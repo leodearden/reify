@@ -28,9 +28,9 @@ use reify_fdm::{
 };
 use reify_ir::{OpaqueState, Value};
 
-use super::as_printed_material::{field_int, field_real, field_scalar};
+use super::as_printed_material::field_int;
 use super::{rejected_input_outcome, struct_data, structure};
-use crate::arg_acceptance::{FieldRejection, length_spec};
+use crate::arg_acceptance::{FieldRejection, dimensionless_spec, length_spec, read_field};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
@@ -345,15 +345,15 @@ const SLICE_CANCEL_GRACE: Duration = Duration::from_millis(500);
 fn read_slice_settings(value_inputs: &[Value]) -> Result<SliceSettings, FieldRejection> {
     let process = value_inputs.get(1).and_then(struct_data);
     let layer_height_m = match process {
-        Some(p) => field_scalar(p, "layer_height", &length_spec())?,
+        Some(p) => read_field(p, "layer_height", &length_spec())?,
         None => None,
     };
     let infill_density = match process {
-        Some(p) => field_real(p, "infill_density")?,
+        Some(p) => read_field(p, "infill_density", &dimensionless_spec())?,
         None => None,
     };
     Ok(SliceSettings {
-        // `field_scalar` yields the SI-metre magnitude of the `Length` field
+        // `read_field` yields the SI-metre magnitude of the `Length` field
         // (`0.2mm` -> 0.0002 m); `SliceSettings.layer_height` is documented in mm
         // and passed verbatim to PrusaSlicer `--layer-height` (which expects mm),
         // so convert m -> mm (×1000). The `.unwrap_or(0.2)` Undef fallback is

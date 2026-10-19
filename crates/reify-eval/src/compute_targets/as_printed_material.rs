@@ -49,8 +49,7 @@ use reify_ir::{FieldSourceKind, OpaqueState, StructureInstanceData, Value};
 
 use super::{rejected_input_outcome, struct_data, structure};
 use crate::arg_acceptance::{
-    ArgSpec, FieldAcceptance, FieldRejection, accept_field, density_spec, dimensionless_spec,
-    length_spec, pressure_spec,
+    FieldRejection, density_spec, dimensionless_spec, length_spec, pressure_spec, read_field,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -63,7 +62,7 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// panicking — matching the Undef-for-Field convention of the stdlib surface.
 /// A present numeric field the reader refuses — a number of the wrong dimension
 /// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
-/// that field's `DimensionedArgRejected` Error (`field_scalar`'s refusal rule).
+/// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule).
 pub fn as_printed_material_r_fast_trampoline(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
@@ -103,10 +102,10 @@ fn build_as_printed_field(
 
     // Every dimension-checked read runs before the realization lookup, so a
     // rejection never depends on whether the body has realized yet.
-    let layer_height = field_scalar(process, "layer_height", &length_spec())?;
-    let infill_density = field_real(process, "infill_density")?;
+    let layer_height = read_field(process, "layer_height", &length_spec())?;
+    let infill_density = read_field(process, "infill_density", &dimensionless_spec())?;
     let base = read_base_elastic(process)?;
-    let line_width = field_scalar(options, "line_width", &length_spec())?;
+    let line_width = read_field(options, "line_width", &length_spec())?;
     let coupon = read_coupon(options)?;
 
     let (
@@ -256,38 +255,6 @@ fn aabb_from_vertices(vertices: &[f32]) -> Option<AxisAlignedBox> {
 
 // ── FDMProcess / AsPrintedOptions field marshalling ─────────────────────────
 
-/// Read a numeric field's SI value through `spec`: `Ok(None)` when it is
-/// absent, `none` or unresolved; `Err` naming `<Struct>.<key>` for any present
-/// value the spec refuses — a number of the wrong dimension, or not a number at
-/// all.
-///
-/// The one strict field reader: the FEA trampolines read their
-/// `ElasticMaterial` fields through it too (`fea_inputs::isotropic_from_data`,
-/// `fea_loads::material_density`), so a material field accepts the same values
-/// whichever trampoline reads it.
-pub(crate) fn field_scalar(
-    data: &StructureInstanceData,
-    key: &str,
-    spec: &ArgSpec,
-) -> Result<Option<f64>, FieldRejection> {
-    match accept_field(data, key, spec) {
-        FieldAcceptance::Accepted(si) => Ok(Some(si)),
-        FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
-        FieldAcceptance::Rejected(rejection) => {
-            Err(FieldRejection::new(&data.type_name, key, rejection))
-        }
-    }
-}
-
-/// [`field_scalar`] at a dimensionless position (a bare `Real`/`Int` or a
-/// dimensionless `Scalar`).
-pub(crate) fn field_real(
-    data: &StructureInstanceData,
-    key: &str,
-) -> Result<Option<f64>, FieldRejection> {
-    field_scalar(data, key, &dimensionless_spec())
-}
-
 /// Read an `Int` field; also accepts a `Real` (truncated).
 pub(crate) fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> {
     match data.fields.get(key) {
@@ -331,9 +298,9 @@ pub(crate) fn read_base_elastic(
     let Some(material) = process.fields.get("material").and_then(struct_data) else {
         return Ok(None);
     };
-    let youngs_modulus = field_scalar(material, "youngs_modulus", &pressure_spec())?;
-    let poisson_ratio = field_real(material, "poisson_ratio")?;
-    let density = field_scalar(material, "density", &density_spec())?;
+    let youngs_modulus = read_field(material, "youngs_modulus", &pressure_spec())?;
+    let poisson_ratio = read_field(material, "poisson_ratio", &dimensionless_spec())?;
+    let density = read_field(material, "density", &density_spec())?;
     Ok(match (youngs_modulus, poisson_ratio, density) {
         (Some(youngs_modulus), Some(poisson_ratio), Some(density)) => Some(BaseElastic {
             youngs_modulus,
@@ -350,14 +317,14 @@ fn read_coupon(options: &StructureInstanceData) -> Result<CouponOverride, FieldR
     let Some(coupon) = options.fields.get("coupon").and_then(struct_data) else {
         return Ok(CouponOverride::default());
     };
-    let modulus = |key| field_scalar(coupon, key, &pressure_spec());
+    let modulus = |key| read_field(coupon, key, &pressure_spec());
     Ok(CouponOverride {
         ex: modulus("ex")?,
         ey: modulus("ey")?,
         ez: modulus("ez")?,
         gxy: modulus("gxy")?,
-        infill_c: field_real(coupon, "infill_gibson_ashby_c")?,
-        infill_n: field_real(coupon, "infill_gibson_ashby_n")?,
+        infill_c: read_field(coupon, "infill_gibson_ashby_c", &dimensionless_spec())?,
+        infill_n: read_field(coupon, "infill_gibson_ashby_n", &dimensionless_spec())?,
     })
 }
 

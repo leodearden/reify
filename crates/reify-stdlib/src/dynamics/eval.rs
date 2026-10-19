@@ -42,7 +42,7 @@ use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
 use reify_ir::arg_acceptance::{
     ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
-    read_arg_or_bare, read_field_or_bare, rotational_damping_spec, rotational_stiffness_spec,
+    read_arg_or_bare, read_entry_or_bare, rotational_damping_spec, rotational_stiffness_spec,
     translational_damping_spec, translational_stiffness_spec,
 };
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -1033,8 +1033,7 @@ fn compliance_constant(
     field: &str,
     spec: &ArgSpec,
 ) -> Result<Option<f64>, FieldRejection> {
-    let constant = read_field_or_bare(map_get(joint, field), spec)
-        .map_err(|rejection| FieldRejection::new(kind, field, rejection))?;
+    let constant = read_entry_or_bare(kind, field, map_get(joint, field), spec)?;
     Ok(constant.filter(|c| c.is_finite()))
 }
 

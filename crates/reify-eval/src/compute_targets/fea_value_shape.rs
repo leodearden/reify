@@ -25,8 +25,14 @@ pub(super) enum FeaValueShapeError {
     /// Expected an ordered component sequence (`Value::List`/`Point`/`Vector`),
     /// got something else, or the wrong arity.
     ExpectedList { context: &'static str, got: String },
-    /// A required `StructureInstance` field was absent.
+    /// A required `StructureInstance` field was absent, or `none`.
     MissingField {
+        context: &'static str,
+        field: &'static str,
+    },
+    /// A required `StructureInstance` field is present but unresolved
+    /// (`Value::Undef`), so it has no value to read yet.
+    Unresolved {
         context: &'static str,
         field: &'static str,
     },
@@ -47,7 +53,7 @@ pub(super) enum FeaValueShapeError {
         got: String,
     },
     /// A present field value its reader's `ArgSpec` refuses, a non-number
-    /// included: a `fea_loads` magnitude or an isotropic material field,
+    /// included: a `fea_loads` magnitude or an elastic law's field,
     /// lifted by `?` through the `From` impl below. Rendered through
     /// [`FieldRejection::to_error`], the wording every dimension-checked
     /// reader shares.
@@ -74,6 +80,9 @@ impl std::fmt::Display for FeaValueShapeError {
             FeaValueShapeError::MissingField { context, field } => {
                 write!(f, "missing field {field:?} for {context}")
             }
+            FeaValueShapeError::Unresolved { context, field } => {
+                write!(f, "field {field:?} is unresolved (Undef) for {context}")
+            }
             FeaValueShapeError::WrongDimension {
                 context,
                 expected,
@@ -98,7 +107,8 @@ impl FeaValueShapeError {
             | FeaValueShapeError::ExpectedScalar { .. }
             | FeaValueShapeError::ExpectedReal { .. }
             | FeaValueShapeError::ExpectedList { .. }
-            | FeaValueShapeError::MissingField { .. } => None,
+            | FeaValueShapeError::MissingField { .. }
+            | FeaValueShapeError::Unresolved { .. } => None,
         }
     }
 }

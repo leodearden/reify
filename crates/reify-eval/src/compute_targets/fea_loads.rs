@@ -6,7 +6,7 @@
 //! carry its position's dimension, while a bare `Real`/`Int` is still read as
 //! the legacy undimensioned spelling until γ3 #5802 narrows it. The material
 //! density is no load magnitude and has no legacy spelling, so it reads through
-//! the strict `field_scalar`, the reader the as-printed trampoline gives the
+//! the strict `read_field`, the reader the as-printed trampoline gives the
 //! same `ElasticMaterial.density`. An absent, `none` or `Undef` value
 //! contributes nothing, quietly (PRD decision 2). Any value refused — a
 //! `Scalar` of another dimension or not a number at all — is a
@@ -16,10 +16,9 @@
 
 use reify_ir::{StructureInstanceData, Value};
 
-use super::as_printed_material::field_scalar;
 use super::fea_value_shape::FeaValueShapeError;
 use crate::arg_acceptance::{
-    ArgSpec, FieldRejection, acceleration_spec, density_spec, force_spec, pressure_spec,
+    FieldRejection, acceleration_spec, density_spec, force_spec, pressure_spec, read_field,
     read_field_or_bare,
 };
 
@@ -41,21 +40,21 @@ pub(super) fn load_items<'a>(
 pub(super) fn point_load_force(
     load: &StructureInstanceData,
 ) -> Result<Option<f64>, FieldRejection> {
-    magnitude(load, "force", &force_spec())
+    read_field_or_bare(load, "force", &force_spec())
 }
 
 /// `PressureLoad.magnitude`, in pascals.
 pub(super) fn pressure_load_magnitude(
     load: &StructureInstanceData,
 ) -> Result<Option<f64>, FieldRejection> {
-    magnitude(load, "magnitude", &pressure_spec())
+    read_field_or_bare(load, "magnitude", &pressure_spec())
 }
 
 /// `Gravity.magnitude`, in m·s⁻².
 pub(super) fn gravity_magnitude(
     load: &StructureInstanceData,
 ) -> Result<Option<f64>, FieldRejection> {
-    magnitude(load, "magnitude", &acceleration_spec())
+    read_field_or_bare(load, "magnitude", &acceleration_spec())
 }
 
 /// The material's `density`, in kg·m⁻³: a `Scalar<Density>` only, exactly as
@@ -67,16 +66,7 @@ pub(super) fn material_density(material: &Value) -> Result<f64, FieldRejection> 
     let Value::StructureInstance(data) = material else {
         return Ok(0.0);
     };
-    Ok(field_scalar(data, "density", &density_spec())?.unwrap_or(0.0))
-}
-
-fn magnitude(
-    data: &StructureInstanceData,
-    field: &str,
-    spec: &ArgSpec,
-) -> Result<Option<f64>, FieldRejection> {
-    read_field_or_bare(data.fields.get(field), spec)
-        .map_err(|rejection| FieldRejection::new(&data.type_name, field, rejection))
+    Ok(read_field(data, "density", &density_spec())?.unwrap_or(0.0))
 }
 
 #[cfg(test)]

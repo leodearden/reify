@@ -764,21 +764,57 @@ pub fn accept_field(
     accept_present_field(data.fields.get(key), spec, accept_arg)
 }
 
-/// A struct field read for a position that still takes the legacy bare
-/// spelling: [`accept_field`]'s absent and `Option` handling over
-/// [`accept_arg_or_bare`], with [`read_arg_or_bare`]'s refusal rule.
+/// The strict struct-field reader: [`accept_field`] as a reader's `Result`.
 ///
-/// `field` is the looked-up value, `None` when the key is absent, so a
-/// `StructureInstance` field and a `Value::Map` entry read alike. `Ok(None)`
-/// for absent, `none` or unresolved; `Err` for any present value refused.
-pub fn read_field_or_bare(
-    field: Option<&crate::value::Value>,
+/// `Ok(Some(si))` accepted; `Ok(None)` for a field that is absent, `none` or
+/// unresolved; `Err` naming `<Struct>.<key>` for any present value the spec
+/// refuses — a number of the wrong dimension, or not a number at all
+/// ([`read_arg_or_bare`]'s refusal rule).
+pub fn read_field(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
     spec: &ArgSpec,
-) -> Result<Option<f64>, ArgRejection> {
-    match accept_present_field(field, spec, accept_arg_or_bare) {
+) -> Result<Option<f64>, FieldRejection> {
+    field_reading(&data.type_name, key, accept_field(data, key, spec))
+}
+
+/// [`read_field`] for a position that still takes the legacy bare spelling
+/// ([`accept_arg_or_bare`]).
+pub fn read_field_or_bare(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    read_entry_or_bare(&data.type_name, key, data.fields.get(key), spec)
+}
+
+/// [`read_field_or_bare`] for an entry looked up outside a structure instance,
+/// such as a `Value::Map` entry: `entry` is `None` when the key is absent, and
+/// a refusal is named `<owner>.<key>`.
+pub fn read_entry_or_bare(
+    owner: &str,
+    key: &str,
+    entry: Option<&crate::value::Value>,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    field_reading(
+        owner,
+        key,
+        accept_present_field(entry, spec, accept_arg_or_bare),
+    )
+}
+
+/// A field's classification as a reader's `Result`, a refusal named
+/// `<owner>.<key>`.
+fn field_reading(
+    owner: &str,
+    key: &str,
+    acceptance: FieldAcceptance,
+) -> Result<Option<f64>, FieldRejection> {
+    match acceptance {
         FieldAcceptance::Accepted(si) => Ok(Some(si)),
         FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
-        FieldAcceptance::Rejected(rejection) => Err(rejection),
+        FieldAcceptance::Rejected(rejection) => Err(FieldRejection::new(owner, key, rejection)),
     }
 }
 
@@ -1167,12 +1203,21 @@ mod tests {
         );
     }
 
-    // ── read_field_or_bare: the bare-tolerant struct-field reader ─────────────
+    // ── read_field / read_field_or_bare / read_entry_or_bare ──────────────────
 
-    /// The field-level twin of `read_arg_or_bare`: `accept_field`'s absent and
-    /// `Option` handling, plus the legacy bare spelling.
+    fn point_load(force: crate::value::Value) -> crate::value::StructureInstanceData {
+        crate::value::StructureInstanceData {
+            type_id: crate::structure_registry::StructureTypeId(1),
+            type_name: "PointLoad".to_string(),
+            version: 1,
+            fields: [("force".to_string(), force)].into_iter().collect(),
+        }
+    }
+
+    /// The strict reader: `accept_field`'s absent and `Option` handling, and
+    /// no bare spelling at a dimensioned position.
     #[test]
-    fn read_field_or_bare_unwraps_option_and_takes_the_bare_spelling() {
+    fn read_field_reads_its_dimension_and_refuses_everything_else() {
         use crate::value::Value;
         use reify_core::DimensionVector as DV;
 
@@ -1182,24 +1227,54 @@ mod tests {
             dimension: DV::FORCE,
         };
         let some = |v: Value| Value::Option(Some(Box::new(v)));
-        assert_eq!(read_field_or_bare(None, &force), Ok(None));
         assert_eq!(
-            read_field_or_bare(Some(&Value::Option(None)), &force),
-            Ok(None)
-        );
-        assert_eq!(
-            read_field_or_bare(Some(&some(Value::Undef)), &force),
-            Ok(None)
-        );
-        assert_eq!(read_field_or_bare(Some(&newtons), &force), Ok(Some(5.0)));
-        assert_eq!(
-            read_field_or_bare(Some(&some(some(newtons.clone()))), &force),
+            read_field(&point_load(some(newtons.clone())), "force", &force),
             Ok(Some(5.0))
         );
+        for unread in [Value::Option(None), Value::Undef] {
+            assert_eq!(read_field(&point_load(unread), "force", &force), Ok(None));
+        }
         assert_eq!(
-            read_field_or_bare(Some(&some(Value::Int(5))), &force),
-            Ok(Some(5.0))
+            read_field(&point_load(newtons), "magnitude", &force),
+            Ok(None),
+            "a key that is not in `fields` reads as absent"
         );
+        for refused in [Value::Real(5.0), Value::Int(5), Value::Bool(true)] {
+            let rejection = read_field(&point_load(refused.clone()), "force", &force);
+            assert!(
+                matches!(
+                    &rejection,
+                    Err(FieldRejection { path, rejection })
+                        if path == "PointLoad.force" && rejection.expected == "Force"
+                ),
+                "{refused:?} must be refused naming PointLoad.force, got {rejection:?}"
+            );
+        }
+    }
+
+    /// The field-level twin of `read_arg_or_bare`: `accept_field`'s absent and
+    /// `Option` handling, plus the legacy bare spelling.
+    #[test]
+    fn read_field_or_bare_unwraps_option_and_takes_the_bare_spelling() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let force = force_spec();
+        let read = |v: Value| read_field_or_bare(&point_load(v), "force", &force);
+        let newtons = Value::Scalar {
+            si_value: 5.0,
+            dimension: DV::FORCE,
+        };
+        let some = |v: Value| Value::Option(Some(Box::new(v)));
+        assert_eq!(
+            read_field_or_bare(&point_load(Value::Undef), "magnitude", &force),
+            Ok(None)
+        );
+        assert_eq!(read(Value::Option(None)), Ok(None));
+        assert_eq!(read(some(Value::Undef)), Ok(None));
+        assert_eq!(read(newtons.clone()), Ok(Some(5.0)));
+        assert_eq!(read(some(some(newtons))), Ok(Some(5.0)));
+        assert_eq!(read(some(Value::Int(5))), Ok(Some(5.0)));
 
         let metres = Value::Scalar {
             si_value: 5.0,
@@ -1207,25 +1282,36 @@ mod tests {
         };
         for refused in [some(metres.clone()), metres, Value::Bool(true)] {
             assert_eq!(
-                read_field_or_bare(Some(&refused), &force)
-                    .err()
-                    .map(|rejection| rejection.expected),
-                Some("Force"),
+                read(refused.clone()).err().map(|rejection| rejection.path),
+                Some("PointLoad.force".to_string()),
                 "{refused:?} must be refused, never read as absent"
             );
         }
     }
 
+    /// An entry looked up outside a structure instance reads like a field and
+    /// is named by the owner its caller gives.
     #[test]
-    fn a_field_rejection_is_named_owner_dot_field() {
+    fn read_entry_or_bare_names_a_refusal_after_its_owner() {
         use crate::value::Value;
 
-        let rejection = read_field_or_bare(Some(&Value::Bool(true)), &force_spec())
-            .expect_err("a Bool at a FORCE field must be refused");
-        let expected_message = rejection.message("solve", "PointLoad.force");
-        let field = FieldRejection::new("PointLoad", "force", rejection);
-        assert_eq!(field.path, "PointLoad.force");
-        assert_eq!(field.to_error("solve").message, expected_message);
+        let force = force_spec();
+        assert_eq!(
+            read_entry_or_bare("prismatic", "damping", None, &force),
+            Ok(None)
+        );
+        assert_eq!(
+            read_entry_or_bare("prismatic", "damping", Some(&Value::Real(2.0)), &force),
+            Ok(Some(2.0))
+        );
+        let rejection =
+            read_entry_or_bare("prismatic", "damping", Some(&Value::Bool(true)), &force)
+                .expect_err("a Bool at a FORCE entry must be refused");
+        assert_eq!(rejection.path, "prismatic.damping");
+        assert_eq!(
+            rejection.to_error("solve").message,
+            rejection.rejection.message("solve", "prismatic.damping")
+        );
     }
 
     // ── read_arg_or_bare: one refusal rule for every reader ──────────────────

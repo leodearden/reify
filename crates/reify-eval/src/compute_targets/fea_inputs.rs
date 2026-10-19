@@ -1,53 +1,59 @@
 //! The FEA leaf input readers shared by the `solve_elastic_static` and
 //! `solve_buckling` trampolines: a spec-classified component, a `Length`
-//! input, a structure's scalar / real field, and the isotropic material. Each
-//! reads into a `Result` whose `Err` is a [`FeaValueShapeError`], so a
-//! malformed input never panics.
+//! input, an elastic law's required modulus / ratio field, and the isotropic
+//! material. Each reads into a `Result` whose `Err` is a
+//! [`FeaValueShapeError`], so a malformed input never panics.
 
 use reify_ir::{StructureInstanceData, Value};
 use reify_solver_elastic::IsotropicElastic;
 
-use super::as_printed_material::field_scalar;
 use super::fea_value_shape::FeaValueShapeError;
 use crate::arg_acceptance::{
-    Acceptance, ArgSpec, accept_arg, dimensionless_spec, length_spec, pressure_spec,
+    Acceptance, ArgSpec, FieldAcceptance, FieldRejection, accept_arg, accept_field,
+    dimensionless_spec, length_spec, pressure_spec,
 };
 
-/// Read a `Value::Scalar { si_value, .. }` field from a StructureInstance.
-pub(super) fn scalar_si_field(
+/// An elastic law's required modulus field `key` (`youngs_modulus`, `e1`,
+/// `g_axial`, ...), in pascals: a Pressure `Scalar` only, as the as-printed
+/// reader takes `ElasticMaterial.youngs_modulus`.
+pub(super) fn modulus_field(
     data: &StructureInstanceData,
     key: &'static str,
 ) -> Result<f64, FeaValueShapeError> {
-    match data.fields.get(key) {
-        Some(Value::Scalar { si_value, .. }) => Ok(*si_value),
-        // `context` is a fixed label, so `got` carries the field key.
-        Some(other) => Err(FeaValueShapeError::ExpectedScalar {
-            context: "scalar_si_field",
-            got: format!("{other:?} (field {key:?})"),
-        }),
-        None => Err(FeaValueShapeError::MissingField {
-            context: "scalar_si_field",
-            field: key,
-        }),
-    }
+    required_field(data, key, &pressure_spec(), "modulus_field")
 }
 
-/// Read a `Value::Real` field from a StructureInstance.
-pub(super) fn real_field(
+/// An elastic law's required Poisson ratio field `key` (`poisson_ratio`,
+/// `nu12`, ...): a bare `Real`/`Int` or a dimensionless `Scalar`.
+pub(super) fn ratio_field(
     data: &StructureInstanceData,
     key: &'static str,
 ) -> Result<f64, FeaValueShapeError> {
-    match data.fields.get(key) {
-        Some(Value::Real(r)) => Ok(*r),
-        // `context` is a fixed label, so `got` carries the field key.
-        Some(other) => Err(FeaValueShapeError::ExpectedReal {
-            context: "real_field",
-            got: format!("{other:?} (field {key:?})"),
-        }),
-        None => Err(FeaValueShapeError::MissingField {
-            context: "real_field",
+    required_field(data, key, &dimensionless_spec(), "ratio_field")
+}
+
+/// Read the required field `key` through `spec`: absent or `none` is
+/// `MissingField`, `Undef` is `Unresolved`, and a present value the spec
+/// refuses is `Rejected`, naming `<Struct>.<key>`.
+fn required_field(
+    data: &StructureInstanceData,
+    key: &'static str,
+    spec: &ArgSpec,
+    context: &'static str,
+) -> Result<f64, FeaValueShapeError> {
+    match accept_field(data, key, spec) {
+        FieldAcceptance::Accepted(si) => Ok(si),
+        FieldAcceptance::Absent => Err(FeaValueShapeError::MissingField {
+            context,
             field: key,
         }),
+        FieldAcceptance::Undefined => Err(FeaValueShapeError::Unresolved {
+            context,
+            field: key,
+        }),
+        FieldAcceptance::Rejected(rejection) => {
+            Err(FieldRejection::new(&data.type_name, key, rejection).into())
+        }
     }
 }
 
@@ -57,34 +63,12 @@ pub(super) fn real_field(
 /// which already holds the law's destructured data; taking the data rather
 /// than a second `&Value` means no caller can pass a pair describing two
 /// different instances.
-///
-/// Each field reads through the strict `field_scalar` under the spec the
-/// as-printed reader (`as_printed_material::read_base_elastic`) applies to the
-/// same `ElasticMaterial` field, so the field accepts the same values whichever
-/// trampoline reads it: `youngs_modulus` a Pressure `Scalar` only,
-/// `poisson_ratio` a dimensionless number (and `density`, read by
-/// `fea_loads::material_density`, a Density `Scalar` only). Only absence
-/// differs, by trampoline: here it is an error.
 pub(super) fn isotropic_from_data(
     data: &StructureInstanceData,
 ) -> Result<IsotropicElastic, FeaValueShapeError> {
     Ok(IsotropicElastic {
-        youngs_modulus: isotropic_field(data, "youngs_modulus", &pressure_spec())?,
-        poisson_ratio: isotropic_field(data, "poisson_ratio", &dimensionless_spec())?,
-    })
-}
-
-/// Read the isotropic material's required field `key` through `spec`: a field
-/// that is absent, `none` or unresolved is `MissingField`, and a present value
-/// the spec refuses is `Rejected`, naming `<Struct>.<key>`.
-fn isotropic_field(
-    data: &StructureInstanceData,
-    key: &'static str,
-    spec: &ArgSpec,
-) -> Result<f64, FeaValueShapeError> {
-    field_scalar(data, key, spec)?.ok_or(FeaValueShapeError::MissingField {
-        context: "isotropic_from_data",
-        field: key,
+        youngs_modulus: modulus_field(data, "youngs_modulus")?,
+        poisson_ratio: ratio_field(data, "poisson_ratio")?,
     })
 }
 
@@ -126,24 +110,12 @@ pub(super) fn extract_length_si(val: &Value) -> Result<f64, FeaValueShapeError> 
 }
 
 /// The outcome of reading ONE numeric value — a triple's component or a
-/// positional input — against an `ArgSpec`. Mirrors
-/// `reify_ir::arg_acceptance::Acceptance` 1:1, carrying
-/// [`FeaValueShapeError`] in place of `ArgRejection`.
+/// positional input — against an `ArgSpec`: `reify_ir`'s `Acceptance`, with a
+/// [`FeaValueShapeError`] in place of its `ArgRejection`.
 ///
-/// `Undefined` is surfaced rather than folded into `Rejected` because the
-/// right response to an unresolved value is the CALLER's to choose, not
-/// [`spec_component`]'s (task #7019 review [reviewer_comprehensive], fixing a
-/// regression where folding the two together made `elastic_static`'s
-/// `read_direction_or_neg_z` hard-fail the whole solve on transient solver
-/// state instead of degrading quietly). `extract_scalar_triple`'s `comp`
-/// closure and [`extract_length_si`] treat `Undefined` as a shape error —
-/// pre-existing behaviour at both positions (follow-up #7793 is filed to
-/// decide, deliberately and with its own test coverage, whether to widen the
-/// triple's) — while `read_direction_or_neg_z` degrades it quietly to `0.0`,
-/// per PRD `dimension-checked-readers.md` decision 2 ("`Undef` in => `Undef`
-/// out, quietly"). Dimension EXPECTATION (what `spec_component` classifies)
-/// and undef POLICY (what the caller decides) are orthogonal axes; this enum
-/// is what keeps a catch-all arm from fusing them back together.
+/// `Undefined` stays distinct from `Rejected` because the caller, not
+/// [`spec_component`], decides what an unresolved value means at its position
+/// (PRD `dimension-checked-readers.md` decision 2).
 pub(super) enum ComponentRead {
     /// The value has the expected dimension; carries the SI f64.
     Accepted(f64),
@@ -154,33 +126,9 @@ pub(super) enum ComponentRead {
     Rejected(FeaValueShapeError),
 }
 
-/// Shared spec-driven classifier (task #7019): classifies `v` against `spec`
-/// via the canonical `reify_ir::arg_acceptance::accept_arg`, so
-/// `elastic_static`'s `dimensioned_component`/`dimensionless_component` and
-/// [`extract_length_si`] differ only in which `ArgSpec` they pass, not in a
-/// hand-written `match` over `Value`.
-///
-/// Returns [`ComponentRead`], not a `Result`: this function's job is to
-/// CLASSIFY `v` against `spec`, not to decide what an `Acceptance::Undefined`
-/// result means to its caller — see `ComponentRead`'s doc. The match below
-/// names all three `Acceptance` variants explicitly, with no catch-all, so a
-/// future fourth variant is a compile error here rather than a silent
-/// miscategorisation.
-///
-/// The `matches!(v, Value::Scalar { .. })` discriminator applies to the
-/// `Rejected` arms ONLY, and distinguishes two genuinely different faults: a
-/// `Value::Scalar` whose `dimension` is wrong
-/// ([`FeaValueShapeError::WrongDimension`]) vs. a value that is not a
-/// `Value::Scalar` at all (`ExpectedScalar`) — which is what keeps every
-/// non-Scalar, DEFINED value on the `ExpectedScalar` path. Both arms reuse
-/// the `ArgRejection` that `accept_arg` already built (task #7019 review
-/// [reviewer_comprehensive]) instead of re-deriving a second wording from
-/// `format!("{v:?}")`: `rej.got` is `value_short_label`'s rendering (e.g.
-/// `"Length Scalar"`) and `rej.expected` is `spec.type_name`, so a
-/// `WrongDimension` at a `dimensionless_spec` position reads "expected Real
-/// … got Length Scalar" instead of a raw `Value::Scalar { .. }` `Debug` dump
-/// that names the dimension but not in the same words the `expected` side
-/// uses.
+/// Classify `v` against `spec` through `accept_arg`. A refused `Value::Scalar`
+/// is `WrongDimension`, naming the spec's `expected` type; any other refused
+/// value is `ExpectedScalar`. Both reuse the rejection's `got` label.
 pub(super) fn spec_component(v: &Value, spec: &ArgSpec, context: &'static str) -> ComponentRead {
     match accept_arg(v, spec) {
         Acceptance::Accepted(x) => ComponentRead::Accepted(x),
@@ -196,5 +144,104 @@ pub(super) fn spec_component(v: &Value, spec: &ArgSpec, context: &'static str) -
             context,
             got: rej.got,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_core::DimensionVector;
+
+    use super::*;
+    use crate::compute_targets::{scalar, structure};
+
+    fn law(field: &str, value: Value) -> StructureInstanceData {
+        match structure("OrthotropicMaterial", vec![(field, value)]) {
+            Value::StructureInstance(data) => *data,
+            other => unreachable!("`structure` builds a StructureInstance, got {other:?}"),
+        }
+    }
+
+    fn refusal_of(res: Result<f64, FeaValueShapeError>) -> Option<(String, &'static str)> {
+        match res {
+            Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection })) => {
+                Some((path, rejection.expected))
+            }
+            _ => None,
+        }
+    }
+
+    /// A modulus is a Pressure `Scalar`: a LENGTH or dimensionless `Scalar`,
+    /// or a bare number, is refused rather than read as pascals.
+    #[test]
+    fn modulus_field_reads_a_pressure_and_refuses_every_other_value() {
+        assert_eq!(
+            modulus_field(&law("e1", scalar(2.0e11, DimensionVector::PRESSURE)), "e1"),
+            Ok(2.0e11)
+        );
+        for refused in [
+            scalar(2.0e11, DimensionVector::LENGTH),
+            scalar(2.0e11, DimensionVector::DIMENSIONLESS),
+            Value::Real(2.0e11),
+            Value::Bool(true),
+        ] {
+            assert_eq!(
+                refusal_of(modulus_field(&law("e1", refused.clone()), "e1")),
+                Some(("OrthotropicMaterial.e1".to_string(), "Pressure")),
+                "a modulus {refused:?} must be refused naming the field"
+            );
+        }
+    }
+
+    /// A Poisson ratio takes every dimensionless spelling, and only those.
+    #[test]
+    fn ratio_field_reads_every_dimensionless_spelling_and_refuses_a_dimension() {
+        for (ratio, expected) in [
+            (Value::Real(0.25), 0.25),
+            (Value::Int(0), 0.0),
+            (scalar(0.25, DimensionVector::DIMENSIONLESS), 0.25),
+        ] {
+            assert_eq!(
+                ratio_field(&law("nu12", ratio.clone()), "nu12"),
+                Ok(expected),
+                "a ratio {ratio:?} must read"
+            );
+        }
+        assert_eq!(
+            refusal_of(ratio_field(
+                &law("nu12", scalar(0.25, DimensionVector::PRESSURE)),
+                "nu12"
+            )),
+            Some(("OrthotropicMaterial.nu12".to_string(), "Real"))
+        );
+    }
+
+    /// A required field that is not there is missing; one that is there but
+    /// has not resolved is not, so the two are told apart.
+    #[test]
+    fn a_required_field_tells_absent_from_unresolved() {
+        let absent_spellings = [
+            law("e2", scalar(1.0, DimensionVector::PRESSURE)),
+            law("e1", Value::Option(None)),
+        ];
+        for absent in absent_spellings {
+            assert!(
+                matches!(
+                    modulus_field(&absent, "e1"),
+                    Err(FeaValueShapeError::MissingField { field: "e1", .. })
+                ),
+                "an absent or `none` e1 must be MissingField"
+            );
+        }
+        let some_undef = Value::Option(Some(Box::new(Value::Undef)));
+        for unresolved in [Value::Undef, some_undef] {
+            let res = ratio_field(&law("nu12", unresolved.clone()), "nu12");
+            assert!(
+                matches!(
+                    &res,
+                    Err(FeaValueShapeError::Unresolved { field: "nu12", .. })
+                ),
+                "an unresolved nu12 ({unresolved:?}) must be Unresolved, got {res:?}"
+            );
+        }
     }
 }

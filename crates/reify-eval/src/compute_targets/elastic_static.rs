@@ -229,8 +229,8 @@ use super::shell_solve::{
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use super::fea_inputs::{
-    ComponentRead, extract_length_si, extract_material, isotropic_from_data, real_field,
-    scalar_si_field, spec_component,
+    ComponentRead, extract_length_si, extract_material, isotropic_from_data, modulus_field,
+    ratio_field, spec_component,
 };
 use super::fea_loads::{
     gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
@@ -4300,7 +4300,7 @@ fn element_stress_anisotropic(
 /// Task D7 (compute-fea-hardening PRD): Result-ified — returns
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
 /// propagating every dependency-extractor call (`classify_material_as_printed_zones`,
-/// `scalar_si_field`, `real_field`, `extract_material`) via `?`, and its own
+/// `modulus_field`, `ratio_field`, `extract_material`) via `?`, and its own
 /// non-StructureInstance guard now returns `Err(ExpectedStructureInstance)`
 /// directly instead of panicking. The sole production call site
 /// (`solve_elastic_static_trampoline`'s validate-all-inputs gate, D9/task
@@ -4776,25 +4776,25 @@ fn law_from_value(
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1")?,
-                e2:   scalar_si_field(law_data, "e2")?,
-                e3:   scalar_si_field(law_data, "e3")?,
-                g12:  scalar_si_field(law_data, "g12")?,
-                g13:  scalar_si_field(law_data, "g13")?,
-                g23:  scalar_si_field(law_data, "g23")?,
-                nu12: real_field(law_data, "nu12")?,
-                nu13: real_field(law_data, "nu13")?,
-                nu23: real_field(law_data, "nu23")?,
+                e1:   modulus_field(law_data, "e1")?,
+                e2:   modulus_field(law_data, "e2")?,
+                e3:   modulus_field(law_data, "e3")?,
+                g12:  modulus_field(law_data, "g12")?,
+                g13:  modulus_field(law_data, "g13")?,
+                g23:  modulus_field(law_data, "g23")?,
+                nu12: ratio_field(law_data, "nu12")?,
+                nu13: ratio_field(law_data, "nu13")?,
+                nu23: ratio_field(law_data, "nu23")?,
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane")?,
-                e_axial:     scalar_si_field(law_data, "e_axial")?,
-                nu_in_plane: real_field(law_data, "nu_in_plane")?,
-                nu_axial:    real_field(law_data, "nu_axial")?,
-                g_axial:     scalar_si_field(law_data, "g_axial")?,
+                e_in_plane:  modulus_field(law_data, "e_in_plane")?,
+                e_axial:     modulus_field(law_data, "e_axial")?,
+                nu_in_plane: ratio_field(law_data, "nu_in_plane")?,
+                nu_axial:    ratio_field(law_data, "nu_axial")?,
+                g_axial:     modulus_field(law_data, "g_axial")?,
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
@@ -4843,16 +4843,17 @@ fn is_named_anisotropic_law(type_name: &str) -> bool {
 /// the isotropic shape — instead of just the field that happened to be
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
-/// inside the `FeaValueShapeError` taxonomy: `MissingField`, `WrongDimension`
-/// and `Rejected` each get their own `reason` arm below (`WrongDimension`'s
-/// folds in `expected` alongside `got`, since it has no `field` to report;
-/// `Rejected` is the shared rejection wording); the rest have no `got: String`
-/// distinct enough to need one and re-emit as `ExpectedScalar`, whose `got` is
-/// already a free-form diagnostic string elsewhere in the FEA readers (see
-/// `fea_inputs::scalar_si_field`'s comment).
+/// inside the `FeaValueShapeError` taxonomy: `MissingField`, `Unresolved`,
+/// `WrongDimension` and `Rejected` each get their own `reason` arm below
+/// (`WrongDimension`'s folds in `expected` alongside `got`, since it has no
+/// `field` to report; `Rejected` is the shared rejection wording); the rest
+/// have no `got: String` distinct enough to need one and re-emit as
+/// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
+/// elsewhere in the FEA readers.
 fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
     let reason = match err {
         FeaValueShapeError::MissingField { field, .. } => format!("missing field {field:?}"),
+        FeaValueShapeError::Unresolved { field, .. } => format!("unresolved field {field:?}"),
         FeaValueShapeError::WrongDimension { expected, got, .. } => {
             format!("expected {expected}, got {got}")
         }
@@ -10102,10 +10103,16 @@ mod tests {
         let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
             unreachable!("a LENGTH force must fail the input gate, got {outcome:?}");
         };
-        let rejection =
-            read_field_or_bare(Some(&scalar(2.0, DimensionVector::LENGTH)), &force_spec())
-                .unwrap_err();
-        let expected = rejection.message("solve_elastic_static_trampoline", "PointLoad.force");
+        let Value::StructureInstance(load) = structure(
+            "PointLoad",
+            vec![("force", scalar(2.0, DimensionVector::LENGTH))],
+        ) else {
+            unreachable!("`structure` builds a StructureInstance");
+        };
+        let expected = read_field_or_bare(&load, "force", &force_spec())
+            .unwrap_err()
+            .to_error("solve_elastic_static_trampoline")
+            .message;
         assert!(
             diagnostics.iter().any(|d| {
                 d.severity == reify_core::Severity::Error
@@ -10817,7 +10824,7 @@ mod tests {
     /// must propagate a leaf extractor's `Err` through its `?`-threaded
     /// `"OrthotropicMaterial"` arm instead of panicking. A `StructureInstance`
     /// with `type_name: "OrthotropicMaterial"` and an empty `fields` map is
-    /// missing `e1` — the arm's first `scalar_si_field` read — so
+    /// missing `e1` — the arm's first `modulus_field` read — so
     /// `classify_material` must surface `Err(FeaValueShapeError::MissingField
     /// { field: "e1", .. })` rather than panicking, proving the arm's 9
     /// field reads genuinely propagate `Err` via `?` and are not left as
@@ -11439,160 +11446,6 @@ mod tests {
         }
     }
 
-    /// step-3 RED: `scalar_si_field` must reject a present-but-wrong-type
-    /// field with `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of
-    /// panicking.
-    ///
-    /// RED: `scalar_si_field` currently returns a bare `f64`, so matching
-    /// `Err(..)` fails to type-check until step-4 converts it to
-    /// `Result<f64, FeaValueShapeError>`.
-    #[test]
-    fn scalar_si_field_rejects_non_scalar_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [("e1".to_string(), Value::Real(1.0))]
-            .into_iter()
-            .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        let res = scalar_si_field(&data, "e1");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type field, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review, suggestion 1): `scalar_si_field` must
-    /// distinguish an absent key from a present-but-wrong-type field, reporting
-    /// `Err(FeaValueShapeError::MissingField { .. })` rather than
-    /// `ExpectedScalar` when the key itself is not in `fields`.
-    #[test]
-    fn scalar_si_field_rejects_missing_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields: PersistentMap::<String, Value>::new(),
-        };
-
-        let res = scalar_si_field(&data, "e1");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
-            "expected Err(MissingField) for an absent field key, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review round 2, suggestion 1): `scalar_si_field`
-    /// must return `Ok` with the SI value for a present, correctly-typed
-    /// field, locking the success path alongside the error/missing paths
-    /// above.
-    #[test]
-    fn scalar_si_field_returns_value_for_scalar_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [(
-            "e1".to_string(),
-            Value::Scalar {
-                si_value: 4.2,
-                dimension: DimensionVector::DIMENSIONLESS,
-            },
-        )]
-        .into_iter()
-        .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        assert_eq!(scalar_si_field(&data, "e1"), Ok(4.2));
-    }
-
-    /// step-5 RED: `real_field` must reject a present-but-wrong-type field
-    /// with `Err(FeaValueShapeError::ExpectedReal { .. })` instead of
-    /// panicking.
-    ///
-    /// RED: `real_field` currently returns a bare `f64`, so matching
-    /// `Err(..)` fails to type-check until step-6 converts it to
-    /// `Result<f64, FeaValueShapeError>`.
-    #[test]
-    fn real_field_rejects_non_real_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [(
-            "nu12".to_string(),
-            Value::Scalar { si_value: 0.3, dimension: DimensionVector::DIMENSIONLESS },
-        )]
-        .into_iter()
-        .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        let res = real_field(&data, "nu12");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
-            "expected Err(ExpectedReal) for a present-but-wrong-type field, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review, suggestion 1): `real_field` must
-    /// distinguish an absent key from a present-but-wrong-type field, reporting
-    /// `Err(FeaValueShapeError::MissingField { .. })` rather than
-    /// `ExpectedReal` when the key itself is not in `fields`.
-    #[test]
-    fn real_field_rejects_missing_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields: PersistentMap::<String, Value>::new(),
-        };
-
-        let res = real_field(&data, "nu12");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
-            "expected Err(MissingField) for an absent field key, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review round 2, suggestion 1): `real_field`
-    /// must return `Ok` with the value for a present, correctly-typed field,
-    /// locking the success path alongside the error/missing paths above.
-    #[test]
-    fn real_field_returns_value_for_real_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [("nu12".to_string(), Value::Real(0.3))]
-            .into_iter()
-            .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        assert_eq!(real_field(&data, "nu12"), Ok(0.3));
-    }
-
     /// step-7 RED: `extract_point3_si` must reject a non-Point `Value` with
     /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
     ///
@@ -12046,7 +11899,7 @@ mod tests {
     /// Amendment (task #5081 review, suggestion 1): also assert `context ==
     /// "extract_material"`. This is the leaf's own shape check (unlike the
     /// wrong-typed/missing-field tests below, which exercise `context`s
-    /// delegated from `scalar_si_field`/`real_field`), so it's the one place
+    /// delegated from `modulus_field`/`ratio_field`), so it's the one place
     /// where pinning `context` locks `extract_material`'s own error
     /// provenance rather than a helper's.
     #[test]
@@ -12124,7 +11977,9 @@ mod tests {
     /// Amendment (task #5081 review, suggestion 2): `extract_material` must
     /// route an absent `youngs_modulus` field to
     /// `Err(FeaValueShapeError::MissingField { .. })` rather than silently
-    /// falling through, and an unresolved (`Undef`) one likewise.
+    /// falling through. An unresolved (`Undef`) one is no missing field: it
+    /// is `Unresolved`, so the diagnostic does not misdirect an
+    /// Undef-propagation investigation.
     #[test]
     fn extract_material_rejects_missing_youngs_modulus() {
         let res = extract_material(&isotropic_material(PersistentMap::new()));
@@ -12141,12 +11996,12 @@ mod tests {
         assert!(
             matches!(
                 res,
-                Err(FeaValueShapeError::MissingField {
+                Err(FeaValueShapeError::Unresolved {
                     field: "youngs_modulus",
                     ..
                 })
             ),
-            "an unresolved youngs_modulus has no value to read, got: {res:?}"
+            "an unresolved youngs_modulus must be Unresolved, not missing, got: {res:?}"
         );
     }
 
@@ -12253,9 +12108,10 @@ mod tests {
     // `Result<AnisotropicMaterial, FeaValueShapeError>`, mirroring D2's
     // compile-RED convention.
 
-    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
-    /// `e1` field on an `OrthotropicMaterial` law with
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    /// `anisotropic_material_from_value` must reject a LENGTH `e1` on an
+    /// `OrthotropicMaterial` law with `Err(FeaValueShapeError::Rejected(..))`
+    /// naming `OrthotropicMaterial.e1`, instead of reading it as pascals —
+    /// the same refusal an isotropic `youngs_modulus` gets.
     ///
     /// The wrapping `frame` field is a well-formed `het_material_frame`
     /// because the frame is parsed before the law inside
@@ -12264,7 +12120,7 @@ mod tests {
     /// this test targets. Only `e1` is wrong-typed; every other law field
     /// (`e2`/`e3`/`g12`/`g13`/`g23`/`nu12`/`nu13`/`nu23`) is set to a
     /// well-formed value (amendment, task #5084 review round 2, suggestion
-    /// 2), so the `Err(ExpectedScalar)` assertion isolates the `e1`
+    /// 2), so the `Err(Rejected)` assertion isolates the `e1`
     /// rejection and cannot be satisfied by an incidental `MissingField` on
     /// a later field — it no longer depends on the `OrthotropicMaterial
     /// { .. }` construction's struct-literal field evaluation order.
@@ -12277,7 +12133,7 @@ mod tests {
         let pressure_scalar =
             |si_value: f64| Value::Scalar { si_value, dimension: DimensionVector::PRESSURE };
         let law_fields: PersistentMap<String, Value> = [
-            ("e1".to_string(), Value::Real(1.0)), // wrong-typed: the field under test
+            ("e1".to_string(), scalar(1.0e9, DimensionVector::LENGTH)), // the field under test
             ("e2".to_string(), pressure_scalar(1.0e9)),
             ("e3".to_string(), pressure_scalar(1.0e9)),
             ("g12".to_string(), pressure_scalar(1.0e9)),
@@ -12311,15 +12167,20 @@ mod tests {
         // `AnisotropicMaterial` StructureInstance inline.
         let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type e1 field, got: {:?}",
+            matches!(
+                &res,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "OrthotropicMaterial.e1" && rejection.expected == "Pressure"
+            ),
+            "expected Err(Rejected) naming OrthotropicMaterial.e1 for a LENGTH e1, got: {:?}",
             res
         );
     }
 
-    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
-    /// `e_in_plane` field on a `TransverseIsotropicMaterial` law with
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    /// `anisotropic_material_from_value` must reject a bare `Real`
+    /// `e_in_plane` on a `TransverseIsotropicMaterial` law with
+    /// `Err(FeaValueShapeError::Rejected(..))` naming the field, instead of
+    /// panicking.
     ///
     /// Mirrors `anisotropic_material_from_value_rejects_malformed_orthotropic_law`
     /// for the sibling law arm — an independent code path in the same
@@ -12357,8 +12218,14 @@ mod tests {
         // `AnisotropicMaterial` StructureInstance inline.
         let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type e_in_plane field, got: {:?}",
+            matches!(
+                &res,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "TransverseIsotropicMaterial.e_in_plane"
+                        && rejection.expected == "Pressure"
+            ),
+            "expected Err(Rejected) naming TransverseIsotropicMaterial.e_in_plane for a \
+             bare Real, got: {:?}",
             res
         );
     }
@@ -12366,7 +12233,7 @@ mod tests {
     // ── task #5084 amendment (reviewer_comprehensive, suggestion 2) ───────────
     //
     // The two tests above only exercise `anisotropic_material_from_value`'s
-    // delegation to `scalar_si_field` (the `ExpectedScalar` path). The
+    // delegation to `modulus_field` (the `Rejected` path). The
     // structural `Err` branches this function constructs directly — a
     // non-`StructureInstance` `val`/`frame`/`law`, a missing `law`/`frame`
     // field, and a missing frame-axis field — were previously only covered
