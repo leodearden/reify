@@ -19,6 +19,7 @@ run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_policy.sh.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -34,8 +35,10 @@ from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERIFY_PY = REPO_ROOT / "scripts" / "verify.py"
+KNOBS_DOC = REPO_ROOT / "docs" / "notes" / "verify-pipeline-knobs.md"
 HANG_GUARD_SECS = 300
 ERROR_PREFIX = "verify.sh: ERROR — "
+WALL_RE = re.compile(r"timeout --kill-after=60 (\S+) ")
 
 
 def base_env(**overrides):
@@ -86,6 +89,84 @@ def python_help(env=None):
     outcome = run_py(["--help"], env if env is not None else base_env())
     assert outcome.returncode == 0, outcome.stderr
     return outcome.stdout
+
+
+def json_lines(outcome):
+    assert outcome.returncode == 0, outcome.stderr
+    return [json.loads(line) for line in outcome.stdout.splitlines()]
+
+
+def knob_report(env):
+    """(records by name, stderr) of `verify.py --print-knobs` under `env`."""
+    outcome = run_py(["--print-knobs"], env)
+    return {record["name"]: record for record in json_lines(outcome)}, outcome.stderr
+
+
+@dataclass(frozen=True)
+class PlanScenario:
+    argv: tuple
+    env: tuple = ()
+
+
+def bash_plan(scenario, env):
+    outcome = run_bash(scenario.argv, {**env, **dict(scenario.env)})
+    assert outcome.returncode == 0, outcome.stderr
+    return outcome
+
+
+MERGE_TEST = PlanScenario(
+    ("test", "--profile", "both", "--print-plan"), (("DF_VERIFY_ROLE", "merge"),)
+)
+MERGE_ALL = PlanScenario(
+    ("all", "--profile", "both", "--print-plan"), (("DF_VERIFY_ROLE", "merge"),)
+)
+TASK_TYPECHECK = PlanScenario(("typecheck", "--print-plan"))
+
+
+@dataclass(frozen=True)
+class WallSite:
+    """The one plan line a duration knob's wall is rendered on."""
+
+    knob: str
+    scenario: PlanScenario
+    includes: tuple
+    excludes: tuple = ()
+
+    def wall(self, plan_stdout):
+        lines = [
+            line
+            for line in plan_stdout.splitlines()
+            if all(s in line for s in self.includes)
+            and not any(s in line for s in self.excludes)
+        ]
+        assert len(lines) == 1, f"{self.knob}: {len(lines)} lines match {self.includes}"
+        match = WALL_RE.search(lines[0])
+        assert match, f"{self.knob}: no timeout wall on {lines[0]!r}"
+        return match.group(1)
+
+
+DURATION_SITES = (
+    WallSite(
+        "REIFY_VERIFY_TEST_TIMEOUT",
+        MERGE_TEST,
+        ("cargo nextest run --workspace",),
+        (" --release",),
+    ),
+    WallSite(
+        "REIFY_VERIFY_TEST_TIMEOUT_RELEASE", MERGE_TEST, ("cargo nextest run ", " --release")
+    ),
+    WallSite(
+        "REIFY_VERIFY_PREBUILD_TIMEOUT", MERGE_ALL, ("cargo build --release -p reify-audit",)
+    ),
+    WallSite("REIFY_VERIFY_CLIPPY_TIMEOUT", MERGE_ALL, ("cargo clippy",)),
+    WallSite(
+        "REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT",
+        MERGE_ALL,
+        ("cargo nextest run -p reify-gui --features gui",),
+    ),
+    WallSite("REIFY_VERIFY_CHECK_TIMEOUT", TASK_TYPECHECK, ("cargo check --workspace --tests",)),
+)
+CHECK_SITE = DURATION_SITES[-1]
 
 
 @dataclass(frozen=True)
@@ -272,6 +353,151 @@ class TestNotPortedActions(unittest.TestCase):
                 lines = py.stderr.splitlines()
                 self.assertEqual(len(lines), 1, py.stderr)
                 self.assertTrue(lines[0].startswith(ERROR_PREFIX), lines[0])
+
+
+class TestKnobRegistry(unittest.TestCase):
+    """`--print-knobs` lists every knob verify.sh reads, resolved as bash does."""
+
+    RECORD_KEYS = {"v", "name", "parser", "default", "meaning", "value"}
+    PARSERS = {"duration", "text", "text-unset-only", "flag-one", "flag-set"}
+    VALID_DURATIONS = ("7", "7s", "7m", "7h", "7d")
+    INVALID_DURATIONS = ("7x", "7mm", "m", "-1", "1.5", " 7")
+    OVERRIDES = dict(
+        zip((site.knob for site in DURATION_SITES), ("11m", "12m", "13m", "14m", "15m", "16m"))
+    )
+    PARSER_CASES = (
+        ("REIFY_GATE_EXCLUDE_HEAVY", "flag-one", (("1", True), ("0", False), ("true", False), ("", False))),
+        ("REIFY_PSI_GATE_THRESHOLD", "text", ((None, "50"), ("", "50"), ("70", "70"))),
+        ("REIFY_PSI_GATE_MEM_FULL_THRESHOLD", "text-unset-only", ((None, "10"), ("", ""))),
+        ("REIFY_INFRA_SUITE_ACTIVE", "flag-set", (("x", True), ("", False))),
+        ("REIFY_VERIFY_LEDGER_DIR", "text", ((None, None), ("/tmp/x", "/tmp/x"))),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.records, cls.stderr = knob_report(base_env())
+
+    def check_timeout(self, raw):
+        env = base_env(REIFY_VERIFY_CHECK_TIMEOUT=raw)
+        bash = bash_plan(CHECK_SITE.scenario, env)
+        records, py_stderr = knob_report(env)
+        return (
+            CHECK_SITE.wall(bash.stdout),
+            bash.stderr.splitlines(),
+            records[CHECK_SITE.knob]["value"],
+            py_stderr,
+        )
+
+    def test_record_shape(self):
+        outcome = run_py(["--print-knobs"], base_env())
+        records = json_lines(outcome)
+        self.assertEqual(self.stderr, "")
+        self.assertTrue(records)
+        names = [record["name"] for record in records]
+        self.assertEqual(len(names), len(set(names)))
+        for record in records:
+            with self.subTest(knob=record.get("name")):
+                self.assertEqual(set(record), self.RECORD_KEYS)
+                self.assertEqual(record["v"], 1)
+                self.assertTrue(record["name"].startswith("REIFY_"))
+                self.assertIn(record["parser"], self.PARSERS)
+                self.assertTrue(record["meaning"].strip())
+                self.assertNotIn("\n", record["meaning"])
+                default = record["default"]
+                if isinstance(default, dict):
+                    self.assertEqual(set(default), {"derived"})
+                    self.assertTrue(default["derived"].strip())
+                else:
+                    self.assertIsInstance(default, str)
+
+    def test_duration_defaults_equal_bash_walls(self):
+        plans = {}
+        for site in DURATION_SITES:
+            with self.subTest(knob=site.knob):
+                if site.scenario not in plans:
+                    plans[site.scenario] = bash_plan(site.scenario, base_env()).stdout
+                record = self.records[site.knob]
+                self.assertEqual(record["parser"], "duration")
+                self.assertEqual(record["default"], site.wall(plans[site.scenario]))
+
+    def test_duration_overrides_render_on_bash_lines_and_as_values(self):
+        env = base_env(**self.OVERRIDES)
+        records, py_stderr = knob_report(env)
+        self.assertEqual(py_stderr, "")
+        plans = {}
+        for site in DURATION_SITES:
+            with self.subTest(knob=site.knob):
+                if site.scenario not in plans:
+                    plans[site.scenario] = bash_plan(site.scenario, env).stdout
+                self.assertEqual(site.wall(plans[site.scenario]), self.OVERRIDES[site.knob])
+                self.assertEqual(records[site.knob]["value"], self.OVERRIDES[site.knob])
+
+    def test_valid_durations_are_kept_verbatim(self):
+        for raw in self.VALID_DURATIONS:
+            with self.subTest(raw=raw):
+                bash_wall, _, py_value, py_stderr = self.check_timeout(raw)
+                self.assertEqual(bash_wall, raw)
+                self.assertEqual(py_value, raw)
+                self.assertEqual(py_stderr, "")
+
+    def test_invalid_durations_warn_once_and_use_the_default(self):
+        default = self.records[CHECK_SITE.knob]["default"]
+        for raw in self.INVALID_DURATIONS:
+            with self.subTest(raw=raw):
+                warning = (
+                    f"verify.sh: WARNING: invalid {CHECK_SITE.knob}={raw}; "
+                    f"using default {default}"
+                )
+                bash_wall, bash_lines, py_value, py_stderr = self.check_timeout(raw)
+                self.assertEqual(bash_wall, default)
+                self.assertEqual(py_value, default)
+                self.assertIn(warning, bash_lines)
+                self.assertEqual(py_stderr.splitlines().count(warning), 1, py_stderr)
+
+    def test_empty_duration_is_the_default_without_a_warning(self):
+        default = self.records[CHECK_SITE.knob]["default"]
+        bash_wall, bash_lines, py_value, py_stderr = self.check_timeout("")
+        self.assertEqual(bash_wall, default)
+        self.assertEqual(py_value, default)
+        self.assertFalse([line for line in bash_lines if "WARNING: invalid" in line])
+        self.assertEqual(py_stderr, "")
+
+    def test_every_other_parser_kind(self):
+        for name, parser, cases in self.PARSER_CASES:
+            self.assertEqual(self.records[name]["parser"], parser, name)
+            for raw, expected in cases:
+                with self.subTest(knob=name, raw=raw):
+                    env = base_env() if raw is None else base_env(**{name: raw})
+                    records, _ = knob_report(env)
+                    self.assertEqual(records[name]["value"], expected)
+
+    def test_a_derived_default_is_not_a_value(self):
+        record = self.records["REIFY_VERIFY_LEDGER_DIR"]
+        self.assertIsNone(record["value"])
+        self.assertIsInstance(record["default"], dict)
+
+    def test_every_knob_is_documented(self):
+        doc = KNOBS_DOC.read_text(encoding="utf-8")
+        for name in self.records:
+            with self.subTest(knob=name):
+                self.assertIn(f"`{name}`", doc)
+
+    def test_knob_warnings_fire_after_argv(self):
+        env = base_env(REIFY_VERIFY_CHECK_TIMEOUT="bogus")
+        py = run_py(["--print-knobs", "--bogus"], env)
+        self.assertEqual(py.returncode, 64)
+        self.assertEqual(py.stdout, "")
+        self.assertEqual(
+            py.stderr.splitlines()[0], f"{ERROR_PREFIX}unknown argument '--bogus'"
+        )
+        self.assertNotIn("WARNING", py.stderr)
+
+    def test_bash_rejects_the_query_flag(self):
+        bash = run_bash(["--print-plan", "--print-knobs"], base_env())
+        self.assertEqual(bash.returncode, 64)
+        self.assertEqual(
+            bash.stderr.splitlines()[0], f"{ERROR_PREFIX}unknown argument '--print-knobs'"
+        )
 
 
 if __name__ == "__main__":
