@@ -4260,6 +4260,7 @@ name = "reify-audit"
 version = "0.1.0"
 dependencies = [
  "reify-audit",
+ "reify-syntax",
  "reify-test-support",
  "rusqlite",
  "serde",

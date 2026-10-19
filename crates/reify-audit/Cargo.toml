@@ -36,6 +36,9 @@ ureq = { version = "2.10", default-features = false, features = ["json"] }
 # this arrangement's persistence as undecided there, not as decided here.
 # Re-evaluate if reify-test-support's deps grow significantly.
 reify-test-support.workspace = true
+# reify-syntax: the language keyword table pdoccover's mention-side filter reads
+# (PRD D15); it was already in the graph transitively via reify-test-support.
+reify-syntax.workspace = true
 
 [[bin]]
 name = "reify-audit"
