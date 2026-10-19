@@ -3580,13 +3580,8 @@ mod tests {
         );
     }
 
-    /// Regression (task 3939 δ, reviewer amendment): overriding a trait's
-    /// default-providing assoc fn with a MISMATCHED signature must surface
-    /// `TraitFnSignatureMismatch` and keep the wrongly-typed override OUT of the
-    /// dispatch table. A default-only fn produces no `RequirementKind::Fn`, so
-    /// phase 5 never checks it — resolving the assoc-fn table is the sole
-    /// validation site (PRD §5.4 exact-match-for-overrides). Before the
-    /// amendment the bad override landed in the table with no diagnostic.
+    /// An override of a default-providing assoc fn with a mismatched signature
+    /// emits `TraitFnSignatureMismatch` and stays out of the dispatch table.
     #[test]
     fn override_of_default_assoc_fn_with_wrong_signature_emits_mismatch_and_skips_table() {
         let run = conform_source(
@@ -3597,8 +3592,6 @@ mod tests {
         );
 
         assert_sole_diagnostic(&run, DiagnosticCode::TraitFnSignatureMismatch, &["area"]);
-        // The wrongly-typed override must NOT enter the dispatch table — task ζ
-        // would otherwise key dispatch on an entry inconsistent with the error.
         assert!(
             run.assoc_fns.is_empty(),
             "a signature-mismatched default override must be kept out of the \
@@ -3607,14 +3600,9 @@ mod tests {
         );
     }
 
-    /// Regression (task 3939 δ, reviewer amendment): a required-fn override whose
-    /// return annotation is UNRESOLVABLE must yield exactly one diagnostic — the
-    /// `UnresolvedType` from `compile_assoc_function` — with NO accompanying
-    /// `TraitFnSignatureMismatch`. The structure-derived sig carries `Type::Error`,
-    /// which `assoc_fn_sig_has_error` recognises so the otherwise-spurious mismatch
-    /// is suppressed (the sig "differs" only because resolution failed). Locks in
-    /// the documented anti-cascade contract (one root cause → one diagnostic) and
-    /// confirms the errored override is also kept out of the dispatch table.
+    /// A required-fn override with an unresolvable return annotation reports only
+    /// the `UnresolvedType` root cause — no `TraitFnNotSatisfied` and no cascaded
+    /// `TraitFnSignatureMismatch` — and stays out of the dispatch table.
     #[test]
     fn required_assoc_fn_override_with_unresolved_annotation_yields_single_diagnostic() {
         let run = conform_source(
@@ -3624,10 +3612,7 @@ mod tests {
             ",
         );
 
-        // The fn IS present (just mis-annotated), so neither `TraitFnNotSatisfied`
-        // nor a cascaded `TraitFnSignatureMismatch` may accompany the root cause.
         assert_sole_diagnostic(&run, DiagnosticCode::UnresolvedType, &["Nonexistent"]);
-        // The errored override must not enter the dispatch table.
         assert!(
             run.assoc_fns.is_empty(),
             "an errored / sig-mismatched required override must be kept out of the \
