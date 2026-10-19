@@ -3276,16 +3276,16 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
         );
     }
 
-    /// The carve-out that stops [`RI_KEYWORDS`] rotting into a false-negative
-    /// machine. docs/reify-language-spec.md:221 explicitly lists these as
-    /// "Not keywords (standard library functions)" — every one must still be
-    /// extracted as a claim when written call-shaped, and none may be a
-    /// `RI_KEYWORDS` member. The spec's "Removed keywords" (`derived`,
-    /// `require`, `dimension`, :219) are likewise absent — they are not part
-    /// of v0.1 at all, so admitting them as keywords would silently disarm a
-    /// chunk that (incorrectly) still calls them.
+    /// The carve-out that stops the keyword filter rotting into a
+    /// false-negative machine. docs/reify-language-spec.md §2.10 explicitly
+    /// lists these as "Not keywords (standard library functions)" — every one
+    /// must still be extracted as a claim when written call-shaped, and none
+    /// may be a [`reify_syntax::KEYWORDS`] row. The spec's "Removed keywords"
+    /// (`derived`, `require`, `dimension`) are likewise absent — they are not
+    /// part of v0.1 at all, so admitting them as keywords would silently
+    /// disarm a chunk that (incorrectly) still calls them.
     #[test]
-    fn ri_keywords_excludes_the_spec_carve_outs() {
+    fn keyword_filter_excludes_the_spec_carve_outs() {
         for name in [
             "determined",
             "constrained",
@@ -3299,9 +3299,9 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
             "geo_equiv",
         ] {
             assert!(
-                !RI_KEYWORDS.contains(&name),
+                reify_syntax::lookup_keyword(name).is_none(),
                 "{name:?} is a spec §2.10 standard-library function, not a \
-                 keyword — it must not be in RI_KEYWORDS"
+                 keyword — it must not be a reify_syntax::KEYWORDS row"
             );
             let hits = chunk_call_mentions(&format!("`{name}(x)`\n"));
             assert_eq!(
@@ -3314,24 +3314,24 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
 
         for removed in ["derived", "require", "dimension"] {
             assert!(
-                !RI_KEYWORDS.contains(&removed),
-                "{removed:?} is a REMOVED keyword (spec :219, not part of \
-                 v0.1) — it must not be in RI_KEYWORDS"
+                reify_syntax::lookup_keyword(removed).is_none(),
+                "{removed:?} is a REMOVED keyword (spec §2.10, not part of \
+                 v0.1) — it must not be a reify_syntax::KEYWORDS row"
             );
         }
     }
 
-    /// `RI_KEYWORDS` must be a strict superset of [`RI_DECL_KEYWORDS`], so
-    /// widening the mention-side filter can never regress the declaration-
+    /// Every [`RI_DECL_KEYWORDS`] word is a [`reify_syntax::KEYWORDS`] row,
+    /// so the mention-side keyword filter can never regress the declaration-
     /// keyword filter a63c892eea already shipped.
     #[test]
-    fn ri_keywords_is_a_superset_of_ri_decl_keywords() {
+    fn every_ri_decl_keyword_is_a_keyword_table_row() {
         for kw in RI_DECL_KEYWORDS {
             assert!(
-                RI_KEYWORDS.contains(kw),
-                "{kw:?} is in RI_DECL_KEYWORDS but not RI_KEYWORDS — the \
-                 widening must never lose a keyword the narrower filter \
-                 already had"
+                reify_syntax::lookup_keyword(kw).is_some(),
+                "{kw:?} is in RI_DECL_KEYWORDS but is not a \
+                 reify_syntax::KEYWORDS row — the mention filter must never \
+                 lose a keyword the narrower filter already had"
             );
         }
     }
