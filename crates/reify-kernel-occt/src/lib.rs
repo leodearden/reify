@@ -542,7 +542,13 @@ pub struct OcctKernel {
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-    Ok(match name.as_str() {
+    brep_kind_of_type_name(&name)
+}
+
+/// The OCCT TopAbs type name → [`BRepKind`] table behind [`brep_kind_of_shape`].
+#[cfg(has_occt)]
+fn brep_kind_of_type_name(name: &str) -> Result<BRepKind, GeometryError> {
+    Ok(match name {
         "Solid" => BRepKind::Solid,
         "CompSolid" | "Compound" => BRepKind::Compound,
         "Shell" => BRepKind::Shell,
@@ -15045,5 +15051,39 @@ mod tests {
             "armed release build changed the accept/reject disposition: \
              bare={bare:?} control={control:?}"
         );
+    }
+
+    #[test]
+    fn brep_kind_decoder_rejects_an_unrecognised_shape_type_name() {
+        let known = [
+            ("Solid", BRepKind::Solid),
+            ("CompSolid", BRepKind::Compound),
+            ("Compound", BRepKind::Compound),
+            ("Shell", BRepKind::Shell),
+            ("Wire", BRepKind::Wire),
+            ("Face", BRepKind::Face),
+            ("Edge", BRepKind::Edge),
+            ("Vertex", BRepKind::Vertex),
+        ];
+        for (name, kind) in known {
+            assert_eq!(
+                brep_kind_of_type_name(name).ok(),
+                Some(kind),
+                "known TopAbs name {name:?}"
+            );
+        }
+
+        for unknown in ["Shape", "Bogus"] {
+            match brep_kind_of_type_name(unknown) {
+                Err(GeometryError::OperationFailed(msg)) => assert!(
+                    msg.contains(unknown),
+                    "error for {unknown:?} must name it, got: {msg}"
+                ),
+                other => panic!(
+                    "unrecognised TopAbs name {unknown:?} must be an \
+                     OperationFailed error, not silently classified: {other:?}"
+                ),
+            }
+        }
     }
 }
