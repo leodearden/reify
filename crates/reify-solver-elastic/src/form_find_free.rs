@@ -100,10 +100,10 @@ pub struct FreeFormResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreeFormError {
     /// The input violates the force-density input contract. A
-    /// [`ForceDensitySpec::GroupRatios`] spec is checked at its seed densities,
-    /// and a malformed group spec (group ids, reference group, zero seed) is a
-    /// [`ForceDensityInputError::DimensionMismatch`].
+    /// [`ForceDensitySpec::GroupRatios`] spec is checked at its seed densities.
     Input(ForceDensityInputError),
+    /// A [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
+    MalformedGroupSpec(GroupSpecDefect),
     /// The force-density matrix `D` is rank-deficient by the wrong amount: a
     /// valid 3-D free-standing form needs nullity exactly `d + 1 = 4`.
     NullityMismatch {
@@ -124,9 +124,34 @@ pub enum FreeFormError {
     DegenerateTriangle,
 }
 
+/// Why a [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupSpecDefect {
+    /// `group_ids` is not parallel to `members`.
+    GroupIdsNotPerMember,
+    /// `group_ids[member]` names a group with no entry in `seed_ratios`.
+    UnseededGroup {
+        /// Position in `members` / `group_ids`.
+        member: usize,
+    },
+    /// `reference_group` names a group with no entry in `seed_ratios`.
+    UnseededReferenceGroup,
+    /// `seed_ratios[group]` is zero, so it fixes no tension / compression sense.
+    ZeroSeed {
+        /// Position in `seed_ratios`.
+        group: usize,
+    },
+}
+
 impl From<ForceDensityInputError> for FreeFormError {
     fn from(input: ForceDensityInputError) -> Self {
         FreeFormError::Input(input)
+    }
+}
+
+impl From<GroupSpecDefect> for FreeFormError {
+    fn from(defect: GroupSpecDefect) -> Self {
+        FreeFormError::MalformedGroupSpec(defect)
     }
 }
 
@@ -170,13 +195,11 @@ pub fn form_find_free(
 
 /// The densities `spec` fixes before any search, for the input contract: the
 /// explicit `q`, or the [`ForceDensitySpec::GroupRatios`] seed densities, whose
-/// signs the search keeps. A malformed group spec — `group_ids` not parallel to
-/// the members, no groups, a group id or `reference_group` without a seed, or
-/// a zero (signless) seed — is a [`ForceDensityInputError::DimensionMismatch`].
+/// signs the search keeps.
 fn seed_densities(
     spec: &ForceDensitySpec,
     n_members: usize,
-) -> Result<Cow<'_, [f64]>, ForceDensityInputError> {
+) -> Result<Cow<'_, [f64]>, GroupSpecDefect> {
     match spec {
         ForceDensitySpec::Explicit(q) => Ok(Cow::Borrowed(q)),
         ForceDensitySpec::GroupRatios {
@@ -185,13 +208,17 @@ fn seed_densities(
             reference_group,
         } => {
             let n_groups = seed_ratios.len();
-            if group_ids.len() != n_members
-                || n_groups == 0
-                || *reference_group >= n_groups
-                || group_ids.iter().any(|&g| g >= n_groups)
-                || seed_ratios.contains(&0.0)
-            {
-                return Err(ForceDensityInputError::DimensionMismatch);
+            if group_ids.len() != n_members {
+                return Err(GroupSpecDefect::GroupIdsNotPerMember);
+            }
+            if let Some(member) = group_ids.iter().position(|&g| g >= n_groups) {
+                return Err(GroupSpecDefect::UnseededGroup { member });
+            }
+            if *reference_group >= n_groups {
+                return Err(GroupSpecDefect::UnseededReferenceGroup);
+            }
+            if let Some(group) = seed_ratios.iter().position(|&r| r == 0.0) {
+                return Err(GroupSpecDefect::ZeroSeed { group });
             }
             let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
             let group_mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
@@ -237,7 +264,9 @@ fn seed_densities(
 /// # Errors
 /// - [`FreeFormError::Input`] — the input violates the [`ForceDensityInputError`]
 ///   contract (lengths, node indices, q or seed signs, σ tension, input
-///   triangles, a malformed group spec).
+///   triangles).
+/// - [`FreeFormError::MalformedGroupSpec`] — a `GroupRatios` spec cannot seed
+///   the search ([`GroupSpecDefect`]).
 /// - [`FreeFormError::DegenerateTriangle`] — a triangle degenerated at an iterate.
 /// - [`FreeFormError::SearchDidNotConverge`] — the GroupRatios search or the
 ///   Explicit combined fixed point exhausted its budget without reaching
@@ -2079,10 +2108,10 @@ mod tests {
         );
     }
 
-    // ---- GroupRatios-mode dimension guards (form_find_group_ratios) ----
+    // ---- GroupRatios-mode group-spec guards (seed_densities) ----
 
     #[test]
-    fn group_ratios_zero_seed_ratio_is_dimension_mismatch() {
+    fn group_ratios_zero_seed_ratio_is_a_zero_seed() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // A zero seed has no sign to hold fixed while the search varies its
@@ -2094,12 +2123,12 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::Input(ForceDensityInputError::DimensionMismatch),
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { group: 1 }),
         );
     }
 
     #[test]
-    fn group_ratios_reference_group_out_of_range_is_dimension_mismatch() {
+    fn group_ratios_reference_group_out_of_range_is_unseeded() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // `seed_ratios` is indexed by group id (3 groups ⇒ valid ids 0..=2), so a
@@ -2111,12 +2140,12 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::Input(ForceDensityInputError::DimensionMismatch),
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup),
         );
     }
 
     #[test]
-    fn group_ratios_group_id_out_of_range_is_dimension_mismatch() {
+    fn group_ratios_group_id_out_of_range_is_an_unseeded_group() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // A `group_ids` entry referencing a group with no seed ratio (id 3 with
@@ -2130,16 +2159,16 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::Input(ForceDensityInputError::DimensionMismatch),
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { member: 0 }),
         );
     }
 
     #[test]
-    fn group_ratios_group_ids_length_mismatch_is_dimension_mismatch() {
+    fn group_ratios_group_ids_length_mismatch_is_not_per_member() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
-        // `group_ids` must be parallel to `members`; one short ⇒ dimension
-        // mismatch, caught before any search work.
+        // `group_ids` must be parallel to `members`; one short is caught before
+        // any search work.
         let mut group_ids = triplex_group_ids();
         group_ids.pop();
         let spec = ForceDensitySpec::GroupRatios {
@@ -2149,7 +2178,7 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::Input(ForceDensityInputError::DimensionMismatch),
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember),
         );
     }
 

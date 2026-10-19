@@ -3,7 +3,7 @@
 
 use reify_solver_elastic::{
     AnisoFormFindError, AnisotropicSurfaceStress, ForceDensityInputError, ForceDensitySpec,
-    FormFindError, FreeFormError, IndexedInput, MemberKind, form_find_anchored,
+    FormFindError, FreeFormError, GroupSpecDefect, IndexedInput, MemberKind, form_find_anchored,
     form_find_anchored_surfaces, form_find_anchored_surfaces_aniso, form_find_free,
     form_find_free_surfaces,
 };
@@ -455,7 +455,7 @@ fn explicit_densities_shorter_than_the_members_are_a_dimension_mismatch() {
 }
 
 #[test]
-fn a_malformed_group_spec_is_a_dimension_mismatch() {
+fn a_malformed_group_spec_names_its_defect_on_both_free_entries() {
     let ids = FD_TRIPLEX_GROUP_IDS.to_vec();
     let seeds = TRIPLEX_SEEDS.to_vec();
     let unseeded_group = seeds.len();
@@ -465,12 +465,21 @@ fn a_malformed_group_spec_is_a_dimension_mismatch() {
     let mut zero_seed = seeds.clone();
     zero_seed[2] = 0.0;
     let malformed = [
-        (short_ids, seeds.clone(), 1),
-        (ids_naming_an_unseeded_group, seeds.clone(), 1),
-        (ids.clone(), seeds, unseeded_group),
-        (ids, zero_seed, 1),
+        (
+            (short_ids, seeds.clone(), 1),
+            GroupSpecDefect::GroupIdsNotPerMember,
+        ),
+        (
+            (ids_naming_an_unseeded_group, seeds.clone(), 1),
+            GroupSpecDefect::UnseededGroup { member: 11 },
+        ),
+        (
+            (ids.clone(), seeds, unseeded_group),
+            GroupSpecDefect::UnseededReferenceGroup,
+        ),
+        ((ids, zero_seed, 1), GroupSpecDefect::ZeroSeed { group: 2 }),
     ];
-    for (group_ids, seed_ratios, reference_group) in malformed {
+    for ((group_ids, seed_ratios, reference_group), defect) in malformed {
         let case = FdFreeCase {
             spec: ForceDensitySpec::GroupRatios {
                 group_ids,
@@ -479,8 +488,31 @@ fn a_malformed_group_spec_is_a_dimension_mismatch() {
             },
             ..FdFreeCase::explicit()
         };
-        case.assert_both_entries_reject(ForceDensityInputError::DimensionMismatch);
+        let expected = Err(FreeFormError::MalformedGroupSpec(defect));
+        assert_eq!(case.line_only(), expected, "line-only");
+        assert_eq!(case.with_surfaces(), expected, "with surfaces");
     }
+}
+
+#[test]
+fn a_group_spec_with_no_seeds_has_an_unseeded_reference_group() {
+    let case = FdFreeCase {
+        spec: ForceDensitySpec::GroupRatios {
+            group_ids: Vec::new(),
+            seed_ratios: Vec::new(),
+            reference_group: 0,
+        },
+        members: Vec::new(),
+        kinds: Vec::new(),
+        surfaces: Vec::new(),
+        sigma: Vec::new(),
+        ..FdFreeCase::explicit()
+    };
+    let expected = Err(FreeFormError::MalformedGroupSpec(
+        GroupSpecDefect::UnseededReferenceGroup,
+    ));
+    assert_eq!(case.line_only(), expected, "line-only");
+    assert_eq!(case.with_surfaces(), expected, "with surfaces");
 }
 
 #[test]

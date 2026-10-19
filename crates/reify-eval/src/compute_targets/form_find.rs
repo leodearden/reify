@@ -68,7 +68,8 @@ use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     ForceDensityInputError, ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError,
-    MemberKind, form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
+    GroupSpecDefect, MemberKind, form_find_anchored_surfaces, form_find_free,
+    form_find_free_surfaces,
 };
 
 use super::tensegrity_crack::{
@@ -537,8 +538,22 @@ fn describe_free(e: FreeFormError) -> &'static str {
              achieve this"
         }
         FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
-            "dimension mismatch — group_ids, seed_ratios, or reference_group length \
-             disagrees with the member count or contains out-of-range ids"
+            "dimension mismatch — the members and their kinds disagree in length"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember) => {
+            "dimension mismatch — group_ids length does not match the member count \
+             (struts + cables)"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { .. }) => {
+            "dimension mismatch — a group_ids entry names a group past the end of \
+             seed_ratios; every group id needs a seed ratio"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup) => {
+            "dimension mismatch — reference_group names a group past the end of seed_ratios"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { .. }) => {
+            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
+             strut groups < 0), so it cannot be zero"
         }
         FreeFormError::SearchDidNotConverge => {
             "search did not converge — the adaptive GroupRatios search exhausted its \
