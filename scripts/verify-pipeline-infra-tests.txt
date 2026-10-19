@@ -257,6 +257,7 @@ scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
 # (see that manifest's TRADEOFF BREADCRUMB). The pole fires only for tasks
 # touching that exact doc, bounded by the map's existing per-test timeout.
 docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_compile_gate.sh
+docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_policy.sh
 docs/notes/verify-scope-throughput.md                        tests/infra/test_verify_throughput.sh
 docs/notes/linker-rustlld-vs-mold-bench.md                   tests/infra/test_linker_config.sh
 docs/notes/lean-debuginfo-bench.md                           tests/infra/test_lean_debuginfo_profile.sh
@@ -811,3 +812,22 @@ tests/infra/test_verify_ledger_lane_seed.py    tests/infra/test_verify_ledger_la
 tests/infra/test_run_all_timing.py    tests/infra/test_run_all_timing.sh
 scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
 scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
+
+# S18 α (#9095, PRD verify-structured-plan-and-role-table D14): the Python verify package.
+# The glob rows keep task-tier selection from narrowing as logic moves out of verify.sh; leaf τ replaces this map.
+scripts/verify.py    tests/infra/test_verify_*.sh
+scripts/verify.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_policy.sh
+tests/infra/test_verify_policy.py    tests/infra/test_verify_policy.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh
