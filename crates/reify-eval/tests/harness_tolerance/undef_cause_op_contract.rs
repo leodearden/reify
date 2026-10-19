@@ -15,6 +15,7 @@
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::UndefCause;
+use reify_ir::arg_acceptance::{Acceptance, ArgSpec, accept_arg, length_spec, mass_spec};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 // ── Helper: load and compile the γ fixture ────────────────────────────────────
@@ -408,5 +409,171 @@ fn user_undef_and_awaiting_solve_survive_the_op_contract_pass() {
         "AwaitingSolve 'k' must never be relabelled OpContractFailed by the \
          record_op_contract_failures pass; got {:?}",
         causes.get(&k_id)
+    );
+}
+
+// ── task 6922 ε / PRD-5 I5: a dimension rejection is loud and records its code ──
+
+/// Inline, not a `tests/fixtures/` file: the eval-invariant corpus sweep would
+/// flag the deliberate undefs.
+const MASS_DIMENSION_SOURCE: &str = "structure def MpDim {
+  let inertia = [[1kg*m^2,0kg*m^2,0kg*m^2],[0kg*m^2,1kg*m^2,0kg*m^2],[0kg*m^2,0kg*m^2,1kg*m^2]]
+  let wrong = mass_properties(2m, point3(0mm,0mm,0mm), inertia)
+  let right = mass_properties(2kg, point3(0mm,0mm,0mm), inertia)
+  let pm_wrong = point_mass(2m)
+}";
+
+/// `mass_properties(2m, …)` and `point_mass(2m)` are Undef with a
+/// `DimensionedArgRejected` Error in the eval diagnostics, and the recorded
+/// cause is that SPECIFIC code, not the generic `OpContractViolation` (PRD-5
+/// I5); the 2 kg twin is a clean `MassProperties`.
+#[test]
+fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
+    use reify_core::{DimensionVector, Severity};
+    use reify_ir::Value;
+
+    let module = compile_source_with_stdlib(MASS_DIMENSION_SOURCE);
+    let errors = collect_errors(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "MpDim must compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    engine.set_capture_undef_causes(true);
+    let result = engine.eval(&module);
+
+    let rejections: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        rejections.len(),
+        2,
+        "one rejection per wrong cell, got {rejections:#?}"
+    );
+    for builtin in ["mass_properties", "point_mass"] {
+        let expected = canonical_rejection(Value::length(2.0), &mass_spec(), builtin, "mass");
+        assert!(
+            rejections.contains(&expected.as_str()),
+            "{builtin}: expected {expected:?}, got {rejections:#?}"
+        );
+    }
+
+    let causes = engine.undef_causes();
+    for cell in ["wrong", "pm_wrong"] {
+        let id = ValueCellId::new("MpDim", cell);
+        assert!(
+            matches!(
+                causes.get(&id),
+                Some(UndefCause::OpContractFailed {
+                    code: DiagnosticCode::DimensionedArgRejected,
+                    ..
+                })
+            ),
+            "{cell}: expected OpContractFailed {{ DimensionedArgRejected }}, got {:?}",
+            causes.get(&id)
+        );
+    }
+
+    let right = ValueCellId::new("MpDim", "right");
+    assert!(
+        causes.get(&right).is_none(),
+        "the 2 kg twin records no cause"
+    );
+    let Some(Value::StructureInstance(mass_properties)) = result.values.get(&right) else {
+        panic!(
+            "right must be a MassProperties, got {:?}",
+            result.values.get(&right)
+        );
+    };
+    assert_eq!(
+        mass_properties.fields.get("mass"),
+        Some(&Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::MASS,
+        })
+    );
+}
+
+/// The message the shared reader renders for `value` at `spec`, so these tests
+/// assert which builtin and argument were named without restating the wording.
+fn canonical_rejection(
+    value: reify_ir::Value,
+    spec: &ArgSpec,
+    builtin: &str,
+    arg_name: &str,
+) -> String {
+    let Acceptance::Rejected(rejection) = accept_arg(&value, spec) else {
+        unreachable!("{value:?} must be rejected at {}", spec.type_name);
+    };
+    rejection.message(builtin, arg_name)
+}
+
+/// Inline for the same reason as [`MASS_DIMENSION_SOURCE`].
+const PLANE_DIMENSION_SOURCE: &str = "structure def PlaneDim {
+  let wrong = plane_xy(2kg)
+  let right = plane_xy(2mm)
+}";
+
+/// The I5 cause is recorded for ANY builtin classifier's
+/// `DimensionedArgRejected`, not only the dynamics ones: a geometry builtin's
+/// rejected `offset` records that code too.
+#[test]
+fn a_mass_plane_offset_records_the_dimensioned_arg_cause() {
+    use reify_core::Severity;
+
+    let module = compile_source_with_stdlib(PLANE_DIMENSION_SOURCE);
+    let errors = collect_errors(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "PlaneDim must compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    engine.set_capture_undef_causes(true);
+    let result = engine.eval(&module);
+
+    let rejections: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    let mass = reify_ir::Value::Scalar {
+        si_value: 2.0,
+        dimension: reify_core::DimensionVector::MASS,
+    };
+    let expected = canonical_rejection(mass, &length_spec(), "plane_xy", "offset");
+    assert_eq!(
+        rejections,
+        [expected.as_str()],
+        "one plane_xy offset rejection"
+    );
+
+    let causes = engine.undef_causes();
+    let wrong = ValueCellId::new("PlaneDim", "wrong");
+    assert!(
+        matches!(
+            causes.get(&wrong),
+            Some(UndefCause::OpContractFailed {
+                code: DiagnosticCode::DimensionedArgRejected,
+                ..
+            })
+        ),
+        "expected OpContractFailed {{ DimensionedArgRejected }}, got {:?}",
+        causes.get(&wrong)
+    );
+    let right = ValueCellId::new("PlaneDim", "right");
+    assert!(
+        causes.get(&right).is_none(),
+        "the 2 mm twin records no cause, got {:?}",
+        causes.get(&right)
     );
 }
