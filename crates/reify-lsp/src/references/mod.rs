@@ -33,6 +33,8 @@ mod cross_file;
 mod decl_uses;
 mod local;
 mod rename;
+#[cfg(test)]
+mod test_support;
 mod walk;
 
 pub use cross_file::{
