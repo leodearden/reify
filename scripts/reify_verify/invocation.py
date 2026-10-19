@@ -25,6 +25,12 @@ class Scope(Enum):
     BRANCH = "branch"
 
 
+class Query(Enum):
+    """A report printed instead of running an action; its value is the flag."""
+
+    KNOBS = "--print-knobs"
+
+
 @dataclass(frozen=True)
 class Invocation:
     action: Action | None
@@ -36,3 +42,4 @@ class Invocation:
     confirm_failed: bool
     test_threads: int | None
     role: Role
+    query: Query | None

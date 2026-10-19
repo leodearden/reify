@@ -11,7 +11,8 @@ import os
 import re
 import sys
 
-from reify_verify.invocation import Action, Invocation, Scope
+from reify_verify import knobs, queries
+from reify_verify.invocation import Action, Invocation, Query, Scope
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
 EX_USAGE = 64
@@ -30,6 +31,8 @@ SWITCHES = {
     "--confirm-failed": "confirm_failed",
 }
 HELP_TOKENS = ("-h", "--help")
+_QUERY_FLAGS = frozenset(query.value for query in Query)
+REPORTS = {Query.KNOBS: queries.knob_report}
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
 
 
@@ -46,6 +49,7 @@ USAGE = (
     "",
     "Usage:",
     f"  verify.sh <{_choices(GATE_ACTIONS)}> [options]",
+    *(f"  verify.sh {query.value}" for query in Query),
     "",
     "Options:",
     *_option(
@@ -80,6 +84,11 @@ USAGE = (
         "test and all only: re-run the tests a recording run saw",
         "fail and print each id that still fails, one per line.",
         "Exits 0 (none), 100 (ids printed), 64 (another tree).",
+    ),
+    *_option(
+        Query.KNOBS.value,
+        "Print every knob verify reads as one JSON line each:",
+        "parser, default, meaning and the value under this env.",
     ),
     *_option("-h|--help", "Show this usage."),
 )
@@ -116,6 +125,8 @@ def _scan(argv: list[str]) -> dict:
             raw[flag] = value
         elif token in SWITCHES:
             raw[SWITCHES[token]] = True
+        elif token in _QUERY_FLAGS:
+            _set_query(raw, Query(token))
         elif token in HELP_TOKENS:
             raise HelpRequested
         else:
@@ -132,9 +143,18 @@ def _set_action(raw: dict, action: Action) -> None:
     raw["action"] = action
 
 
+def _set_query(raw: dict, query: Query) -> None:
+    if raw.get("query", query) is not query:
+        raise CliError(
+            (f"{ERROR}query already set to '{raw['query'].value}', got '{query.value}'",)
+        )
+    raw["query"] = query
+
+
 def _validate(raw: dict, env: dict[str, str]) -> Invocation:
     action = raw.get("action")
-    if action is None:
+    query = raw.get("query")
+    if action is None and query is None:
         raise CliError((f"{ERROR}missing action ({_choices(GATE_ACTIONS)})", *USAGE))
     profile_arg = _member(ProfileSelection, raw.get("--profile"), "--profile")
     scope = _member(Scope, raw.get("--scope", Scope.ALL.value), "--scope")
@@ -156,6 +176,7 @@ def _validate(raw: dict, env: dict[str, str]) -> Invocation:
         confirm_failed=confirm_failed,
         test_threads=test_threads,
         role=role,
+        query=query,
     )
 
 
@@ -180,20 +201,21 @@ def _test_threads(raw: str | None) -> int | None:
     return int(raw)
 
 
-def _check_confirm_failed(action: Action, env: dict[str, str]) -> None:
+def _check_confirm_failed(action: Action | None, env: dict[str, str]) -> None:
     if action not in CONFIRMABLE_ACTIONS:
+        got = action.value if action else ""
         raise CliError(
             (
                 f"{ERROR}--confirm-failed is valid only for action "
-                f"{_choices(CONFIRMABLE_ACTIONS)} (got '{action.value}')",
+                f"{_choices(CONFIRMABLE_ACTIONS)} (got '{got}')",
             )
         )
-    retry_scope = env.get("REIFY_VERIFY_RETRY_SCOPE", "")
+    retry_scope = knobs.resolve(knobs.RETRY_SCOPE, env).value
     if retry_scope:
         raise CliError(
             (
                 f"{ERROR}--confirm-failed conflicts with "
-                f"REIFY_VERIFY_RETRY_SCOPE='{retry_scope}' (both drive the retry "
+                f"{knobs.RETRY_SCOPE.name}='{retry_scope}' (both drive the retry "
                 "subset pipeline; refusing rather than picking one silently)",
             )
         )
@@ -210,10 +232,15 @@ def main(argv: list[str]) -> int:
     except CliError as err:
         _diagnose(err.lines)
         return err.exit_code
-    return _dispatch(invocation)
+    return _dispatch(invocation, env)
 
 
-def _dispatch(invocation: Invocation) -> int:
+def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
+    if invocation.query is not None:
+        output = REPORTS[invocation.query](env)
+        _diagnose(output.warnings)
+        _print(output.stdout_lines)
+        return 0
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
