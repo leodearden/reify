@@ -1421,8 +1421,7 @@ pub(crate) fn resolve_argless_enum_annotation(
     if type_params.is_empty() {
         return Type::Enum(name.to_string());
     }
-    let defaults: Option<Vec<Type>> = type_params.iter().map(|tp| tp.default.clone()).collect();
-    match defaults {
+    match fill_type_param_defaults(type_params) {
         Some(args) => Type::Applied {
             name: name.to_string(),
             args,
@@ -1432,6 +1431,28 @@ pub(crate) fn resolve_argless_enum_annotation(
             Type::Enum(name.to_string())
         }
     }
+}
+
+/// Every type parameter's declared default, or `None` when any parameter has
+/// none. Filled left to right, so a default naming an earlier parameter
+/// (`<A = Length, B = A>`) takes that parameter's filled argument.
+/// [`convert_type_params`] resolves defaults without the parameter list in
+/// scope, which leaves such a default as `StructureRef("A")`.
+fn fill_type_param_defaults(type_params: &[reify_ir::TypeParam]) -> Option<Vec<Type>> {
+    let mut filled: HashMap<&str, Type> = HashMap::new();
+    type_params
+        .iter()
+        .map(|tp| {
+            let default = tp.default.as_ref()?;
+            let earlier_param_arg = match default {
+                Type::StructureRef(name) => filled.get(name.as_str()),
+                _ => None,
+            };
+            let arg = earlier_param_arg.unwrap_or(default).clone();
+            filled.insert(&tp.name, arg.clone());
+            Some(arg)
+        })
+        .collect()
 }
 
 /// Resolve an enum name with optional type arguments to a `Type`.
