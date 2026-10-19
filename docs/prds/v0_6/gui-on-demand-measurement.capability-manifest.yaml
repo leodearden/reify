@@ -669,9 +669,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: unregistered-standalone
+      # widened 2026-10-19 by the cargo-native-harness-layout decompose: δ deletes the script; its successor is scripts/harness_layout.py
+      pattern: 'unregistered-standalone|standalone-added'
       paths:
       - scripts/check-harness-baseline-registration.sh
+      - scripts/harness_layout.py
       expect: present
   - name: run-all-classification-covers-only-infra-shell-tests
     binding: PASS-WITH-AMENDMENT (A13). tests/infra/run-all-classification.manifest

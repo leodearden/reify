@@ -205,8 +205,10 @@ tasks:
     delivered_check:
       kind: grep
       pattern: harness-layout-contract
+      # widened 2026-10-19 by the cargo-native-harness-layout decompose: ε₂ deletes test_harness_kloc_cap.sh; its successor member points at the contract doc
       paths:
       - tests/infra/test_harness_kloc_cap.sh
+      - tests/infra/test_harness_layout.py
       expect: present
 - label: ι
   task_id: 8703
