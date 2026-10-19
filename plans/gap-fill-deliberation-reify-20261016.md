@@ -510,3 +510,8 @@ Append-only, by the gap-fill lead. The FILED rows above were appended by each st
   - #7809 (medium, pending, unclaimed; branch task/7809 holds its fix): syntax α #9343, and so high β #9344 on #9171, wait on it.
   - #5992 is in progress; generic γ₂ #9363 waits on it.
   - Leo's: the esc-audit-1 docs-truth sitting; optionally installing the docs-truth sweep timer (deploy/systemd/reify-docs-truth-sweep.{service,timer}); P1/P5 detector runtime (#8331, #9355).
+- **Addendum (2026-10-19, after the lead log above):**
+  - support-realization-policy landed a second commit, cc12cd59d2. At Leo's request, a fresh fable review of the landed state found 1 blocker, 7 majors and 9 minors; all were folded into the PRD and manifest and the task records #9379–#9384, #7081 and #9120. No delivered check changed. One more cross-reference line: #7189's merge must not re-baseline S5's `support-bc-literals` or `support-anchor-nearest-node` rows (the session's note on #7189; the lead's note on #8984 records the third S5 row).
+  - Every gap-fill session has now exited.
+  - **Gate #9171 committed** (deferred → pending) by the lead on Leo's direction.
+  - #7809 is handed to a sibling /team session (team-reify-1506619), which checks whether branch task/7809 is complete and, if so, carries it through /merge-queue.
