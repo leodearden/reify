@@ -414,3 +414,35 @@ Append-only, by the gap-fill lead. Each stream session returns these in its resu
   - a list-valued `stderr_contains` crashed prd-capability-check.py: filed as #9376, after S22 δ #8644 (follow-on form);
   - the run also needed REIFY_BIN=target/debug/reify, since target/release/reify dates from 2026-09-01. That is the same trap as the S22 ε #8649 widening above.
 - **Interim tasks that land first:** #5992 (14-commit finished branch; γ₂ #9363 depends on it and deletes its parity test), #9169 (in progress) and #6851 (C14).
+
+### support-realization-policy (5616280aa7; `docs/prds/v0_6/support-realization-policy.md`)
+- **G4 amends** the gap-fill row `support realization (constraint_pattern, resolve_support_target, SupportCapability) | support-realization-policy | …`. Owner leaf: α₁ #9379. Consumers: S15 γ #8683, S16 ξ/ο/μ #9120/#9121/#9119, #7081, CT #8251/#8256 and #7142/#7143. The settled shape:
+  - the API is `realize_supports(&[SupportDecl], &BoundaryView, &SupportCapability)` over a solver-side `SupportDecl`, because reify-solver-elastic cannot name `SupportSpec`; the `support_decls` adapter sits beside the S15 decoder;
+  - `BoundaryView { StructuredBox, Realized }` with `SupportTarget { Named, Face, Faces, Patch }`, and no Points view (R2);
+  - the third table parameter is `SupportFrame`, not `Idealization` (R3);
+  - every capability row is a const in `supports/capability.rs`.
+- **S16** (`elastic-modal-trampoline-factoring.md`): the PRD still spells `FeaDimsSupportNotRealized` throughout; the code is now `FeaSupportNotRealized` (R1). A dated line in that PRD's §Gap-fill amendments records the rename. The session corrected μ #9119's description and metadata, plus the S16 sidecar and `.md` twin. ξ #9120 and ο #9121 carry notes.
+- **coordinate-target-fea** §5 C9: R14 folds `FeaPointSupportsUnderRestrained` into `FeaSupportsUnderRestrained`, which α₁ #9379 mints. δ #9383 repoints #8251's done-producer check in three writes. The session wrote notes on #8251, #8256 and #7189.
+- **PDROP** (`trampoline-param-drop-closure.md` §7 A1): A1 is now "a call to realize_supports with BUCKLING_COLUMN". #7081 was rewritten and depends on γ #9382 and #8683. The buckling examples' `"base"` targets are #7081's to rename.
+- **S15:** the session wrote nothing to closure leaf #8683. β #9381 rewrites #8683's landed T8 body-path Pinned test as a follow-on (a refusal, per R9).
+- **S5** (notes by the lead on #8984 and #8999):
+  - ratchet rows `support-face-vocabulary` and `support-bc-literals` go on #8984's `tests/infra/test_analysis_stratum_ratchet.py`;
+  - the `support_decls` adapter sits in the shared foundation beside `SupportSpec` (κ₁ #8999 placement).
+- **INV-SF-3** is amended in place by ε #9384: its row in docs/legibility/design-invariants.md plus a census row. The program-doc pointer (R12) is appended to the program doc.
+- **#7871** now depends on α₂ #9380 and describes the hinge.
+- **Observed, not owned** (notes by the lead):
+  - #7383: the printer.ri SIGSEGV still reproduces on 2026-10-19;
+  - #6660: the CLI body overload returns Failed with no diagnostic;
+  - #5847: `examples/trajectory/printer_print_envelope.ri` fails `reify eval` on constructor debt;
+  - #8649: the stale release binary; the session added evidence.
+- The session also wrote a #9121 note (D10: `nodes_on` delegates to the module's face predicate) after its FILED row was committed.
+
+### gui-engine-admission (1156ce4bc6; `docs/prds/v0_6/gui-engine-admission.md`)
+- **G4 supersedes** the gap-fill row for this stream with: `EngineSession source-write admission (EntryDocument/resolve_target), PreviewState, WriteTarget (write_confinement.rs), DesignWatch (design_watch.rs), claude_bridge SidecarState table, GuiState.entry_path/preview_live, INV-GUI-4 | gui-engine-admission | S25 ξ #8950, ο #8951, commands.rs doors`.
+- **S25** (`gui-backend-engine-modules-events-tool-contract.md`): §4.10 placement row 3 is superseded when α #9387 lands, because the host guard is re-homed onto resolve_target. A dated pointer line is appended to that PRD's §Gap-fill amendments. The session wrote notes on ξ #8950, η #8943 and ο #8951.
+- **K7-D3 #9279** depends on ε/ζ/η (#9391, #9392, #9393). Its R6 premise note: landlock is applied per `claude --print` child per turn, the sidecar is unconfined, and `--resume` is passed per turn, so a workspace change may not need a respawn. Leo's visible-reset condition still binds.
+- **Review instrument:** #9174 (fk-19a30824e41b) is re-targeted onto `WriteTarget::write` and depends on γ #9389.
+- **docs/debug-mcp-contract.md** (S25-owned): γ adds the save_path admission paragraph and widens the AI-write rule to design dir ∪ temp dir (R8/R12).
+- **Vendored helper:** η #9393 adds a second REIFY DIVERGENCE to `gui/src-tauri/sandbox/landlock_exec.py` (the temp grant reads TMPDIR). A lead note on #9393 asks it to update reify CLAUDE.md "Vendored sandbox helpers" in the same diff.
+- **INV-GUI-4:** a new docs/invariants.md row owned by this stream. α adds it and ω refreshes it.
+- **D3 tooling:** not run, because every leaf's signal is GUI/Tauri/frontend and outside the D3 workflow's reach. Recorded in the manifest.
