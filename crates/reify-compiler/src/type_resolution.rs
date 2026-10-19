@@ -1437,7 +1437,8 @@ pub(crate) fn resolve_argless_enum_annotation(
 /// none. Filled left to right, so a default naming an earlier parameter
 /// (`<A = Length, B = A>`) takes that parameter's filled argument.
 /// [`convert_type_params`] resolves defaults without the parameter list in
-/// scope, which leaves such a default as `StructureRef("A")`.
+/// scope, which leaves such a default as `StructureRef("A")` until #5994
+/// lowers it to `TypeParam("A")`.
 fn fill_type_param_defaults(type_params: &[reify_ir::TypeParam]) -> Option<Vec<Type>> {
     let mut filled: HashMap<&str, Type> = HashMap::new();
     type_params
