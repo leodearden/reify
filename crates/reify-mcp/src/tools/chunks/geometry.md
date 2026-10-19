@@ -55,6 +55,8 @@ Transform<N>:
 
 Transform is always rigid (rotation + translation). Sub-structure placement uses Transform from child frame to parent frame.
 
+A transform keeps its input's kind: a translated profile is still a face, so `centroid` and `area` measure the face.
+
 ## Geometry Constructors (Prelude)
 
 ```reify-schematic
@@ -274,6 +276,10 @@ the REMAINING exit-code claims are UNPINNED prose (nothing else in these harness
 and the residual is tracked in `docs/prds/v0_6/check-diagnostic-truthfulness.md`. Full
 PINNED/UNPINNED inventory: the `units` chunk.
 
+
+## Fillet & chamfer
+
+`fillet` and `chamfer` need one solid, also after a transform: a disjoint `union` or a swept wire is rejected.
 
 ## GD&T Tolerance Zones
 
