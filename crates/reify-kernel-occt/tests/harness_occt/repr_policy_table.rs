@@ -8,7 +8,9 @@
 //! keeps its fixed kind. SweepGuided and LoftGuided are covered by
 //! `harness_occt_measurement/sweep_guided_integration.rs` and
 //! `loft_guided_integration.rs`. Draft's all-faces form has no row: it fails
-//! on every closed solid probed (ticket tkt_0RW01PW74XY9CPGF4A4TEBCZVS).
+//! on every closed solid probed (ticket tkt_0RW01PW74XY9CPGF4A4TEBCZVS). Nor
+//! does a revolved wire: the revolve wrapper wraps its open shell in a SOLID
+//! (ticket tkt_0RW02D1V7Z761QCHHGYSMJ674C).
 //!
 //! Lengths are SI metres. `GeometryOp::Box` is centred on the origin.
 
@@ -260,18 +262,14 @@ fn sweeps_classify_a_face_profile_as_solid_and_a_wire_profile_as_shell() {
         "FACE moved off the Y axis",
         translate(i.face, 0.05, 0.0, 0.0),
     );
-    let revolve_wire = t.input(
-        "WIRE off the Y axis",
-        segment([0.05, 0.0, 0.0], [0.07, 0.0, 0.0]),
-    );
     let path = t.input("+Z path", segment([0.0; 3], [0.0, 0.0, 0.02]));
     let raised_face = t.input("FACE raised 0.01", translate(i.face, 0.0, 0.0, 0.01));
 
     let profiles = [
-        ("FACE", i.face, revolve_face, BRepKind::Solid),
-        ("WIRE", i.wire, revolve_wire, BRepKind::Shell),
+        ("FACE", i.face, BRepKind::Solid),
+        ("WIRE", i.wire, BRepKind::Shell),
     ];
-    for (input, profile, revolve_profile, kind) in profiles {
+    for (input, profile, kind) in profiles {
         let distance = Value::length(0.01);
         let sweeps = [
             (
@@ -293,15 +291,6 @@ fn sweeps_classify_a_face_profile_as_solid_and_a_wire_profile_as_shell() {
                     both: false,
                 },
             ),
-            (
-                "Revolve",
-                GeometryOp::Revolve {
-                    profile: revolve_profile,
-                    axis_origin: [0.0; 3],
-                    axis_dir: [0.0, 1.0, 0.0],
-                    angle_rad: FRAC_PI_2,
-                },
-            ),
             ("Sweep", GeometryOp::Sweep { profile, path }),
         ];
         for (op_label, op) in sweeps {
@@ -309,6 +298,13 @@ fn sweeps_classify_a_face_profile_as_solid_and_a_wire_profile_as_shell() {
         }
     }
 
+    let revolve = GeometryOp::Revolve {
+        profile: revolve_face,
+        axis_origin: [0.0; 3],
+        axis_dir: [0.0, 1.0, 0.0],
+        angle_rad: FRAC_PI_2,
+    };
+    t.row("Revolve × FACE", &revolve, BRepKind::Solid);
     let pipe = GeometryOp::Pipe {
         path,
         radius: Value::length(0.002),

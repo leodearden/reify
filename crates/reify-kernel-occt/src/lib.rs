@@ -483,8 +483,7 @@ pub struct OcctKernel {
     /// restored in lock-step with `shapes` across warm-start (see
     /// `warm_state` / `with_warm_state`): entries missing at restore time
     /// (e.g. because the shape failed to serialize) fall back to
-    /// `BRepKind::Solid`, matching the implicit default in
-    /// [`Self::store`].
+    /// `BRepKind::Solid`.
     reprs: HashMap<u64, BRepKind>,
     /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
     /// previously-minted edge handle list (in canonical
@@ -543,6 +542,34 @@ fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryE
     brep_kind_of_type_name(&name)
 }
 
+/// How an op's result [`BRepKind`] is decided: stated, copied from an input,
+/// or read off the built shape by [`brep_kind_of_shape`].
+#[cfg(has_occt)]
+#[derive(Clone, Copy)]
+enum ReprPolicy {
+    Fixed(BRepKind),
+    Inherit(GeometryHandleId),
+    Classify,
+}
+
+/// What an `execute` arm yields: a new shape to store under its policy, or a
+/// handle a delegate already stored.
+#[cfg(has_occt)]
+enum ArmOutcome {
+    New {
+        shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
+        policy: ReprPolicy,
+    },
+    Stored(GeometryHandle),
+}
+
+#[cfg(has_occt)]
+impl ArmOutcome {
+    fn new(shape: cxx::UniquePtr<ffi::ffi::OcctShape>, policy: ReprPolicy) -> Self {
+        Self::New { shape, policy }
+    }
+}
+
 /// The OCCT TopAbs type name → [`BRepKind`] table behind [`brep_kind_of_shape`].
 #[cfg(has_occt)]
 fn brep_kind_of_type_name(name: &str) -> Result<BRepKind, GeometryError> {
@@ -583,7 +610,7 @@ impl OcctKernel {
     /// After a `warm_state()`/`with_warm_state()` round-trip the classification
     /// is restored from the persisted `reprs` map. Any handle whose BRep
     /// serialized successfully but whose repr entry was absent falls back to
-    /// [`BRepKind::Solid`] (matches the implicit default in [`OcctKernel::store`]).
+    /// [`BRepKind::Solid`].
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
         self.reprs.get(&id.0).copied()
     }
@@ -674,11 +701,6 @@ impl OcctKernel {
         parent_handle.clear();
     }
 
-    /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
-    fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
-        self.store_with_repr(shape, BRepKind::Solid)
-    }
-
     /// Store a shape with an explicit `BRepKind`.
     ///
     /// `repr` is wrapped in `Some(...)` on the returned [`GeometryHandle`] —
@@ -700,14 +722,30 @@ impl OcctKernel {
         }
     }
 
-    /// Store `shape` stamped with the [`BRepKind`] of its real top-level type
-    /// (see [`brep_kind_of_shape`]), for ops whose result kind depends on
-    /// their inputs.
-    fn store_classified(
+    /// The [`BRepKind`] `policy` assigns to `shape`. An `Inherit` whose source
+    /// has no recorded kind classifies `shape` instead.
+    fn resolve_repr(
+        &self,
+        shape: &ffi::ffi::OcctShape,
+        policy: ReprPolicy,
+    ) -> Result<BRepKind, GeometryError> {
+        match policy {
+            ReprPolicy::Fixed(kind) => Ok(kind),
+            ReprPolicy::Inherit(source) => match self.repr_of(source) {
+                Some(kind) => Ok(kind),
+                None => brep_kind_of_shape(shape),
+            },
+            ReprPolicy::Classify => brep_kind_of_shape(shape),
+        }
+    }
+
+    /// Store `shape` under the [`BRepKind`] its `policy` resolves to.
+    fn store_with_policy(
         &mut self,
         shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
+        policy: ReprPolicy,
     ) -> Result<GeometryHandle, GeometryError> {
-        let repr = brep_kind_of_shape(&shape)?;
+        let repr = self.resolve_repr(&shape, policy)?;
         Ok(self.store_with_repr(shape, repr))
     }
 
@@ -1066,13 +1104,12 @@ impl OcctKernel {
             ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
         };
         // The single-element path is an identity passthrough of the sole
-        // input shape (any kind), so it keeps that input's classification;
-        // a real fuse is classified by `store_classified`.
-        if handles.len() == 1 {
-            let repr = self.repr_of(handles[0]).unwrap_or(BRepKind::Solid);
-            return Ok(self.store_with_repr(fused, repr));
-        }
-        self.store_classified(fused)
+        // input shape (any kind), so it keeps that input's classification.
+        let policy = match handles {
+            [only] => ReprPolicy::Inherit(*only),
+            _ => ReprPolicy::Classify,
+        };
+        self.store_with_policy(fused, policy)
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).
@@ -1181,15 +1218,11 @@ impl OcctKernel {
         handle: GeometryHandleId,
         t: &crate::Transform3,
     ) -> Result<GeometryHandleId, GeometryError> {
-        // Inherit the source's BRepKind so a transformed Face stays a Face,
-        // a Wire stays a Wire, etc. Missing repr falls back to Solid to match
-        // the implicit default in `store(shape)`.
-        let source_repr = self.repr_of(handle).unwrap_or(BRepKind::Solid);
         let shape = self.get_shape(handle)?;
         let props = ffi::ffi::Transform3Props::from(t);
         let new_shape = ffi::ffi::apply_transform_to_shape(shape, &props)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        let new_handle = self.store_with_repr(new_shape, source_repr);
+        let new_handle = self.store_with_policy(new_shape, ReprPolicy::Inherit(handle))?;
         Ok(new_handle.id)
     }
 
@@ -1552,8 +1585,8 @@ impl OcctKernel {
     ///
     /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
     /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
-    /// arm, and the handle's `BRepKind` is classified from that real shape by
-    /// `store_classified` — so a disjoint fuse registers as the multi-body
+    /// arm, and the handle's `BRepKind` is classified from that real shape —
+    /// so a disjoint fuse registers as the multi-body
     /// `BRepKind::Compound`, not `Solid`. The history records describe the
     /// parent ↔ result correspondence emitted by
     /// `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
@@ -1573,7 +1606,7 @@ impl OcctKernel {
         right: GeometryHandleId,
     ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
         // Run the FFI call inside a scope that drops the immutable borrow
-        // before we mutate `self` via `store_classified`.
+        // before we mutate `self` via `store_with_policy`.
         let (result_shape, records) = {
             let l = self.get_shape(left)?;
             let r = self.get_shape(right)?;
@@ -1581,7 +1614,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_classified(result_shape)?;
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -1590,7 +1623,7 @@ impl OcctKernel {
     /// alongside the result shape.
     ///
     /// The result is normalized like the plain `boolean_cut` arm and its
-    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// `BRepKind` is classified from the real shape (see `brep_kind_of_shape`),
     /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
@@ -1610,7 +1643,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_classified(result_shape)?;
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -1619,7 +1652,7 @@ impl OcctKernel {
     /// alongside the result shape.
     ///
     /// The result is normalized like the plain `boolean_common` arm and its
-    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// `BRepKind` is classified from the real shape (see `brep_kind_of_shape`),
     /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
@@ -1639,7 +1672,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_classified(result_shape)?;
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -1647,7 +1680,7 @@ impl OcctKernel {
     ///
     /// Looks up `shape_id`, calls `build` to run the OCCT algorithm and obtain a
     /// `LocalFeatureOpHistory`, decodes all six record buffers, then registers the
-    /// result shape with `BRepKind::Solid`.  Error mapping (cxx exceptions →
+    /// result shape under its classified `BRepKind`.  Error mapping (cxx exceptions →
     /// `GeometryError::OperationFailed`) is handled here so public callers stay
     /// concise.
     ///
@@ -1671,8 +1704,7 @@ impl OcctKernel {
     {
         // DEFENSE-IN-DEPTH (task 2821 / esc-2655-26 #4): `BRepFilletAPI_MakeFillet`
         // and `BRepFilletAPI_MakeChamfer` iterate parent edges of a Solid; only a
-        // Solid input has a well-defined edge map AND produces a Solid result that
-        // matches the hardcoded `store_with_repr(..., BRepKind::Solid)` below.
+        // Solid input has a well-defined edge map AND produces a single-solid result.
         // Passing a Face / Edge / Wire / Shell / Compound would either crash inside
         // OCCT or silently produce a misclassified result.  Guard up-front so both
         // `fillet_with_history` and `chamfer_with_history` receive the check for free.
@@ -1717,7 +1749,7 @@ impl OcctKernel {
                 build(shape).map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &LOCAL_FEATURE_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -1732,15 +1764,14 @@ impl OcctKernel {
         validate_positive_finite(radius, "fillet radius")?;
         let filleted = ffi::ffi::fillet_all_edges(self.get_shape(shape_id)?, radius)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        Ok(self.store(filleted))
+        self.store_with_policy(filleted, ReprPolicy::Classify)
     }
 
     /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
     /// given `radius`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// `radius` must be a finite, strictly positive number. Result handle is
-    /// registered with `BRepKind::Solid`.
+    /// `radius` must be a finite, strictly positive number.
     ///
     /// `parent_index` in every record is `0` (single parent solid).
     ///
@@ -1770,8 +1801,8 @@ impl OcctKernel {
     /// up-front — the all-edges path is [`Self::fillet_with_history`] /
     /// `fillet_all_edges`, never this method silently falling through.
     ///
-    /// `radius` must be finite and strictly positive. Result handle is
-    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    /// `radius` must be finite and strictly positive. `parent_index` in every
+    /// record is `0`.
     ///
     /// Curated edge-selection seam (task 3205). The persistent-naming history
     /// seam is preserved identically to the all-edges path.
@@ -1824,9 +1855,8 @@ impl OcctKernel {
     /// handles are mapped to their 0-based canonical positions via
     /// `extract_faces` (TopExp::MapShapes order, same as the eval-arm seam).
     ///
-    /// The result is stored directly via `store_with_repr(.., BRepKind::Solid)`
-    /// (history-free) — mirroring the existing `draft_shape` execute arm, which
-    /// does not participate in persistent-naming.
+    /// The result is stored history-free — mirroring the existing `draft_shape`
+    /// execute arm, which does not participate in persistent-naming.
     pub fn draft_faces(
         &mut self,
         target: GeometryHandleId,
@@ -1871,7 +1901,7 @@ impl OcctKernel {
         let result_shape =
             ffi::ffi::draft_faces_shape(shape, angle_rad, plane_shape, &face_indices)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+        self.store_with_policy(result_shape, ReprPolicy::Classify)
     }
 
     /// Apply `BRepOffsetAPI_MakeThickSolid` to the curated face subset
@@ -1935,7 +1965,7 @@ impl OcctKernel {
         let shape = self.get_shape(target)?;
         let result_shape = ffi::ffi::shell_shape(shape, thickness, &face_indices)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+        self.store_with_policy(result_shape, ReprPolicy::Classify)
     }
 
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
@@ -1949,15 +1979,14 @@ impl OcctKernel {
         validate_positive_finite(distance, "chamfer distance")?;
         let chamfered = ffi::ffi::chamfer_all_edges(self.get_shape(shape_id)?, distance)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        Ok(self.store(chamfered))
+        self.store_with_policy(chamfered, ReprPolicy::Classify)
     }
 
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// `distance` must be a finite, strictly positive number. Result handle is
-    /// registered with `BRepKind::Solid`.
+    /// `distance` must be a finite, strictly positive number.
     ///
     /// `parent_index` in every record is `0` (single parent solid).
     ///
@@ -1978,8 +2007,8 @@ impl OcctKernel {
     /// modified-result handle alongside the per-parent face/edge
     /// Modified/Generated/Deleted history records.
     ///
-    /// `distance` must be finite and strictly positive. Result handle is
-    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    /// `distance` must be finite and strictly positive. `parent_index` in every
+    /// record is `0`.
     ///
     /// Curated edge-selection seam (task 4185, β). The persistent-naming history
     /// seam is preserved identically to the all-edges path. An empty `edges`
@@ -2030,9 +2059,8 @@ impl OcctKernel {
     /// modified-result handle alongside the per-parent face/edge
     /// Modified/Generated/Deleted history records.
     ///
-    /// Both `d1` and `d2` must be finite and strictly positive. Result handle
-    /// is registered with `BRepKind::Solid`. `parent_index` in every record is
-    /// `0`.
+    /// Both `d1` and `d2` must be finite and strictly positive. `parent_index`
+    /// in every record is `0`.
     ///
     /// An empty `edges` slice means ALL edges (back-compat, mirroring the
     /// symmetric/Fillet contract): the wrapper enumerates every parent edge
@@ -2090,8 +2118,7 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Extrude` arm of
     /// [`OcctKernel::execute`]: profile is extruded along `(0, 0, distance)`,
-    /// validated to be finite and non-zero. Result handle is registered
-    /// with `BRepKind::Solid`.
+    /// validated to be finite and non-zero.
     ///
     /// `parent_index` in every record is `0` (single parent profile).
     /// `start_cap_face_indices` carries the FirstShape() face index (the
@@ -2153,7 +2180,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -2166,8 +2193,7 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Revolve` arm of
     /// [`OcctKernel::execute`]: same finite/non-zero/non-degenerate
-    /// validation thresholds (AXIS_MAG_SQ_MIN, ANGLE_ABS_MIN). Result
-    /// handle is registered with `BRepKind::Solid`.
+    /// validation thresholds (AXIS_MAG_SQ_MIN, ANGLE_ABS_MIN).
     ///
     /// Cap behavior:
     /// - PARTIAL revolution (angle_rad mod 2π ∈ (0, 2π)) →
@@ -2245,7 +2271,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -2332,10 +2358,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        // Same input-dependent kind as the `GeometryOp::Sweep` arm — the one
-        // classifier, so the two entry points cannot drift apart again (#5713).
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -2347,8 +2370,8 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Loft` arm of
     /// [`OcctKernel::execute`]: same handle resolution, same
-    /// `profiles.len() < 2` validation, and same result registration
-    /// with `BRepKind::Solid`. Loft is **multi-parent** — each profile
+    /// `profiles.len() < 2` validation, and same result classification.
+    /// Loft is **multi-parent** — each profile
     /// section is a distinct parent indexed `0..N-1`, and
     /// `LoftOpHistoryRecords::face_generated`'s `parent_index` field
     /// denotes the section index (NOT always 0 like sweep / extrude /
@@ -2414,7 +2437,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 }
@@ -2431,7 +2454,7 @@ impl Default for OcctKernel {
 /// Called directly by the kernel thread in `OcctKernelHandle`.
 impl OcctKernel {
     pub fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        let shape = match op {
+        let outcome = match op {
             GeometryOp::Box {
                 width,
                 height,
@@ -2441,22 +2464,25 @@ impl OcctKernel {
                 let h = extract_length_f64(height, op, "height")?;
                 let d = extract_length_f64(depth, op, "depth")?;
                 validate_all_positive_finite(&[w, h, d], BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE)?;
-                ffi::ffi::make_box(w, h, d)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_box(w, h, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Cylinder { radius, height } => {
                 let r = extract_length_f64(radius, op, "radius")?;
                 let h = extract_length_f64(height, op, "height")?;
                 validate_positive_finite(r, "cylinder radius")?;
                 validate_positive_finite(h, "cylinder height")?;
-                ffi::ffi::make_cylinder(r, h)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_cylinder(r, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Sphere { radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
                 validate_all_positive_finite(&[r], SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE)?;
-                ffi::ffi::make_sphere(r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_sphere(r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Tube {
                 outer_r,
@@ -2483,8 +2509,9 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 let inner_shape = ffi::ffi::make_cylinder(inner, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Cone {
                 bottom_radius,
@@ -2510,8 +2537,9 @@ impl OcctKernel {
                     ));
                 }
                 validate_positive_finite(h, "cone height")?;
-                ffi::ffi::make_cone(bottom_r, top_r, h)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_cone(bottom_r, top_r, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Wedge {
                 width,
@@ -2531,8 +2559,9 @@ impl OcctKernel {
                         "wedge top_width must be finite and non-negative".into(),
                     ));
                 }
-                ffi::ffi::make_wedge(w, d, h, ltx)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_wedge(w, d, h, ltx)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Torus {
                 major_radius,
@@ -2550,8 +2579,9 @@ impl OcctKernel {
                         "torus minor radius must be strictly less than major radius".into(),
                     ));
                 }
-                ffi::ffi::make_torus(major, minor)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_torus(major, minor)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::HalfSpace {
                 px,
@@ -2577,39 +2607,30 @@ impl OcctKernel {
                         "half_space normal must be a non-zero finite vector".into(),
                     ));
                 }
-                ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
-            // The three binary booleans return EARLY through `store_classified`
-            // rather than falling through to the shared `Ok(self.store(shape))`
-            // tail below, which hardcodes `BRepKind::Solid`: since task 7054 a
-            // fuse of disjoint operands genuinely yields a multi-body result.
-            //
-            // One consumer does more than READ the repr: `run_local_feature_with_history`
-            // REJECTS anything that is not `BRepKind::Solid`, so a disjoint
-            // `union` that now classifies as `Compound` can no longer be filleted
-            // or chamfered. See the reach note on that guard for why that is the
-            // intended outcome rather than a regression.
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let fused = ffi::ffi::boolean_fuse(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return self.store_classified(fused);
+                ArmOutcome::new(fused, ReprPolicy::Classify)
             }
             GeometryOp::Difference { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let cut = ffi::ffi::boolean_cut(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return self.store_classified(cut);
+                ArmOutcome::new(cut, ReprPolicy::Classify)
             }
             GeometryOp::Intersection { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let common = ffi::ffi::boolean_common(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return self.store_classified(common);
+                ArmOutcome::new(common, ReprPolicy::Classify)
             }
             GeometryOp::Fillet {
                 target,
@@ -2619,12 +2640,12 @@ impl OcctKernel {
                 let r = extract_length_f64(radius, op, "radius")?;
                 // Empty `edges` = all edges (2-arg back-compat). The curated
                 // primitive's history is not surfaced through execute().
-                return if edges.is_empty() {
-                    self.fillet_all_edges(*target, r)
+                let handle = if edges.is_empty() {
+                    self.fillet_all_edges(*target, r)?
                 } else {
-                    self.fillet_edges_with_history(*target, r, edges)
-                        .map(|(handle, _history)| handle)
+                    self.fillet_edges_with_history(*target, r, edges)?.0
                 };
+                ArmOutcome::Stored(handle)
             }
             GeometryOp::Chamfer {
                 target,
@@ -2634,12 +2655,12 @@ impl OcctKernel {
                 let d = extract_length_f64(distance, op, "distance")?;
                 // Empty `edges` = all edges (2-arg back-compat). The curated
                 // primitive's history is not surfaced through execute().
-                return if edges.is_empty() {
-                    self.chamfer_all_edges(*target, d)
+                let handle = if edges.is_empty() {
+                    self.chamfer_all_edges(*target, d)?
                 } else {
-                    self.chamfer_edges_with_history(*target, d, edges)
-                        .map(|(handle, _history)| handle)
+                    self.chamfer_edges_with_history(*target, d, edges)?.0
                 };
+                ArmOutcome::Stored(handle)
             }
             GeometryOp::ChamferAsymmetric {
                 target,
@@ -2651,12 +2672,11 @@ impl OcctKernel {
                 let d2 = extract_length_f64(d2, op, "d2")?;
                 // Asymmetric chamfer always routes to the per-edge primitive
                 // (empty `edges` = all-edges, enumerated inside the kernel
-                // wrapper). `chamfer_asymmetric_edges_with_history` stores the
-                // Solid result and returns its handle; the history is captured
-                // for the persistent-naming seam but not surfaced through execute().
+                // wrapper). The history is captured for the persistent-naming
+                // seam but not surfaced through execute().
                 let (handle, _history) =
                     self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)?;
-                return Ok(handle);
+                ArmOutcome::Stored(handle)
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
@@ -2665,8 +2685,9 @@ impl OcctKernel {
                         "translate components must be finite values: dx={dx}, dy={dy}, dz={dz}"
                     )));
                 }
-                ffi::ffi::translate_shape(shape, *dx, *dy, *dz)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::translate_shape(shape, *dx, *dy, *dz)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::Rotate {
                 target,
@@ -2690,8 +2711,9 @@ impl OcctKernel {
                         "rotation axis must not be zero-length".into(),
                     ));
                 }
-                ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::LinearPattern {
                 target,
@@ -2706,7 +2728,7 @@ impl OcctKernel {
                         "linear pattern count must be >= 1".into(),
                     ));
                 }
-                ffi::ffi::linear_pattern(
+                let built = ffi::ffi::linear_pattern(
                     shape,
                     direction[0],
                     direction[1],
@@ -2714,7 +2736,8 @@ impl OcctKernel {
                     *count as u32,
                     sp,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::CircularPattern {
                 target,
@@ -2731,7 +2754,7 @@ impl OcctKernel {
                         "circular pattern count must be >= 1".into(),
                     ));
                 }
-                ffi::ffi::circular_pattern(
+                let built = ffi::ffi::circular_pattern(
                     shape,
                     axis_origin[0],
                     axis_origin[1],
@@ -2742,7 +2765,8 @@ impl OcctKernel {
                     *count as u32,
                     total_angle,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::Mirror {
                 target,
@@ -2767,7 +2791,7 @@ impl OcctKernel {
                         "mirror plane normal must not be zero-length".into(),
                     ));
                 }
-                ffi::ffi::mirror_shape(
+                let built = ffi::ffi::mirror_shape(
                     shape,
                     plane_origin[0],
                     plane_origin[1],
@@ -2776,7 +2800,8 @@ impl OcctKernel {
                     plane_normal[1],
                     plane_normal[2],
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::Loft { profiles } => {
                 validate_loft_profile_count(profiles.len())?;
@@ -2785,8 +2810,9 @@ impl OcctKernel {
                     let shape = self.get_shape(pid)?;
                     ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
                 }
-                ffi::ffi::loft_profiles(&vec)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::loft_profiles(&vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::Draft {
                 target,
@@ -2804,22 +2830,21 @@ impl OcctKernel {
                     // faces (unchanged path). Shape stored after the match.
                     let shape = self.get_shape(*target)?;
                     let plane_shape = self.get_shape(*plane)?;
-                    ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                    let built = ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                    ArmOutcome::new(built, ReprPolicy::Classify)
                 } else {
-                    // Curated per-face selection: draft only the chosen faces.
-                    // `draft_faces` stores the Solid result history-free and
-                    // returns its handle; early return mirrors the Fillet
-                    // curated arm (lib.rs:2167-2174).
-                    let handle = self.draft_faces(*target, angle_rad, *plane, faces)?;
-                    return Ok(handle);
+                    // Curated per-face selection: draft only the chosen faces,
+                    // stored history-free by `draft_faces`.
+                    ArmOutcome::Stored(self.draft_faces(*target, angle_rad, *plane, faces)?)
                 }
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
                 let off = extract_length_f64(offset, op, "offset")?;
-                ffi::ffi::thicken_shape(shape, off)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::thicken_shape(shape, off)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::OffsetCurve {
                 target,
@@ -2828,10 +2853,7 @@ impl OcctKernel {
                 direction,
             } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                // Build the offset wire inside an inner scope so the immutable
-                // `get_shape` borrow(s) drop before `store_with_repr` takes
-                // `&mut self` (mirrors `extract_edges` / `execute_split`'s
-                // `materialized` scope). Dispatch the three overloads on
+                // Dispatch the three overloads on
                 // (reference, direction): a reference surface (overload 2) wins
                 // over a direction (overload 3); neither → planar offset
                 // (overload 1).
@@ -2849,19 +2871,21 @@ impl OcctKernel {
                     }
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
                 };
-                return Ok(self.store_with_repr(result, BRepKind::Wire));
+                ArmOutcome::new(result, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::ZoneSlab { target, width } => {
                 let shape = self.get_shape(*target)?;
                 let w = extract_length_f64(width, op, "width")?;
-                ffi::ffi::zone_slab_shape(shape, w)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::zone_slab_shape(shape, w)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::OffsetSolid { target, distance } => {
                 let shape = self.get_shape(*target)?;
                 let d = extract_length_f64(distance, op, "distance")?;
-                ffi::ffi::offset_solid_shape(shape, d)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::offset_solid_shape(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::OffsetSurface { target, distance } => {
                 let shape = self.get_shape(*target)?;
@@ -2873,7 +2897,7 @@ impl OcctKernel {
                 // `make_offset_surface`'s header doc comment (occt_wrapper.h)
                 // for the shell-input caveat this would need if that ever
                 // changes.
-                return Ok(self.store_with_repr(out, BRepKind::Face));
+                ArmOutcome::new(out, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::Shell {
                 target,
@@ -2883,17 +2907,19 @@ impl OcctKernel {
             } => {
                 let th = extract_length_f64(thickness, op, "thickness")?;
                 // Curated-handle path (shell_open): open_face_handles is
-                // non-empty → delegate to shell_solid_faces and early-return,
-                // mirroring the Draft execute arm's curated dispatch
-                // (lib.rs:2398-2418 pattern).
+                // non-empty → delegate to shell_solid_faces, mirroring the
+                // Draft execute arm's curated dispatch.
                 if !open_face_handles.is_empty() {
-                    return self.shell_solid_faces(*target, th, open_face_handles);
+                    ArmOutcome::Stored(self.shell_solid_faces(*target, th, open_face_handles)?)
+                } else {
+                    // Legacy numeric path: faces_to_remove 0-based indices → FFI.
+                    let shape = self.get_shape(*target)?;
+                    let face_indices: Vec<u32> =
+                        faces_to_remove.iter().map(|&i| i as u32).collect();
+                    let built = ffi::ffi::shell_shape(shape, th, &face_indices)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                    ArmOutcome::new(built, ReprPolicy::Classify)
                 }
-                // Legacy numeric path: faces_to_remove 0-based indices → FFI.
-                let shape = self.get_shape(*target)?;
-                let face_indices: Vec<u32> = faces_to_remove.iter().map(|&i| i as u32).collect();
-                ffi::ffi::shell_shape(shape, th, &face_indices)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Scale { target, factor } => {
                 let shape = self.get_shape(*target)?;
@@ -2902,8 +2928,9 @@ impl OcctKernel {
                         "scale factor must be finite and non-zero, got {factor}"
                     )));
                 }
-                ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::RotateAround {
                 target,
@@ -2931,10 +2958,11 @@ impl OcctKernel {
                         "rotate_around axis must not be zero-length".into(),
                     ));
                 }
-                ffi::ffi::rotate_around_shape(
+                let built = ffi::ffi::rotate_around_shape(
                     shape, point[0], point[1], point[2], axis[0], axis[1], axis[2], *angle_rad,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::ApplyTransform {
                 target,
@@ -2968,13 +2996,11 @@ impl OcctKernel {
                     ty: translation[1],
                     tz: translation[2],
                 };
-                // Forward to the inherent `apply_transform_to_handle` to
-                // re-use its source-repr inheritance + FFI plumbing. Return
-                // early so we don't fall through to the default `self.store`
-                // path below — the new handle is already registered.
+                // Forward to the inherent `apply_transform_to_handle`, which
+                // stores the result under its source's repr.
                 let new_id = self.apply_transform_to_handle(*target, &t)?;
                 let repr = self.repr_of(new_id);
-                return Ok(GeometryHandle { id: new_id, repr });
+                ArmOutcome::Stored(GeometryHandle { id: new_id, repr })
             }
             GeometryOp::AffineApply {
                 target,
@@ -2990,7 +3016,7 @@ impl OcctKernel {
                         linear, translation
                     )));
                 }
-                ffi::ffi::gtransform_shape(
+                let built = ffi::ffi::gtransform_shape(
                     shape,
                     linear[0][0],
                     linear[0][1],
@@ -3005,7 +3031,8 @@ impl OcctKernel {
                     translation[1],
                     translation[2],
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
                 let shape = self.get_shape(*target)?;
@@ -3020,17 +3047,19 @@ impl OcctKernel {
                         "scale factors must be finite and non-zero, got sx={sx}, sy={sy}, sz={sz}"
                     )));
                 }
-                ffi::ffi::gtransform_shape(
+                let built = ffi::ffi::gtransform_shape(
                     shape, *sx, 0.0, 0.0, 0.0, *sy, 0.0, 0.0, 0.0, *sz, 0.0, 0.0, 0.0,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
                 validate_extrude_distance(dist, "extrude")?;
                 let profile_shape = self.get_shape(*profile)?;
-                ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::Revolve {
                 profile,
@@ -3040,7 +3069,7 @@ impl OcctKernel {
             } => {
                 validate_revolve_params(*axis_origin, *axis_dir, *angle_rad)?;
                 let profile_shape = self.get_shape(*profile)?;
-                ffi::ffi::make_revolve(
+                let built = ffi::ffi::make_revolve(
                     profile_shape,
                     axis_origin[0],
                     axis_origin[1],
@@ -3050,7 +3079,8 @@ impl OcctKernel {
                     axis_dir[2],
                     *angle_rad,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::Sweep { profile, path } => {
                 let profile_shape = self.get_shape(*profile)?;
@@ -3058,11 +3088,7 @@ impl OcctKernel {
                 validate_sweep_pose(profile_shape, path_shape)?;
                 let shape = ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                // Input-dependent result kind, as for SweepGuided below: a wire
-                // profile sweeps to an un-capped SHELL, so the shared `store`
-                // tail's default Solid would be a lie. See `brep_kind_of_shape`.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                ArmOutcome::new(shape, ReprPolicy::Classify)
             }
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
@@ -3083,8 +3109,9 @@ impl OcctKernel {
                 let circle_shape =
                     ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, tx, ty, tz)
                         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                ffi::ffi::make_pipe(&circle_shape, path_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_pipe(&circle_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
@@ -3098,8 +3125,9 @@ impl OcctKernel {
                 let profile_shape = self.get_shape(*profile)?;
                 let prism = ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::ExtrudeInfinite { profile, axis, both } => {
                 let [dx, dy, dz] = *axis;
@@ -3118,8 +3146,9 @@ impl OcctKernel {
                     )));
                 }
                 let profile_shape = self.get_shape(*profile)?;
-                ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             // No Rust-side argument validation, unlike the LoftGuided / Pipe /
             // ExtrudeInfinite neighbours: `make_pipe_shell` in
@@ -3136,15 +3165,7 @@ impl OcctKernel {
                 let guide_shape = self.get_shape(*guide)?;
                 let shape = ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                // The result kind is input-dependent, so it cannot use the
-                // default `store` (which stamps BRepKind::Solid): a face
-                // profile — the only kind a DSL `sweep_guided()` can supply —
-                // is capped into a SOLID, while a wire or vertex profile
-                // leaves an un-capped SHELL that no end cap can close. Stamping
-                // Solid on the latter would make `repr_of()` report a closed
-                // solid for a shape whose `IsClosed` is false, and mislead the
-                // sub-shape classification keyed off the repr.
-                return self.store_classified(shape);
+                ArmOutcome::new(shape, ReprPolicy::Classify)
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3169,12 +3190,7 @@ impl OcctKernel {
                 }
                 let shape = ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                // Input-dependent result kind, exactly as for SweepGuided
-                // above: an all-face section set — the only kind a DSL
-                // `loft_guided()` can supply — is capped into a SOLID, while a
-                // mixed or all-wire set stays an un-capped SHELL. Stamp the
-                // repr the shape actually has rather than the default Solid.
-                return self.store_classified(shape);
+                ArmOutcome::new(shape, ReprPolicy::Classify)
             }
             GeometryOp::LineSegment {
                 x1,
@@ -3188,7 +3204,7 @@ impl OcctKernel {
                     .map_err(GeometryError::OperationFailed)?;
                 let shape = ffi::ffi::make_line_wire(*x1, *y1, *z1, *x2, *y2, *z2)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::Arc {
                 center,
@@ -3216,7 +3232,7 @@ impl OcctKernel {
                     axis[2],
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::Helix {
                 radius,
@@ -3228,7 +3244,7 @@ impl OcctKernel {
                 validate_positive_finite(*height, "helix height")?;
                 let shape = ffi::ffi::make_helix_wire(*radius, *pitch, *height)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::InterpCurve { points } => {
                 if points.len() < 2 {
@@ -3239,7 +3255,7 @@ impl OcctKernel {
                 let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_interp_curve(&coords, points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::BezierCurve { control_points } => {
                 if control_points.len() < 2 {
@@ -3253,7 +3269,7 @@ impl OcctKernel {
                     .collect();
                 let shape = ffi::ffi::make_bezier_curve(&coords, control_points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::NurbsCurve {
                 control_points,
@@ -3301,7 +3317,7 @@ impl OcctKernel {
                     *degree as i32,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::LinearPattern2D {
                 target,
@@ -3343,7 +3359,7 @@ impl OcctKernel {
                         "linear_pattern_2d count2 must be >= 1".into(),
                     ));
                 }
-                ffi::ffi::linear_pattern_2d(
+                let built = ffi::ffi::linear_pattern_2d(
                     shape,
                     direction1[0],
                     direction1[1],
@@ -3356,7 +3372,8 @@ impl OcctKernel {
                     *count2 as u32,
                     sp2,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::ArbitraryPattern { target, transforms } => {
                 let shape = self.get_shape(*target)?;
@@ -3384,8 +3401,9 @@ impl OcctKernel {
                     })
                     .collect();
                 let num_transforms = transforms.len() as u32;
-                ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::new(built, ReprPolicy::Classify)
             }
             GeometryOp::RectangleProfile { width, height } => {
                 let w = extract_length_f64(width, op, "width")?;
@@ -3394,14 +3412,14 @@ impl OcctKernel {
                 validate_positive_finite(h, "rectangle_profile height")?;
                 let shape = ffi::ffi::make_rectangle_face(w, h, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::CircleProfile { radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
                 validate_positive_finite(r, "circle_profile radius")?;
                 let shape = ffi::ffi::make_circle_face(r, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::PolygonProfile { points } => {
                 if points.len() < 3 {
@@ -3413,7 +3431,7 @@ impl OcctKernel {
                 let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_polygon_face(&coords, points.len(), 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::EllipseProfile { semi_major, semi_minor } => {
                 let a = extract_length_f64(semi_major, op, "semi_major")?;
@@ -3422,7 +3440,7 @@ impl OcctKernel {
                 validate_positive_finite(b, "ellipse_profile semi_minor")?;
                 let shape = ffi::ffi::make_ellipse_face(a, b, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::NurbsSurface {
                 control_points,
@@ -3530,7 +3548,7 @@ impl OcctKernel {
                     *v_degree as i32,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::new(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
@@ -3553,7 +3571,10 @@ impl OcctKernel {
                 ));
             }
         };
-        Ok(self.store(shape))
+        match outcome {
+            ArmOutcome::New { shape, policy } => self.store_with_policy(shape, policy),
+            ArmOutcome::Stored(handle) => Ok(handle),
+        }
     }
 
     /// The one op-to-history lowering: execute `op` and return the attribute
@@ -4452,8 +4473,7 @@ impl WarmStartable for OcctKernel {
         // `parent_handle`, untouched on a dirty kernel).
         if !staged.is_empty() {
             // Rebuild repr map: for every successfully staged id, take the
-            // persisted repr if present, falling back to BRepKind::Solid
-            // (matches the implicit default in OcctKernel::store).
+            // persisted repr if present, falling back to BRepKind::Solid.
             // debug_assert guards against a future producer that serializes
             // warm.shapes and warm.reprs out of sync: if reprs is non-empty it
             // must contain an entry for every shape id (the lock-step invariant
@@ -4518,8 +4538,7 @@ impl WarmStartable for OcctKernel {
 impl OcctKernel {
     /// Store a raw OcctShape and return its GeometryHandleId for testing.
     fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
-        let h = self.store(shape);
-        h.id
+        self.store_with_repr(shape, BRepKind::Solid).id
     }
 
     /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
@@ -4648,7 +4667,7 @@ impl OcctKernel {
     pub fn store_circle_face_for_test(&mut self, radius: f64, z: f64) -> GeometryHandleId {
         let shape = ffi::ffi::make_circle_face(radius, z)
             .expect("make_circle_face should succeed in test fixture");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Face);
         h.id
     }
 
@@ -4732,7 +4751,7 @@ impl OcctKernel {
     pub fn store_nonmanifold_compound_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_nonmanifold_compound_for_test()
             .expect("make_nonmanifold_compound_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Compound);
         h.id
     }
 
@@ -4744,7 +4763,7 @@ impl OcctKernel {
     pub fn store_malformed_solid_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_malformed_solid_for_test()
             .expect("make_malformed_solid_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Solid);
         h.id
     }
 
@@ -4757,7 +4776,7 @@ impl OcctKernel {
     pub fn store_nonorientable_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_nonorientable_shell_for_test()
             .expect("make_nonorientable_shell_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Shell);
         h.id
     }
 
@@ -4770,7 +4789,7 @@ impl OcctKernel {
     pub fn store_closed_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_closed_shell_for_test()
             .expect("make_closed_shell_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Shell);
         h.id
     }
 
@@ -4791,7 +4810,7 @@ impl OcctKernel {
     pub fn store_closed_nonmanifold_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_closed_nonmanifold_shell_for_test()
             .expect("make_closed_nonmanifold_shell_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Shell);
         h.id
     }
 
@@ -4802,7 +4821,7 @@ impl OcctKernel {
     /// short-circuit path in `is_watertight`.
     pub fn store_edge_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_edge_for_test().expect("make_edge_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Edge);
         h.id
     }
 
@@ -4813,7 +4832,7 @@ impl OcctKernel {
     /// short-circuit path in `is_watertight`.
     pub fn store_vertex_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_vertex_for_test().expect("make_vertex_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Vertex);
         h.id
     }
 
@@ -4826,7 +4845,7 @@ impl OcctKernel {
     pub fn store_vertex_at_for_test(&mut self, x: f64, y: f64, z: f64) -> GeometryHandleId {
         let shape = ffi::ffi::make_vertex_at_for_test(x, y, z)
             .expect("make_vertex_at_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Vertex);
         h.id
     }
 
@@ -4838,7 +4857,7 @@ impl OcctKernel {
     pub fn store_compsolid_for_test(&mut self) -> GeometryHandleId {
         let shape =
             ffi::ffi::make_compsolid_for_test().expect("make_compsolid_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Compound);
         h.id
     }
 
@@ -4872,8 +4891,9 @@ impl OcctKernel {
         let placed =
             ffi::ffi::apply_test_placement_for_test(src, ax, ay, az, angle_rad, dx, dy, dz)
                 .expect("apply_test_placement_for_test should succeed");
-        let h = self.store(placed);
-        h.id
+        self.store_with_policy(placed, ReprPolicy::Inherit(src_handle))
+            .expect("store_placed_for_test: the source handle has a recorded repr")
+            .id
     }
 
     /// Build a half-space via the OCCT FFI and store it in the kernel, returning
@@ -4896,7 +4916,7 @@ impl OcctKernel {
     ) -> Result<GeometryHandleId, GeometryError> {
         let shape = ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Solid);
         Ok(h.id)
     }
 }
