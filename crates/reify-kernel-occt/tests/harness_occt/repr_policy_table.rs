@@ -21,8 +21,8 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8, TAU};
 use reify_ir::{BRepKind, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, Value};
 use reify_kernel_occt::OcctKernel;
 
-/// One kernel plus every row that did not stamp its expected kind, so a
-/// single run reports the whole table rather than its first mismatch.
+/// One kernel plus every row that failed its expectation, so a single run
+/// reports the whole table rather than its first mismatch.
 struct Table {
     kernel: OcctKernel,
     failures: Vec<String>,
@@ -99,10 +99,33 @@ impl Table {
         }
     }
 
+    /// `op` must fail fillet/chamfer's Solid-input precondition, naming
+    /// `input_kind`, with the same text through both entry points.
+    fn rejected(&mut self, row: &str, op: &GeometryOp, input_kind: BRepKind) {
+        let expected = format!(
+            "local-feature operation requires a BRepKind::Solid input shape, got {input_kind:?}"
+        );
+        let plain = self.kernel.execute(op).map(|h| h.id);
+        let with_history = self.kernel.execute_with_history(op).map(|(h, _)| h.id);
+        let agreed = match (&plain, &with_history) {
+            (Err(plain_err), Err(history_err)) => {
+                matches!(plain_err, GeometryError::OperationFailed(msg) if msg.contains(&expected))
+                    && history_err.to_string() == plain_err.to_string()
+            }
+            _ => false,
+        };
+        if !agreed {
+            self.failures.push(format!(
+                "{row}: both entry points must fail with {expected:?}; \
+                 execute = {plain:?}, execute_with_history = {with_history:?}"
+            ));
+        }
+    }
+
     fn finish(self) {
         assert!(
             self.failures.is_empty(),
-            "{} row(s) stamped the wrong kind:\n  {}",
+            "{} row(s) failed:\n  {}",
             self.failures.len(),
             self.failures.join("\n  ")
         );
@@ -633,5 +656,59 @@ fn a_union_of_disjoint_solids_classifies_as_compound() {
         right: far,
     };
     t.row("Union × disjoint boxes", &union, BRepKind::Compound);
+    t.finish();
+}
+
+/// D5: fillet and chamfer hold ONE Solid-input precondition per op, so the
+/// plain all-edges `execute` path rejects what `execute_with_history` does.
+#[test]
+fn fillet_and_chamfer_reject_a_non_solid_input_on_both_entry_points() {
+    let mut t = Table::new();
+    let i = inputs(&mut t);
+    let moved = t.input(
+        "DISJOINT COMPOUND moved",
+        translate(i.disjoint_compound, 0.0, 0.0, 0.01),
+    );
+    let sheet = t.input(
+        "extruded WIRE",
+        GeometryOp::Extrude {
+            profile: i.wire,
+            distance: Value::length(0.01),
+        },
+    );
+    let fillet = |target| GeometryOp::Fillet {
+        target,
+        edges: vec![],
+        radius: Value::length(0.001),
+    };
+    let cases = [
+        (
+            "Fillet all-edges × DISJOINT COMPOUND",
+            fillet(i.disjoint_compound),
+            BRepKind::Compound,
+        ),
+        (
+            "Chamfer all-edges × DISJOINT COMPOUND",
+            GeometryOp::Chamfer {
+                target: i.disjoint_compound,
+                edges: vec![],
+                distance: Value::length(0.001),
+            },
+            BRepKind::Compound,
+        ),
+        (
+            "Fillet all-edges × translated DISJOINT COMPOUND",
+            fillet(moved),
+            BRepKind::Compound,
+        ),
+        (
+            "Fillet all-edges × extruded WIRE",
+            fillet(sheet),
+            BRepKind::Shell,
+        ),
+    ];
+    for (row, op, input_kind) in cases {
+        t.rejected(row, &op, input_kind);
+    }
     t.finish();
 }
