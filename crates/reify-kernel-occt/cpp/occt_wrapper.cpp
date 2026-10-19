@@ -2652,10 +2652,10 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
             // A present-but-empty selection must never silently fall through to
             // the all-edges behaviour (the anti-zero-edges contract is enforced
             // in eval; this is defense-in-depth for direct kernel callers). The
-            // all-edges path is `fillet_all_edges`, not this function.
+            // all-edges path is `make_fillet_with_history`, not this function.
             throw std::runtime_error(
                 "make_fillet_edges_with_history: edge_indices must be non-empty "
-                "(the all-edges path uses fillet_all_edges)");
+                "(the all-edges path uses make_fillet_with_history)");
         }
         return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
             // Build the canonical 1-based edge map. TopExp::MapShapes is
@@ -2719,10 +2719,10 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
             // A present-but-empty selection must never silently fall through to
             // the all-edges behaviour (the anti-zero-edges contract is enforced
             // in eval; this is defense-in-depth for direct kernel callers). The
-            // all-edges path is `chamfer_all_edges`, not this function.
+            // all-edges path is `make_chamfer_with_history`, not this function.
             throw std::runtime_error(
                 "make_chamfer_edges_with_history: edge_indices must be non-empty "
-                "(the all-edges path uses chamfer_all_edges)");
+                "(the all-edges path uses make_chamfer_with_history)");
         }
         return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
             // Build the canonical 1-based edge map. TopExp::MapShapes is
@@ -2853,40 +2853,6 @@ rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHi
 }
 uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history) {
     return history.silent_drop_count;
-}
-
-// --- Modifications ---
-
-std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius) {
-    return wrap_occt_call("fillet_all_edges", [&]() {
-        BRepFilletAPI_MakeFillet fillet(shape.shape);
-        for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
-            fillet.Add(radius, TopoDS::Edge(ex.Current()));
-        }
-        fillet.Build();
-        if (!fillet.IsDone()) {
-            throw std::runtime_error("BRepFilletAPI_MakeFillet failed");
-        }
-        auto result = std::make_unique<OcctShape>();
-        result->shape = fillet.Shape();
-        return result;
-    });
-}
-
-std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance) {
-    return wrap_occt_call("chamfer_all_edges", [&]() {
-        BRepFilletAPI_MakeChamfer chamfer(shape.shape);
-        for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
-            chamfer.Add(distance, TopoDS::Edge(ex.Current()));
-        }
-        chamfer.Build();
-        if (!chamfer.IsDone()) {
-            throw std::runtime_error("BRepFilletAPI_MakeChamfer failed");
-        }
-        auto result = std::make_unique<OcctShape>();
-        result->shape = chamfer.Shape();
-        return result;
-    });
 }
 
 // --- Transforms ---

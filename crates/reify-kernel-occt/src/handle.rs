@@ -153,7 +153,7 @@ enum OcctRequest {
     /// ONLY the selected `edges` of `shape` with the given `radius`, capturing
     /// Modified/Generated/Deleted records. Mirrors `FilletWithHistory` but
     /// carries the curated edge subset. An empty `edges` vector is rejected by
-    /// the kernel — the all-edges path is `FilletWithHistory` / `fillet_all_edges`.
+    /// the kernel — the all-edges path is `FilletWithHistory`.
     FilletEdgesWithHistory {
         shape: GeometryHandleId,
         radius: f64,
@@ -175,8 +175,7 @@ enum OcctRequest {
     /// to ONLY the selected `edges` of `shape` with the given `distance`,
     /// capturing Modified/Generated/Deleted records. Mirrors `ChamferWithHistory`
     /// but carries the curated edge subset. An empty `edges` vector is rejected
-    /// by the kernel — the all-edges path is `ChamferWithHistory` /
-    /// `chamfer_all_edges`.
+    /// by the kernel — the all-edges path is `ChamferWithHistory`.
     ChamferEdgesWithHistory {
         shape: GeometryHandleId,
         distance: f64,
@@ -707,7 +706,7 @@ impl OcctKernelHandle {
     /// emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::fillet_with_history`] across the kernel-thread
-    /// channel. Result handle is registered with `BRepKind::Solid`.
+    /// channel.
     ///
     /// # Panics
     ///
@@ -736,9 +735,8 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::fillet_edges_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`. An empty `edges` slice is rejected — the all-edges
-    /// path is [`Self::fillet_with_history`].
+    /// kernel-thread channel. An empty `edges` slice is rejected — the
+    /// all-edges path is [`Self::fillet_with_history`].
     ///
     /// # Panics
     ///
@@ -770,7 +768,7 @@ impl OcctKernelHandle {
     /// emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::chamfer_with_history`] across the kernel-thread
-    /// channel. Result handle is registered with `BRepKind::Solid`.
+    /// channel.
     ///
     /// # Panics
     ///
@@ -799,9 +797,8 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::chamfer_edges_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`. An empty `edges` slice is rejected — the all-edges
-    /// path is [`Self::chamfer_with_history`].
+    /// kernel-thread channel. An empty `edges` slice is rejected — the
+    /// all-edges path is [`Self::chamfer_with_history`].
     ///
     /// # Panics
     ///
@@ -833,7 +830,7 @@ impl OcctKernelHandle {
     /// (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::chamfer_asymmetric_edges_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with `BRepKind::Solid`.
+    /// kernel-thread channel.
     /// An empty `edges` slice means ALL edges (back-compat); both `d1` and `d2`
     /// must be finite positive.
     ///

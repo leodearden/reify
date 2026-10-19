@@ -1703,30 +1703,17 @@ impl OcctKernel {
         E: std::fmt::Display,
     {
         // DEFENSE-IN-DEPTH (task 2821 / esc-2655-26 #4): `BRepFilletAPI_MakeFillet`
-        // and `BRepFilletAPI_MakeChamfer` iterate parent edges of a Solid; only a
-        // Solid input has a well-defined edge map AND produces a single-solid result.
-        // Passing a Face / Edge / Wire / Shell / Compound would either crash inside
-        // OCCT or silently produce a misclassified result.  Guard up-front so both
-        // `fillet_with_history` and `chamfer_with_history` receive the check for free.
+        // and `BRepFilletAPI_MakeChamfer` iterate parent edges of ONE solid; a
+        // Face / Edge / Wire / Shell / Compound input would either fail inside
+        // OCCT or fillet a multi-body aggregate. The result is Classify-stamped.
         //
-        // REACH (task 7054 amendment): this is the shared body of the ALL-edge
-        // variants (`fillet_with_history`, `chamfer_with_history`) AND the
-        // curated-edge ones (`fillet_edges_with_history`,
-        // `chamfer_edges_with_history`, `chamfer_asymmetric_edges_with_history`),
-        // so it is the guard the designer-facing `fillet(body, edges_at_height(..), r)`
-        // idiom hits. Task 7054 made the binary-boolean arms stamp the TRUE repr
-        // instead of an unconditional `BRepKind::Solid`, which means a
-        // `union(a, b)` of DISJOINT operands now classifies as `BRepKind::Compound`
-        // (a COMPSOLID underneath) and is REJECTED here where it previously fell
-        // through on the strength of a false Solid stamp. That is deliberate, not
-        // incidental: the n-ary `fuse_all` path has classified from the real shape
-        // since task 5213, so `fillet(pattern(...))` over disjoint instances
-        // already errored the same way — the binary path now merely agrees with
-        // it, and the alternative is handing a multi-body aggregate to an API that
-        // assumes one. `apply_transform_to_handle` propagates the repr, so
-        // `fillet(translate(union(a, b)), ...)` is rejected too. Pinned by
-        // `curated_fillet_over_a_disjoint_fuse_is_rejected_as_non_solid` in
-        // `boolean_result_normalization_integration.rs`.
+        // REACH: every fillet/chamfer entry point — `execute`'s all-edges and
+        // curated arms and each `*_with_history` variant — runs through this one
+        // guard. A disjoint `union(a, b)` classifies as `BRepKind::Compound`, and
+        // a transform inherits its input's repr (`ReprPolicy::Inherit`), so
+        // `fillet(translate(union(a, b)))` is rejected like `fillet(union(a, b))`.
+        // Pinned by `repr_policy_table.rs`'s D5 block and
+        // `occt_repr_policy_fixtures_e2e.rs`.
         match self.repr_of(shape_id) {
             Some(BRepKind::Solid) => {}
             Some(other) => {
@@ -1751,20 +1738,6 @@ impl OcctKernel {
         };
         let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
-    }
-
-    /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
-    /// given `radius`, recording no history. `radius` must be a finite,
-    /// strictly positive number.
-    fn fillet_all_edges(
-        &mut self,
-        shape_id: GeometryHandleId,
-        radius: f64,
-    ) -> Result<GeometryHandle, GeometryError> {
-        validate_positive_finite(radius, "fillet radius")?;
-        let filleted = ffi::ffi::fillet_all_edges(self.get_shape(shape_id)?, radius)
-            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        self.store_with_policy(filleted, ReprPolicy::Classify)
     }
 
     /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
@@ -1798,8 +1771,8 @@ impl OcctKernel {
     /// `extract_edges` first. Each handle is mapped to its 0-based position in
     /// the parent's canonical edge enumeration and passed to the kernel, which
     /// applies the fillet to exactly those edges. An empty selection is rejected
-    /// up-front — the all-edges path is [`Self::fillet_with_history`] /
-    /// `fillet_all_edges`, never this method silently falling through.
+    /// up-front — the all-edges path is [`Self::fillet_with_history`], never
+    /// this method silently falling through.
     ///
     /// `radius` must be finite and strictly positive. `parent_index` in every
     /// record is `0`.
@@ -1816,7 +1789,7 @@ impl OcctKernel {
         if edges.is_empty() {
             return Err(GeometryError::OperationFailed(
                 "fillet_edges_with_history: edge selection must be non-empty \
-                 (the all-edges path is fillet_with_history / fillet_all_edges)"
+                 (the all-edges path is fillet_with_history)"
                     .into(),
             ));
         }
@@ -1969,20 +1942,6 @@ impl OcctKernel {
     }
 
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
-    /// given `distance`, recording no history. `distance` must be a finite,
-    /// strictly positive number.
-    fn chamfer_all_edges(
-        &mut self,
-        shape_id: GeometryHandleId,
-        distance: f64,
-    ) -> Result<GeometryHandle, GeometryError> {
-        validate_positive_finite(distance, "chamfer distance")?;
-        let chamfered = ffi::ffi::chamfer_all_edges(self.get_shape(shape_id)?, distance)
-            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        self.store_with_policy(chamfered, ReprPolicy::Classify)
-    }
-
-    /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
@@ -2012,8 +1971,7 @@ impl OcctKernel {
     ///
     /// Curated edge-selection seam (task 4185, β). The persistent-naming history
     /// seam is preserved identically to the all-edges path. An empty `edges`
-    /// slice is rejected — the all-edges path is `chamfer_with_history` /
-    /// `chamfer_all_edges`.
+    /// slice is rejected — the all-edges path is `chamfer_with_history`.
     pub fn chamfer_edges_with_history(
         &mut self,
         shape_id: GeometryHandleId,
@@ -2024,7 +1982,7 @@ impl OcctKernel {
         if edges.is_empty() {
             return Err(GeometryError::OperationFailed(
                 "chamfer_edges_with_history: edge selection must be non-empty \
-                 (the all-edges path is chamfer_with_history / chamfer_all_edges)"
+                 (the all-edges path is chamfer_with_history)"
                     .into(),
             ));
         }
@@ -2638,10 +2596,10 @@ impl OcctKernel {
                 radius,
             } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                // Empty `edges` = all edges (2-arg back-compat). The curated
-                // primitive's history is not surfaced through execute().
+                // Empty `edges` = all edges (2-arg back-compat). Neither
+                // primitive's history is surfaced through execute().
                 let handle = if edges.is_empty() {
-                    self.fillet_all_edges(*target, r)?
+                    self.fillet_with_history(*target, r)?.0
                 } else {
                     self.fillet_edges_with_history(*target, r, edges)?.0
                 };
@@ -2653,10 +2611,10 @@ impl OcctKernel {
                 distance,
             } => {
                 let d = extract_length_f64(distance, op, "distance")?;
-                // Empty `edges` = all edges (2-arg back-compat). The curated
-                // primitive's history is not surfaced through execute().
+                // Empty `edges` = all edges (2-arg back-compat). Neither
+                // primitive's history is surfaced through execute().
                 let handle = if edges.is_empty() {
-                    self.chamfer_all_edges(*target, d)?
+                    self.chamfer_with_history(*target, d)?.0
                 } else {
                     self.chamfer_edges_with_history(*target, d, edges)?.0
                 };

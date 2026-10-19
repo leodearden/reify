@@ -658,7 +658,7 @@ pub mod ffi {
         /// to the matching index. Eagerly captures the per-parent face/edge
         /// Modified/Generated/Deleted records (the curated path preserves the
         /// persistent-naming seam). Requires a non-empty `edge_indices`; the
-        /// all-edges / empty-selection path keeps using `fillet_all_edges`.
+        /// all-edges / empty-selection path is `make_fillet_with_history`.
         fn make_fillet_edges_with_history(
             shape: &OcctShape,
             radius: f64,
@@ -681,7 +681,7 @@ pub mod ffi {
         /// to the matching index. Eagerly captures the per-parent face/edge
         /// Modified/Generated/Deleted records (the curated path preserves the
         /// persistent-naming seam). Requires a non-empty `edge_indices`; the
-        /// all-edges / empty-selection path keeps using `chamfer_all_edges`.
+        /// all-edges / empty-selection path is `make_chamfer_with_history`.
         fn make_chamfer_edges_with_history(
             shape: &OcctShape,
             distance: f64,
@@ -730,10 +730,6 @@ pub mod ffi {
         /// Count of Modified/Generated children silently dropped because they could
         /// not be found in the result map. Zero for a well-formed fillet/chamfer.
         fn local_feature_op_history_silent_drop_count(history: &LocalFeatureOpHistory) -> u32;
-
-        // --- Modifications ---
-        fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
-        fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Transforms ---
         fn translate_shape(

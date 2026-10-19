@@ -720,7 +720,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_fillet_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `fillet_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_fillet_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
     const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices);
@@ -739,7 +739,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_chamfer_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `chamfer_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_chamfer_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
     const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices);
@@ -777,11 +777,6 @@ rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHi
 /// Count of Modified/Generated children silently dropped because they could
 /// not be found in the result map. Zero for a well-formed fillet/chamfer.
 uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history);
-
-// --- Modifications ---
-
-std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);
-std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance);
 
 // --- Transforms ---
 

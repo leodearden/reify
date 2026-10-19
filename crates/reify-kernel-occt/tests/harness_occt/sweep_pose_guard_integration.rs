@@ -430,10 +430,8 @@ fn sweep_with_history_of_a_wire_profile_is_stamped_shell() {
 ///
 /// Spelled with a CURATED edge selection — the designer-facing
 /// `fillet(body, edges_at_height(..), r)` idiom the gate's own REACH note
-/// names. The 2-arg back-compat spelling (`edges: vec![]`) is deliberately
-/// NOT used here: that arm calls `ffi::fillet_all_edges` directly and
-/// reaches no gate at all, which is a pre-existing gap of its own (#7742)
-/// rather than anything the `BRepKind` stamp can fix.
+/// names. The 2-arg back-compat spelling (`edges: vec![]`) now reaches the
+/// same gate (#7742); `repr_policy_table.rs` pins it there.
 #[test]
 fn filleting_a_shell_swept_result_is_rejected_by_the_local_feature_gate() {
     if !OCCT_AVAILABLE {
