@@ -576,19 +576,16 @@ structure def S : Left + Right {
 ///
 /// When `param x` from TraitA and annotated `let x : Real` from TraitB both appear in
 /// Pass 1 of `check_phase_pre_register_default_types`, TraitA's Param wins the
-/// `register_if_absent` scope slot. TraitB's annotated Let loses and is recorded in
-/// `pass1_skipped` (task 1952 Option A fix). The injection loop then skips the annotated-Let
-/// cell to prevent duplicate `(entity, "x")` cells with different kinds.
+/// `register_if_absent` scope slot. TraitB's annotated Let has its slot taken
+/// (`DefaultDisposition::SlotTaken`), so it is neither advertised nor injected, and there is
+/// no duplicate `(entity, "x")` cell with a different kind.
 ///
-/// Expected: exactly 1 value cell for 'x' (the Param from TraitA). The annotated Let from
-/// TraitB is SUPPRESSED by `pass1_skipped` — the same mechanism that suppresses unannotated
-/// Let losers via `pass2_skipped`.
+/// Expected: exactly 1 value cell for 'x' (the Param from TraitA).
 ///
-/// The test name reflects the post-fix semantics: the annotated Let IS suppressed/discarded.
 /// The reverse direction (annotated Let wins scope, Param loses) is covered symmetrically by
-/// `annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped` (task 2208).
+/// `param_losing_slot_to_annotated_let_is_not_injected`.
 #[test]
-fn annotated_let_suppressed_by_pass1_skipped_when_param_wins_slot() {
+fn annotated_let_losing_slot_to_param_is_not_injected() {
     let source = r#"
 trait ProvidesParamX {
     param x : Real = 1.0
@@ -622,8 +619,8 @@ structure def S : ProvidesParamX + ProvidesLetX {
     assert_eq!(
         x_cells.len(),
         1,
-        "expected 1 'x' value cell (Param from ProvidesParamX; annotated-Let from \
-         ProvidesLetX suppressed by pass1_skipped, task 1952), got {}",
+        "expected 1 'x' value cell (Param from ProvidesParamX; the annotated Let from \
+         ProvidesLetX lost its scope slot), got {}",
         x_cells.len()
     );
 
@@ -674,11 +671,10 @@ structure def T : NeedsX + AlsoNeedsX {
 /// key were just the name, the HashMap might store only the last-written kind (collision),
 /// causing the Param lookup to fail or return a Let type.
 ///
-/// After task 1952's Pass 1 symmetry fix: the annotated Let from ProvidesLetDefault loses
-/// the Pass 1 `register_if_absent` scope race to the Param from ProvidesParamDefault and is
-/// recorded in `pass1_skipped`. The injection loop skips the annotated-Let cell. Only the
-/// Param cell is injected (1 cell, not 2). The Param requirement from NeedsParam is still
-/// satisfied by the `available_defaults` advertisement of ProvidesParamDefault's Param.
+/// The annotated Let from ProvidesLetDefault loses the Pass 1 `register_if_absent` scope
+/// race to the Param from ProvidesParamDefault, so its slot is taken and it is not injected.
+/// Only the Param cell is injected (1 cell, not 2). The Param requirement from NeedsParam is
+/// still satisfied by the `available_defaults` advertisement of ProvidesParamDefault's Param.
 #[test]
 fn param_requirement_still_satisfied_with_let_default_present() {
     let source = r#"
@@ -711,8 +707,8 @@ structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
         errors
     );
 
-    // After task 1952: the annotated-Let loser is suppressed by pass1_skipped.
-    // Only the Param cell is materialized (no duplicate (entity, "x") cells).
+    // The annotated-Let loser is not injected: only the Param cell is materialized
+    // (no duplicate (entity, "x") cells).
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -721,8 +717,8 @@ structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
     assert_eq!(
         x_cells.len(),
         1,
-        "expected 1 'x' cell (Param from ProvidesParamDefault; annotated-Let from \
-         ProvidesLetDefault suppressed by pass1_skipped per task 1952), got {}",
+        "expected 1 'x' cell (Param from ProvidesParamDefault; the annotated Let from \
+         ProvidesLetDefault lost its scope slot), got {}",
         x_cells.len()
     );
     assert_eq!(
@@ -994,11 +990,9 @@ structure def S : FirstParam + SecondParam {
 /// (only Add/Sub do). The subtraction in `x - 1mm > 0mm` is what triggers the
 /// observable type error when x is overwritten from Length to Real.
 ///
-/// Cell shape: exactly ONE Param cell for `x` (from TraitA).  The two-pass
-/// amendment (task 1907) means Pass 2 detects that the Param already claimed
-/// the scope slot and records TraitB's `let x` in `pass2_skipped`, so the
-/// injection loop skips the Let cell — preventing duplicate (entity, member)
-/// pairs for `x`.
+/// Cell shape: exactly ONE Param cell for `x` (from TraitA).  Pass 2 finds that the
+/// Param already claimed the scope slot, so TraitB's `let x` has its slot taken and is
+/// not injected — preventing duplicate (entity, member) pairs for `x`.
 #[test]
 fn cross_kind_pre_registration_preserves_first_type() {
     let source = r#"
@@ -1036,10 +1030,8 @@ structure def S : TraitA + TraitB {
         template.constraints.len()
     );
 
-    // Exactly 1 'x' value cell: the Param from TraitA.  TraitB's `let x = 5.0`
-    // is suppressed by the two-pass amendment: Pass 2 finds the scope slot
-    // already occupied by TraitA's Param and records `x` in `pass2_skipped`,
-    // so the injection loop skips Let-cell emission for `x`.
+    // Exactly 1 'x' value cell: the Param from TraitA.  Pass 2 finds the scope slot
+    // already occupied by TraitA's Param, so TraitB's `let x = 5.0` is not injected.
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -1048,8 +1040,8 @@ structure def S : TraitA + TraitB {
     assert_eq!(
         x_cells.len(),
         1,
-        "expected 1 'x' value cell (Param from TraitA only; Let from TraitB \
-         suppressed by pass2_skipped), got {}",
+        "expected 1 'x' value cell (Param from TraitA only; the Let from TraitB \
+         lost its scope slot), got {}",
         x_cells.len()
     );
     assert_eq!(
@@ -1066,26 +1058,13 @@ structure def S : TraitA + TraitB {
     );
 }
 
-/// Integration test for the Pass 1 ↔ Pass 2 symmetry bug (task 1952).
+/// Annotated-Let counterpart of `cross_kind_pre_registration_preserves_first_type`.
 ///
-/// # Problem
-///
-/// The two-pass pre-register split (task 1907) guards against duplicate cell injection
-/// when an **unannotated** Let loses its `register_if_absent` race to a Param: that case
-/// records the name in `pass2_skipped` and the injection loop skips the Let cell.
-///
-/// The **symmetric case** — a Param claiming the scope slot first, followed by an
-/// **annotated Let** (`DefaultKind::Let { cell_type: Some(_), .. }`) in the same Pass 1
-/// loop — is NOT currently guarded. Both defaults go through Pass 1; the annotated Let's
-/// `register_if_absent` returns `Occupied`, but the name is NOT added to any skip-set.
-/// The injection loop then injects BOTH a Param cell AND an annotated-Let cell for the
-/// same name — two `(entity, "x")` cells.
-///
-/// The `pass1_skipped: HashSet<String>` fix (task 1952 Option A) plugs this gap: the
-/// Pass 1 loop records the annotated-Let loser in `pass1_skipped`, and the injection
-/// loop skips annotated-Let cell emission for names in `pass1_skipped`. This test fails
-/// today at the cell-count assertion (2 cells produced, 1 expected) and passes after the
-/// fix.
+/// There an **unannotated** Let loses its scope slot to a Param in Pass 2 and is not
+/// injected. Here the Let is **annotated** (`DefaultKind::Let { cell_type: Some(_), .. }`),
+/// so it competes for the slot in Pass 1: TraitA's Param claims the slot first, TraitB's
+/// annotated Let has its slot taken (`DefaultDisposition::SlotTaken`), and only one
+/// `(entity, "x")` cell is injected.
 ///
 /// # Fixture
 ///
@@ -1135,13 +1114,9 @@ structure def S : TraitA + TraitB {
         template.constraints.len()
     );
 
-    // Exactly 1 'x' value cell: the Param from TraitA.  TraitB's annotated `let x : Length = 80mm`
-    // is suppressed by `pass1_skipped` (task 1952): Pass 1 finds the scope slot already
-    // occupied by TraitA's Param and records `x` in `pass1_skipped`, so the injection loop
-    // skips annotated-Let cell emission for `x`.
-    //
-    // WITHOUT the fix (pass1_skipped not yet implemented): the injection loop emits BOTH a
-    // Param cell (TraitA) and an annotated-Let cell (TraitB), producing 2 cells.
+    // Exactly 1 'x' value cell: the Param from TraitA.  Pass 1 finds the scope slot
+    // already occupied by TraitA's Param, so TraitB's annotated `let x : Length = 80mm`
+    // is not injected.
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -1150,8 +1125,8 @@ structure def S : TraitA + TraitB {
     assert_eq!(
         x_cells.len(),
         1,
-        "expected 1 'x' value cell (Param from TraitA only; annotated Let from TraitB \
-         suppressed by pass1_skipped), got {}",
+        "expected 1 'x' value cell (Param from TraitA only; the annotated Let from TraitB \
+         lost its scope slot), got {}",
         x_cells.len()
     );
     assert_eq!(
@@ -1168,20 +1143,18 @@ structure def S : TraitA + TraitB {
     );
 }
 
-/// Reverse-order annotated Let + Param: annotated Let wins, Param loser is suppressed.
-///
-/// # Invariant (task 2208)
+/// Reverse-order annotated Let + Param: the annotated Let wins, the Param loser is not
+/// injected.
 ///
 /// When the bound-list order puts the annotated Let *before* the Param
 /// (`S : TraitB + TraitA`), the annotated Let wins the Pass 1 `register_if_absent` race.
-/// The losing Param's name is recorded in `pass1_param_skipped` (task 2208), which guards
-/// both the advertisement map (`check_phase_build_available_defaults_map`) and the injection
-/// loop (`check_phase_inject_defaults`). As a result, exactly **one** `(entity, "x")` cell
-/// is emitted — the annotated-Let winner's cell from TraitB.
+/// The losing Param has its slot taken (`DefaultDisposition::SlotTaken`), so it is neither
+/// advertised (`check_phase_build_available_defaults_map`) nor injected
+/// (`check_phase_inject_defaults`). As a result, exactly **one** `(entity, "x")` cell is
+/// emitted — the annotated-Let winner's cell from TraitB.
 ///
 /// This is the symmetric counterpart of `cross_kind_pre_registration_preserves_first_type_annotated_let`
-/// (which tests the opposite order: Param first, annotated Let second) and mirrors the
-/// fix task 1952 applied for annotated-Let losers.
+/// (which tests the opposite order: Param first, annotated Let second).
 ///
 /// # Fixture
 ///
@@ -1191,7 +1164,7 @@ structure def S : TraitA + TraitB {
 ///
 /// Expected: no errors, exactly 1 `x` cell (the annotated Let from TraitB).
 #[test]
-fn annotated_let_wins_param_loser_is_suppressed_by_pass1_param_skipped() {
+fn param_losing_slot_to_annotated_let_is_not_injected() {
     // Reverse of cross_kind_pre_registration_preserves_first_type_annotated_let:
     // TraitB (annotated Let) is listed first in the bound list.
     let source = r#"
@@ -1216,9 +1189,9 @@ structure def S : TraitB + TraitA {
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    // The Param loser (TraitA's `param x`) is tracked in `pass1_param_skipped` (task 2208).
-    // The injection loop and advertisement map both suppress the phantom Param, so only
-    // the annotated-Let winner (TraitB's `let x : Length = 80mm`) produces a cell.
+    // The Param loser (TraitA's `param x`) lost its scope slot, so it is neither advertised
+    // nor injected, and only the annotated-Let winner (TraitB's `let x : Length = 80mm`)
+    // produces a cell.
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -1228,7 +1201,7 @@ structure def S : TraitB + TraitA {
         x_cells.len(),
         1,
         "expected exactly 1 'x' cell (annotated Let from TraitB wins scope; \
-         Param from TraitA is suppressed by pass1_param_skipped), \
+         Param from TraitA lost its scope slot), \
          got {}",
         x_cells.len()
     );
@@ -1245,7 +1218,7 @@ structure def S : TraitB + TraitA {
         "the 'x' Let cell must carry type Length"
     );
     // At least 1 constraint injected (from TraitA) — confirms TraitA's `constraint x - 1mm > 0mm`
-    // survives Param suppression and is not collateral damage of the pass1_param_skipped fix.
+    // survives the Param losing its slot.
     assert!(
         !template.constraints.is_empty(),
         "expected at least 1 constraint injected from TraitA, got {}",

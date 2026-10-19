@@ -897,8 +897,8 @@ structure S : ReverseOrder {
 ///
 /// `trait T { let a = b + 1mm; let c = a * 2mm }` — `a` depends on `b`, which is
 /// undefined.  Without scope poisoning, Pass 2 of `check_phase_pre_register_default_types`
-/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` in
-/// `pass2_compile_errors` — but does NOT register `a` in scope.  When it then compiles
+/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` as a
+/// compile error — but does NOT register `a` in scope.  When it then compiles
 /// `c`'s expression, the scope lookup for `a` fails and emits a SECOND "unresolved name: a"
 /// cascade on top of the root-cause error.
 ///
