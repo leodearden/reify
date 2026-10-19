@@ -816,8 +816,8 @@ fn row_ii_handle_as_f64_within_baseline() {
 struct HomedRow {
     id: &'static str,
     idents: &'static [&'static str],
-    /// When set, only a use immediately preceded by this text counts.
-    receiver: Option<&'static str>,
+    /// When set, only a use immediately preceded by one of these texts counts.
+    receivers: Option<&'static [&'static str]>,
     /// `(file basename, fn)` pairs where a use is at home.
     homes: &'static [(&'static str, &'static str)],
     baseline: usize,
@@ -851,7 +851,10 @@ fn use_offsets(row: &HomedRow, text: &str) -> Vec<usize> {
         .iter()
         .flat_map(|ident| ident_offsets(text, ident))
         .filter(|&at| !is_declared_name(text, at))
-        .filter(|&at| row.receiver.is_none_or(|r| has_receiver(text, at, r)))
+        .filter(|&at| {
+            row.receivers
+                .is_none_or(|rs| rs.iter().any(|r| has_receiver(text, at, r)))
+        })
         .collect();
     offsets.sort_unstable();
     offsets
@@ -928,29 +931,82 @@ fn assert_homed_row(row: &HomedRow) {
     );
 }
 
-// ── row (iv): sweep-history decode ──────────────────────────────────────────
+// ── row (iv): op-history decode ─────────────────────────────────────────────
 
-const ROW_IV: HomedRow = HomedRow {
+// One row per op-history type. A decode reads the record buffers and then
+// takes the result shape, so a re-inlined decode, whole or partial, names the
+// type's first buffer reader or its shape-taker.
+
+const ROW_IV_BOOLEAN: HomedRow = HomedRow {
     id: "iv",
-    idents: &["sweep_op_history_face_modified"],
-    receiver: None,
+    idents: &[
+        "boolean_op_history_face_modified",
+        "boolean_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_boolean_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_boolean_history",
+};
+
+const ROW_IV_LOCAL_FEATURE: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "local_feature_op_history_face_modified",
+        "local_feature_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_local_feature_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_local_feature_history",
+};
+
+const ROW_IV_SWEEP: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "sweep_op_history_face_modified",
+        "sweep_op_history_take_result_shape",
+    ],
+    receivers: None,
     homes: &[("history_decode.rs", "decode_sweep_history")],
     baseline: 0,
     remedy: "decode through history_decode::decode_sweep_history",
 };
 
+const ROW_IV_LOFT: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "loft_op_history_face_modified",
+        "loft_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_loft_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_loft_history",
+};
+
 #[test]
-fn row_iv_sweep_history_decode_within_baseline() {
-    assert_homed_row(&ROW_IV);
+fn row_iv_op_history_decode_within_baseline() {
+    for row in [
+        &ROW_IV_BOOLEAN,
+        &ROW_IV_LOCAL_FEATURE,
+        &ROW_IV_SWEEP,
+        &ROW_IV_LOFT,
+    ] {
+        assert_homed_row(row);
+    }
 }
 
 // ── row (v): curated-selection membership mapping ───────────────────────────
 
 /// The construct is the in-kernel parent enumeration every membership loop
-/// needs: a `self.extract_*` call outside the extraction facades and the one
-/// mapper. The "does not belong to" message is not counted, as that would pin
-/// wording (γ1, 70628489ca); `curated_selection_membership.rs` holds the
-/// messages equal across entry points.
+/// needs: an `extract_*` call on the kernel itself (`self.`, `Self::` or
+/// `OcctKernel::`) outside the extraction facades and the one mapper. A call
+/// through another binding, such as the handle actor's `kernel.extract_faces`,
+/// is not counted: that is the row's known blind spot. The "does not belong
+/// to" message is not counted either, as that would pin wording (γ1,
+/// 70628489ca); `curated_selection_membership.rs` holds the messages equal
+/// across entry points.
 const ROW_V: HomedRow = HomedRow {
     id: "v",
     idents: &[
@@ -959,7 +1015,7 @@ const ROW_V: HomedRow = HomedRow {
         "extract_vertices",
         "extract_subshapes",
     ],
-    receiver: Some("self."),
+    receivers: Some(&["self.", "Self::", "OcctKernel::"]),
     homes: &[
         ("lib.rs", "extract_edges"),
         ("lib.rs", "extract_faces"),
@@ -980,7 +1036,7 @@ fn row_v_selection_membership_mapping_within_baseline() {
 const ROW_VI: HomedRow = HomedRow {
     id: "vi",
     idents: &["get_edges", "get_faces", "get_vertices"],
-    receiver: None,
+    receivers: None,
     homes: &[("lib.rs", "extract_subshapes")],
     baseline: 0,
     remedy: "enumerate sub-shapes through OcctKernel::extract_subshapes",
@@ -1430,7 +1486,7 @@ fn extrude_with_history(&mut self) -> R {
 }
 "#,
     );
-    let scan = homed_scan(&ROW_IV, "src/lib.rs", copied);
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/lib.rs", copied);
     assert_eq!(
         scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
         vec![3]
@@ -1446,10 +1502,10 @@ pub(crate) fn decode_sweep_history(
 }
 "#,
     );
-    let scan = homed_scan(&ROW_IV, "src/history_decode.rs", homed);
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/history_decode.rs", homed);
     assert!(scan.live.is_empty(), "{scan:?}");
     assert_eq!(
-        unseen_homes(&ROW_IV, &scan.homes_seen),
+        unseen_homes(&ROW_IV_SWEEP, &scan.homes_seen),
         Vec::<String>::new()
     );
 }
@@ -1469,7 +1525,7 @@ mod ffi {
 "#,
     );
     assert_eq!(
-        homed_live_lines(&ROW_IV, "src/ffi.rs", src),
+        homed_live_lines(&ROW_IV_SWEEP, "src/ffi.rs", src),
         Vec::<usize>::new()
     );
 }
@@ -1484,7 +1540,7 @@ const SWEEP_OP_ACCESSORS: Accessors<ffi::SweepOpHistory> = Accessors {
 "#,
     );
     assert_eq!(
-        homed_live_lines(&ROW_IV, "src/history_decode.rs", src),
+        homed_live_lines(&ROW_IV_SWEEP, "src/history_decode.rs", src),
         vec![2]
     );
 }
@@ -1507,7 +1563,7 @@ mod tests {
 "#,
     );
     assert_eq!(
-        homed_live_lines(&ROW_IV, "src/lib.rs", src),
+        homed_live_lines(&ROW_IV_SWEEP, "src/lib.rs", src),
         Vec::<usize>::new()
     );
 }
@@ -1523,7 +1579,7 @@ fn extrude_with_history() {
 "#,
     );
     assert_eq!(
-        homed_live_lines(&ROW_IV, "src/lib.rs", src),
+        homed_live_lines(&ROW_IV_SWEEP, "src/lib.rs", src),
         Vec::<usize>::new()
     );
 }
@@ -1537,10 +1593,10 @@ fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
 }
 "#,
     );
-    let scan = homed_scan(&ROW_IV, "src/lib.rs", src);
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/lib.rs", src);
     assert_eq!(scan.live.len(), 1, "{scan:?}");
     assert_eq!(
-        unseen_homes(&ROW_IV, &scan.homes_seen),
+        unseen_homes(&ROW_IV_SWEEP, &scan.homes_seen),
         vec!["history_decode.rs::decode_sweep_history".to_owned()]
     );
 }
@@ -1554,11 +1610,66 @@ pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
 }
 "#,
     );
-    let scan = homed_scan(&ROW_IV, "src/history_decode.rs", src);
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/history_decode.rs", src);
     assert!(scan.live.is_empty(), "{scan:?}");
     assert_eq!(
-        unseen_homes(&ROW_IV, &scan.homes_seen),
+        unseen_homes(&ROW_IV_SWEEP, &scan.homes_seen),
         vec!["history_decode.rs::decode_sweep_history".to_owned()]
+    );
+}
+
+#[test]
+fn row_iv_counts_a_readers_table_in_a_closure_of_its_decoder_as_at_home() {
+    let src = snippet(
+        r#"
+pub(crate) fn decode_loft_history(
+    history: cxx::UniquePtr<ffi::LoftOpHistory>,
+) -> (cxx::UniquePtr<ffi::OcctShape>, LoftOpHistoryRecords) {
+    read_then_take(history, ffi::loft_op_history_take_result_shape, |h| {
+        let buffers = RecordBufferReaders {
+            face_modified: ffi::loft_op_history_face_modified,
+        }
+        .read(h);
+    })
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV_LOFT, "src/history_decode.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV_LOFT, &scan.homes_seen),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn row_iv_flags_a_partial_decode_by_its_shape_taker() {
+    let src = snippet(
+        r#"
+fn run_local_feature_with_history(&mut self) -> R {
+    let edge_deleted = ffi::ffi::local_feature_op_history_edge_deleted(&history);
+    let shape = ffi::ffi::local_feature_op_history_take_result_shape(history.pin_mut());
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_LOCAL_FEATURE, "src/lib.rs", src),
+        vec![3]
+    );
+}
+
+#[test]
+fn row_iv_pairs_each_history_type_with_its_own_decoder() {
+    let src = snippet(
+        r#"
+pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
+    let boolean = ffi::boolean_op_history_face_modified(&other);
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_BOOLEAN, "src/history_decode.rs", src),
+        vec![2]
     );
 }
 
@@ -1627,15 +1738,20 @@ pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
 // ── self-tests: row (v) ─────────────────────────────────────────────────────
 
 #[test]
-fn row_v_counts_self_enumerations_only() {
+fn row_v_counts_kernel_enumerations_only() {
     let kernel_side = snippet(
         r#"
 pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
     let parent_faces = self.extract_faces(target).map_err(fail)?;
+    let parent_edges = Self::extract_edges(self, target).map_err(fail)?;
+    let parent_vertices = crate::OcctKernel::extract_vertices(self, target).map_err(fail)?;
 }
 "#,
     );
-    assert_eq!(homed_live_lines(&ROW_V, "src/lib.rs", kernel_side), vec![2]);
+    assert_eq!(
+        homed_live_lines(&ROW_V, "src/lib.rs", kernel_side),
+        vec![2, 3, 4]
+    );
 
     let handle_forwards = snippet(
         r#"
