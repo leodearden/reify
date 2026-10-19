@@ -417,6 +417,18 @@ assert "--list includes scripts/lib_event_log.sh (transitive dep; must be in man
     bash -c 'bash "$1" --list | grep -qxF "scripts/lib_event_log.sh"' \
     _ "$GUARD_SH"
 
+# gui/src/__tests__/reifyGrammarCorpus.expected-clean.json is the GUI grammar
+# ledger's pin set (S18 PRD D6), read by the vitest ledger and PG-DRIFT-GUI
+# today and by the S18 planner from β on. It is data, so neither auto-derivation
+# clause can reach it; the row keeps a JSON-only diff off the merge worker's
+# config fast path. The guard checks set membership of the path string only.
+assert_exit "POSITIVE: gui/src/__tests__/reifyGrammarCorpus.expected-clean.json is load-bearing (GUI grammar-pin data; manifest row; exit 0)" 0 \
+    run_guard requires-full-gate gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
+
+assert "--list includes gui/src/__tests__/reifyGrammarCorpus.expected-clean.json (static manifest row)" \
+    bash -c 'bash "$1" --list | grep -qxF "gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"' \
+    _ "$GUARD_SH"
+
 # SYNTHETIC self-healing: build a throwaway verify.sh copy with a fake source
 # line appended, prove the classifier auto-covers the new lib via
 # REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — no manifest edit needed.
