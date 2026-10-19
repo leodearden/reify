@@ -210,7 +210,7 @@ pub fn __infer_mul_div_result_for_parity_test(
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-// G-allow: task #5992 (done) — test-support-gated parity shim, consumed by
+// G-allow: test-support-gated parity shim (feature = "test-support"), consumed by
 // tests/harness_langcore/overload_resolution_compile_eval_parity.rs
 // (compile-vs-eval overload-resolution parity).
 pub enum ParityOverloadVerdict {
@@ -241,7 +241,7 @@ pub enum ParityOverloadVerdict {
 /// `cfg(test)` for in-crate tests); not part of the released public API.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #5992 (done) — test-support-gated parity shim, consumed by
+// G-allow: test-support-gated parity shim (feature = "test-support"), consumed by
 // tests/harness_langcore/overload_resolution_compile_eval_parity.rs
 // (compile-vs-eval overload-resolution parity).
 pub fn __resolve_function_overload_for_parity_test(
