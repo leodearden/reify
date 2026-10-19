@@ -428,7 +428,7 @@ pub mod ffi {
         /// (task 7054).
         ///
         /// Consequence for the Rust side: stamp the stored `BRepKind` via
-        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// `brep_kind_of_shape` (which reads `body_type_name`), never a
         /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
         /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -1437,19 +1437,10 @@ pub mod ffi {
         /// `Build()`).
         fn parallel_bop_build_count() -> u64;
 
-        /// Return the canonical name of `shape`'s top-level TopAbs shape type
-        /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
-        /// every boolean path uses to stamp the right `BRepKind` instead of
-        /// assuming Solid:
-        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
-        ///     (disjoint), or the sole input's kind (identity), task 5213;
-        ///   - all six binary boolean arms — the three plain
-        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
-        ///     three `boolean_*_with_history` variants, task 7054. Since every
-        ///     boolean result is normalized, a disjoint fuse really is a
-        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
-        fn shape_type_name(shape: &OcctShape) -> Result<String>;
+        /// The TopAbs name of `shape`'s body type after the single-body unwrap,
+        /// so OCCT's 1-solid COMPOUND wrappers from fillet, chamfer, draft and
+        /// thicken name "Solid". Backs `brep_kind_of_shape`; errs on a null shape.
+        fn body_type_name(shape: &OcctShape) -> Result<String>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 

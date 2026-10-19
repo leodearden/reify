@@ -533,14 +533,12 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
-/// Map an `OcctShape`'s top-level TopAbs type to its [`BRepKind`]: `SOLID` →
-/// [`BRepKind::Solid`]; the multi-body aggregates `COMPSOLID` and `COMPOUND` →
-/// [`BRepKind::Compound`]; `SHELL`/`WIRE`/`FACE`/`EDGE`/`VERTEX` → the
-/// same-named kind; anything unrecognized → [`BRepKind::Solid`] (`store`'s
-/// default).
+/// Classify an `OcctShape` by its BODY type: the top-level TopAbs type after
+/// the single-body unwrap, so a 1-solid COMPOUND wrapper is
+/// [`BRepKind::Solid`]. A type with no [`BRepKind`] is an error, never Solid.
 #[cfg(has_occt)]
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
-    let name = ffi::ffi::shape_type_name(shape)
+    let name = ffi::ffi::body_type_name(shape)
         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
     brep_kind_of_type_name(&name)
 }
@@ -556,7 +554,11 @@ fn brep_kind_of_type_name(name: &str) -> Result<BRepKind, GeometryError> {
         "Face" => BRepKind::Face,
         "Edge" => BRepKind::Edge,
         "Vertex" => BRepKind::Vertex,
-        _ => BRepKind::Solid,
+        other => {
+            return Err(GeometryError::OperationFailed(format!(
+                "cannot classify OCCT shape type {other:?} as a BRepKind"
+            )));
+        }
     })
 }
 

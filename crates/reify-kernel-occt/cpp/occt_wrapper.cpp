@@ -273,7 +273,7 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
 
 /// Canonical display name for a `TopAbs_ShapeEnum` ("Solid", "Face", …, or
 /// "Shape" for the abstract fallback). Single source for both the
-/// `shape_type_name` FFI entry point and error messages built in this file.
+/// `body_type_name` FFI entry point and error messages built in this file.
 static const char* topabs_name(TopAbs_ShapeEnum type) {
     switch (type) {
         case TopAbs_COMPOUND:  return "Compound";
@@ -1313,17 +1313,15 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
     });
 }
 
-// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
-// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-// "Vertex", or "Shape" for the abstract fallback).  Lets the Rust side stamp
-// the correct BRepKind on a fuse/pattern result instead of assuming Solid: a
-// single-pass fuse yields a SOLID (overlapping inputs), a COMPSOLID (disjoint
-// inputs, rewrapped by fuse_shape_list), or — in the 1-element identity path —
-// the sole input shape unchanged, which may be any kind (task 5213 amendment).
-rust::String shape_type_name(const OcctShape& shape) {
-    return wrap_occt_call("shape_type_name", [&]() -> rust::String {
-        // Delegates to topabs_name so the enum -> name table exists once.
-        return rust::String(topabs_name(shape.shape.ShapeType()));
+// The TopAbs name of `shape`'s BODY type: the top-level type after
+// unwrap_boolean_compound's single-body rule, so OCCT's 1-solid COMPOUND
+// wrappers (fillet, chamfer, draft, thicken) name "Solid".
+rust::String body_type_name(const OcctShape& shape) {
+    return wrap_occt_call("body_type_name", [&]() -> rust::String {
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("cannot name the body type of a null shape");
+        }
+        return rust::String(topabs_name(unwrap_boolean_compound(shape.shape).ShapeType()));
     });
 }
 

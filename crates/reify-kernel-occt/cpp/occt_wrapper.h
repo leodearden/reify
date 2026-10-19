@@ -214,11 +214,9 @@ bool boolean_run_parallel();
 /// reported RunParallel() afterwards: what OCCT ran, not what was requested.
 uint64_t parallel_bop_build_count();
 
-/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
-/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
-/// fuse/pattern result's real type rather than assuming Solid (task 5213).
-rust::String shape_type_name(const OcctShape& shape);
+/// The TopAbs name of `shape`'s body type after the single-body unwrap, so
+/// OCCT's 1-solid COMPOUND wrappers name "Solid"; throws on a null shape.
+rust::String body_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
@@ -233,7 +231,7 @@ rust::String shape_type_name(const OcctShape& shape);
 /// the topology-preserving type the result actually is — one solid → bare
 /// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
 /// Callers must therefore classify the stored repr from the real shape (see
-/// `shape_type_name`) rather than assuming Solid.
+/// `body_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
