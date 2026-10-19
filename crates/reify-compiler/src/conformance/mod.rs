@@ -177,9 +177,9 @@ pub(crate) fn check_trait_conformance(
         );
 
     // Build a combined name→type view for phases that only need to know whether the
-    // structure declares a member by name (conflict-suppression, injection-skip, scope
-    // pre-registration). Phases that must distinguish param from let members use
-    // `structure_param_members` / `structure_let_members` directly (phase 5).
+    // structure declares a member by name (conflict-suppression, scope pre-registration,
+    // which records the overrides injection skips). Phases that must distinguish param from
+    // let members use `structure_param_members` / `structure_let_members` directly (phase 5).
     //
     // If a name appears in both maps (no upstream diagnostic prevents it today),
     // the param entry wins: let-first chain means param entries overwrite let entries.
@@ -289,7 +289,6 @@ pub(crate) fn check_trait_conformance(
     check_phase_inject_defaults(
         &ctx,
         structure,
-        &structure_all_members,
         &structure_constraint_labels,
         pre,
         scope,
@@ -3661,7 +3660,8 @@ mod tests {
     /// the helper must return the inferred expression's result_type. This is the common
     /// path for unannotated let defaults that passed Pass 2 compilation successfully.
     /// After task 1914 suggestion #1, this is the only non-defensive path for
-    /// unannotated lets: names in `pass2_compile_errors` never reach this helper.
+    /// unannotated lets: a let recorded as `DefaultDisposition::CompileError` never reaches
+    /// this helper.
     #[test]
     fn resolve_let_advertised_type_uses_inferred_when_no_annotation() {
         let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
