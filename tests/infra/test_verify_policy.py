@@ -937,5 +937,63 @@ class TestPrioDegradedTools(unittest.TestCase):
                     self.assertEqual(warnings, [resolved["prio_warning"]] if resolved["prio_warning"] else [])
 
 
+INFRA_MAP = REPO_ROOT / "scripts" / "verify-pipeline-infra-tests.txt"
+PACKAGE_DIR = REPO_ROOT / "scripts" / "reify_verify"
+PIPELINE_GUARD = REPO_ROOT / "scripts" / "verify-pipeline-guard.sh"
+VERIFY_GLOB = "tests/infra/test_verify_*.sh"
+POLICY_WRAPPER = "tests/infra/test_verify_policy.sh"
+
+
+def infra_map_rows():
+    """The map's active rows: both whitespace-separated fields non-empty."""
+    rows = set()
+    for line in INFRA_MAP.read_text(encoding="utf-8").splitlines():
+        if re.match(r"\s*#", line):
+            continue
+        fields = line.split()
+        if len(fields) >= 2:
+            rows.add((fields[0], fields[1]))
+    return rows
+
+
+def package_modules():
+    modules = [f"scripts/reify_verify/{path.name}" for path in sorted(PACKAGE_DIR.glob("*.py"))]
+    return [*modules, "scripts/verify.py"]
+
+
+class TestInfraMapRegistration(unittest.TestCase):
+    """Moving logic out of verify.sh never narrows task-tier infra selection (D14)."""
+
+    def assert_row(self, rows, artifact, glob):
+        self.assertTrue((artifact, glob) in rows, f"no map row: {artifact}    {glob}")
+
+    def test_every_package_module_selects_both_globs(self):
+        rows = infra_map_rows()
+        modules = package_modules()
+        self.assertGreater(len(modules), 1)
+        for module in modules:
+            with self.subTest(module=module):
+                self.assert_row(rows, module, VERIFY_GLOB)
+                self.assert_row(rows, module, POLICY_WRAPPER)
+
+    def test_this_suites_own_files_select_its_wrapper(self):
+        rows = infra_map_rows()
+        for path in (
+            "tests/infra/test_verify_policy.py",
+            "tests/infra/tree_under_test.py",
+            "docs/notes/verify-pipeline-knobs.md",
+        ):
+            with self.subTest(path=path):
+                self.assert_row(rows, path, POLICY_WRAPPER)
+
+    def test_the_guard_counts_every_module_as_registered(self):
+        for module in package_modules():
+            with self.subTest(module=module):
+                outcome = _run(
+                    ["bash", str(PIPELINE_GUARD), "is-registered", module], base_env(), REPO_ROOT
+                )
+                self.assertEqual(outcome.returncode, 0, outcome.stdout + outcome.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
