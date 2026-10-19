@@ -195,6 +195,77 @@ pub fn __infer_mul_div_result_for_parity_test(
     type_compat::infer_mul_div_result(op, left, right)
 }
 
+/// Test-visible mirror of the `pub(crate)` `OverloadResolution` discriminants.
+///
+/// Carries a positional INDEX into the caller's `functions` slice rather than
+/// a `&CompiledFunction`, so the `pub(crate)` `OverloadResolution` type is not
+/// re-exported and no lifetime plumbing crosses the crate boundary. The index
+/// also gives the parity test its SELECTION-IDENTITY axis for free: eval-side
+/// `find_matching_compiled_function` returns a `&CompiledFunction`, which maps
+/// back to the same coordinate system by pointer-identity position lookup.
+///
+/// # Stability
+///
+/// This type is intentionally named for a single test consumer and is **not
+/// part of the public API**. It may be removed or changed at any time. Gated
+/// behind `feature = "test-support"` (or `cfg(test)` for in-crate tests).
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+// G-allow: test-support-gated parity shim (feature = "test-support"), consumed by
+// tests/harness_langcore/overload_resolution_compile_eval_parity.rs
+// (compile-vs-eval overload-resolution parity).
+pub enum ParityOverloadVerdict {
+    /// Exactly one candidate matched; `index` is its position in `functions`.
+    Resolved { index: usize },
+    /// No function with this name exists at all.
+    NoUserFunctions,
+    /// Same-name candidates exist but none matched the given arg types.
+    NoMatch,
+    /// Multiple candidates matched; `count` is how many.
+    Ambiguous { count: usize },
+}
+
+/// Expose `resolve_function_overload` to the compile-vs-eval
+/// overload-resolution parity integration test without widening the
+/// compiler's public API.
+///
+/// Both `resolve_function_overload` and its `OverloadResolution` return type
+/// are `pub(crate)`, so an integration test (a separate external crate)
+/// cannot reach them. This shim calls the resolver and projects its verdict
+/// onto the index-carrying [`ParityOverloadVerdict`].
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: test-support-gated parity shim (feature = "test-support"), consumed by
+// tests/harness_langcore/overload_resolution_compile_eval_parity.rs
+// (compile-vs-eval overload-resolution parity).
+pub fn __resolve_function_overload_for_parity_test(
+    name: &str,
+    arg_types: &[reify_core::Type],
+    functions: &[reify_ir::CompiledFunction],
+) -> ParityOverloadVerdict {
+    match type_compat::resolve_function_overload(name, arg_types, functions) {
+        type_compat::OverloadResolution::Resolved(f) => ParityOverloadVerdict::Resolved {
+            index: functions
+                .iter()
+                .position(|c| std::ptr::eq(c, f))
+                .expect("resolved candidate must be an element of `functions`"),
+        },
+        type_compat::OverloadResolution::NoUserFunctions => ParityOverloadVerdict::NoUserFunctions,
+        type_compat::OverloadResolution::NoMatch(_) => ParityOverloadVerdict::NoMatch,
+        type_compat::OverloadResolution::Ambiguous(v) => {
+            ParityOverloadVerdict::Ambiguous { count: v.len() }
+        }
+    }
+}
+
 /// Expose the compiler's single builtin-signature-registry entry point to the
 /// registry seam test without widening the compiler's public API.
 ///
