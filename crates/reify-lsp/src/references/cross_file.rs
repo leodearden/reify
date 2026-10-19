@@ -561,7 +561,7 @@ pub fn prepare_rename_cross_file(
 ///
 /// Two refusals keep the multi-file result re-parse-clean (Invariant 5):
 /// `new_name` must be a legal Reify identifier ([`is_valid_rename_identifier`] —
-/// rejecting empty/whitespace/punctuation/digit-leading/reserved-keyword), and
+/// rejecting empty/whitespace/punctuation/digit-leading/rename-refused keyword), and
 /// the cursor must resolve to a renameable home. Renameability is gated through
 /// [`prepare_rename_cross_file`] so prepare and rename never disagree (value
 /// members keep single-file semantics; declaration homes admit only the kinds
