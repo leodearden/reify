@@ -26,7 +26,7 @@
 //! **Scenario A** (`poisoned_structure_let_preserves_root_cause_error`):
 //! A structure claiming trait `HasX` declares its own annotated
 //! `let x : Length = self.unsupported`.  The entity pass produces `Type::Error`
-//! + an "unknown member" error from `expr.rs:~724`.  `HasX` is empty: a
+//! and an "unknown member" error from `expr.rs:~724`.  `HasX` is empty: a
 //! value-less `let x : Length` is not trait syntax, so there is no requirement
 //! for the conformance pass to compare against, and the anti-cascade half (b)
 //! has nothing to cascade against.  The invariant pinned is the root-cause half:
