@@ -56,7 +56,7 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// # Precondition: a live [`EnumNameScope`]
 ///
 /// An enum-typed param resolves only while an [`EnumNameScope`] is installed
-/// over the ambient `RESOLUTION_ENUM_NAMES` set; the sole caller,
+/// over the ambient `RESOLUTION_ENUM_NAMES` map; the sole caller,
 /// [`phase_constraint_defs`], installs one across its whole loop (task 6416).
 /// Without it every such param silently stores `ty: None`, which is the defect
 /// 6416 fixed. Why the scope reaches what it does — and what it does NOT reach
@@ -198,14 +198,14 @@ pub(crate) fn phase_constraint_defs(
     // phase_traits (traits_phase.rs:71-79).
     let mut structure_names: Option<HashSet<String>> = None;
 
-    // Ambient enum-name set for constraint-def param type resolution (task
+    // Ambient enum scope for constraint-def param type resolution (task
     // 6416), mirroring entity.rs's struct-param scope and functions.rs's
     // fn-param/return scopes. Held in this binding for the whole loop: it is an
-    // RAII guard, so dropping it early would uninstall the set that
+    // RAII guard, so dropping it early would uninstall the enums that
     // `compile_constraint_def`'s params loop depends on.
     //
     // Built here, once for the whole loop, rather than inside
-    // `compile_constraint_def`: the set is the same for every def in the module,
+    // `compile_constraint_def`: the scope is the same for every def in the module,
     // and constructing it clones every name and type-param list in
     // `ctx.resolution_enums` (prelude ++ local — 38 enums from stdlib alone).
     // Lazily, on the same first-`Declaration::Constraint` trigger as

@@ -19,7 +19,7 @@ thread_local! {
     /// crate (including unit tests). Threading a new argument through all of them
     /// for a narrow fallback would be large churn with no behavioural change at the
     /// many sites that would pass it empty. Instead the resolver reads this ambient
-    /// set, installed (via [`EnumNameScope`]) at exactly four sites, each of which
+    /// map, installed (via [`EnumNameScope`]) at exactly four sites, each of which
     /// has the module's `enum_defs` in scope:
     ///
     ///   * `entity.rs`    — struct-param resolution (task 2998);
@@ -34,7 +34,7 @@ thread_local! {
     /// unaffected — the same param-position scoping precedent as qualified-assoc
     /// resolution (`entity.rs`). Keep this list in sync: `grep -rn
     /// 'EnumNameScope::new' crates/` is the authority.
-    /// Type resolution is single-threaded per module and the set lives only for the
+    /// Type resolution is single-threaded per module and the map lives only for the
     /// lifetime of an `EnumNameScope` guard.
     static RESOLUTION_ENUM_NAMES: RefCell<HashMap<String, Vec<reify_ir::TypeParam>>> =
         RefCell::new(HashMap::new());
@@ -51,8 +51,8 @@ thread_local! {
     /// conformance walker then rejected an `Enum(Fit)` argument against a
     /// "structure type Fit" param.
     ///
-    /// How this differs from [`RESOLUTION_ENUM_NAMES`] — the two sets are
-    /// deliberately separate, not one hoisted set:
+    /// How this differs from [`RESOLUTION_ENUM_NAMES`] — the two are
+    /// deliberately separate, not one hoisted collection:
     /// - **Membership.** This set is MODULE-LOCAL only (`ctx.enum_defs`), whereas
     ///   `RESOLUTION_ENUM_NAMES` is installed from `ctx.resolution_enums` =
     ///   prelude ++ local. A PRELUDE enum must never shadow a LOCAL structure —
@@ -102,6 +102,13 @@ impl EnumNameScope {
     }
 }
 
+impl Drop for EnumNameScope {
+    fn drop(&mut self) {
+        let prev = std::mem::take(&mut self.prev);
+        RESOLUTION_ENUM_NAMES.with(|s| *s.borrow_mut() = prev);
+    }
+}
+
 /// The ambient enum named `name` (see [`RESOLUTION_ENUM_NAMES`]) resolved as an
 /// argument-less annotation, or `None` when no in-scope enum has that name.
 fn resolve_ambient_bare_enum(
@@ -116,17 +123,10 @@ fn resolve_ambient_bare_enum(
     })
 }
 
-impl Drop for EnumNameScope {
-    fn drop(&mut self) {
-        let prev = std::mem::take(&mut self.prev);
-        RESOLUTION_ENUM_NAMES.with(|s| *s.borrow_mut() = prev);
-    }
-}
-
 /// RAII guard that installs an ambient shadowing-enum-name set into
 /// [`RESOLUTION_SHADOWING_ENUM_NAMES`] for its lifetime, restoring the prior set
 /// on drop so nested scopes compose (task #5429). Modelled on [`EnumNameScope`];
-/// see that type and `RESOLUTION_SHADOWING_ENUM_NAMES` for why the two sets are
+/// see that type and `RESOLUTION_SHADOWING_ENUM_NAMES` for why the two are
 /// separate.
 ///
 /// Construct one around a region of type resolution where a MODULE-LOCAL `enum N`
@@ -2140,7 +2140,7 @@ fn resolve_entity_name_with_shadowing(
 /// makes the next namespace a single-site addition instead of two copies that
 /// must be kept in step by hand.
 ///
-/// Enums answer through the ambient `RESOLUTION_ENUM_NAMES` set, so a caller
+/// Enums answer through the ambient `RESOLUTION_ENUM_NAMES` map, so a caller
 /// that cares about them must install an [`EnumNameScope`] first — the same
 /// channel the `_kinded` and alias-body tails read, rather than a second
 /// plumbing axis for the same question.
@@ -2486,7 +2486,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
 /// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
 /// resolves an entity-bodied alias by RECURSING into that same function, so the
 /// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
-/// set is live. [`EnumNameScope`] installs it at four places — struct-param
+/// map is live. [`EnumNameScope`] installs it at four places — struct-param
 /// resolution (`entity.rs`), fn param and fn return resolution (`functions.rs`),
 /// and, since task 6416, constraint-def param resolution (`defs_phase.rs`).
 ///
@@ -3473,7 +3473,7 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
 ///
 /// Enum names are deliberately NOT a field: they travel on the ambient
 /// `RESOLUTION_ENUM_NAMES` thread-local, which the non-parametric `_kinded`
-/// tail already reads for exactly this purpose. Adding a third set here would
+/// tail already reads for exactly this purpose. Adding a third field here would
 /// be a second plumbing axis for the same question.
 ///
 /// Both name sets are EMPTY on the alias-DFS pre-pass path, and that emptiness
@@ -4852,8 +4852,8 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// exists because the two drifted: this guard had no enum arm while the
 /// resolver had `RESOLUTION_ENUM_NAMES`, so `pub type G<T> = Option<SomeEnum>`
 /// failed its own definition site with "references unknown name" for a plainly
-/// declared name.  The enum names arrive through an [`EnumNameScope`] rather
-/// than a direct set membership for exactly that reason.
+/// declared name.  The enums arrive through an [`EnumNameScope`] rather than
+/// a lookup of this guard's own for exactly that reason.
 ///
 /// Resolving names in isolation (rather than re-resolving the whole body)
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
