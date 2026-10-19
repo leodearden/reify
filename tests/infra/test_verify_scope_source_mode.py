@@ -23,7 +23,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUITE = REPO_ROOT / "tests" / "infra" / "test_verify_scope.sh"
 
-FUNC_DEF = re.compile(r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(\)[ \t]*\{", re.M)
+NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+
+FUNC_DEF = re.compile(
+    rf"^[ \t]*(?:function[ \t]+(?P<keyword>{NAME})(?:[ \t]*\(\))?|(?P<posix>{NAME})[ \t]*\(\))\s*\{{",
+    re.M,
+)
 
 DOCS_ONLY_CLASSIFICATION = "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"
 
@@ -33,13 +38,16 @@ REFUSAL_PHRASE = "is not a fixture this shell built"
 
 
 def declared_functions(path):
-    return set(FUNC_DEF.findall(Path(path).read_text()))
+    return {
+        match["keyword"] or match["posix"]
+        for match in FUNC_DEF.finditer(Path(path).read_text())
+    }
 
 
 def refusal_line(helper):
     """The line _require_fixture prints when `helper` itself refuses its fixture variable."""
     return re.compile(
-        rf"^{re.escape(helper)}: \$[A-Za-z_][A-Za-z0-9_]* {re.escape(REFUSAL_PHRASE)} ",
+        rf"^{re.escape(helper)}: \${NAME} {re.escape(REFUSAL_PHRASE)} ",
         re.M,
     )
 
@@ -152,12 +160,32 @@ class SourceModeContractTest(SourcedSuiteTestCase):
             "after `source`: define them above the source-mode return",
         )
 
+    def test_declared_functions_reads_every_definition_form(self):
+        fixture = self.make_tmpdir() / "fixture.sh"
+        fixture.write_text(
+            "posix() { :; }\n"
+            "  indented () {\n    :\n  }\n"
+            "brace_below()\n{\n    :\n}\n"
+            "function keyword { :; }\n"
+            "function keyword_parens() { :; }\n"
+            "# commented() { :; }\n"
+            "echo 'function quoted { :; }'\n"
+        )
+        self.assertEqual(
+            declared_functions(fixture),
+            {"posix", "indented", "brace_below", "keyword", "keyword_parens"},
+        )
+
     def test_unreachable_check_flags_a_function_defined_after_the_return(self):
         fixture = self.make_tmpdir() / "fixture.sh"
-        fixture.write_text("early() { :; }\n" + SOURCE_MODE_RETURN + "late() { :; }\n")
-        self.assertEqual(self.unreachable_after_source(fixture), {"late"})
+        fixture.write_text(
+            "early() { :; }\nfunction early_kw { :; }\n"
+            + SOURCE_MODE_RETURN
+            + "late() { :; }\nfunction late_kw { :; }\n"
+        )
+        self.assertEqual(self.unreachable_after_source(fixture), {"late", "late_kw"})
 
-        fixture.write_text("early() { :; }\n" + SOURCE_MODE_RETURN)
+        fixture.write_text("early() { :; }\nfunction early_kw { :; }\n" + SOURCE_MODE_RETURN)
         self.assertEqual(self.unreachable_after_source(fixture), set())
 
     def test_unreachable_check_reports_a_source_that_aborts(self):
