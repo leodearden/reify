@@ -878,6 +878,53 @@ structure def S : ProvidesParamX + ProvidesLetX {
     );
 }
 
+/// A conformer's unannotated `let x` holds the `x` scope slot against every kind of
+/// same-name trait default, so only the conformer's own cell survives.
+///
+/// This needs a full compile: `compile_entity` registers the conformer's members,
+/// unannotated lets included, in scope before conformance runs, whereas the
+/// conformance unit-test harness starts from an empty scope.
+#[test]
+fn conformer_unannotated_let_holds_slot_against_same_name_trait_defaults() {
+    for trait_member in ["param x : Real = 1.0", "let x : Real = 1.0", "let x = true"] {
+        let source =
+            format!("trait A {{ {trait_member} }}\nstructure def S : A {{ let x = 5.0 }}\n");
+
+        let (template, diagnostics) = compile_first_template(&source);
+
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "trait member `{trait_member}`: expected no errors, got: {errors:?}"
+        );
+        let x_cells: Vec<_> = template
+            .value_cells
+            .iter()
+            .filter(|vc| vc.id.member == "x")
+            .collect();
+        assert_eq!(
+            x_cells.len(),
+            1,
+            "trait member `{trait_member}`: expected only the conformer's `x` cell, got: \
+             {x_cells:?}"
+        );
+        assert_eq!(
+            x_cells[0].kind,
+            ValueCellKind::Let,
+            "trait member `{trait_member}`: the surviving cell must be the conformer's Let"
+        );
+        assert_ne!(
+            x_cells[0].cell_type,
+            Type::Bool,
+            "trait member `{trait_member}`: the surviving cell must not be the trait's \
+             Bool default"
+        );
+    }
+}
+
 /// Two traits each providing `param x : Real = 1.0`. Structure implements both.
 /// Same-kind, same-type dedup must still produce exactly 1 'x' value cell.
 ///

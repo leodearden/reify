@@ -3034,6 +3034,32 @@ mod tests {
         );
     }
 
+    /// Characterizes current behaviour: a trait default the conformer overrides is still
+    /// advertised under its declared type, so `A`'s `param x` default satisfies `C`'s
+    /// `param x` requirement even though `S`'s own `let x` replaces it. The control
+    /// without `A` is `let_member_does_not_satisfy_param_requirement`.
+    #[test]
+    fn trait_param_default_overridden_by_conformer_let_is_advertised_but_not_injected() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait C { param x : Real }
+            structure def S : A + C { let x : Real = 2.0 }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "C's `param x` must be satisfied by A's advertised default; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            injected_named(&run, "x").is_empty(),
+            "the conformer declares `x`, so nothing is injected for it; got: {:?}",
+            run.injected_cells
+        );
+    }
+
     /// Pass 2, compile error: `let a = b` fails on the unresolved `b`. The root cause is
     /// reported exactly once and `a` is not injected. `a` is also poisoned in scope, so
     /// the dependent `let c = a` compiles silently against the poison instead of
