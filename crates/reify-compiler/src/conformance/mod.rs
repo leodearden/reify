@@ -223,14 +223,7 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let available_defaults = check_phase_build_available_defaults_map(
-        &ctx,
-        &pre.inferred_let_exprs,
-        &pre.pass1_skipped,
-        &pre.pass1_param_skipped,
-        &pre.pass2_skipped,
-        &pre.pass2_compile_errors,
-    );
+    let available_defaults = check_phase_build_available_defaults_map(&ctx, &pre);
 
     check_phase_check_members_against_requirements(
         &ctx,
@@ -298,11 +291,7 @@ pub(crate) fn check_trait_conformance(
         structure,
         &structure_all_members,
         &structure_constraint_labels,
-        pre.inferred_let_exprs,
-        &pre.pass1_skipped,
-        &pre.pass1_param_skipped,
-        &pre.pass2_skipped,
-        &pre.pass2_compile_errors,
+        pre,
         scope,
         value_cells,
         constraints,

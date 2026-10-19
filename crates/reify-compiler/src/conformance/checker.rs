@@ -16,6 +16,28 @@ pub(super) enum AvailableDefaultKind {
     Let,
 }
 
+impl AvailableDefaultKind {
+    /// The kind of a `param` or `let` default; `None` for the default kinds that are not
+    /// value cells.
+    pub(super) fn of(kind: &DefaultKind) -> Option<Self> {
+        match kind {
+            DefaultKind::Param { .. } => Some(Self::Param),
+            DefaultKind::Let { .. } => Some(Self::Let),
+            DefaultKind::Constraint(_) | DefaultKind::Fn(_) | DefaultKind::AssocType(_) => None,
+        }
+    }
+}
+
+/// The type a default declares: a `param`'s type or a `let`'s annotation. `None` for an
+/// unannotated `let` and for the default kinds that are not value cells.
+fn declared_value_type(kind: &DefaultKind) -> Option<&Type> {
+    match kind {
+        DefaultKind::Param { cell_type, .. } => Some(cell_type),
+        DefaultKind::Let { cell_type, .. } => cell_type.as_ref(),
+        DefaultKind::Constraint(_) | DefaultKind::Fn(_) | DefaultKind::AssocType(_) => None,
+    }
+}
+
 /// Centralised "annotation wins, else inferred, else Type::Error" rule for let defaults.
 ///
 /// Both call sites in the trait-conformance pipeline share this three-way precedence:
@@ -424,14 +446,75 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// (`b` is not in scope when `a`'s expression is compiled), yielding an `unresolved name`
 /// diagnostic. Annotating *either* binding unblocks the case. A topological ordering pass
 /// would remove the limitation but is out of scope ("documenting as intentional simplification").
-/// Named return type for `check_phase_pre_register_default_types`, replacing the former
-/// anonymous 5-tuple to eliminate position-swap bugs between the two `HashSet<String>` skip-sets.
+#[derive(Default)]
 pub(super) struct PreRegisterOutput {
-    pub inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,
+    dispositions: HashMap<(String, AvailableDefaultKind), DefaultDisposition>,
+    inferred_lets: HashMap<String, CompiledExpr>,
     pub pass1_skipped: HashSet<String>,
     pub pass1_param_skipped: HashSet<String>,
     pub pass2_skipped: HashSet<String>,
     pub pass2_compile_errors: HashSet<String>,
+}
+
+/// What conformance does with one named `param` or `let` trait default, recorded per
+/// `(name, kind)` by [`check_phase_pre_register_default_types`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum DefaultDisposition {
+    /// Owns its name's scope slot: advertised and injected.
+    Inject,
+    /// The conformer declares the name: never injected; advertised under its declared type
+    /// when it has one.
+    OverriddenByConformer,
+    /// Another registration claimed the scope slot first (a same-name default of the other
+    /// kind, or a conformer member conformance does not count as an override): neither
+    /// advertised nor injected.
+    SlotTaken,
+    /// An unannotated `let` whose expression failed to compile: neither advertised nor
+    /// injected.
+    CompileError,
+}
+
+impl PreRegisterOutput {
+    /// The disposition of the named default of `kind`.
+    pub(super) fn disposition(&self, name: &str, kind: AvailableDefaultKind) -> DefaultDisposition {
+        *self
+            .dispositions
+            .get(&(name.to_string(), kind))
+            .unwrap_or_else(|| {
+                panic!(
+                    "every named param/let default in ctx.defaults gets a disposition from \
+                     check_phase_pre_register_default_types; none for `{name}` ({kind:?})"
+                )
+            })
+    }
+
+    /// The expression Pass 2 compiled for the unannotated `let` default `name`.
+    pub(super) fn inferred_let(&self, name: &str) -> Option<&CompiledExpr> {
+        self.inferred_lets.get(name)
+    }
+
+    /// Moves out the expression Pass 2 compiled for the unannotated `let` default `name`.
+    pub(super) fn take_inferred_let(&mut self, name: &str) -> Option<CompiledExpr> {
+        self.inferred_lets.remove(name)
+    }
+
+    fn record(&mut self, name: &str, kind: AvailableDefaultKind, disposition: DefaultDisposition) {
+        let prior = self
+            .dispositions
+            .insert((name.to_string(), kind), disposition);
+        debug_assert!(
+            prior.is_none_or(|prior| prior == disposition),
+            "one disposition per (name, kind): `{name}` ({kind:?}) recorded as {prior:?}, \
+             then as {disposition:?}"
+        );
+    }
+
+    /// Records the unannotated `let` default `name` as [`DefaultDisposition::Inject`] together
+    /// with its inferred expression, so an unannotated Inject always has a cached expression.
+    fn record_inferred_let(&mut self, name: &str, expr: CompiledExpr) {
+        self.record(name, AvailableDefaultKind::Let, DefaultDisposition::Inject);
+        self.inferred_lets.insert(name.to_string(), expr);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,56 +527,10 @@ pub(super) fn check_phase_pre_register_default_types(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> PreRegisterOutput {
-    let mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr> =
-        HashMap::new();
-    // Annotated-Let defaults whose scope slot was already claimed by an earlier Pass 1
-    // default (typically a Param registered before this annotated Let in ctx.defaults
-    // order).  Pass 1 records names here so the injection loop does not emit a
-    // duplicate annotated-Let cell alongside the first-seen default's cell.
-    //
-    // Symmetric with `pass2_skipped` (task 1952) and `pass1_param_skipped` (task 2208):
-    //   `pass1_skipped`       — annotated-Let loser in Pass 1; a valid Param/first-annotated-Let
-    //                           cell WILL be injected for this name.
-    //   `pass1_param_skipped` — Param loser in Pass 1 (annotated Let appeared earlier in
-    //                           ctx.defaults); the winning annotated-Let cell WILL be injected.
-    //   `pass2_skipped`       — unannotated-Let loser in Pass 2; a valid Param/annotated-Let
-    //                           cell WILL be injected for this name.
-    let mut pass1_skipped: HashSet<String> = HashSet::new();
-    // Param defaults whose scope slot was already claimed by an earlier annotated-Let default
-    // in Pass 1 (i.e., annotated Let appeared before Param in ctx.defaults order).  Pass 1
-    // records names here so the injection loop (`check_phase_inject_defaults`) does not emit
-    // a duplicate Param cell alongside the winning annotated-Let cell, and so the advertisement
-    // builder (`check_phase_build_available_defaults_map`) does not emit a phantom Param entry.
-    //
-    // Symmetric with `pass1_skipped` (annotated-Let loser) and `pass2_skipped` (unannotated-Let
-    // loser).  Unlike `pass1_skipped` and `pass2_skipped`, no `cell_type: Option` discriminant
-    // is needed in the consumers — the `DefaultKind::Param` arm is already kind-exclusive.
-    let mut pass1_param_skipped: HashSet<String> = HashSet::new();
-    // Unannotated-let defaults whose scope slot was already claimed by an annotated
-    // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
-    // insert so the injection loop does not emit a duplicate Let cell alongside the
-    // Param/annotated-Let cell that will already be injected for the same name.
-    // The injection loop uses this set to distinguish a deliberate skip from drift.
-    let mut pass2_skipped: HashSet<String> = HashSet::new();
-    // Unannotated-let defaults whose Pass 2 `compile_expr` call pushed at least one
-    // diagnostic (i.e. the expression itself failed to compile — e.g. unresolved
-    // forward reference or unknown unit).  These names are excluded from
-    // `inferred_let_exprs` (no poisoned entry in the cache) and excluded from
-    // `available_defaults` (no phantom advertisement) and silently skipped by the
-    // injection loop (the root-cause diagnostic was already emitted; injecting a
-    // poisoned cell would add noise, not value).
-    //
-    // Distinct from `pass2_skipped`:
-    //   `pass2_skipped`        — Pass 1 occupied the slot; a valid Param/annotated-Let
-    //                            cell WILL be injected for this name.
-    //   `pass2_compile_errors` — The let expression itself is broken; NO cell is
-    //                            injected for this name (root cause already reported).
-    let mut pass2_compile_errors: HashSet<String> = HashSet::new();
+    let mut pre = PreRegisterOutput::default();
 
-    // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
-    // `structure_name` from the enclosing scope so both Pass 1 and Pass 2 call
-    // sites stay structurally identical — no drift risk if the message or fields
-    // ever change.
+    // Shared conflict logger for `register_if_absent` Occupied returns, so both passes
+    // report a lost scope slot identically.
     let log_conflict = |name: &str, ignored_ty: Type| {
         tracing::debug!(
             target: "reify_compiler::conformance",
@@ -504,198 +541,116 @@ pub(super) fn check_phase_pre_register_default_types(
         );
     };
 
-    // Pass 1: register all *annotated* defaults (Param, Let-with-annotation).
-    // Unannotated lets and constraints are deferred to Pass 2 / injection.
-    // register_if_absent provides the no-overwrite guarantee: first-seen type
-    // wins, and the method itself is safe against cross-kind overwrites
-    // without a call-site guard.
+    // Pass 1: record every default the conformer overrides, and register every declared
+    // type (Param, annotated Let); the first-seen type wins the scope slot. Unannotated lets
+    // are deferred to Pass 2, which compiles them against the scope Pass 1 completes.
     for default in &ctx.defaults {
-        if let Some(name) = &default.name
-            && !structure_members.contains_key(name)
-        {
-            // Compute both the type to register and kind flags in a single match,
-            // so the Occupied path (below) can act on `is_annotated_let` and
-            // `is_param` without re-inspecting `default.kind`.
-            let (ty, is_annotated_let, is_param) = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => (cell_type.clone(), false, true),
-                DefaultKind::Let {
-                    cell_type: Some(annotation_ty),
-                    ..
-                } => (annotation_ty.clone(), true, false),
-                // Deferred to Pass 2 — needs Pass 1's scope to compile against.
-                DefaultKind::Let {
-                    cell_type: None, ..
-                } => continue,
-                DefaultKind::Constraint(_) => continue,
-                // Assoc-fn defaults are resolved in the dedicated assoc-fn
-                // phase (task 3939 δ), not registered as value-cell defaults.
-                DefaultKind::Fn(_) => continue,
-                // Assoc-type defaults are resolved in the dedicated assoc-type
-                // phase (step-10), not registered as value-cell defaults.
-                DefaultKind::AssocType(_) => continue,
-            };
-            // First-seen type wins. `ty` is moved into `register_if_absent`; on
-            // the cold Occupied (conflict) path the method hands it back via
-            // `Some(ignored_ty)` for the debug emission, so no clone is needed on
-            // the hot Vacant insertion path.
-            if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
-                log_conflict(name, ignored_ty);
-                // SYMMETRIC FIX (task 1952): when the loser in Pass 1 is an annotated
-                // Let, record the name in pass1_skipped so the injection loop skips
-                // annotated-Let cell emission for this name, preventing a duplicate
-                // (entity, member) cell alongside the winning default's cell.
-                if is_annotated_let {
-                    pass1_skipped.insert(name.to_string());
-                }
-                // SYMMETRIC FIX (task 2208): when the loser in Pass 1 is a Param
-                // (annotated Let appeared earlier in ctx.defaults and won the slot),
-                // record the name in pass1_param_skipped so the injection loop skips
-                // Param cell emission and the advertisement builder skips the phantom
-                // Param entry — restoring full Pass-1 symmetry.
-                if is_param {
-                    pass1_param_skipped.insert(name.to_string());
-                }
-            }
+        let (Some(name), Some(kind)) = (&default.name, AvailableDefaultKind::of(&default.kind))
+        else {
+            continue;
+        };
+        if structure_members.contains_key(name) {
+            pre.record(name, kind, DefaultDisposition::OverriddenByConformer);
+            continue;
         }
+        let Some(declared_ty) = declared_value_type(&default.kind) else {
+            continue;
+        };
+        let disposition = match scope.register_if_absent(name, declared_ty.clone()) {
+            None => DefaultDisposition::Inject,
+            Some(ignored_ty) => {
+                log_conflict(name, ignored_ty);
+                match kind {
+                    AvailableDefaultKind::Param => pre.pass1_param_skipped.insert(name.clone()),
+                    AvailableDefaultKind::Let => pre.pass1_skipped.insert(name.clone()),
+                };
+                DefaultDisposition::SlotTaken
+            }
+        };
+        pre.record(name, kind, disposition);
     }
 
-    // Pass 2: compile each *unannotated* Let's expression against the
-    // fully-populated annotated scope from Pass 1 and register its inferred
-    // type.  When `register_if_absent` finds the scope slot already claimed
-    // (Pass 1 registered an annotated Param or Let), the compiled expression
-    // is discarded and the name is recorded in `pass2_skipped` so the
-    // injection loop skips Let-cell injection — preventing a duplicate
-    // (entity, member) cell alongside the annotated-type injection.  When the
-    // slot is vacant, the expression is cached in `inferred_let_exprs` for
-    // reuse by the injection loop (avoids double compilation) and by
-    // `available_defaults` (so requirement-matching uses the inferred type
-    // instead of the old `Type::dimensionless_scalar()` fallback).
-    //
-    // Error suppression (task 1914 suggestion #1, hardened by task 2158):
-    // snapshot the diagnostic-vector length before each compile_expr call, then
-    // scan only the newly-appended tail for Severity::Error.  If the tail
-    // contains at least one Error, the expression failed to compile (root-cause
-    // diagnostic already emitted).  In that case the name is recorded in
-    // `pass2_compile_errors` and the scope slot is poisoned with Type::Error —
-    // no inferred cache entry is produced, preventing phantom "available default
-    // has Real/Error" cascade diagnostics downstream.
-    //
-    // Scanning only the tail (rather than counting total Errors) is required
-    // because compile_expr legitimately emits Severity::Warning and
-    // Severity::Info on valid paths (e.g. Diagnostic::warning for
-    // ExprKind::ListLiteral/SetLiteral/MapLiteral (empty literal), zero-arg
-    // return-type inference, and Diagnostic::info for dynamic collection index /
-    // qualified-access not-in-scope).  Counting those as compile failures would
-    // incorrectly suppress successfully-typed expressions such as `let x = []`.
-    // The tail-scan is safe under future drift: any new warning/info path in
-    // compile_expr or its callees is silently tolerated.
-    //
-    // Order-dependence caveat: cascade suppression via the Type::Error scope-poison
-    // sentinel is effective only when the failing dependency is defined *before* its
-    // dependents in ctx.defaults traversal order.  In a reverse-ordered chain (e.g.
-    // `let c = a  let a = b` with b undefined), Pass 2 compiles c first, finds a
-    // absent, and emits the cascade error before a = b fails and poisons a.  A
-    // topological pre-pass would eliminate this but is not warranted unless such
-    // cases become a real concern.
+    // Pass 2: compile each unannotated Let the conformer does not override and register
+    // its inferred type. The compiled expression is cached for advertisement and injection,
+    // so it is never compiled twice.
     for default in &ctx.defaults {
-        if let Some(name) = &default.name
-            && !structure_members.contains_key(name)
-            && let DefaultKind::Let {
+        let (
+            Some(name),
+            DefaultKind::Let {
                 cell_type: None,
                 let_decl,
-            } = &default.kind
-        {
-            // Snapshot the diagnostic-vector length before compilation, then scan
-            // only the newly-appended tail for Severity::Error.  This avoids
-            // rescanning the entire (growing) diagnostics vector on every default
-            // in the loop — O(emitted diagnostics) rather than O(N × |diagnostics|).
-            // Warning/Info entries in the tail are tolerated; only Error entries
-            // indicate a compile failure.  Partial error-recovery paths may return
-            // non-Error types (e.g. Type::Scalar{DIMENSIONLESS}), so the diagnostic
-            // tail-scan is more reliable than inspecting compiled_expr.result_type.
-            let diag_before = diagnostics.len();
-            let compiled_expr =
-                compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
-            let had_compile_error = diagnostics[diag_before..]
-                .iter()
-                .any(|d| d.severity == Severity::Error);
-
-            if had_compile_error {
-                // compile_expr itself emitted at least one Severity::Error diagnostic —
-                // the expression is broken.  Do NOT insert into inferred_let_exprs
-                // (prevents a poisoned entry advertising a phantom type in
-                // available_defaults).
-                pass2_compile_errors.insert(name.to_string());
-                // Poison the scope slot with Type::Error so sibling unannotated-let
-                // expressions (or trait constraints) that reference this name resolve to
-                // the anti-cascade sentinel rather than emitting a fresh "unresolved name"
-                // cascade.  `implicitly_converts_to(Error, _) -> true` and
-                // `infer_binop_type`'s leading Type::Error guard (see `type_compat.rs`)
-                // then propagate the poison silently through downstream compilation —
-                // the same pattern used at `check_phase_resolve_structure_members` for
-                // unresolved structure-member annotations.
-                //
-                // `register_if_absent` preserves any prior registration: a Pass 1 annotated
-                // Param/Let that already claimed the slot keeps its real type (Type::Error
-                // can never displace a real type, only fill a vacant slot).  A collision
-                // here means Pass 1 already registered this name with a real type; log it
-                // at trace level for observability.
-                if let Some(prior_ty) = scope.register_if_absent(name, Type::Error) {
-                    tracing::trace!(
-                        target: "reify_compiler::conformance",
-                        name = %name,
-                        prior_ty = ?prior_ty,
-                        "pass2 compile-error: scope slot already claimed by Pass-1 \
-                         registration; Type::Error sentinel not inserted (prior type wins)"
-                    );
-                }
-            } else {
-                let inferred_ty = compiled_expr.result_type.clone();
-                if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
-                    log_conflict(name, ignored_ty);
-                    // Scope slot already claimed by an annotated type (Pass 1).
-                    // Record in pass2_skipped so the injection loop skips Let-cell
-                    // injection for this name and avoids duplicate (entity, member) cells.
-                    pass2_skipped.insert(name.to_string());
-                } else {
-                    inferred_let_exprs
-                        .insert((name.clone(), AvailableDefaultKind::Let), compiled_expr);
-                }
+            },
+        ) = (&default.name, &default.kind)
+        else {
+            continue;
+        };
+        if structure_members.contains_key(name) {
+            continue;
+        }
+        let Some(compiled_expr) =
+            compile_inferred_let(&let_decl.value, scope, enum_defs, functions, diagnostics)
+        else {
+            // Poison the slot with the Type::Error anti-cascade sentinel, so a sibling
+            // expression referencing this name compiles silently against it instead of
+            // reporting a second "unresolved name"; `implicitly_converts_to(Error, _)` and
+            // `infer_binop_type`'s leading Error guard (type_compat.rs) propagate it. A slot
+            // Pass 1 already claimed keeps its real type.
+            if let Some(prior_ty) = scope.register_if_absent(name, Type::Error) {
+                tracing::trace!(
+                    target: "reify_compiler::conformance",
+                    name = %name,
+                    prior_ty = ?prior_ty,
+                    "pass2 compile-error: scope slot already claimed by Pass-1 \
+                     registration; Type::Error sentinel not inserted (prior type wins)"
+                );
             }
-        }
-    }
-
-    // Pass 2 post-pass: register unannotated Let defaults that were skipped by Pass 2's
-    // `!structure_members.contains_key(name)` guard (conformer already declares the name).
-    // These names are absent from `inferred_let_exprs` and `pass2_compile_errors` because
-    // compilation was never attempted, and absent from `pass2_skipped` because
-    // `register_if_absent` was never called. Without this registration,
-    // `check_phase_build_available_defaults_map`'s debug_assert! at :802 fires:
-    //
-    //   cell_type.is_some() || inferred_let_exprs.contains_key(&key)
-    //
-    // Adding the name to `pass2_skipped` satisfies the guard at :777-778
-    // (`cell_type.is_none() && pass2_skipped.contains(name) → return None`),
-    // correctly excluding the default from the available_defaults advertisement map —
-    // there is nothing to advertise because the conformer member overrides it.
-    for default in &ctx.defaults {
-        if let Some(name) = &default.name
-            && structure_members.contains_key(name.as_str())
-            && let DefaultKind::Let {
-                cell_type: None, ..
-            } = &default.kind
+            pre.pass2_compile_errors.insert(name.clone());
+            pre.record(
+                name,
+                AvailableDefaultKind::Let,
+                DefaultDisposition::CompileError,
+            );
+            continue;
+        };
+        if let Some(ignored_ty) = scope.register_if_absent(name, compiled_expr.result_type.clone())
         {
-            pass2_skipped.insert(name.to_string());
+            log_conflict(name, ignored_ty);
+            pre.pass2_skipped.insert(name.clone());
+            pre.record(
+                name,
+                AvailableDefaultKind::Let,
+                DefaultDisposition::SlotTaken,
+            );
+        } else {
+            pre.record_inferred_let(name, compiled_expr);
         }
     }
 
-    PreRegisterOutput {
-        inferred_let_exprs,
-        pass1_skipped,
-        pass1_param_skipped,
-        pass2_skipped,
-        pass2_compile_errors,
-    }
+    pre
+}
+
+/// Compiles an unannotated `let` default's expression for its inferred type. `None` when the
+/// compile reported an error, whose root-cause diagnostic is then already in `diagnostics`.
+///
+/// Failure is read from the Error-severity diagnostics this compile appended rather than from
+/// the expression's `result_type`, because some error-recovery paths (e.g. unknown-unit
+/// coercion) return a dimensionless scalar instead of `Type::Error`. Only errors count:
+/// `compile_expr` legitimately emits warnings and infos on valid paths (an empty collection
+/// literal such as `let x = []`, zero-arg return-type inference, a dynamic collection index),
+/// and counting those would drop well-typed expressions.
+fn compile_inferred_let(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledExpr> {
+    let diag_before = diagnostics.len();
+    let compiled_expr = compile_expr(expr, scope, enum_defs, functions, diagnostics);
+    let had_compile_error = diagnostics[diag_before..]
+        .iter()
+        .any(|d| d.severity == Severity::Error);
+    (!had_compile_error).then_some(compiled_expr)
 }
 
 /// Phase 4 of trait conformance checking: build the `available_defaults` advertisement map.
@@ -717,137 +672,35 @@ pub(super) fn check_phase_pre_register_default_types(
 ///    are small in practice so this is acceptable; a two-level map is the escape hatch if
 ///    it ever becomes a hot path.
 ///
-/// ## Pass 1/Pass 2 skipped exclusions — three symmetric guards
-///
-/// Three symmetric guards suppress phantom advertisements to maintain the
-/// "advertisement mirrors injection" invariant (task 1951 Option B + task 1952 + task 2208):
-///
-/// | Guard                                            | Skipped by | Cell_type predicate         |
-/// |--------------------------------------------------|------------|-----------------------------|
-/// | `cell_type.is_none() && pass2_skipped.contains` | Pass 2     | unannotated Let (`None`)    |
-/// | `cell_type.is_some() && pass1_skipped.contains` | Pass 1     | annotated Let (`Some`)      |
-/// | `pass1_param_skipped.contains`                   | Pass 1     | n/a — Param arm, no Option  |
-///
-/// The Let `cell_type` predicates are mutually exclusive: a given Let entry can only satisfy
-/// one of the two Let guards — it is either annotated or unannotated, never both.
-///
-/// **pass2_skipped**: When `cell_type` is `None` (unannotated Let) *and* the name is in
-/// `pass2_skipped`, this entry is excluded. Pass 2 populates `pass2_skipped` exclusively
-/// from the `DefaultKind::Let { cell_type: None, .. }` arm; annotated Lets (`Some(_)`)
-/// for the same name still advertise normally (the injection loop injects them). The
-/// `cell_type.is_none() &&` conjunction is the minimal narrowing from the original guard
-/// (task 1951 Option B).
-///
-/// **pass1_skipped**: When `cell_type` is `Some(_)` (annotated Let) *and* the name is in
-/// `pass1_skipped`, this entry is excluded. Pass 1 populates `pass1_skipped` when an
-/// annotated Let's `register_if_absent` call finds the scope slot already claimed by an
-/// earlier Pass 1 default (task 1952). The injection loop skips annotated-Let cell emission
-/// for names in `pass1_skipped`, so advertising such a name would produce a phantom
-/// `(name, Let) → Type` entry with no injected cell backing it — a "requirement satisfied"
-/// lie. The `cell_type.is_some() &&` conjunction parallels the `is_none()` guard.
-///
-/// **pass1_param_skipped**: When a Param name is in `pass1_param_skipped`, the `Param` arm
-/// returns `None` unconditionally, excluding the phantom `(name, Param) → Type` advertisement.
-/// Pass 1 populates `pass1_param_skipped` when a Param's `register_if_absent` call finds the
-/// scope slot already claimed by an annotated Let (task 2208). Unlike the two Let guards, no
-/// `cell_type` predicate is needed — `DefaultKind::Param` has no `cell_type: Option`
-/// discriminant; the arm is already kind-exclusive. The injection loop mirrors this guard via
-/// a matching `if pass1_param_skipped.contains(name) { continue; }` at the top of the Param
-/// arm in `check_phase_inject_defaults`.
-///
-/// ## `pass2_compile_errors` exclusion (task 1914 suggestion #1)
-///
-/// Names in `pass2_compile_errors` are also excluded from the `Let` arm: Pass 2 failed to
-/// compile the let expression (root-cause diagnostic already emitted), so there is no valid
-/// inferred type to advertise. Including a phantom entry would produce a spurious
-/// "available default has Real/Error" cascade diagnostic on top of the root-cause error.
-///
-/// ## Unannotated let defaults
-///
-/// For `DefaultKind::Let { cell_type: None, .. }` entries that passed both guards, the
-/// advertised type is the inferred result type from `inferred_let_exprs` (populated by phase
-/// 3's Pass 2). Falls back to `Type::dimensionless_scalar()` if the name is absent from the cache — after task
-/// 1914 this is a defensive-default that should not be reached in practice: compile-error
-/// names are excluded by `pass2_compile_errors` and skipped names by `pass2_skipped`.
-/// A `debug_assert!` guards the fallback to catch any drift.
+/// Which defaults are advertised, and under what type, follows
+/// [`PreRegisterOutput::disposition`]: an injected default under its declared type (an
+/// unannotated let under the type Pass 2 inferred), a default the conformer overrides under
+/// its declared type if it has one, and a default that lost its scope slot or failed to
+/// compile not at all.
 pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
-    inferred_let_exprs: &HashMap<(String, AvailableDefaultKind), CompiledExpr>,
-    pass1_skipped: &HashSet<String>,
-    pass1_param_skipped: &HashSet<String>,
-    pass2_skipped: &HashSet<String>,
-    pass2_compile_errors: &HashSet<String>,
+    pre: &PreRegisterOutput,
 ) -> HashMap<(String, AvailableDefaultKind), Type> {
     ctx.defaults
         .iter()
         .filter_map(|d| {
             let name = d.name.as_deref()?;
-            let (kind, ty) = match &d.kind {
-                DefaultKind::Param { cell_type, .. } => {
-                    // SYMMETRIC FIX (task 2208): suppress the phantom Param advertisement for
-                    // names in pass1_param_skipped. Pass 1 populates pass1_param_skipped when a
-                    // Param's register_if_absent found the scope slot already claimed by an
-                    // earlier annotated Let; the injection loop will NOT emit a Param cell for
-                    // this name, so advertising it would produce a phantom (name, Param) entry
-                    // with no injected cell — a "requirement satisfied" lie.
-                    // Unlike the Let guards there is no cell_type.is_some()/is_none() conjunction
-                    // needed here — the DefaultKind::Param arm is already kind-exclusive.
-                    if pass1_param_skipped.contains(name) {
-                        return None;
+            let kind = AvailableDefaultKind::of(&d.kind)?;
+            let ty = match pre.disposition(name, kind) {
+                DefaultDisposition::Inject => match declared_value_type(&d.kind) {
+                    Some(declared_ty) => declared_ty.clone(),
+                    None => {
+                        let inferred = pre.inferred_let(name);
+                        debug_assert!(
+                            inferred.is_some(),
+                            "unannotated let '{name}' has an Inject disposition without a \
+                             cached inferred expression"
+                        );
+                        resolve_let_advertised_type(&None, inferred)
                     }
-                    (AvailableDefaultKind::Param, cell_type.clone())
-                }
-                DefaultKind::Let { cell_type, .. } => {
-                    // Suppress the *unannotated* Let phantom entry for names in pass2_skipped
-                    // (task 1951 Option B, narrowed to unannotated Lets). Pass 2 populates
-                    // pass2_skipped exclusively from `cell_type: None` entries; the
-                    // `cell_type.is_none()` conjunction restricts suppression to that case.
-                    // Removing this guard is observable only in debug builds, through the
-                    // debug_assert! below: a Let-keyed advertisement is read only by a `let`
-                    // requirement, which the parser cannot express.
-                    if cell_type.is_none() && pass2_skipped.contains(name) {
-                        return None;
-                    }
-                    // SYMMETRIC FIX (task 1952): suppress the *annotated* Let phantom entry
-                    // for names in pass1_skipped. Pass 1 populates pass1_skipped when an
-                    // annotated Let's register_if_absent found the scope slot already claimed;
-                    // the injection loop will NOT emit a cell for this name, so advertising
-                    // it would produce a phantom (name, Let) entry with no injected cell.
-                    // The `cell_type.is_some()` conjunction is the mirror of `is_none()`
-                    // above — the two guards are mutually exclusive by construction.
-                    if cell_type.is_some() && pass1_skipped.contains(name) {
-                        return None;
-                    }
-                    // Do not advertise a phantom Let entry for names whose Pass 2
-                    // compile_expr call emitted a diagnostic (task 1914 suggestion #1).
-                    // The root-cause diagnostic was already pushed; advertising a
-                    // phantom `(name, Let) → poison_type` entry would produce a
-                    // spurious "available default has Real/Error" cascade on top of it.
-                    if pass2_compile_errors.contains(name) {
-                        return None;
-                    }
-                    // Guard: unannotated names without an annotation must have a
-                    // cache entry (pass2_compile_errors and pass2_skipped names were
-                    // excluded above; anything else means the Pass 2 contract is broken).
-                    let key = (name.to_string(), AvailableDefaultKind::Let);
-                    debug_assert!(
-                        cell_type.is_some() || inferred_let_exprs.contains_key(&key),
-                        "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
-                         (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
-                         contract broken; Type::dimensionless_scalar() fallback would re-introduce the \
-                         phantom-type-mismatch bug fixed by task 1951 Option B"
-                    );
-                    let resolved =
-                        resolve_let_advertised_type(cell_type, inferred_let_exprs.get(&key));
-                    (AvailableDefaultKind::Let, resolved)
-                }
-                DefaultKind::Constraint(_) => return None,
-                // Assoc-fn defaults are not value-cell defaults; resolved in
-                // the dedicated assoc-fn phase (task 3939 δ).
-                DefaultKind::Fn(_) => return None,
-                // Assoc-type defaults are not value-cell defaults; resolved in
-                // the dedicated assoc-type phase (step-10).
-                DefaultKind::AssocType(_) => return None,
+                },
+                DefaultDisposition::OverriddenByConformer => declared_value_type(&d.kind)?.clone(),
+                DefaultDisposition::SlotTaken | DefaultDisposition::CompileError => return None,
             };
             Some(((name.to_string(), kind), ty))
         })
@@ -1736,23 +1589,12 @@ pub(super) fn check_phase_check_members_against_requirements(
         if !checked_names.insert(name) {
             continue;
         }
-        let trait_declared_type = match &default.kind {
-            DefaultKind::Param { cell_type, .. } => cell_type,
-            DefaultKind::Let {
-                cell_type: Some(ty),
-                ..
-            } => ty,
-            // Unannotated let: declared type is the inferred expr type, NOT computed for names
-            // colliding with a structure member (pre-register Pass 2 skips structure_members
-            // names, checker.rs:596) — mirrors structure_let_members holding only annotated
-            // conformer lets (:257). Closing this gap would require compiling the trait-let
-            // expression against the conformer scope — deferred.
-            DefaultKind::Let {
-                cell_type: None, ..
-            }
-            | DefaultKind::Constraint(_)
-            | DefaultKind::Fn(_)
-            | DefaultKind::AssocType(_) => continue,
+        // An unannotated let has no declared type, and pre-register Pass 2 never infers one
+        // for a name the conformer declares — mirroring structure_let_members, which holds
+        // only annotated conformer lets. Closing this gap would require compiling the
+        // trait-let expression against the conformer scope — deferred.
+        let Some(trait_declared_type) = declared_value_type(&default.kind) else {
+            continue;
         };
         let Some(conformer_type) = structure_param_members
             .get(name)
@@ -1842,11 +1684,7 @@ pub(super) fn check_phase_inject_defaults(
     structure: &EntityDefRef<'_>,
     structure_members: &HashMap<String, Type>,
     structure_constraint_labels: &HashSet<String>,
-    mut inferred_let_exprs: HashMap<(String, AvailableDefaultKind), CompiledExpr>,
-    pass1_skipped: &HashSet<String>,
-    pass1_param_skipped: &HashSet<String>,
-    pass2_skipped: &HashSet<String>,
-    pass2_compile_errors: &HashSet<String>,
+    mut pre: PreRegisterOutput,
     scope: &mut CompilationScope,
     value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
@@ -1872,7 +1710,7 @@ pub(super) fn check_phase_inject_defaults(
                 // claimed by an earlier annotated Let, the annotated Let will inject the
                 // definitive cell; skip emission here to prevent duplicate `(entity, member)`
                 // cells. Silent `continue` — before `compile_expr`, no cell, no diagnostic.
-                if pass1_param_skipped.contains(name) {
+                if pre.pass1_param_skipped.contains(name) {
                     continue;
                 }
                 if !structure_members.contains_key(name) {
@@ -1923,7 +1761,7 @@ pub(super) fn check_phase_inject_defaults(
                     // This mirrors the `pass2_skipped` / None-cache-miss guard in the
                     // `None` arm of the `DefaultKind::Let` dispatch below in this same
                     // function.
-                    if cell_type.is_some() && pass1_skipped.contains(name) {
+                    if cell_type.is_some() && pre.pass1_skipped.contains(name) {
                         continue;
                     }
 
@@ -1955,12 +1793,10 @@ pub(super) fn check_phase_inject_defaults(
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
                         }
                         None => {
-                            match inferred_let_exprs
-                                .remove(&(name.to_string(), AvailableDefaultKind::Let))
-                            {
+                            match pre.take_inferred_let(name) {
                                 Some(ce) => ce,
                                 None => {
-                                    if pass2_skipped.contains(name) {
+                                    if pre.pass2_skipped.contains(name) {
                                         // (a) Deliberate skip: Pass 2 found an annotated
                                         // type already occupying the scope slot and
                                         // did not cache this expression (see the `pass2_skipped`
@@ -1970,7 +1806,7 @@ pub(super) fn check_phase_inject_defaults(
                                         // to prevent duplicate (entity, member) cells.
                                         continue;
                                     }
-                                    if pass2_compile_errors.contains(name) {
+                                    if pre.pass2_compile_errors.contains(name) {
                                         // (b) Pass 2 compile error: compile_expr pushed at
                                         // least one diagnostic for this expression — the
                                         // root-cause error is already in diagnostics.
