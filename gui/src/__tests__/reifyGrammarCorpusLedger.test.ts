@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { countErrorNodes } from './lezerProbeHelpers';
+import { REPO_ROOT, readFixture } from './repoFixtures';
 import EXPECTED_CLEAN from './reifyGrammarCorpus.expected-clean.json';
 
 /**
@@ -12,12 +13,8 @@ import EXPECTED_CLEAN from './reifyGrammarCorpus.expected-clean.json';
  * The per-production shape tests live in `reifyGrammarCorpus.test.ts`.
  */
 
-/** Repo root, three levels up from `gui/src/__tests__/`. */
-const REPO_ROOT = join(__dirname, '../../..');
-
-function readFixture(relPath: string): string {
-  return readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-}
+/** Where `EXPECTED_CLEAN` is edited — named in the failure messages below. */
+const PIN_FILE = 'gui/src/__tests__/reifyGrammarCorpus.expected-clean.json';
 
 // ── Corpus drift ledger ──────────────────────────────────────────────────
 //
@@ -283,7 +280,8 @@ describe('reify.grammar — corpus drift ledger', () => {
       `These committed .ri files parsed with zero error nodes but no longer do — ` +
         `the grammar regressed:\n${regressed.map((p) => `  ${p}`).join('\n')}\n` +
         `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
-        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
+        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} paths pinned in ${PIN_FILE} ` +
+        `still exist on disk; ` +
         `${unpinnedClean.length} clean files are not pinned by this ledger)`,
     ).toEqual([]);
 
@@ -297,8 +295,8 @@ describe('reify.grammar — corpus drift ledger', () => {
     expect(
       capabilityGained,
       `These files are listed in KNOWN_NOT_CLEAN ("WHY THE LAST THREE FILES ` +
-        `REMAIN" above) but now parse with zero error nodes — move each into ` +
-        `EXPECTED_CLEAN and drop it from KNOWN_NOT_CLEAN:\n` +
+        `REMAIN" above) but now parse with zero error nodes — add each path to ` +
+        `${PIN_FILE} and drop it from KNOWN_NOT_CLEAN:\n` +
         `${capabilityGained.map((p) => `  ${p}`).join('\n')}`,
     ).toEqual([]);
   }, LEDGER_TIMEOUT_MS);

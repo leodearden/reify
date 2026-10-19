@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { foldNodeProp, indentNodeProp } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
@@ -20,6 +18,7 @@ import {
   punctuationSpans,
   sourceOfNodeNamed,
 } from './lezerProbeHelpers';
+import { readFixture } from './repoFixtures';
 
 /**
  * Corpus test for the GUI Lezer grammar (`gui/src/editor/reify.grammar`).
@@ -32,13 +31,6 @@ import {
  * error nodes. The corpus-wide drift ledger lives in
  * `reifyGrammarCorpusLedger.test.ts`.
  */
-
-/** Repo root, three levels up from `gui/src/__tests__/`. */
-const REPO_ROOT = join(__dirname, '../../..');
-
-function readFixture(relPath: string): string {
-  return readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-}
 
 /**
  * Node types that group two operands under an infix operator.

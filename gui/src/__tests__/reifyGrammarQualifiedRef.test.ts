@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { parser } from '../editor/reifyParser.js';
+import { readFixture } from './repoFixtures';
 
 /**
  * Qualified references through an import binding (`pp.Pulley`) on the GUI Lezer
@@ -35,9 +34,6 @@ import { parser } from '../editor/reifyParser.js';
  *   CONTROL param p : Beam::Material  0
  *   CONTROL let x = Foo::bar()     0
  */
-
-/** Repo root, three levels up from `gui/src/__tests__/`. */
-const REPO_ROOT = join(__dirname, '../../..');
 
 // The three helpers below are the ones `reifyGrammarCorpus.test.ts` documents
 // at length; they are re-declared rather than imported because a vitest test
@@ -294,8 +290,7 @@ describe('reify.grammar — prd-gate qualified-reference fixtures', () => {
     'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
   ]) {
     it(`parses ${relPath} with zero error nodes`, () => {
-      const src = readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-      expect(countErrorNodes(src)).toBe(0);
+      expect(countErrorNodes(readFixture(relPath))).toBe(0);
     });
   }
 });
