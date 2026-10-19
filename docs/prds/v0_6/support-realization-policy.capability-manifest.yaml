@@ -1,0 +1,271 @@
+prd: docs/prds/v0_6/support-realization-policy.md
+schema_version: 1
+signal_leaves:
+- ε
+tasks:
+- label: α₁
+  task_id: 9379
+  title: 'One support-realization module in reify-solver-elastic: table, resolver, composer, rows, rank helper; shell realizes through it'
+  note: 'Evidence measured on main eb0a855dad (2026-10-18) with the debug reify built 2026-10-16 14:45; modal_ops.rs, buckling.rs and shell_boundary.rs carry no realization change since 04be9302ea. Byte-identical leaf: solver crate plus reify-core codes only.'
+  capabilities:
+  - name: five-sites-on-main
+    binding: 'existing-substrate — modal_ops.rs::{build_dirichlet_bcs, support_targets, face_bound, face_company, face_realization, per_face_bcs, pin_pin_axial_anchor}; elastic_static.rs::{SYNTHETIC_CLAMP_FACE, any_support_targets, target_node_set, realized_cantilever_bc_node_sets}; buckling.rs::solve_buckling_trampoline (value_inputs[5] discarded, k_face loop); shell_boundary.rs::build_support_bcs called only from shell_solve.rs with (Fixed, Shell).'
+    verdict: PASS
+  - name: boxface-upstream
+    binding: 'producer:task-9121 upstream (S16 ο BoxFace::parse with "root" → XMin for every box-mesh consumer, axis, is_max; StructuredBoxMesh). Absent on main; α₁ depends on it, and through it on ξ #9120, ν #9091 and ζ₀ #9287.'
+    verdict: PASS
+  - name: no-cross-crate-registry
+    binding: 'existing-substrate — crates/reify-solver-elastic/Cargo.toml deps are reify-ir, reify-kernel-gmsh, faer, inventory, tracing; reify-eval depends on reify-solver-elastic, so a solver-crate test binary cannot link trampoline-side inventory submissions. Rows therefore live in supports/capability.rs as one REGISTERED list (PRD P9, D12).'
+    verdict: PASS
+  - name: module-table
+    binding: 'producer-self — pub fn constraint_pattern in crates/reify-solver-elastic/src/supports/policy.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn constraint_pattern\(
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: module-composer
+    binding: 'producer-self — pub fn realize_supports in crates/reify-solver-elastic/src/supports/realize.rs; absent on main. It also keeps ξ #9120''s crates-wide `fn realize_supports\(` check green after α₂ deletes the modal-local function.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn realize_supports\(
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: shell-table-absorbed
+    binding: 'producer-self — pub fn build_support_bcs (shell_boundary.rs, 1 on main) is absorbed into constraint_pattern; shell_solve.rs calls the table.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn build_support_bcs\(
+      expect: absent
+      paths:
+      - crates
+  - name: solver-crate-reify-core-edge
+    binding: 'producer-self — reify-core dependency in crates/reify-solver-elastic/Cargo.toml (R4, D9); absent on main. reify-ir and reify-kernel-gmsh already depend on reify-core, so no cycle.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^reify-core
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/Cargo.toml
+  - name: mechanism-code
+    binding: 'producer-self — DiagnosticCode FeaSupportsUnderRestrained (D4); absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FeaSupportsUnderRestrained
+      expect: present
+      paths:
+      - crates/reify-core/src
+  - name: totality-matrix
+    binding: 'behavioural — crates/reify-solver-elastic/tests/support_capability_matrix.rs drives every REGISTERED row against kind × target form × view (BT4); census row lands as chartered in this diff.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the matrix test is the behavioural cover; ε''s checks bind the INV-SF-3 pointer.'
+- label: α₂
+  task_id: 9380
+  title: 'Modal realizes through the module; the hinge pin; typed applied echo'
+  capabilities:
+  - name: supportspec-upstream
+    binding: 'producer:task-8683 upstream (S15 γ SupportSpec { kind: reify_solver_elastic::SupportKind, target }; unknown type_name → UnknownVariant). Absent on main; α₂ depends on it.'
+    verdict: PASS
+  - name: modal-local-realize-supports-upstream
+    binding: 'producer:task-9120 upstream through α₁ → ο (ξ: modal-local realize_supports with K5-3 totality and K5-4 DirichletRealization.applied). α₂ absorbs it as a call.'
+    verdict: PASS
+  - name: modal-placement-settled
+    binding: 'dependency chain — #9121 → #9120 → #9091 → #9003 → #8999, so modal_ops is in reify-analysis''s modal family when α₂ runs; locate by grep.'
+    verdict: PASS
+  - name: lone-pin-clamped-today
+    binding: 'probe (reify eval tests/prd-gate/fixtures/support_policy_modal_lone_pin.ri, rc 0) — f1 = 18925.96994693253 Hz plus info I_ModalPinnedFaceRealization "clamps all 3 translational DOFs, because it is the only face the model''s supports name". Control (support_policy_modal_unknown_face.ri: the same beam with a support naming no face, free-free today): rc 0, f1 = 0 Hz, W_ModalRigidBodyMode for modes 0-2, so the eigensolver channel reports at this size (nx = 12, ny = 1, nz = 6: 182 nodes, 546 DOFs, under the 1024-DOF dense ceiling). After α₂ the lone hinge leaves exactly 2 free rotations (rank argument, PRD D3); that the dense QZ reports both as ω ≤ 1 rad/s is predicted, not measured. The realization-time coded Warning (D4) reports the count in both regimes.'
+    verdict: PASS
+  - name: fixtures-parse
+    binding: 'grammar-fixture:tests/prd-gate/fixtures/support_policy_modal_lone_pin.ri and support_policy_modal_unknown_face.ri parse (tree-sitter parse --quiet rc 0, session-isolated cache).'
+    verdict: PASS
+  - name: hinge-numbers-measured
+    binding: 'G6 — the moved pinned-modal frequencies are not asserted from a guess: α₂ measures them before deleting the old realization. Only simply_supported_beam_modes (2%) and clamped_clamped_beam_modes.ri carry analytic bands and must stay inside them; printer_gantry_modes and printer_print_envelope have structural e2e only (no analytic tolerance) and printer_print_envelope.ri fails reify eval on #5847''s ctor debt (in-process only); `reify check prj/printer_v01/printer.ri` SIGSEGVs on the current build (open crash #7383), so its verdicts are recorded only if #7383 is fixed (decompose-verify wf_bfc0888c-04e). P1: build_beam_mesh has ny = 1, so the node nearest the analytic face centre ties to today''s y=0 edge anchor (lowest index wins under min_by(total_cmp)); on P2 the midside node at y = W/2 exists and the anchor moves. A crossed band is an escalation.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a measurement recorded in the commit message and re-baselined e2e bands; no grep can observe it.'
+  - name: modal-row
+    binding: 'producer-self — pub const MODAL_BOX in crates/reify-solver-elastic/src/supports/capability.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const MODAL_BOX
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: face-company-gone
+    binding: 'producer-self — enum FaceCompany (modal_ops.rs, 1 on main) is deleted by the hinge meaning (R3, D1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum FaceCompany
+      expect: absent
+      paths:
+      - crates
+- label: β
+  task_id: 9381
+  title: 'Elastic dims, Field and body realize through the module; μ''s refusal becomes the dims row; body refusals (R9, R10)'
+  capabilities:
+  - name: dims-refusal-upstream
+    binding: 'producer:task-9119 upstream (μ: request-validation refusal FeaSupportNotRealized per R1, five committed fixtures under tests/prd-gate/fixtures). β depends on it.'
+    verdict: PASS
+  - name: body-silent-today
+    binding: 'probe (debug reify built 2026-10-16, main-equivalent for elastic_static.rs): reify eval on tests/prd-gate/fixtures/support_policy_body_tip_target.ri and support_policy_body_pinned_root.ri exits 0, but the CLI registers no gmsh kernel (#6660) and the body overload''s pre-hydration guard (realized_solver_mesh_with_handle(..).is_none() → Failed with empty diagnostics) returns before any support is read; the printed ElasticResult is the hollow default and result.max_von_mises is undef (decompose-verify wf_bfc0888c-04e). The stale 2026-09-01 target/release/reify still solves on the fallback (vm 148294750.88), so CLI evidence depends on the binary. The body signal is therefore an in-process test in the crates/reify-eval/tests gmsh binary (pattern: solve_elastic_static_body_e2e.rs), PRD §2.2 P7; that test records the gmsh before-image.'
+    verdict: PASS
+  - name: fixtures-parse
+    binding: 'grammar-fixture:tests/prd-gate/fixtures/support_policy_body_tip_target.ri and support_policy_body_pinned_root.ri parse (tree-sitter parse --quiet rc 0).'
+    verdict: PASS
+  - name: body-row
+    binding: 'producer-self — pub const ELASTIC_BODY in crates/reify-solver-elastic/src/supports/capability.rs; absent on main; no other task can satisfy it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const ELASTIC_BODY
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: dims-clamp-const-gone
+    binding: 'producer-self — const SYNTHETIC_CLAMP_FACE (elastic_static.rs, 1 on main). μ #9119 may retire it first (its own check is on the arm, not the symbol); that only satisfies this check early.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const SYNTHETIC_CLAMP_FACE
+      expect: absent
+      paths:
+      - crates
+  - name: root-string-check-gone
+    binding: 'producer-self — fn any_support_targets (elastic_static.rs, 1 on main). μ may retire it first, as above.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn any_support_targets\(
+      expect: absent
+      paths:
+      - crates
+  - name: kind-blind-union-gone
+    binding: 'producer-self — fn target_node_set (elastic_static.rs, 1 on main); its loads half survives under a loads name.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn target_node_set\(
+      expect: absent
+      paths:
+      - crates
+  - name: static-numbers-identical
+    binding: 'behavioural — every committed static example prints identical results (S16 BT3 set); μ''s five fixtures keep their exits and codes; body refusals and the kept empty-list clamp in process (BT9-BT11).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'whole-corpus print equality and an in-process gmsh test; not grep-expressible.'
+- label: γ
+  task_id: 9382
+  title: 'Buckling realizes through the module (BUCKLING_COLUMN; synthesized pin-pin); #7081 becomes a call'
+  capabilities:
+  - name: buckling-loops-on-main
+    binding: 'existing-substrate — buckling.rs P1 `for k_face in [0usize, nz]` (u_x, u_y per end-face node, u_z at node_id(0,0,0)) and the P2 coordinate loop with DirichletBc { dof: 2 }.'
+    verdict: PASS
+  - name: calibration-floor
+    binding: 'measured pre-filing (2026-10-19, isolated worktree at main, release build): euler_column_pin_pin.rs::pin_pin_euler_column_within_ten_percent (nx = ny = 8, nz = 160; rel_err = |λ·F − π²EI/L²| / (π²EI/L²), bound < 0.10). Corner anchor node_id(0,0,0), today: λF = 46018.72 N, 9.17%. Centroid anchor node_id(4,4,0), the exact section centre: λF = 46033.78 N, 9.21%. The hinge''s anchor move costs +0.04 points; headroom stays 0.79 points. fixed_pin has no single-node u_z anchor (bottom face fully clamped), so it is unchanged. The P1 bending-lock floor is near 6.8% (#4052/#4066); γ asserts no new bound.'
+    verdict: PASS
+  - name: buckling-row
+    binding: 'producer-self — pub const BUCKLING_COLUMN in crates/reify-solver-elastic/src/supports/capability.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const BUCKLING_COLUMN
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: loops-gone
+    binding: 'producer-self — the hard-coded P1 loop (1 on main).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: for k_face in \[0usize, nz\]
+      expect: absent
+      paths:
+      - crates
+  - name: buckling-numbers-measured
+    binding: 'behavioural — BT12: buckling smoke examples and the two numeric embeds re-baselined inside their bounds with before/after in the commit.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a measurement; release-gated tests.'
+- label: δ
+  task_id: 9383
+  title: 'Point patches as a target form: 7189''s realization sites and its rigid-body guard absorbed; the restrain seam; the point code folded'
+  capabilities:
+  - name: point-sites-upstream
+    binding: 'producer:task-7189 upstream (unlanded branch task/7189: point_support_bcs, dirichlet_nodes, point_support.rs; mints FeaPointSupportsUnderRestrained in its rebase) and producer:task-8251 upstream (CT α patch_nodes, check_on_body in node_patch.rs; its done-producer check greps FeaPointSupportsUnderRestrained, which δ hand-repoints). δ depends on both.'
+    verdict: PASS
+  - name: patch-target
+    binding: 'producer-self — SupportTarget::Patch { nodes, restrain } in crates/reify-solver-elastic/src/supports/target.rs; absent on main (α₁ ships Named, Face, Faces only).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Patch \{ nodes
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: point-values-unchanged
+    binding: 'behavioural — BT13: 7189''s committed fixtures print unchanged values and exit codes.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'fixture print equality after #7189 merges; the names δ deletes are absent on main today (branch-only), so an absent grep would be vacuous.'
+- label: ε
+  task_id: 9384
+  title: 'INV-SF-3 covers supports; per-solver refusal e2e; FEA chunk and exemplar'
+  capabilities:
+  - name: sf3-text-today
+    binding: 'existing-substrate — docs/legibility/design-invariants.md §INV-SF-3 (heading `## INV-SF-3 `declared-intent-consumed-or-diagnosed``) names constraints, relate blocks, objectives and DFM rules; supports and loads are absent. The census table (Surface | Gate | Status) is in the same file.'
+    verdict: PASS
+  - name: fea-chunk-upstream
+    binding: 'producer:task-9119 upstream (μ creates or extends crates/reify-mcp/src/tools/chunks/fea.md; absent on main), reached through β; co-owners #8259, #7088, #8296, #8384 extend-if-present.'
+    verdict: PASS
+  - name: e2e-crate-has-no-gmsh
+    binding: 'existing-substrate — crates/reify-eval-fea-tests has no reify-kernel-gmsh dependency; the body family of the e2e is β''s gmsh binary in crates/reify-eval/tests.'
+    verdict: PASS
+  - name: sf3-enforcement-pointer
+    binding: 'producer-self — the INV-SF-3 Enforcement paragraph names the per-solver e2e; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: support_refusals_e2e
+      expect: present
+      paths:
+      - docs/legibility/design-invariants.md
+  - name: refusal-e2e
+    binding: 'producer-self — crates/reify-eval-fea-tests/tests/support_refusals_e2e.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn '
+      expect: present
+      paths:
+      - crates/reify-eval-fea-tests/tests/support_refusals_e2e.rs
+  - name: docs-truth
+    binding: 'behavioural — FEA chunk supports section with intent findability, best_practices exemplar plus INDEX line, reify-design SKILL index line; chunk signatures compile.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'chunk fence gate and intent findability.'
+- label: Ω
+  task_id: 9385
+  title: 'PRD close: SHIPPED header, landed ids, AS-AUTHORED freeze'
+  capabilities:
+  - name: close-header
+    binding: 'producer-self — the committed SHIPPED header (overlay "PRD terminal status").'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a docs header.'

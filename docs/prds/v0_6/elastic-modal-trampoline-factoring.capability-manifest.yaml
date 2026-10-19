@@ -488,7 +488,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: FeaDimsSupportNotRealized
+      pattern: FeaSupportNotRealized
       paths:
       - crates/reify-core/src
       expect: present
