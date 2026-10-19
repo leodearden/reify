@@ -32,7 +32,7 @@ SWITCHES = {
 }
 HELP_TOKENS = ("-h", "--help")
 _QUERY_FLAGS = frozenset(query.value for query in Query)
-REPORTS = {Query.KNOBS: queries.knob_report}
+REPORTS = {Query.KNOBS: queries.knob_report, Query.ROLE_POLICY: queries.role_policy_report}
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
 
 
@@ -89,6 +89,11 @@ USAGE = (
         Query.KNOBS.value,
         "Print every knob verify reads as one JSON line each:",
         "parser, default, meaning and the value under this env.",
+    ),
+    *_option(
+        Query.ROLE_POLICY.value,
+        "Print the role table (one JSON line per role) and the",
+        "profile table. A run's role is DF_VERIFY_ROLE (empty: task).",
     ),
     *_option("-h|--help", "Show this usage."),
 )

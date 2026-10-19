@@ -29,6 +29,7 @@ class Query(Enum):
     """A report printed instead of running an action; its value is the flag."""
 
     KNOBS = "--print-knobs"
+    ROLE_POLICY = "--print-role-policy"
 
 
 @dataclass(frozen=True)
