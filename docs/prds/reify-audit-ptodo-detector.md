@@ -508,12 +508,16 @@ that reintroduces guard 1's class wholesale and walks back into the §14 regime.
     `once` · `after` · `before`. The clause is the text since the last `.` `;` `:` `!` `?`
     that is followed by whitespace.
 
-  The payload is `Cited(owner ids)` only, deduped. A provenance cite on the same line never
-  reaches liveness: `introduced by #4578; growth owned by #7097` resolves #7097 alone.
+  The payload is `Cited(owner ids)` only, deduped. Through δ-C, a provenance cite on the same
+  line never reaches liveness: `introduced by #4578; growth owned by #7097` resolves #7097
+  alone.
 
   Precedence: the lane is **appended last** (arm 8, after δ-B). Every earlier lane therefore
-  keeps its lines, and a δ-B line keeps δ-B's payload. The `ptodo:allow` escape wins, as
-  everywhere.
+  keeps its lines, and a δ-B line keeps δ-B's payload: ALL its canonical cites, provenance
+  included. So, unless δ-B claims the line (`.rs` only), the provenance exclusion holds; when
+  it does, the verdict depends on the extension. `// introduced by #2330; wiring is blocked
+  on task #2947` resolves both ids in a `.rs` file and #2947 alone in a `.ri` file (pinned by
+  `scan_file_delta_c_precedence`). The `ptodo:allow` escape wins, as everywhere.
 
   Out of scope: trailing comments after code, `#`-comment languages (`.sh`/`.py`) and
   JSDoc ` * ` continuation lines.

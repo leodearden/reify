@@ -1495,9 +1495,11 @@ fn on_line_cites(line: &str) -> Vec<u32> {
 
 /// Lane δ-C's payload: the cites on `line` in owner position
 /// ([`is_owner_position`]), each id once, in source order. A cite is canonical
-/// ([`canonical_cite_spans`]) or the legacy `task N` spelling
-/// ([`legacy_task_cite_occurrences`]) above the same [`PRD_RELATIVE_MAX_ID`]
-/// bound, so one definition of "cite" serves every lane.
+/// ([`canonical_cite_spans`], which drops a PRD-relative `#N` by its left
+/// context) or the legacy `task N` spelling ([`legacy_task_cite_occurrences`]).
+/// The legacy spelling reuses the same [`PRD_RELATIVE_MAX_ID`] bound, applied
+/// unconditionally because the spelling is itself the `task N` register. Only
+/// this lane resolves it: the marker lanes report it as `malformed-cite`.
 fn promise_owner_cites(line: &str) -> Vec<u32> {
     let legacy = legacy_task_cite_occurrences(line).filter(|&(_, _, id)| id > PRD_RELATIVE_MAX_ID);
     let mut spans: Vec<(usize, usize, u32)> = canonical_cite_spans(line).chain(legacy).collect();
@@ -3890,12 +3892,16 @@ mod tests {
                 malformed.to_string()
             )]
         );
-        // Arm (7): on Rust δ-B wins, keeping its ALL-canonical-cites payload
-        // (δ-C alone would yield only the owner, #2947).
+        // Arm (7): on Rust δ-B wins, keeping its ALL-canonical-cites payload;
+        // where δ-B does not run, δ-C resolves the owner alone.
         let delta_b = "/// introduced by #2330; wiring is blocked on task #2947";
         assert_eq!(
             scan_file(delta_b, SweptLang::Rust),
             cited_line(delta_b, &[2330, 2947])
+        );
+        assert_eq!(
+            scan_file(delta_b, SweptLang::SlashComment),
+            cited_line(delta_b, &[2947])
         );
         // Arm (6): an uncited phantom claim stays structural.
         let phantom = "// tracked separately, owned by task 4578";
