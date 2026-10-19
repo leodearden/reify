@@ -208,7 +208,7 @@ tasks:
     binding: 'producer:task-7189 upstream (unlanded branch task/7189: point_support_bcs, dirichlet_nodes, point_support.rs; mints FeaPointSupportsUnderRestrained in its rebase) and producer:task-8251 upstream (CT α patch_nodes, check_on_body in node_patch.rs; its done-producer check greps FeaPointSupportsUnderRestrained, which δ hand-repoints). δ depends on both.'
     verdict: PASS
   - name: patch-target
-    binding: 'producer-self — SupportTarget::Patch { nodes, restrain } in crates/reify-solver-elastic/src/supports/target.rs; absent on main (α₁ ships Named, Face, Faces only).'
+    binding: 'producer-self — SupportTarget::Patch { nodes, restrain } in crates/reify-solver-elastic/src/supports/target.rs; absent on main (α₁ ships Named and Face; β adds Faces).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -253,6 +253,12 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval-fea-tests/tests/support_refusals_e2e.rs
+  - name: coverage-test
+    binding: 'behavioural — D12''s reify-eval/analysis coverage test (every production target whose stdlib declaration takes List<Support> names a REGISTERED row) lands in ε, after every row-adding leaf (α₂, β, γ); solve_buckling takes supports : List<Support> (solver_buckling_fns.ri), so it would be red before γ.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a test over the registry and the stdlib declarations; not grep-expressible.'
   - name: docs-truth
     binding: 'behavioural — FEA chunk supports section with intent findability, best_practices exemplar plus INDEX line, reify-design SKILL index line; chunk signatures compile.'
     verdict: PASS

@@ -1,5 +1,6 @@
 //! Parse-error lookup shared by this harness's diagnostic tests: run the public
-//! `reify_syntax::parse` and pick out the one diagnostic a test is about.
+//! `reify_syntax::parse`, pick out the one diagnostic a test is about, and assert where it is
+//! located.
 //!
 //! One copy, so every consumer selects its diagnostic by the same rule and fails with the same
 //! full error list.
@@ -26,4 +27,18 @@ pub fn only_error_starting_with<'a>(errors: &'a [ParseError], prefix: &str) -> &
         "expected exactly one {prefix:?} diagnostic, got: {errors:?}"
     );
     error
+}
+
+/// Assert `error` starts at byte `offset` and renders at `line_col`.
+#[track_caller]
+pub fn assert_located(error: &ParseError, source: &str, offset: usize, line_col: &str) {
+    assert_eq!(
+        error.span.start as usize, offset,
+        "expected the diagnostic to start at byte {offset}, got: {error:?}"
+    );
+    let rendered = error.render(source);
+    assert!(
+        rendered.starts_with(&format!("{line_col}: ")),
+        "expected the diagnostic rendered at {line_col}, got: {rendered:?}"
+    );
 }
