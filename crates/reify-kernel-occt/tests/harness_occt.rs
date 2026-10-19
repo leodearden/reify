@@ -116,6 +116,8 @@ mod point_on_shape_integration;
 mod projection_trait_delegation;
 #[path = "harness_occt/projector_impl.rs"]
 mod projector_impl;
+#[path = "harness_occt/repr_policy_table.rs"]
+mod repr_policy_table;
 #[path = "harness_occt/revolve_with_history_integration.rs"]
 mod revolve_with_history_integration;
 #[path = "harness_occt/shell_shape_oob_face_index_integration.rs"]
