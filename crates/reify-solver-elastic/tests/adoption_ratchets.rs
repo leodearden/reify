@@ -741,6 +741,8 @@ struct Ratchet {
     measure: Measure,
 }
 
+const SOLVE_REDUCED_DEFINITION_AND_TEST_ITEMS: &[&str] = &[TEST_ITEMS[0], "fn solve_reduced"];
+
 const SRC: &[&str] = &["src/"];
 const SRC_AND_TESTS: &[&str] = &["src/", "tests/"];
 const NO_PATHS: &[&str] = &[];
@@ -904,6 +906,8 @@ const RATCHETS: &[Ratchet] = &[
             "is_anchor[a] = true;",
         )),
     },
+    // The next three rows are textual proxies: each needle spells the one copy's
+    // local variable names, so a copy written with other names escapes it.
     Ratchet {
         name: "member-force-loops",
         home: "member_axial_forces in form_find.rs (solver-crates-layering D3, leaf η)",
@@ -930,16 +934,23 @@ const RATCHETS: &[Ratchet] = &[
             "d[(j, k)] -= qi;",
         )),
     },
+    // Counts every reference to `solve_reduced` outside its own definition, so a
+    // second caller, a fn-pointer binding or an import reds whatever its
+    // argument spelling; a hand-rolled loop that solves `D_ff` some other way
+    // is not a reference, so this stays a proxy for "one driver".
     Ratchet {
         name: "anchored-fixed-point-drivers",
-        home: "the stencil-parameterised anchored fixed-point driver in form_find.rs \
-               (solver-crates-layering D3, leaf η)",
+        home: "solve_reduced's one caller, the stencil-parameterised anchored \
+               fixed-point driver in form_find.rs (solver-crates-layering D3, leaf η)",
         baseline: 1,
-        measure: Measure::Occurrences(production_pattern(
-            "solve_reduced(&",
-            SRC,
-            "let solved = solve_reduced(&d, &x, &f, &a);",
-        )),
+        measure: Measure::Occurrences(Pattern {
+            skip_items: SOLVE_REDUCED_DEFINITION_AND_TEST_ITEMS,
+            ..production_pattern(
+                "solve_reduced",
+                SRC,
+                "let solved = solve_reduced(&d, &x, &f, &a);",
+            )
+        }),
     },
     Ratchet {
         name: "mpc-row-literals",
