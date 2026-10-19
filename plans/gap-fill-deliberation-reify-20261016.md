@@ -447,3 +447,66 @@ Append-only, by the gap-fill lead. Each stream session returns these in its resu
 - **Vendored helper:** η #9393 adds a second REIFY DIVERGENCE to `gui/src-tauri/sandbox/landlock_exec.py` (the temp grant reads TMPDIR). A lead note on #9393 asks it to update reify CLAUDE.md "Vendored sandbox helpers" in the same diff.
 - **INV-GUI-4:** a new docs/invariants.md row owned by this stream. α adds it and ω refreshes it.
 - **D3 tooling:** not run, because every leaf's signal is GUI/Tauri/frontend and outside the D3 workflow's reach. Recorded in the manifest.
+
+### cargo-native-harness-layout (42531785aa; `docs/prds/v0_6/cargo-native-harness-layout.md`)
+- **G4 row added:** `scripts/harness_layout.py (engine) + tests/infra/test_harness_layout.py (member) + the post-nextest check-dep-info planner step | cargo-native-harness-layout (δ #9403, ε₁ #9404, ε₂ #9405) | S18 build/selection modules, S19 contract doc`.
+- **S18** (`verify-structured-plan-and-role-table.md`; note by the lead on ζ #9112): after ζ, three follow-on edits land in S18's modules:
+  - δ #9403 swaps the `check-harness-baseline-registration.sh --from-git` emitter for `harness_layout.py check-registration`. If `ScopeDecision` carries a base by then, δ passes it as `--base`;
+  - ε₁ #9404 adds a `check-dep-info` emitter after the debug nextest pass at merge/background;
+  - δ and ε₂ edit `selection.py::select_harness_kloc_guard`.
+
+  #9313's `harness_consolidatable` key restates δ's `autotests = false` for the same five crates. δ enforces that they agree, and a note on #9313 proposes deriving the key from `autotests` instead.
+- **#6745 premise checks** (dependent #6748; notes by the lead on #6745, #9112 and #9303): two more checks flip when other leaves land, and each landing leaf must widen its check in three writes:
+  - `new-ri-fixtures-need-rust-coupled-registration`, at S18 ζ #9112;
+  - `run-all-classification-covers-only-infra-shell-tests`, at S19 υ #9303.
+
+  The stream widened its own check, `reify-eval-tests-must-be-harness-submodules`.
+- **S19** (`run-all-runner-infra-harness.md`):
+  - #8700's fk-53a9afc0d2b9 is now `x_finding_part`, and ε₂ #9405 closes it;
+  - `contract-doc-home` also accepts `tests/infra/test_harness_layout.py` (twins in 42531785aa);
+  - the contract doc's layout half is this stream's from α #9396;
+  - δ registers its member by #9303's pragma if that is live, or by a manifest row otherwise.
+- **syntax-lowering-contract** (note by the lead on ω₂ #9352): β₂ #9398 moves both reify-syntax harness roots to `main.rs`, and γ #9402 splits harness_syntax (not harness_syntax_lowering). There is no edge; ω₂ re-reads its root at leaf time.
+- **merge-gate-compile-cost (#5254):** ε₁ #9404 appends one dated line to that PRD's 2026-10-16 gap-fill amendments: the cap is re-based to code lines (CAP_CODE_LINES = 12000) and splits are by subtopic. #5254 has no live consolidation leaf.
+- **Premise corrections to this record's D-K8-1 text** (measured by the session):
+  - the ruled check `git ls-files 'crates/*/tests/*.rs'` ⊆ `src_paths` is false as written, because 895 nested module files are not targets; the corrected contract is flat `tests/*.rs` + `tests/*/main.rs`;
+  - step A must re-path 19 escaping includes (3 bare `mod common;` + 16 `common/…`);
+  - harness_geometry.rs's "~700 lines from the cap" is stale (it is 2,991 under).
+- **Step B** folds into ε₁ (R1): a real-cargo G3 probe showed directory-driven membership fails on stable Rust, so membership is bare `mod` lines.
+
+## Lead log — gap-fill streams (gap-fill lead, 2026-10-17 → 2026-10-19)
+
+Append-only, by the gap-fill lead. The FILED rows above were appended by each stream's own session, as their briefs said; the lead verified each row on main. Every task write listed here or in §Cross-reference lines was read back.
+
+- **The FILED table is complete:** six streams, each authored, decomposed, filed and landed in one attended /prd session.
+  - syntax-lowering-contract: cfc86e10ad
+  - auto-reach-relation: 449d4aae22
+  - generic-instantiation-and-call-binding: 3a9fe15b08
+  - support-realization-policy: 5616280aa7
+  - gui-engine-admission: 1156ce4bc6
+  - cargo-native-harness-layout: 42531785aa
+
+  The lead's cross-reference commits are 3f9015b3b5 and d3ba9e6834, plus this commit.
+- **Gates (census 2026-10-19).** Neither gate's commit is the lead's.
+  - **#9171** (hotspot-origin; deferred until Leo commits it) has 24 dependencies: 22 high, #9170 medium and #9169 low.
+    - The six streams' highs: syntax β #9344; generic α₁–γ₂ #9358–#9363; auto-reach β1–γ #9369–#9372; support ε #9384; gui α #9387; cargo ε₁ #9404.
+    - The applier seats' highs from 2026-10-16/17: #9263, #9264, #9267, #9287, #9288, #9292, #9321 and #9322.
+  - **#9242** (review-origin; pending) has 4 high dependencies: #9077, #9207 (in progress), #9269 (in progress; raised low → high and gated by Leo on 2026-10-18), and cargo ε₂ #9405.
+- **Session roster:** the six stream sessions and the audit routing session ran attended, plus two /unblock sessions Leo authorised on 2026-10-18. Every session hit the account usage limit on its first turn on 2026-10-17 and resumed at the 22:00 reset. Their pre-reset result.md stubs were not outcomes.
+- **Open items from "Open after application", resolved:**
+  - #7233 landed as merge b3895273b7 (/unblock, 2026-10-18) after its dead claim (run-e2c568798195) was cleared, and is done. Its docs commit conflicted with #7280's §11.2 rework and kept main's prose. Leo then raised #9269 and gated it on #9242: under load, the pre-done wrapper's 87 MB get_tasks fetch overruns its 10 s curl timeout, so done-flips fail with exit 125, and #9269 removes that fetch. ~/.cargo/bin/reify-audit (built 2026-09-01) was reinstalled from main.
+  - #6306 landed as merge 8abc62eecc (/unblock, 2026-10-18; same dead run) and is done. Its gate took about 3 h because three docs-only direct commits moved main mid-verify.
+  - The fused-memory one-sidecar-per-batch gap is filed as dark-factory #7111 (Leo, 2026-10-18): commit_planning is to stamp every distinct sidecar a batch names.
+- **Audit routing session** (audit-reify-470123; memory project_audit_reify_20261017):
+  - esc-audit-1 (PPRDSTATUS: 49 findings across 37 PRDs; per-doc proposed rulings in data/audit-runs/2026-10-17T21-33-03Z-pprdstatus-adjudication.json) awaits Leo's docs-truth sitting. esc-5798-1 and esc-6941-1 are the PDCHECK escalations.
+  - Its follow-ups #9334, #9335, #9341 and #9355 were filed deferred, per the /audit convention, and released to pending by Leo.
+  - #9342 (the PTODO orphaned cites) landed as ba132e57fb.
+  - It repointed 85 live tasks' metadata.files in place.
+  - Leo's rulings on the three tasks whose premise a deletion removed:
+    - #7821 closed done, found on main at 18cc3cd88a (#7709's split);
+    - #7651 re-scoped to the GUI `build_constraints` guarded-group lookup residual;
+    - #5972 re-scoped to the Satisfaction wire-token single-source half of its unlanded branch task/5972 (#6665 deleted the CLI MCP adapter both tasks targeted).
+- **Still open at hand-off:**
+  - #7809 (medium, pending, unclaimed; branch task/7809 holds its fix): syntax α #9343, and so high β #9344 on #9171, wait on it.
+  - #5992 is in progress; generic γ₂ #9363 waits on it.
+  - Leo's: the esc-audit-1 docs-truth sitting; optionally installing the docs-truth sweep timer (deploy/systemd/reify-docs-truth-sweep.{service,timer}); P1/P5 detector runtime (#8331, #9355).
