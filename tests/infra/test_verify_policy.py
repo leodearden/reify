@@ -500,5 +500,158 @@ class TestKnobRegistry(unittest.TestCase):
         )
 
 
+def split_role_policy(lines):
+    """(role lines by role, profile lines by profile) of a role-policy report."""
+    roles = {line["role"]: line for line in lines if line["kind"] == "role"}
+    profiles = {line["profile"]: line for line in lines if line["kind"] == "profile"}
+    return roles, profiles
+
+
+D3_FIELDS = (
+    "default_profile",
+    "prio_class",
+    "force_scope_all",
+    "jobserver",
+    "heavy",
+    "fail_fast",
+    "records_confirm_manifest",
+    "release_wall_default",
+    "release_selector",
+    "infra_tier",
+    "attempt_sidecar",
+    "release_delta_skip_eligible",
+    "sweep_ledger",
+    "gui_feature_test_pass",
+    "admission_exempt",
+)
+T, F = True, False
+D3_ROWS = {
+    "task": ("debug", "nice -n 15 ionice -c 2 -n 7 ", F, "task", "exclude-eligible", T, F,
+             "90m", "release-sensitive", "selective", F, F, F, T, F),
+    "merge": ("both", "nice -n 5 ", T, "merge", "exclude-eligible", T, F,
+              "90m", "release-sensitive", "wholesale", T, T, F, T, T),
+    "offline": ("release", "nice -n 19 ionice -c3 ", F, "none", "only", F, T,
+                "13h", "workspace", "selective", F, F, F, F, F),
+    "background": ("both", "nice -n 19 ionice -c3 ", T, "task", "none", T, F,
+                   "90m", "release-sensitive", "wholesale", F, F, T, T, F),
+}
+D4_FIELDS = (
+    "cargo_release_flag",
+    "wall_knob",
+    "narrowable",
+    "confirm_manifest",
+    "confirm_sidecar",
+    "retry_filter_env",
+)
+D4_KNOB_FIELDS = ("wall_knob", "confirm_manifest", "confirm_sidecar", "retry_filter_env")
+D4_ROWS = {
+    "debug": ("", "REIFY_VERIFY_TEST_TIMEOUT", T, "REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG",
+              "REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG", "REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG"),
+    "release": ("--release", "REIFY_VERIFY_TEST_TIMEOUT_RELEASE", F,
+                "REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE", "REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE",
+                "REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE"),
+}
+
+
+class TestRolePolicyTable(unittest.TestCase):
+    """`--print-role-policy` prints the PRD's D3 role table and D4 profile table."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.outcome = run_py(["--print-role-policy"], base_env())
+        cls.lines = json_lines(cls.outcome)
+        cls.roles, cls.profiles = split_role_policy(cls.lines)
+
+    def test_shape(self):
+        self.assertEqual(len(self.lines), 6)
+        self.assertTrue(all(line["v"] == 1 for line in self.lines))
+        self.assertEqual(
+            [line["role"] for line in self.lines if line["kind"] == "role"],
+            list(D3_ROWS),
+        )
+        self.assertEqual(
+            [line["profile"] for line in self.lines if line["kind"] == "profile"],
+            list(D4_ROWS),
+        )
+        self.assertEqual(self.outcome.stderr, "")
+
+    def test_role_policies_equal_d3(self):
+        for role, row in D3_ROWS.items():
+            with self.subTest(role=role):
+                policy = self.roles[role]["policy"]
+                self.assertEqual(set(policy), set(D3_FIELDS))
+                expected = dict(zip(D3_FIELDS, row))
+                prio = policy["prio_class"]
+                self.assertIsInstance(prio, dict)
+                self.assertEqual(prio["prefix"], expected.pop("prio_class"))
+                actual = {k: v for k, v in policy.items() if k != "prio_class"}
+                self.assertEqual(actual, expected)
+
+    def test_idle_roles_share_one_prio_class(self):
+        self.assertEqual(
+            self.roles["offline"]["policy"]["prio_class"]["name"],
+            self.roles["background"]["policy"]["prio_class"]["name"],
+        )
+
+    def test_profile_policies_equal_d4(self):
+        for profile, row in D4_ROWS.items():
+            with self.subTest(profile=profile):
+                policy = self.profiles[profile]["policy"]
+                self.assertEqual(set(policy), set(D4_FIELDS))
+                self.assertEqual(policy, dict(zip(D4_FIELDS, row)))
+
+    def test_profile_knobs_are_registry_knobs(self):
+        records, _ = knob_report(base_env())
+        for profile, line in self.profiles.items():
+            for name in D4_KNOB_FIELDS:
+                with self.subTest(profile=profile, field=name):
+                    self.assertIn(line["policy"][name], records)
+
+    def test_release_wall_default_is_the_registry_default(self):
+        records, _ = knob_report(base_env())
+        registry_default = records["REIFY_VERIFY_TEST_TIMEOUT_RELEASE"]["default"]
+        for role in ("task", "merge", "background"):
+            with self.subTest(role=role):
+                self.assertEqual(
+                    self.roles[role]["policy"]["release_wall_default"], registry_default
+                )
+
+    def test_queries_are_exclusive(self):
+        py = run_py(["--print-knobs", "--print-role-policy"], base_env())
+        self.assertEqual(py.returncode, 64)
+        self.assertEqual(py.stdout, "")
+        self.assertEqual(
+            py.stderr,
+            f"{ERROR_PREFIX}query already set to '--print-knobs', "
+            "got '--print-role-policy'\n",
+        )
+        repeated = run_py(["--print-role-policy", "--print-role-policy"], base_env())
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(repeated.stdout, self.outcome.stdout)
+
+    def test_a_query_takes_the_same_validation_path(self):
+        bogus = run_py(["--print-role-policy"], base_env(DF_VERIFY_ROLE="bogus"))
+        self.assertEqual(bogus.returncode, 64)
+        self.assertEqual(
+            bogus.stderr,
+            f"{ERROR_PREFIX}unknown DF_VERIFY_ROLE 'bogus' "
+            "(want task|merge|offline|background)\n",
+        )
+        weird = run_py(["--print-role-policy", "--profile=weird"], base_env())
+        self.assertEqual(weird.returncode, 64)
+        self.assertEqual(
+            weird.stderr,
+            f"{ERROR_PREFIX}invalid --profile 'weird' (want debug|release|both)\n",
+        )
+
+    def test_bash_rejects_the_query_flag(self):
+        bash = run_bash(["--print-plan", "--print-role-policy"], base_env())
+        self.assertEqual(bash.returncode, 64)
+        self.assertEqual(
+            bash.stderr.splitlines()[0],
+            f"{ERROR_PREFIX}unknown argument '--print-role-policy'",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
