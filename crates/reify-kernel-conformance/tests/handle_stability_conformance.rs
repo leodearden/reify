@@ -4,9 +4,10 @@
 //! session, per real kernel. This is the regression guard that "would have
 //! caught #4262" — see `docs/prds/kernel-seam-contracts.md` §5/§12.
 //!
-//! Scope: all four arms of the §12 ζ conformance matrix — OCCT
+//! Scope: the four arms of the §12 ζ conformance matrix — OCCT
 //! `extract_faces`, OCCT `extract_edges`, Manifold `extract_faces`, and
-//! Manifold `extract_edges`. The Manifold `extract_edges` arm was
+//! Manifold `extract_edges` — plus two OCCT arms outside that matrix,
+//! described below. The Manifold `extract_edges` arm was
 //! DELIBERATELY OMITTED when this file was first landed (task ζ):
 //! `ManifoldKernel::extract_edges`, in
 //! `crates/reify-kernel-manifold/src/kernel.rs`, minted a fresh id every
@@ -15,17 +16,18 @@
 //! assertion would have been permanently red and un-greenable within that
 //! task's scope. The downstream leaf η landed the mirrored
 //! `extracted_edges` memoization cache and added this arm to complete the
-//! matrix (§5/§8/§12). Two further OCCT arms cover the sub-shape-kind axis
-//! behind `OcctKernel`'s one extraction body: `extract_vertices` stability,
-//! and edges/faces/vertices interleaved on one parent (each stable, the kinds
-//! disjoint, every id carrying its own kind's repr and the parent as owner).
+//! matrix (§5/§8/§12). The two OCCT arms outside the matrix cover the
+//! sub-shape-kind axis behind `OcctKernel`'s one extraction body:
+//! `extract_vertices` stability, and edges/faces/vertices interleaved on one
+//! parent (each stable, the kinds disjoint, every id carrying its own kind's
+//! repr and the parent as owner).
 //!
-//! All four arms here are GREEN on current main: the memoization they pin
-//! already landed (OCCT `extracted_faces`/`extracted_edges` caches, #318/
-//! #4262; Manifold `extracted_faces`/`extracted_edges` caches). Their value
-//! is red-on-revert — delete the relevant cache and a repeated `extract_*`
-//! call mints fresh ids, `first != second`, and the test fails: exactly the
-//! #4262 defect.
+//! Every arm here is GREEN on current main: the memoization they pin already
+//! landed (OCCT `extracted_faces`/`extracted_edges` caches, #318/#4262, and
+//! its `extracted_vertices` cache; Manifold `extracted_faces`/
+//! `extracted_edges` caches). Their value is red-on-revert — delete the
+//! relevant cache and a repeated `extract_*` call mints fresh ids,
+//! `first != second`, and the test fails: exactly the #4262 defect.
 //!
 //! Also out of scope: none of the arms below call `OcctKernel::with_warm_state`,
 //! so this file pins ONLY within-session stability, not the cache's
