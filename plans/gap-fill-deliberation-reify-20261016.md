@@ -361,3 +361,157 @@ Each new stream's spawned /prd session appends its row here (append-only) in its
 | stream | brief | PRD | tasks | gate deps | notes |
 |---|---|---|---|---|---|
 | syntax-lowering-contract | ~/.claude/spawn-briefs/gapfill-syntax-lowering-contract-brief.md | docs/prds/v0_6/syntax-lowering-contract.md | α #9343, β #9344 (high), γ #9346, δ #9347, ε #9348, ζ #9349, η #9350, ω₁ #9351, ω₂ #9352, Ω #9353; out-of-plan decision milestone #9354 (pragmas in guards / annotations in spec bodies; ← #8612, #9347) | 9171 ← 9344 | held: none. Subsumed and cancelled (content ported first): #8080 → 9347, #8081 → 9346, #8275 → 9344, #7810 → 9344, #7676 → 9348 (R3). Interim kept: #7809 (9343 and 9347 depend on it). Edges on other streams' tasks: #9150 ← 9352 (S23 OQ-7 (a)). This stream's leaves also depend on #8182, #8742 (9350), and #8904 and #9322 (9352). Record writes: #8742 details (R8 UnattributedFault request), #9322 details (R4: σ populates its own fields; no lowering leaf). Key stamps: fk-3553b78476b5 9344 (parts 9343, 9346); fk-653f242d7f93 9350; fk-7173c189d7ea 9347; fk-cff74023db39 9348; fk-50ed9b0483bf 9349; fk-258131627845 9352 (parts 9351, #8182); fk-cdf6477a3b3d 9352. Session rulings R1–R8 and R7′ are in the PRD §4. |
+| auto-reach-relation | ~/.claude/spawn-briefs/gapfill-auto-reach-relation-brief.md | docs/prds/v0_6/auto-reach-relation.md | α #9368, β1 #9369 (high), β2 #9370 (high), β3 #9371 (high), γ #9372 (high), δ #9374 (dep-gated [MILESTONE] decision gate, born-at-L2 after γ: R3's "drivable later via whole-model-objective-coupling"), ω #9373 (close) | 9171 ← 9369, 9370, 9371, 9372 | held: none. Subsumed and cancelled (content ported first: 18 committed tests/prd-gate/fixtures/auto_reach_*.ri, the #6307 verdict table in the manifest, dated details on 9369/9370): #6307 → 9369, #7069 → 9369 (premise false: its disjunct never reached main; defect live), #6649 → 9370. Interim kept: none. Edges on other streams' tasks: none (this stream's leaves depend on #8691, #8704, #8860 — closure members, depended on only — and #6690, #8868). New invariant INV-EVAL-7 (docs/invariants.md row added by β1, enforced by γ). Key stamps: fk-a5a65ab8428c on 9369, 9370, 9371, 9372; fk-a5237570b374 on 9368, 9369, 9371. Session rulings R1–R10 are in the PRD §4 (R9 turned δ into a decision milestone after the critic pass; R10 ratified EvaluationState as the retention home). |
+| generic-instantiation-and-call-binding | ~/.claude/spawn-briefs/gapfill-generic-instantiation-and-call-binding-brief.md | docs/prds/v0_6/generic-instantiation-and-call-binding.md | α₁ #9358 (high), α₂ #9359 (high), β₁ #9360 (high), β₂ #9361 (high; follow-on after #8761/#8860, G1), γ₁ #9362 (high), γ₂ #9363 (high), δ #9364, ε #9365 (docs truth), ω #9366 (close) | 9171 ← 9358, 9359, 9360, 9361, 9362, 9363 | held: none (plain edges, R3): α₁ ← #8643, #8903, #8638, #9169, #8013; α₂ ← #8018; β₁ ← #8638, #8743, #8704; β₂ ← #8761, #8860; γ₁ ← #8897; γ₂ ← #5992; δ ← #8643, #8903 (#8704/#8761/#8860 are closure members, depended on only). Subsumed and cancelled (content ported first): #7337, #8098, #9329 (the K1-D3 interim), #8214 (R14) → 9358; #8229 → 9359; #6853, #7225 → 9360; #7573 → 9364. Interim kept: #6851 (C14, R2), #9169 (lands first), #5992 (lands first, R1; γ₂ deletes its parity test). Edges on other tasks: #7882 ← 9360 (added before #6853/#7225 were cancelled), #8586 ← 9363. Cross-reference notes written on #8903, #8643, #6851, #8013, #8018, #5992, #9169, #7882, #8586, #8233, #8426. New invariant INV-COMP-4 (docs/invariants.md row by β₁). Key stamps: fk-4bd738a79576 9359 (part 9358); fk-7bf9e6299eca 9360 (part 9361); fk-1b3f91469997 9363 (part 9362); fk-7eb49b30a889 9364; fk-0e4c27b21db7, fk-6b74a4f8fcfc 9358. Session rulings R1–R14 are in the PRD §4 (R13 re-ruled R12 (3) after the critic pass; R14 absorbed #8214 after decompose-verify). |
+| support-realization-policy | ~/.claude/spawn-briefs/gapfill-support-realization-policy-brief.md | docs/prds/v0_6/support-realization-policy.md | α₁ #9379, α₂ #9380, β #9381, γ #9382, δ #9383, ε #9384 (high), Ω #9385; out-of-plan decision milestone #9386 (rigid-coupling hinge, option D; ← Ω #9385, #8612) | 9171 ← 9384 | held: none. Subsumed/cancelled: none (ξ #9120 is absorbed as a call by α₂, not cancelled). Amended: #9119 (R3's code spelled FeaSupportNotRealized per R1; dims-support-code corrected by three writes: S16 sidecar .yaml, .md twin, metadata), #7081 (full-text rewrite: A1 is a call to realize_supports with BUCKLING_COLUMN, not a port; its "base" targets are renamed there), #7871 (note). Edges on other tasks: #7081 ← 9382 and ← #8683; #7871 ← 9380. Upstream edges: 9379 ← #9121; 9380 ← #8683; 9381 ← #9119; 9383 ← #7189, #8251; 9386 ← #8612. Notes (scope unchanged): #9120, #8256, #7143, #7142, #7189, #8251, #7213, #8649. Key stamps: fk-47257bcb2c8c 9384 (parts 9379, 9380, 9381, 9382, 9383); fk-ec25b28cba70 9380; fk-5edeea9c474a 9380. Session rulings R1–R14 are in the PRD §4: R3 PinnedSupport is a hinge face (modal and buckling pins change; buckling pin-pin measured 9.17% → 9.21%, bound 10%); R4 reify-solver-elastic gains reify-core; R9 Pinned on a realized face is refused; R13 α split; R14 FeaSupportsUnderRestrained is the general mechanism code and CT's FeaPointSupportsUnderRestrained folds into it in δ. #8612 closure: 239 on 2026-10-19. |
+| gui-engine-admission | ~/.claude/spawn-briefs/gapfill-gui-engine-admission-brief.md | docs/prds/v0_6/gui-engine-admission.md | α #9387 (high), β #9388, γ #9389, δ #9390, ε #9391, ζ #9392, η #9393 (added by session ruling R12), ω #9394 (close) | 9171 ← 9387 | held: none. Subsumed and cancelled (content ported first; no spawned children): #8471 → 9389 (`x_subsumed_by` 9389); #8574 → 9391 + S25 ρ #8954 (`x_subsumed_by` [9391, 8954]). Key stamps (all `x_finding_run` hotspot-survey-reify-20261015): fk-efe244a6697a 9387 (part 9388); fk-0ea9b4872587 9387 (rider, R5); fk-e9fa33e06157 9390; fk-9f1803be198c 9389 (part 9393); fk-33bb6efd23ac 9391; fk-2513539f4913 9392. Upstream edges (closure leaves; allowed direction): every leaf ← #8942, #8947, #8950; 9387 ← #8951; 9388 ← 9387, #9070, #8943; 9389 ← #8951, #8954; 9390 ← #8943, #9070; 9391 ← #8954; 9392 ← #9076; 9393 ← 9389, 9392. Edges on other tasks (all outside #8612's closure: 239 non-terminal at 2026-10-19T09:45Z): #9279 ← 9391, 9392, 9393 (claude_bridge.rs order #9076 → 9392 → 9393 → #9279; #9284 file-lock only); #9174 ← 9389 (R7). Record writes: #9279 (R6 premise: landlock is per `claude --print` child per turn, so a respawn may be unnecessary; R9), #9174 (R7 re-target onto `WriteTarget::write`), sentence-sized notes on #8950, #8943, #8951; adjacency notes on #9285, #6257, #7704. Session rulings R1–R12 and two lead decisions are in the PRD §4. |
+| cargo-native-harness-layout | ~/.claude/spawn-briefs/gapfill-cargo-native-harness-layout-brief.md | docs/prds/v0_6/cargo-native-harness-layout.md | α #9396, β₁ #9397, β₂ #9398, β₃ #9399, β₄ #9400, β₅ #9401, γ #9402, δ #9403, ε₁ #9404 (high), ε₂ #9405 (high), Ω #9406 (close) | 9171 ← 9404; 9242 ← 9405 | held: none. Step B is folded into ε₁ (R1: the G3 probe failed for every directory-driven mechanism, so membership is bare `mod` lines). Upstream edges: α ← #8700; δ ← #9112, #9097; ε₂ ← #9097 (closure members, depended on only; #8612 closure 240 at 2026-10-18). Subsumed and cancelled: none. #8146 stays as the interim fix, and δ cancels it as moot if it is still open. Key stamps: fk-e2a244cfb575 9404 (parts 9396–9401, 9403); fk-b904603b81f2 9404; fk-10c353ee8ed7 9404 (parts 9396, 9402); fk-9e9f9b36fbcc 9401 (parts 9396–9400); fk-e6dd1263aafe 9403; fk-53a9afc0d2b9 9405 (moved from #8700, which now carries it as x_finding_part; run review-all-reify-20261010, gate #9242 per R4). Record writes: delivered checks widened as three writes on #5789, #6745 and #8700 (each manifest twin is in this commit); one-sentence layout notes on #8648, #8207, #7749, #5436, #8599, #7557, #7357; #8700 details note. New invariant INV-TEST-1 (δ adds the row, ε₁ enforces it). Session rulings R1–R8 are in the PRD §4. R2 sets the cap to 12,000 code lines, with harness_syntax split first (γ). R3 makes size-driven splits subtopic clusters (`harness_<topic>_<subtopic>`) instead of numbered shards. R8 re-ruled R7's lane after the critic pass: dark-factory runs test and lint concurrently, so the dep-info checks run as a planner step after the debug nextest pass at merge/background. |
+
+## Cross-reference lines — gap-fill streams (applied by the gap-fill lead)
+
+Append-only, by the gap-fill lead. Each stream session returns these in its result. A G4 line here adds to or supersedes the matching row in the program doc's §Gap-fill deliberation "G4 rows added". Task-record writes are named with their target ids, and each was read back.
+
+### syntax-lowering-contract (cfc86e10ad; `docs/prds/v0_6/syntax-lowering-contract.md`)
+- **G4 supersedes:** `SpannedIdent on declared/referenced names | S9 σ #9322 (fields and lowering-site population; session ruling R4) | reify-lsp decl_oracle`. No lowering leaf exists for it.
+- **G4 amends:** `crates/reify-syntax/src/ts_parser.rs lowering dispatch, body loops and fault policy | syntax-lowering-contract | S9 γ/μ #8732/#8742, S9 σ #9322, S8 π #8904 (one-hunk edits)`. Close leaf ω₂ #9352 waits on #8904 (→ #8620 → #8613) and on #9322.
+- **S9** (`docs/prds/v0_6/compiler-declaration-passes.md`; task-record writes by the session):
+  - μ #8742 carries the R8 request for UnattributedFault, and η #9350 depends on it;
+  - σ #9322 carries the R4 note;
+  - γ #8732's B4 splits: β #9344 delivers the safety half and δ #9347 the message half, with no edge (R5);
+  - ε #9348's public `reify_syntax::grammar_contract` is available to γ's B2 matrix.
+- **S23:** #9150 depends on ω₂ #9352 (wired by the session; OQ-7 (a)).
+- **S22** (closure leaves; small widenings by the lead, as details notes; evidence workflow wf_0066c884-b8a):
+  - δ #8644: α `load_probe_set` refuses a match key outside the known set;
+  - ε #8649: `ProbeContext.from_environment()` resolves the newer of target/release/reify and target/debug/reify by mtime.
+- **#6567** (deferred) closes as subsumed by ζ #9349 once ζ lands (notes on #6567 and #9349).
+- **#9354**'s gate on #8612 as "the review-all work capstone" was confirmed by Leo (2026-10-18).
+
+### auto-reach-relation (449d4aae22; `docs/prds/v0_6/auto-reach-relation.md`)
+- **G4 rows added** (session ruling R6):
+  - `AutoReach relation + ReachEdges policy (crates/reify-eval/src/auto_reach.rs) | auto-reach-relation | single builder (#6690), S4 detectors.rs, resolve_order::compute_clusters, engine_fixpoint decline gate, check_constraints_post_geometry`;
+  - `DependencyGraph::template_reads() / TemplateReads + ScopeMap (crates/reify-eval/src/instance_scope.rs) | auto-reach-relation (on S3's type) | AutoReach, the pinned-connector writers`;
+  - `resolve_order cluster-formation reach query | auto-reach-relation | —`.
+- **S3** (δ #8691; note on #8691): α #9368 adds `DependencyGraph::template_reads(&ScopeMap) -> TemplateReads` in deps.rs, and deps.rs imports the new instance_scope module. Alias edges live only in TemplateReads, so §5.2's inversion law and B5 are untouched.
+- **S4** (cell-eval-transaction-closure D7, κ #8868; note on #8868): after β1 #9369, ColdArtifacts carries `&AutoReach` in place of CellReadIndex, and detectors.rs imports `crate::auto_reach::AutoReach` instead of `solver_problem::CellReadIndex`. κ stays a pure move. S4's E11 row and auto-reach's two `Engine` adoption-ratchet rows are one rule on two vehicles; whichever lands second folds them.
+- **S1** (engine-state-partition §5.6, ζ #9044; note on #9044): EvaluationState gains `auto_reach: AutoReach`, rebuilt by eval and edit_param, and `scope_map: ScopeMap`, built by eval from templates alone and kept across edits. Classify both in the Engine-state partition.
+- **#6690** (note on #6690): the single builder takes `&AutoReach` as a parameter in β1 #9369. A constraint whose only reach into a scope's autos is cross-scope is NOT admitted unless both scopes are co-solved in one merged cluster. The edit path's raw-match admission of it is the divergence R3 resolves; do not preserve it.
+- **whole-model-objective-coupling / whole-model-joint-drive-seam:** R3 (2026-10-18) rules cross-scope constraints on template-keyed child autos undrivable now and drivable later via whole-model-objective-coupling. δ milestone #9374 brings the INV-2 / BT-10 / joint-drive decision 7 re-rule to Leo after γ. No task write: #9374 carries it.
+
+### generic-instantiation-and-call-binding (3a9fe15b08; `docs/prds/v0_6/generic-instantiation-and-call-binding.md`)
+- **G4 rows added:**
+  - `crates/reify-compiler/src/type_args.rs (bind_type_args / Sigma / TypeArity; the one TypeArgArity diagnostic) | generic-instantiation-and-call-binding (α₁ #9358) | S8 ο #8903 (ParamBuiltin.arity reader), #5024 (generic traits)`;
+  - `compile_builder/monomorph.rs + instantiate_phase.rs + the reify-eval hydration concreteness check (INV-COMP-4) | generic-instantiation-and-call-binding (β₁ #9360, β₂ #9361) | S27 β #8761 (first_unrepresentable_cell), #6851`;
+  - `CompiledExprKind::UserFunctionCall shape + reify-ir fn_ref.rs (FnRef/FnTable), after S8 ζ #8897 | generic-instantiation-and-call-binding (γ₁ #9362, γ₂ #9363) | S8 ζ hands over the variant; ζ's intrinsic field becomes a projection of callee origin`;
+  - `ValueCellId monomorph re-keying (through S3 ι InstancePath) | generic-instantiation-and-call-binding (β₁) | S3 keeps OQ-2 b's typed ValueCellId; S3 ι #8704`;
+  - `Type::has_value_representation (reify-core; moved from reify-eval is_representable_cell_type) | generic-instantiation-and-call-binding (β₁) | S4 ν #8860, S27 β #8761`.
+- **Closure tasks** (notes by the lead; the session left them unwritten on purpose):
+  - S3 η #8677: γ₁ #9362 folds FnRef into the UserFunctionCall content_hash (R6). The node-hash formula is unchanged; one input moves once.
+  - S3 ι #8704: β₁ #9360 depends on it and re-keys monomorph ValueCellIds through InstancePath.
+  - S27 β #8761: β₂ #9361 depends on it. β₁ flips the LSP compile-clean generic cases, and whichever lands second adapts eval_guard.rs.
+  - S4 ν #8860: β₁ moves is_representable_cell_type to reify-core; β₂ deletes assert_value_cell_types_representable after ν's partition.
+- **generic-enum-type-arg-retention PRD** (#8013, #8018; notes by the session): α₁ follows #8013 and routes its bare-enum rule through bind_type_args; α₂ follows #8018. That PRD's R2 quotes the old arity text, which α₁ unifies to `E_TYPE_ARG_ARITY`.
+- **docs/prds/v0_3/auto-type-param-resolution-completion.md** §4.2 invariant 2 and §4.3 are superseded by a dated addendum in β₁'s diff (R8).
+- **D3 tooling:**
+  - a list-valued `stderr_contains` crashed prd-capability-check.py: filed as #9376, after S22 δ #8644 (follow-on form);
+  - the run also needed REIFY_BIN=target/debug/reify, since target/release/reify dates from 2026-09-01. That is the same trap as the S22 ε #8649 widening above.
+- **Interim tasks that land first:** #5992 (14-commit finished branch; γ₂ #9363 depends on it and deletes its parity test), #9169 (in progress) and #6851 (C14).
+
+### support-realization-policy (5616280aa7; `docs/prds/v0_6/support-realization-policy.md`)
+- **G4 amends** the gap-fill row `support realization (constraint_pattern, resolve_support_target, SupportCapability) | support-realization-policy | …`. Owner leaf: α₁ #9379. Consumers: S15 γ #8683, S16 ξ/ο/μ #9120/#9121/#9119, #7081, CT #8251/#8256 and #7142/#7143. The settled shape:
+  - the API is `realize_supports(&[SupportDecl], &BoundaryView, &SupportCapability)` over a solver-side `SupportDecl`, because reify-solver-elastic cannot name `SupportSpec`; the `support_decls` adapter sits beside the S15 decoder;
+  - `BoundaryView { StructuredBox, Realized }` with `SupportTarget { Named, Face, Faces, Patch }`, and no Points view (R2);
+  - the third table parameter is `SupportFrame`, not `Idealization` (R3);
+  - every capability row is a const in `supports/capability.rs`.
+- **S16** (`elastic-modal-trampoline-factoring.md`): the PRD still spells `FeaDimsSupportNotRealized` throughout; the code is now `FeaSupportNotRealized` (R1). A dated line in that PRD's §Gap-fill amendments records the rename. The session corrected μ #9119's description and metadata, plus the S16 sidecar and `.md` twin. ξ #9120 and ο #9121 carry notes.
+- **coordinate-target-fea** §5 C9: R14 folds `FeaPointSupportsUnderRestrained` into `FeaSupportsUnderRestrained`, which α₁ #9379 mints. δ #9383 repoints #8251's done-producer check in three writes. The session wrote notes on #8251, #8256 and #7189.
+- **PDROP** (`trampoline-param-drop-closure.md` §7 A1): A1 is now "a call to realize_supports with BUCKLING_COLUMN". #7081 was rewritten and depends on γ #9382 and #8683. The buckling examples' `"base"` targets are #7081's to rename.
+- **S15:** the session wrote nothing to closure leaf #8683. β #9381 rewrites #8683's landed T8 body-path Pinned test as a follow-on (a refusal, per R9).
+- **S5** (notes by the lead on #8984 and #8999):
+  - ratchet rows `support-face-vocabulary` and `support-bc-literals` go on #8984's `tests/infra/test_analysis_stratum_ratchet.py`;
+  - the `support_decls` adapter sits in the shared foundation beside `SupportSpec` (κ₁ #8999 placement).
+- **INV-SF-3** is amended in place by ε #9384: its row in docs/legibility/design-invariants.md plus a census row. The program-doc pointer (R12) is appended to the program doc.
+- **#7871** now depends on α₂ #9380 and describes the hinge.
+- **Observed, not owned** (notes by the lead):
+  - #7383: the printer.ri SIGSEGV still reproduces on 2026-10-19;
+  - #6660: the CLI body overload returns Failed with no diagnostic;
+  - #5847: `examples/trajectory/printer_print_envelope.ri` fails `reify eval` on constructor debt;
+  - #8649: the stale release binary; the session added evidence.
+- The session also wrote a #9121 note (D10: `nodes_on` delegates to the module's face predicate) after its FILED row was committed.
+
+### gui-engine-admission (1156ce4bc6; `docs/prds/v0_6/gui-engine-admission.md`)
+- **G4 supersedes** the gap-fill row for this stream with: `EngineSession source-write admission (EntryDocument/resolve_target), PreviewState, WriteTarget (write_confinement.rs), DesignWatch (design_watch.rs), claude_bridge SidecarState table, GuiState.entry_path/preview_live, INV-GUI-4 | gui-engine-admission | S25 ξ #8950, ο #8951, commands.rs doors`.
+- **S25** (`gui-backend-engine-modules-events-tool-contract.md`): §4.10 placement row 3 is superseded when α #9387 lands, because the host guard is re-homed onto resolve_target. A dated pointer line is appended to that PRD's §Gap-fill amendments. The session wrote notes on ξ #8950, η #8943 and ο #8951.
+- **K7-D3 #9279** depends on ε/ζ/η (#9391, #9392, #9393). Its R6 premise note: landlock is applied per `claude --print` child per turn, the sidecar is unconfined, and `--resume` is passed per turn, so a workspace change may not need a respawn. Leo's visible-reset condition still binds.
+- **Review instrument:** #9174 (fk-19a30824e41b) is re-targeted onto `WriteTarget::write` and depends on γ #9389.
+- **docs/debug-mcp-contract.md** (S25-owned): γ adds the save_path admission paragraph and widens the AI-write rule to design dir ∪ temp dir (R8/R12).
+- **Vendored helper:** η #9393 adds a second REIFY DIVERGENCE to `gui/src-tauri/sandbox/landlock_exec.py` (the temp grant reads TMPDIR). A lead note on #9393 asks it to update reify CLAUDE.md "Vendored sandbox helpers" in the same diff.
+- **INV-GUI-4:** a new docs/invariants.md row owned by this stream. α adds it and ω refreshes it.
+- **D3 tooling:** not run, because every leaf's signal is GUI/Tauri/frontend and outside the D3 workflow's reach. Recorded in the manifest.
+
+### cargo-native-harness-layout (42531785aa; `docs/prds/v0_6/cargo-native-harness-layout.md`)
+- **G4 row added:** `scripts/harness_layout.py (engine) + tests/infra/test_harness_layout.py (member) + the post-nextest check-dep-info planner step | cargo-native-harness-layout (δ #9403, ε₁ #9404, ε₂ #9405) | S18 build/selection modules, S19 contract doc`.
+- **S18** (`verify-structured-plan-and-role-table.md`; note by the lead on ζ #9112): after ζ, three follow-on edits land in S18's modules:
+  - δ #9403 swaps the `check-harness-baseline-registration.sh --from-git` emitter for `harness_layout.py check-registration`. If `ScopeDecision` carries a base by then, δ passes it as `--base`;
+  - ε₁ #9404 adds a `check-dep-info` emitter after the debug nextest pass at merge/background;
+  - δ and ε₂ edit `selection.py::select_harness_kloc_guard`.
+
+  #9313's `harness_consolidatable` key restates δ's `autotests = false` for the same five crates. δ enforces that they agree, and a note on #9313 proposes deriving the key from `autotests` instead.
+- **#6745 premise checks** (dependent #6748; notes by the lead on #6745, #9112 and #9303): two more checks flip when other leaves land, and each landing leaf must widen its check in three writes:
+  - `new-ri-fixtures-need-rust-coupled-registration`, at S18 ζ #9112;
+  - `run-all-classification-covers-only-infra-shell-tests`, at S19 υ #9303.
+
+  The stream widened its own check, `reify-eval-tests-must-be-harness-submodules`.
+- **S19** (`run-all-runner-infra-harness.md`):
+  - #8700's fk-53a9afc0d2b9 is now `x_finding_part`, and ε₂ #9405 closes it;
+  - `contract-doc-home` also accepts `tests/infra/test_harness_layout.py` (twins in 42531785aa);
+  - the contract doc's layout half is this stream's from α #9396;
+  - δ registers its member by #9303's pragma if that is live, or by a manifest row otherwise.
+- **syntax-lowering-contract** (note by the lead on ω₂ #9352): β₂ #9398 moves both reify-syntax harness roots to `main.rs`, and γ #9402 splits harness_syntax (not harness_syntax_lowering). There is no edge; ω₂ re-reads its root at leaf time.
+- **merge-gate-compile-cost (#5254):** ε₁ #9404 appends one dated line to that PRD's 2026-10-16 gap-fill amendments: the cap is re-based to code lines (CAP_CODE_LINES = 12000) and splits are by subtopic. #5254 has no live consolidation leaf.
+- **Premise corrections to this record's D-K8-1 text** (measured by the session):
+  - the ruled check `git ls-files 'crates/*/tests/*.rs'` ⊆ `src_paths` is false as written, because 895 nested module files are not targets; the corrected contract is flat `tests/*.rs` + `tests/*/main.rs`;
+  - step A must re-path 19 escaping includes (3 bare `mod common;` + 16 `common/…`);
+  - harness_geometry.rs's "~700 lines from the cap" is stale (it is 2,991 under).
+- **Step B** folds into ε₁ (R1): a real-cargo G3 probe showed directory-driven membership fails on stable Rust, so membership is bare `mod` lines.
+
+## Lead log — gap-fill streams (gap-fill lead, 2026-10-17 → 2026-10-19)
+
+Append-only, by the gap-fill lead. The FILED rows above were appended by each stream's own session, as their briefs said; the lead verified each row on main. Every task write listed here or in §Cross-reference lines was read back.
+
+- **The FILED table is complete:** six streams, each authored, decomposed, filed and landed in one attended /prd session.
+  - syntax-lowering-contract: cfc86e10ad
+  - auto-reach-relation: 449d4aae22
+  - generic-instantiation-and-call-binding: 3a9fe15b08
+  - support-realization-policy: 5616280aa7
+  - gui-engine-admission: 1156ce4bc6
+  - cargo-native-harness-layout: 42531785aa
+
+  The lead's cross-reference commits are 3f9015b3b5 and d3ba9e6834, plus this commit.
+- **Gates (census 2026-10-19).** Neither gate's commit is the lead's.
+  - **#9171** (hotspot-origin; deferred until Leo commits it) has 24 dependencies: 22 high, #9170 medium and #9169 low.
+    - The six streams' highs: syntax β #9344; generic α₁–γ₂ #9358–#9363; auto-reach β1–γ #9369–#9372; support ε #9384; gui α #9387; cargo ε₁ #9404.
+    - The applier seats' highs from 2026-10-16/17: #9263, #9264, #9267, #9287, #9288, #9292, #9321 and #9322.
+  - **#9242** (review-origin; pending) has 4 high dependencies: #9077, #9207 (in progress), #9269 (in progress; raised low → high and gated by Leo on 2026-10-18), and cargo ε₂ #9405.
+- **Session roster:** the six stream sessions and the audit routing session ran attended, plus two /unblock sessions Leo authorised on 2026-10-18. Every session hit the account usage limit on its first turn on 2026-10-17 and resumed at the 22:00 reset. Their pre-reset result.md stubs were not outcomes.
+- **Open items from "Open after application", resolved:**
+  - #7233 landed as merge b3895273b7 (/unblock, 2026-10-18) after its dead claim (run-e2c568798195) was cleared, and is done. Its docs commit conflicted with #7280's §11.2 rework and kept main's prose. Leo then raised #9269 and gated it on #9242: under load, the pre-done wrapper's 87 MB get_tasks fetch overruns its 10 s curl timeout, so done-flips fail with exit 125, and #9269 removes that fetch. ~/.cargo/bin/reify-audit (built 2026-09-01) was reinstalled from main.
+  - #6306 landed as merge 8abc62eecc (/unblock, 2026-10-18; same dead run) and is done. Its gate took about 3 h because three docs-only direct commits moved main mid-verify.
+  - The fused-memory one-sidecar-per-batch gap is filed as dark-factory #7111 (Leo, 2026-10-18): commit_planning is to stamp every distinct sidecar a batch names.
+- **Audit routing session** (audit-reify-470123; memory project_audit_reify_20261017):
+  - esc-audit-1 (PPRDSTATUS: 49 findings across 37 PRDs; per-doc proposed rulings in data/audit-runs/2026-10-17T21-33-03Z-pprdstatus-adjudication.json) awaits Leo's docs-truth sitting. esc-5798-1 and esc-6941-1 are the PDCHECK escalations.
+  - Its follow-ups #9334, #9335, #9341 and #9355 were filed deferred, per the /audit convention, and released to pending by Leo.
+  - #9342 (the PTODO orphaned cites) landed as ba132e57fb.
+  - It repointed 85 live tasks' metadata.files in place.
+  - Leo's rulings on the three tasks whose premise a deletion removed:
+    - #7821 closed done, found on main at 18cc3cd88a (#7709's split);
+    - #7651 re-scoped to the GUI `build_constraints` guarded-group lookup residual;
+    - #5972 re-scoped to the Satisfaction wire-token single-source half of its unlanded branch task/5972 (#6665 deleted the CLI MCP adapter both tasks targeted).
+- **Still open at hand-off:**
+  - #7809 (medium, pending, unclaimed; branch task/7809 holds its fix): syntax α #9343, and so high β #9344 on #9171, wait on it.
+  - #5992 is in progress; generic γ₂ #9363 waits on it.
+  - Leo's: the esc-audit-1 docs-truth sitting; optionally installing the docs-truth sweep timer (deploy/systemd/reify-docs-truth-sweep.{service,timer}); P1/P5 detector runtime (#8331, #9355).
+- **Addendum (2026-10-19, after the lead log above):**
+  - support-realization-policy landed a second commit, cc12cd59d2. At Leo's request, a fresh fable review of the landed state found 1 blocker, 7 majors and 9 minors; all were folded into the PRD and manifest and the task records #9379–#9384, #7081 and #9120. No delivered check changed. One more cross-reference line: #7189's merge must not re-baseline S5's `support-bc-literals` or `support-anchor-nearest-node` rows (the session's note on #7189; the lead's note on #8984 records the third S5 row).
+  - Every gap-fill session has now exited.
+  - **Gate #9171 committed** (deferred → pending) by the lead on Leo's direction.
+  - #7809 is handed to a sibling /team session (team-reify-1506619), which checks whether branch task/7809 is complete and, if so, carries it through /merge-queue.

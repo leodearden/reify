@@ -1471,3 +1471,9 @@ config_key_census:
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"
+
+# Task 3546 (mu gate), Leo's ruling of 2026-10-18 on esc-3546-1: enforce strand
+# conversion (task 3539) fleet-wide. Restart-only, so it takes effect at the next
+# scheduled fleet redeploy. workflow_exit_contract_enforce stays False until task
+# 3113 lands and a fresh soak shows zero would-violates.
+convert_to_blocked_enforce: true

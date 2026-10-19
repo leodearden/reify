@@ -2297,6 +2297,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Partial fit. watcher-rearm.sh CEILING timeouts were retried three times with near-identical commands. The session did not end in a user interrupt, so the outcome differs from the entry's description.
+  - date: '2026-10-18'
+    project: reify
+    session: 58559c49-f9c4-45bf-9044-72473beab516
+    origin_phase: ops
+    manifested_phase: ops
+    note: Partial match. watcher-rearm.sh CEILING timeout was retried four times in this session. Only the last attempt changed a parameter (timeout 3600 to 2700), and there was no user interrupt, so the match is weaker than the entry's description.
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -4320,6 +4326,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'The watcher-rearm command hit its own 3600s ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING) and was re-issued with the identical command and timeout in three designed-outcome cycles (turns 110, 117, 162), with no change in approach.'
+  - date: '2026-10-18'
+    project: reify
+    session: 58559c49-f9c4-45bf-9044-72473beab516
+    origin_phase: ops
+    manifested_phase: ops
+    note: The same watcher-rearm.sh command (3600s timeout) was re-issued identically after hitting CEILING exit=124 at turns 73, 91, and 98, then re-issued with a reduced timeout at turn 106. Matches the 'bounded rearm wait re-issued after its own ceiling' pattern.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -7392,6 +7404,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent probes .task-meta/_lane-35/iterations.jsonl, a path the warm-lane layout does not document, and the wc call fails with 'No such file or directory' (exit 1 from the compound ls/wc command).
+  - date: '2026-10-18'
+    project: reify
+    session: d12ca763-95ca-480a-9abe-7c0fcd3e776c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Same undocumented .task-meta/<lane>/iterations.jsonl probe as turn 41. The exit code here is 1 rather than 2, but the path and failure mode match.
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -8216,6 +8234,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Partial match: the session''s tail of .task/iterations.jsonl fails with ''No such file or directory'' in a warm-lane worktree, the same missing per-lane iterations.jsonl pattern. The digest does not show the expected path or the phase, so both phases are unknown.'
+  - date: '2026-10-18'
+    project: reify
+    session: d12ca763-95ca-480a-9abe-7c0fcd3e776c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 41 probes .task-meta/_lane-30/iterations.jsonl; wc returns 'No such file or directory' (exit 1) while the directory itself exists and lists plan.json, metadata.json and others.
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium

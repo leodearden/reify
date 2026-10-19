@@ -619,6 +619,7 @@ pub use elements::{
     // Task 4417/ζ: dedicated CST membrane element K_e.
     membrane_cst::element_stiffness_membrane_cst,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
+    shell_frame::{ShellFrame, build_shell_frame, plane_stress_d},
     tet_p1::TetP1,
     tet_p2::TetP2,
     wedge_p1::WedgeP1,
@@ -664,9 +665,9 @@ pub use result::{
     recover_nodal_stress_p1, tet_volume_p1,
 };
 pub use shell_assembly::{
-    ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
-    shell_element_stiffness_degenerate, shell_element_stiffness_degenerate_ans,
-    shell_element_stiffness_degenerate_ans_bubble, shell_element_stiffness_mitc3_plus,
+    shell_element_stiffness, shell_element_stiffness_degenerate,
+    shell_element_stiffness_degenerate_ans, shell_element_stiffness_degenerate_ans_bubble,
+    shell_element_stiffness_mitc3_plus,
 };
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};

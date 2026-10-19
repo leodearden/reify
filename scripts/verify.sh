@@ -4523,10 +4523,16 @@ build_plan() {
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
         local _leaf_env
+        # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
+        # slot_acquire deadline or nested run_all.sh never writes into this
+        # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
+        # unset extends the scrub prefix's documented `env -u ...` argv, so one
+        # env invocation builds the member environment; it is per member
+        # command, so verify.sh's own processes keep the channel.
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi

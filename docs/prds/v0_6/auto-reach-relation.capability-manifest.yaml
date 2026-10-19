@@ -1,0 +1,189 @@
+prd: docs/prds/v0_6/auto-reach-relation.md
+schema_version: 1
+signal_leaves:
+- γ
+tasks:
+- label: α
+  task_id: 9368
+  title: 'auto-reach-relation α: ScopeMap + DependencyGraph::template_reads (alias edges in the projection only; budgets on ScopeMap)'
+  capabilities:
+  - name: dependency-graph-upstream
+    binding: 'DependencyGraph (forward + reverse() as its inversion) is S3 δ #8691 (pending), upstream of α; template_reads iterates its forward edges, never EvaluationGraph node maps, so δ''s one-walk row stays at one.'
+    verdict: PASS
+  - name: instance-path-upstream
+    binding: InstancePath::structure_scope is S3 ι #8704 (pending), upstream of α (ruled R6).
+    verdict: PASS
+  - name: solver-problem-home-upstream
+    binding: CellReadIndex, build_single_instance_alias_paths and the pinned-connector writers move to solver_problem.rs in S4 ν #8860 (pending), upstream of α.
+    verdict: PASS
+  - name: scope-map-delivered
+    binding: The one canonicalisation home (path map, single-instance oracle, connector correspondence; budgets as constructor args) is a new module.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/instance_scope.rs
+  - name: template-reads-delivered
+    binding: DependencyGraph::template_reads(&ScopeMap) -> TemplateReads lives in deps.rs (PRD §5.2).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn template_reads[(]
+      expect: present
+      paths:
+      - crates/reify-eval/src/deps.rs
+  - name: fixtures-registered
+    binding: α's alias-law tests are the first compiled reader of all eighteen auto_reach_*.ri fixtures, so α registers them in _RUST_COUPLED_RI_FIXTURES (PRD D16; PG-DRIFT).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: auto_reach_geo_loop_b
+      expect: present
+      paths:
+      - scripts/verify.sh
+- label: β1
+  task_id: 9369
+  title: 'auto-reach-relation β1: AutoReach; builder admission and W_UNDERDETERMINED switch together (absorbs #6307, #7069)'
+  capabilities:
+  - name: single-builder-upstream
+    binding: The one engine-side ResolutionProblem builder (cold, merged, edit) is solver-driver-parity β #6690 (pending, high), upstream of β1.
+    verdict: PASS
+  - name: post-pass-detector-upstream
+    binding: detect_underdetermined as a PostPassDetector reading ColdArtifacts is S4 κ #8868 (pending; κ after φ #9292), upstream of β1.
+    verdict: PASS
+  - name: connector-false-positive-observed
+    binding: 'reify check tests/prd-gate/fixtures/auto_reach_conn_pinned.ri and auto_reach_conn_concrete.ri emit W_UNDERDETERMINED for E.__connector_0.gain while eval prints E.__connector_0.gain = 0.01 m (main baff3ed38b, binary 2026-10-16).'
+    verdict: PASS
+  - name: underdetermined-fires
+    binding: reify check tests/prd-gate/fixtures/auto_reach_conn_free.ri emits two W_UNDERDETERMINED (the rejection mechanism exists and fires).
+    verdict: PASS
+  - name: optimized-let-doomed-solve
+    binding: The cold-path @optimized-let doomed solve and the wrapper shape are not yet observed; β1 proves them with a fixture before relying on the containment predicate (PRD §11 OQ-1).
+    verdict: OPEN
+  - name: auto-reach-delivered
+    binding: crates/reify-eval/src/auto_reach.rs holds AutoReach, Reacher, ReadPath, Drivability, ReachEdges::RULED (PRD §5.3–5.4).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/auto_reach.rs
+  - name: inv-eval-7-registered
+    binding: β1 adds the INV-EVAL-7 row (partial) to docs/invariants.md (ruled R7).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^[|] INV-EVAL-7 [|]'
+      expect: present
+      paths:
+      - docs/invariants.md
+  - name: reach-not-drivable-cause
+    binding: UndefCause gains ReachNotDrivable for an auto whose only reachers are undrivable (replaces the misattributed solve failed infeasible).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ReachNotDrivable
+      expect: present
+      paths:
+      - crates/reify-ir/src/value.rs
+- label: β2
+  task_id: 9370
+  title: 'auto-reach-relation β2: E_EVAL_UNRESOLVED and the post-geometry decline set from the relation (absorbs #6649)'
+  capabilities:
+  - name: relation-upstream
+    binding: AutoReach and EvaluationState.auto_reach come from β1, upstream of β2.
+    verdict: PASS
+  - name: false-violated-observed
+    binding: reify check tests/prd-gate/fixtures/auto_reach_geo_loop_b.ri prints VIOLATED GeoLoopB#constraint[0], exit 1, and no geometry-backed refusal (INV-SF-4 breach; main baff3ed38b).
+    verdict: PASS
+  - name: refusal-fires
+    binding: reify check tests/prd-gate/fixtures/auto_reach_geo_loop_a.ri prints the E_EVAL_UNRESOLVED refusal (the mechanism exists and fires).
+    verdict: PASS
+  - name: gate-reads-relation
+    binding: engine_fixpoint's decline gate calls the retained relation's declined_constraints() (refusal-class blocks only, PRD D8).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: declined_constraints[(]
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_fixpoint.rs
+- label: β3
+  task_id: 9371
+  title: 'auto-reach-relation β3: compute_clusters reads the relation (drivable objective reachers only)'
+  capabilities:
+  - name: relation-upstream
+    binding: AutoReach comes from β1, upstream of β3; ClusterFormationCtx exists in resolve_order.rs.
+    verdict: PASS
+  - name: clusters-oracle
+    binding: The bt8/bt9/bt10/δ-cluster suites exist in resolve_order.rs, and examples/whole_model_joint_drive.ri and examples/cost_subtree_aggregate.ri evaluate on main (exit 0); β3 keeps both byte-identical.
+    verdict: PASS
+  - name: clusters-query-delivered
+    binding: compute_clusters calls AutoReach::auto_owners_reached_by instead of union_via_transitive_auto_owners.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: auto_owners_reached_by
+      expect: present
+      paths:
+      - crates/reify-eval/src/resolve_order.rs
+- label: γ
+  task_id: 9372
+  title: 'auto-reach-relation γ: cross-check e2e over the auto_reach fixtures (eval and edit) + the parameters chunk; INV-EVAL-7 enforced'
+  capabilities:
+  - name: consumers-upstream
+    binding: Admission and W (β1), the decline gate (β2) and clusters (β3) all read the relation; all three are upstream of γ.
+    verdict: PASS
+  - name: fixtures-committed
+    binding: The eighteen tests/prd-gate/fixtures/auto_reach_*.ri fixtures are committed with this PRD, parse with 0 ERROR nodes (isolated cache; negative control rejected) and are registered by α.
+    verdict: PASS
+  - name: cross-check-module-delivered
+    binding: One harness_engine module asserts AR-1 ⇔ AR-3 and AR-2 ⇔ E_EVAL_UNRESOLVED on every fixture, eval and edit columns.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/tests/harness_engine/auto_reach_cross_check.rs
+  - name: doc-chunk-delivered
+    binding: crates/reify-mcp/src/tools/chunks/parameters.md gains the section on which constraints drive an auto (docs-truth gate).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Which constraints drive
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/parameters.md
+  - name: inv-eval-7-enforced
+    binding: γ flips INV-EVAL-7's status cell to enforced(type+test).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^[|] INV-EVAL-7 [|].*[|] enforced[(]'
+      expect: present
+      paths:
+      - docs/invariants.md
+- label: δ
+  task_id: 9374
+  title: '[MILESTONE] auto-reach-relation δ: decide whether cross-scope constraints drive a child''s template-keyed auto (R3 later via whole-model-objective-coupling; R9)'
+  capabilities:
+  - name: decision-gate
+    binding: A born-at-L2 decision gate (execution_class decision) after γ; it asserts no capability and gates ω on no code. Its escalation carries the read-binding (P.l.k), objective-less merged solve, fence (bt10, WMOC INV-2/BT-10, joint-drive-seam D7) and single-instance questions.
+    verdict: OPEN
+- label: ω
+  task_id: 9373
+  title: 'auto-reach-relation ω: PRD close — terminal status, AS-AUTHORED freeze, manifest twin'
+  capabilities:
+  - name: all-leaves-upstream
+    binding: α, β1, β2, β3, γ, δ are all upstream of ω.
+    verdict: PASS
+  - name: terminal-status-delivered
+    binding: The PRD header carries the SHIPPED terminal token with the landed leaf ids.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Status:[*]* *[*]*SHIPPED'
+      expect: present
+      paths:
+      - docs/prds/v0_6/auto-reach-relation.md

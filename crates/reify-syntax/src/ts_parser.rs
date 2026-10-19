@@ -298,12 +298,12 @@ impl<'a> Lowering<'a> {
     /// anchoring `let` keeps the recovery debris around a single break from multiplying into
     /// several diagnostics for the same missing separator.
     ///
-    /// `context` (`"source file"`, `"structure body"`) names only the DISPATCH ARM, not the
-    /// construct the fault is in — the t9 shape reaches this method as a `"source file"` ERROR
-    /// yet the fault is inside a function body — so it is used only in the generic arm's
-    /// message. The separator arm instead earns its "in function body" wording from
-    /// [`fault_diagnosis::LetAnchor::in_fn_body`], which is a property of the anchoring
-    /// `let` itself.
+    /// `context` (`"source file"`, `"structure body"`, `"trait body"`) names only the DISPATCH
+    /// ARM, not the construct the fault is in — the t9 shape reaches this method as a
+    /// `"source file"` ERROR yet the fault is inside a function body — so it is used only in
+    /// the generic arm's message. The separator arm instead earns its "in function body"
+    /// wording from [`fault_diagnosis::LetAnchor::in_fn_body`], which is a property of the
+    /// anchoring `let` itself.
     ///
     /// The CST-walking half of this — innermost-fault selection, the `let` anchor table and
     /// its search, and the [`MAX_DIAGNOSTICS`] budget — lives in [`fault_diagnosis`]; what
@@ -2547,43 +2547,53 @@ impl<'a> Lowering<'a> {
         let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "trait_member" {
-                // trait_member is a choice node wrapping the actual member, annotation, or pragma.
-                if let Some(inner) = child.named_child(0) {
-                    if inner.kind() == "annotation" {
-                        if let Some(annotation) = self.lower_annotation(inner) {
-                            pending_annotations.push(annotation);
-                        }
-                    } else if inner.kind() == "pragma" {
-                        // Annotations before a pragma are consumed/dropped — no defined semantics.
-                        let _ = std::mem::take(&mut pending_annotations);
-                        if let Some(pragma) = self.lower_pragma(inner) {
-                            pragmas.push(pragma);
-                        }
-                    } else {
-                        // Drain pending annotations before lowering the member.
-                        let annotations = std::mem::take(&mut pending_annotations);
-                        if let Some(mut member) = self.lower_member(inner) {
-                            // Attach drained annotations to Fn members only — the only
-                            // trait-member kind with a downstream deprecation consumer
-                            // (the TraitStaticCall dispatch arm in expr.rs). Other kinds
-                            // drain-and-drop: no annotation semantics are defined for them yet.
-                            //
-                            // Note: the drain-and-attach *pattern* mirrors lower_members
-                            // (line ~2145), but the *target kind* is inverted — lower_members
-                            // attaches to Param/Let while here we attach to Fn.
-                            if let MemberDecl::Fn(ref mut f) = member {
-                                f.annotations = annotations;
+            match child.kind() {
+                "trait_member" => {
+                    // trait_member is a choice node wrapping the actual member, annotation, or
+                    // pragma.
+                    if let Some(inner) = child.named_child(0) {
+                        if inner.kind() == "annotation" {
+                            if let Some(annotation) = self.lower_annotation(inner) {
+                                pending_annotations.push(annotation);
                             }
-                            members.push(member);
+                        } else if inner.kind() == "pragma" {
+                            // Annotations before a pragma are consumed/dropped — no defined
+                            // semantics.
+                            let _ = std::mem::take(&mut pending_annotations);
+                            if let Some(pragma) = self.lower_pragma(inner) {
+                                pragmas.push(pragma);
+                            }
+                        } else {
+                            // Drain pending annotations before lowering the member.
+                            let annotations = std::mem::take(&mut pending_annotations);
+                            if let Some(mut member) = self.lower_member(inner) {
+                                // Attach drained annotations to Fn members only — the only
+                                // trait-member kind with a downstream deprecation consumer
+                                // (the TraitStaticCall dispatch arm in expr.rs). Other kinds
+                                // drain-and-drop: no annotation semantics are defined for them yet.
+                                //
+                                // Note: the drain-and-attach *pattern* mirrors `lower_members`,
+                                // but the *target kind* is inverted — `lower_members` attaches
+                                // to Param/Let while here we attach to Fn.
+                                if let MemberDecl::Fn(ref mut f) = member {
+                                    f.annotations = annotations;
+                                }
+                                members.push(member);
+                            }
                         }
                     }
                 }
-            } else {
-                // Non-trait_member child (e.g. an ERROR recovery node or punctuation token):
-                // drain any pending annotations so they cannot leak past a malformed member
-                // onto the next valid member. Mirrors the "ERROR" arm in lower_members (~line 2134).
-                let _ = std::mem::take(&mut pending_annotations);
+                "ERROR" => {
+                    // INV-SF-7 parse-is-value-faithful (docs/legibility/design-invariants.md),
+                    // #7809: the twin of `lower_members`' arm.
+                    let _ = std::mem::take(&mut pending_annotations);
+                    self.diagnose_error_node(child, "trait body");
+                }
+                _ => {
+                    // Header tokens, braces and comments: drain pending annotations so they
+                    // cannot leak onto the next valid member.
+                    let _ = std::mem::take(&mut pending_annotations);
+                }
             }
         }
         (members, pragmas)

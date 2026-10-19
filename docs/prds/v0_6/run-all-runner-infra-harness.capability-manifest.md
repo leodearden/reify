@@ -84,7 +84,7 @@ _Gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-1/§D
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
 | kloc-warn-ratchet-deleted | gap-fill §D-K8-2: `_KLOC_WARN_KNOWN` is assigned and read in test_harness_kloc_cap.sh at c7bbfe2519. Delivered when the WARN ratchet machinery is deleted and the WARN tier only prints. | OPEN | grep `_KLOC_WARN_KNOWN` absent in `tests/infra/test_harness_kloc_cap.sh` |
-| contract-doc-home | deliverable; docs/contributor/ exists. | OPEN | grep `harness-layout-contract` present in `tests/infra/test_harness_kloc_cap.sh` |
+| contract-doc-home | deliverable; docs/contributor/ exists. | OPEN | grep `harness-layout-contract` present in `tests/infra/test_harness_kloc_cap.sh` or `tests/infra/test_harness_layout.py` (widened 2026-10-19 by cargo-native-harness-layout: ε₂ deletes the former) |
 
 ## ι (#8703) — wallclock_rust_guard_lib.sh; test_no_new_wallclock_rust_deadlines.sh h14 partition (3)
 

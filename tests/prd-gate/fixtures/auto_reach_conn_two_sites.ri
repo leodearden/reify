@@ -1,0 +1,17 @@
+module auto_reach_conn_two_sites
+trait Signal {}
+
+structure ConnAuto {
+    param gain : Length = auto
+    constraint self.gain == 10mm
+}
+
+structure E {
+    port a1 : out Signal {}
+    port b1 : in Signal {}
+    connect a1 -> b1 : ConnAuto { gain = auto }
+
+    port a2 : out Signal {}
+    port b2 : in Signal {}
+    connect a2 -> b2 : ConnAuto { gain = auto }
+}

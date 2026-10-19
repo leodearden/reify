@@ -780,7 +780,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "shell-assembly-upward-imports",
         home: "elements/shell_frame.rs (solver-crates-layering D4, leaf β)",
-        baseline: 5,
+        baseline: 0,
         measure: Measure::Occurrences(production_pattern(
             "shell_assembly::",
             &[
