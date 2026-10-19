@@ -2,7 +2,8 @@
 
 A Role is parsed once from DF_VERIFY_ROLE. Every consumer reads one named field
 of the role's RolePolicy, or of a Profile's ProfilePolicy, instead of comparing
-the role or profile name.
+the role or profile name. The resolution functions at the end are pure: they
+take the env and host facts they need as arguments.
 """
 
 from collections.abc import Mapping
@@ -237,3 +238,64 @@ def _check_keys(table: Mapping, enum: type[Enum], name: str) -> None:
 
 _check_keys(ROLE_TABLE, Role, "ROLE_TABLE")
 _check_keys(PROFILE_TABLE, Profile, "PROFILE_TABLE")
+
+
+def test_wall(role_policy: RolePolicy, profile: Profile, env: Mapping[str, str]) -> knobs.Resolution:
+    """A test pass's outer wall; the role's release_wall_default replaces the release default."""
+    default = role_policy.release_wall_default if profile is Profile.RELEASE else None
+    return knobs.resolve(PROFILE_TABLE[profile].wall_knob, env, default)
+
+
+@dataclass(frozen=True)
+class PrioResolution:
+    prefix: str
+    warning: str | None
+
+
+def resolve_prio(role: Role, has_nice: bool, has_ionice: bool) -> PrioResolution:
+    """CARGO_PRIO for `role` on a host with or without nice and ionice."""
+    prio = ROLE_TABLE[role].prio_class
+    if has_nice and (has_ionice or not prio.uses_ionice):
+        return PrioResolution(prio.prefix, None)
+    if has_nice:
+        return PrioResolution(
+            prio.nice_only_prefix,
+            f"verify.sh: WARNING — ionice not found; {role.value} role using nice only (no IO throttle)",
+        )
+    missing = "nice/ionice" if prio.uses_ionice else "nice"
+    return PrioResolution(
+        "", f"verify.sh: WARNING — {missing} not found; {role.value} role running at normal priority"
+    )
+
+
+JOBSERVER_FIFO_KNOB: Mapping[JobserverPool, knobs.Knob] = MappingProxyType(
+    {
+        JobserverPool.TASK: knobs.JOBSERVER_TASK_FIFO,
+        JobserverPool.MERGE: knobs.JOBSERVER_MERGE_FIFO,
+    }
+)
+
+
+def jobserver_fifo(role_policy: RolePolicy, env: Mapping[str, str]) -> str | None:
+    """The FIFO the role's jobserver pool names; whether it exists is a runtime question."""
+    knob = JOBSERVER_FIFO_KNOB.get(role_policy.jobserver)
+    return None if knob is None else knobs.resolve(knob, env).value
+
+
+class HeavyPartition(Enum):
+    """Which heavy tests the nextest passes receive."""
+
+    INCLUDED = "included"
+    EXCLUDED = "excluded"
+    ONLY = "only"
+
+
+def heavy_partition(role_policy: RolePolicy, env: Mapping[str, str]) -> HeavyPartition:
+    if role_policy.heavy is HeavyFilter.ONLY:
+        return HeavyPartition.ONLY
+    if (
+        role_policy.heavy is HeavyFilter.EXCLUDE_ELIGIBLE
+        and knobs.resolve(knobs.GATE_EXCLUDE_HEAVY, env).value
+    ):
+        return HeavyPartition.EXCLUDED
+    return HeavyPartition.INCLUDED
