@@ -886,25 +886,36 @@ assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf (Rust or TS) and a 
 
 echo ""
 echo "--- Scenario PG-DRIFT-GUI: every EXPECTED_CLEAN-pinned prd-gate fixture classifies RUN_GUI=1 ---"
-# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpus.test.ts)
-# asserts that each pinned path still parses with zero ERROR nodes. Editing a
-# pinned fixture into an unparseable state regresses a committed signal, but the
-# prd-gate arm leaves gui=0 for a fixture that is not RUST-coupled — so under
+# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpusLedger.test.ts)
+# asserts that each path pinned in its JSON pin set
+# (gui/src/__tests__/reifyGrammarCorpus.expected-clean.json) still parses with
+# zero ERROR nodes. Editing a pinned fixture into an unparseable state
+# regresses a committed signal, but the prd-gate arm leaves gui=0 for a
+# fixture that is not RUST-coupled — so under
 # --scope staged/branch the suite that reads it would never run, and on the
 # hook-gated docs commit on `main` there is no later gate. verify.sh's
 # _GUI_COUPLED_RI_FIXTURES closes that; this scenario is what keeps the list
 # honest, exactly as PG-DRIFT does for the Rust side (task 6435).
-_PG_GUI_PINS="$(sed -n '/^const EXPECTED_CLEAN = \[/,/^\];/p' \
-    "$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.test.ts" \
-    | grep -o 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]*\.ri' | sort -u || true)"
-# Non-empty FIRST: a renamed ledger file, a changed EXPECTED_CLEAN spelling or a
-# broken sed range must fail loudly here rather than pass an empty loop.
-assert "PG-DRIFT-GUI: derived EXPECTED_CLEAN pin set is NON-EMPTY (guard is not vacuous)" \
+_PG_GUI_JSON="$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"
+_PG_GUI_PINS="$(python3 -I -c '
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    pins = json.load(f)
+if not isinstance(pins, list) or not all(isinstance(p, str) for p in pins):
+    sys.exit(f"{path}: expected a JSON array of repo-relative path strings")
+for p in pins:
+    if p.startswith("tests/prd-gate/fixtures/") and p.endswith(".ri"):
+        print(p)
+' "$_PG_GUI_JSON" | sort -u || true)"
+# Non-empty FIRST: a moved/renamed pin file or malformed JSON (python3 names it
+# on stderr) must fail loudly here rather than pass an empty loop.
+assert "PG-DRIFT-GUI: derived pin set from reifyGrammarCorpus.expected-clean.json is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PG_GUI_PINS"
 while IFS= read -r _pg_gui_path; do
     [ -n "$_pg_gui_path" ] || continue
     plan_for staged "$_pg_gui_path"
-    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
+    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.expected-clean.json; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
         plan_has 'RUN_GUI=1'
 done <<< "$_PG_GUI_PINS"
 
@@ -2994,7 +3005,7 @@ assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename 
 # The examples/ tree gains a crate MAPPING on the affected_crates side (ALL ->
 # the declared reader closure), but decide_scope's answer must not move: the
 # corpus gates are compiled Rust tests (rust), gui/src/__tests__/
-# reifyGrammarCorpus.test.ts walks examples/ recursively (gui), and both
+# reifyGrammarCorpusLedger.test.ts walks examples/ recursively (gui), and both
 # reify-eval and reify-cli are declared OCCT-touching (gate). A control that
 # pins the mapping as never-SUBTRACTING heavy checks.
 # ---------------------------------------------------------------------------

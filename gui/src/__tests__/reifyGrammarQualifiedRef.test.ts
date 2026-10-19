@@ -11,11 +11,13 @@ import { parser } from '../editor/reifyParser.js';
  * the CST→AST lowering in `crates/reify-syntax/src/ts_parser.rs`, and this one.
  * The editor is the surface with no compiler behind it to catch a miss — a
  * qualified reference that the compiler accepts but Lezer rejects degrades
- * silently into error nodes and lost highlighting. `reifyGrammarCorpus.test.ts`
- * catches that at FILE granularity (the two prd-gate fixtures move into its
- * `EXPECTED_CLEAN` ledger alongside this file); what it cannot express is
- * WHICH NODE a qualified reference reduced to, and a shape regression that
- * keeps the error count at zero is exactly the silent kind. That is this file.
+ * silently into error nodes and lost highlighting.
+ * `reifyGrammarCorpusLedger.test.ts` catches that at FILE granularity (the two
+ * prd-gate fixtures move into its pin set,
+ * `reifyGrammarCorpus.expected-clean.json`, alongside this file); what it
+ * cannot express is WHICH NODE a qualified reference reduced to, and a shape
+ * regression that keeps the error count at zero is exactly the silent kind.
+ * That is this file.
  *
  * MEASURED RED BASELINE on this branch, before the grammar productions land —
  * every qualified shape below fails, every control below already passes:
