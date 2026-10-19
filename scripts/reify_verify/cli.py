@@ -139,7 +139,6 @@ def _scan(argv: list[str]) -> dict:
     return raw
 
 
-
 def _set_action(raw: dict, action: Action) -> None:
     if "action" in raw:
         raise CliError(
