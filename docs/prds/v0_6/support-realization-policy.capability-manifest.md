@@ -30,6 +30,21 @@ majors and twelve minors, all folded into the PRD:
 | β's discriminating check | `pub const ELASTIC_BODY` |
 | the twelve minors | applied in place |
 
+**Fresh review.** A second, fresh fable reviewer read the landed state on 2026-10-19: this PRD, these twins, the
+filed tasks and the amended ones. It raised one blocker, seven majors and nine minors, all applied to the PRD
+and the task records:
+
+| finding | fix |
+|---|---|
+| the body implicit clamp would have added a second clamp on the `Faces` path (blocker) | D13 `unless: AnyApplied` |
+| D12's coverage test red before γ | moved to ε |
+| a vacuous solver-host `nearest_node` row | moved to the S5 member |
+| `support-bc-literals` and #7189's literal | 0 or 1 until δ |
+| unowned S5-row creation | the first-lands rule |
+| α₁ could not resolve `Faces` from the solver crate | `Faces` moved to β |
+| `bases` typed on the absent `NodalBasis` | added by whichever of δ / #8256 lands second |
+| the unowned point decode | δ owns it |
+
 **Decompose verification.** `scripts/prd-decompose-verify.mjs` ran on 2026-10-19 (run `wf_bfc0888c-04e`) over the
 pre-split α, β, γ and ε. It probed 3/4 leaves, executed 45/45 records, and produced 0 malformed records. ε was
 unenumerated: its Enumerator returned no premises.
@@ -114,7 +129,7 @@ Verdict key:
 | capability | evidence | verdict | delivered check |
 |---|---|---|---|
 | point-sites-upstream | producer: #7189 (unlanded branch; mints `FeaPointSupportsUnderRestrained`) and #8251 (CT α `patch_nodes`; its done-producer check greps that code, which δ hand-repoints), both upstream | PASS | — |
-| patch-target | producer-self. α₁ ships `Named`, `Face` and `Faces` only | PASS | grep `Patch \{ nodes` present in `crates/reify-solver-elastic/src` |
+| patch-target | producer-self. α₁ ships `Named` and `Face`; β adds `Faces` | PASS | grep `Patch \{ nodes` present in `crates/reify-solver-elastic/src` |
 | point-values-unchanged | BT13. The names δ deletes exist only on `task/7189`, so an absent grep would be vacuous | PASS | manual |
 
 ## ε — invariant, e2e, docs (high, gate #9171)
@@ -126,6 +141,7 @@ Verdict key:
 | e2e-crate-has-no-gmsh | `reify-eval-fea-tests` has no gmsh, so the body family is β's gmsh binary | PASS | — |
 | sf3-enforcement-pointer | producer-self | PASS | grep `support_refusals_e2e` present in `docs/legibility/design-invariants.md` |
 | refusal-e2e | producer-self | PASS | grep `fn ` present in `crates/reify-eval-fea-tests/tests/support_refusals_e2e.rs` |
+| coverage-test | D12's coverage test lands here, after every row-adding leaf. `solve_buckling` takes `List<Support>`, so the test would be red before γ | PASS | manual |
 | docs-truth | the chunk fence gate and intent findability | PASS | manual |
 
 ## Ω — PRD close

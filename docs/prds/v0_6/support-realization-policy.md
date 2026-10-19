@@ -163,8 +163,10 @@ static "implicit clamp" policy (clamp iff the list has no PointSupport or any fa
 ## §3 Pre-conditions and already-filed owners
 
 - **S15 γ #8683** (in #8612's closure): `SupportSpec { kind: reify_solver_elastic::SupportKind, target }`,
-  decoded once, with an unknown type_name → `UnknownVariant`. It is the input type, consumed unchanged. α₂ and
-  #7081 depend on it; β reaches it through μ.
+  decoded once, with an unknown type_name → `UnknownVariant`. It is the input type, consumed unchanged until δ.
+  α₂ and #7081 depend on it; β reaches it through μ. A `PointSupport` decodes to `UnknownVariant` there, so the
+  point form of the decode is δ's: δ extends the landed decoder (a follow-on edit, no write to #8683) unless
+  #7189's rebase or #8256 has already added it.
 - **S16 ο #9121** (→ ξ #9120 → ν #9091): `BoxFace` (`parse`, with `"root"` → `XMin` for every box-mesh consumer;
   `axis`; `is_max`) and `StructuredBoxMesh`. The module sits beside them and α₁ depends on ο.
 - **S16 ξ #9120:** modal-local `realize_supports` with K5-3 totality and the K5-4 applied echo. α₂ absorbs it as
@@ -409,15 +411,21 @@ static "implicit clamp" policy (clamp iff the list has no PointSupport or any fa
   - The solver-crate matrix test iterates `REGISTERED`.
   - A reify-eval/analysis-side test asserts that every production target whose stdlib declaration takes a
     `List<Support>` names a registered row by its `solver` id. This catches a new support-taking solver with no
-    row.
-- **D13 — the body row keeps today's implicit clamp.**
-  - `ELASTIC_BODY` has `implicit_clamp: Some(ImplicitClamp { face: XMin, unless: Never })`, which becomes
-    `PointOnly` after δ, as 7189's body rule says.
-  - On `BoundaryView::Realized` the implicit clamp is the AABB x-min set, the same realization `Named("root")`
-    resolves to, so a declared root support dedups into it.
-  - An empty list therefore still solves with the AABB clamp and the `FeaUnderConstrained` Warning
-    (`applied.is_empty() && implicit_clamp_applied`), as today. K5-2's "no change on the realized path" holds
-    except where R9/R10 rule otherwise.
+    row. It lands in ε, which depends on every leaf that adds a production row (α₂, β, γ). Landed earlier, it
+    would be red until `BUCKLING_COLUMN` exists, because `solve_buckling` takes `supports : List<Support>`.
+- **D13 — the body row keeps today's implicit clamp, and only when nothing was declared.**
+  - On main a handle-list target REPLACES the coordinate clamp (`solve_cantilever_fea`: `root_nodes = clamp`
+    from `bc_override`), while a String target falls through to it.
+  - So `ELASTIC_BODY` has `implicit_clamp: Some(ImplicitClamp { face: XMin, unless: AnyApplied })`: the AABB
+    x-min clamp is emitted only when no declared support was applied.
+  - On `BoundaryView::Realized`, `Named("root")` / `Face(XMin)` resolve to the same AABB set. A `Faces` union
+    stands alone, as today. An empty list still solves with the AABB clamp and the `FeaUnderConstrained`
+    Warning (`applied.is_empty() && implicit_clamp_applied`).
+  - After δ, a point-only list is covered by the same rule (a `Patch` in `applied` suppresses the clamp), so
+    the body row needs no `PointOnly` flip.
+  - K5-2's "no change on the realized path" holds except where R9/R10 rule otherwise.
+  - `ELASTIC_DIMS` keeps `unless: Never` (R1: the dims root is clamped whatever the list says), which becomes
+    `PointOnly` after δ.
 
 ## §6 Contract (B+H)
 
@@ -453,7 +461,7 @@ pub struct SupportDecl { pub kind: SupportKind, pub target: SupportTarget, pub l
 pub enum SupportTarget {
     Named(String),                                            // as authored; BoxFace::parse at resolve time
     Face(BoxFace),                                            // built in code (γ's synthesized decls; parse-at-boundary results)
-    Faces(Vec<GeometryHandleId>),                             // build-time resolved B-rep faces (#5312/#5313)
+    Faces(Vec<GeometryHandleId>),                             // β: build-time resolved B-rep faces (#5312/#5313)
     Patch { nodes: Vec<usize>, restrain: Option<Vec<[f64; 3]>> },   // δ: pre-resolved on the mesh being solved
 }
 pub enum BoundaryView<'a> {
@@ -471,7 +479,7 @@ pub struct SupportCapability {
     pub kinds: KindSet,
     pub targets: TargetForms,                  // NAMED | FACE | FACES | PATCH
     pub faces: FaceSet,                        // Any | Only(&'static [BoxFace])
-    pub implicit_clamp: Option<ImplicitClamp>, // { face: BoxFace, unless: Never | PointOnly }
+    pub implicit_clamp: Option<ImplicitClamp>, // { face: BoxFace, unless: Never | PointOnly | AnyApplied }
     pub mechanism: MechanismPolicy,            // Warn | Refuse
     pub remedy: &'static str,
 }
@@ -484,7 +492,7 @@ impl<T> Applied<T> { pub fn get(&self) -> &T; }
 impl Applied<Vec<usize>> { pub fn select<T: Clone>(&self, decls: &[T]) -> Applied<Vec<T>>; }
 pub struct Realization {
     pub bcs: Vec<DirichletBc>,                 // sorted by dof, deduplicated, homogeneous
-    pub bases: Vec<NodalBasis>,                // added by δ (CT ε #8256's directional restraint)
+    pub bases: Vec<NodalBasis>,                // added by whichever of δ / CT ε #8256 lands second (NodalBasis is #8256's)
     pub applied: Applied<Vec<usize>>,          // decl indices, input order
     pub implicit_clamp_applied: bool,
     pub free_rigid_modes: u8,                  // 0..=6
@@ -534,30 +542,31 @@ A node shared by two supports restrains the union of their DOFs, or the span of 
 
 Each step is one function (heuristic 4):
 
-1. Capability check per decl: kind ∈ `kinds`, target form ∈ `targets`, resolved face ∈ `faces`.
+1. Capability check per decl: kind ∈ `kinds`, target form ∈ `targets`.
 2. Resolve every target.
-3. If any step-1 or step-2 refusal exists, return `Err` with all of them.
-4. Pattern per decl.
-5. Emit the union per node.
-6. Implicit clamp (`cap.implicit_clamp`, honouring `unless`).
-7. The D3 anchor rule.
-8. Restrain bases (δ).
-9. Normalize: sort and dedup by dof.
-10. `free_rigid_modes`.
-11. Mechanism policy:
+3. Face check: the `ResolvedTarget.face` ∈ `faces`.
+4. If any step-1, -2 or -3 refusal exists, return `Err` with all of them.
+5. Pattern per decl.
+6. Emit the union per node.
+7. Implicit clamp (`cap.implicit_clamp`, honouring `unless`).
+8. The D3 anchor rule.
+9. Restrain bases (δ / #8256).
+10. Normalize: sort and dedup by dof.
+11. `free_rigid_modes`.
+12. Mechanism policy:
     - `Refuse` with free modes > 0 gives `Err(UnderRestrained)`;
     - `Warn` adds the coded Warning to `Realization.diagnostics`.
-12. `Applied`.
+13. `Applied`.
 
 ### §6.6 Capability rows (all in `supports/capability.rs`, listed in `REGISTERED`)
 
 | row | solver path | kinds | targets | faces | implicit clamp | mechanism | lands in |
 |---|---|---|---|---|---|---|---|
-| `ELASTIC_SHELL` | the shell plan λ #9118's planner selects (μ refuses non-root supports before routing) | Fixed | Named, Face | Only(XMin) | XMin, Never | Refuse | α₁ (`shell_solve.rs` calls the table) |
+| `ELASTIC_SHELL` | the shell plan λ #9118's planner selects (declarative: μ refuses non-root supports before routing, so the shell never sees a user support and only the matrix test drives this row) | Fixed | Named, Face | Only(XMin) | XMin, Never | Refuse | α₁ (`shell_solve.rs` calls the table) |
 | `MODAL_BOX` | modal free_vibration (dims overload; #8247 only moves the list into a `supports` argument) | Fixed, Pinned | Named, Face (+ Patch after δ) | Any | — | Warn | α₂ |
 | `ELASTIC_DIMS` | `solve_elastic_static` dims and `solve_load_cases` dims (shared supports refused once, per-case supports per case, as μ specifies) | Fixed | Named, Face (+ Patch after δ) | Only(XMin) | XMin, Never (PointOnly after δ) | Refuse | β |
 | `ELASTIC_FIELD` | the as-printed Field overload; remedy "only the root clamp can be modelled" | Fixed | Named, Face | Only(XMin) | XMin, Never | Refuse | β |
-| `ELASTIC_BODY` | the body overload and `solve_load_cases` body | Fixed (Pinned → R9 refusal) | Named, Face (XMin only), Faces (+ Patch after δ) | Only(XMin) for Named/Face | XMin (the AABB set), Never (PointOnly after δ) (D13) | Refuse | β |
+| `ELASTIC_BODY` | the body overload and `solve_load_cases` body | Fixed (Pinned → R9 refusal) | Named, Face (XMin only), Faces (+ Patch after δ) | Only(XMin) for Named/Face | XMin (the AABB set), unless AnyApplied (D13) | Refuse | β |
 | `BUCKLING_COLUMN` | `solve_buckling` P1/P2 and per-case `solve_buckling_load_cases` | Fixed, Pinned | Named, Face (+ Patch through #7081 (a)) | Any | — | Refuse | γ |
 | `MODAL_BODY` | #7142's body-arg modal overload | Fixed (Pinned → R9 refusal) | Faces, Patch | — | — | Warn | added by #7142 / #7143 when they land (a note on each) |
 
@@ -569,10 +578,11 @@ membrane/tensegrity Int node-index lists are not `Support` declarations and are 
 
 1. **One home.** No production code outside `supports/` maps a support kind to DOFs, parses a box-face name
    for a support, places a support anchor, or declares a capability row. Ratchet rows (§6.8) and D12's coverage
-   test enforce this.
+   test (ε) enforce this.
 2. **Totality (INV-SF-3).** For every row in `REGISTERED`, every decl is either in `applied` or is exactly one
    `SupportRefusal`. `support_capability_matrix.rs` drives every row against kind × every target form × both
-   views. The reify-eval/analysis coverage test (D12) fails when a `List<Support>` target names no row.
+   views. The reify-eval/analysis coverage test (D12, landed by ε) fails when a `List<Support>` target names no
+   row.
 3. **Failed, never Completed-with-Error (INV-SF-2).** A refusal leaves its entry as `ComputeOutcome::Failed`
    carrying the coded Error. This is checked at construction (`realize_supports` returns `Err`) and at use (the
    ζ₀ `completed` debug-assert).
@@ -585,9 +595,14 @@ membrane/tensegrity Int node-index lists are not `Support` declarations and are 
 | row | host | counts | target |
 |---|---|---|---|
 | `support-dof-pattern-arms` | `crates/reify-solver-elastic/tests/adoption_ratchets.rs` (production scope) | `(SupportBodyKind::` match-arm tuples outside `src/supports/` | 0 (α₁) |
-| `support-anchor-nearest-node` | same host | `fn nearest_node` definitions outside `src/supports/` | 0 (α₁ adds it; α₂ lowers it when modal's copy dies) |
-| `support-face-vocabulary` | S5's `tests/infra/test_analysis_stratum_ratchet.py` (reify-eval/reify-analysis production) | `fn face_bound`, `fn face_company`, `fn any_support_targets`, `SYNTHETIC_CLAMP_FACE` | 0 after β (α₂ lowers the modal rows; μ may already have removed part of the elastic one) |
-| `support-bc-literals` | S5's member | `DirichletBc {` constructions in the buckling, elastic and modal production families | α₂ measures the baseline after the modal sites die; β lowers it by the elastic root loop and γ by the buckling loops, so it reaches 0 when the second of them lands; ε asserts 0 |
+| `support-anchor-nearest-node` | S5's `tests/infra/test_analysis_stratum_ratchet.py` (reify-eval/reify-analysis production; the copies are there, not in the solver crate) | `fn nearest_node\b` definitions | 0, or 1 while #7189's `point_support.rs` / #8251's `node_patch.rs` copy stands (δ or #8251 lowers it) |
+| `support-face-vocabulary` | S5's member | `fn face_bound`, `fn face_company`, `fn any_support_targets`, `SYNTHETIC_CLAMP_FACE` | 0 after α₂ and β (μ may already have removed part of the elastic one) |
+| `support-bc-literals` | S5's member | `DirichletBc {` constructions in the buckling, elastic and modal production families | 0 after α₂, β and γ, or 1 while #7189's `point_support_bcs` literal stands (δ lowers it to 0) |
+
+**Who adds the S5 rows.** α₂, β and γ have no edges among themselves. Whichever lands first ADDS the three S5
+rows at the values measured on its own tree, using the patterns above. Each later leaf lowers them by the sites
+it deletes. This is the same first-lands rule as `support_decls` (D6). #7189 lowers nothing and must not
+re-baseline: its `point_support_bcs` literal and `nearest_node` copy are retired by δ / #8251.
 
 ο's `box-face-literal` row stays at 0. γ builds its synthesized declaration from `SupportTarget::Face(BoxFace::ZMin)`
 and `Face(BoxFace::ZMax)`, never as a literal.
@@ -617,7 +632,7 @@ Each row faces one side of the seam: P means producer (the module), C means cons
 | artefact | owner | this PRD's role | status |
 |---|---|---|---|
 | support realization (`constraint_pattern`, `resolve_support_target`, `realize_supports`, `SupportCapability` rows) | **this PRD** (program G4 row) | owner | α₁ |
-| `SupportSpec` decode | S15 γ #8683 | consumer, unchanged; no write to #8683 (β edits its landed T8 body-path test as a follow-on, G1) | upstream edge (α₂) |
+| `SupportSpec` decode | S15 γ #8683 | consumer, unchanged until δ adds the point form (a follow-on edit); no write to #8683 (β edits its landed T8 body-path test as a follow-on, G1) | upstream edge (α₂) |
 | `BoxFace`, `StructuredBoxMesh` | S16 ο #9121 | consumer; `nodes_on` delegates to the module's predicate (D10) | upstream edge (α₁) |
 | modal `realize_supports` (modal-local, K5-3/K5-4) | S16 ξ #9120 | absorbs it as a call in α₂ | upstream (via ο); ξ is not re-scoped |
 | dims refusal (`FeaSupportNotRealized`) | S16 μ #9119 | turns it into the `ELASTIC_DIMS` row in β | upstream edge; code renamed by R1 (three writes) |
@@ -646,7 +661,7 @@ lead; this session edits only μ's delivered-check twins and task record (R1).
 | label | id | title | prio | depends on | user-observable signal |
 |---|---|---|---|---|---|
 | **α₁** | #9379 | One support-realization module in reify-solver-elastic: table, resolver, composer, rows, rank helper; shell realizes through it | medium | #9121 | `cargo test -p reify-solver-elastic` runs `support_capability_matrix` over `REGISTERED`; the shell examples print byte-identical results (BT5) |
-| **α₂** | #9380 | Modal realizes through the module; the hinge pin; typed applied echo | medium | α₁, #8683 | `reify eval tests/prd-gate/fixtures/support_policy_modal_lone_pin.ri` prints the coded mechanism Warning and `W_ModalRigidBodyMode` for modes 0 and 1 (today f1 = 18925.97 Hz, a clamp); pinned modal examples inside their bands, numbers recorded |
+| **α₂** | #9380 | Modal realizes through the module; the hinge pin; typed applied echo | medium | α₁, #8683 | `reify eval tests/prd-gate/fixtures/support_policy_modal_lone_pin.ri` prints the coded mechanism Warning naming 2 free modes (binding) and, predicted, `W_ModalRigidBodyMode` for modes 0 and 1 (today f1 = 18925.97 Hz, a clamp); pinned modal examples inside their bands, numbers recorded |
 | **β** | #9381 | Elastic dims, Field and body realize through the module; μ's refusal becomes the dims row; body refusals (R9, R10) | medium | α₁, #9119 | in process with gmsh, `support_policy_body_tip_target.ri` and `support_policy_body_pinned_root.ri` give Failed with `FeaSupportNotRealized` naming the support; every committed static example prints identical results |
 | **γ** | #9382 | Buckling realizes through the module (`BUCKLING_COLUMN`; synthesized pin-pin); #7081 becomes a call | medium | α₁ | `reify eval examples/buckling_column_smoke.ri` prints a critical load inside the 10% band with the centroid anchor, before/after recorded; `euler_column_pin_pin` families through the module, inside their bounds |
 | **δ** | #9383 | Point patches as a target form: 7189's realization sites and its rigid-body guard absorbed; the restrain seam; the point code folded | medium | α₂, β, #7189, #8251 | 7189's committed fixtures print unchanged values and exit codes; a PointSupport is in `applied` on both static and modal |
@@ -669,6 +684,9 @@ none of the edges' dependents is in the closure.
   `prd_task_label` (the sidecar label byte-for-byte: `α₁`, `α₂`, `β`, `γ`, `δ`, `ε`, `Ω`),
   `user_observable_signal`, `consumer_ref`, `grammar_confirmed: true`, `metadata.files` (tight-or-empty, through
   `scripts/lock-charter-guard.sh`), `task_kind: "normal"`.
+- **`metadata.files`.** The files of α₂, β, γ and δ move before they run (S5 ν/μ, S16 θ/ν), so their lists name
+  only stable paths. `crates/reify-solver-elastic/src/supports/capability.rs` is deliberately on α₂, β and γ:
+  it is the serialization lock among the three row-adding siblings. The architect acquires the rest.
 - **`x_gapfill_ruling`:** `"plans/gap-fill-deliberation-reify-20261016.md §K5-2"`. α₂ also cites
   `§Uncontested block → K5-3, → K5-4`.
 - **Keys and priority (§10):**
@@ -693,8 +711,10 @@ none of the edges' dependents is in the closure.
 **α₁ — the module** (x_finding_part fk-47257bcb2c8c). This leaf touches only reify-solver-elastic, plus a
 reify-core code. Its numbers are byte-identical.
 
-- **The module.** §6.1–§6.5, with the target forms `Named`, `Face` and `Faces` (δ adds `Patch` and
-  `Realization.bases`), the rank helper, `nearest_node` (moved), and the `ELASTIC_SHELL` row in `REGISTERED`.
+- **The module.** §6.1–§6.5, with the target forms `Named` and `Face`, the rank helper, `nearest_node` (moved),
+  and the `ELASTIC_SHELL` row in `REGISTERED`.
+  - β adds `Faces`, because the face→node map is in reify-eval (§13 OQ-1).
+  - δ adds `Patch`, and whichever of δ / #8256 lands second adds `Realization.bases`.
   - `shell_boundary.rs` is absorbed, and `shell_solve.rs` calls `constraint_pattern(Fixed, Shell, …)` for its
     root edge. Its drilling θz pins are not supports and stay.
   - `build_support_bcs` and `SupportCompatibility` are deleted. Their unit tests move to the table tests.
@@ -706,7 +726,7 @@ reify-core code. Its numbers are byte-identical.
   - `tests/support_realization.rs`: BT1–BT3, driven through the public seam.
   - `tests/support_capability_matrix.rs`: BT4 over `REGISTERED`. Its census row lands in
     `docs/legibility/design-invariants.md` in this diff as `chartered`, since it adds a declarable surface.
-  - The two solver-host ratchet rows.
+  - The solver-host ratchet row `support-dof-pattern-arms` (the S5-member rows are §6.8's first-lands rule).
   - nextest partition rows for the two new test binaries where applicable (gate-test drift-guard rule); no
     wall-clock bounds.
 - **Done when:** BT1–BT5 green for the shell; the delivered checks hold; `python3 scripts/assert-module-scc.py
@@ -742,8 +762,8 @@ in reify-analysis's modal family; locate it by grep.
     band.
   - Cantilever and transient examples (Fixed) must print byte-identical frequencies.
 - **Rows and registration.**
-  - The `support-face-vocabulary` modal rows go to 0, `support-anchor-nearest-node` to 0, and the
-    `support-bc-literals` baseline is measured.
+  - The S5 rows: add them if α₂ lands first of α₂/β/γ (§6.8), otherwise lower them. Modal's
+    `support-face-vocabulary` sites, its `nearest_node` copy and its two `DirichletBc {` sites leave.
   - Register `support_policy_modal_lone_pin.ri` and `support_policy_modal_unknown_face.ri` wherever a Rust test
     reads them (`_RUST_COUPLED_RI_FIXTURES` until S18 ζ #9112).
 - **Done when:** BT6–BT8 green; the delivered checks hold.
@@ -757,14 +777,17 @@ in reify-analysis's modal family; locate it by grep.
     (`applied.is_empty() && implicit_clamp_applied`).
   - `SYNTHETIC_CLAMP_FACE` and `any_support_targets` die, if μ has not already retired them. The inline root
     loop's `DirichletBc {` leaves `support-bc-literals` (§6.8).
-- **Body.** `ELASTIC_BODY` (D13) is `Fixed` only, with the AABB x-min implicit clamp.
-  - `Named("root"|"x_min")` and `Face(XMin)` dedup into the clamp.
-  - `Faces` is the face → node union, and an empty result keeps `FeaSelectorNoMatch` byte-stable.
+- **Body.** `ELASTIC_BODY` (D13) is `Fixed` only, with the AABB x-min implicit clamp `unless: AnyApplied`.
+  - `Named("root"|"x_min")` and `Face(XMin)` resolve to the same AABB set.
+  - β adds `SupportTarget::Faces` and its matrix cells. It decides §13 OQ-1 (suggested: move
+    `bc_resolve::boundary_node_set` to `reify_ir::BoundaryAssociation::nodes_on_faces`, with bc_resolve
+    delegating). A `Faces` union stands alone, as today (it replaces the AABB clamp). An empty result keeps
+    `FeaSelectorNoMatch` byte-stable.
   - A Pinned decl or any other Named target is refused (R9, R10).
   - The supports half of `loads_supports_to_bc_node_sets` / `target_node_set` and the root half of
     `realized_cantilever_bc_node_sets` die. The loads side stays, renamed to its loads purpose.
-  - `SolveBoundary.node_override` (CT β) carries the module's node set, consumed only. `apply_face_clamp` is
-    read from `implicit_clamp_applied`.
+  - Today's `bc_override` (or `SolveBoundary.node_override`, if CT β #8253 has landed) carries the module's node
+    set, consumed only. `apply_face_clamp` is read from `implicit_clamp_applied`.
 - **Rewrites:**
   - `loads_supports_to_bc_node_sets_unions_multiple_support_faces` keeps the union with Fixed handles;
   - the PinnedSupport `SelectorNoMatch` label test becomes the R9 refusal;
@@ -772,11 +795,11 @@ in reify-analysis's modal family; locate it by grep.
     test; there is no write to #8683.
 - **Tests and fixtures.**
   - An in-process test in `crates/reify-eval/tests`, the gmsh binary (P7), drives the two body fixtures and an
-    empty-list body scene (BT10). It records the gmsh before-image.
+    empty-list body scene (BT10). The gmsh before-image (max von Mises and the applied clamp set under today's
+    silent AABB clamp) goes in the commit message.
   - The fixtures are registered for PG-DRIFT.
-  - The D12 coverage test (every `List<Support>` production target names a row in `REGISTERED`) lands here,
-    when the last elastic rows exist. γ adds buckling's row before or after; the test covers whatever is
-    registered and names any target without a row.
+  - S5 rows per §6.8's first-lands rule; the elastic root loop's `DirichletBc {` and the elastic
+    `support-face-vocabulary` sites leave.
 - **Done when:**
   - BT9–BT11 green;
   - μ's five fixtures keep their exits;
@@ -787,8 +810,11 @@ in reify-analysis's modal family; locate it by grep.
 
 - Replace the P1 `for k_face in [0usize, nz]` loop with its anchor, and the P2 coordinate loop with
   `DirichletBc { dof: 2 }`. The replacement is one `realize_supports` call on a synthesized
-  `[Pinned(Face(ZMin)), Pinned(Face(ZMax))]` under `BUCKLING_COLUMN`, over `BoundaryView::StructuredBox { coords:
-  active_nodes, extent: [lx, ly, lz] }`.
+  `[Pinned(Face(ZMin)), Pinned(Face(ZMax))]` under `BUCKLING_COLUMN`, over `BoundaryView::StructuredBox { coords,
+  extent: [lx, ly, lz] }`. `coords` is `&nodes` in the P1 arm and `&nodes_p2_storage` in the P2 arm;
+  `active_nodes` is bound only after the kernel call.
+  - The module's 1e-9 face predicate selects the same end-face set as today's 1e-10 P2 test. Assert the set
+    equality in the port.
   - The axial anchor moves to the z_min centroid (D1, D3). On both grids the centroid is a node: P1 i = j = 4,
     P2 i = j = 1.
   - Keep `let _ = &value_inputs[5];` and its comment verbatim. Its "Support-driven BC selection is deferred"
@@ -797,6 +823,8 @@ in reify-analysis's modal family; locate it by grep.
 - **Measure (BT12).** The pre-filing measurement of `pin_pin_euler_column_within_ten_percent` with the centroid
   anchor is 9.21% (corner anchor 9.17%; bound 10%). It is recorded in the manifest's `calibration-floor`
   binding.
+  - The file header's own "Observed 9.21%" predates #4052/#4066. Re-measure both anchors on your tree and
+    update the header figures in the port.
   - Re-baseline the two numeric embeds (`buckling_smoke.rs`, `buckling_persistent_cache_round_trip.rs`) and the
     P2 smoke inside their existing bounds.
   - Port `euler_column_pin_pin.rs`'s pin-pin and fixed-pin families to build their BCs through
@@ -804,14 +832,19 @@ in reify-analysis's modal family; locate it by grep.
   - Fixed-free, the two fixed-guided families (P1 at nx = ny = 10, and P2) keep their hand-built sets:
     fixed-guided needs MPC rows no declaration expresses.
   - A crossed bound is an escalation.
-- Lower `support-bc-literals` by the buckling loops (§6.8).
+- S5 rows per §6.8's first-lands rule; the buckling loops' `DirichletBc {` sites leave `support-bc-literals`.
 - **Done when:** BT12 green and the delivered checks hold.
 
 **δ — points** (x_finding_part fk-47257bcb2c8c). This leaf runs after #7189 merges and CT α #8251 extracts
 `patch_nodes`.
 
-- Add `SupportTarget::Patch` (with its resolution and its matrix cells) and `Realization.bases`. The adapter resolves `PointSupport { at, radius }` through
-  `patch_nodes` / `check_on_body` on the mesh being solved, every call (CT I1); `FeaPointOffBody` stays the
+- Add `SupportTarget::Patch { nodes, restrain }` (with its resolution and its matrix cells) unconditionally.
+  Add `Realization.bases` only if CT ε #8256's `NodalBasis` exists on your tree; otherwise #8256 adds `bases`
+  and the `restrain → NodalBasis` routing when it lands. `NodalBasis` stays #8256's.
+- **The point decode.** #8683's `SupportSpec` decodes a `PointSupport` to `UnknownVariant`. Extend the landed
+  decoder with a point form (`at`, `radius`, `restrain`) unless #7189's rebase or #8256 has already added one.
+  This is a follow-on edit, with no write to #8683. `support_decls` resolves it through `patch_nodes` /
+  `check_on_body` on the mesh being solved, every call (CT I1), to `Patch`. `FeaPointOffBody` stays the
   caller's.
 - These die: `point_support_bcs`, `point_support_dofs`, `dirichlet_nodes`, `has_face_class_support`, and the
   `apply_face_clamp` computation (it becomes `ImplicitClamp { unless: PointOnly }` on `ELASTIC_DIMS` and
@@ -820,8 +853,9 @@ in reify-analysis's modal family; locate it by grep.
   done-producer check (three writes) and any #8256 assertion by identity.
 - If CT ε #8256 has landed, route `restrain` through `Patch.restrain` → `NodalBasis`; otherwise #8256 adapts
   second (R7).
-- **Done when:** BT13 green; δ adds no `DirichletBc {` construction outside the module; the delivered checks
-  hold.
+- **Done when:** BT13 green; `support-bc-literals` and `support-anchor-nearest-node` read 0 (#7189's
+  `point_support_bcs` literal and `nearest_node` copy are retired here, unless #8251 already moved the latter);
+  the delivered checks hold.
 
 **ε — invariant, e2e, docs** (x_finding_key fk-47257bcb2c8c; high; gate #9171).
 
@@ -832,6 +866,9 @@ in reify-analysis's modal family; locate it by grep.
     `crates/reify-solver-elastic/tests/support_capability_matrix.rs`, D12's coverage test,
     `crates/reify-eval-fea-tests/tests/support_refusals_e2e.rs` and β's gmsh body test;
   - α₁'s census row moves to `shipped`.
+- **D12's coverage test** (reify-eval/analysis side): every production target whose stdlib declaration takes
+  a `List<Support>` names a row in `REGISTERED` by its `solver` id. It lands here because ε depends on every
+  row-adding leaf (α₂, β, γ).
 - **`support_refusals_e2e.rs`** (reify-eval-fea-tests, no gmsh): modal box (`support_policy_modal_unknown_face.ri`)
   and elastic dims (μ's `dims_support_xmax_only.ri`) each return Failed with `FeaSupportNotRealized` by code
   and name the support. The body family is β's gmsh test. Buckling joins when #7081 honours its list.
@@ -847,7 +884,8 @@ in reify-analysis's modal family; locate it by grep.
   - the heading is byte-identical (grep);
   - the `**Enforcement**:` paragraph names the e2e files (the delivered check);
   - the census row reads `shipped`;
-  - `support-bc-literals` reads 0 (β and γ have both landed);
+  - `support-bc-literals` reads 0, or 1 while #7189's `point_support_bcs` literal stands (δ lowers it);
+  - D12's coverage test is green;
   - the e2e and the chunk smoke are green.
 
 **Ω — PRD close.** Follows the overlay's "PRD terminal status" rule: SHIPPED header, landed leaf ids, AS-AUTHORED
