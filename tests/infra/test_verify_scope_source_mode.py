@@ -29,9 +29,19 @@ DOCS_ONLY_CLASSIFICATION = "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"
 
 SOURCE_MODE_RETURN = 'if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi\n'
 
+REFUSAL_PHRASE = "is not a fixture this shell built"
+
 
 def declared_functions(path):
     return set(FUNC_DEF.findall(Path(path).read_text()))
+
+
+def refusal_line(helper):
+    """The line _require_fixture prints when `helper` itself refuses its fixture variable."""
+    return re.compile(
+        rf"^{re.escape(helper)}: \$[A-Za-z_][A-Za-z0-9_]* {re.escape(REFUSAL_PHRASE)} ",
+        re.M,
+    )
 
 
 def child_env(tmpdir, target=SUITE, extra_env=None):
@@ -281,7 +291,7 @@ class FixtureRefusalTest(SourcedSuiteTestCase):
                     f"no fixture, list it in FIXTURE_FREE\n{self.describe(proc)}"
                 )
                 self.assertNotEqual(proc.returncode, 0, failure)
-                self.assertIn(helper, proc.stderr, failure)
+                self.assertRegex(proc.stderr, refusal_line(helper), failure)
                 self.assertEqual(self.snapshot(repo), before, failure)
 
     def test_refusal_names_the_variable_and_its_constructor(self):
