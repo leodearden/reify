@@ -231,7 +231,7 @@ fn annotation_positions(ty: &str, value: &str) -> Vec<(&'static str, String)> {
 /// arm. Exactly one, so a site where both the ambient bare-name step and the
 /// `resolve_enum_type_with_args` fallback fire is caught.
 /// (The structure-param row mirrors
-/// tests/prd-gate/fixtures/getar_bare_result_annotation_match_panics.ri.)
+/// tests/prd-gate/fixtures/getar_bare_result_annotation_match_panics.ri — pg-drift:allow — prose only, the source is inlined here.)
 #[test]
 fn bare_generic_enum_is_one_arity_error_in_every_annotation_position() {
     let enums = [
