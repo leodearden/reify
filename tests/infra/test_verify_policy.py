@@ -22,6 +22,7 @@ thin wrapper tests/infra/test_verify_policy.sh.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
+from tree_under_test import shared_clone  # noqa: E402
 from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +41,7 @@ KNOBS_DOC = REPO_ROOT / "docs" / "notes" / "verify-pipeline-knobs.md"
 HANG_GUARD_SECS = 300
 ERROR_PREFIX = "verify.sh: ERROR — "
 WALL_RE = re.compile(r"timeout --kill-after=60 (\S+) ")
+BASH = shutil.which("bash") or "/bin/bash"
 
 
 def base_env(**overrides):
@@ -77,8 +80,8 @@ def _run(cmd, env, cwd):
     )
 
 
-def run_bash(argv, env, tree=REPO_ROOT):
-    return _run(["bash", "scripts/verify.sh", *argv], env, tree)
+def run_bash(argv, env, tree=REPO_ROOT, bash="bash"):
+    return _run([bash, "scripts/verify.sh", *argv], env, tree)
 
 
 def run_py(argv, env, cwd=REPO_ROOT):
@@ -651,6 +654,287 @@ class TestRolePolicyTable(unittest.TestCase):
             bash.stderr.splitlines()[0],
             f"{ERROR_PREFIX}unknown argument '--print-role-policy'",
         )
+
+
+PLAN_HEADER_PREFIX = "# verify.sh plan — "
+HEAVY_HEADER_PREFIX = "# heavy partition — HEAVY="
+CARGO_LINE_RE = re.compile(r"timeout --kill-after=60 (\S+) (.*?)cargo (.*)")
+MAKEFLAGS_EXPORT = "export CARGO_MAKEFLAGS=--jobserver-auth=fifo:"
+OFFLINE_MAKEFLAGS_NOTE = "CARGO_MAKEFLAGS left unset (offline role"
+NEXTEST_RUN = "nextest run "
+GUI_FEATURE_ARGS = "-p reify-gui --features gui"
+ROLES = tuple(D3_ROWS)
+
+
+@dataclass(frozen=True)
+class CargoLine:
+    wall: str
+    prio: str
+    args: str
+
+
+class BashPlan:
+    """The facts a bash `--print-plan` stdout states, read on demand."""
+
+    def __init__(self, stdout):
+        self.text = stdout
+        self.lines = stdout.splitlines()
+
+    def header(self):
+        line = next(line for line in self.lines if line.startswith(PLAN_HEADER_PREFIX))
+        return dict(token.split("=", 1) for token in line[len(PLAN_HEADER_PREFIX):].split())
+
+    def heavy_partition(self):
+        return next(
+            line[len(HEAVY_HEADER_PREFIX):]
+            for line in self.lines
+            if line.startswith(HEAVY_HEADER_PREFIX)
+        )
+
+    def jobserver_fifo(self):
+        for line in self.lines:
+            _, found, path = line.partition(MAKEFLAGS_EXPORT)
+            if found:
+                return path
+        assert any(OFFLINE_MAKEFLAGS_NOTE in line for line in self.lines), (
+            "the plan names neither a CARGO_MAKEFLAGS fifo nor the offline note"
+        )
+        return None
+
+    def cargo_lines(self):
+        return [
+            CargoLine(*match.groups())
+            for line in self.lines
+            if not line.startswith("#")
+            for match in [CARGO_LINE_RE.search(line)]
+            if match
+        ]
+
+    def prio(self):
+        prios = {line.prio for line in self.cargo_lines()}
+        assert len(prios) == 1, f"cargo lines disagree on the prio prefix: {prios}"
+        return prios.pop()
+
+    def nextest(self, kind):
+        """The `cargo nextest run` lines of one kind: debug, release or gui-feature."""
+        return [
+            line
+            for line in self.cargo_lines()
+            if line.args.startswith(NEXTEST_RUN) and _nextest_kind(line.args) == kind
+        ]
+
+
+def _nextest_kind(args):
+    if GUI_FEATURE_ARGS in args:
+        return "gui-feature"
+    return "release" if "--release" in args.split() else "debug"
+
+
+def bash_role_plan(role, argv, env, **kwargs):
+    outcome = run_bash(argv, {**env, "DF_VERIFY_ROLE": role}, **kwargs)
+    assert outcome.returncode == 0, outcome.stderr
+    return BashPlan(outcome.stdout), outcome.stderr
+
+
+def python_roles(env):
+    outcome = run_py(["--print-role-policy"], env)
+    roles, _ = split_role_policy(json_lines(outcome))
+    return roles, outcome.stderr
+
+
+class TestResolvedPolicyMatchesBashPlans(unittest.TestCase):
+    """Each role line's policy and `resolved` values are what today's bash plans show."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._fifo_dir = tempfile.TemporaryDirectory()
+        fifo_dir = Path(cls._fifo_dir.name)
+        for name in ("task", "merge"):
+            os.mkfifo(fifo_dir / name)
+        cls.fifo_env = base_env(
+            REIFY_JOBSERVER_TASK_FIFO=str(fifo_dir / "task"),
+            REIFY_JOBSERVER_MERGE_FIFO=str(fifo_dir / "merge"),
+            REIFY_JOBSERVER_SKIP_LIVENESS_PROBE="1",
+        )
+        cls.roles, cls.stderr = python_roles(cls.fifo_env)
+        cls.both = {
+            role: bash_role_plan(role, ["test", "--profile", "both", "--print-plan"], cls.fifo_env)[0]
+            for role in ROLES
+        }
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._fifo_dir.cleanup()
+
+    def test_nextest_is_present(self):
+        for role, plan in self.both.items():
+            self.assertEqual(
+                plan.header()["nextest"], "1", f"{role}: cargo-nextest must be on PATH"
+            )
+
+    def test_resolved_shape(self):
+        self.assertEqual(self.stderr, "")
+        for role in ROLES:
+            with self.subTest(role=role):
+                resolved = self.roles[role]["resolved"]
+                self.assertEqual(
+                    set(resolved),
+                    {"walls", "prio_prefix", "prio_warning", "jobserver_fifo", "heavy_partition"},
+                )
+                self.assertEqual(set(resolved["walls"]), {"debug", "release"})
+
+    def test_default_profile(self):
+        for role in ROLES:
+            with self.subTest(role=role):
+                plan, _ = bash_role_plan(role, ["test", "--print-plan"], base_env())
+                self.assertEqual(
+                    plan.header()["profile"], self.roles[role]["policy"]["default_profile"]
+                )
+
+    def test_profile_both_plans(self):
+        for role, plan in self.both.items():
+            with self.subTest(role=role):
+                line = self.roles[role]
+                policy, resolved = line["policy"], line["resolved"]
+                (debug,) = plan.nextest("debug")
+                (release,) = plan.nextest("release")
+                self.assertEqual(debug.wall, resolved["walls"]["debug"])
+                self.assertEqual(release.wall, resolved["walls"]["release"])
+                self.assertEqual(plan.prio(), resolved["prio_prefix"])
+                self.assertIsNone(resolved["prio_warning"])
+                workspace = policy["release_selector"] == "workspace"
+                self.assertEqual(release.args[len(NEXTEST_RUN):].startswith("--workspace"), workspace)
+                if not workspace:
+                    self.assertTrue(release.args[len(NEXTEST_RUN):].startswith("-p "))
+                for nextest in (debug, release):
+                    self.assertEqual(
+                        "--no-fail-fast" in nextest.args.split(), not policy["fail_fast"]
+                    )
+                self.assertEqual(
+                    "_confirm_rc=$?" in plan.text, policy["records_confirm_manifest"]
+                )
+                self.assertEqual(
+                    bool(plan.nextest("gui-feature")), policy["gui_feature_test_pass"]
+                )
+                self.assertEqual(plan.heavy_partition(), resolved["heavy_partition"])
+                self.assertEqual(plan.jobserver_fifo(), resolved["jobserver_fifo"])
+
+    def test_heavy_exclusion_knob(self):
+        env = base_env(REIFY_GATE_EXCLUDE_HEAVY="1")
+        roles, _ = python_roles(env)
+        expected = {"task": "excluded", "merge": "excluded", "offline": "only", "background": "included"}
+        for role in ROLES:
+            with self.subTest(role=role):
+                plan, _ = bash_role_plan(role, ["test", "--print-plan"], env)
+                self.assertEqual(plan.heavy_partition(), roles[role]["resolved"]["heavy_partition"])
+                self.assertEqual(plan.heavy_partition(), expected[role])
+
+    def test_wall_overrides(self):
+        env = base_env(REIFY_VERIFY_TEST_TIMEOUT="7m", REIFY_VERIFY_TEST_TIMEOUT_RELEASE="7h")
+        roles, py_stderr = python_roles(env)
+        self.assertEqual(py_stderr, "")
+        for role in ROLES:
+            with self.subTest(role=role):
+                plan, _ = bash_role_plan(role, ["test", "--profile", "both", "--print-plan"], env)
+                walls = roles[role]["resolved"]["walls"]
+                self.assertEqual(walls, {"debug": "7m", "release": "7h"})
+                self.assertEqual(plan.nextest("debug")[0].wall, walls["debug"])
+                self.assertEqual(plan.nextest("release")[0].wall, walls["release"])
+
+    def test_a_malformed_release_wall_warns_once_per_default(self):
+        knob = "REIFY_VERIFY_TEST_TIMEOUT_RELEASE"
+        env = base_env(**{knob: "abc"})
+        roles, py_stderr = python_roles(env)
+        bash_lines = set()
+        for role in ROLES:
+            with self.subTest(role=role):
+                plan, bash_stderr = bash_role_plan(
+                    role, ["test", "--profile", "both", "--print-plan"], env
+                )
+                bash_lines.update(bash_stderr.splitlines())
+                release = roles[role]["resolved"]["walls"]["release"]
+                self.assertEqual(release, "13h" if role == "offline" else "90m")
+                self.assertEqual(plan.nextest("release")[0].wall, release)
+        expected = [
+            f"verify.sh: WARNING: invalid {knob}=abc; using default {default}"
+            for default in ("90m", "13h")
+        ]
+        self.assertEqual(py_stderr.splitlines(), expected)
+        for line in expected:
+            self.assertIn(line, bash_lines)
+
+
+class TestForcedScopeInTreeUnderTestClone(unittest.TestCase):
+    """force_scope_all is what bash does with --scope staged, in a clone with no MERGE_HEAD."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._scratch = tempfile.TemporaryDirectory()
+        cls.clone = shared_clone(Path(cls._scratch.name) / "tree")
+        cls.roles, _ = python_roles(base_env())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._scratch.cleanup()
+
+    def test_scope_staged(self):
+        for role in ROLES:
+            with self.subTest(role=role):
+                forced = self.roles[role]["policy"]["force_scope_all"]
+                plan, stderr = bash_role_plan(
+                    role, ["test", "--scope", "staged", "--print-plan"], base_env(), tree=self.clone
+                )
+                self.assertEqual(plan.header()["scope"], "all" if forced else "staged")
+                notice = (
+                    f"verify.sh: DF_VERIFY_ROLE={role} — forcing --scope all "
+                    "(integrity gate never narrows, contract C2)"
+                )
+                self.assertEqual(notice in stderr.splitlines(), forced)
+
+
+def path_farm(dest, excluded):
+    """A PATH directory linking every executable on PATH except `excluded`."""
+    dest.mkdir()
+    linked = set(excluded)
+    for directory in base_env()["PATH"].split(os.pathsep):
+        if not os.path.isdir(directory):
+            continue
+        for entry in sorted(os.scandir(directory), key=lambda e: e.name):
+            if entry.name in linked or not entry.is_file() or not os.access(entry.path, os.X_OK):
+                continue
+            (dest / entry.name).symlink_to(entry.path)
+            linked.add(entry.name)
+    return dest
+
+
+class TestPrioDegradedTools(unittest.TestCase):
+    """Without ionice, or without nice, the prio prefix and warning degrade as bash's do."""
+
+    FARMS = {"no-ionice": ("ionice",), "no-nice": ("nice", "ionice")}
+
+    @classmethod
+    def setUpClass(cls):
+        cls._scratch = tempfile.TemporaryDirectory()
+        cls.farms = {
+            name: path_farm(Path(cls._scratch.name) / name, excluded)
+            for name, excluded in cls.FARMS.items()
+        }
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._scratch.cleanup()
+
+    def test_degraded_prio(self):
+        for farm_name, farm in self.farms.items():
+            env = base_env(PATH=str(farm))
+            roles, _ = python_roles(env)
+            for role in ROLES:
+                with self.subTest(farm=farm_name, role=role):
+                    plan, stderr = bash_role_plan(role, ["lint", "--print-plan"], env, bash=BASH)
+                    resolved = roles[role]["resolved"]
+                    self.assertEqual(plan.prio(), resolved["prio_prefix"])
+                    warnings = [line for line in stderr.splitlines() if "not found;" in line]
+                    self.assertEqual(warnings, [resolved["prio_warning"]] if resolved["prio_warning"] else [])
 
 
 if __name__ == "__main__":
