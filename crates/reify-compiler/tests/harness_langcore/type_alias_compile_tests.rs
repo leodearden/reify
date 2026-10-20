@@ -5,8 +5,8 @@
 //! and integration with existing type resolution paths.
 
 use reify_compiler::CompiledTypeAlias;
-use reify_core::{ContentHash, SourceSpan, Type};
-use reify_test_support::{compile_source, errors_only};
+use reify_core::{ContentHash, Diagnostic, SourceSpan, Type};
+use reify_test_support::{compile_source, compile_source_named, errors_only};
 
 // ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
@@ -1043,6 +1043,43 @@ fn self_recursive_parameterized_alias_does_not_stack_overflow() {
     );
 }
 
+// ─── nested parametric alias arity mismatch ───────────────────────────────
+
+/// The text of `source` that `diagnostic`'s first label covers; `None` when the
+/// label's span does not lie inside `source`.
+fn first_label_text<'a>(source: &'a str, diagnostic: &Diagnostic) -> Option<&'a str> {
+    let span = diagnostic.labels.first()?.span;
+    source.get(span.start as usize..span.end as usize)
+}
+
+/// Assert `errs` hold exactly one alias-arity error — `P` given two type
+/// arguments where it takes one — and that its first label covers `anchor` in
+/// `source`: the written use that triggered the expansion, in the module the
+/// diagnostic will be rendered against.
+fn assert_sole_arity_error_covers(errs: &[&Diagnostic], source: &str, anchor: &str) {
+    let arity_errs: Vec<&Diagnostic> = errs
+        .iter()
+        .copied()
+        .filter(|d| d.message.contains("type argument(s)"))
+        .collect();
+    let [arity_err] = arity_errs.as_slice() else {
+        panic!("expected exactly one arity diagnostic; got: {errs:?}");
+    };
+    assert!(
+        arity_err.message.contains("'P'")
+            && arity_err
+                .message
+                .contains("expects 1 type argument(s), got 2"),
+        "expected an arity error naming P; got: {errs:?}"
+    );
+    assert_eq!(
+        first_label_text(source, arity_err),
+        Some(anchor),
+        "the arity error must be labelled at the use that triggered the \
+         expansion, not at an offset into an alias definition; got: {arity_err:?}"
+    );
+}
+
 #[test]
 fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
     let source = r#"
@@ -1053,19 +1090,49 @@ fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
         }
     "#;
     let module = compile_source(source);
-    let errs = errors_only(&module);
+    assert_sole_arity_error_covers(&errors_only(&module), source, "Q<Int>");
+}
+
+/// A non-parametric alias body is resolved eagerly by the alias-DFS pre-pass,
+/// which surfaces the nested arity error itself
+/// (`AliasInnerDiagPolicy::Propagate`); resolving `param r : R` afterwards must
+/// not report it a second time.
+#[test]
+fn alias_dfs_nested_arity_mismatch_is_reported_once_at_the_body_use() {
+    let source = r#"
+        type P<T> = List<T>
+        type Q<X> = P<X, X>
+        type R = Q<Int>
+        structure def S {
+            param r : R = [1]
+        }
+    "#;
+    let module = compile_source(source);
+    assert_sole_arity_error_covers(&errors_only(&module), source, "Q<Int>");
+}
+
+/// The arity error raised while expanding a PRELUDE alias joins the CONSUMER's
+/// diagnostics, so its label must index the consumer's source (see
+/// `AliasBodyUseSite::span`). Anchored in the prelude alias's own body it would
+/// be an offset into a file the consumer never opened.
+#[test]
+fn prelude_nested_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
+    let prelude = compile_source_named(
+        "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
+        "nested_arity_prelude",
+    );
+    let consumer_source = "structure def S { param q : Q<Int> = [1] }";
+    let parsed = reify_syntax::parse(
+        consumer_source,
+        reify_core::ModulePath::single("nested_arity_consumer"),
+    );
     assert!(
-        errs.iter().any(|d| d.message.contains("'P'")
-            && d.message.contains("expects 1 type argument(s), got 2")),
-        "expected an arity error naming P; got: {errs:?}"
+        parsed.errors.is_empty(),
+        "consumer parse errors: {:?}",
+        parsed.errors
     );
-    assert_eq!(
-        errs.iter()
-            .filter(|d| d.message.contains("type argument(s)"))
-            .count(),
-        1,
-        "expected exactly one arity diagnostic; got: {errs:?}"
-    );
+    let compiled = reify_compiler::compile_with_prelude(&parsed, std::slice::from_ref(&prelude));
+    assert_sole_arity_error_covers(&errors_only(&compiled), consumer_source, "Q<Int>");
 }
 
 // ─── step-33: module boundary separation — CompiledTypeAlias ───────────────

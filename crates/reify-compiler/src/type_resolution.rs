@@ -2519,16 +2519,15 @@ pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) ->
 const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 
 /// Check that `got` type arguments satisfy `alias_entry`'s arity (required
-/// params without defaults up to total params); on violation push the one
-/// arity diagnostic every alias-instantiation path shares, labelled at
-/// `anchor`, and return `false`.
-fn alias_arity_accepts(
+/// params without defaults up to total params). On violation, return the one
+/// arity diagnostic every alias-instantiation path shares, labelled `label` at
+/// `anchor`.
+fn check_alias_arity(
     alias_entry: &TypeAliasEntry,
     got: usize,
     anchor: SourceSpan,
     label: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> bool {
+) -> Option<Diagnostic> {
     let total_params = alias_entry.type_params.len();
     let required_params = alias_entry
         .type_params
@@ -2536,9 +2535,9 @@ fn alias_arity_accepts(
         .take_while(|p| p.default.is_none())
         .count();
     if (required_params..=total_params).contains(&got) {
-        return true;
+        return None;
     }
-    diagnostics.push(
+    Some(
         Diagnostic::error(format!(
             "type alias '{}' expects {}{} type argument(s), got {}",
             alias_entry.name,
@@ -2551,8 +2550,7 @@ fn alias_arity_accepts(
             got
         ))
         .with_label(DiagnosticLabel::new(anchor, label)),
-    );
-    false
+    )
 }
 
 /// Instantiate a parameterized alias by substituting type arguments.
@@ -2587,13 +2585,9 @@ pub(crate) fn resolve_parameterized_alias(
         return None;
     }
     let got = type_args.len();
-    if !alias_arity_accepts(
-        alias_entry,
-        got,
-        alias_entry.span,
-        "defined here",
-        diagnostics,
-    ) {
+    if let Some(arity_error) = check_alias_arity(alias_entry, got, alias_entry.span, "defined here")
+    {
+        diagnostics.push(arity_error);
         return None;
     }
 
@@ -3569,13 +3563,10 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 && !alias_entry.type_params.is_empty()
             {
                 let got = type_args.len();
-                if !alias_arity_accepts(
-                    alias_entry,
-                    got,
-                    use_site.span,
-                    "in this alias body's use",
-                    diagnostics,
-                ) {
+                if let Some(arity_error) =
+                    check_alias_arity(alias_entry, got, use_site.span, "expanded from this use")
+                {
+                    diagnostics.push(arity_error);
                     return None;
                 }
                 // Resolve type args with current substitutions applied,
