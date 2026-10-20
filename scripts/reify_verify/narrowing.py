@@ -2,7 +2,9 @@
 
 narrow returns the Narrowing record and the narrowing stage's stderr lines.
 The closure comes from affected-crates-lib.sh's affected_crates, called once
-over every changed path and never reimplemented here (PRD D15).
+over every changed path and never reimplemented here (PRD D15). Its text, or
+an operator override's, is parsed once into a Closure variant; narrowing and
+closure_reaches_reify_gui match on the variant.
 """
 
 import re
@@ -22,35 +24,113 @@ _CRATE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 @dataclass(frozen=True)
-class Closure:
-    """The affected-crate closure as bash holds it: text, and whether this run's diff derived it."""
+class NotComputed:
+    """No closure answers this run: none was read, or an override held no word."""
 
-    text: str
+    @property
+    def words(self) -> tuple[str, ...]:
+        return ()
+
+    @property
+    def from_diff(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class Crates:
+    """A crate list in affected_crates' order; empty only when this run's diff derived it."""
+
+    names: tuple[str, ...]
     from_diff: bool
+
+    def __post_init__(self):
+        if not self.names and not self.from_diff:
+            raise ValueError("Crates: an empty list is a closure only when derived from the diff")
+
+    @property
+    def words(self) -> tuple[str, ...]:
+        return self.names
+
+
+@dataclass(frozen=True)
+class AllCrates:
+    """affected_crates' ALL sentinel: every crate is affected."""
+
+    from_diff: bool
+
+    @property
+    def words(self) -> tuple[str, ...]:
+        return (ALL_CRATES,)
+
+
+@dataclass(frozen=True)
+class Malformed:
+    """Words that are no crate list: a token outside cargo's package-name grammar, or a padded ALL."""
+
+    words: tuple[str, ...]
+    from_diff: bool
+
+
+Closure = NotComputed | Crates | AllCrates | Malformed
+
+
+def parse_closure(text: str, from_diff: bool) -> Closure:
+    """The one reading of a closure's text, split as bash's default IFS splits it."""
+    names = _ifs_split(text)
+    if not names and not from_diff:
+        return NotComputed()
+    if text == ALL_CRATES:
+        return AllCrates(from_diff)
+    if names == (ALL_CRATES,) or not all(_CRATE_NAME.fullmatch(name) for name in names):
+        return Malformed(names, from_diff)
+    return Crates(names, from_diff)
+
+
+def _ifs_split(text: str) -> tuple[str, ...]:
+    """Split on space, tab and newline only, never globbed."""
+    return tuple(word for word in text.replace("\t", " ").replace("\n", " ").split(" ") if word)
 
 
 @dataclass(frozen=True)
 class Narrowing:
-    narrow_active: bool
-    affected_text: str
     closure: Closure
-    packages: tuple[str, ...]
+    narrow_eligible: bool
     run_gui_vitest: bool
+
+    @property
+    def affected(self) -> tuple[str, ...]:
+        """bash's AFFECTED: the closure's words when this run may narrow."""
+        return self.closure.words if self.narrow_eligible else ()
+
+    @property
+    def narrow_active(self) -> bool:
+        return self.narrow_eligible and _narrows(self.closure)
+
+    @property
+    def packages(self) -> tuple[str, ...]:
+        return self.affected if self.narrow_active else ()
 
     def to_json(self) -> dict:
         return {
             "narrow_active": int(self.narrow_active),
-            "affected": list(words(self.affected_text)),
-            "closure": list(words(self.closure.text)),
+            "affected": list(self.affected),
+            "closure": list(self.closure.words),
             "from_diff": int(self.closure.from_diff),
             "packages": list(self.packages),
             "run_gui_vitest": int(self.run_gui_vitest),
         }
 
 
-def words(text: str) -> tuple[str, ...]:
-    """`text` split as bash's default IFS splits it: on space, tab and newline only, never globbed."""
-    return tuple(word for word in text.replace("\t", " ").replace("\n", " ").split(" ") if word)
+def _narrows(closure: Closure) -> bool:
+    """As bash's: a closure holding a word narrows unless it is the exact ALL sentinel, so a
+    malformed override narrows too (closure_reaches_reify_gui still fails it wide)."""
+    match closure:
+        case Crates(names=names):
+            return bool(names)
+        case Malformed():
+            return True
+        case NotComputed() | AllCrates():
+            return False
 
 
 def narrow(
@@ -60,9 +140,6 @@ def narrow(
     eligible = decision.run_rust and (
         decision.mode is Scope.BRANCH or (decision.mode is Scope.STAGED and narrow_flag)
     )
-    affected_text = closure.text if eligible else ""
-    affected = words(affected_text)
-    narrow_active = bool(affected) and affected_text != ALL_CRATES
     retry_specs = knobs.resolve(knobs.GUI_RETRY_SPECS, env).value
     run_gui_vitest = decision.run_gui and (
         decision.gui_path_signal
@@ -76,16 +153,7 @@ def narrow(
             f"vitest lane (RUN_GUI={int(decision.run_gui)} RUN_GUI_VITEST=0); the requested "
             "specs will NOT run",
         )
-    return (
-        Narrowing(
-            narrow_active=narrow_active,
-            affected_text=affected_text,
-            closure=closure,
-            packages=affected if narrow_active else (),
-            run_gui_vitest=run_gui_vitest,
-        ),
-        warnings,
-    )
+    return Narrowing(closure, eligible, run_gui_vitest), warnings
 
 
 def _closure(
@@ -93,23 +161,24 @@ def _closure(
 ) -> tuple[Closure, tuple[str, ...]]:
     """An operator override verbatim, else ONE affected_crates call over the changed paths."""
     if not (decision.run_rust and decision.mode in (Scope.STAGED, Scope.BRANCH)):
-        return Closure("", False), ()
+        return NotComputed(), ()
     override = knobs.resolve(knobs.AFFECTED_CRATES_OVERRIDE, env).value
     if override:
-        return Closure(override, False), ()
+        return parse_closure(override, from_diff=False), ()
     if not decision.changed_paths:
-        return Closure("", False), ()
+        return NotComputed(), ()
     result = bashcall.run(AFFECTED_CRATES, decision.changed_paths, repo_root, env)
-    return Closure(result.stdout.rstrip("\n"), True), result.stderr_lines
+    return parse_closure(result.stdout.rstrip("\n"), from_diff=True), result.stderr_lines
 
 
 def closure_reaches_reify_gui(mode: Scope, closure: Closure) -> bool:
     """bash's four named arms: MERGE-GATE, FAIL-WIDE, COMPUTED-EMPTY, MEMBERSHIP."""
     if mode is Scope.ALL:
         return True
-    crates = words(closure.text)
-    if any(not _CRATE_NAME.fullmatch(crate) for crate in crates) or crates == (ALL_CRATES,):
-        return True
-    if not crates:
-        return not closure.from_diff
-    return GUI_CRATE in crates
+    match closure:
+        case NotComputed() | AllCrates() | Malformed():
+            return True
+        case Crates(names=()):
+            return False
+        case Crates(names=names):
+            return GUI_CRATE in names
