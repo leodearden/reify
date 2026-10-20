@@ -340,7 +340,12 @@ const FIXTURE_TABLE: &str = r#"{
     {"name": "engine", "may_depend_on": ["spine", "language", "kernel", "solver"], "packages": ["reify-eval"]},
     {"name": "test-support", "may_depend_on": ["spine", "language", "kernel", "solver", "engine"], "packages": ["reify-test-support"]}
   ],
-  "crate_rules": [],
+  "crate_rules": [
+    {"name": "kernel-crate-deps", "from": {"packages": ["reify-kernel-gmsh", "reify-kernel-x"]}, "only": {"packages": ["reify-core", "reify-ir"]}},
+    {"name": "compute-contract-spine-only", "from": {"packages": ["reify-compute-contract"]}, "only": {"strata": ["spine"]}},
+    {"name": "expr-compiler-independent", "from": {"packages": ["reify-compiler", "reify-expr"]}, "never": {"packages": ["reify-compiler", "reify-expr"]}},
+    {"name": "production-not-on-test-support", "from": {"strata": ["spine", "language", "kernel", "solver", "engine"]}, "never": {"strata": ["test-support"]}}
+  ],
   "exceptions": [
     {"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}
   ]
@@ -406,11 +411,18 @@ fn strata_new_kernel_to_engine_edge_reds_naming_the_edge_and_rule() {
     );
     assert_findings(
         &check(FIXTURE_TABLE, &graph),
-        &[&[
-            "VIOLATION reify-kernel-x -> reify-eval",
-            "stratum rule",
-            "reify-eval is engine",
-        ]],
+        &[
+            &[
+                "VIOLATION reify-kernel-x -> reify-eval",
+                "stratum rule",
+                "reify-eval is engine",
+            ],
+            &[
+                "VIOLATION reify-kernel-x -> reify-eval",
+                "crate rule kernel-crate-deps",
+                "may depend only on",
+            ],
+        ],
         "a new normal kernel -> engine edge",
     );
 }
@@ -536,5 +548,78 @@ fn strata_a_classified_package_absent_from_the_workspace_reds() {
         &check(FIXTURE_TABLE, &graph),
         &[&["STALE stratum solver lists reify-compute-contract"]],
         "a classified package that left the workspace",
+    );
+}
+
+#[test]
+fn strata_crate_rules_fire_on_edges_the_stratum_table_allows() {
+    for (from, to, needles) in [
+        (
+            "reify-kernel-x",
+            "reify-kernel-gmsh",
+            &["crate rule kernel-crate-deps"][..],
+        ),
+        (
+            "reify-compute-contract",
+            "reify-solver-elastic",
+            &["crate rule compute-contract-spine-only"][..],
+        ),
+        (
+            "reify-compiler",
+            "reify-expr",
+            &[
+                "crate rule expr-compiler-independent",
+                "must not depend on reify-expr",
+            ][..],
+        ),
+    ] {
+        let graph = with_dep(clean_workspace(), from, Dep::new(to, DepKind::Normal));
+        let violation = format!("VIOLATION {from} -> {to}");
+        let mut expected = vec![violation.as_str()];
+        expected.extend_from_slice(needles);
+        assert_findings(
+            &check(FIXTURE_TABLE, &graph),
+            &[&expected],
+            &format!("a same-stratum {from} -> {to} edge"),
+        );
+    }
+}
+
+#[test]
+fn strata_production_strata_must_not_depend_on_test_support() {
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-eval",
+        Dep::new("reify-test-support", DepKind::Normal),
+    );
+    let violation = "VIOLATION reify-eval -> reify-test-support";
+    assert_findings(
+        &check(FIXTURE_TABLE, &graph),
+        &[
+            &[violation, "stratum rule", "engine may depend only on"],
+            &[violation, "crate rule production-not-on-test-support"],
+        ],
+        "a normal engine -> test-support edge beside the clean graph's dev edge",
+    );
+}
+
+#[test]
+fn strata_one_exception_row_covers_every_rule_its_edge_breaks() {
+    let row = r#"{"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}"#;
+    let table = fixture_table_with(
+        row,
+        &format!(
+            "{row},\n    {}",
+            r#"{"from": "reify-kernel-x", "to": "reify-eval", "task": 8561, "note": "fixture"}"#
+        ),
+    );
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-kernel-x",
+        Dep::new("reify-eval", DepKind::Normal),
+    );
+    assert_green(
+        &check(&table, &graph),
+        "one row excuses both the stratum rule and kernel-crate-deps",
     );
 }
