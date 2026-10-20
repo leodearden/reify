@@ -36,6 +36,7 @@ pub mod persistent;
 pub mod product_tree;
 pub mod provenance;
 pub mod ranked;
+pub mod resolution_profile;
 pub mod ri_literal;
 pub mod sampled;
 pub mod structure_registry;
@@ -59,6 +60,7 @@ pub use constraint::{
     OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,
     TermContribution, dimension_of, objective_terms_coherent,
 };
+pub use resolution_profile::{IterationBudget, ResolutionProfile, StalenessPolicy};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
     CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,

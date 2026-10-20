@@ -162,7 +162,7 @@ impl Regime {
     fn new(module: &CompiledModule, activations: &[(&str, &str)]) -> Self {
         let kernel = MockGeometryKernel::new();
         let ops = kernel.operations_ref();
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
         engine.set_build_scheduler(BuildScheduler::UnifiedDag);
         engine.eval(module);
         for (purpose, entity) in activations {
@@ -922,6 +922,7 @@ fn a_realization_reading_a_build_refreshed_let_is_changed_by_an_unrelated_edit()
             .and_then(|node| node.input_cone_hash)
     };
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

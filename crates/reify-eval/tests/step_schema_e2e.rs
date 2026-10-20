@@ -43,6 +43,7 @@ fn step_version_selects_occt_step_schema_end_to_end() {
     // reached via the trait's default method, which ignores options).
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

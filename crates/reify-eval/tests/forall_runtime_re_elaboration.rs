@@ -38,7 +38,7 @@ fn compile_source(source: &str) -> CompiledModule {
 
 /// Build an Engine with an empty prelude for self-contained forall-runtime tests.
 fn fresh_engine() -> Engine {
-    Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[])
 }
 
 /// Canonical fixture source for the runtime re-elaboration tests.

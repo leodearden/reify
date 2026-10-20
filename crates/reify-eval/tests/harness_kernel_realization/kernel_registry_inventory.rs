@@ -112,7 +112,7 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
     // The new inventory-driven constructor: no manual `OcctKernelHandle::spawn()`
     // call here — that wiring is the contract under test.
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
 
     // STEP rather than STL: STEP is OCCT's BRep-native export format, so it is
     // what this inventory pin should round-trip through — we rely on the
@@ -178,7 +178,7 @@ fn engine_with_registered_kernel_emits_one_selection_event() {
 
     tracing::subscriber::with_default(subscriber, || {
         let checker = reify_constraints::SimpleConstraintChecker;
-        let _engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+        let _engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     });
 
     let info_c = info_count.load(Ordering::Acquire);

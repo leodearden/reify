@@ -59,7 +59,7 @@ fn filter_direct_conformance_preserves_source_order() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let bolts_id = ValueCellId::new("Assembly", "bolts");
@@ -128,7 +128,7 @@ fn filter_empty_when_no_conformers() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let bolts_id = ValueCellId::new("Assembly", "bolts");
@@ -193,7 +193,7 @@ fn filter_transitive_refinement_conformance() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // filter by Fastener: HexBolt conforms via Bolt -> Fastener chain.
@@ -286,7 +286,7 @@ fn filter_nested_filter_resolves_bottom_up() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let id = ValueCellId::new("Assembly", "bolt_fasteners");
@@ -349,7 +349,7 @@ fn example_structural_query_filter_ri_evals_clean() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

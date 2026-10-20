@@ -47,6 +47,7 @@ fn build_and_probe(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

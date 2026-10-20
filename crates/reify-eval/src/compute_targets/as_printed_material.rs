@@ -527,7 +527,7 @@ mod iota_tests {
     #[test]
     fn rung_keys_are_registered_in_compute_dispatch() {
         use reify_test_support::mocks::MockConstraintChecker;
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         crate::compute_targets::register_compute_fns(&mut engine);
         for rung in [Rung::RFast, Rung::R0] {
             let key = rung_compute_key(rung);

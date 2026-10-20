@@ -92,6 +92,7 @@ fn tally(engine: &Engine, entity: &str) -> usize {
 /// bodies and then to be fully warm (a no-edit rebuild dispatches nothing).
 fn warm_two_body_engine(module: &CompiledModule) -> Engine {
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
     );

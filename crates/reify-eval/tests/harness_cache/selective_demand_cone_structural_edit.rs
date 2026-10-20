@@ -57,6 +57,7 @@ fn selective_cone_preserved_across_collection_grow() {
     let n = ValueCellId::new(e, "n"); // collection count param
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -154,6 +155,7 @@ fn cold_parity_all_visible_selective_matches_full_scope_across_structural_grow()
 
         // Engine A: all-visible selective demand (body_a AND body_b both visible).
         let mut sel_engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -173,6 +175,7 @@ fn cold_parity_all_visible_selective_matches_full_scope_across_structural_grow()
 
         // Engine B: cold full-scope (all nodes demanded).
         let mut full_engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -224,6 +227,7 @@ fn cold_build_restores_full_scope_after_selective_structural_grow() {
         let n = ValueCellId::new(e, "n");
 
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );

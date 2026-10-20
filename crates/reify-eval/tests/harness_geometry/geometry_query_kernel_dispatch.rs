@@ -47,7 +47,7 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     Some(engine.build(&compiled, ExportFormat::Step))
 }
 
@@ -398,7 +398,7 @@ fn assert_mixed_exports_the_box(source: &str, label: &str) {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Stl);
 
     // (a) The measurement still works: 2·π²·R·r² = 2π²·0.02·0.005².
@@ -664,7 +664,7 @@ fn mass_and_centroid_survive_realization_cache_hit() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     // Canonical user flow: eval → activate_purpose → build.
     let _eval = engine.eval(&compiled);

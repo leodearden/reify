@@ -28917,6 +28917,7 @@
 
         let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -28969,6 +28970,7 @@
 
         let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
