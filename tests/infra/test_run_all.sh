@@ -3901,12 +3901,15 @@ for _t33_leg in pool legacy subset host-infra; do
 done
 
 # -- Test 34: member spawn hygiene is uniform across branches (task #8681) ------
-# Every branch spawns a member with FD 9 closed and REIFY_RUN_ALL_MEMBER_SUBSET
-# unset. Each probe member FAILs if it inherited either. run_all.sh is started
-# with FD 9 already open (a command-scoped redirect, as a caller holding a lock
-# would leave it), and every leg but subset carries the subset knob SET: the
-# pool and legacy legs as whitespace-only, which keeps the default path, and
-# the host-infra leg as a real name, which --scope host-infra overrides.
+# Every branch spawns a member with FD 9 closed, no fd onto run_all.sh's own
+# output open (task 9412) and REIFY_RUN_ALL_MEMBER_SUBSET unset. Each probe
+# member FAILs if it inherited any. run_all.sh is started with FD 9 already open
+# (a command-scoped redirect, as a caller holding a lock would leave it) and
+# with its output in a known file, so a probe can tell an inherited copy of the
+# run's stdout/stderr from its own fd 1/2, which are never that file. Every leg
+# but subset carries the subset knob SET: the pool and legacy legs as
+# whitespace-only, which keeps the default path, and the host-infra leg as a
+# real name, which --scope host-infra overrides.
 echo ""
 echo "--- Test 34: member spawn hygiene is uniform across branches ---"
 
@@ -3914,6 +3917,9 @@ TMPDIR_T34="$(mktemp -d)"
 _TMPDIRS+=("$TMPDIR_T34")
 T34_INFRA="$TMPDIR_T34/infra"
 mkdir "$T34_INFRA"
+# Canonical: a probe's readlink of /proc/<pid>/fd/N resolves symlinks, so a
+# symlinked TMPDIR would otherwise never match and the check would pass vacuously.
+T34_RUN_OUT="$(readlink -f "$TMPDIR_T34")/run.out"
 for _t34_name in test_p_pool.sh test_q_hx.sh; do
     cat > "$T34_INFRA/$_t34_name" <<T34EOF
 #!/usr/bin/env bash
@@ -3922,6 +3928,11 @@ if [ -e /proc/self/fd/9 ]; then
     echo "  FAIL: $_t34_name inherited fd 9"
     bad=1
 fi
+for _fd in /proc/\$\$/fd/*; do
+    [ "\$(readlink "\$_fd" 2>/dev/null)" = "$T34_RUN_OUT" ] || continue
+    echo "  FAIL: $_t34_name inherited fd \${_fd##*/} onto run_all.sh's own output"
+    bad=1
+done
 if [ -n "\${REIFY_RUN_ALL_MEMBER_SUBSET+x}" ]; then
     echo "  FAIL: $_t34_name inherited REIFY_RUN_ALL_MEMBER_SUBSET"
     bad=1
@@ -3936,18 +3947,19 @@ printf 'test_p_pool.sh pool\ntest_q_hx.sh host-exclusive\n' > "$MANIFEST_T34"
 
 # (pool) default path; the subset knob is set but whitespace-only.
 t34p_rc=0
-t34p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/pool.lock" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
-    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34p_rc=$?
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34p_rc=$?
+t34p_out="$(cat "$T34_RUN_OUT")"
 
 # (legacy) the same, all-serial.
 t34l_rc=0
-t34l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
@@ -3955,23 +3967,25 @@ t34l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_POOL_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
-    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34l_rc=$?
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34l_rc=$?
+t34l_out="$(cat "$T34_RUN_OUT")"
 
 # (subset) both probes named.
 t34s_rc=0
-t34s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/subset.lock" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET="test_p_pool.sh test_q_hx.sh" \
-    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34s_rc=$?
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34s_rc=$?
+t34s_out="$(cat "$T34_RUN_OUT")"
 
 # (host-infra) --scope host-infra takes precedence over the named subset.
 LOCK_T34="$TMPDIR_T34/lane-x.lock"
 t34h_rc=0
-t34h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
@@ -3979,7 +3993,8 @@ t34h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET="test_q_hx.sh" \
     REIFY_LANE_X_FLOCK_LOCK="$LOCK_T34" \
-    bash "$RUN_ALL" --scope host-infra "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34h_rc=$?
+    bash "$RUN_ALL" --scope host-infra "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34h_rc=$?
+t34h_out="$(cat "$T34_RUN_OUT")"
 rm -f "$LOCK_T34" "${LOCK_T34}.slot-1"
 
 for _t34_leg in pool legacy subset host-infra; do
@@ -3991,10 +4006,11 @@ for _t34_leg in pool legacy subset host-infra; do
     esac
     _t34_summary="$(grep -E '^=== Summary: ' <<<"$_t34_out")" || true
     _t34_failed="$(sed -n 's/^  RESULT: FAIL (\(.*\))$/\1/p' <<<"$_t34_out" | tr '\n' ' ')" || true
+    _t34_probe_fails="$(grep -E '^  FAIL: ' <<<"$_t34_out" | sort -u | tr '\n' ' ')" || true
     if [ "$_t34_rc" -eq 0 ] && [ "$_t34_summary" = "$_t34_want" ]; then
-        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0)" true
+        assert "T34 [$_t34_leg]: no member inherits fd 9, run_all's own output fds or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0)" true
     else
-        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0) (got rc=$_t34_rc, failing: $_t34_failed)" false
+        assert "T34 [$_t34_leg]: no member inherits fd 9, run_all's own output fds or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0) (got rc=$_t34_rc, failing: $_t34_failed, probes: $_t34_probe_fails)" false
     fi
 done
 
