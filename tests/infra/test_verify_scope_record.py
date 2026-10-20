@@ -71,6 +71,7 @@ SELECTED_LEAF = re.compile(
 KLOC_LEAF = "tests/infra/test_harness_kloc_cap.sh"
 KLOC_LIB = "tests/infra/harness-layout-lib.sh"
 CLOSURE_WITH_GUI = "crates/reify-eval/src/lib.rs"
+OCCT_DECLARED_LIST = "scripts/occt-touching-crates.txt"
 
 
 def base_env(**overrides):
@@ -467,7 +468,7 @@ class TestEffectiveScope(InClone):
 
 
 def _declare_reify_doc_occt(clone):
-    clone.commit_change("scripts/occt-touching-crates.txt", "reify-doc\n")
+    clone.commit_change(OCCT_DECLARED_LIST, "reify-doc\n")
     clone.stage("crates/reify-doc/src/lib.rs")
 
 
@@ -581,6 +582,11 @@ class FailingGit:
         wrapper.chmod(0o755)
         return dest
 
+    def env(self, scratch: Path) -> dict:
+        """base_env() with this case's farm, built under `scratch`, first on PATH."""
+        farm = self.farm(scratch / self.label.replace(" ", "-"))
+        return base_env(PATH=f"{farm}{os.pathsep}{base_env()['PATH']}")
+
 
 def _c5(scope, what):
     return f"verify.sh: WARNING — --scope {scope} {what} failed — failing WIDE to --scope all (contract C5)"
@@ -616,9 +622,7 @@ class TestGatherFailsWide(InClone):
                     self.clone.reset()
                     self.clone.start_branch()
                     self.clone.stage(DOCS_PATH)
-                    farm = case.farm(Path(scratch) / case.label.replace(" ", "-"))
-                    env = base_env(PATH=f"{farm}{os.pathsep}{base_env()['PATH']}")
-                    record, py, bash = self.side_by_side(case.scope, env)
+                    record, py, bash = self.side_by_side(case.scope, case.env(Path(scratch)))
                     scope = record["scope"]
                     self.assertEqual(scope["mode"], case.scope)
                     for flag in SCOPE_FLAGS:
@@ -744,13 +748,33 @@ class TestDerivedFixtureCoupling(InClone):
         )
 
     def test_a_new_pin_couples_with_no_list_edit(self):
-        pins_path = self.clone.root / GUI_PINS
-        pins = json.loads(pins_path.read_text(encoding="utf-8"))
-        pins_path.write_text(json.dumps([*pins, fixture(self.PINNED)], indent=2) + "\n", encoding="utf-8")
-        self.clone.git("add", "--", GUI_PINS)
-        self.clone.commit("scope-record probe: pin a fixture")
+        self.commit_pin(self.PINNED)
         scope, _ = self.staged_alone_on_top(fixture(self.PINNED))
         self.assertEqual(flags(scope), (0, 1, 0))
+
+    def test_staged_reads_references_from_the_index(self):
+        self.commit_probe_rs()
+        (self.clone.root / self.PROBE_RS).unlink()
+        scope, _ = self.staged_alone_on_top(fixture(self.REFERENCED))
+        self.assertEqual(
+            flags(scope),
+            (1, 1, 1),
+            "the commit still holds the referencing test: an unstaged deletion does not uncouple",
+        )
+
+    def test_staged_reads_pins_from_the_index(self):
+        self.commit_pin(self.PINNED)
+        (self.clone.root / GUI_PINS).write_text("[]\n", encoding="utf-8")
+        scope, py = self.staged_alone_on_top(fixture(self.PINNED))
+        self.assertEqual(flags(scope), (0, 1, 0), "an unstaged unpin does not uncouple")
+        self.assertEqual(py.stderr, "")
+
+    def commit_pin(self, name):
+        pins_path = self.clone.root / GUI_PINS
+        pins = json.loads(pins_path.read_text(encoding="utf-8"))
+        pins_path.write_text(json.dumps([*pins, fixture(name)], indent=2) + "\n", encoding="utf-8")
+        self.clone.git("add", "--", GUI_PINS)
+        self.clone.commit("scope-record probe: pin a fixture")
 
     def staged_alone_on_top(self, path):
         """Stage `path` over whatever the test committed (no reset)."""
@@ -770,6 +794,19 @@ class TestDerivedFixtureCoupling(InClone):
         scope = scope_record(self.clone.py(STAGED_SCOPE, base_env()))["scope"]
         self.assertEqual((scope["run_rust"], scope["run_gui"]), (0, 0))
 
+    def test_a_failing_reference_grep_fails_wide(self):
+        grep = FailingGit(
+            "reference grep", "staged", "grep --cached -h -E", None,
+            f"verify.sh: WARNING — git grep --cached -E '{FIXTURE_REFERENCE}' -- '*.rs' exited 128 "
+            "— every prd-gate fixture counts as Rust-coupled (fail wide, contract C5)",
+            bash_fails_wide=False,
+        )
+        self.clone.stage(fixture(self.UNREFERENCED))
+        with tempfile.TemporaryDirectory() as scratch:
+            py = self.clone.py(STAGED_SCOPE, grep.env(Path(scratch)))
+        self.assertEqual(flags(scope_record(py)["scope"]), (1, 1, 1))
+        self.assertIn(grep.warning, py.stderr.splitlines())
+
     def test_the_derivation_is_lazy_and_fails_wide(self):
         (self.clone.root / GUI_PINS).write_text("{ not json\n", encoding="utf-8")
         self.clone.git("add", "--", GUI_PINS)
@@ -781,6 +818,26 @@ class TestDerivedFixtureCoupling(InClone):
         scope, py = self.staged_alone_on_top(fixture(self.UNREFERENCED))
         self.assertEqual(scope["run_gui"], 1, "an unreadable pins file fails wide")
         self.assertEqual(len([line for line in py.stderr.splitlines() if GUI_PINS in line]), 1, py.stderr)
+
+
+class TestBashCallFailureEndsTheQuery(InClone):
+    """A failing bash library call is an error: one stderr line naming the call, exit 1 (PRD D15)."""
+
+    def test_a_missing_occt_declared_list(self):
+        self.clone.git("rm", "-q", "--", OCCT_DECLARED_LIST)
+        self.clone.commit("scope-record probe: no declared OCCT list")
+        self.clone.stage(CLOSURE_WITHOUT_GUI)
+        py = self.clone.py(STAGED_SCOPE, base_env())
+        self.assertEqual((py.returncode, py.stdout), (1, ""), py.stderr)
+        lines = py.stderr.splitlines()
+        self.assertEqual(len(lines), 1, py.stderr)
+        self.assertTrue(
+            lines[0].startswith(
+                f"{ERROR_PREFIX}scripts/occt-scope-lib.sh::occt_declared_set exited 1 ("
+            ),
+            lines[0],
+        )
+        self.assertIn("occt-touching-crates.txt not found", lines[0])
 
 
 class TestNarrowingMatchesBash(InClone):
@@ -868,8 +925,7 @@ class TestNarrowingMatchesBash(InClone):
     def test_a_fail_wide_scope_never_reads_a_closure(self):
         rename_failure = next(case for case in FAILING_GIT if case.label == "staged rename source")
         with tempfile.TemporaryDirectory() as scratch:
-            farm = rename_failure.farm(Path(scratch) / "farm")
-            env = base_env(PATH=f"{farm}{os.pathsep}{base_env()['PATH']}")
+            env = rename_failure.env(Path(scratch))
             narrowing, _, _ = self.assert_narrowing(
                 "staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI), env=env
             )

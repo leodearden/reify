@@ -47,11 +47,16 @@ MERGE_BASE_WARNING = (
 @dataclass(frozen=True)
 class GitOutput:
     returncode: int
-    lines: tuple[str, ...]
+    text: str
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        """stdout's lines verbatim (core.quotePath quoting included)."""
+        return tuple(self.text.removesuffix("\n").split("\n")) if self.text else ()
 
 
 def _git(repo_root: Path, env: Mapping[str, str], *args: str) -> GitOutput:
-    """`git -C repo_root args`: stdout lines verbatim (core.quotePath quoting included), stderr dropped."""
+    """`git -C repo_root args`, stderr dropped."""
     proc = subprocess.run(
         ["git", "-C", str(repo_root), *args],
         env=dict(env),
@@ -59,8 +64,7 @@ def _git(repo_root: Path, env: Mapping[str, str], *args: str) -> GitOutput:
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
-    text = proc.stdout.decode("utf-8", "surrogateescape")
-    return GitOutput(proc.returncode, tuple(text.removesuffix("\n").split("\n")) if text else ())
+    return GitOutput(proc.returncode, proc.stdout.decode("utf-8", "surrogateescape"))
 
 
 @dataclass(frozen=True)
@@ -233,24 +237,31 @@ class FixtureCoupling:
 
 
 def derive_fixture_coupling(
-    repo_root: Path, env: Mapping[str, str]
+    mode: Scope, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[FixtureCoupling, tuple[str, ...]]:
-    """The prd-gate fixtures a compiled test reads, and those the vitest ledger pins (PRD D6)."""
-    rust, rust_warnings = _rust_coupled(repo_root, env)
-    gui, gui_warnings = _gui_pinned(repo_root)
+    """The prd-gate fixtures a compiled test reads, and those the vitest ledger pins (PRD D6).
+
+    Both are read from the content the scope classifies: the index under
+    staged, which is what the commit holds, and otherwise the working tree.
+    """
+    rust, rust_warnings = _rust_coupled(mode, repo_root, env)
+    gui, gui_warnings = _gui_pinned(mode, repo_root, env)
     return FixtureCoupling(rust, gui), (*rust_warnings, *gui_warnings)
 
 
-def _rust_coupled(repo_root: Path, env: Mapping[str, str]) -> tuple[CoupledSet, tuple[str, ...]]:
+def _rust_coupled(
+    mode: Scope, repo_root: Path, env: Mapping[str, str]
+) -> tuple[CoupledSet, tuple[str, ...]]:
     """PG-DRIFT's predicate: fixtures named on tracked *.rs lines not carrying the reviewed marker."""
-    found = _git(repo_root, env, "grep", "-h", "-E", FIXTURE_REFERENCE.pattern, "--", "*.rs")
+    source = ("--cached",) if mode is Scope.STAGED else ()
+    found = _git(repo_root, env, "grep", *source, "-h", "-E", FIXTURE_REFERENCE.pattern, "--", "*.rs")
     if found.returncode == 1:
         return CoupledSet(frozenset()), ()
     if found.returncode != 0:
+        command = " ".join(("git grep", *source, f"-E '{FIXTURE_REFERENCE.pattern}' -- '*.rs'"))
         return CoupledSet(frozenset(), everything=True), (
-            f"verify.sh: WARNING — git grep -E '{FIXTURE_REFERENCE.pattern}' -- '*.rs' exited "
-            f"{found.returncode} — every prd-gate fixture counts as Rust-coupled (fail wide, "
-            "contract C5)",
+            f"verify.sh: WARNING — {command} exited {found.returncode} — every prd-gate fixture "
+            "counts as Rust-coupled (fail wide, contract C5)",
         )
     return CoupledSet(
         frozenset(
@@ -262,10 +273,12 @@ def _rust_coupled(repo_root: Path, env: Mapping[str, str]) -> tuple[CoupledSet, 
     ), ()
 
 
-def _gui_pinned(repo_root: Path) -> tuple[CoupledSet, tuple[str, ...]]:
+def _gui_pinned(
+    mode: Scope, repo_root: Path, env: Mapping[str, str]
+) -> tuple[CoupledSet, tuple[str, ...]]:
     """The pins file's tests/prd-gate/fixtures/ entries; it must be a JSON list of paths."""
     try:
-        pins = json.loads(GUI_PINS.read_text(repo_root))
+        pins = json.loads(_pins_text(mode, repo_root, env))
         problem = None if _is_path_list(pins) else "not a JSON list of strings"
     except (OSError, ValueError) as err:
         problem = str(err)
@@ -275,6 +288,15 @@ def _gui_pinned(repo_root: Path) -> tuple[CoupledSet, tuple[str, ...]]:
             "fixture counts as GUI-pinned (fail wide, contract C5)",
         )
     return CoupledSet(frozenset(_basename(pin) for pin in pins if pin.startswith(FIXTURES_DIR))), ()
+
+
+def _pins_text(mode: Scope, repo_root: Path, env: Mapping[str, str]) -> str:
+    if mode is not Scope.STAGED:
+        return GUI_PINS.read_text(repo_root)
+    found = _git(repo_root, env, "cat-file", "blob", f":{GUI_PINS.path}")
+    if found.returncode != 0:
+        raise OSError(f"git cat-file blob :{GUI_PINS.path} exited {found.returncode}")
+    return found.text
 
 
 def _is_path_list(value: object) -> bool:
@@ -296,7 +318,7 @@ class ScopeFacts:
 
 
 def gather_facts(
-    changed: ChangedSet, repo_root: Path, env: Mapping[str, str]
+    mode: Scope, changed: ChangedSet, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[ScopeFacts, tuple[str, ...]]:
     """PathFacts for every classified path in one pass; the OCCT set only if a crate path
     seeds, and the fixture coupling only if a path is a prd-gate fixture (PRD D6)."""
@@ -309,7 +331,7 @@ def gather_facts(
         occt_declared = frozenset(line for line in result.stdout.split("\n") if line)
         warnings.extend(result.stderr_lines)
     if any(fnmatchcase(path, FIXTURE_GLOB) for path in paths):
-        coupling, coupling_warnings = derive_fixture_coupling(repo_root, env)
+        coupling, coupling_warnings = derive_fixture_coupling(mode, repo_root, env)
         warnings.extend(coupling_warnings)
     return ScopeFacts(paths, occt_declared, coupling), tuple(warnings)
 
@@ -408,5 +430,5 @@ def decide(
     changed = gather_changed(resolved, repo_root, env)
     if isinstance(changed, GatherFailure):
         return ScopeDecision.wide(resolved), (*resolved.notices, changed.warning)
-    facts, warnings = gather_facts(changed, repo_root, env)
+    facts, warnings = gather_facts(resolved.mode, changed, repo_root, env)
     return decide_scope(resolved, changed, facts), (*resolved.notices, *warnings)
