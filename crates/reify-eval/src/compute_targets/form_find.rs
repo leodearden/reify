@@ -67,8 +67,9 @@
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError, MemberKind,
-    form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
+    ForceDensityInputError, ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError,
+    GroupSpecDefect, MemberKind, form_find_anchored_surfaces, form_find_free,
+    form_find_free_surfaces,
 };
 
 use super::tensegrity_crack::{
@@ -321,11 +322,16 @@ fn build_result(solve: &FormFindSolve) -> Value {
     }))
 }
 
+/// The cause shared by [`describe`] and [`describe_free`] for a node index past
+/// the node list — unreachable through the crackers, which range-check first.
+const INDEX_OUT_OF_RANGE: &str = "index out of range — a member endpoint, anchor or \
+     surface corner indexes past the node list";
+
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
 fn describe(e: FormFindError) -> &'static str {
     match e {
-        FormFindError::SignViolation => {
+        FormFindError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — every cable requires q > 0 (tension) and every strut requires q < 0 (compression)"
         }
         FormFindError::SingularReducedStiffness => {
@@ -335,19 +341,21 @@ fn describe(e: FormFindError) -> &'static str {
         FormFindError::EmptyFreeSet => {
             "every node is anchored — there is no free node to solve for"
         }
-        FormFindError::DimensionMismatch => {
+        FormFindError::Input(ForceDensityInputError::DimensionMismatch) => {
             "force_densities length does not match the member count (struts + cables)"
         }
-        FormFindError::DegenerateTriangle => {
+        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
+        FormFindError::DegenerateTriangle
+        | FormFindError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
         }
-        FormFindError::NonTensionSurfaceStress => {
+        FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
         }
-        FormFindError::SurfaceCountMismatch => {
+        FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
         }
@@ -520,7 +528,7 @@ fn build_result_free(
 /// `E_FormFindInfeasible:` prefix).
 fn describe_free(e: FreeFormError) -> &'static str {
     match e {
-        FreeFormError::SignViolation => {
+        FreeFormError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — cable groups require positive seed ratios (q > 0) \
              and strut groups require negative seed ratios (q < 0)"
         }
@@ -529,9 +537,23 @@ fn describe_free(e: FreeFormError) -> &'static str {
              exactly d+1 = 4 for a valid 3-D free-standing form; the supplied q does not \
              achieve this"
         }
-        FreeFormError::DimensionMismatch => {
-            "dimension mismatch — group_ids, seed_ratios, or reference_group length \
-             disagrees with the member count or contains out-of-range ids"
+        FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
+            "dimension mismatch — the members and their kinds disagree in length"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember) => {
+            "dimension mismatch — group_ids length does not match the member count \
+             (struts + cables)"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { .. }) => {
+            "dimension mismatch — a group_ids entry names a group past the end of \
+             seed_ratios; every group id needs a seed ratio"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup) => {
+            "dimension mismatch — reference_group names a group past the end of seed_ratios"
+        }
+        FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { .. }) => {
+            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
+             strut groups < 0), so it cannot be zero"
         }
         FreeFormError::SearchDidNotConverge => {
             "search did not converge — the adaptive GroupRatios search exhausted its \
@@ -542,16 +564,18 @@ fn describe_free(e: FreeFormError) -> &'static str {
             "singular recovery — null-space coordinate recovery failed to produce a \
              3-D realisation; try a less degenerate initial node placement"
         }
-        FreeFormError::DegenerateTriangle => {
+        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
+        FreeFormError::DegenerateTriangle
+        | FreeFormError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
         }
-        FreeFormError::NonTensionSurfaceStress => {
+        FreeFormError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
         }
-        FreeFormError::SurfaceCountMismatch => {
+        FreeFormError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
         }
