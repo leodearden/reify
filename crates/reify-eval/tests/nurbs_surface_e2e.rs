@@ -277,7 +277,10 @@ fn nurbs_surface_builds_under_registered_kernels() {
         errors_only(&compiled)
     );
 
-    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+    let mut engine = reify_eval::Engine::with_registered_kernels(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+    );
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let errors: Vec<_> = result

@@ -243,9 +243,10 @@ fn body_z_stretch_aabb_occt() {
 fn example_builds_step_under_registered_kernels() {
     let compiled = compiled_example();
 
-    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(
-        reify_constraints::SimpleConstraintChecker,
-    ));
+    let mut engine = reify_eval::Engine::with_registered_kernels(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(reify_constraints::SimpleConstraintChecker),
+    );
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let errors: Vec<_> = result
