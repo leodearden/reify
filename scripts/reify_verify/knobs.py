@@ -308,60 +308,13 @@ RUN_ID = Knob(
     "a recording run's id; a run that inherits one is nested and records nothing",
 )
 
-KNOBS: tuple[Knob, ...] = (
-    TEST_TIMEOUT,
-    TEST_TIMEOUT_RELEASE,
-    PREBUILD_TIMEOUT,
-    CLIPPY_TIMEOUT,
-    GUI_FEATURE_TEST_TIMEOUT,
-    CHECK_TIMEOUT,
-    PSI_GATE_THRESHOLD,
-    PSI_GATE_WINDOW,
-    PSI_GATE_MAX_WAIT,
-    PSI_GATE_POLL,
-    PSI_GATE_PROC_PATH,
-    PSI_GATE_DISPATCH_FILE,
-    PSI_GATE_DISABLE,
-    PSI_GATE_MEM_PROC_PATH,
-    PSI_GATE_MEM_FULL_THRESHOLD,
-    PSI_GATE_MEM_SOME_THRESHOLD,
-    COMPILE_GATE_THRESHOLD,
-    COMPILE_GATE_MAX_WAIT,
-    COMPILE_GATE_POLL,
-    COMPILE_GATE_PROC_PATH,
-    COMPILE_GATE_DISABLE,
-    COMPILE_GATE_MEM_PROC_PATH,
-    COMPILE_GATE_MEM_FULL_THRESHOLD,
-    COMPILE_GATE_MEM_SOME_THRESHOLD,
-    GATE_EXCLUDE_HEAVY,
-    RELEASE_DELTA_SKIP,
-    JOBSERVER_TASK_FIFO,
-    JOBSERVER_MERGE_FIFO,
-    JOBSERVER_SKIP_LIVENESS_PROBE,
-    NEXTEST_PROBE_RETRY_SLEEP,
-    RETRY_SCOPE,
-    RETRY_NEXTEST_FILTER_FILE,
-    RETRY_NEXTEST_FILTER_FILE_DEBUG,
-    RETRY_NEXTEST_FILTER_FILE_RELEASE,
-    RETRY_TREE_OID,
-    RETRY_MAX_SUBSET,
-    ATTEMPT_SIDECAR,
-    CONFIRM_MANIFEST_DEBUG,
-    CONFIRM_MANIFEST_RELEASE,
-    CONFIRM_SIDECAR_DEBUG,
-    CONFIRM_SIDECAR_RELEASE,
-    CONFIRM_JUNIT,
-    CONFIRM_LOG,
-    NEXTEST_CONFIG,
-    AFFECTED_CRATES_OVERRIDE,
-    GUI_RETRY_SPECS,
-    INFRA_SUITE_ACTIVE,
-    RUN_ALL_MEMBER_SUBSET,
-    BACKGROUND_SWEEP_LEDGER,
-    LEDGER_DIR,
-    LEDGER_LANE_DIR,
-    RUN_ID,
-)
+
+def _defined_knobs(namespace: Mapping[str, object]) -> tuple[Knob, ...]:
+    """Every Knob constant in `namespace`, in definition order."""
+    return tuple(value for value in namespace.values() if isinstance(value, Knob))
+
+
+KNOBS: tuple[Knob, ...] = _defined_knobs(globals())
 
 
 def _check_unique_names(knobs: tuple[Knob, ...]) -> None:
