@@ -275,6 +275,7 @@ test_verify_retry_failed_only.sh pool
 test_verify_retry_subset.sh pool
 test_verify_role_prio.sh pool
 test_verify_scope.sh pool
+test_verify_scope_record.sh pool
 test_verify_scope_source_mode.sh pool
 test_verify_selective_infra_event_log_isolation.sh pool
 test_verify_semaphore_wiring.sh pool

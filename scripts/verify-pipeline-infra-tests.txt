@@ -840,3 +840,7 @@ scripts/reify_verify/queries.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/queries.py    tests/infra/test_verify_policy.sh
 tests/infra/test_verify_policy.py    tests/infra/test_verify_policy.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh
+
+# S18 β (#9097, PRD verify-structured-plan-and-role-table D5/D6/D14): the scope decision record.
+tests/infra/test_verify_scope_record.py    tests/infra/test_verify_scope_record.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_scope_record.sh
