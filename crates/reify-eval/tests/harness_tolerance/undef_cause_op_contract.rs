@@ -439,7 +439,7 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
         "MpDim must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
@@ -534,7 +534,7 @@ fn a_mass_plane_offset_records_the_dimensioned_arg_cause() {
         "PlaneDim must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
