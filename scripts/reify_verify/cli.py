@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-from reify_verify import knobs, queries
+from reify_verify import bashcall, knobs, queries
 from reify_verify.invocation import Action, Invocation, Query, Scope
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
@@ -279,7 +279,11 @@ def main(argv: list[str]) -> int:
 
 def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
     if invocation.query is not None:
-        output = REPORTS[invocation.query](invocation, env, REPO_ROOT)
+        try:
+            output = REPORTS[invocation.query](invocation, env, REPO_ROOT)
+        except bashcall.BashCallError as err:
+            _diagnose((f"{ERROR}{err}",))
+            return 1
         _diagnose(output.warnings)
         _print(output.stdout_lines)
         return 0

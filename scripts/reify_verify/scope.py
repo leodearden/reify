@@ -1,19 +1,33 @@
 """scope — which check families a verify run needs, decided from what changed (PRD D5).
 
-resolve_scope settles the effective scope. decide returns the ScopeDecision
-and the scope stage's stderr lines, in the order bash prints them.
+The stages, each a function of the one before: resolve_scope settles the
+effective scope, gather_changed reads the changed paths, gather_facts reads
+what the classifier needs to know about them, and the pure decide_scope maps
+those facts to check families. decide runs the stages and returns the
+ScopeDecision and the scope stage's stderr lines, in the order bash prints
+them.
 
 Every git call goes through _git, under the caller's env unmodified: the
 hook's GIT_* env is never scrubbed (consumer C18).
 """
 
+import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import reduce
 from pathlib import Path
 
+from reify_path_attribution import PathFacts, Tree, attribute
+from reify_verify import bashcall
+from reify_verify.bashcall import BashCall
 from reify_verify.invocation import Invocation, Scope
 from reify_verify.policy import ROLE_TABLE
+
+OCCT_DECLARED_SET = BashCall("scripts/occt-scope-lib.sh", "occt_declared_set")
+GUI_EVENT_CHANNELS = "docs/gui-event-channels.md"
+RENAME_SOURCE = re.compile(r"tests/prd-gate/fixtures/.*\.ri|docs/gui-event-channels\.md")
+TASK_DIR = ".task/"
 
 MERGE_HEAD_NOTICE = "verify.sh: MERGE_HEAD present — forcing --scope all (merge in progress)"
 MERGE_BASE_WARNING = (
@@ -138,8 +152,153 @@ class ScopeDecision:
         }
 
 
+@dataclass(frozen=True)
+class ChangedSet:
+    """The primary diff's paths (minus .task/) and the rename sources the classifier reads."""
+
+    files: tuple[str, ...]
+    rename_sources: tuple[str, ...]
+
+    @property
+    def classified(self) -> tuple[str, ...]:
+        return (*self.files, *self.rename_sources)
+
+
+@dataclass(frozen=True)
+class GatherFailure:
+    warning: str
+
+
+def gather_changed(
+    resolved: ResolvedScope, repo_root: Path, env: Mapping[str, str]
+) -> ChangedSet | GatherFailure:
+    """Staged reads the index; branch diffs the merge base to the working tree.
+
+    Every non-zero git status fails wide, the staged primary diff included
+    (PRD D5, amended 2026-10-15).
+    """
+    mode = resolved.mode
+    if mode is Scope.STAGED:
+        before, after = ("--cached",), ()
+    else:
+        before, after = (), (resolved.merge_base,)
+    primary = _git(repo_root, env, "diff", *before, "--name-only", "--diff-filter=ACMRD", *after)
+    if primary.returncode != 0:
+        return GatherFailure(_fail_wide(mode, "git diff"))
+    renames = _git(repo_root, env, "diff", *before, "--name-status", "--diff-filter=R", "-M", *after)
+    if renames.returncode != 0:
+        return GatherFailure(_fail_wide(mode, "rename-source diff"))
+    files = tuple(path for path in primary.lines if path and not path.startswith(TASK_DIR))
+    sources = tuple(
+        source for source in map(_second_field, renames.lines) if RENAME_SOURCE.fullmatch(source)
+    )
+    return ChangedSet(files, sources)
+
+
+def _fail_wide(mode: Scope, what: str) -> str:
+    return (
+        f"verify.sh: WARNING — --scope {mode.value} {what} failed — failing WIDE to "
+        "--scope all (contract C5)"
+    )
+
+
+def _second_field(line: str) -> str:
+    """`cut -f2`: the second tab field, or the whole line when it has no tab."""
+    fields = line.split("\t")
+    return fields[1] if len(fields) > 1 else line
+
+
+@dataclass(frozen=True)
+class ScopeFacts:
+    """What decide_scope reads about the classified paths; None = not gathered."""
+
+    paths: Mapping[str, PathFacts]
+    occt_declared: frozenset[str] | None
+    coupling: None = None
+
+
+def gather_facts(
+    changed: ChangedSet, repo_root: Path, env: Mapping[str, str]
+) -> tuple[ScopeFacts, tuple[str, ...]]:
+    """PathFacts for every classified path in one pass; the OCCT set only if a crate path seeds."""
+    paths = {path: attribute(path) for path in changed.classified}
+    occt_declared = None
+    warnings: tuple[str, ...] = ()
+    if any(facts.tree is Tree.CRATES and facts.seed_crates for facts in paths.values()):
+        result = bashcall.run(OCCT_DECLARED_SET, (), repo_root, env)
+        occt_declared = frozenset(line for line in result.stdout.split("\n") if line)
+        warnings = result.stderr_lines
+    return ScopeFacts(paths, occt_declared), warnings
+
+
+@dataclass(frozen=True)
+class Signals:
+    rust: bool = False
+    gui: bool = False
+    gate: bool = False
+
+    def __or__(self, other: "Signals") -> "Signals":
+        return Signals(self.rust or other.rust, self.gui or other.gui, self.gate or other.gate)
+
+
+NOTHING = Signals()
+GUI = Signals(gui=True)
+RUST_AND_GUI = Signals(rust=True, gui=True)
+EVERYTHING = Signals(rust=True, gui=True, gate=True)
+
+
+def decide_scope(resolved: ResolvedScope, changed: ChangedSet, facts: ScopeFacts) -> ScopeDecision:
+    """The check families the changed paths need: an OR over one classification per path."""
+    signals = reduce(Signals.__or__, (_classify(path, facts) for path in changed.classified), NOTHING)
+    rust = signals.rust or GUI_EVENT_CHANNELS in changed.rename_sources
+    return ScopeDecision(
+        mode=resolved.mode,
+        merge_base=resolved.merge_base,
+        run_rust=rust,
+        run_gui=rust or signals.gui,
+        run_occt_gate=signals.gate,
+        gui_path_signal=signals.gui,
+        changed_paths=changed.files,
+        rename_sources=changed.rename_sources,
+    )
+
+
+def _classify(path: str, facts: ScopeFacts) -> Signals:
+    """Verify's policy arms first, then the arms over the path's facts (S22 ruling)."""
+    if path == GUI_EVENT_CHANNELS:
+        return GUI
+    path_facts = facts.paths.get(path)
+    if path_facts is None:
+        raise ValueError(f"decide_scope: no PathFacts gathered for {path!r}")
+    if path_facts.tree is Tree.CRATES:
+        return Signals(rust=True, gate=_seeds_an_occt_crate(path, path_facts, facts))
+    if path_facts.tree is Tree.GUI_TAURI:
+        return RUST_AND_GUI
+    if path_facts.is_global:
+        return EVERYTHING
+    if path_facts.tree in (Tree.GUI_SRC, Tree.GUI_OTHER):
+        return GUI
+    if path_facts.inert:
+        return NOTHING
+    return EVERYTHING
+
+
+def _seeds_an_occt_crate(path: str, path_facts: PathFacts, facts: ScopeFacts) -> bool:
+    if not path_facts.seed_crates:
+        return False
+    if facts.occt_declared is None:
+        raise ValueError(f"decide_scope: {path!r} seeds a crate but the OCCT set was not gathered")
+    return bool(path_facts.seed_crates & facts.occt_declared)
+
+
 def decide(
     invocation: Invocation, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[ScopeDecision, tuple[str, ...]]:
     resolved = resolve_scope(invocation, repo_root, env)
-    return ScopeDecision.wide(resolved), resolved.notices
+    if resolved.mode is Scope.ALL:
+        return ScopeDecision.wide(resolved), resolved.notices
+    changed = gather_changed(resolved, repo_root, env)
+    if isinstance(changed, GatherFailure):
+        return ScopeDecision.wide(resolved), (*resolved.notices, changed.warning)
+    facts, warnings = gather_facts(changed, repo_root, env)
+    return decide_scope(resolved, changed, facts), (*resolved.notices, *warnings)
