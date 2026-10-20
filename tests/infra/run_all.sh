@@ -662,12 +662,17 @@ _ra_emit_fail_detail() {
 # git-env scrub, an unset REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this
 # run's discovery only; a member that drives run_all.sh over its own fixtures
 # must not inherit the filter), an unset REIFY_VERIFY_EVENT_LOG (no member
-# writes the parent channel, PRD §4 C4) and FD 9 closed (no member holds a
-# lock FD this run or its caller opened).
-_ra_spawn_member() {
+# writes the parent channel, PRD §4 C4), FD 9 closed (no member holds a lock
+# FD this run or its caller opened) and the run's saved stdout/stderr closed
+# (so no member, nor a background child it leaves behind, holds the verify
+# stream open). The body is a subshell so those closes never reach the main
+# shell, where a deferred TERM trap runs inside this call and writes through
+# the saved fds.
+_ra_spawn_member() (
+    exec 9<&- {_RA_RUN_STDOUT_FD}>&- {_RA_RUN_STDERR_FD}>&-
     reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_VERIFY_EVENT_LOG \
-        bash "$INFRA_DIR/$1" 9<&-
-}
+        bash "$INFRA_DIR/$1"
+)
 
 # _ra_sanitize_stream -- stdin to stdout through the one $_RA_SANITIZE_SED
 # chain, line-buffered so a live member's output is never held back.
