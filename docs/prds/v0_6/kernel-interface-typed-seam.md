@@ -462,7 +462,7 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
 - **Ratchet:** `structure-instance-literal-eval | ^[^/]*StructureInstanceData [{] | crates/reify-eval/src/**/*.rs | <post-step-one count> | α₅`, plus `-stdlib` and `-expr` rows over `crates/reify-stdlib/src/**/*.rs` and `crates/reify-expr/src/**/*.rs`, each measured at the leaf's base commit (L12).
 
 ### β₁ (#8935) — Native dependencies fail closed; the stub arms are deleted (R5)
-- **Keys:** fk-107e28de9029, fk-0f933e75bf7d; plus S14's fk-c497935d4b8a from the subsumed κ. **Subsumes #8532 and S14 κ #8632** (L13). **INV:** INV-GEO-4 (the stub-arm clause is deleted from the row).
+- **Keys:** fk-107e28de9029, fk-0f933e75bf7d; plus S14's fk-c497935d4b8a from the subsumed κ; plus S21's fk-765ff49d2de5 from the subsumed S21 β (**[Amended 2026-10-20, retro-critic R12]**). **Subsumes #8532 and S14 κ #8632** (L13), **and S21 β #8646** (**[Amended 2026-10-20, retro-critic R12]**; #7623's subsumption is re-pointed here). **INV:** INV-GEO-4 (the stub-arm clause is deleted from the row).
 - **Files:**
   - Build scripts: `crates/reify-kernel-occt/build.rs`, `crates/reify-kernel-gmsh/build.rs`, `crates/reify-kernel-openvdb/build.rs`, `crates/reify-kernel-conformance/build.rs`, `crates/reify-cli/build.rs`, `crates/reify-eval/build.rs`, `crates/reify-mesh-morph/build.rs`, `gui/src-tauri/build.rs`; `crates/reify-build-utils/src/lib.rs` (`require`).
   - OCCT: `crates/reify-kernel-occt/src/stubs.rs` (deleted), `crates/reify-kernel-occt/src/lib.rs`.
@@ -472,6 +472,7 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
   - `scripts/check-manifold-deps.sh` (its "THE SILENT-VACUITY RULE" header describes the fail-open build that β₁ removes). It is a verify-pipeline file, so this leaf takes the full gate (`verify-pipeline-guard.sh requires-full-gate` exits 0).
   - `crates/reify-test-support/src/kernel_assertions.rs` (`assert_stub_kernel_errors!` and the `stub;` arm, if no user remains).
   - `CLAUDE.md` (Native deps bullet); `docs/invariants.md` (INV-GEO-4).
+  - **[Amended 2026-10-20, retro-critic R12]** `tests/infra/adoption-ratchet.manifest` (the absorbed S21 β ratchet rows).
 - **Deps:** none.
 - **Work:**
   - Every build script listed calls `reify_build_utils::require(NativeDep::…)` instead of `find(..)` + `return`. `require` panics with a message naming the dependency, the `*_LIB_DIR`/`*_INCLUDE_DIR` overrides and `scripts/setup-dev.sh`.
@@ -479,10 +480,15 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
   - Rewrite the check-manifold-deps.sh header for a build that fails closed, keeping the preflight as the fast first failure.
   - `has_*` stays emitted (always true) until β₂/β₃ sweep it.
   - Rewrite the openvdb crate doc for its single arm (absorbing #8532).
-  - Update CLAUDE.md's Native-deps bullet: absence now fails the build, and check-manifold-deps.sh stays as the fast first failure.
+  - Update CLAUDE.md's Native-deps bullet: absence now fails the build, and check-manifold-deps.sh stays as the fast first failure. **[Amended 2026-10-20, retro-critic R12]** This leaf rewrites the bullet once, for both S10 and the subsumed S21 β; no 'find() returns None' sentence survives.
+  - **[Amended 2026-10-20, retro-critic R12]** **The absorbed S21 β contract** (supersedes the 2026-10-12 uncontested-block S21 clause and S21 D4's `detect()`). `require(dep)` is the one public discovery entry; `find()` goes private and no `detect()` is added. `require` emits, in order: `cargo::rustc-check-cfg=cfg(<row.cfg>)`; `cargo:rerun-if-env-changed=` for `include_env`, then `lib_env` (the surviving half of fk-765ff49d2de5: today `find()` declares neither); `cargo:rustc-cfg=<row.cfg>` for as long as `has_*` lives (β₂/β₃ sweep it). Every kernel's fail-open warning-and-return branch is deleted, not kept. The 8 `build.rs` lose their 10 hand-written cfg lines, 10 check-cfg lines and 6 env literals, and `reify-mesh-morph` drops its "copied from reify-solver-elastic" header line with its block. #8646's migration list and openvdb four-probe note are ported into #8935's record.
+  - **[Amended 2026-10-20, retro-critic R12]** **Directive contract (S21 M2).** Factor a pure `fn directives(row, resolved) -> Vec<String>` (or use lib.rs's re-exec child pattern) and unit-test the ordered lines: check-cfg, rerun `include_env`, rerun `lib_env`, cfg only when both dirs resolve, and the not-resolved case. This is part of done.
+  - **[Amended 2026-10-20, retro-critic R12]** **Ratchet (S21 M1).** Rows in `tests/infra/adoption-ratchet.manifest` at ceiling 0, owner β₁, one row id per glob (`crates/*/build.rs`, `gui/src-tauri/build.rs`), for `rustc-cfg=has_`, `rustc-check-cfg=cfg\(has_`, `rerun-if-env-changed=(OCCT|GMSH|OPENVDB)_` and `reify_build_utils::find\(`. There is no new section in `test_occt_deps_preflight.sh`. The engine strips only `#` lines, so a `//` comment quoting a pattern counts as a hit.
+  - **[Amended 2026-10-20, retro-critic R12]** Re-check `gui/src-tauri` built without `--features gui` (S21 §3 item 7): it emits zero `rerun-if-*` today, so the new rerun lines switch it off cargo's package-scan heuristic. Report it.
 - **Signal:**
   - The decision is unit-tested where it lives: `require`'s pure core, given an injected empty candidate list, produces a message naming the dependency, both overrides and `scripts/setup-dev.sh`.
-  - `git grep -nE 'reify_build_utils::find\(' -- '*build.rs'` = 0, so every detector goes through `require`.
+  - `git grep -nE 'reify_build_utils::find\(' -- '*build.rs'` = 0, so every detector goes through `require`. **[Amended 2026-10-20, retro-critic R12]** This is a ratchet row, not a delivered check: S21 β's `find()`-private diff alone would satisfy it. The delivered checks are `require-helper` (`pub fn require\(` present) and `hand-written-cfg-sites-gone` (`rustc-cfg=has_` absent over the 8 `build.rs`, moved from S21 β).
+  - **[Amended 2026-10-20, retro-critic R12]** After `GMSH_INCLUDE_DIR=<other dir>`, `cargo build -p reify-eval -v` reports reify-eval's build script dirty on that env var (S21 β's signal); the S21 M1 ratchet rows read 0.
   - `git grep -n 'not(has_occt)\|not(has_gmsh)\|not(has_openvdb)' -- crates gui` = 0.
   - `git ls-files crates/reify-kernel-occt/src/stubs.rs` is empty.
   - The INV-GEO-4 row no longer names a stub arm.
@@ -500,11 +506,12 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
   - The rows below are at 0 for these crates.
   - `git grep -n stub_register -- crates/reify-kernel-gmsh crates/reify-kernel-openvdb` = 0 (β₃ takes the comment mentions elsewhere).
   - Each crate's test count is not lower than before (an un-gated test that now runs is expected), counted once per crate with `scripts/cargo-test-tally.py`.
-- **Ratchet:** `native-cfg-gate-<crate> | ^[^/]*has_(occt|gmsh|openvdb) | crates/<crate>/**/*.rs | 0 | β₂`, one row per crate in the footprint (L12: one id per glob). No guard row yet: the constants' definitions stay until β₃.
+- **Ratchet:** `native-cfg-gate-<crate> | ^[^/]*has_(occt|gmsh|openvdb) | crates/<crate>/**/*.rs | 0 | β₂`, one row per crate in the footprint (L12: one id per glob). No guard row yet: the constants' definitions stay until β₃. **[Amended 2026-10-20, retro-critic R12]** The rows exclude `crates/reify-build-utils`: its one `has_*` hit is S21 α's `every_row_cfg_is_has_row_key` test line (lib.rs:489), which β₃ deletes with native-deps.toml's `cfg` column and takes to 0.
 
 ### β₃ (#8957) — Sweep always-true native cfgs: reify-eval, front ends, the rest; the constants go
 - **Keys:** none.
 - **Files:** `[]` (footprint `crates/reify-eval`, `crates/reify-cli`, `gui/src-tauri`, `crates/reify-mesh-morph`, `crates/reify-solver-elastic` and the remaining crates, plus the two constant definitions in `crates/reify-kernel-occt/src/lib.rs` and `crates/reify-kernel-gmsh/src/lib.rs`; `tests/infra/adoption-ratchet.manifest`).
+  **[Amended 2026-10-20, retro-critic R12]** The task's `files` now list the `cfg`-column retirement set: `crates/reify-build-utils/native-deps.toml`, `crates/reify-build-utils/src/lib.rs`, `scripts/native_deps_table.py`, `scripts/check-manifold-deps.sh`, `tests/infra/test_occt_deps_preflight.sh`.
 - **Deps:** β₂.
 - **Work:**
   - As β₂, over these crates (`OCCT_AVAILABLE` has readers in 110 reify-eval files, 15 reify-cli, 4 gui and 1 solver-elastic; `GMSH_AVAILABLE` in 2 reify-eval, 1 mesh-morph and 6 solver-elastic).
@@ -513,11 +520,12 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
   - `gui/src-tauri/src/kernel_status.rs::current_kernel_status` calls `kernel_status_for(true)`, so it returns "available" unconditionally. The `get_kernel_status` command and its TS consumer stay as they are (S25/S26, §12).
   - Remove the `stub_register` comment mentions in `crates/reify-eval/Cargo.toml`, `crates/reify-mesh-morph/Cargo.toml`, `crates/reify-cli/src/main.rs` and `crates/reify-eval/src/realize_solid_sdf.rs`.
   - meshing-service ζ #8289 also deletes `GMSH_AVAILABLE`; whichever lands second finds it gone.
+  - **[Amended 2026-10-20, retro-critic R12]** **Retire native-deps.toml's `cfg` column end to end** (S21 M3; S21 §6 row `native-deps.toml columns | S21 | S10 β₃ #8957 retires cfg`). Files: `crates/reify-build-utils/native-deps.toml` (the `cfg` rows), `scripts/native_deps_table.py` (`IDENTIFIER_COLUMNS` and its required set), `scripts/check-manifold-deps.sh` (the `$<ROW>_CFG` hint lines), `tests/infra/test_occt_deps_preflight.sh` (section R), `crates/reify-build-utils/src/lib.rs` (`DepRow.cfg`, `check_row`, `every_row_cfg_is_has_row_key`, the lib.rs:489 test line). Otherwise the signal grep below can never reach 0. `check-manifold-deps.sh` and the preflight member are verify-pipeline files, so this leaf takes the full gate.
 - **Signal:**
   - `git grep -nE '^[^/]*(OCCT|GMSH|OPENVDB)_AVAILABLE|has_(occt|gmsh|openvdb)' -- crates gui` = 0.
   - `git grep -n stub_register -- crates gui` = 0.
   - Workspace test counts are measured as in β₂.
-- **Ratchet:** `native-cfg-gate-<crate>` rows for these crates, at 0. `native-available-guard | ^[^/]*(OCCT|GMSH|OPENVDB)_AVAILABLE | crates/**/*.rs | 0 | β₃`.
+- **Ratchet:** `native-cfg-gate-<crate>` rows for these crates, at 0 (**[Amended 2026-10-20, retro-critic R12]** including `crates/reify-build-utils`, excluded from β₂). `native-available-guard | ^[^/]*(OCCT|GMSH|OPENVDB)_AVAILABLE | crates/**/*.rs | 0 | β₃`.
 
 ### γ (#8958) — Crate strata assertion
 - **Keys:** fk-448317051ff9. **Subsumes #6474** (assert-crate-dag.sh B7+ for the expr/compiler/eval/application pairs): the stratum table forbids language → engine and engine → frontend edges, and the crate rule below covers the expr/compiler pair. Dev-dependencies (for example reify-eval's deliberate dev-dep cycle with reify-runtime) are not counted.
@@ -1049,6 +1057,7 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
 - **S25 / S26.** After β₃, `get_kernel_status` (`gui/src-tauri/src/kernel_status.rs`) always reports OCCT available. Whether the command and its TS consumer stay is theirs to decide.
 - **S1 (anchors).** β₃ removes `cfg(has_openvdb)` from the link-anchor lines in `crates/reify-cli/src/main.rs` and `gui/src-tauri/src/lib.rs`, and keeps the anchor lines themselves.
 - **#8561.** Lower γ's `kernel-occt → mesh-morph` exception row in the same diff (note appended).
+- **[Amended 2026-10-20, retro-critic R12]** **S21 (`native-dep-table-and-loader-path.md`).** β₁ #8935 subsumes S21 β #8646 (cancelled, `x_subsumed_by = 8935`) and carries its key fk-765ff49d2de5; ω #8663 depends on [8634, 8935, 8654]. S21 §6 records `reify_build_utils discovery API + build.rs native cfg emission | S10 (R5) | S21` and `native-deps.toml columns | S21 | S10 β₃ #8957 retires cfg`. β₂ #8936's reify-build-utils row is scoped out; β₃ #8957 retires the `cfg` column.
 
 ## Gap-fill amendments (2026-10-16)
 
@@ -1056,3 +1065,11 @@ Rulings from `plans/gap-fill-deliberation-reify-20261016.md` (Leo, attended sitt
 
 - **K4-D6** (§K4-D6; contradiction 10; fk-4fdd3e5ffbc1). New leaf **α₆ #9301** after α₂ #8931: `GeometryError::{CorruptHandle(id), ContractViolation { detail }, KernelFailure { op, detail }}` in `geometry/error.rs` with the From impls to QueryError / ExportError / TessError; diagnostics render user text from the variant and keep `op` as a debug field. These variants have producers (S11 λ1 #9304's `FfiFault` decoder, λ2 #9306's `ShapeStore::get` and actor conversion), so they are not the producer-less kind R5 removed (L13 / S14 Q2 unaffected). Read β₁ #8935 first: it deletes the stub arms, `STUB_UNAVAILABLE_MARKER` and the substring routing in the same error surface. #5895 and #5898 are re-scoped onto `KernelFailure.op` and depend on α₆. The S11 halves are in `occt-crate-internals.md` §"Gap-fill amendments (2026-10-16)".
 - **K4-D8** (§K4-D8; review R14 fk-c23fa8fef28c, R16 fk-17a5194418da; Leo, option B: implement both). Two medium standalone tasks: **#9310** — OpenVDB executes the `(BooleanUnion | Difference | Intersection, Voxel)` rows it declares through OpenVDB grid CSG, deleting `VOXEL_BOOL_STUB_MSG`, its execute/query stubs and the malformed "task ε" cites; **#9311** — Manifold's AdjacentFaces/SharedEdges answer in the trait's face index space (positions in `extract_faces`' coalesced planar faces, adjacency through shared canonical edges), with an OCCT/Manifold cube parity test (4 neighbours per face). G1 named exception: **ι₅ #8995 depends on #9311**, because ι₅ makes handle-served adjacency on a Manifold-owned body reachable; BT-ι3 does not cover adjacency, #9311 does. The framing's "every declared (op, repr) executes" follow-up after ι₂ belonged to the refuse option (A), which was not adopted, so no ι₂ follow-up leaf is filed.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+- **R12 B1** (S21 stream) — β₁ #8935 subsumes S21 β #8646 and absorbs its contract (`require(dep)` is the one public discovery entry; ordered check-cfg, `include_env`/`lib_env` reruns, cfg while `has_*` lives). Its `x_finding_key` gains fk-765ff49d2de5; `subsumes` gains 8646; #7623 is re-pointed to 8935; `tests/infra/adoption-ratchet.manifest` joins its files. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 M1/M2** — β₁ adds the S21 ratchet rows (ceiling 0, one id per glob) and the directive-contract unit test (part of done). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 polarity** — β₁'s `every-detector-requires` (`reify_build_utils::find\(` absent) delivered check is replaced by `hand-written-cfg-sites-gone` (`rustc-cfg=has_` absent over the 8 `build.rs`); `require-helper` and `occt-stub-deleted` stay. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 M3** — β₂ #8936's reify-build-utils ratchet row excludes `crates/reify-build-utils`; β₃ #8957's footprint and work delete native-deps.toml's `cfg` column end to end (table, reader, guard hints, preflight section R, `DepRow.cfg`/`check_row`, `every_row_cfg_is_has_row_key`, lib.rs:489). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 CLAUDE.md** — the Native-deps bullet is rewritten once, by β₁ #8935. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.

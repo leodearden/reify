@@ -112,7 +112,7 @@ _Gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-1/§D
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
 | no-finalizer-today | test_helpers.sh test_summary prints Results and exits; no hook; the warm-lane facility deliberately installs no EXIT trap (bash traps do not stack). | PASS | grep `^test_register_finalizer\(\)` present in `tests/infra/test_helpers.sh` |
-| base-constructor | deliverable. | OPEN | grep `^_make_base\(\)` present in `tests/infra/test_seed_warm_lane.sh` |
+| base-constructor | deliverable. Retro-critic R1 M4 (2026-10-20): `_make_base` lives in `tests/infra/test_helpers.sh` beside `make_isolated_lane`, so μ₂'s partition cannot redden this check; path repointed in three writes. | OPEN | grep `^_make_base\(\)` present in `tests/infra/test_helpers.sh` |
 | shared-handshake-primitive-exists | tests/infra/slot_holder_handshake_lib.sh holder_wait_for_marker — already adopted by test_warm_lane_gc.sh and test_warm_lane_pool.sh. | PASS | grep `^_wait_for_reader_lock\(\)` absent in `tests/infra/test_seed_warm_lane.sh` |
 
 ## μ₂ (#8719) — test_seed_warm_lane.sh h14 partition (9)
@@ -138,7 +138,7 @@ _Gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-1/§D
 
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
-| private-harness-and-substring-discovery-today | test_tree_sitter_pipeline.sh defines PASS_COUNT/FAIL_COUNT and discovers cases via declare -F \| awk '/test_/'; run_all.sh _ra_collect_fail_detail ERE matches neither 'ASSERTION FAILED' nor 'RUN … FAIL'. | PASS | grep `declare -F \\| awk` absent in `tests/infra/test_tree_sitter_pipeline.sh` |
+| private-harness-and-substring-discovery-today | test_tree_sitter_pipeline.sh defines PASS_COUNT/FAIL_COUNT and discovers cases via declare -F \| awk '/test_/'; run_all.sh _ra_collect_fail_detail ERE matches neither 'ASSERTION FAILED' nor 'RUN … FAIL'. Polarity (retro-critic R1): the pattern also matches the comment at `test_tree_sitter_pipeline.sh:36`; comment hit deleted in-diff by ο. | PASS | grep `declare -F \\| awk` absent in `tests/infra/test_tree_sitter_pipeline.sh` |
 | plan-capture-test-home-exists | tests/infra/test_plan_capture_lib.sh exists (S18 owns plan_capture_lib.sh; this leaf only moves a test into its existing test file). | PASS | grep `retries_on_truncation` present in `tests/infra/test_plan_capture_lib.sh` |
 
 ## π (#8726) — delete test_test_helpers.sh source-shape and prose pins; h14 partition (3); test_run_all.sh Test 6
@@ -152,7 +152,7 @@ _Gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-1/§D
 
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
-| importlib-heredocs-today | test_jobserver_balancer.sh — 13 spec_from_file_location heredocs, 4 mod._transfer_burst calls; scripts/jobserver-balancer.py defines _transfer_burst and decide. | PASS | grep `spec_from_file_location` absent in `tests/infra/test_jobserver_balancer.sh` |
+| importlib-heredocs-today | test_jobserver_balancer.sh — 13 spec_from_file_location heredocs, 4 mod._transfer_burst calls; scripts/jobserver-balancer.py defines _transfer_burst and decide. Polarity (retro-critic R1): the pattern also matches the comment at `test_jobserver_balancer.sh:577`; comment hit deleted in-diff by ρ. | PASS | grep `spec_from_file_location` absent in `tests/infra/test_jobserver_balancer.sh` |
 
 ## σ (#8728) — test_with_jcodemunch_serve.sh h14 partition (3)
 
@@ -167,7 +167,7 @@ _Gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-4._
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
 | manifest-is-the-bucket-home-today | `tests/infra/run-all-classification.manifest` is tracked at c7bbfe2519 (203 data rows) and read by `classification_bucket` / `classification_discovered_set`; the pragma has 0 hits. | PASS | path `tests/infra/run-all-classification.manifest` absent |
-| lib-reads-the-pragma | deliverable; the lib reads the pragma and fails closed on a missing or unknown bucket. | OPEN | grep `run-all-bucket:` present in `tests/infra/run-all-classification-lib.sh` |
+| lib-reads-the-pragma | deliverable; `classification_discovered_set` / `classification_bucket <bucket> <dir>` read the pragma and fail closed (discovery reports a named FAIL, the remaining members still run) on a missing or unknown bucket. Retro-critic R1 B2: anchored on code so a comment alone cannot satisfy it. | OPEN | grep `^[^#]*run-all-bucket:` present in `tests/infra/run-all-classification-lib.sh` |
 
 ## φ (#9309) — one per-member timing emitter on the γ event channel
 
@@ -175,7 +175,7 @@ _Gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-9._
 
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
-| pool-only-timing-ledger-today | `run_all.sh` defines `_ra_timing_member` / `_ra_timing_pool_lines` at c7bbfe2519; `_ra_run_serial_member` records no timing. | PASS | grep `^_ra_timing_pool_lines\(\)` absent in `tests/infra/run_all.sh` |
+| pool-only-timing-ledger-today | `run_all.sh` defines `_ra_timing_member` / `_ra_timing_pool_lines` at c7bbfe2519; `_ra_run_serial_member` records no timing. Retro-critic R1 B3: one emitter, two sinks (event channel; step file when `REIFY_RUN_ALL_TIMING_OUT` is set). R1 M1: paths widened to `run_all*.sh` so a δ relocation cannot satisfy it vacuously. | PASS | grep `^_ra_timing_pool_lines\(\)` absent in `tests/infra/run_all.sh`, `tests/infra/run_all_*.sh` |
 
 ## Ω (#8729) — PRD close — terminal stamp and freeze header
 

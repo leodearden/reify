@@ -41,7 +41,8 @@ rows carry no delivered check: the fixtures land with the PRD and would be green
 
 | leaf | capability | evidence | verdict | delivered check |
 |---|---|---|---|---|
-| α | ratchet member exists | producer-self; `scripts/lib_rust_production_view.sh` exists for the production view | PASS | path `tests/infra/test_tooling_front_end_ratchet.py` present |
+| α | ratchet member exists | producer-self; registered by `# run-all-bucket:` pragma if S19 υ #9303 has landed, else a manifest row (R3 MAJ-5) | PASS | path `tests/infra/test_tooling_front_end_ratchet.py` present |
+| α | rows on the shared construct engine | producer #8730 (S9 α), upstream edge; the member imports `rust_construct_ratchet`, no engine of its own (R3 MAJ-5) | PASS | grep `rust_construct_ratchet` in `tests/infra/test_tooling_front_end_ratchet.py` present |
 | χ | decl-oracle module | producer-self; record h14 unit list | PASS | path `crates/reify-lsp/src/decl_oracle.rs` present |
 | ψ | walk leaf module | producer-self; record h14 unit list | PASS | path `crates/reify-lsp/src/references/walk.rs` present |
 | τ | check-verdict module | producer-self; record h14 unit list | PASS | path `crates/reify-cli/src/check_verdict.rs` present |
@@ -51,23 +52,23 @@ rows carry no delivered check: the fixtures land with the PRD and would be green
 | ε | wrapper, not a second pipeline | behavioural, PRD §5 B6 | PASS | manual |
 | ω | tests module | producer-self; after ε | PASS | path `crates/reify-lsp/src/diagnostics/tests.rs` present |
 | ζ | accessor substrate | producer #8743 (S9 ν), upstream edge; absent at main; ζ lowers S9 R4's reify-lsp/reify-cli rows (#8730 member) | PASS | grep `\.all_value_cells\(\)` in `crates/reify-lsp/src` present |
-| ζ | guarded FEA-hint fixture | ζ's own deliverable; D3 probes the premise at decompose | OPEN | manual |
+| ζ | guarded FEA-hint fixture | ζ's own deliverable; guard-aware (R3 MAJ-6): guard cell value from `check_result`, guarded constraints via S9 ν #8743's `all_constraints()`; guard-false half stands; closes in-leaf with the measured outcome | OPEN | manual |
 | η | `member_scopes` on `Declaration` | absent at main; `PurposeDef.structures` exists | PASS | grep `fn member_scopes` in `crates/reify-ast/src` present |
 | η | purpose-nested fixture | `tooling_fe_purpose_nested_members.ri` parses, checks clean | PASS | — |
 | θ | hover names `Joint` | no Joint/Field/Purpose/Constraint arm in `hover.rs` | PASS | grep `Declaration::Joint` in `crates/reify-lsp/src/hover.rs` present |
 | θ | hover-kinds fixture | `tooling_fe_hover_decl_kinds.ri` parses, checks clean | PASS | — |
-| κ | `LspMethod` enum | `handle_request` matches strings at main | PASS | grep `pub enum LspMethod` in `crates/reify-lsp/src` present |
+| κ | `LspMethod` enum | `handle_request` matches strings at main; homed in leaf module `crates/reify-lsp/src/lsp_method.rs` (R3 MAJ-3) | PASS | grep `pub enum LspMethod` in `crates/reify-lsp/src` present |
 | κ | GUI lane consumes it | `lane_for_method` lists 8 strings | PASS | grep `LspMethod` in `gui/src-tauri/src/lsp_bridge.rs` present |
 | λ | generated TS method type (HELD S26) | S26's generator, wave 3 | OPEN | manual |
-| ι | hover placed | hover/completion inline at main; run label `"hover"` | PASS | grep `\.run\("hover"` in `crates/reify-lsp/src/server.rs` present |
+| ι | hover placed | hover/completion inline at main; run label `"hover"`; brittle: ι re-anchors in three writes if it labels runs from `LspMethod` (R3 MIN-2) | PASS | grep `\.run\("hover"` in `crates/reify-lsp/src/server.rs` present |
 | μ | `dev_stdlib_root` home | literal 3× server.rs, 1× main.rs, 1× gui engine.rs | PASS | grep `fn dev_stdlib_root` in `crates/reify-compiler/src` present |
 | π | family predicate | no `impl DiagnosticCode` at main; 9 `AutoTypeParam*` variants | PASS | grep `fn is_auto_type_param` in `crates/reify-core/src` present |
 | π | parse-error code adopted | producer #8742 (S9 μ), upstream edge | PASS | grep `diagnostic_code\(\)` in `crates/reify-lsp/src/convert.rs` present |
 | β | predicate in reify-eval | private to `reify-lsp` `diagnostics::eval_guard` at main | PASS | grep `pub fn first_unrepresentable_cell` in `crates/reify-eval/src` present |
 | β | shape-two fixture | probe: exit 101 panic, zero compile diagnostics | PASS | — |
 | γ | AnalysisContext on `compile_program` | producer #5516 (upstream edge); `compile_with_stdlib_checked` at main | PASS | grep `compile_program\(` in `crates/reify-lsp/src/analysis.rs` present |
-| γ | module-name derivation gone | `pub fn module_name_from_uri` at main | PASS | grep `pub fn module_name_from_uri\(` in `crates/reify-lsp/src` absent |
-| γ | stdlib-enum divergence | probe: check clean, MCP unresolved | PASS | — |
+| γ | module-name derivation gone | `pub fn module_name_from_uri` at main; satisfiable via γ's `reify_compiler::module_path_for_entry` (R3 BLK-2) | PASS | grep `pub fn module_name_from_uri\(` in `crates/reify-lsp/src` absent |
+| γ | stdlib-enum divergence | historical / non-regression (R3 MAJ-1): probe of the deleted `reify mcp-server`; LSP clean today; γ's RED signal is multi-file | PASS | — |
 | ν | chunk table | three in-file lists; reify-mcp depends only on reify-core | PASS | grep `pub const CHUNKS` in `crates/reify-mcp/src` present |
 | ν | no source-text scan | `TOPICS_ANCHOR` in `fence_gate.rs` at main | PASS | grep `TOPICS_ANCHOR` in `crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs` absent |
 | ξ | false consumer claim gone | reify-config rustdoc; five dependent crates | PASS | grep `no other workspace crate consumes it` in `crates/reify-config/src` absent |
@@ -87,6 +88,11 @@ rows carry no delivered check: the fixtures land with the PRD and would be green
 | γ₂ | `analyse` constructor | producer-self | PASS | grep `fn analyse\(` in `crates/reify-lsp/src/analysis.rs` present |
 | ε₂ (#9327, gap-fill 2026-10-16) | monolithic pipeline | ~495-line `compute_diagnostics_with_state`; prose EvalState ordering rule; string codes | PASS | — |
 | ε₂ | typed LSP codes | producer-self | PASS | grep `enum LspDiagnosticCode\b` in `crates/reify-lsp/src` present |
+
+**Amended 2026-10-20 (retro-critic R3).** Rows above marked R3 follow
+`plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R3`.
+The `reify mcp-server` probes in the provenance paragraph are historical (#6665 deleted the
+command 2026-10-14).
 
 **Accepted gaps.** `\.run\("hover"` binds ι to that label; the behavioural cover is §5 B5's
 placement rig. `Declaration::Joint` proves θ's arm exists, not its content; B1 is the cover.

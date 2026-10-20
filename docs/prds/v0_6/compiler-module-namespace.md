@@ -48,8 +48,11 @@ install-site lists and "why a thread-local" essays this PRD deletes).
 ## §1 — Goal and consumers (G1)
 
 After this PRD lands, an agent reading any one reify-compiler source file can tell from its
-`use` lines which module or crate every callee lives in; a new peer cycle or a new glob is red
-at the gate; whether a type resolution sees enum names is a field of the argument it was
+`use` lines which module or crate every callee lives in; a new glob is red at the gate;
+**[Amended 2026-10-20, retro-critic R8/R10]** a new peer cycle is red at the gate when it
+joins modules that sit in different measured residual SCCs (ξ records reify-compiler's residual
+SCCs; the INV-ARCH-1 tool ratchets SCC membership only, so a new edge inside one residual SCC is
+not seen), and `entity` and `guards` sit in different SCCs once σ has landed; whether a type resolution sees enum names is a field of the argument it was
 passed, not an accident of which caller installed a guard; a new per-sub fact is one field on
 one record built in one constructor; a new `Type` variant is classified once.
 
@@ -61,6 +64,7 @@ Consumers (every mechanism below names one):
 | `builtin_families.rs` (ε) | **S8** — its upstream seam in the program table is literally "S7 (explicit imports; builtin tables out of units.rs)"; S8 then migrates the families into reify-builtins rows. |
 | Namespace ratchet member (α) | The gate (`tests/infra/run_all.sh`), read by every compiler change. |
 | INV-ARCH-1 reify-compiler rows (ξ) | The gate; S3 (co-owner) reads the same tool for reify-eval/reify-ir. |
+| **[Amended 2026-10-20, retro-critic R10]** `trait_bounds.rs`, the AST-substitution module, the `EntityDefRef` module and the top-level `sketch_unsupported` (σ) | ξ's "entity and guards in different SCCs" criterion; S9 leaves on `entity.rs` / `guards.rs` (smaller files to lock). |
 | `ResolutionCtx` (μ) | Every type-resolution call site (29 production callers outside `type_resolution.rs`); #6893 (lambda-param annotations resolve with an explicitly empty context today) and #6399 (type-param defaults bypass the shadow override) get a context value to pass instead of a guard to install. |
 | `SubFacts` record (ν) | `expr.rs`, `connect.rs`, `member_path.rs` readers; the next connect check (fk-a9fb39978c17's next-change scenario). |
 | `Type::children` / `any_descendant` (λ) | `reify_core::overload::{type_carries_type_param, type_carries_dim_param}` and `type_mentions_conflicted_param`; the next `Type` variant. |
@@ -84,12 +88,21 @@ altered, so the overlay's docs-truth gate does not fire (no chunk, corpus or che
   `conformance/sub_component_validation.rs` (`use super::*;`, transitively the root) and
   `conformance/checker.rs` (`use crate::*;`). Total column-0 non-test glob imports: **29**.
 - **Peer cycle**: `entity.rs` calls `guards.rs` 6 times (`compile_block_guard`,
-  `register_guarded_names` ×2, `compile_per_decl_guard` ×3); `guards.rs` calls back into five
+  `register_guarded_names` ×2, `compile_per_decl_guard` ×3); `guards.rs` calls back into six
   `entity.rs` helpers — `build_param_value_cell_decl`, `build_auto_let_value_cell_decl`,
-  `resolve_auto_let_cell_type`, `fixup_option_none_for_let`, `fixup_option_none_for_param`.
+  `resolve_auto_let_cell_type`, `fixup_option_none_for_let`, `fixup_option_none_for_param`,
+  `priv_flag_to_visibility` (**[Amended 2026-10-20, retro-critic R8 M4]** the sixth, called at
+  `guards.rs` `let visibility = priv_flag_to_visibility(param.is_priv);`).
   Those helpers depend only on `annotations.rs` (`validate_annotations`, `lower_annotations`,
-  `extract_solver_hints`, `validate_solver_hint_collections`), `annotations/display.rs`, the
-  resolver, and one further `entity.rs` fn, `reject_keyed_value_position`.
+  `extract_solver_hints`, `validate_solver_hint_collections`), `annotations/display.rs`,
+  `scope.rs` (`build_auto_let_value_cell_decl` takes `&CompilationScope`), the resolver, and one
+  further `entity.rs` fn, `reject_keyed_value_position`. **[Amended 2026-10-20, retro-critic
+  R8 B1 / R10]** The direct call edge is not the only path: without the globs, `guards` also
+  reaches `entity` through `type_resolution` (`satisfies_trait_bound`), through `geometry` →
+  `conformance` (`satisfies_trait_bound`, `trait_satisfies`, `EntityDefRef`), through
+  `geometry_list` (`substitute_free_idents`) and through `compile_builder::sketch_unsupported`
+  (`guards.rs` `crate::compile_builder::sketch_unsupported::diagnostic(`); σ lifts those targets
+  below `entity` (D2).
 - `type_compat.rs` (5,299 lines; production 1–1912) keeps a facade
   `pub(crate) use reify_core::overload::{type_carries_trait_object, type_carries_type_param};`
   whose own comment says it survives only for `expr.rs`,
@@ -137,15 +150,33 @@ files while the 28 globs stay; the globs are deleted in one leaf (κ) once no co
 import remains. Every per-file leaf lowers the ratchet baseline in the same diff. This keeps
 every intermediate main green and keeps file locks narrow.
 
-**D2 — The entity↔guards cycle is broken by a lower module, not by inlining.** The five
-cell-builder helpers guards.rs takes from entity.rs (plus `reject_keyed_value_position`, which
-they call) move verbatim to a new `member_cell_decls.rs` that imports only `annotations`,
-`annotations::display`, the resolver and `types`; both `entity.rs` and `guards.rs` import it.
-Afterwards `guards.rs` names no `crate::entity` item.
+**D2 — The entity↔guards cycle is broken by a lower module, not by inlining.**
+**[Amended 2026-10-20, retro-critic R8 M4 / R10]** The six cell-builder helpers guards.rs takes
+from entity.rs — `build_param_value_cell_decl`, `build_auto_let_value_cell_decl`,
+`resolve_auto_let_cell_type`, `fixup_option_none_for_let`, `fixup_option_none_for_param`,
+`priv_flag_to_visibility` — (plus `reject_keyed_value_position`, which they call) move verbatim
+to a new `member_cell_decls.rs` that imports `annotations`, `annotations::display`,
+`crate::scope`, the resolver and `types`; both `entity.rs` and `guards.rs` import it.
+Afterwards `guards.rs` names no `crate::entity` item. ~~The five cell-builder helpers … move
+verbatim to a new `member_cell_decls.rs` that imports only `annotations`,
+`annotations::display`, the resolver and `types`~~ (superseded by R8: the move set is six, the
+import set includes `crate::scope`, and `types` is not a lower module — `types.rs` calls
+`crate::annotations` and imports `crate::port_path` — so the list is `member_cell_decls`' import
+set, not a layering claim). β's goal is removing the **direct** `guards → entity` edge
+(heuristic 13). Separating `entity` and `guards` into different SCCs also needs σ (R10): it moves
+`satisfies_trait_bound` and `trait_satisfies` to `trait_bounds.rs`; `substitute_expr`,
+`substitute_free_idents` and the private `rewrite_free_idents` to an AST-substitution module;
+`EntityDefRef` and its two `From` impls to their own leaf module (each importing only `types`);
+and lifts the 7-line `compile_builder::sketch_unsupported::diagnostic` to a top-level module.
+Measured textually with the SCC tool's own lexer (sitting memo `s7-b1-memo.md`): after β + σ,
+`entity` is in a 3-module SCC {`compile_builder`, `entity`, `forall_elaborate`} and `guards` in a
+separate 10-module SCC; every strict subset of σ's moves leaves them together.
 
 **D3 — New modules are siblings importing downward, never children reaching back.** Every
 module this PRD creates (`member_cell_decls`, `builtin_families`, `type_unification`,
-`overload_resolution`, `operator_typing`, `poison`, the `expr.rs` partitions) is a top-level
+`overload_resolution`, `operator_typing`, `poison`, the `expr.rs` partitions, and σ's
+`trait_bounds`, AST-substitution, `EntityDefRef` and `sketch_unsupported` modules — **[Amended
+2026-10-20, retro-critic R10]**) is a top-level
 `mod` in `lib.rs` whose imports point at lower modules only. A file that would need to import
 from the file that imports it is not split (heuristic 14's no-cheating clause). The one
 exception is the conventional `#[cfg(test)] mod tests;` child file, whose `use super::*` is the
@@ -181,16 +212,31 @@ type_compatible}` stays.
 **D7 — `ResolutionCtx` is an immutable value; the alias stack is a persistent list.** One
 struct carries everything a resolution reads besides its `TypeExpr` and its diagnostics sink:
 the alias registry, the structure and trait name sets, the type-param and dim-param sets, the
-enum-fallback set (replacing `RESOLUTION_ENUM_NAMES`; absent = today's "not installed"), the
+enum fallback table (name → declared type params, replacing `RESOLUTION_ENUM_NAMES` in the
+`HashMap<String, Vec<TypeParam>>` shape #8013 gives it; absent = not installed —
+**[Amended 2026-10-20, retro-critic R8 M6]**), the
 local-enum shadow set (replacing `RESOLUTION_SHADOWING_ENUM_NAMES`), and the in-progress alias
 stack (replacing `ALIAS_DEFER_IN_PROGRESS`) as a borrowed linked list, so entering an alias
 returns a child context and a cycle is "name already on the stack" — still cycle-exact.
 Contexts derive by value (`with_type_params`, `with_enum_fallback`, `entering_alias`), never by
 mutation (heuristics 7, 8). The kinded/non-kinded entry pair collapses into one entry because
 `dim_params` is a context field defaulting empty. The behaviour of every existing install site
-is preserved exactly: the five `EnumNameScope` sites construct their context with the enum
-fallback, every other site without it — this PRD does **not** decide whether enum fallback
-should become uniform (that would be a behaviour change).
+is preserved exactly. **[Amended 2026-10-20, retro-critic R8 M1/M6]** An `EnumNameScope`
+install is dynamically scoped today, so each install site's context flows through everything
+that runs in its dynamic extent: `compile_entity`'s struct-param install → `guards`
+(`register_guarded_names`, `compile_per_decl_guard`, `compile_block_guard`),
+`member_cell_decls` (the auto-let and fixup helpers), `conformance` (`check_trait_conformance`
+and the checker phases' resolution sites) and forall elaboration; `defs_phase::phase_constraint_defs`
+(whose install is lazy since #8013, `get_or_insert_with`, and stays lazy) →
+`compile_constraint_def`; the alias def-site check (`validate_pub_parametric_alias_def_site`,
+reached from `compile_builder/aliases_phase.rs`). Sites outside every install's extent build
+their context without the fallback. ~~the five `EnumNameScope` sites construct their context
+with the enum fallback, every other site without it~~ (superseded by R8: implemented literally
+it drops the fallback inside the extent, so a nested `Option<E>` in a guarded let or a
+trait-conformance member would stop resolving). This PRD does **not** decide whether enum
+fallback should become uniform (that would be a behaviour change). Two RED-first harness tests
+pin the extent before μ and pass before and after it: a guarded `let x : Option<E> = auto`, and
+a structure conforming to a trait that requires an `Option<E>` member (§5 rows 11–12).
 
 **D8 — `SubFacts` encodes the absence contracts as types.** One map keyed by sub name holds a
 record per sub: the structure name plus `Option<ResolvedSub>` — `None` meaning
@@ -241,13 +287,18 @@ defined at main `8e6ffcac9d`, same names and signatures; imports only `reify_cor
 `reify_ir` and named lower modules (no glob). S8 owns every later edit to it.
 
 **C3 — `reify_compiler::satisfies_trait_bound(&[String], &str, &HashMap<String,
-&CompiledTrait>) -> bool`** keeps this root path and signature through every S7 leaf. S7 does
-not move its definition (`entity.rs`). S12 may depend on it at any point.
+&CompiledTrait>) -> bool`** keeps this root path and signature through every S7 leaf.
+~~S7 does not move its definition (`entity.rs`).~~ (superseded by R10) **[Amended 2026-10-20,
+retro-critic R10]** σ moves the definition verbatim to `trait_bounds.rs`; `lib.rs`'s
+`pub use trait_bounds::satisfies_trait_bound;` keeps the root path. S12 may depend on it at any
+point.
 
 **C4 — `ResolutionCtx`** (crate-private, `type_resolution.rs` or a lower module it owns):
 - constructed from module-wide names once per compile phase and refined per declaration;
 - carries: alias registry, structure names, trait names, type params, dim params,
-  `enum_fallback: Option<set>`, local-enum shadow set, alias stack;
+  **[Amended 2026-10-20, retro-critic R8 M6]** the enum fallback table (name → declared type
+  params), absent = not installed ~~`enum_fallback: Option<set>`~~ (superseded by R8),
+  local-enum shadow set, alias stack;
 - every resolver that today takes any of these sets (or reads a thread-local) takes one
   `&ResolutionCtx` in their place, plus its subject (`&TypeExpr` or name) and the
   `&mut Vec<Diagnostic>` sink;
@@ -256,7 +307,9 @@ not move its definition (`entity.rs`). S12 may depend on it at any point.
   sets today calls it, so a later fix (#6893 lambda-param annotations, #6399 type-param
   defaults) swaps in a real context instead of installing a guard;
 - equivalence: for every call site, the context it builds yields the same `Type` and the same
-  diagnostics, in the same order, as the thread-local state at that site did.
+  diagnostics, in the same order, as the thread-local state at that site did — including every
+  site inside an install's dynamic extent (D7), and the lazy `defs_phase` install, which is one
+  of the preserved sites.
 
 **C5 — `SubFacts`**: as D8. Queries cover every read the 8 maps serve today (structure name of
 a sub, forward-declared?, member type, realization-name membership, port direction, declared
@@ -274,7 +327,14 @@ and a `run-all-classification.manifest` row `pool`, per reify `CLAUDE.md` §Infr
   `crates/reify-compiler/src` code: (a) visibility-qualified glob re-exports
   (`pub use …::*;` / `pub(crate) use …::*;`), allowlisting exactly `lib.rs`'s
   `pub use types::*;` (D9), baseline 28; (b) unqualified column-0 glob imports
-  (`use …::*;`), baseline 29. Test code is excluded by construction: indented `use` lines in
+  (`use …::*;`), baseline 29; **[Amended 2026-10-20, retro-critic R8 M2]** (c) internal
+  crate-root re-export paths: `crate::<item>` (including `use crate::{item, …}`) where the item
+  is a root `pub use` name or a `types` glob name, baseline 122 (25 files), driven to 0 in κ
+  (every internal import names the home module, D9). The count lives in the shared helper;
+  α #8613's branch is already built, so κ carries it. The INV-ARCH-1 tool counts only
+  `crate::<module>` heads, so a root re-export path hides its edge from the SCC measurement;
+  ξ adds this blind spot to `scripts/assert-module-scc.py`'s docstring and INV-ARCH-1's row.
+  Test code is excluded by construction: indented `use` lines in
   inline `mod tests` are not column-0, and files that are `#[cfg(test)]` children are skipped
   (the member checks each skipped file really is declared under `#[cfg(test)]`). The baseline is a committed file; the member is red
   when a count exceeds it (naming each offending `file:line`) and red when a count is below it
@@ -290,8 +350,16 @@ and a `run-all-classification.manifest` row `pool`, per reify `CLAUDE.md` §Infr
 **C8 — INV-ARCH-1 reify-compiler rows** (ξ): once κ has landed, the module-SCC ratchet
 (candidate 7's checkable form: production-text `crate::<module>` edges, comments stripped, cut
 at the first top-level `#[cfg(test)]`, Tarjan SCC, per-crate baseline of SCC sizes, red on
-growth) gains reify-compiler with its measured residual SCCs as the baseline; `entity` and
-`guards` are not in one SCC. Until then the tool must exclude reify-compiler (or model a root
+growth) gains reify-compiler with its measured residual SCCs as the baseline.
+~~`entity` and `guards` are not in one SCC.~~ (superseded by R8, restored as measured by R10)
+**[Amended 2026-10-20, retro-critic R8/R10]** Once σ has landed, `entity` and `guards` are in
+different SCCs, as measured by `scripts/assert-module-scc.py print`. ξ records the measured
+residual SCCs (size, members) in reify-compiler's baseline row either way. If the compiled
+result differs from σ's textual measurement, R8's (a) wording is the fallback: ξ records the
+measured residual and the guarantee is that a back-edge from a module outside the residual SCC
+into it reds. The tool ratchets SCC membership only, so a new edge inside one residual SCC is
+not seen. The program's S7 consequence "the hidden module cycle becomes visible and lintable"
+is superseded (R8): visible yes, lintable only across residual SCCs. Until then the tool must exclude reify-compiler (or model a root
 glob import as edges to every glob-re-exported module): today's globs hide every edge, so
 measuring the crate before κ would read near-empty and then "grow" as each leaf makes edges
 visible.
@@ -303,13 +371,15 @@ visible.
 | 1 | Behaviour floor, every leaf | main green | full reify-compiler suite, `examples_smoke`, the prd-gate corpus and the workspace build green with **no** edit to any expected diagnostic, snapshot or test expectation; a leaf that needs one is out of scope and stops |
 | 2 | Glob growth | ratchet at N | adding one `use super::*;` in a non-test compiler file → member red naming the file:line |
 | 3 | Un-lowered baseline | a leaf removes k globs | member red until the baseline file drops by k |
-| 4 | Cycle broken (β) | entity↔guards mutual calls | `guards.rs` has no glob and imports no `crate::entity` item; after ξ, the SCC listing shows `entity` and `guards` apart |
+| 4 | Cycle broken (β, σ) | entity↔guards mutual calls | `guards.rs` has no glob and imports no `crate::entity` item; **[Amended 2026-10-20, retro-critic R8/R10]** after σ and ξ, the SCC listing shows `entity` and `guards` apart, as measured; ξ records the residual SCCs either way (fallback, R8 (a): a back-edge from a module outside the residual SCC into it reds) |
 | 5 | Public surface (C1) | reify-eval `registry_drift_tests` reads `reify_compiler::GEOMETRY_FUNCTION_NAMES` etc. | compiles unchanged after ε |
-| 6 | Alias cycle (μ) | `tests/prd-gate/fixtures/s7_resolution_alias_cycle.ri`: `reify check` → rc 1, `error: circular type alias 'C1'`, `error: unresolved type: C1` | identical output after μ |
-| 7 | Enum inside a parameterized builtin (μ) | `tests/prd-gate/fixtures/s7_resolution_enum_in_option.ri` (`param m : Option<Mode>`): rc 0, `All constraints satisfied.` | identical after μ |
+| 6 | Alias cycle (μ) | `tests/prd-gate/fixtures/s7_resolution_alias_cycle.ri`: `reify check` → rc 1, `error: circular type alias 'C1'`, `error: unresolved type: C1` | identical output after μ; **[Amended 2026-10-20, retro-critic R8 M5]** asserted by a harness test (exit code + diagnostics) landed before μ's rewrite — nothing in the gate reads `tests/prd-gate/fixtures` |
+| 7 | Enum inside a parameterized builtin (μ) | `tests/prd-gate/fixtures/s7_resolution_enum_in_option.ri` (`param m : Option<Mode>`): rc 0, `All constraints satisfied.` | identical after μ; **[Amended 2026-10-20, retro-critic R8 M5]** asserted by a harness test landed before μ's rewrite |
 | 8 | Local enum shadows a prelude structure (μ) | `docs/prds/v0_6/fixtures/member_enum_ctor.ri` rc 0 `OK Test#constraint[0]`; `shadow_payload_binder.ri` rc 0; `harness_langcore/enum_ctor_param_binding_tests.rs` green | identical after μ, with the tests rewritten only where they installed a scope guard directly |
 | 9 | Forward-declared sub (ν) | `sub_member_is_cross_sub_geometry_or_forward_declared` tests | same truth table through the `SubFacts` query |
 | 10 | New Type variant (λ) | — | the `TypeDiscriminants` completeness test fails until `children` classifies it; the three predicates agree with their pre-λ results on a corpus of nested types built in the test |
+| 11 | **[Amended 2026-10-20, retro-critic R8 M1/M5]** Enum fallback in a guarded let (μ) | harness test, RED-first: a guarded `let x : Option<E> = auto` resolves (written and green before μ) | green after μ (exit code + diagnostics unchanged) |
+| 12 | **[Amended 2026-10-20, retro-critic R8 M1/M5]** Enum fallback in trait conformance (μ) | harness test, RED-first: a structure conforming to a trait that requires an `Option<E>` member (written and green before μ) | green after μ |
 
 ## §6 — Cross-PRD relationship (G4)
 
@@ -326,12 +396,14 @@ visible.
 | S23 prose rehoming (wave 4) | adjacent | μ/ν delete the install-site lists and "why a thread-local" essays outright | S7 for prose it deletes | — |
 | `docs/prds/v0_6/enum-shadow-coherence.md` (#6955, pending) | upstream of μ | #6955 M3(a) adds a reader of `RESOLUTION_SHADOWING_ENUM_NAMES` in `conformance/checker.rs` | that PRD | **μ depends on #6955** so μ converts the new reader too instead of invalidating #6955's premise |
 | `docs/prds/v0_6/stdlib-namespace.md` (#5493 α, pending; #5494 γ, pending) | upstream of μ; file contention | #5493 introduces `name_env.rs` and owns the shadow-install fold comment in `lib.rs`; #5494 rewrites phase order in `lib.rs`/`entity.rs`/`functions.rs`/`type_resolution.rs` | that PRD | **μ depends on #5493**; #5494 is file contention only (orchestrator locks serialize) |
+| **[Amended 2026-10-20, retro-critic R8 M6]** generic-enum-type-arg-retention α2 (#8013, in merge) | upstream of μ | turns `RESOLUTION_ENUM_NAMES` into `HashMap<String, Vec<reify_ir::TypeParam>>`, makes `EnumNameScope::new` take `&[EnumDef]`, and makes the `defs_phase` install lazy | that PRD | **μ depends on #8013** (edge wired by R8); C4's field is the fallback table |
 
 ## §7 — Pre-conditions
 
 None for α–λ: no novel substrate (no grammar, no new crate dependency — strum is already a
-reify-core and reify-compiler dependency; clippy runs in the gate). μ waits on #6955 and
-#5493 (§6). ξ waits on S3 α (INV-ARCH-1 tool and baseline; held leaf).
+reify-core and reify-compiler dependency; clippy runs in the gate). μ waits on #6955,
+#5493 and **[Amended 2026-10-20, retro-critic R8 M6]** #8013 (§6). ξ waits on S3 α (INV-ARCH-1
+tool and baseline; held leaf) and **[Amended 2026-10-20, retro-critic R10]** σ.
 
 ## §8 — Decomposition plan
 
@@ -346,10 +418,14 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
   baseline. Consumer: β–κ, λ (shared helper). Prereqs: none. Keys: none (the ruled enforcement).
 - **β — Explicit imports for guards/traits/forall_elaborate/geometry_list; break the
   entity↔guards cycle (D2).** Modules: reify-compiler (`guards.rs`, `traits.rs`,
-  `forall_elaborate.rs`, `geometry_list.rs`, `entity.rs` helper removal, new
-  `member_cell_decls.rs`, `lib.rs` `mod` line). Signal: ratchet line `glob_imports 25`;
-  `guards.rs` imports `crate::member_cell_decls` and no `crate::entity` item; §5 row 1.
-  Consumer: κ, θ, ξ; S9. Prereqs: α. Keys: contributes to fk-28fab6d836c8 (carried by κ).
+  `forall_elaborate.rs`, `geometry_list.rs`, `entity.rs` helper removal — **[Amended
+  2026-10-20, retro-critic R8 M4]** the six helpers including `priv_flag_to_visibility`, new
+  `member_cell_decls.rs` importing `crate::scope` among its imports, `lib.rs` `mod` line).
+  Signal: ratchet line `glob_imports 25`; `guards.rs` imports `crate::member_cell_decls` and no
+  `crate::entity` item (the direct edge gone, heuristic 13); §5 row 1. Consumer: κ, θ, σ;
+  S9. **[Amended 2026-10-20, retro-critic R8 B1 / R10]** β alone does not put `entity` and
+  `guards` in different SCCs; that is delivered by σ and measured (R10), and ξ reads it.
+  Prereqs: α. Keys: contributes to fk-28fab6d836c8 (carried by κ).
 - **γ — Explicit imports for the eight-file slice; privatise termination's dead helpers.**
   Modules: `coerce.rs`, `datum_projection.rs`, `diagnostics.rs`, `geometry_boolean.rs`,
   `geometry_curve.rs`, `geometry_transform.rs`, `ice.rs`, `termination.rs`
@@ -361,7 +437,14 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
   Modules: `type_compat.rs`, new `type_unification.rs`, `overload_resolution.rs`,
   `operator_typing.rs` + child test files, `expr.rs` / `compile_builder/entities_phase.rs` /
   `variant_construct.rs` import lines, `lib.rs` `mod` lines. Signal: ratchet line drops by 1;
-  `git grep 'type_compat::type_carries'` empty; each new file states its purpose in one
+  **[Amended 2026-10-20, retro-critic R8 M3]** the facade itself is gone
+  (`^pub\(crate\) use reify_core::overload::` absent in `type_compat.rs`; the private
+  `use reify_core::overload::{…}` that the retained `constraint_arg_type_conforms` needs
+  stays); per consumer, each of `expr.rs`, `compile_builder/entities_phase.rs` and
+  `variant_construct.rs` imports its `type_carries_*` names from `reify_core::overload`, and no
+  `type_carries` name remains inside any `use crate::type_compat::{…}` list
+  ~~`git grep 'type_compat::type_carries'` empty~~ (superseded by R8: vacuous at main, the
+  consumers use multi-line lists); each new file states its purpose in one
   sentence without "and"; §5 row 1. Consumer: θ, λ; S8 (operator group). Prereqs: α.
   **Keys: fk-78d6c776ba64. Subsumes task #7338** (decomposition either cancels #7338 as
   superseded by δ, naming δ's id, or folds it in as δ's own dependency).
@@ -392,8 +475,11 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
 - **κ — Delete the 28 root globs; deny `clippy::wildcard_imports` (D10).** Modules: `lib.rs`
   (the 28 lines, their comment, the 5 `#[allow(unused_imports)]`), `annotations/materialize.rs`
   and any other path that resolved through a root glob, crate attribute. Signal: ratchet line
-  `glob_reexports 0` / `glob_imports 0`; the gate's clippy pass reds a newly added
-  glob in reify-compiler at its line; §5 rows 1–3. Consumer: μ, ν, ξ, every later compiler
+  `glob_reexports 0` / `glob_imports 0`; **[Amended 2026-10-20, retro-critic R8 M2]** the
+  third C7 count (internal crate-root re-export paths) added to the shared helper and driven
+  from 122 to 0; the gate's clippy pass reds a newly added glob in reify-compiler at its line
+  (the check anchors on the `deny(… clippy::wildcard_imports)` attribute, not any mention of
+  the lint name); §5 rows 1–3. Consumer: μ, ν, ξ, every later compiler
   change. Prereqs: β, γ, δ, ε, ζ, η, θ. **Keys: fk-28fab6d836c8** (medium per the
   *Contradictions* ruling).
 - **λ — `Type::children` / `any_descendant` in reify-core (D11, C6); adoption ratchet.**
@@ -407,22 +493,54 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
   `type_resolution.rs`, `compile_builder/{defs_phase,entities_phase,enums_phase}.rs`,
   `entity.rs` (11 call sites), `functions.rs`, `guards.rs`, `traits.rs`,
   `conformance/checker.rs` (6 call sites, plus #6955's shadow-set reader), `lib.rs` (install
-  site body only). Signal: `reify check` on §5 rows 6–8
-  fixtures produces byte-identical output; no `thread_local!` in `type_resolution.rs`;
-  the "exactly four sites" list and the three "why a thread-local" essays are gone; §5 row 1.
-  Consumer: every resolution call site; #6893, #6399. Prereqs: κ, η; **#6955, #5493**.
+  site body only), and **[Amended 2026-10-20, retro-critic R8 M1]** `conformance/mod.rs`,
+  `member_cell_decls.rs`, `compile_builder/aliases_phase.rs`,
+  `compile_builder/reserved_name_lint.rs`. **[Amended 2026-10-20, retro-critic R8 M5]** First
+  step, before the rewrite: the two s7 fixtures (§5 rows 6–7) and the two M1 cases (§5 rows
+  11–12) become harness tests asserting exit code and diagnostics, green on main. Signal:
+  those harness tests and `reify check` on §5 rows 6–8 fixtures produce byte-identical output;
+  no `thread_local!` in `type_resolution.rs`; the "exactly four sites" list and the three "why
+  a thread-local" essays are gone; §5 row 1. Consumer: every resolution call site; #6893,
+  #6399. Prereqs: κ, η; **#6955, #5493**; **[Amended 2026-10-20, retro-critic R8 M6]
+  #8013**.
   **Keys: fk-eeae7ace09ad.**
 - **ν — `SubFacts` per-sub record behind query methods (D8, C5).** Modules: `scope.rs`,
   `entity.rs` (both Sub pre-pass sites), `expr.rs`, `member_access.rs`, `connect.rs`,
   `member_path.rs`, and the projection helpers' new home. Signal: no `pub(crate) sub_*` field
   in `scope.rs`; one constructor call per pre-pass site; §5 row 9; §5 row 1. Consumer: the next
   per-sub fact. Prereqs: κ, ι. **Keys: fk-a9fb39978c17. Subsumes tasks #8006 and #7986.**
+- **σ — Trait-bound predicates, AST substitution and `EntityDefRef` below `entity`;
+  `sketch_unsupported::diagnostic` lifted (D2, C3; R10).** **[Amended 2026-10-20, retro-critic
+  R10 — new leaf]** Modules: `entity.rs`; new `trait_bounds.rs` (`satisfies_trait_bound`,
+  `trait_satisfies`, ~40 lines); an AST-substitution module (`substitute_expr`,
+  `substitute_free_idents`, the private `rewrite_free_idents`, ~225 lines); a leaf module for
+  `EntityDefRef` and its two `From` impls (~45 lines) — each importing only `types`; a
+  top-level `sketch_unsupported.rs` holding the 7-line `diagnostic` lifted out of
+  `compile_builder::sketch_unsupported`; 5 path edits (`lib.rs:80` keeps C3's root path via
+  `pub use trait_bounds::satisfies_trait_bound`; `auto_type_param.rs:171`,
+  `compile_builder/entities_phase.rs:43`, `guards.rs:435`, `entity.rs:3`) plus every glob
+  consumer of the moved names, imported explicitly. Verbatim moves; no behaviour change.
+  Signal: `satisfies_trait_bound` no longer defined in `entity.rs`; `mod trait_bounds;` in
+  `lib.rs`; `python3 scripts/assert-module-scc.py print` (on the committed tree after κ, else a
+  scratch κ-approximation with the tool's lexer) shows `entity` and `guards` in different
+  SCCs; §5 row 1. Consumer: ξ ('apart' criterion); S9 leaves on `entity.rs` / `guards.rs`.
+  Prereqs: β (not κ: the moves do not depend on the globs). Keys: none (R10). Caveat: the
+  separation was measured textually, not compiled (sitting memo `s7-b1-memo.md`); γ #5508
+  deletes `sketch_unsupported` and must not reintroduce a `guards → compile_builder` (or
+  `→ entity`) edge.
 - **ξ — reify-compiler rows on the INV-ARCH-1 module-SCC ratchet (C8).** Modules: the SCC
   tool's baseline (built by S3 α; S7 adds only the reify-compiler rows and the one-time
-  exception note in its commit). Signal: the gate's SCC member lists reify-compiler
-  with its residual SCCs; `entity` and `guards` are in different SCCs; adding a
-  `crate::entity` import to `guards.rs` reds it. Consumer: every later compiler change; S3.
-  Prereqs: κ, β, and S3 α (held until S3 α is filed and released by the lead). **INV: INV-ARCH-1
+  exception note in its commit). **[Amended 2026-10-20, retro-critic R8/R10]** Signal: the
+  gate's SCC member lists reify-compiler with its measured residual SCCs (size, members)
+  recorded in the baseline row; `entity` and `guards` are in different SCCs, as measured, once
+  σ has landed; if the compiled result differs, R8's (a) fallback holds — the demonstration is
+  a module outside the residual SCC that gains a back-edge into it, shown red (scratch edit,
+  not committed); the root re-export blind spot is recorded in `scripts/assert-module-scc.py`'s
+  docstring and INV-ARCH-1's row; the baseline's reify-compiler exclusion line is gone.
+  ~~`entity` and `guards` are in different SCCs; adding a `crate::entity` import to
+  `guards.rs` reds it~~ (superseded by R8; "apart" restored as measured by R10). Consumer:
+  every later compiler change; S3. Prereqs: κ, β, **σ** (R10), and S3 α (held until S3 α is
+  filed and released by the lead). **INV: INV-ARCH-1
   (candidate 7).**
 - **π — derive `strum::EnumCount` on the nine geometry-kind
   enums.** Modules: `crates/reify-compiler/src/types.rs`. Signal: no `const ALL: [Self;` and
@@ -431,6 +549,8 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
   still compile; §5 row 1. Prereqs: none. **Keys: fk-bb1ba38a6a46** (lead ruling 2).
 - **ω — PRD close.** Stamp this PRD and its manifest `SHIPPED` with the landed leaf ids, the
   AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map (overlay §PRD terminal status).
+  **[Amended 2026-10-20, retro-critic R8]** The stamp records ξ's measured residual SCCs of
+  reify-compiler (size, members), not a bare "entity and guards apart".
   Prereqs: every leaf above and the adopted tasks below. Signal: the committed header.
 
 **Adopted existing tasks (filed by the review-all mechanical filing; not re-filed):**
@@ -442,13 +562,15 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
 | **#8560** drop the reify-constraints loop-closure shim and its reify-stdlib Cargo edge (its own test keeps `reify-stdlib` as a dev-dependency) | fk-6875d651562b | keep as filed; ω depends on it |
 
 **DAG**: α → {β, γ, δ, ε, ζ, η}; {β, δ, ε} → θ → ι; {β, γ, δ, ε, ζ, η, θ} → κ; {α, δ} → λ;
-{κ, η, #6955, #5493} → μ; {κ, ι} → ν; {κ, β, SCC tool} → ξ; π independent; everything → ω.
+{κ, η, #6955, #5493, #8013} → μ; {κ, ι} → ν; β → σ; {κ, β, σ, SCC tool} → ξ; π independent;
+everything → ω. (**[Amended 2026-10-20, retro-critic R8/R10]** #8013 → μ and σ added.)
 
 **Filed task ids (pass 2, 2026-10-12):** α #8613 · β #8615 · γ #8617 · δ #8620 · ε #8622 ·
 ζ #8623 · η #8625 · θ #8627 · ι #8631 · κ #8636 · λ #8638 · μ #8643 · ν #8650 ·
 ξ #8657 (held: `x_seam_wait` S3 α = #8673; edge wired) · π #8661 · ω #8665. Adopted: #8552,
 #8551, #8560. Superseded and cancelled: #7338 (by δ), #8321 (by ι), #8006 and #7986 (by ν).
-Upstream edges: #6955, #5493 → μ.
+Upstream edges: #6955, #5493 → μ. **[Amended 2026-10-20, retro-critic R8/R10]** σ #9419
+(filed by the sitting, prereq β #8615; ξ #8657 depends on it); upstream edge #8013 → μ.
 
 ## §9 — Out of scope
 
@@ -460,7 +582,11 @@ Upstream edges: #6955, #5493 → μ.
 - D-OOS-3: the FunctionCall-arm partition of `expr.rs` (S8); partitions of `entity.rs`,
   `geometry.rs`, `type_resolution.rs` (no S7 ruling).
 - D-OOS-4: `pub use types::*` and any change to reify-compiler's public API (D9, C1).
-- D-OOS-5: moving `satisfies_trait_bound`'s definition.
+- D-OOS-5: ~~moving `satisfies_trait_bound`'s definition.~~ (superseded by R10)
+  **[Amended 2026-10-20, retro-critic R10]** σ moves `satisfies_trait_bound`,
+  `trait_satisfies`, `EntityDefRef` (with its `From` impls), `substitute_expr`,
+  `substitute_free_idents` and `rewrite_free_idents` out of `entity.rs`; `lib.rs`'s `pub use`
+  keeps C3's root path and signature. Out of scope: any change to that path or signature.
 
 ## §10 — Open questions (tactical)
 
@@ -505,3 +631,14 @@ Upstream edges: #6955, #5493 → μ.
    the disjointness and key-parity invariants live in the type.
 4. κ files at **medium** (Contradictions ruling).
 5. The glob-import baseline is **29** (25 top-level + 4 in `conformance/`).
+
+## Retro-critic sitting amendments (2026-10-20)
+
+- **B1 / R8 (a), then R10 (σ)** — The program's S7 consequence "the hidden module cycle becomes visible and lintable" is superseded as realised in D2/C8/ξ: visible yes, lintable only across residual SCCs (the INV-ARCH-1 tool ratchets SCC membership only). D2's goal is the direct `guards → entity` edge (heuristic 13); §1's "a new peer cycle is red" is limited to modules in different residual SCCs; ξ #8657 records the measured residual SCCs (size, members) in reify-compiler's baseline row, and ω #8665's SHIPPED stamp records them. R10 then measured option (b) and adopted it: new leaf **σ #9419** (§8; prereq β #8615; ξ #8657 depends on it) moves `satisfies_trait_bound`/`trait_satisfies` to `trait_bounds.rs`, `substitute_expr`/`substitute_free_idents`/`rewrite_free_idents` to an AST-substitution module, `EntityDefRef` + 2 `From` impls to their own leaf module, and lifts `sketch_unsupported::diagnostic` to a top-level module, with 5 path edits. Measured (textual, SCC tool's lexer): `entity` in {compile_builder, entity, forall_elaborate}, `guards` in a separate 10-module SCC; every strict subset leaves them together. ξ regains "entity and guards in different SCCs, as measured"; R8's (a) wording (a back-edge from outside the residual SCC reds) is the fallback if the compiled result differs. Amended: §1 goal + consumer table, §2, D2, D3, C3, C8, §5 row 4, §7, β/σ/ξ/ω leaves, DAG, D-OOS-5. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8` and `R10`.
+- **M1 / R8 (μ #8643)** — D7 rewritten for dynamic extent: each `EnumNameScope` install site's context flows through everything in its extent (compile_entity → guards, member_cell_decls, conformance's check_trait_conformance and checker phases, forall elaboration; phase_constraint_defs → compile_constraint_def; the alias def-site check). μ's modules gain `conformance/mod.rs`, `member_cell_decls.rs`, `compile_builder/aliases_phase.rs`, `compile_builder/reserved_name_lint.rs`; two RED-first harness tests (§5 rows 11–12) pass before and after μ. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
+- **M2 / R8 (κ #8636, ξ #8657)** — C7 gains a third count, internal crate-root re-export paths, baselined at 122 and driven to 0 in κ (α #8613's branch is built, so κ carries the count); ξ records the blind spot in `scripts/assert-module-scc.py`'s docstring and INV-ARCH-1's row. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
+- **M3 / R8 (δ #8620)** — the overload-facade check becomes `^pub\(crate\) use reify_core::overload::` absent in `type_compat.rs`; the vacuous `git grep 'type_compat::type_carries'` criterion is replaced by one per consumer. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
+- **M4 / R8 (β #8615; S9 ξ #8744)** — `priv_flag_to_visibility` joins D2's move set (six helpers); `crate::scope` joins `member_cell_decls`' imports; "types" is no longer described as a lower module. Cross-PRD: S9 ξ #8744 (compiler-declaration-passes) says six, not five (its task text amended by the sitting). Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
+- **M5 / R8 (μ #8643)** — the two s7 fixtures plus the M1 cases become harness tests asserting exit code and diagnostics before μ (§5 rows 6–7, 11–12); the manifest's behaviour-pins verdict PASS becomes a bound check. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
+- **M6 / R8 (μ #8643)** — edge #8643 ← #8013; C4's field is the enum fallback table (name → declared type params), absent = not installed; the lazy `defs_phase` install is one of the preserved sites (§6 row added). Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
+- **Polarity / R8** — κ's `wildcard-imports-lint-denied` check anchors on the deny attribute; ξ's OPEN `scc-tool-owner` binds as a grep (the baseline's reify-compiler exclusion line absent). Twins updated. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R8`.
