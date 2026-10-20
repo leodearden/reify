@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = INFRA_DIR.parents[1]
 HANG_GUARD_SECS = 600
+CONCURRENT_READS = 8
 ERROR_PREFIX = "verify.sh: ERROR — "
 RECORD_KEYS = {"v", "scope", "narrowing", "infra_selection"}
 SCOPE_FLAGS = ("run_rust", "run_gui", "run_occt_gate", "gui_path_signal")
@@ -225,6 +227,46 @@ class Clone:
 
     def py(self, argv, env, cwd=None):
         return run_py(argv, env, tree=self.root, cwd=cwd)
+
+    def read_each_staged_alone(self, paths, argv):
+        """{path: verify.py's outcome with only `path` staged, one byte appended}, read concurrently.
+
+        Each run reads its own copy of the index through GIT_INDEX_FILE, the
+        variable a hook runs verify under (consumer C18), so the runs share
+        nothing mutable and the clone's own index is untouched.
+        """
+        index = self.root / self.git("rev-parse", "--git-path", "index")
+        with tempfile.TemporaryDirectory() as scratch:
+            blobs = self._appended_blobs(paths, Path(scratch))
+
+            def read(numbered):
+                n, path = numbered
+                private = Path(scratch) / f"index-{n}"
+                shutil.copyfile(index, private)
+                env = base_env(GIT_INDEX_FILE=str(private))
+                subprocess.run(
+                    ["git", "-C", str(self.root), "update-index", "--add", "--cacheinfo",
+                     f"100644,{blobs[n]},{path}"],
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    check=True,
+                    timeout=HANG_GUARD_SECS,
+                )
+                return path, self.py(argv, env)
+
+            with ThreadPoolExecutor(max_workers=CONCURRENT_READS) as pool:
+                return dict(pool.map(read, enumerate(paths)))
+
+    def _appended_blobs(self, paths, scratch):
+        copies = []
+        for n, path in enumerate(paths):
+            source = self.root / path
+            copy = scratch / f"blob-{n}"
+            copy.write_bytes((source.read_bytes() if source.exists() else b"") + b"\n")
+            copies.append(str(copy))
+        stdin = "\n".join(copies).encode("utf-8")
+        return self.git("hash-object", "-w", "--stdin-paths", stdin=stdin).splitlines()
 
     def bash(self, argv, env):
         return run_bash(argv, env, tree=self.root)
@@ -648,22 +690,24 @@ class TestDerivedFixtureCoupling(InClone):
         self.assertTrue(self.gui, "the JSON pins name no prd-gate fixture")
         self.assertTrue(self.rust_on_disk and self.uncoupled_on_disk)
 
-    def staged_alone(self, path):
-        self.clone.reset()
-        self.clone.stage(path)
-        py = self.clone.py(STAGED_SCOPE, base_env())
-        return scope_record(py)["scope"], py
+    def each_staged_alone(self, names):
+        """{name: its scope record}, each fixture staged alone."""
+        outcomes = self.clone.read_each_staged_alone([fixture(name) for name in names], STAGED_SCOPE)
+        scopes = {}
+        for path, outcome in outcomes.items():
+            scope = scope_record(outcome)["scope"]
+            self.assertEqual(scope["changed_paths"], [path], "the run read its own index")
+            scopes[path.rsplit("/", 1)[1]] = scope
+        return scopes
 
     def test_every_rust_coupled_fixture_runs_rust(self):
-        for name in sorted(self.rust):
+        for name, scope in self.each_staged_alone(sorted(self.rust)).items():
             with self.subTest(fixture=name):
-                scope, _ = self.staged_alone(fixture(name))
                 self.assertEqual(flags(scope), (1, 1, 1))
 
     def test_every_pinned_fixture_runs_gui(self):
-        for name in sorted(self.gui):
+        for name, scope in self.each_staged_alone(sorted(self.gui)).items():
             with self.subTest(fixture=name):
-                scope, _ = self.staged_alone(fixture(name))
                 self.assertEqual(scope["run_gui"], 1)
                 if name not in self.rust:
                     self.assertEqual(flags(scope), (0, 1, 0))
