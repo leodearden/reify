@@ -632,6 +632,21 @@ class TestRolePolicyTable(unittest.TestCase):
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertEqual(repeated.stdout, self.outcome.stdout)
 
+    def test_a_query_takes_no_action(self):
+        cases = (
+            (["lint", "--print-knobs"], "--print-knobs", "lint"),
+            (["--print-role-policy", "test", "--print-plan"], "--print-role-policy", "test"),
+            (["all", "--print-plan", "--print-role-policy"], "--print-role-policy", "all"),
+        )
+        for argv, query, action in cases:
+            with self.subTest(argv=argv):
+                py = run_py(argv, base_env())
+                self.assertEqual(py.returncode, 64)
+                self.assertEqual(py.stdout, "")
+                self.assertEqual(
+                    py.stderr, f"{ERROR_PREFIX}query '{query}' takes no action (got '{action}')\n"
+                )
+
     def test_a_query_takes_the_same_validation_path(self):
         bogus = run_py(["--print-role-policy"], base_env(DF_VERIFY_ROLE="bogus"))
         self.assertEqual(bogus.returncode, 64)

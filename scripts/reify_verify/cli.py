@@ -160,6 +160,10 @@ def _validate(raw: dict, env: dict[str, str]) -> Invocation:
     query = raw.get("query")
     if action is None and query is None:
         raise CliError((f"{ERROR}missing action ({_choices(GATE_ACTIONS)})", *USAGE))
+    if action is not None and query is not None:
+        raise CliError(
+            (f"{ERROR}query '{query.value}' takes no action (got '{action.value}')",)
+        )
     profile_arg = _member(ProfileSelection, raw.get("--profile"), "--profile")
     scope = _member(Scope, raw.get("--scope", Scope.ALL.value), "--scope")
     test_threads = _test_threads(raw.get("--test-threads"))
