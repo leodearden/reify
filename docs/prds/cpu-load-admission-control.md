@@ -1,4 +1,6 @@
 # PRD — Work-conserving CPU-load admission control over ALL load sources
+> **Amended 2026-09-08 — "ALL load sources" means all *reify-launched* load sources; the
+> host is multi-tenant. See [Amendment 2026-09-08](#amendment-2026-09-08--multi-tenant-host-and-c-a1-re-sourcing).**
 
 **Status:** deferred (author 2026-06-17). Version-agnostic build-host infrastructure
 (root `docs/prds/`, alongside `test-run-concurrency-semaphore.md` and
@@ -9,12 +11,70 @@ load-bearing infra → contract + two-way boundary tests).
 from the 2026-06-17 substrate verification, not live breadcrumbs** — do not re-anchor
 them; grep the symbol named beside each one to find the code today.
 
-**One-line goal:** put *every* significant CPU source on the build host —
+**One-line goal** *(amended 2026-09-08: "every" = every **reify-launched** source; the
+host is multi-tenant — see the Amendment below)*: put *every* significant CPU source on the build host —
 agent ad-hoc `cargo build`/test-execution, the verify pipeline's cargo, rustc/sccache,
 the merge verify — under a single **work-conserving** governance regime, so the host
 never oversubscribes into the 2–3×-`nproc` thrash that ballooned a ~1-minute
 `cargo test -p reify-solver-elastic` to ~10 minutes on 2026-06-16, **without** ever
 idling a core when only one source is active.
+
+---
+
+## Amendment 2026-09-08 — multi-tenant host and C-A1 re-sourcing
+
+Companion correction for dark-factory's `plans/load-throttle-harmonisation-prd.md`
+(task rho1; §6.2 holds the harmonised `psi_admission` block, D7 the reasoning). This
+amendment corrects four implicit single-tenant assertions below and re-sources C-A1;
+**the contract text of C-A1 is unchanged.**
+
+**Multi-tenant framing.** Two heavy projects (reify and dark-factory) share this
+32-thread host, and seven orchestrator services run on it. Host-wide CPU PSI is
+therefore not *this* project's stall: it includes the other tenant's load. Whichever
+project's admission threshold is lowest subsidises the other, because its dispatch
+backs off while the other keeps filling the box. Four places in this document assume
+otherwise and are corrected in place by pointers to this block:
+
+1. the **title** ("over ALL load sources") — reify governs reify-launched sources only;
+2. **§1's goal** ("every significant CPU source on the build host … under a single
+   regime") — reify cannot govern dark-factory's agents or verify scopes;
+3. **§2's source enumeration** — closed and reify-only, and it attributes the whole
+   measured host load (42–89 on 32 cores) to reify's 24 agents; part of it was never
+   reify's;
+4. **§3's "A lone source must reach all 32 cores"** — on a two-heavy-project host there
+   is no lone source in the sense that sentence assumes; read it as "lone *within its
+   own slice*".
+
+**C-A1 re-sourcing.** C-A1's PSI **source** moves from host `/proc/pressure/cpu` to the
+`@own-slice` sentinel (the pressure of this project's own cgroup slice). C-A1's
+contract text — "host-portable %, no `nproc`-derived constant", work-conserving
+(a lone source on a quiet box is never delayed), and never requeue on timeout in
+`admit` mode — **survives verbatim**; only the file it reads changes. On the
+dispatch-admission side (`psi_admission` in `dark-factory-orchestrator.yaml`), the host
+`cpu_some_avg10` arm is switched off in favour of `runqueue_ratio`, a
+`procs_running / len(os.sched_getaffinity(0))` ratio read directly from `/proc/stat`.
+
+**Why host CPU `some` avg10 was switched off (evidence moved here from the yaml).**
+Measured CPU PSI `some` avg10, two 1 Hz samples: 2026-07-31 (load ~85) min 5.5 / med
+46.3 / max 68.9; 2026-08-03 (load ~190) min 62.2 / med 66.8 / max 74.1. The
+distribution slides with load rather than spreading, so any value below 62 is a total
+gate on a busy day and any value above 69 is dead on a quiet one. 86% of reify's holds
+at the previous threshold of 70 were single-tick at values 70–73, longest 5 ticks —
+it blips rather than discriminates. Fraction of ticks a gate would hold, per sample:
+
+| Threshold | Held, 07-31 sample | Held, 08-03 sample |
+|---|---|---|
+| 55 | 22.2% | 100% |
+| 60 | 13.9% | 100% |
+| 65 | 1.9% | 68.1% |
+| 70 | 0.0% | 13.5% |
+| 75 | 0% | 0% |
+
+CPU PSI `full` is always 0.00 by kernel definition (something is always runnable); only
+`some` is usable for CPU. The runqueue ratio separated the same regimes at 2.4× cores
+(quiet) vs 7.1× cores (busy); those figures are `procs_running`-derived. They do **not**
+calibrate `scripts/fleet-load-detector.sh`, which reads `load1/nproc`, a different
+quantity that merely shares the numeral 4.0.
 
 ---
 
@@ -58,6 +118,9 @@ These four are the §8 boundary-test sketch made observable; the integration-gat
 
 ## 2. The premise — what is and isn't governed today (G6, validated by code-trace)
 
+*(Amended 2026-09-08: the enumeration of sources below is reify-only and the host is
+multi-tenant; part of the measured load was never reify's — see the Amendment above.)*
+
 On 2026-06-16 the 32-core host ran at **load average 42–89**. That oversubscription
 inflated a normally-fast `cargo test -p reify-solver-elastic` to **~10 minutes**
 wall-clock, exhausting agent timeout budgets (the false "startup wedge" telemetry) and
@@ -97,7 +160,8 @@ the run-queue near `nproc`. The two are complementary and both required.
 > **Requester constraint (do not violate):** allow *full utilisation for all load
 > mixes* — **no fixed per-load-source hard cap below 100% utilisation.**
 
-A lone source must reach all 32 cores; under contention N sources share
+A lone source must reach all 32 cores *(amended 2026-09-08: "lone" means lone within
+its own slice — a second heavy tenant shares the host; see the Amendment above)*; under contention N sources share
 **proportionally / by pressure feedback**, never throttled by a static sub-100%
 per-source ceiling that idles cores when the rest of the box is quiet. **`cpu.weight`
 proportional sharing and PSI-reactive backoff are work-conserving by construction**;
@@ -144,7 +208,9 @@ cpu-admit.sh requeue    # exit-75-on-timeout mode (verify test phase)
 
 - **C-A1 (work-conserving).** Admits immediately while `avg10 < THRESHOLD`
   (`/proc/pressure/cpu`, host-portable %, no `nproc`-derived constant). A lone source
-  on a quiet box is never delayed.
+  on a quiet box is never delayed. *(Amended 2026-09-08: the PSI source is now the
+  `@own-slice` sentinel, not host `/proc/pressure/cpu`; the contract text above is
+  unchanged — see the Amendment.)*
 - **C-A2 (mode contract).** **Reversed (task 4920):** `admit` mode no longer admits
   on a `MAX_WAIT` timeout — it now **HOLDS until PSI drops, NEVER exits 75** (mirrors
   today's `compile_gate`; an agent's mid-turn `cargo` command has no requeue
