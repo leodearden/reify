@@ -34,13 +34,13 @@ SWITCHES = {
 }
 HELP_TOKENS = ("-h", "--help")
 _QUERY_FLAGS = frozenset(query.value for query in Query)
-ACTION_QUERIES = frozenset({Query.SCOPE})
-ACTION_QUERY_CONFLICTS = ("--print-plan", "--confirm-failed")
 REPORTS = {
-    Query.KNOBS: lambda _invocation, env, _repo_root: queries.knob_report(env),
-    Query.ROLE_POLICY: lambda _invocation, env, _repo_root: queries.role_policy_report(env),
-    Query.SCOPE: queries.scope_report,
+    Query.KNOBS: queries.knob_report,
+    Query.ROLE_POLICY: queries.role_policy_report,
 }
+ACTION_REPORTS = {Query.SCOPE: queries.scope_report}
+ACTION_QUERIES = frozenset(ACTION_REPORTS)
+ACTION_QUERY_CONFLICTS = ("--print-plan", "--confirm-failed")
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
 
 
@@ -278,15 +278,15 @@ def main(argv: list[str]) -> int:
 
 
 def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
-    if invocation.query is not None:
+    if invocation.query in ACTION_REPORTS:
         try:
-            output = REPORTS[invocation.query](invocation, env, REPO_ROOT)
+            output = ACTION_REPORTS[invocation.query](invocation, env, REPO_ROOT)
         except bashcall.BashCallError as err:
             _diagnose((f"{ERROR}{err}",))
             return 1
-        _diagnose(output.warnings)
-        _print(output.stdout_lines)
-        return 0
+        return _emit(output)
+    if invocation.query is not None:
+        return _emit(REPORTS[invocation.query](env))
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
@@ -295,6 +295,12 @@ def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
         )
     )
     return EX_UNAVAILABLE
+
+
+def _emit(output: queries.QueryOutput) -> int:
+    _diagnose(output.warnings)
+    _print(output.stdout_lines)
+    return 0
 
 
 def _print(lines: tuple[str, ...]) -> None:
