@@ -48,6 +48,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from typing import NoReturn
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -129,19 +130,21 @@ class Workspace:
     edges: frozenset[Edge]
 
 
+TABLE_SCHEMA = 1
 COUNTED_DEP_KINDS = frozenset({None, "build"})
+SKIPPED_DEP_KINDS = frozenset({"dev"})
 
 
-# --- the table --------------------------------------------------------------
+# --- reading inputs ---------------------------------------------------------
 
 def read_json(path: Path, what: str) -> object:
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise InputError(f"{path}: missing {what}") from None
     except (OSError, UnicodeDecodeError) as error:
         raise InputError(f"{path}: unreadable {what}: {error}") from None
-    return parse_json(text, f"{path}: {what}")
+    return parse_json(raw, f"{path}: {what}")
 
 
 def parse_json(text: str, source: str) -> object:
@@ -151,46 +154,192 @@ def parse_json(text: str, source: str) -> object:
         raise InputError(f"{source} is not JSON: {error}") from None
 
 
-def load_stratum(obj: dict) -> Stratum:
-    return Stratum(name=obj["name"],
-                   may_depend_on=frozenset(obj["may_depend_on"]),
-                   packages=frozenset(obj["packages"]))
+def fail(where: str, problem: str) -> NoReturn:
+    raise InputError(f"{where}: {problem}")
 
 
-def resolve_package_set(obj: dict, strata: Mapping[str, Stratum]) -> frozenset[str]:
-    packages = frozenset(obj.get("packages", []))
-    return packages.union(*(strata[name].packages for name in obj.get("strata", [])))
+def fields(obj: object, where: str, required: Sequence[str],
+           optional: Sequence[str] = ()) -> dict:
+    """`obj` as a dict holding every `required` key and no unknown key."""
+    if not isinstance(obj, dict):
+        fail(where, f"expected an object, found {obj!r}")
+    problems = [*(f"unknown key {key!r}" for key in sorted(set(obj) - {*required, *optional})),
+                *(f"missing key {key!r}" for key in required if key not in obj)]
+    if problems:
+        fail(where, "; ".join(problems))
+    return obj
 
 
-def load_rule(obj: dict, strata: Mapping[str, Stratum]) -> CrateRule:
-    (kind,) = [kind for kind in RuleKind if kind.value in obj]
-    return CrateRule(name=obj["name"],
-                     sources=resolve_package_set(obj["from"], strata),
-                     kind=kind,
-                     targets=resolve_package_set(obj[kind.value], strata))
+def text(value: object, where: str) -> str:
+    if not isinstance(value, str) or not value:
+        fail(where, f"expected a non-empty string, found {value!r}")
+    return value
 
 
-def load_exception(obj: dict) -> ExceptionRow:
-    return ExceptionRow(edge=Edge(obj["from"], obj["to"]),
-                        task=obj["task"], note=obj["note"])
+def str_list(value: object, where: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        fail(where, f"expected a list of strings, found {value!r}")
+    items = tuple(text(item, where) for item in value)
+    twice = sorted({item for item in items if items.count(item) > 1})
+    if twice:
+        fail(where, f"lists {', '.join(twice)} twice")
+    return items
+
+
+def object_list(value: object, where: str) -> list:
+    if not isinstance(value, list):
+        fail(where, f"expected a list of objects, found {value!r}")
+    return value
+
+
+# --- the table --------------------------------------------------------------
+
+def named_where(path: Path, noun: str, collection: str, index: int, obj: object) -> str:
+    """`<path>: <noun> <name>` when `obj` has a readable name, else its index."""
+    name = obj.get("name") if isinstance(obj, dict) else None
+    if isinstance(name, str) and name:
+        return f"{path}: {noun} {name}"
+    return f"{path}: {collection}[{index}]"
+
+
+def load_stratum(path: Path, index: int, obj: object) -> Stratum:
+    where = named_where(path, "stratum", "strata", index, obj)
+    entry = fields(obj, where, required=("name", "may_depend_on", "packages"))
+    name = text(entry["name"], f"{where}: name")
+    return Stratum(name=name,
+                   may_depend_on=frozenset(str_list(entry["may_depend_on"],
+                                                    f"{where}: may_depend_on")),
+                   packages=frozenset(str_list(entry["packages"], f"{where}: packages")))
+
+
+def layering_problem(stratum: Stratum, dependency: str, earlier: Sequence[str],
+                     defined: frozenset[str]) -> str | None:
+    if dependency == stratum.name:
+        return "itself; same-stratum edges are always allowed, so drop it"
+    if dependency not in defined:
+        return "a stratum the table does not define"
+    if dependency not in earlier:
+        return (f"a stratum listed after {stratum.name}; a stratum may depend "
+                f"only on strata listed before it")
+    return None
+
+
+def load_strata(path: Path, value: object) -> dict[str, Stratum]:
+    """The strata in table order, each depending only on earlier ones."""
+    strata: dict[str, Stratum] = {}
+    for index, obj in enumerate(object_list(value, f"{path}: strata")):
+        stratum = load_stratum(path, index, obj)
+        if stratum.name in strata:
+            fail(f"{path}: stratum {stratum.name}", "is defined twice")
+        strata[stratum.name] = stratum
+    defined = frozenset(strata)
+    for position, stratum in enumerate(strata.values()):
+        earlier = list(strata)[:position]
+        for dependency in sorted(stratum.may_depend_on):
+            problem = layering_problem(stratum, dependency, earlier, defined)
+            if problem:
+                fail(f"{path}: stratum {stratum.name}",
+                     f"may_depend_on names {dependency}, {problem}")
+    return strata
+
+
+def classify(path: Path, strata: Mapping[str, Stratum]) -> dict[str, str]:
+    stratum_of: dict[str, str] = {}
+    for stratum in strata.values():
+        for package in sorted(stratum.packages):
+            if package in stratum_of:
+                fail(f"{path}: package {package}",
+                     f"is listed in stratum {stratum_of[package]} and in stratum "
+                     f"{stratum.name}; a package sits in exactly one")
+            stratum_of[package] = stratum.name
+    return stratum_of
+
+
+def resolve_package_set(obj: object, where: str, strata: Mapping[str, Stratum],
+                        stratum_of: Mapping[str, str]) -> frozenset[str]:
+    """The named packages plus every member of the named strata."""
+    entry = fields(obj, where, required=(), optional=("packages", "strata"))
+    if not entry:
+        fail(where, "names neither packages nor strata")
+    packages = str_list(entry.get("packages", []), f"{where}: packages")
+    names = str_list(entry.get("strata", []), f"{where}: strata")
+    for package in packages:
+        if package not in stratum_of:
+            fail(where, f"names {package}, which no stratum lists")
+    for name in names:
+        if name not in strata:
+            fail(where, f"names stratum {name}, which the table does not define")
+    return frozenset(packages).union(*(strata[name].packages for name in names))
+
+
+def load_rule(path: Path, index: int, obj: object, strata: Mapping[str, Stratum],
+              stratum_of: Mapping[str, str]) -> CrateRule:
+    where = named_where(path, "crate rule", "crate_rules", index, obj)
+    entry = fields(obj, where, required=("name", "from"),
+                   optional=tuple(kind.value for kind in RuleKind))
+    name = text(entry["name"], f"{where}: name")
+    kinds = [kind for kind in RuleKind if kind.value in entry]
+    if len(kinds) != 1:
+        found = " and ".join(kind.value for kind in kinds) or "neither"
+        fail(where, f"needs exactly one of only/never, found {found}")
+    (kind,) = kinds
+    return CrateRule(
+        name=name,
+        sources=resolve_package_set(entry["from"], f"{where}: from", strata, stratum_of),
+        kind=kind,
+        targets=resolve_package_set(entry[kind.value], f"{where}: {kind.value}",
+                                    strata, stratum_of))
+
+
+def load_rules(path: Path, value: object, strata: Mapping[str, Stratum],
+               stratum_of: Mapping[str, str]) -> tuple[CrateRule, ...]:
+    rules: dict[str, CrateRule] = {}
+    for index, obj in enumerate(object_list(value, f"{path}: crate_rules")):
+        rule = load_rule(path, index, obj, strata, stratum_of)
+        if rule.name in rules:
+            fail(f"{path}: crate rule {rule.name}", "is defined twice")
+        rules[rule.name] = rule
+    return tuple(rules.values())
+
+
+def load_exception(path: Path, index: int, obj: object,
+                   stratum_of: Mapping[str, str]) -> ExceptionRow:
+    entry = fields(obj, f"{path}: exceptions[{index}]",
+                   required=("from", "to", "task", "note"))
+    edge = Edge(text(entry["from"], f"{path}: exceptions[{index}]: from"),
+                text(entry["to"], f"{path}: exceptions[{index}]: to"))
+    where = f"{path}: exception {edge}"
+    for package in (edge.source, edge.target):
+        if package not in stratum_of:
+            fail(where, f"names {package}, which no stratum lists")
+    task = entry["task"]
+    if type(task) is not int or task <= 0:
+        fail(where, f"task must be a positive integer task id, found {task!r}")
+    return ExceptionRow(edge=edge, task=task, note=text(entry["note"], f"{where}: note"))
+
+
+def load_exceptions(path: Path, value: object,
+                    stratum_of: Mapping[str, str]) -> dict[Edge, ExceptionRow]:
+    rows: dict[Edge, ExceptionRow] = {}
+    for index, obj in enumerate(object_list(value, f"{path}: exceptions")):
+        row = load_exception(path, index, obj, stratum_of)
+        if row.edge in rows:
+            fail(f"{path}: exception {row.edge}", "is listed twice")
+        rows[row.edge] = row
+    return rows
 
 
 def load_table(path: Path) -> Table:
-    document = read_json(path, "strata table")
-    try:
-        strata = {stratum.name: stratum
-                  for stratum in map(load_stratum, document["strata"])}
-        rules = tuple(load_rule(obj, strata) for obj in document["crate_rules"])
-        exceptions = [load_exception(obj) for obj in document["exceptions"]]
-    except (KeyError, TypeError, ValueError) as error:
-        raise InputError(f"{path}: malformed strata table: {error!r}") from None
-    return Table(
-        strata=strata,
-        stratum_of={package: stratum.name
-                    for stratum in strata.values() for package in stratum.packages},
-        rules=rules,
-        exceptions={row.edge: row for row in exceptions},
-    )
+    document = fields(read_json(path, "strata table"), str(path),
+                      required=("schema", "strata", "crate_rules", "exceptions"))
+    schema = document["schema"]
+    if type(schema) is not int or schema != TABLE_SCHEMA:
+        fail(f"{path}: schema", f"is {schema!r}; this checker reads schema {TABLE_SCHEMA}")
+    strata = load_strata(path, document["strata"])
+    stratum_of = classify(path, strata)
+    return Table(strata=strata, stratum_of=stratum_of,
+                 rules=load_rules(path, document["crate_rules"], strata, stratum_of),
+                 exceptions=load_exceptions(path, document["exceptions"], stratum_of))
 
 
 # --- the workspace ----------------------------------------------------------
@@ -207,6 +356,17 @@ def read_metadata(root: Path, metadata_path: Path | None) -> object:
     return parse_json(result.stdout, f"`{' '.join(command)}` output")
 
 
+def counted(package: dict, dependency: dict, source: str) -> bool:
+    """Whether a dependency's kind is one the check counts (normal, build)."""
+    kind = dependency["kind"]
+    if kind in COUNTED_DEP_KINDS:
+        return True
+    if kind in SKIPPED_DEP_KINDS:
+        return False
+    fail(f"{source}: {package['name']} -> {dependency['name']}",
+         f"unknown dependency kind {kind!r}; it is neither counted nor skipped")
+
+
 def workspace_of(metadata: object, source: str) -> Workspace:
     try:
         member_ids = frozenset(metadata["workspace_members"])
@@ -217,9 +377,9 @@ def workspace_of(metadata: object, source: str) -> Workspace:
             Edge(package["name"], dependency["name"])
             for package in members
             for dependency in package["dependencies"]
-            if dependency["name"] in names
+            if counted(package, dependency, source)
+            and dependency["name"] in names
             and dependency["name"] != package["name"]
-            and dependency["kind"] in COUNTED_DEP_KINDS
         )
     except (KeyError, TypeError) as error:
         raise InputError(f"{source}: malformed cargo metadata: {error!r}") from None
