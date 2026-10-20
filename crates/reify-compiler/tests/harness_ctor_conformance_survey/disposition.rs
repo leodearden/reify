@@ -146,8 +146,8 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 ///
 /// PRD §4 D9 assigns the per-case judgment — call-site bug, or wrong declared
 /// field type — to γ. γ ruled: two sites were the call site's fault and are
-/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); these eleven
-/// (#6179 has since retired one) are owned elsewhere and are deferred, per the shape
+/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); the sites this
+/// table lists are owned elsewhere and are deferred, per the shape
 /// `CTOR_CONFORMANCE_GATE_REMEDY` remedy 3 already mandates on main — *"Add a
 /// per-SITE entry naming the file, the param and the LIVE task that owns
 /// retiring it. Per-site, never per-file, and never without an owner."*

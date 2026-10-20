@@ -57,7 +57,31 @@ fn curvature_param_resolves_rad_per_length_and_folds() {
 
 #[test]
 fn curvature_param_rejects_the_dimensionless_numerator_spelling() {
-    let module = compile_source_with_stdlib("structure def S { param x : Curvature = 0.2 / 1mm }");
+    assert_param_default_mismatch(
+        "structure def S { param x : Curvature = 0.2 / 1mm }",
+        DimensionVector::CURVATURE,
+        DimensionVector::ABSORPTION_COEFF,
+    );
+}
+
+/// Control: green before and after α — AbsorptionCoeff stays m⁻¹.
+#[test]
+fn absorption_coeff_param_rejects_the_curvature_spelling() {
+    assert_param_default_mismatch(
+        "structure def S { param x : AbsorptionCoeff = 1rad/m }",
+        DimensionVector::ABSORPTION_COEFF,
+        DimensionVector::CURVATURE,
+    );
+}
+
+/// Asserts `source` raises an Error `ParamDefaultTypeMismatch` whose message
+/// names the `declared` scalar type before the `initializer` one.
+fn assert_param_default_mismatch(
+    source: &str,
+    declared: DimensionVector,
+    initializer: DimensionVector,
+) {
+    let module = compile_source_with_stdlib(source);
     let mismatch = module
         .diagnostics
         .iter()
@@ -67,42 +91,20 @@ fn curvature_param_rejects_the_dimensionless_numerator_spelling() {
         })
         .unwrap_or_else(|| {
             panic!(
-                "expected an Error ParamDefaultTypeMismatch for `0.2 / 1mm`, got: {:?}",
+                "expected an Error ParamDefaultTypeMismatch for `{source}`, got: {:?}",
                 module.diagnostics
             )
         });
 
-    let declared = format!(
-        "`{}`",
-        Type::Scalar {
-            dimension: DimensionVector::CURVATURE
-        }
-    );
-    let initializer = format!(
-        "`{}`",
-        Type::Scalar {
-            dimension: DimensionVector::ABSORPTION_COEFF
-        }
-    );
+    let quoted = |dimension| format!("`{}`", Type::Scalar { dimension });
+    let declared = quoted(declared);
+    let initializer = quoted(initializer);
+    let declared_at = mismatch.message.find(&declared);
+    let initializer_at = mismatch.message.find(&initializer);
     assert!(
-        mismatch.message.contains(&declared) && mismatch.message.contains(&initializer),
-        "mismatch message should name declared {declared} and initializer {initializer}; got: {}",
+        matches!((declared_at, initializer_at), (Some(d), Some(i)) if d < i),
+        "mismatch for `{source}` should name declared {declared} then initializer \
+         {initializer}; got: {}",
         mismatch.message
-    );
-}
-
-/// Control: green before and after α — AbsorptionCoeff stays m⁻¹.
-#[test]
-fn absorption_coeff_param_rejects_the_curvature_spelling() {
-    let module =
-        compile_source_with_stdlib("structure def S { param x : AbsorptionCoeff = 1rad/m }");
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "`param x : AbsorptionCoeff = 1rad/m` should be rejected, got no errors"
     );
 }
