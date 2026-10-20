@@ -56,7 +56,7 @@ from pathlib import Path
 
 class Verdict(IntEnum):
     OK = 0
-    VIOLATION = 1
+    FINDINGS = 1
     INPUT_ERROR = 2
 
 
@@ -257,10 +257,10 @@ def classify(path: Path, strata: Mapping[str, Stratum]) -> dict[str, str]:
 
 def resolve_package_set(obj: object, where: str, strata: Mapping[str, Stratum],
                         stratum_of: Mapping[str, str]) -> frozenset[str]:
-    """The named packages plus every member of the named strata."""
+    """The named packages plus every member of the named strata, never empty:
+    an empty `from` or `never` could never fire, and an empty `only` would
+    forbid every edge."""
     entry = fields(obj, where, required=(), optional=("packages", "strata"))
-    if not entry:
-        fail(where, "names neither packages nor strata")
     packages = str_list(entry.get("packages", []), f"{where}: packages")
     names = str_list(entry.get("strata", []), f"{where}: strata")
     for package in packages:
@@ -269,7 +269,11 @@ def resolve_package_set(obj: object, where: str, strata: Mapping[str, Stratum],
     for name in names:
         if name not in strata:
             fail(where, f"names stratum {name}, which the table does not define")
-    return frozenset(packages).union(*(strata[name].packages for name in names))
+    members = frozenset(packages).union(*(strata[name].packages for name in names))
+    if not members:
+        fail(where, "resolves to no packages; name at least one package, directly "
+                    "or through a non-empty stratum")
+    return members
 
 
 def load_rule(path: Path, index: int, obj: object, strata: Mapping[str, Stratum],
@@ -453,7 +457,7 @@ def run(root: Path, table_path: Path, metadata_path: Path | None) -> Verdict:
         print("\n".join(lines))
         print("crate-strata: FAIL — python3 scripts/assert-crate-strata.py --help "
               "explains each line")
-        return Verdict.VIOLATION
+        return Verdict.FINDINGS
     print(f"crate-strata: OK ({len(ws.packages)} packages in {len(table.strata)} strata, "
           f"{len(ws.edges)} edges, {len(table.exceptions)} excepted)")
     return Verdict.OK

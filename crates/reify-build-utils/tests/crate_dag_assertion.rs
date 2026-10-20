@@ -9,6 +9,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+fn workspace_root() -> PathBuf {
+    // The runtime variable, not `env!`: a warm-lane test binary can be reused
+    // from another worktree, and `env!` bakes in the build-time path.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+    Path::new(&manifest_dir)
+        .parent()
+        .and_then(Path::parent)
+        .expect("CARGO_MANIFEST_DIR is crates/<crate>, two levels below the workspace root")
+        .to_path_buf()
+}
+
 /// Workspace-wide DAG invariant gate.
 ///
 /// Invokes `scripts/assert-crate-dag.sh` and asserts:
@@ -24,27 +36,12 @@ use std::process::{Command, Output};
 /// verify. Moving this gate to another crate means updating that constant.
 #[test]
 fn workspace_dag_invariant_via_assert_script() {
-    use std::path::Path;
-    use std::process::Command;
-
-    // CARGO_MANIFEST_DIR resolves to `crates/reify-build-utils/` at test time.
-    // Two levels up reaches the workspace root.
-    // Use the runtime env var (set by cargo/nextest per test-run) rather than the
-    // compile-time env!() macro, which bakes in the build-time worktree path and
-    // breaks when test binaries are reused across worktrees (warm-lane CoW pool).
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-    let workspace_root = Path::new(&manifest_dir)
-        .parent() // crates/
-        .expect("parent of CARGO_MANIFEST_DIR")
-        .parent() // workspace root
-        .expect("workspace root");
-
+    let workspace_root = workspace_root();
     let script = workspace_root.join("scripts/assert-crate-dag.sh");
 
     let output = Command::new("bash")
         .arg(&script)
-        .current_dir(workspace_root)
+        .current_dir(&workspace_root)
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -77,18 +74,6 @@ fn workspace_dag_invariant_via_assert_script() {
 }
 
 // --- crate strata: scripts/assert-crate-strata.py ---------------------------
-
-fn workspace_root() -> PathBuf {
-    // The runtime variable, not `env!`: a warm-lane test binary can be reused
-    // from another worktree, and `env!` bakes in the build-time path.
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-    Path::new(&manifest_dir)
-        .parent()
-        .and_then(Path::parent)
-        .expect("CARGO_MANIFEST_DIR is crates/<crate>, two levels below the workspace root")
-        .to_path_buf()
-}
 
 fn run_strata<I, S>(args: I) -> Output
 where
@@ -352,6 +337,7 @@ const FIXTURE_TABLE: &str = r#"{
     {"name": "language", "may_depend_on": ["spine"], "packages": ["reify-compiler", "reify-expr"]},
     {"name": "kernel", "may_depend_on": ["spine"], "packages": ["reify-kernel-gmsh", "reify-kernel-x"]},
     {"name": "solver", "may_depend_on": ["spine"], "packages": ["reify-compute-contract", "reify-solver-elastic"]},
+    {"name": "analysis", "may_depend_on": ["spine", "language", "solver"], "packages": []},
     {"name": "engine", "may_depend_on": ["spine", "language", "kernel", "solver"], "packages": ["reify-eval"]},
     {"name": "test-support", "may_depend_on": ["spine", "language", "kernel", "solver", "engine"], "packages": ["reify-test-support"]}
   ],
@@ -359,7 +345,7 @@ const FIXTURE_TABLE: &str = r#"{
     {"name": "kernel-crate-deps", "from": {"packages": ["reify-kernel-gmsh", "reify-kernel-x"]}, "only": {"packages": ["reify-core", "reify-ir"]}},
     {"name": "compute-contract-spine-only", "from": {"packages": ["reify-compute-contract"]}, "only": {"strata": ["spine"]}},
     {"name": "expr-compiler-independent", "from": {"packages": ["reify-compiler", "reify-expr"]}, "never": {"packages": ["reify-compiler", "reify-expr"]}},
-    {"name": "production-not-on-test-support", "from": {"strata": ["spine", "language", "kernel", "solver", "engine"]}, "never": {"strata": ["test-support"]}}
+    {"name": "production-not-on-test-support", "from": {"strata": ["spine", "language", "kernel", "solver", "analysis", "engine"]}, "never": {"strata": ["test-support"]}}
   ],
   "exceptions": [
     {"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}
@@ -416,7 +402,8 @@ fn strata_clean_fixture_is_green() {
     let out = check(FIXTURE_TABLE, &clean_workspace());
     assert_green(
         &out,
-        "dev back-edges are not counted and the excepted edge passes",
+        "dev back-edges are not counted, the excepted edge passes, and a rule may \
+         name an empty stratum beside non-empty ones",
     );
 }
 
@@ -653,6 +640,21 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
             "an unknown schema",
         ),
         (
+            swap(r#""schema": 1"#, r#""schema": true"#),
+            &["schema"][..],
+            "a bool schema, which Python compares equal to 1",
+        ),
+        (
+            swap(r#""schema": 1,"#, r#""schema": 1, "comment": "fixture","#),
+            &["'comment'"][..],
+            "an unknown top-level key",
+        ),
+        (
+            swap(r#""crate_rules":"#, r#""crate_rule":"#),
+            &["'crate_rule'", "'crate_rules'"][..],
+            "a misspelt top-level key, unknown and leaving a required one missing",
+        ),
+        (
             swap(
                 r#"{"name": "spine", "may_depend_on": []"#,
                 r#"{"name": "spine", "may_depend_on": ["kernel"]"#,
@@ -718,6 +720,77 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
             ),
             &["compute-contract-spine-only"][..],
             "a crate rule with neither only nor never",
+        ),
+        (
+            swap(
+                r#""name": "compute-contract-spine-only""#,
+                r#""name": "kernel-crate-deps""#,
+            ),
+            &["kernel-crate-deps", "twice"][..],
+            "two crate rules with one name",
+        ),
+        (
+            swap(
+                r#"{"packages": ["reify-kernel-gmsh", "reify-kernel-x"]}"#,
+                r#"{"packages": ["reify-kernel-gmsh", "reify-kernel-gmsh", "reify-kernel-x"]}"#,
+            ),
+            &["kernel-crate-deps", "reify-kernel-gmsh", "twice"][..],
+            "a package set naming a package twice",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "from: resolves to no packages",
+            ][..],
+            "a crate rule from a set naming nothing",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"packages": []}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "from: resolves to no packages",
+            ][..],
+            "a crate rule from an empty package list, which could never fire",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"strata": ["analysis"]}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "from: resolves to no packages",
+            ][..],
+            "a crate rule from only an empty stratum, which could never fire",
+        ),
+        (
+            swap(
+                r#""only": {"strata": ["spine"]}"#,
+                r#""only": {"strata": ["analysis"]}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "only: resolves to no packages",
+            ][..],
+            "an only set naming only an empty stratum, which would forbid every edge",
+        ),
+        (
+            swap(
+                r#""never": {"strata": ["test-support"]}"#,
+                r#""never": {"packages": []}"#,
+            ),
+            &[
+                "production-not-on-test-support",
+                "never: resolves to no packages",
+            ][..],
+            "an empty never set, which could never fire",
         ),
         (
             swap(
@@ -808,6 +881,24 @@ fn strata_fails_closed_on_untrustworthy_metadata() {
     let out = fixture.check_metadata("weird.json");
     for culprit in ["weird", "reify-kernel-x"] {
         assert_input_error(&out, culprit, "a dependency kind cargo never documents");
+    }
+
+    fixture.write("no-members.json", r#"{"packages": []}"#);
+    let out = fixture.check_metadata("no-members.json");
+    for culprit in ["malformed cargo metadata", "workspace_members"] {
+        assert_input_error(&out, culprit, "metadata with no workspace_members");
+    }
+
+    let metadata = metadata_json(&clean_workspace());
+    let kindless = metadata.replacen(r#""kind": null, "#, "", 1);
+    assert_ne!(
+        kindless, metadata,
+        "the clean metadata has a normal dependency"
+    );
+    fixture.write("kindless.json", &kindless);
+    let out = fixture.check_metadata("kindless.json");
+    for culprit in ["malformed cargo metadata", "'kind'"] {
+        assert_input_error(&out, culprit, "a dependency with no kind");
     }
 }
 
