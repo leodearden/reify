@@ -1457,3 +1457,6 @@ project_root: "/home/leo/src/reify"
 # scheduled fleet redeploy. workflow_exit_contract_enforce stays False until task
 # 3113 lands and a fresh soak shows zero would-violates.
 convert_to_blocked_enforce: true
+
+merge_deep:
+  chain_cap: 6
