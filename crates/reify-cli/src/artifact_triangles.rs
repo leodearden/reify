@@ -34,8 +34,7 @@ pub(crate) fn stl_triangle_count(data: &[u8]) -> usize {
 /// kernel's `ThreeMF` export re-tessellates at its own hardcoded
 /// `DEFAULT_STL_TESSELLATION_TOLERANCE` (0.1), not
 /// `Engine::DEFAULT_TESSELLATION_TOLERANCE` (0.0001), so a tessellation
-/// re-walk is not guaranteed to agree with what was actually exported (amend:
-/// reviewer_comprehensive correctness_consistency finding). See
+/// re-walk is not guaranteed to agree with what was actually exported. See
 /// `triangle_count_tests` below for coverage.
 ///
 /// This is a package-wide total, not a single-mesh count: if `data` ever
@@ -121,9 +120,8 @@ mod triangle_count_tests {
         assert_eq!(threemf_triangle_count(&[]), 0);
     }
 
-    /// Cross-writer parity (reviewer_comprehensive correctness_consistency
-    /// finding): `stl_triangle_count` and `threemf_triangle_count` must
-    /// report the same count when reading the REAL bytes
+    /// Cross-writer parity: `stl_triangle_count` and `threemf_triangle_count`
+    /// must report the same count when reading the REAL bytes
     /// `reify_ir::write_stl_binary` / `reify_ir::write_3mf` emit for the SAME
     /// mesh. Deriving both from one shared `Mesh` via the actual production
     /// writers — rather than two independently hand-built buffers — is what
