@@ -244,14 +244,14 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
 /// # The inline engine is load-bearing — do not collapse it to `make_simple_engine()`
 ///
 /// `make_simple_engine()` installs no `ConstraintSolver` at all
-/// (`Engine::new(Box::new(SimpleConstraintChecker), None)`), so no `auto` is
+/// (`Engine::new(SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None)`), so no `auto` is
 /// ever resolved and every constraint over one comes back `Indeterminate`.
 /// MEASURED: under it this very fixture leaves `AsmAuto.budget == Undef` with
 /// both constraints `Indeterminate`, which made an earlier revision of this
 /// guard VACUOUS — the solver never engaged, `build_dependent_cells` never ran,
 /// and the closing non-empty check passed trivially on all-`Indeterminate`
 /// entries. No fixture rewrite works around that, and the `auto`'s type is not
-/// the cause. Only the solver differs from `make_simple_engine()` here; the
+/// the cause. Only the posture differs from `make_simple_engine()` here; the
 /// checker and the compute-fn registration are identical. The first e2e in this
 /// file stays on `make_simple_engine()` because it declares no `auto`.
 ///
@@ -300,11 +300,10 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
     let compiled = parse_and_compile_with_stdlib(source);
 
     // Same checker and same compute-fn registration as `make_simple_engine()`;
-    // the ONLY difference is the attached solver, without which the `auto`
+    // the ONLY difference is the `Solve` posture, without which the `auto`
     // below is never resolved and this guard is vacuous. See the doc comment.
     let mut engine =
-        reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(reify_constraints::SimpleConstraintChecker), None)
-            .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(reify_constraints::SimpleConstraintChecker), None);
     reify_eval::compute_targets::register_compute_fns(&mut engine);
 
     let result = engine.check(&compiled);
