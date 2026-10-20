@@ -3173,7 +3173,7 @@ assert "GV-6: gui lane carries the vitest runner" \
 #
 # The headline is a NEGATIVE (plan_lacks), so it gets an anti-vacuity control
 # FIRST, the same discipline b11/b13/b15 keep in
-# test_compute_trampoline_registration_wired.sh. plan_for_branch_env captures
+# test_verify_gui_feature_test_pass.sh. plan_for_branch_env captures
 # with `|| true` and asserts nothing itself, so on retry exhaustion PLAN_OUT can
 # be a partial dump that still carries the preamble both the scope-header check
 # and the vitest-lane grep live in — and then the one assertion pinning the

@@ -3871,7 +3871,7 @@ add_test_passes() {
     # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
     # can emit an `-E` filterset — and an `-E` here would narrow away the very
     # gui-gated tests this pass exists to run (asserted by (b8) in
-    # tests/infra/test_compute_trampoline_registration_wired.sh), so they would all
+    # tests/infra/test_verify_gui_feature_test_pass.sh), so they would all
     # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
     # that single construction site.  The two arms below therefore mirror its
     # nextest/cargo-test if/else by hand so this pass is shape-identical on a
