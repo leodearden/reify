@@ -279,7 +279,7 @@ PINNED/UNPINNED inventory: the `units` chunk.
 
 ## Fillet & chamfer
 
-`fillet` and `chamfer` need one solid, also after a transform: a disjoint `union` or a swept wire is rejected.
+`fillet` and `chamfer` need one solid, also after a transform: a disjoint `union`, a pattern whose copies do not touch, or a swept wire is rejected.
 
 ## GD&T Tolerance Zones
 

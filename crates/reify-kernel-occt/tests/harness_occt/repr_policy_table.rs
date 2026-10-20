@@ -7,7 +7,8 @@
 //! feature is classified from the shape it actually built; a constructor
 //! keeps its fixed kind. SweepGuided and LoftGuided are covered by
 //! `harness_occt_measurement/sweep_guided_integration.rs` and
-//! `loft_guided_integration.rs`. Draft's all-faces form has no row: it fails
+//! `loft_guided_integration.rs`; Split and Surface store nothing through
+//! `execute`. Draft's all-faces form has no row: it fails
 //! on every closed solid probed (ticket tkt_0RW01PW74XY9CPGF4A4TEBCZVS). Nor
 //! does a revolved wire: the revolve wrapper wraps its open shell in a SOLID
 //! (ticket tkt_0RW02D1V7Z761QCHHGYSMJ674C).
@@ -161,6 +162,16 @@ fn segment(from: [f64; 3], to: [f64; 3]) -> GeometryOp {
         y2: to[1],
         z2: to[2],
     }
+}
+
+/// Four points of a planar zig-zag, in metres.
+fn curve_points() -> Vec<[f64; 3]> {
+    vec![
+        [0.0, 0.0, 0.0],
+        [0.01, 0.01, 0.0],
+        [0.02, 0.0, 0.0],
+        [0.03, 0.01, 0.0],
+    ]
 }
 
 fn square_face_op() -> GeometryOp {
@@ -614,6 +625,35 @@ fn constructors_keep_their_fixed_kind() {
                 axis: [0.0, 0.0, 1.0],
             },
         ),
+        (
+            "Helix",
+            GeometryOp::Helix {
+                radius: 0.005,
+                pitch: 0.002,
+                height: 0.01,
+            },
+        ),
+        (
+            "InterpCurve",
+            GeometryOp::InterpCurve {
+                points: curve_points(),
+            },
+        ),
+        (
+            "BezierCurve",
+            GeometryOp::BezierCurve {
+                control_points: curve_points(),
+            },
+        ),
+        (
+            "NurbsCurve",
+            GeometryOp::NurbsCurve {
+                control_points: curve_points(),
+                weights: vec![1.0; 4],
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                degree: 3,
+            },
+        ),
     ];
     for (row, op) in wires {
         t.row(row, &op, BRepKind::Wire);
@@ -638,6 +678,20 @@ fn constructors_keep_their_fixed_kind() {
                 semi_minor: len(0.005),
             },
         ),
+        (
+            "NurbsSurface",
+            GeometryOp::NurbsSurface {
+                control_points: vec![
+                    vec![[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]],
+                    vec![[0.01, 0.0, 0.0], [0.01, 0.01, 0.005]],
+                ],
+                weights: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+                u_knots: vec![0.0, 0.0, 1.0, 1.0],
+                v_knots: vec![0.0, 0.0, 1.0, 1.0],
+                u_degree: 1,
+                v_degree: 1,
+            },
+        ),
     ];
     for (row, op) in faces {
         t.row(row, &op, BRepKind::Face);
@@ -646,16 +700,132 @@ fn constructors_keep_their_fixed_kind() {
 }
 
 #[test]
-fn a_union_of_disjoint_solids_classifies_as_compound() {
+fn curve_and_surface_offsets_keep_their_fixed_kind() {
     let mut t = Table::new();
     let i = inputs(&mut t);
+    let arc = t.input(
+        "arc WIRE",
+        GeometryOp::Arc {
+            center: [0.0; 3],
+            radius: 0.01,
+            start_angle: -FRAC_PI_4,
+            end_angle: FRAC_PI_4,
+            axis: [0.0, 0.0, 1.0],
+        },
+    );
+    let reference = t.face_of(i.solid);
+    let offset_curve = |reference, direction| GeometryOp::OffsetCurve {
+        target: arc,
+        distance: Value::length(0.002),
+        reference,
+        direction,
+    };
+    t.row(
+        "OffsetCurve planar × arc",
+        &offset_curve(None, None),
+        BRepKind::Wire,
+    );
+    t.row(
+        "OffsetCurve on a reference face × arc",
+        &offset_curve(Some(reference), None),
+        BRepKind::Wire,
+    );
+    t.row(
+        "OffsetCurve along a direction × arc",
+        &offset_curve(None, Some([0.0, 0.0, 1.0])),
+        BRepKind::Wire,
+    );
+    let offset_surface = GeometryOp::OffsetSurface {
+        target: i.face,
+        distance: Value::length(0.002),
+    };
+    t.row("OffsetSurface × FACE", &offset_surface, BRepKind::Face);
+    t.finish();
+}
+
+/// A boolean is classified from the body it built: one body is a Solid; two
+/// bodies, or none, are a Compound.
+#[test]
+fn booleans_classify_the_bodies_they_built() {
+    let mut t = Table::new();
+    let i = inputs(&mut t);
+    let overlapping = t.input("box overlapping SOLID", box_op(0.01));
+    let overlapping = t.input(
+        "box overlapping SOLID moved",
+        translate(overlapping, 0.005, 0.0, 0.0),
+    );
     let far = t.input("far box", box_op(0.01));
     let far = t.input("far box moved", translate(far, 0.1, 0.0, 0.0));
-    let union = GeometryOp::Union {
-        left: i.solid,
-        right: far,
-    };
-    t.row("Union × disjoint boxes", &union, BRepKind::Compound);
+    let bar = t.input(
+        "bar",
+        GeometryOp::Box {
+            width: Value::length(0.03),
+            height: Value::length(0.01),
+            depth: Value::length(0.01),
+        },
+    );
+    let slab = t.input(
+        "slab across the bar's middle",
+        GeometryOp::Box {
+            width: Value::length(0.002),
+            height: Value::length(0.02),
+            depth: Value::length(0.02),
+        },
+    );
+
+    let rows = [
+        (
+            "Union × overlapping boxes",
+            GeometryOp::Union {
+                left: i.solid,
+                right: overlapping,
+            },
+            BRepKind::Solid,
+        ),
+        (
+            "Union × disjoint boxes",
+            GeometryOp::Union {
+                left: i.solid,
+                right: far,
+            },
+            BRepKind::Compound,
+        ),
+        (
+            "Difference × overlapping boxes",
+            GeometryOp::Difference {
+                left: i.solid,
+                right: overlapping,
+            },
+            BRepKind::Solid,
+        ),
+        (
+            "Difference × slab splitting the bar in two",
+            GeometryOp::Difference {
+                left: bar,
+                right: slab,
+            },
+            BRepKind::Compound,
+        ),
+        (
+            "Intersection × overlapping boxes",
+            GeometryOp::Intersection {
+                left: i.solid,
+                right: overlapping,
+            },
+            BRepKind::Solid,
+        ),
+        (
+            "Intersection × disjoint boxes (empty)",
+            GeometryOp::Intersection {
+                left: i.solid,
+                right: far,
+            },
+            BRepKind::Compound,
+        ),
+    ];
+    for (row, op, kind) in rows {
+        t.row(row, &op, kind);
+    }
     t.finish();
 }
 
@@ -674,6 +844,15 @@ fn fillet_and_chamfer_reject_a_non_solid_input_on_both_entry_points() {
         GeometryOp::Extrude {
             profile: i.wire,
             distance: Value::length(0.01),
+        },
+    );
+    let spread = t.input(
+        "LinearPattern of disjoint copies",
+        GeometryOp::LinearPattern {
+            target: i.solid,
+            direction: [1.0, 0.0, 0.0],
+            count: 3,
+            spacing: Value::length(0.02),
         },
     );
     let fillet = |target| GeometryOp::Fillet {
@@ -705,6 +884,11 @@ fn fillet_and_chamfer_reject_a_non_solid_input_on_both_entry_points() {
             "Fillet all-edges × extruded WIRE",
             fillet(sheet),
             BRepKind::Shell,
+        ),
+        (
+            "Fillet all-edges × LinearPattern of disjoint copies",
+            fillet(spread),
+            BRepKind::Compound,
         ),
     ];
     for (row, op, input_kind) in cases {
