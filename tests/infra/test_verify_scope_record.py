@@ -21,12 +21,14 @@ thin wrapper tests/infra/test_verify_scope_record.sh.
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
+from tree_under_test import scratch_git, shared_clone  # noqa: E402
 from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = INFRA_DIR.parents[1]
@@ -34,6 +36,14 @@ HANG_GUARD_SECS = 600
 ERROR_PREFIX = "verify.sh: ERROR — "
 RECORD_KEYS = {"v", "scope", "narrowing", "infra_selection"}
 SCOPE_FLAGS = ("run_rust", "run_gui", "run_occt_gate", "gui_path_signal")
+DOCS_PATH = "docs/getting-started.md"
+MERGE_HEAD_NOTICE = "verify.sh: MERGE_HEAD present — forcing --scope all (merge in progress)"
+MERGE_BASE_WARNING = (
+    "verify.sh: WARNING — --scope branch could not resolve 'git merge-base main HEAD' "
+    "(detached HEAD / missing local main ref / merge-base failure) — failing WIDE to "
+    "--scope all (contract C5)"
+)
+FORCED_SCOPE_MARK = "forcing --scope all"
 
 
 def base_env(**overrides):
@@ -98,6 +108,76 @@ def python_help():
     outcome = run_py(["--help"], base_env())
     assert outcome.returncode == 0, outcome.stderr
     return outcome.stdout
+
+
+class Clone:
+    """B1's shared clone of the tree under test (PRD D13), reset between tests."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.base = self.git("rev-parse", "HEAD")
+        self.main = self.git("rev-parse", "--verify", "refs/heads/main")
+
+    def git(self, *args, stdin=None) -> str:
+        return scratch_git(self.root, *args, stdin=stdin).decode("utf-8").strip()
+
+    def reset(self):
+        self.git("reset", "-q", "--hard", self.base)
+        self.git("clean", "-fdq")
+        self.git("branch", "-f", "main", self.main)
+        self.merge_head().unlink(missing_ok=True)
+
+    def merge_head(self) -> Path:
+        return self.root / self.git("rev-parse", "--git-path", "MERGE_HEAD")
+
+    def append(self, path, text="\n"):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def stage(self, path, text="\n"):
+        """Append `text` to `path` (creating it) and stage it."""
+        self.append(path, text)
+        self.git("add", "--", path)
+
+    def commit(self, message):
+        self.git("commit", "-q", "--allow-empty", "-m", message)
+
+    def py(self, argv, env, cwd=None):
+        return run_py(argv, env, tree=self.root, cwd=cwd)
+
+    def bash(self, argv, env):
+        return run_bash(argv, env, tree=self.root)
+
+
+_SCRATCH = None
+_CLONE = None
+
+
+def the_clone() -> Clone:
+    """The module's one clone, built on first use (each `git clone` costs a checkout)."""
+    global _SCRATCH, _CLONE
+    if _CLONE is None:
+        _SCRATCH = tempfile.TemporaryDirectory()
+        _CLONE = Clone(shared_clone(Path(_SCRATCH.name) / "tree"))
+    return _CLONE
+
+
+def tearDownModule():
+    if _SCRATCH is not None:
+        _SCRATCH.cleanup()
+
+
+class InClone(unittest.TestCase):
+    """A test case that runs in the shared clone, reset to its base before each test."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.clone = the_clone()
+
+    def setUp(self):
+        self.clone.reset()
 
 
 class TestPrintScopeCli(unittest.TestCase):
@@ -187,6 +267,60 @@ class TestPrintScopeCli(unittest.TestCase):
         self.assertIn("--print-scope", self.help_text)
         last = [line for line in self.help_text.splitlines() if line.strip()][-1]
         self.assertTrue(last.lstrip().startswith("-h|--help"), last)
+
+
+class TestEffectiveScope(InClone):
+    """MERGE_HEAD, force_scope_all and the merge base settle the scope before any diff."""
+
+    STAGED = ["test", "--scope", "staged", "--print-scope"]
+
+    def setUp(self):
+        super().setUp()
+        self.clone.stage(DOCS_PATH)
+
+    def test_merge_head_is_found_from_the_repo_root(self):
+        self.clone.merge_head().write_text(self.clone.base + "\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory() as foreign:
+            py = self.clone.py(self.STAGED, base_env(), cwd=foreign)
+        self.assertEqual(scope_record(py)["scope"]["mode"], "all")
+        self.assertIn(MERGE_HEAD_NOTICE, py.stderr.splitlines())
+        bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], base_env())
+        self.assertEqual(bash.returncode, 0, bash.stderr)
+        self.assertIn(
+            MERGE_HEAD_NOTICE,
+            bash.stderr.splitlines(),
+            "premise: bash, run from the clone root, sees the same MERGE_HEAD",
+        )
+
+    def test_force_scope_all_roles(self):
+        for role, forced in (("merge", True), ("background", True), ("task", False), ("offline", False)):
+            with self.subTest(role=role):
+                env = base_env(DF_VERIFY_ROLE=role)
+                py = self.clone.py(self.STAGED, env)
+                self.assertEqual(scope_record(py)["scope"]["mode"], "all" if forced else "staged")
+                bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], env)
+                self.assertEqual(bash.returncode, 0, bash.stderr)
+                bash_notices = [l for l in bash.stderr.splitlines() if FORCED_SCOPE_MARK in l]
+                py_notices = [l for l in py.stderr.splitlines() if FORCED_SCOPE_MARK in l]
+                self.assertEqual(len(bash_notices), int(forced), bash.stderr)
+                self.assertEqual(py_notices, bash_notices)
+
+    def test_branch_without_main_fails_wide(self):
+        self.clone.git("branch", "-D", "main")
+        argv = ["test", "--scope", "branch", "--print-scope"]
+        py = self.clone.py(argv, base_env())
+        self.assertEqual(scope_record(py)["scope"]["mode"], "all")
+        self.assertIn(MERGE_BASE_WARNING, py.stderr.splitlines())
+        bash = self.clone.bash(["test", "--scope", "branch", "--print-plan"], base_env())
+        self.assertEqual(bash.returncode, 0, bash.stderr)
+        self.assertIn(MERGE_BASE_WARNING, bash.stderr.splitlines(), "premise: bash's exact C5 line")
+
+    def test_branch_records_the_merge_base(self):
+        self.clone.git("branch", "-f", "main", "HEAD")
+        py = self.clone.py(["test", "--scope", "branch", "--print-scope"], base_env())
+        scope = scope_record(py)["scope"]
+        self.assertEqual(scope["mode"], "branch")
+        self.assertEqual(scope["merge_base"], self.clone.git("merge-base", "main", "HEAD"))
 
 
 if __name__ == "__main__":
