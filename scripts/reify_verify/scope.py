@@ -388,6 +388,17 @@ def _seeds_an_occt_crate(path: str, path_facts: PathFacts, facts: ScopeFacts) ->
     return bool(path_facts.seed_crates & facts.occt_declared)
 
 
+def merge_base_diff(
+    decision: ScopeDecision, repo_root: Path, env: Mapping[str, str], *args: str
+) -> tuple[str, ...] | None:
+    """`git diff <args> <merge base>` lines under --scope branch; None outside branch, or when
+    git fails (the selectors' `|| return 0`)."""
+    if decision.mode is not Scope.BRANCH or not decision.merge_base:
+        return None
+    found = _git(repo_root, env, "diff", *args, decision.merge_base)
+    return found.lines if found.returncode == 0 else None
+
+
 def decide(
     invocation: Invocation, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[ScopeDecision, tuple[str, ...]]:
