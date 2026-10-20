@@ -256,6 +256,7 @@ test_verify_events.sh pool
 test_verify_failfast_order.sh pool
 test_verify_gate_exclude_heavy.sh pool
 test_verify_gui_feature_check.sh pool
+test_verify_gui_feature_test_pass.sh pool
 test_verify_gui_retry_specs.sh pool
 test_verify_ld_library_path_scope.sh pool
 test_verify_ledger_cli.sh pool
