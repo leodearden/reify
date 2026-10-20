@@ -8,9 +8,11 @@ The kloc guard's crate set is read from its one owner, harness-layout-lib.sh.
 The ptodo, pdiag and pdoccover predicates are copies of reify-audit's
 (crates/reify-audit/src/ptodo.rs::is_swept_ext, pdiag.rs::is_swept_path and
 SCOPE_EXCLUDE_PREFIXES, pdoccover.rs::is_chunk_path and in_oracle_scope,
-pdoccover_baseline.rs::BASELINE_PATH), as bash's are: test_verify_scope.sh's
-PT-DRIFT, PDIAG-DRIFT and PDOCCOVER-DRIFT guard bash's copies, and this
-module is held equal to bash's (PRD §2.3, §8).
+pdoccover_baseline.rs::BASELINE_PATH), as bash's are. Both copies are probed
+against that Rust source with corpora derived from it: bash's by
+test_verify_scope.sh's PT-DRIFT, PDIAG-DRIFT and PDOCCOVER-DRIFT, this
+module's by test_verify_scope_record.py through tests/infra/reify_audit_inputs.py
+(PRD §2.3, §8).
 """
 
 import re

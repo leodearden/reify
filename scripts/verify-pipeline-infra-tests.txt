@@ -849,6 +849,7 @@ tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh
 # requires both rows for every package module.
 tests/infra/test_verify_scope_record.py    tests/infra/test_verify_scope_record.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_scope_record.sh
+tests/infra/reify_audit_inputs.py    tests/infra/test_verify_scope_record.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_*.sh
