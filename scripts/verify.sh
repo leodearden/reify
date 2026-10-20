@@ -2538,7 +2538,8 @@ select_pdoccover_ratchet
 # `task` and no run_all.sh pool runs. Such a commit gets the full cargo
 # workspace but not these gates. Closing it needs a fail-wide signal
 # decide_scope does not expose today; the merge tier remains the wholesale
-# authority.
+# authority. Also shared: the leaves scan the working tree, not the index
+# (follow-up ticket tkt_0RW1FVPYNRMX4G7R4ZTB0AVZ0Z).
 # ---------------------------------------------------------------------------
 select_staged_whole_tree_gate() {
     [ "$SCOPE" = "staged" ] || return 0
@@ -2600,23 +2601,14 @@ select_cited_test_path_gate
 
 # ---------------------------------------------------------------------------
 # Canonical-config-path gate on the hook-gated --scope staged path (task #7797):
-# landing-contract §3 R3's canonical-path instance.
+# landing-contract §3 R3 (docs/legibility/landing-contract.md) for
+# tests/infra/test_orchestrator_config_canonical_path.sh.
 #
-# tests/infra/test_orchestrator_config_canonical_path.sh (task 5242): (B) is a
-# repo-wide absence invariant with NO grandfather baseline, and (A) parses
-# dark-factory-orchestrator.yaml, which is itself classified inert and whose
-# only infra-map row (knob parity) reads it with awk. Neither ran on a
-# hook-gated commit on `main`.
-#
-# ANY staged change, no filter: the verdict is a function of the whole tree,
-# the test's own legacy_config_ref_exclusions, and that file's existence and
-# parse. A staged DELETE or a YAML-breaking edit of it carries no legacy-name
-# content, so no predicate over the staged set is sound — and a content
-# predicate would copy the test's PCRE (SPOT).
-#
-# COST: no cargo, no npm — what makes "any staged change" affordable as well as
-# correct. No selected_infra_leaf_env arm: (D) already FAILS a scan that cannot
-# run, and (A)'s PyYAML SKIP leaves (B) running, so there is no skip to forbid.
+# Fires on ANY staged change. The verdict depends on the whole tracked tree and
+# on whether dark-factory-orchestrator.yaml exists and parses, so a staged
+# delete or a YAML-breaking edit of that file carries no legacy-name text: no
+# predicate over the staged set is sound. The leaf is hermetic bash, no cargo
+# and no npm, so always-on is affordable.
 # ---------------------------------------------------------------------------
 select_canonical_config_path_gate() {
     select_staged_whole_tree_gate tests/infra/test_orchestrator_config_canonical_path.sh

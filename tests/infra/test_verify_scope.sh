@@ -154,6 +154,16 @@ plan_for() {
     for f in "$@"; do rm -f "$FIX/$f"; done
 }
 
+# plan_for_staged_role <role> <file...> — plan_for staged with DF_VERIFY_ROLE
+# set to <role> for that one call. It delegates, so plan_for stays the only
+# copy of the stage/capture/unstage steps; the fixture check is repeated
+# because _require_fixture names the helper it was called from.
+plan_for_staged_role() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    local role="$1"; shift
+    DF_VERIFY_ROLE="$role" plan_for staged "$@"
+}
+
 # Convenience predicates over PLAN_OUT.
 # Fork-free: delegate to plan_match ([[ =~ ]]) — eliminates the pipe-to-grep
 # EINTR surface that caused B9-default spurious failures under load (task #4708,
@@ -1227,16 +1237,11 @@ done <<< "$_CT_EXTS"
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario CT-MERGE-SUPPRESSED: DF_VERIFY_ROLE=merge emits NO selective cited-test-path leaf ---"
-mkdir -p "$FIX/docs"
-printf 'x\n' > "$FIX/docs/ct_merge_probe.md"
-git -C "$FIX" add docs/ct_merge_probe.md
-_CT_MERGE_PLAN="$(cd "$FIX" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
-git -C "$FIX" reset -q -- . 2>/dev/null || true
-rm -f "$FIX/docs/ct_merge_probe.md"
+plan_for_staged_role merge docs/ct_merge_probe.md
 assert "CT-MERGE-SUPPRESSED-vacuity: the merge-role plan was captured (the negative pin below is not vacuous)" \
-    test -n "$_CT_MERGE_PLAN"
+    test -n "$PLAN_OUT"
 assert "CT-MERGE-SUPPRESSED: no selective tests/infra/test_cited_test_paths_resolve.sh leaf (run_all.sh owns it wholesale there)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "test_cited_test_paths_resolve"' _ "$_CT_MERGE_PLAN"
+    plan_lacks 'test_cited_test_paths_resolve'
 
 # ---------------------------------------------------------------------------
 # Scenarios CANON-*: the canonical-config-path gate on the hook-gated --scope
@@ -1289,16 +1294,11 @@ assert "CANON-EXTLESS: extension-less staged path still emits the canonical-conf
 # under DF_VERIFY_ROLE=merge run_all.sh runs this file wholesale.
 echo ""
 echo "--- Scenario CANON-MERGE-SUPPRESSED: DF_VERIFY_ROLE=merge emits NO selective canonical-config-path leaf ---"
-mkdir -p "$FIX/docs"
-printf 'x\n' > "$FIX/docs/canon_merge_probe.md"
-git -C "$FIX" add docs/canon_merge_probe.md
-_CANON_MERGE_PLAN="$(cd "$FIX" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
-git -C "$FIX" reset -q -- . 2>/dev/null || true
-rm -f "$FIX/docs/canon_merge_probe.md"
+plan_for_staged_role merge docs/canon_merge_probe.md
 assert "CANON-MERGE-SUPPRESSED-vacuity: the merge-role plan was captured (the negative pin below is not vacuous)" \
-    test -n "$_CANON_MERGE_PLAN"
+    test -n "$PLAN_OUT"
 assert "CANON-MERGE-SUPPRESSED: no selective tests/infra/test_orchestrator_config_canonical_path.sh leaf (run_all.sh owns it wholesale there)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "test_orchestrator_config_canonical_path"' _ "$_CANON_MERGE_PLAN"
+    plan_lacks 'test_orchestrator_config_canonical_path'
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
