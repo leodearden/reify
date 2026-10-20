@@ -20,6 +20,7 @@ thin wrapper tests/infra/test_verify_scope_record.sh.
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -50,6 +51,11 @@ FORCED_SCOPE_MARK = "forcing --scope all"
 FAIL_WIDE_MARK = "failing WIDE"
 SCOPE_HEADER = "# scope decision — "
 BASH_FLAGS = {"run_rust": "RUN_RUST", "run_gui": "RUN_GUI", "run_occt_gate": "RUN_OCCT_GATE"}
+FIXTURES_DIR = "tests/prd-gate/fixtures/"
+FIXTURE_REFERENCE = r"tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri"
+REVIEWED_MARKER = "pg-drift:allow"
+GUI_PINS = "gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"
+STAGED_SCOPE = ["test", "--scope", "staged", "--print-scope"]
 
 
 def base_env(**overrides):
@@ -551,6 +557,147 @@ class TestGatherFailsWide(InClone):
                             "diff fails wide in python, while bash still fails open",
                         )
                         self.assertEqual(bash_wide, [])
+
+
+def derived_rust_set(clone):
+    """PG-DRIFT's predicate (PRD D6): fixture basenames named on unmarked lines of tracked *.rs."""
+    lines = clone.git("grep", "-h", "-E", FIXTURE_REFERENCE, "--", "*.rs").splitlines()
+    return {
+        match.rsplit("/", 1)[1]
+        for line in lines
+        if REVIEWED_MARKER not in line
+        for match in re.findall(FIXTURE_REFERENCE, line)
+    }
+
+
+def pinned_gui_set(clone):
+    """Basenames of the prd-gate fixtures the vitest ledger pins (PRD D6)."""
+    pins = json.loads((clone.root / GUI_PINS).read_text(encoding="utf-8"))
+    return {pin.rsplit("/", 1)[1] for pin in pins if pin.startswith(FIXTURES_DIR)}
+
+
+def fixture(name):
+    return FIXTURES_DIR + name
+
+
+def flags(scope):
+    return scope["run_rust"], scope["run_gui"], scope["run_occt_gate"]
+
+
+class TestDerivedFixtureCoupling(InClone):
+    """B7: a fixture's coupling is derived from the tree, with no list edit (PRD D6)."""
+
+    UNREFERENCED = "zz_scope_record_unreferenced.ri"
+    MARKED = "zz_scope_record_marked.ri"
+    REFERENCED = "zz_scope_record_referenced.ri"
+    PINNED = "zz_scope_record_pinned.ri"
+    MOVED = "zz_scope_record_moved.ri"
+    PROBE_RS = "crates/reify-doc/tests/zz_scope_record_probe.rs"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.clone.reset()
+        cls.rust = derived_rust_set(cls.clone)
+        cls.gui = pinned_gui_set(cls.clone)
+        on_disk = {path.name for path in (cls.clone.root / FIXTURES_DIR).glob("*.ri")}
+        cls.rust_on_disk = sorted(cls.rust & on_disk)
+        cls.uncoupled_on_disk = sorted(on_disk - cls.rust - cls.gui)
+
+    def test_premise_the_sets_are_not_vacuous(self):
+        self.assertTrue(self.rust, "the derived Rust set is empty: the predicate found nothing")
+        self.assertTrue(self.gui, "the JSON pins name no prd-gate fixture")
+        self.assertTrue(self.rust_on_disk and self.uncoupled_on_disk)
+
+    def staged_alone(self, path):
+        self.clone.reset()
+        self.clone.stage(path)
+        py = self.clone.py(STAGED_SCOPE, base_env())
+        return scope_record(py)["scope"], py
+
+    def test_every_rust_coupled_fixture_runs_rust(self):
+        for name in sorted(self.rust):
+            with self.subTest(fixture=name):
+                scope, _ = self.staged_alone(fixture(name))
+                self.assertEqual(flags(scope), (1, 1, 1))
+
+    def test_every_pinned_fixture_runs_gui(self):
+        for name in sorted(self.gui):
+            with self.subTest(fixture=name):
+                scope, _ = self.staged_alone(fixture(name))
+                self.assertEqual(scope["run_gui"], 1)
+                if name not in self.rust:
+                    self.assertEqual(flags(scope), (0, 1, 0))
+
+    def test_an_unreferenced_unpinned_fixture_runs_nothing(self):
+        self.clone.stage(fixture(self.UNREFERENCED))
+        record, py, bash = self.side_by_side("staged")
+        self.assertEqual(flags(record["scope"]), (0, 0, 0))
+        self.assert_flags_match_bash(record, bash)
+        self.assertEqual(py.stderr, "")
+
+    def commit_probe_rs(self):
+        self.clone.commit_change(
+            self.PROBE_RS,
+            f"// {fixture(self.MARKED)} ({REVIEWED_MARKER} — scope-record probe: prose only)\n"
+            f"// {fixture(self.REFERENCED)} is read by this probe\n",
+        )
+
+    def test_the_reviewed_marker_drops_a_reference(self):
+        self.commit_probe_rs()
+        scope, _ = self.staged_alone_on_top(fixture(self.MARKED))
+        self.assertEqual(scope["run_rust"], 0, "a pg-drift:allow line is not a reference")
+
+    def test_a_new_reference_couples_with_no_list_edit(self):
+        self.commit_probe_rs()
+        scope, _ = self.staged_alone_on_top(fixture(self.REFERENCED))
+        self.assertEqual(flags(scope), (1, 1, 1))
+        bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], base_env())
+        self.assertEqual(bash.returncode, 0, bash.stderr)
+        self.assertEqual(
+            header_fields(bash.stdout)["RUN_RUST"],
+            "0",
+            "premise: bash classifies from its own list, which this probe never edits",
+        )
+
+    def test_a_new_pin_couples_with_no_list_edit(self):
+        pins_path = self.clone.root / GUI_PINS
+        pins = json.loads(pins_path.read_text(encoding="utf-8"))
+        pins_path.write_text(json.dumps([*pins, fixture(self.PINNED)], indent=2) + "\n", encoding="utf-8")
+        self.clone.git("add", "--", GUI_PINS)
+        self.clone.commit("scope-record probe: pin a fixture")
+        scope, _ = self.staged_alone_on_top(fixture(self.PINNED))
+        self.assertEqual(flags(scope), (0, 1, 0))
+
+    def staged_alone_on_top(self, path):
+        """Stage `path` over whatever the test committed (no reset)."""
+        self.clone.stage(path)
+        py = self.clone.py(STAGED_SCOPE, base_env())
+        return scope_record(py)["scope"], py
+
+    def test_a_renamed_rust_fixture_still_runs_rust(self):
+        source = fixture(self.rust_on_disk[0])
+        self.clone.git("mv", source, fixture(self.MOVED))
+        scope = scope_record(self.clone.py(STAGED_SCOPE, base_env()))["scope"]
+        self.assertEqual(scope["rename_sources"], [source])
+        self.assertEqual(scope["run_rust"], 1)
+
+    def test_a_renamed_uncoupled_fixture_runs_nothing(self):
+        self.clone.git("mv", fixture(self.uncoupled_on_disk[0]), fixture(self.MOVED))
+        scope = scope_record(self.clone.py(STAGED_SCOPE, base_env()))["scope"]
+        self.assertEqual((scope["run_rust"], scope["run_gui"]), (0, 0))
+
+    def test_the_derivation_is_lazy_and_fails_wide(self):
+        (self.clone.root / GUI_PINS).write_text("{ not json\n", encoding="utf-8")
+        self.clone.git("add", "--", GUI_PINS)
+        self.clone.commit("scope-record probe: a malformed pins file")
+        docs_scope, docs = self.staged_alone_on_top(DOCS_PATH)
+        self.assertEqual(flags(docs_scope), (0, 0, 0))
+        self.assertNotIn(GUI_PINS, docs.stderr, "the derivation ran for a non-fixture change")
+        self.clone.git("reset", "-q", "--", DOCS_PATH)
+        scope, py = self.staged_alone_on_top(fixture(self.UNREFERENCED))
+        self.assertEqual(scope["run_gui"], 1, "an unreadable pins file fails wide")
+        self.assertEqual(len([line for line in py.stderr.splitlines() if GUI_PINS in line]), 1, py.stderr)
 
 
 if __name__ == "__main__":
