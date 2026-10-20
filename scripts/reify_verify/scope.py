@@ -2,13 +2,44 @@
 
 resolve_scope settles the effective scope. decide returns the ScopeDecision
 and the scope stage's stderr lines, in the order bash prints them.
+
+Every git call goes through _git, under the caller's env unmodified: the
+hook's GIT_* env is never scrubbed (consumer C18).
 """
 
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from reify_verify.invocation import Invocation, Scope
+from reify_verify.policy import ROLE_TABLE
+
+MERGE_HEAD_NOTICE = "verify.sh: MERGE_HEAD present — forcing --scope all (merge in progress)"
+MERGE_BASE_WARNING = (
+    "verify.sh: WARNING — --scope branch could not resolve 'git merge-base main HEAD' "
+    "(detached HEAD / missing local main ref / merge-base failure) — failing WIDE to "
+    "--scope all (contract C5)"
+)
+
+
+@dataclass(frozen=True)
+class GitOutput:
+    returncode: int
+    lines: tuple[str, ...]
+
+
+def _git(repo_root: Path, env: Mapping[str, str], *args: str) -> GitOutput:
+    """`git -C repo_root args`: stdout lines verbatim (core.quotePath quoting included), stderr dropped."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        env=dict(env),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    text = proc.stdout.decode("utf-8", "surrogateescape")
+    return GitOutput(proc.returncode, tuple(text.removesuffix("\n").split("\n")) if text else ())
 
 
 @dataclass(frozen=True)
@@ -21,7 +52,35 @@ class ResolvedScope:
 
 
 def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str]) -> ResolvedScope:
-    return ResolvedScope(invocation.scope, None, ())
+    """A merge in progress, then a force_scope_all role, force scope all; branch needs a merge base."""
+    mode = invocation.scope
+    notices = []
+    if mode is not Scope.ALL and _merge_in_progress(repo_root, env):
+        notices.append(MERGE_HEAD_NOTICE)
+        mode = Scope.ALL
+    if mode is not Scope.ALL and ROLE_TABLE[invocation.role].force_scope_all:
+        notices.append(
+            f"verify.sh: DF_VERIFY_ROLE={invocation.role.value} — forcing --scope all "
+            "(integrity gate never narrows, contract C2)"
+        )
+        mode = Scope.ALL
+    merge_base = None
+    if mode is Scope.BRANCH:
+        found = _git(repo_root, env, "merge-base", "main", "HEAD")
+        if found.returncode == 0 and found.lines and found.lines[0]:
+            merge_base = found.lines[0]
+        else:
+            notices.append(MERGE_BASE_WARNING)
+            mode = Scope.ALL
+    return ResolvedScope(mode, merge_base, tuple(notices))
+
+
+def _merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
+    """A MERGE_HEAD file exists; a relative git path is resolved against repo_root, never the cwd."""
+    found = _git(repo_root, env, "rev-parse", "--git-path", "MERGE_HEAD")
+    if found.returncode != 0 or not found.lines or not found.lines[0]:
+        return False
+    return (repo_root / found.lines[0]).is_file()
 
 
 @dataclass(frozen=True)
