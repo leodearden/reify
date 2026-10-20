@@ -5,9 +5,10 @@ assert-crate-strata.py — the workspace crate strata assertion.
 The rule: every workspace package sits in exactly one stratum of
 scripts/crate-strata.json. Every normal or build edge between workspace
 packages (optional and target-specific ones included; dev-dependencies are
-never counted) must satisfy the stratum table, except edges named in the
-exception list. The exception list must equal the violations: a new violation
-and a stale row are both red.
+never counted) must satisfy the stratum table and every crate rule, except
+edges named in the exception list. The exception list must equal the
+violations: a new violation and a stale row are both red. One row excuses
+every rule its edge breaks.
 
 Edges are the DECLARED dependencies of `cargo metadata --no-deps`, so an
 optional dependency counts whether or not any feature activates it.
@@ -48,7 +49,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 from pathlib import Path
 
 
@@ -85,10 +86,40 @@ class ExceptionRow:
     note: str
 
 
+def braces(names: frozenset[str] | set[str]) -> str:
+    return "{" + ", ".join(sorted(names)) + "}"
+
+
+class RuleKind(Enum):
+    ONLY = "only"
+    NEVER = "never"
+
+
+@dataclass(frozen=True)
+class CrateRule:
+    name: str
+    sources: frozenset[str]
+    kind: RuleKind
+    targets: frozenset[str]
+
+    def breaks(self, edge: Edge) -> bool:
+        if edge.source not in self.sources:
+            return False
+        inside = edge.target in self.targets
+        return not inside if self.kind is RuleKind.ONLY else inside
+
+    def describe(self, edge: Edge) -> str:
+        if self.kind is RuleKind.ONLY:
+            return (f"crate rule {self.name}: {edge.source} may depend only on "
+                    f"{braces(self.targets)}")
+        return f"crate rule {self.name}: {edge.source} must not depend on {edge.target}"
+
+
 @dataclass(frozen=True)
 class Table:
     strata: Mapping[str, Stratum]
     stratum_of: Mapping[str, str]
+    rules: tuple[CrateRule, ...]
     exceptions: Mapping[Edge, ExceptionRow]
 
 
@@ -126,6 +157,19 @@ def load_stratum(obj: dict) -> Stratum:
                    packages=frozenset(obj["packages"]))
 
 
+def resolve_package_set(obj: dict, strata: Mapping[str, Stratum]) -> frozenset[str]:
+    packages = frozenset(obj.get("packages", []))
+    return packages.union(*(strata[name].packages for name in obj.get("strata", [])))
+
+
+def load_rule(obj: dict, strata: Mapping[str, Stratum]) -> CrateRule:
+    (kind,) = [kind for kind in RuleKind if kind.value in obj]
+    return CrateRule(name=obj["name"],
+                     sources=resolve_package_set(obj["from"], strata),
+                     kind=kind,
+                     targets=resolve_package_set(obj[kind.value], strata))
+
+
 def load_exception(obj: dict) -> ExceptionRow:
     return ExceptionRow(edge=Edge(obj["from"], obj["to"]),
                         task=obj["task"], note=obj["note"])
@@ -134,16 +178,17 @@ def load_exception(obj: dict) -> ExceptionRow:
 def load_table(path: Path) -> Table:
     document = read_json(path, "strata table")
     try:
-        strata = [load_stratum(obj) for obj in document["strata"]]
-        if not isinstance(document["crate_rules"], list):
-            raise InputError(f"{path}: crate_rules must be a list")
+        strata = {stratum.name: stratum
+                  for stratum in map(load_stratum, document["strata"])}
+        rules = tuple(load_rule(obj, strata) for obj in document["crate_rules"])
         exceptions = [load_exception(obj) for obj in document["exceptions"]]
-    except (KeyError, TypeError) as error:
+    except (KeyError, TypeError, ValueError) as error:
         raise InputError(f"{path}: malformed strata table: {error!r}") from None
     return Table(
-        strata={stratum.name: stratum for stratum in strata},
+        strata=strata,
         stratum_of={package: stratum.name
-                    for stratum in strata for package in stratum.packages},
+                    for stratum in strata.values() for package in stratum.packages},
+        rules=rules,
         exceptions={row.edge: row for row in exceptions},
     )
 
@@ -183,10 +228,6 @@ def workspace_of(metadata: object, source: str) -> Workspace:
 
 # --- the check --------------------------------------------------------------
 
-def braces(names: frozenset[str] | set[str]) -> str:
-    return "{" + ", ".join(sorted(names)) + "}"
-
-
 def broken_rules(table: Table, edge: Edge) -> list[str]:
     source = table.strata[table.stratum_of[edge.source]]
     target_stratum = table.stratum_of[edge.target]
@@ -196,6 +237,7 @@ def broken_rules(table: Table, edge: Edge) -> list[str]:
             f"stratum rule: {source.name} may depend only on "
             f"{braces(source.may_depend_on | {source.name})}; "
             f"{edge.target} is {target_stratum}")
+    reasons.extend(rule.describe(edge) for rule in table.rules if rule.breaks(edge))
     return reasons
 
 
