@@ -109,7 +109,7 @@ No novel syntax. All 7 committed fixtures parse with 0 ERROR nodes
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| Check spine exists (substrate) | source read: `report_constraint_results` `main.rs:2370-2400` → `ConstraintOutcome` → `check_fails` `main.rs:2299-2305` → `finish_check` `main.rs:2719-2746` **[Amended 2026-10-20, τ #8758 BLK-1]** delivered check `check-spine-exists` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `fn finish_check` moved to `crates/reify-cli/src/report.rs`. | **PASS** |
+| Check spine exists (substrate) | source read: `report_constraint_results` `main.rs:2370-2400` → `ConstraintOutcome` → `check_fails` `main.rs:2299-2305` → `finish_check` `main.rs:2719-2746` **[Amended 2026-10-20, τ #8758 BLK-1]** delivered check `check-spine-exists` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `fn finish_check` moved to `crates/reify-cli/src/constraint_report.rs`. | **PASS** |
 | Baseline summary strings (signal premise) | probe + source: `All constraints satisfied.` / `No constraints violated (N indeterminate).` — no per-reason breakdown, no objective/relate rows, no inert class | **PASS** (gap confirmed) |
 | Producers all upstream (DAG-direction) | ζ ← {α, γ, δ, ε}; every ledger fact class is delivered by a hard upstream dep in this batch (anti-inversion) | **PASS** |
 | Inert-fails-check is outcome-native | design property: extends `ConstraintOutcome`/`check_fails`, not the diagnostic-severity exit gate (sibling PRD's seam — G4) | **PASS** |

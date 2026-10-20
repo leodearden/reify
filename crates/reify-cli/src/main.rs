@@ -33,9 +33,9 @@ mod args;
 mod artifact_triangles;
 mod cache;
 mod check_verdict;
+mod constraint_report;
 mod dev;
 mod module_capabilities;
-mod report;
 mod sigpipe;
 use args::{
     CHECK_USAGE, EXPLAIN_USAGE, PurposeActivation, build_cfg_set, doc_usage_error,
@@ -47,13 +47,13 @@ use check_verdict::{
     drop_falsified_indeterminate_diagnostics, has_error_diagnostic, merge_build_diagnostics,
     merge_post_build_verdicts, strip_diagnostics_reproduced_by,
 };
+use constraint_report::{finish_check, format_undef_cause, report_eval_output};
 use module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry, module_has_isosurface,
     module_has_representation_within, module_has_thickness_dfm_rule,
 };
 use reify_core::{ModulePath, Severity};
 use reify_ir::ExportFormat;
-use report::{finish_check, format_undef_cause, report_eval_output};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
@@ -197,9 +197,10 @@ fn main() -> ExitCode {
 /// the reason for rendering the whole list at once is documented.
 ///
 /// `out` is injected rather than written as `eprintln!`, matching
-/// `report_constraint_results` in report.rs: the position prefix is the whole point of the
-/// rendering step, and a test that cannot read what was written can only assert that SOMETHING
-/// mentioning "Parse error" reached stderr — which passes just as well with the position gone.
+/// `report_constraint_results` in constraint_report.rs: the position prefix is the whole point
+/// of the rendering step, and a test that cannot read what was written can only assert that
+/// SOMETHING mentioning "Parse error" reached stderr — which passes just as well with the
+/// position gone.
 fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
     for error in rendered {
         let _ = writeln!(out, "Parse error: {error}");

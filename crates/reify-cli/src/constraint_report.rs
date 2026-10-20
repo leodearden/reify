@@ -1,5 +1,4 @@
 //! Renders constraint verdicts and undef causes to the CLI's stdout/stderr writers.
-//! This is NOT `reify report` (`cmd_report`, the BOM roll-up), which is unrelated.
 
 use reify_ir::{Satisfaction, UndefCause};
 
