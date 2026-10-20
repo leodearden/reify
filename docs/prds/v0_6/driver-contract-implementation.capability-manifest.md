@@ -120,7 +120,7 @@ the warning would let a leaf "fix" explain into gating and still pass.
 | Capability | Binding | Verdict |
 |---|---|---|
 | `eval-does-not-gate-today` | **negative-assertion sentinel, observed by execution** — `driver_contract_eval_blind_to_violation.ri`: `check` exit 1 `VIOLATED`, `eval` exit **0** with no constraint output. Rejection ABSENT. | PASS |
-| `shared-verdict-fold-exists` | capability→producer, **wired on main** — `ConstraintOutcome`, `report_constraint_results`, `check_fails`, `build_is_success` and `finish_check` all exist and are used by check and build. θ routes through them. | PASS |
+| `shared-verdict-fold-exists` | capability→producer, **wired on main** — `ConstraintOutcome`, `report_constraint_results`, `check_fails`, `build_is_success` and `finish_check` all exist and are used by check and build. θ routes through them. **[Amended 2026-10-20, τ #8758 BLK-1]** delivered check re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `enum ConstraintOutcome` moved to `crates/reify-cli/src/check_verdict.rs`. | PASS |
 | `fixture-parses` | grammar-fixture — `tests/prd-gate/fixtures/driver_contract_eval_blind_to_violation.ri`, 0 ERROR nodes. | PASS |
 
 ### ι — `report` runs `check()` and gates
@@ -210,7 +210,7 @@ the warning would let a leaf "fix" explain into gating and still pass.
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| `no-json-surface-exists-today` | observed — exhaustive grep finds no `--json` flag in any Rust crate. σ creates the surface. | PASS |
+| `no-json-surface-exists-today` | observed — exhaustive grep finds no `--json` flag in any Rust crate. σ creates the surface. **[Amended 2026-10-20, τ #8758 BLK-1]** delivered check re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is the flag parsers in `crates/reify-cli/src/args.rs` or the `cmd_*` flag loops. | PASS |
 | `structured-stdout-precedent-exists` | capability→producer, **wired on main** — `reify doc --format json` already emits serde JSON of a model to stdout, and is the only structured-stdout mode on the CLI. σ follows its convention. | PASS |
 | `diagnostic-code-serializes` | capability→producer, **wired on main** — `DiagnosticCode` derives serde behind a feature and renames to PascalCase; the LSP already relies on that round-trip and pins it with a table test. That is the wire form. | PASS |
 | `cli-does-not-enable-the-serde-feature-directly` | **observed, and a real hazard** — `reify-cli` does not request `reify-core`'s `serde` feature; it compiles with serde only through feature unification via its LSP and MCP dependencies. σ must enable it explicitly (PRD decision 7) or a dependency reshuffle breaks `--json` for an unrelated reason. | PASS |
@@ -220,7 +220,7 @@ the warning would let a leaf "fix" explain into gating and still pass.
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| `doc-is-the-only-exit-2-driver` | **observed by execution** — `reify doc` with no args and with an unknown flag both exit **2**; `reify check` with an unknown flag and `reify eval` with no args both exit **1**. | PASS |
+| `doc-is-the-only-exit-2-driver` | **observed by execution** — `reify doc` with no args and with an unknown flag both exit **2**; `reify check` with an unknown flag and `reify eval` with no args both exit **1**. **[Amended 2026-10-20, τ #8758 BLK-1]** delivered check re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `doc_usage_error` moved to `crates/reify-cli/src/args.rs`. | PASS |
 | `fifteen-sites` | observed — fifteen `ExitCode::from(2u8)` sites, all inside the doc command; nothing else in the workspace asserts a reify exit code 2. | PASS |
 | `twelve-tests-and-three-doc-sites-must-move` | observed — twelve tests assert the code (several encode "two" in their names), plus the harness module doc block, a format-enum doc comment, and one sentence in the reify-doc PRD. Bound so the leaf budgets for a rename-and-rebaseline, not a one-line change. | PASS |
 | `no-clap-to-fight` | observed — the workspace has no `clap` dependency; every subcommand hand-rolls its flag walk, so the exit code is chosen explicitly at each site and there is no framework default to override. | PASS |
