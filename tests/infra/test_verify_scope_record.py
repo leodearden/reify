@@ -62,6 +62,12 @@ NARROWING_HEADER = re.compile(
 )
 RETRY_SPECS_MARK = "REIFY_GUI_RETRY_SPECS"
 CLOSURE_WITHOUT_GUI = "crates/reify-doc/src/lib.rs"
+SELECTED_LEAF = re.compile(
+    r'\( for _vt in (\S+); do \[ -f "\$_vt" \] \|\| continue; '
+    r"((?:[A-Za-z_][A-Za-z0-9_]*=\S* )*)timeout "
+)
+KLOC_LEAF = "tests/infra/test_harness_kloc_cap.sh"
+KLOC_LIB = "tests/infra/harness-layout-lib.sh"
 CLOSURE_WITH_GUI = "crates/reify-eval/src/lib.rs"
 
 
@@ -142,6 +148,18 @@ def bash_narrowing(stdout):
         "from_diff": int(from_diff),
         "run_gui_vitest": int(header_fields(stdout)["RUN_GUI_VITEST"]),
     }
+
+
+def bash_leaves(stdout):
+    """bash's selective-infra plan leaves, in plan order, as (glob, {name: value})."""
+    return [
+        (glob, dict(token.split("=", 1) for token in assignments.split()))
+        for glob, assignments in SELECTED_LEAF.findall(stdout)
+    ]
+
+
+def python_leaves(record):
+    return [(leaf["glob"], leaf["env"]) for leaf in record["infra_selection"]]
 
 
 def is_subsequence(lines, of):
@@ -812,6 +830,95 @@ class TestNarrowingMatchesBash(InClone):
                 "staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI), env=env
             )
         self.assertEqual((narrowing["from_diff"], narrowing["run_gui_vitest"]), (0, 1))
+
+
+def staged(*paths):
+    def change(clone):
+        for path in paths:
+            clone.stage(path)
+
+    return change
+
+
+def branch_commit(*paths, removed=()):
+    """Start a branch at HEAD, then commit `paths` (appended or created) and `removed`."""
+
+    def change(clone):
+        clone.start_branch()
+        for path in paths:
+            clone.stage(path)
+        for path in removed:
+            clone.git("rm", "-q", "--", path)
+        clone.commit("scope-record probe: branch change")
+
+    return change
+
+
+SELECTION_SCENARIOS = {
+    "staged infra-map artifact": ("staged", staged("scripts/verify-pipeline-guard.sh")),
+    "staged crate source": ("staged", staged("crates/reify-doc/src/lib.rs")),
+    "staged docs only": ("staged", staged(DOCS_PATH)),
+    "staged upper-case extension": ("staged", staged("docs/Probe.TS")),
+    "branch added top-level test": ("branch", branch_commit("crates/reify-eval/tests/zz_probe.rs")),
+    "branch modified harness root": ("branch", branch_commit("crates/reify-eval/tests/harness_cache.rs")),
+    "branch modified standalone": ("branch", branch_commit("crates/reify-eval/tests/achieved_repr_tol.rs")),
+    "branch added nested non-harness": ("branch", branch_commit("crates/reify-eval/tests/common/zz.rs")),
+    "branch added non-consolidatable crate test": ("branch", branch_commit("crates/reify-doc/tests/zz.rs")),
+    "branch new compiler source": ("branch", branch_commit("crates/reify-compiler/src/zz.rs")),
+    "branch new compiler _tests source": ("branch", branch_commit("crates/reify-compiler/src/zz_tests.rs")),
+    "branch pdiag baseline": ("branch", branch_commit("crates/reify-audit/pdiag-baseline.txt")),
+    "branch deleted pdoccover baseline": (
+        "branch",
+        branch_commit(removed=("crates/reify-audit/pdoccover-baseline.txt",)),
+    ),
+    "branch-only rust change": ("branch", branch_commit("crates/reify-doc/src/lib.rs")),
+    "scope all": ("all", None),
+}
+
+
+class TestInfraSelectionMatchesBash(InClone):
+    """The six selectors pick bash's selective-infra leaves, in bash's order, with their env."""
+
+    def test_each_selector(self):
+        for label, (scope, change) in SELECTION_SCENARIOS.items():
+            with self.subTest(scenario=label):
+                self.clone.reset()
+                if change is not None:
+                    change(self.clone)
+                record, py, bash = self.side_by_side(scope)
+                self.assertEqual(python_leaves(record), bash_leaves(bash.stdout), label)
+                self.assert_stderr_within_bash(py, bash, label)
+
+    def test_premise_the_scenarios_select_something(self):
+        self.clone.reset()
+        branch_commit("crates/reify-compiler/src/zz.rs")(self.clone)
+        _, _, bash = self.side_by_side("branch")
+        self.assertGreaterEqual(len(bash_leaves(bash.stdout)), 2, "the leaf reader reads bash's plan")
+
+
+class TestHarnessKlocSetIsTheLibs(InClone):
+    """The kloc guard's crate set has one owner, harness-layout-lib.sh (PRD D6, §2.3)."""
+
+    def test_a_crate_added_to_the_lib_is_selected(self):
+        lib = self.clone.root / KLOC_LIB
+        text = lib.read_text(encoding="utf-8")
+        declared = "declare -ga _HL_CRATES=("
+        self.assertEqual(text.count(declared), 1, "premise: the lib's one _HL_CRATES definition")
+        lib.write_text(text.replace(declared, declared + "reify-doc "), encoding="utf-8")
+        self.clone.git("add", "--", KLOC_LIB)
+        self.clone.commit("scope-record probe: reify-doc is consolidatable")
+        branch_commit("crates/reify-doc/tests/zz.rs")(self.clone)
+        record, _, bash = self.side_by_side("branch")
+        self.assertIn(
+            (KLOC_LEAF, {}),
+            python_leaves(record),
+            "python reads the crate set from harness_layout_consolidatable_crates (D6, §2.3)",
+        )
+        self.assertNotIn(
+            KLOC_LEAF,
+            [glob for glob, _ in bash_leaves(bash.stdout)],
+            "premise: bash's select_harness_kloc_guard still holds its own literal copy",
+        )
 
 
 if __name__ == "__main__":
