@@ -810,3 +810,18 @@ fn strata_fails_closed_on_untrustworthy_metadata() {
         assert_input_error(&out, culprit, "a dependency kind cargo never documents");
     }
 }
+
+#[test]
+fn workspace_crate_strata_match_the_committed_table() {
+    let root = workspace_root();
+    let out = run_strata([OsStr::new("--root"), root.as_os_str()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the crate-strata assertion (PRD kernel-interface-typed-seam §8 γ) is red. \
+         `python3 scripts/assert-crate-strata.py --help` explains each line: classify a \
+         new crate in scripts/crate-strata.json, and delete an exception row in the diff \
+         that drops its edge.\n{}",
+        describe(&out)
+    );
+}
