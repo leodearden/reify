@@ -30,6 +30,7 @@ class Query(Enum):
 
     KNOBS = "--print-knobs"
     ROLE_POLICY = "--print-role-policy"
+    SCOPE = "--print-scope"
 
 
 @dataclass(frozen=True)

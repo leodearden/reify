@@ -10,6 +10,7 @@ missing or empty option value exits 64 where bash's ${2:?} exits 1.
 import os
 import re
 import sys
+from pathlib import Path
 
 from reify_verify import knobs, queries
 from reify_verify.invocation import Action, Invocation, Query, Scope
@@ -19,6 +20,7 @@ EX_USAGE = 64
 EX_UNAVAILABLE = 69
 ERROR = "verify.sh: ERROR — "
 PRD = "docs/prds/v0_6/verify-structured-plan-and-role-table.md"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _ACTION_VALUES = frozenset(action.value for action in Action)
 GATE_ACTIONS = (Action.TEST, Action.LINT, Action.TYPECHECK, Action.ALL)
@@ -32,7 +34,13 @@ SWITCHES = {
 }
 HELP_TOKENS = ("-h", "--help")
 _QUERY_FLAGS = frozenset(query.value for query in Query)
-REPORTS = {Query.KNOBS: queries.knob_report, Query.ROLE_POLICY: queries.role_policy_report}
+ACTION_QUERIES = frozenset({Query.SCOPE})
+ACTION_QUERY_CONFLICTS = ("--print-plan", "--confirm-failed")
+REPORTS = {
+    Query.KNOBS: lambda _invocation, env, _repo_root: queries.knob_report(env),
+    Query.ROLE_POLICY: lambda _invocation, env, _repo_root: queries.role_policy_report(env),
+    Query.SCOPE: queries.scope_report,
+}
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
 
 
@@ -49,7 +57,12 @@ USAGE = (
     "",
     "Usage:",
     f"  verify.sh <{_choices(GATE_ACTIONS)}> [options]",
-    *(f"  verify.sh {query.value}" for query in Query),
+    *(f"  verify.sh {query.value}" for query in Query if query not in ACTION_QUERIES),
+    *(
+        f"  verify.sh <{_choices(GATE_ACTIONS)}> {query.value} [options]"
+        for query in Query
+        if query in ACTION_QUERIES
+    ),
     "",
     "Options:",
     *_option(
@@ -94,6 +107,11 @@ USAGE = (
         Query.ROLE_POLICY.value,
         "Print the role table (one JSON line per role) and the",
         "profile table. A run's role is DF_VERIFY_ROLE (empty: task).",
+    ),
+    *_option(
+        Query.SCOPE.value,
+        "With a gate action: print the scope decision, the",
+        "narrowing and the infra selection as one JSON line.",
     ),
     *_option("-h|--help", "Show this usage."),
 )
@@ -158,9 +176,11 @@ def _set_query(raw: dict, query: Query) -> None:
 def _validate(raw: dict, env: dict[str, str]) -> Invocation:
     action = raw.get("action")
     query = raw.get("query")
-    if action is None and query is None:
+    if action is None and (query is None or query in ACTION_QUERIES):
         raise CliError((f"{ERROR}missing action ({_choices(GATE_ACTIONS)})", *USAGE))
-    if action is not None and query is not None:
+    if query in ACTION_QUERIES:
+        _check_action_query(query, action, raw)
+    elif action is not None and query is not None:
         raise CliError(
             (f"{ERROR}query '{query.value}' takes no action (got '{action.value}')",)
         )
@@ -186,6 +206,20 @@ def _validate(raw: dict, env: dict[str, str]) -> Invocation:
         role=role,
         query=query,
     )
+
+
+def _check_action_query(query: Query, action: Action, raw: dict) -> None:
+    """An action query reads a gate invocation and runs nothing."""
+    if action not in GATE_ACTIONS:
+        raise CliError(
+            (
+                f"{ERROR}query '{query.value}' takes action {_choices(GATE_ACTIONS)} "
+                f"(got '{action.value}')",
+            )
+        )
+    for flag in ACTION_QUERY_CONFLICTS:
+        if raw.get(SWITCHES[flag]):
+            raise CliError((f"{ERROR}query '{query.value}' does not combine with {flag}",))
 
 
 def _member(enum, raw: str | None, flag: str):
@@ -245,7 +279,7 @@ def main(argv: list[str]) -> int:
 
 def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
     if invocation.query is not None:
-        output = REPORTS[invocation.query](env)
+        output = REPORTS[invocation.query](invocation, env, REPO_ROOT)
         _diagnose(output.warnings)
         _print(output.stdout_lines)
         return 0
