@@ -34,7 +34,7 @@
 //!
 //! ## Signal is read through eval/build, NOT `reify check`
 //!
-//! `check_fails` (`crates/reify-cli/src/main.rs`) keys only on
+//! `check_fails` (`crates/reify-cli/src/check_verdict.rs`) keys only on
 //! `ConstraintOutcome` and ignores `Severity::Error` — gating `check`'s exit on
 //! Error severity is task #5403's leaf, not this one. `cmd_eval` and
 //! `build_is_success` DO gate on Error, which is what PRD B1's "reify eval/build
@@ -275,7 +275,7 @@ fn violated_fixture_emits_one_aggregated_static_relate_error() {
 /// direct `solve_scopes` call.
 ///
 /// Asserted through `build`, NOT `reify check`. `check_fails`
-/// (`crates/reify-cli/src/main.rs`) keys only on `ConstraintOutcome` and ignores
+/// (`crates/reify-cli/src/check_verdict.rs`) keys only on `ConstraintOutcome` and ignores
 /// `Severity::Error` — gating check's exit on Error severity is task #5403's leaf,
 /// not this one. `cmd_eval` and `build_is_success` both DO fail on any Error,
 /// which is what PRD B1's "reify eval/build emits the geometric violation Error"
