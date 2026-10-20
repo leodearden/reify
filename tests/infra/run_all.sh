@@ -662,12 +662,17 @@ _ra_emit_fail_detail() {
 # git-env scrub, an unset REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this
 # run's discovery only; a member that drives run_all.sh over its own fixtures
 # must not inherit the filter), an unset REIFY_VERIFY_EVENT_LOG (no member
-# writes the parent channel, PRD §4 C4) and FD 9 closed (no member holds a
-# lock FD this run or its caller opened).
-_ra_spawn_member() {
+# writes the parent channel, PRD §4 C4), FD 9 closed (no member holds a lock
+# FD this run or its caller opened) and the run's saved stdout/stderr closed
+# (so no member, nor a background child it leaves behind, holds the verify
+# stream open). The body is a subshell so those closes never reach the main
+# shell, where a deferred TERM trap runs inside this call and writes through
+# the saved fds.
+_ra_spawn_member() (
+    exec 9<&- {_RA_RUN_STDOUT_FD}>&- {_RA_RUN_STDERR_FD}>&-
     reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_VERIFY_EVENT_LOG \
-        bash "$INFRA_DIR/$1" 9<&-
-}
+        bash "$INFRA_DIR/$1"
+)
 
 # _ra_sanitize_stream -- stdin to stdout through the one $_RA_SANITIZE_SED
 # chain, line-buffered so a live member's output is never held back.
@@ -1211,8 +1216,9 @@ _ra_partial_failed_names() {
 # `=== Summary:` / `=== FAILED:` emit block at the end of this file never
 # runs on a signal death).
 #
-# Emits, to STDOUT (the same stream the normal-path marker uses and DF's
-# `^FAILED\s` scan reads):
+# Emits, to the run's own STDOUT (the stream the normal-path marker uses and
+# DF's `^FAILED\s` scan reads), saved at startup in _RA_RUN_STDOUT_FD because
+# fd 1 may be a capture-mode member's out file when the trap fires:
 #   - a distinct `=== Summary: INTERRUPTED ... ===` line, deliberately NOT
 #     matching the byte-exact `=== Summary: N discovered, M failed ===`
 #     substring the contract tests assert (T9a/T13b/T22e class).
@@ -1250,24 +1256,26 @@ _ra_partial_failed_names() {
 # ---------------------------------------------------------------------------
 _ra_on_term() {
     set +e
-
-    echo ""
-    echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
-
-    # One array feeds both the text lines and the run_finish record, so the
-    # record's failed names equal the classifier line's by construction.
     local -a _names=()
-    mapfile -t _names < <(
-        { _ra_partial_failed_names; printf '%s\n' "${failed_names[@]:-}"; } 2>/dev/null \
-            | sed '/^$/d' | sort -u
-    )
 
-    # Unconditional even when $_names is empty -- see "DELIBERATE" above.
-    echo "=== FAILED: ${_names[*]} (partial) ==="
-    printf 'FAILED %s(partial)\n' "${_names[*]:+${_names[*]} }"
+    {
+        echo ""
+        echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
 
-    # After the classifier lines, so the record can never pre-empt them.
-    _ra_emit_run_finish true "${#_names[@]}" "${_names[@]+"${_names[@]}"}"
+        # One array feeds both the text lines and the run_finish record, so the
+        # record's failed names equal the classifier line's by construction.
+        mapfile -t _names < <(
+            { _ra_partial_failed_names; printf '%s\n' "${failed_names[@]:-}"; } 2>/dev/null \
+                | sed '/^$/d' | sort -u
+        )
+
+        # Unconditional even when $_names is empty -- see "DELIBERATE" above.
+        echo "=== FAILED: ${_names[*]} (partial) ==="
+        printf 'FAILED %s(partial)\n' "${_names[*]:+${_names[*]} }"
+
+        # After the classifier lines, so the record can never pre-empt them.
+        _ra_emit_run_finish true "${#_names[@]}" "${_names[@]+"${_names[@]}"}"
+    } >&"$_RA_RUN_STDOUT_FD" 2>&"$_RA_RUN_STDERR_FD"
 
     trap - TERM
     kill -TERM $$
@@ -1320,6 +1328,11 @@ _RA_RUN_FINISH_WRITTEN=0
 # mid-run outer-timeout SIGTERM is reclassified regardless of which path is
 # active (task #5147). See _ra_on_term above. The EXIT cleanup is one handler
 # for every branch; see _ra_on_exit.
+# The run's own stdout/stderr are saved first: a TERM trap runs inside whatever
+# redirect is active in the main shell when it fires (a capture-mode member's
+# out file in Phase 2/2.5), so _ra_on_term writes through these fds, never
+# through fd 1/2. They must exist before the trap does.
+exec {_RA_RUN_STDOUT_FD}>&1 {_RA_RUN_STDERR_FD}>&2
 trap _ra_on_term TERM
 trap _ra_on_exit EXIT
 
