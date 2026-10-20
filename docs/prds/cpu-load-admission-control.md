@@ -45,8 +45,10 @@ otherwise and are corrected in place by pointers to this block:
    is no lone source in the sense that sentence assumes; read it as "lone *within its
    own slice*".
 
-**C-A1 re-sourcing.** C-A1's PSI **source** moves from host `/proc/pressure/cpu` to the
-`@own-slice` sentinel (the pressure of this project's own cgroup slice). C-A1's
+**C-A1 re-sourcing (pending).** C-A1's PSI **source** is to move from host
+`/proc/pressure/cpu` to the `@own-slice` sentinel (the pressure of this project's own
+cgroup slice). Task #7335 implements the sentinel; until it lands, `scripts/cpu-admit.sh`
+still reads host `/proc/pressure/cpu`. C-A1's
 contract text — "host-portable %, no `nproc`-derived constant", work-conserving
 (a lone source on a quiet box is never delayed), and never requeue on timeout in
 `admit` mode — **survives verbatim**; only the file it reads changes. On the
@@ -208,8 +210,9 @@ cpu-admit.sh requeue    # exit-75-on-timeout mode (verify test phase)
 
 - **C-A1 (work-conserving).** Admits immediately while `avg10 < THRESHOLD`
   (`/proc/pressure/cpu`, host-portable %, no `nproc`-derived constant). A lone source
-  on a quiet box is never delayed. *(Amended 2026-09-08: the PSI source is now the
-  `@own-slice` sentinel, not host `/proc/pressure/cpu`; the contract text above is
+  on a quiet box is never delayed. *(Amended 2026-09-08: the PSI source is to move to
+  the `@own-slice` sentinel, implemented by task #7335; until that lands
+  `cpu-admit.sh` still reads host `/proc/pressure/cpu`. The contract text above is
   unchanged — see the Amendment.)*
 - **C-A2 (mode contract).** **Reversed (task 4920):** `admit` mode no longer admits
   on a `MAX_WAIT` timeout — it now **HOLDS until PSI drops, NEVER exits 75** (mirrors

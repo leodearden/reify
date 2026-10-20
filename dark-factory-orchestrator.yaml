@@ -901,9 +901,11 @@ starvation_watchdog:
   idle_secs: 86400.0
 
 # Dispatch-admission gate (PsiAdmissionConfig; DF tasks 2327/2328). Green-tier
-# hot-reloadable via mcp__escalation__reload_config. Block is byte-identical to
-# dark-factory's (its drift check compares parsed mappings); rationale lives in the
-# PRD pointed to inline, not here.
+# hot-reloadable via mcp__escalation__reload_config. The parsed mapping equals the
+# block in that dark-factory PRD's §6.2. dark-factory's own yaml is to carry the same
+# block (the PRD's task γ), and the PRD's task-δ calibration script will drift-check
+# the two as parsed mappings, so comments may differ. Rationale lives in the PRD
+# pointed to inline, not here.
 psi_admission:            # PRD dark_factory plans/load-throttle-harmonisation-prd.md 6.2 (2026-09-08)
   mem_some_avg10: 15.0
   mem_full_avg10: 3.0
