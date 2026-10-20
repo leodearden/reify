@@ -863,3 +863,4 @@ scripts/verify.py    tests/infra/test_verify_scope_record.sh
 gui/src/__tests__/reifyGrammarCorpus.expected-clean.json    tests/infra/test_verify_scope_record.sh
 scripts/occt-scope-lib.sh    tests/infra/test_verify_scope_record.sh
 scripts/occt-touching-crates.txt    tests/infra/test_verify_scope_record.sh
+scripts/affected-crates-lib.sh    tests/infra/test_verify_scope_record.sh
