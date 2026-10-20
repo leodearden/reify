@@ -151,6 +151,16 @@ fn assert_green(out: &Output, context: &str) {
     );
 }
 
+/// Exit 2 — an input could not be trusted — with stderr naming `culprit`.
+fn assert_input_error(out: &Output, culprit: &str, context: &str) {
+    assert_exit(out, 2, context);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(culprit),
+        "{context}: expected stderr to name {culprit:?}\n{}",
+        describe(out)
+    );
+}
+
 /// Exit 1 with exactly one finding line per entry of `expected`, each line
 /// holding every needle of its entry.
 fn assert_findings(out: &Output, expected: &[&[&str]], context: &str) {
@@ -321,11 +331,16 @@ impl StrataFixture {
     }
 
     fn check(&self) -> Output {
+        self.check_metadata("metadata.json")
+    }
+
+    /// Checks table.json against the fixture file `metadata`.
+    fn check_metadata(&self, metadata: &str) -> Output {
         run_strata([
             OsStr::new("--table"),
             self.path("table.json").as_os_str(),
             OsStr::new("--metadata"),
-            self.path("metadata.json").as_os_str(),
+            self.path(metadata).as_os_str(),
         ])
     }
 }
@@ -361,6 +376,9 @@ fn fixture_table_with(from: &str, to: &str) -> String {
     );
     FIXTURE_TABLE.replacen(from, to, 1)
 }
+
+/// FIXTURE_TABLE's one exception row.
+const EXCEPTED_ROW: &str = r#"{"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}"#;
 
 /// A graph FIXTURE_TABLE accepts, with dev back-edges and the excepted edge.
 fn clean_workspace() -> Vec<Pkg> {
@@ -605,11 +623,10 @@ fn strata_production_strata_must_not_depend_on_test_support() {
 
 #[test]
 fn strata_one_exception_row_covers_every_rule_its_edge_breaks() {
-    let row = r#"{"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}"#;
     let table = fixture_table_with(
-        row,
+        EXCEPTED_ROW,
         &format!(
-            "{row},\n    {}",
+            "{EXCEPTED_ROW},\n    {}",
             r#"{"from": "reify-kernel-x", "to": "reify-eval", "task": 8561, "note": "fixture"}"#
         ),
     );
@@ -622,4 +639,174 @@ fn strata_one_exception_row_covers_every_rule_its_edge_breaks() {
         &check(&table, &graph),
         "one row excuses both the stratum rule and kernel-crate-deps",
     );
+}
+
+#[test]
+fn strata_fails_closed_on_an_untrustworthy_table() {
+    let swap = fixture_table_with;
+    const SPINE_ROW: &str =
+        r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-core", "reify-ir"]},"#;
+    let cases: Vec<(String, &[&str], &str)> = vec![
+        (
+            swap(r#""schema": 1"#, r#""schema": 2"#),
+            &["schema"][..],
+            "an unknown schema",
+        ),
+        (
+            swap(
+                r#"{"name": "spine", "may_depend_on": []"#,
+                r#"{"name": "spine", "may_depend_on": ["kernel"]"#,
+            ),
+            &["spine", "kernel"][..],
+            "a stratum depending on a stratum listed after it",
+        ),
+        (
+            swap(
+                r#"{"name": "language", "may_depend_on": ["spine"]"#,
+                r#"{"name": "language", "may_depend_on": ["spine", "nowhere"]"#,
+            ),
+            &["nowhere"][..],
+            "a stratum depending on an unknown stratum",
+        ),
+        (
+            swap(
+                r#"{"name": "solver", "may_depend_on": ["spine"]"#,
+                r#"{"name": "solver", "may_depend_on": ["spine", "solver"]"#,
+            ),
+            &["solver"][..],
+            "a stratum listing itself",
+        ),
+        (
+            swap(
+                SPINE_ROW,
+                &format!(
+                    "{SPINE_ROW}\n    {}",
+                    r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-other"]},"#
+                ),
+            ),
+            &["spine"][..],
+            "two strata named spine",
+        ),
+        (
+            swap(
+                r#"["spine"], "packages": ["reify-compiler", "reify-expr"]}"#,
+                r#"["spine"], "packages": ["reify-compiler", "reify-expr", "reify-ir"]}"#,
+            ),
+            &["reify-ir"][..],
+            "a package in two strata",
+        ),
+        (
+            swap(
+                r#"{"name": "engine", "may_depend_on":"#,
+                r#"{"name": "engine", "may_depends_on":"#,
+            ),
+            &["may_depends_on"][..],
+            "a misspelt stratum key",
+        ),
+        (
+            swap(
+                r#"["reify-compiler", "reify-expr"]}, "never""#,
+                r#"["reify-compiler", "reify-expr"]}, "only": {"packages": ["reify-ir"]}, "never""#,
+            ),
+            &["expr-compiler-independent"][..],
+            "a crate rule with both only and never",
+        ),
+        (
+            swap(
+                r#"["reify-compute-contract"]}, "only": {"strata": ["spine"]}}"#,
+                r#"["reify-compute-contract"]}}"#,
+            ),
+            &["compute-contract-spine-only"][..],
+            "a crate rule with neither only nor never",
+        ),
+        (
+            swap(
+                r#""only": {"packages": ["reify-core", "reify-ir"]}"#,
+                r#""only": {"packages": ["reify-core", "reify-ghost", "reify-ir"]}"#,
+            ),
+            &["reify-ghost"][..],
+            "a crate rule naming an unclassified package",
+        ),
+        (
+            swap(
+                r#""never": {"strata": ["test-support"]}"#,
+                r#""never": {"strata": ["nowhere", "test-support"]}"#,
+            ),
+            &["nowhere"][..],
+            "a crate rule naming an unknown stratum",
+        ),
+        (
+            swap(
+                r#""to": "reify-kernel-gmsh", "task""#,
+                r#""to": "reify-ghost", "task""#,
+            ),
+            &["reify-ghost"][..],
+            "an exception naming an unclassified package",
+        ),
+        (
+            swap(r#""task": 8289"#, r##""task": "#8289""##),
+            &["task"][..],
+            "an exception task that is a string",
+        ),
+        (
+            swap(r#""task": 8289"#, r#""task": true"#),
+            &["task"][..],
+            "an exception task that is a bool",
+        ),
+        (
+            swap(
+                r#""note": "fixture: excepted solver -> kernel edge""#,
+                r#""note": """#,
+            ),
+            &["note"][..],
+            "an exception with an empty note",
+        ),
+        (
+            swap(
+                EXCEPTED_ROW,
+                &format!("{EXCEPTED_ROW},\n    {EXCEPTED_ROW}"),
+            ),
+            &["reify-solver-elastic -> reify-kernel-gmsh"][..],
+            "a duplicate exception edge",
+        ),
+    ];
+    for (table, culprits, context) in &cases {
+        let out = check(table, &clean_workspace());
+        for culprit in *culprits {
+            assert_input_error(&out, culprit, context);
+        }
+    }
+}
+
+#[test]
+fn strata_fails_closed_on_untrustworthy_metadata() {
+    let fixture = StrataFixture::new(FIXTURE_TABLE, &clean_workspace());
+    assert_input_error(
+        &fixture.check_metadata("absent.json"),
+        "absent.json",
+        "a nonexistent --metadata path",
+    );
+
+    fixture.write("garbled.json", "{\"packages\": [");
+    assert_input_error(
+        &fixture.check_metadata("garbled.json"),
+        "garbled.json",
+        "a --metadata file that is not JSON",
+    );
+
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-kernel-x",
+        Dep::new("reify-eval", DepKind::Build),
+    );
+    let metadata = metadata_json(&graph);
+    assert_eq!(metadata.matches(r#""kind": "build""#).count(), 1);
+    fixture.write(
+        "weird.json",
+        &metadata.replace(r#""kind": "build""#, r#""kind": "weird""#),
+    );
+    let out = fixture.check_metadata("weird.json");
+    for culprit in ["weird", "reify-kernel-x"] {
+        assert_input_error(&out, culprit, "a dependency kind cargo never documents");
+    }
 }
