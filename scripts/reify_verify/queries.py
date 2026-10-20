@@ -80,7 +80,7 @@ def _resolved(
 ) -> tuple[dict, list[str]]:
     role_policy = policy.ROLE_TABLE[role]
     walls = {profile: policy.test_wall(role_policy, profile, env) for profile in policy.Profile}
-    prio = policy.resolve_prio(role, has_nice, has_ionice)
+    prio = policy.resolve_prio(role_policy, role.value, has_nice, has_ionice)
     resolved = {
         "walls": {profile.value: wall.value for profile, wall in walls.items()},
         "prio_prefix": prio.prefix,

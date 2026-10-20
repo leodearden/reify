@@ -252,19 +252,21 @@ class PrioResolution:
     warning: str | None
 
 
-def resolve_prio(role: Role, has_nice: bool, has_ionice: bool) -> PrioResolution:
-    """CARGO_PRIO for `role` on a host with or without nice and ionice."""
-    prio = ROLE_TABLE[role].prio_class
+def resolve_prio(
+    role_policy: RolePolicy, role_label: str, has_nice: bool, has_ionice: bool
+) -> PrioResolution:
+    """CARGO_PRIO with or without nice and ionice; `role_label` names the role in a warning."""
+    prio = role_policy.prio_class
     if has_nice and (has_ionice or not prio.uses_ionice):
         return PrioResolution(prio.prefix, None)
     if has_nice:
         return PrioResolution(
             prio.nice_only_prefix,
-            f"verify.sh: WARNING — ionice not found; {role.value} role using nice only (no IO throttle)",
+            f"verify.sh: WARNING — ionice not found; {role_label} role using nice only (no IO throttle)",
         )
     missing = "nice/ionice" if prio.uses_ionice else "nice"
     return PrioResolution(
-        "", f"verify.sh: WARNING — {missing} not found; {role.value} role running at normal priority"
+        "", f"verify.sh: WARNING — {missing} not found; {role_label} role running at normal priority"
     )
 
 
