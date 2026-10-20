@@ -4332,6 +4332,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The same watcher-rearm.sh command (3600s timeout) was re-issued identically after hitting CEILING exit=124 at turns 73, 91, and 98, then re-issued with a reduced timeout at turn 106. Matches the 'bounded rearm wait re-issued after its own ceiling' pattern.
+  - date: '2026-10-19'
+    project: reify
+    session: 80c50f0a-a7e7-432a-9cd1-2cd4541746ed
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The session re-issued the same watcher-rearm.sh background invocation (--timeout 3600) 58 times in a row, which matches the identical re-issue after a bounded-wait ceiling. The digest does not show the ceiling outcome directly.
+  - date: '2026-10-19'
+    project: reify
+    session: 57aa9e1a-e5c7-418a-bc4a-b05a5fdf139b
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Monitor is re-issued with the identical while-true watcher command and the same 1800000 ms timeout_ms about 103 times, plus 3 and 24 and 11 more identical re-arms of the same loop. This fits the codebook's pattern of re-issuing a bounded wait identically after its ceiling. The digest does not state the ceiling was hit explicitly, so the match rests on the repeated identical re-arms and the fixed timeout_ms.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -8240,6 +8252,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Turn 41 probes .task-meta/_lane-30/iterations.jsonl; wc returns 'No such file or directory' (exit 1) while the directory itself exists and lists plan.json, metadata.json and others.
+  - date: '2026-10-19'
+    project: reify
+    session: 8198bc90-9c9e-4bb8-b2f9-ba98fb389022
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Agent probed .task/iterations.jsonl in the warm-lane worktree (turn 27) and got ''No such file or directory'' (exit 1), matching the codebook''s missing per-lane iterations.jsonl at the expected path. Phase is not supported by the evidence: the verify.sh failure is post-merge, but the probe happens later during unblock investigation.'
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -10387,6 +10405,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'mcp__escalation__get_pending_escalations({"compact": true, "level": 2}) timed out and was re-issued 9 times with identical arguments. Timeouts at turns 204 and 496 are shown. The agent kept retrying instead of diagnosing a systemic MCP timeout or switching approach.'
+  - date: '2026-10-19'
+    project: reify
+    session: 80c50f0a-a7e7-432a-9cd1-2cd4541746ed
+    origin_phase: unknown
+    manifested_phase: ops
+    note: mcp__fused-memory__resolve_ticket timed out at turn 906 and turn 2122 with different ticket IDs and the same timeout_seconds of 110. This is repeated timeouts retried with varying arguments rather than a diagnosis of the systemic failure.
 - id: entry-cand-20260906-9
   title: add_memory content payload leaks raw MCP tool-call envelope markup, triggering rejection
   severity: medium
@@ -10451,6 +10475,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Digest cites a probe of a guessed path (`ls scripts/legibility 2>/dev/null`) with stderr discarded, so the nonexistent path surfaced only as a bare exit code. The Not Found signal (turn 32, 'does not exist') fits the same shape. The session does not establish which phase produced the probe, so both phases are unknown.
+  - date: '2026-10-19'
+    project: reify
+    session: 8391ee73-61b2-435c-b154-5dce91447abf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: At turn 287 a guessed scripts/*/__init__.py probe runs with 2>/dev/null and exits 2, which matches the bare exit-2 pattern for a nonexistent guessed subdirectory. The turn-26 probes (scripts/reify_verify, scripts/verify.py) show the same guessed-path failure but without stderr suppression, so the match rests mainly on turn 287.
 - id: entry-cand-20261006-7
   title: Extracting a shell function from a test file via sed and eval inside bash -c trips the dangerous-removal approval check
   severity: low
@@ -10465,6 +10495,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.
+  - date: '2026-10-19'
+    project: reify
+    session: 8853d8f2-36a7-4aed-8baa-4e6d27addd0c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Digest shows the same mechanism: a function from tests/infra/test_verify_scope.sh was extracted with sed and eval inside a nested bash -c, and the rm-containing body tripped the dangerous-removal approval check, stalling a non-interactive agent. Phase is not determinable from the digest.'
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -27142,3 +27178,29 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: The parity test calls only the 18 forwarded ones. ... The comment tells the reader the parity test would have caught it, which it would not.
+- id: cand-20261019-1
+  title: Escalation queue read times out and is retried identically 24 times without diagnosis
+  cause: 'mcp__escalation__get_pending_escalations({"compact": true, "level": 2}) timed out and was re-issued with identical arguments 24 times during the watcher session, with no change in strategy or diagnostic step between attempts.'
+  area: escalation-mcp
+  first_seen: '2026-10-19'
+  disposition: pending
+  sightings:
+  - date: '2026-10-19'
+    project: reify
+    session: 80c50f0a-a7e7-432a-9cd1-2cd4541746ed
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'mcp__escalation__get_pending_escalations x24: {"compact": true, "level": 2}'
+- id: cand-20261019-2
+  title: Post-merge verify failure classified as unknown_test_failure with tests shown as unmapped, so the failing test cannot be attributed
+  cause: The verify run reports the failure only as a generic unknown_test_failure category. The test runner lists tests as RUN (unmapped), so the failing test cannot be tied to a crate or owner. The agent must search through large verify logs to find the failure, which raises the cost of diagnosing and safely fixing the next change.
+  area: verify tooling
+  first_seen: '2026-10-19'
+  disposition: pending
+  sightings:
+  - date: '2026-10-19'
+    project: reify
+    session: d2a1d91a-2214-437b-96fd-1d3118329e1a
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'RUN (unmapped): test_warm_lane_lock_guard.sh'
