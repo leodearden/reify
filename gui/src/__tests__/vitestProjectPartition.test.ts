@@ -3,8 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  assignTestProjects,
+  FRESH_MODULES_PROJECT,
   listSharedModuleTestFiles,
   needsFreshModuleGraph,
+  SHARED_MODULES_PROJECT,
 } from '../../vitest-project-partition'
 
 describe('needsFreshModuleGraph', () => {
@@ -45,26 +48,53 @@ describe('needsFreshModuleGraph', () => {
   })
 })
 
-describe('listSharedModuleTestFiles', () => {
-  let root: string | undefined
+let root: string | undefined
 
-  afterEach(() => {
-    if (root !== undefined) rmSync(root, { recursive: true, force: true })
-    root = undefined
+afterEach(() => {
+  if (root !== undefined) rmSync(root, { recursive: true, force: true })
+  root = undefined
+})
+
+const makeRoot = (files: Record<string, string>): string => {
+  root = mkdtempSync(join(tmpdir(), 'vitest-partition-'))
+  for (const [relativePath, source] of Object.entries(files)) {
+    const absolutePath = join(root, relativePath)
+    mkdirSync(dirname(absolutePath), { recursive: true })
+    writeFileSync(absolutePath, source)
+  }
+  return root
+}
+
+const clean = "import { it } from 'vitest'\nit('works', () => {})\n"
+
+describe('assignTestProjects', () => {
+  it('assigns every gui test file the project it must run in', () => {
+    const guiRoot = makeRoot({
+      'src/__tests__/clean.test.tsx': clean,
+      'src/__tests__/mocked.test.ts': `vi.mock('../x')\n${clean}`,
+      'src/helper.ts': clean,
+    })
+
+    expect(assignTestProjects(guiRoot)).toEqual(
+      new Map([
+        ['src/__tests__/clean.test.tsx', SHARED_MODULES_PROJECT],
+        ['src/__tests__/mocked.test.ts', FRESH_MODULES_PROJECT],
+      ]),
+    )
   })
 
-  const makeRoot = (files: Record<string, string>): string => {
-    root = mkdtempSync(join(tmpdir(), 'vitest-partition-'))
-    for (const [relativePath, source] of Object.entries(files)) {
-      const absolutePath = join(root, relativePath)
-      mkdirSync(dirname(absolutePath), { recursive: true })
-      writeFileSync(absolutePath, source)
-    }
-    return root
-  }
+  it('leaves out the sidecar and node_modules trees at the gui root only', () => {
+    const guiRoot = makeRoot({
+      'sidecar/src/s.test.ts': clean,
+      'node_modules/dep/x.test.ts': `vi.mock('../x')\n${clean}`,
+      'src/sidecar/kept.test.ts': clean,
+    })
 
-  const clean = "import { it } from 'vitest'\nit('works', () => {})\n"
+    expect([...assignTestProjects(guiRoot).keys()]).toEqual(['src/sidecar/kept.test.ts'])
+  })
+})
 
+describe('listSharedModuleTestFiles', () => {
   it('lists only clean test files, sorted, relative to the gui root with POSIX separators', () => {
     const guiRoot = makeRoot({
       'src/__tests__/clean.test.tsx': clean,
@@ -73,6 +103,7 @@ describe('listSharedModuleTestFiles', () => {
       'packages/p/src/__tests__/pkg.test.ts': clean,
       'test/visual/v.test.ts': clean,
       'node_modules/dep/x.test.ts': clean,
+      'sidecar/src/s.test.ts': clean,
       'src/helper.ts': clean,
     })
 

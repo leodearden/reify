@@ -23,8 +23,24 @@ Measured against vitest **3.2.4**; a vitest major upgrade (v4 reworks pools and
 - **The routing rule is `MODULE_REGISTRY_CALL` in
   `gui/vitest-project-partition.ts`**: a file goes to `shared-modules` only if
   its own source matches none of the `vi` APIs listed there. The fail-safe
-  direction is `fresh-modules`: a file the walk misses, or a comment that
-  merely mentions such a call, costs speed, never correctness.
+  direction is `fresh-modules`: a comment that merely mentions such a call
+  costs speed, never correctness. The same module also says which files are
+  gui test files: `*.test.ts(x)` outside the root's `sidecar/` and
+  `node_modules/` (`NON_GUI_TEST_DIRECTORIES`, which the root `exclude` is
+  built from).
+- **`gui/vitest-partition-guard.ts` enforces the partition on every run.** It
+  is a `globalSetup`, so it runs in the main process before any worker starts.
+  It asks each project for its files (`TestProject.globTestFiles()`) and fails
+  the run unless every gui test file runs in exactly the project the partition
+  assigns it, and no other file runs at all. That catches a vitest change in
+  how a project's `include` / `exclude` merge with the root config under
+  `extends: true`, which would otherwise drop files from both projects or put
+  a `vi.mock` file in `shared-modules`. vitest always sets up the root project,
+  so only the root project's copy checks (`isRootProject()`); the two projects
+  inherit the hook and skip it. A run narrowed with `--project` or `--dir`
+  does not glob the whole partition and skips the check; positional file
+  filters do not narrow it. On failure vitest first prints `No test files
+  found`, because no file ran, and then the guard's error listing each file.
 - **Even with `isolate: false`, jsdom is fresh per file.** The pool still calls
   `runFiles([file])` per file, and each call builds a new environment.
 
@@ -77,6 +93,9 @@ previous jsdom's values over the new environment.
   solid's delegated document listener redefines `target` during dispatch and
   restores it afterwards; a non-configurable override throws
   `Cannot redefine property: target` (see `MenuBar.test.tsx`).
+- **Name test files `*.test.ts` or `*.test.tsx`.** vitest's default `include`
+  also picks up `.spec.ts`, `.test.js` and the like, which the partition does
+  not list, so the guard fails the run on one.
 - **In watch mode**, a file that gains a `vi.mock` call is re-routed only after
   a restart: the partition is computed when the config loads.
 
@@ -84,21 +103,18 @@ previous jsdom's values over the new environment.
 
 Setup files are still fetched once per test file, and `fresh-modules` files
 still re-fetch their module graphs, so worker→host fetch-RPC volume falls only
-slightly. The 60 s birpc bound described in `docs/notes/verify-pipeline-knobs.md`
+modestly. The 60 s birpc bound described in `docs/notes/verify-pipeline-knobs.md`
 (GUI worker-RPC starvation marker) still applies; reused workers only shrink
 its exposure window.
 
 ## Re-validating (after a vitest upgrade or a change to the config wiring)
 
-1. **Project wiring.** From `gui/`, run
-   `./node_modules/.bin/vitest list --filesOnly --json=<out.json>`. Each entry
-   is `{ file, projectName }`. Check that every file appears exactly once, that
-   no file under `sidecar/` or `node_modules/` appears, and that every file for
-   which `needsFreshModuleGraph` (from `gui/vitest-project-partition.ts`) is
-   true has `projectName` `fresh-modules`. Nothing in the gate checks this. A
-   change in how vitest merges a project's `include` / `exclude` with the root
-   config under `extends: true` would surface only as order-dependent flakes,
-   or as files silently dropped from both projects.
+1. **The guard still fires.** The guard checks the project wiring on every
+   run, but only while vitest still calls the root project's `globalSetup`
+   with a `TestProject`. Copy `gui/vitest.config.ts` to a scratch config, change
+   the `shared-modules` `include` to `SHARED_MODULE_TEST_FILES.slice(1)`, and
+   run `./node_modules/.bin/vitest run --config <scratch>` from `gui/`. The run
+   must fail, naming the dropped file as running in no project.
 2. **Order independence.** Run the suite in default order, with five
    `--sequence.shuffle.files` seeds, with `maxForks=1` plus shuffling (maximal
    sharing), and with `DF_VERIFY_ROLE` unset. Any order-dependent failure is a

@@ -1,7 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type TestProjectInlineConfiguration } from 'vitest/config';
 import solidPlugin from 'vite-plugin-solid';
-import { listSharedModuleTestFiles } from './vitest-project-partition';
+import {
+  FRESH_MODULES_PROJECT,
+  listSharedModuleTestFiles,
+  NON_GUI_TEST_DIRECTORIES,
+  SHARED_MODULES_PROJECT,
+} from './vitest-project-partition';
 
 // FM2 mitigation (esc-4853-42 / task 4856): under verify-lane cargo
 // contention the Node main process is starved for 60+ s, causing vitest's
@@ -28,7 +33,7 @@ const SHARED_MODULE_TEST_FILES = listSharedModuleTestFiles(
 const sharedModulesProject: TestProjectInlineConfiguration = {
   extends: true,
   test: {
-    name: 'shared-modules',
+    name: SHARED_MODULES_PROJECT,
     include: SHARED_MODULE_TEST_FILES,
     poolOptions: { forks: { isolate: false } },
   },
@@ -37,7 +42,7 @@ const sharedModulesProject: TestProjectInlineConfiguration = {
 const freshModulesProject: TestProjectInlineConfiguration = {
   extends: true,
   test: {
-    name: 'fresh-modules',
+    name: FRESH_MODULES_PROJECT,
     exclude: SHARED_MODULE_TEST_FILES,
     poolOptions: { forks: { isolate: true } },
   },
@@ -76,12 +81,16 @@ export default defineConfig({
     // only when absent. Must be a global setupFile: per-test jsdom isolation
     // means an in-test polyfill can't reach other test files.
     setupFiles: ['./vitest.setup.ts'],
+    // Fails the run if the projects below do not run each gui test file in
+    // exactly the project vitest-project-partition.ts assigns it (task 7642).
+    // Only the root project's copy checks; the projects inherit it as a no-op.
+    globalSetup: ['./vitest-partition-guard.ts'],
     // @solidjs/testing-library registers afterEach(cleanup) when it is
     // evaluated, which a shared-modules worker does only once. vitest.setup.ts
     // registers cleanup for every file instead; switching the import-time hook
     // off leaves that as the only registration (task 7642).
     env: { STL_SKIP_AUTO_CLEANUP: 'true' },
-    exclude: ['sidecar/**', 'node_modules/**'],
+    exclude: NON_GUI_TEST_DIRECTORIES.map((directory) => `${directory}/**`),
     transformMode: {
       web: [/\.[jt]sx?$/],
     },
