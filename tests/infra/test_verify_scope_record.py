@@ -19,6 +19,9 @@ thin wrapper tests/infra/test_verify_scope_record.sh.
 """
 
 import json
+import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +47,9 @@ MERGE_BASE_WARNING = (
     "--scope all (contract C5)"
 )
 FORCED_SCOPE_MARK = "forcing --scope all"
+FAIL_WIDE_MARK = "failing WIDE"
+SCOPE_HEADER = "# scope decision — "
+BASH_FLAGS = {"run_rust": "RUN_RUST", "run_gui": "RUN_GUI", "run_occt_gate": "RUN_OCCT_GATE"}
 
 
 def base_env(**overrides):
@@ -104,6 +110,19 @@ def scope_record(outcome):
     return record
 
 
+def header_fields(stdout, prefix=SCOPE_HEADER):
+    """The KEY=V tokens of bash's one header line starting `prefix`, by key."""
+    lines = [line for line in stdout.splitlines() if line.startswith(prefix)]
+    assert len(lines) == 1, f"{len(lines)} plan lines start {prefix!r}"
+    return dict(token.split("=", 1) for token in lines[0][len(prefix):].split())
+
+
+def is_subsequence(lines, of):
+    """Every item of `lines` appears in `of`, in the same order."""
+    remaining = iter(of)
+    return all(line in remaining for line in lines)
+
+
 def python_help():
     outcome = run_py(["--help"], base_env())
     assert outcome.returncode == 0, outcome.stderr
@@ -123,7 +142,7 @@ class Clone:
 
     def reset(self):
         self.git("reset", "-q", "--hard", self.base)
-        self.git("clean", "-fdq")
+        self.git("clean", "-fdqx")
         self.git("branch", "-f", "main", self.main)
         self.merge_head().unlink(missing_ok=True)
 
@@ -141,8 +160,23 @@ class Clone:
         self.append(path, text)
         self.git("add", "--", path)
 
+    def stage_ignored(self, path):
+        self.append(path)
+        self.git("add", "-f", "--", path)
+
     def commit(self, message):
         self.git("commit", "-q", "--allow-empty", "-m", message)
+
+    def commit_change(self, path, text="\n"):
+        self.stage(path, text)
+        self.commit(f"scope-record probe: {path}")
+
+    def start_branch(self):
+        """Point main at HEAD, so `--scope branch` diffs from here to the working tree."""
+        self.git("branch", "-f", "main", "HEAD")
+
+    def name_list(self, *diff_args):
+        return [line for line in self.git("diff", "--name-only", *diff_args).splitlines() if line]
 
     def py(self, argv, env, cwd=None):
         return run_py(argv, env, tree=self.root, cwd=cwd)
@@ -178,6 +212,28 @@ class InClone(unittest.TestCase):
 
     def setUp(self):
         self.clone.reset()
+
+    def side_by_side(self, scope, env=None, flags=()):
+        """(python's record, python's outcome, bash's plan outcome) for one gate invocation."""
+        env = base_env() if env is None else env
+        py = self.clone.py(["test", "--scope", scope, *flags, "--print-scope"], env)
+        bash = self.clone.bash(
+            ["test", "--scope", scope, *flags, "--include-infra", "--print-plan"], env
+        )
+        self.assertEqual(bash.returncode, 0, f"premise: bash plans this scenario\n{bash.stderr}")
+        return scope_record(py), py, bash
+
+    def assert_flags_match_bash(self, record, bash, label=""):
+        header = header_fields(bash.stdout)
+        for flag, bash_key in BASH_FLAGS.items():
+            self.assertEqual(record["scope"][flag], int(header[bash_key]), f"{label}: {flag}")
+
+    def assert_stderr_within_bash(self, py, bash, label=""):
+        self.assertTrue(
+            is_subsequence(py.stderr.splitlines(), bash.stderr.splitlines()),
+            f"{label}: python's stderr {py.stderr!r} is not an in-order subsequence of "
+            f"bash's {bash.stderr!r}",
+        )
 
 
 class TestPrintScopeCli(unittest.TestCase):
@@ -321,6 +377,180 @@ class TestEffectiveScope(InClone):
         scope = scope_record(py)["scope"]
         self.assertEqual(scope["mode"], "branch")
         self.assertEqual(scope["merge_base"], self.clone.git("merge-base", "main", "HEAD"))
+
+
+def _declare_reify_doc_occt(clone):
+    clone.commit_change("scripts/occt-touching-crates.txt", "reify-doc\n")
+    clone.stage("crates/reify-doc/src/lib.rs")
+
+
+STAGED_SCENARIOS = {
+    "occt-declared crate": (lambda c: c.stage("crates/reify-eval/src/lib.rs"), {"run_occt_gate": 1}),
+    "undeclared crate": (lambda c: c.stage("crates/reify-doc/src/lib.rs"), {"run_occt_gate": 0}),
+    "depth-1 crates file": (lambda c: c.stage("crates/README.md"), {"run_rust": 1, "run_occt_gate": 0}),
+    "gui crate": (lambda c: c.stage("gui/src-tauri/src/main.rs"), {}),
+    "workspace manifest": (lambda c: c.stage("Cargo.toml"), {}),
+    "lockfile": (lambda c: c.stage("Cargo.lock"), {}),
+    "cargo config": (lambda c: c.stage(".cargo/config.toml"), {}),
+    "toolchain file": (lambda c: c.stage("rust-toolchain.toml"), {}),
+    "grammar": (lambda c: c.stage("tree-sitter-reify/grammar.js"), {}),
+    "grammar readme (global beats inert)": (lambda c: c.stage("tree-sitter-reify/README.md"), {"run_rust": 1}),
+    "frontend source": (lambda c: c.stage("gui/src/bridge.ts"), {}),
+    "gui readme (gui beats inert)": (lambda c: c.stage("gui/README.md"), {"run_gui": 1}),
+    "docs": (lambda c: c.stage(DOCS_PATH), {"run_rust": 0, "run_gui": 0}),
+    "root markdown": (lambda c: c.stage("README.md"), {}),
+    "yaml": (lambda c: c.stage("dark-factory-orchestrator.yaml"), {}),
+    "gui event channels edited": (
+        lambda c: c.stage("docs/gui-event-channels.md"),
+        {"run_rust": 0, "run_gui": 1},
+    ),
+    "gui event channels renamed": (
+        lambda c: c.git("mv", "docs/gui-event-channels.md", "docs/zz-scope-record-channels.md"),
+        {"run_rust": 1},
+    ),
+    "example": (lambda c: c.stage("examples/anisotropic_bar.ri"), {}),
+    "infra test": (lambda c: c.stage("tests/infra/test_helpers.sh"), {}),
+    "script": (lambda c: c.stage("scripts/land.sh"), {}),
+    "crate deletion": (lambda c: c.git("rm", "-q", "--", "crates/reify-doc/src/util.rs"), {"run_rust": 1}),
+    ".task/ only": (
+        lambda c: c.stage_ignored(".task/zz-scope-record"),
+        {"run_rust": 0, "run_gui": 0, "run_occt_gate": 0},
+    ),
+    "docs and crate": (
+        lambda c: (c.stage(DOCS_PATH), c.stage("crates/reify-eval/src/lib.rs")),
+        {"run_rust": 1},
+    ),
+    "OCCT set read from its lib": (_declare_reify_doc_occt, {"run_occt_gate": 1}),
+}
+
+BRANCH_SCENARIOS = {
+    "crate": "crates/reify-doc/src/lib.rs",
+    "docs": DOCS_PATH,
+    "frontend": "gui/src/bridge.ts",
+}
+UNCOMMITTED_EDIT = "README.md"
+
+
+class TestScopeDecisionMatchesBash(InClone):
+    """decide_scope over PathFacts classifies every arm as bash's decide_scope does."""
+
+    def assert_expected(self, record, expected, label):
+        for flag, value in expected.items():
+            self.assertEqual(record["scope"][flag], value, f"{label}: {flag}")
+
+    def test_staged(self):
+        for label, (change, expected) in STAGED_SCENARIOS.items():
+            with self.subTest(scenario=label):
+                self.clone.reset()
+                change(self.clone)
+                record, py, bash = self.side_by_side("staged")
+                self.assert_flags_match_bash(record, bash, label)
+                self.assert_expected(record, expected, label)
+                staged = [p for p in self.clone.name_list("--cached") if not p.startswith(".task/")]
+                self.assertEqual(record["scope"]["changed_paths"], staged, label)
+                self.assert_stderr_within_bash(py, bash, label)
+
+    def test_branch_runs_to_the_working_tree(self):
+        for label, path in BRANCH_SCENARIOS.items():
+            with self.subTest(scenario=label):
+                self.clone.reset()
+                self.clone.start_branch()
+                self.clone.commit_change(path)
+                self.clone.append(UNCOMMITTED_EDIT)
+                record, py, bash = self.side_by_side("branch")
+                self.assertEqual(record["scope"]["mode"], "branch")
+                self.assert_flags_match_bash(record, bash, label)
+                self.assertEqual(
+                    record["scope"]["changed_paths"], sorted({path, UNCOMMITTED_EDIT}), label
+                )
+                self.assert_stderr_within_bash(py, bash, label)
+
+
+@dataclass(frozen=True)
+class FailingGit:
+    """One git argv shape that exits 128; every other git call runs the real git."""
+
+    label: str
+    scope: str
+    match: str
+    unless: str | None
+    warning: str
+    bash_fails_wide: bool
+
+    def farm(self, dest: Path) -> Path:
+        real = shutil.which("git", path=base_env()["PATH"])
+        dest.mkdir()
+        spared = f'    *" {self.unless} "*) exec {shlex.quote(real)} "$@" ;;\n' if self.unless else ""
+        wrapper = dest / "git"
+        wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            'case " $* " in\n'
+            f"{spared}"
+            f'    *" {self.match} "*) exit 128 ;;\n'
+            "esac\n"
+            f'exec {shlex.quote(real)} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        return dest
+
+
+def _c5(scope, what):
+    return f"verify.sh: WARNING — --scope {scope} {what} failed — failing WIDE to --scope all (contract C5)"
+
+
+FAILING_GIT = (
+    FailingGit(
+        "staged primary", "staged", "diff --cached --name-only", None,
+        _c5("staged", "git diff"), bash_fails_wide=False,
+    ),
+    FailingGit(
+        "staged rename source", "staged", "diff --cached --name-status", None,
+        _c5("staged", "rename-source diff"), bash_fails_wide=True,
+    ),
+    FailingGit(
+        "branch primary", "branch", "--name-only --diff-filter=ACMRD", "--cached",
+        _c5("branch", "git diff"), bash_fails_wide=True,
+    ),
+    FailingGit(
+        "branch rename source", "branch", "--name-status --diff-filter=R", "--cached",
+        _c5("branch", "rename-source diff"), bash_fails_wide=True,
+    ),
+)
+
+
+class TestGatherFailsWide(InClone):
+    """Every changed-path git failure fails wide under one policy (C5; D5 amended 2026-10-15)."""
+
+    def test_each_failing_git_call(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            for case in FAILING_GIT:
+                with self.subTest(case=case.label):
+                    self.clone.reset()
+                    self.clone.start_branch()
+                    self.clone.stage(DOCS_PATH)
+                    farm = case.farm(Path(scratch) / case.label.replace(" ", "-"))
+                    env = base_env(PATH=f"{farm}{os.pathsep}{base_env()['PATH']}")
+                    record, py, bash = self.side_by_side(case.scope, env)
+                    scope = record["scope"]
+                    self.assertEqual(scope["mode"], case.scope)
+                    for flag in SCOPE_FLAGS:
+                        self.assertEqual(scope[flag], 1, flag)
+                    self.assertEqual(scope["changed_paths"], [])
+                    py_wide = [l for l in py.stderr.splitlines() if FAIL_WIDE_MARK in l]
+                    self.assertEqual(py_wide, [case.warning])
+                    bash_wide = [l for l in bash.stderr.splitlines() if FAIL_WIDE_MARK in l]
+                    if case.bash_fails_wide:
+                        self.assert_flags_match_bash(record, bash, case.label)
+                        self.assertEqual(py_wide, bash_wide)
+                    else:
+                        self.assertEqual(
+                            header_fields(bash.stdout)["RUN_RUST"],
+                            "0",
+                            "PRD D5's lead amendment of 2026-10-15 (#9170): the staged primary "
+                            "diff fails wide in python, while bash still fails open",
+                        )
+                        self.assertEqual(bash_wide, [])
 
 
 if __name__ == "__main__":
