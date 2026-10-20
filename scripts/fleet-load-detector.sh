@@ -75,11 +75,9 @@
 #
 # (Those engagement fractions are measured, from the same two samples; the full
 # per-threshold table is in docs/prds/cpu-load-admission-control.md, "Amendment
-# 2026-09-08". That gate reads the SAME signal and retuned to 70 rather than
-# dropping it — not a contradiction: a per-dispatch admission gate is USEFUL
-# when it engages on the worst tenth of a busy day, whereas a fleet monitor
-# that only speaks then, and never on a merely-loaded host, adds nothing the
-# ratio arm does not already say sooner.)
+# 2026-09-08". The dispatch-admission gate has since dropped this signal too:
+# psi_admission.cpu_some_avg10 is off in dark-factory-orchestrator.yaml, for the
+# reasons recorded in that Amendment.)
 #
 # This SUPERSEDES docs/prds/cpu-load-admission-control.md §G6's dual-axis
 # rationale FOR THIS DETECTOR ONLY. §G6's PSI-over-loadavg argument still
