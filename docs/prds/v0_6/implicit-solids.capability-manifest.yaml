@@ -814,6 +814,7 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/geometry_op_lowering.rs
   - name: voxel-source-dispatch-tier
     binding: producer-self (R4, D-6) — a tier in Engine::execute_realization_ops keyed
       on a separate OUTPUT-side predicate (a voxel-source predicate or a descriptor
@@ -1333,6 +1334,7 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/realization_executor
   - name: b20-both-paths
     binding: producer-self (R8) — the inline (intra) and named (cross) parents are
       each tested, never an OCCT handle (Engine::realization_kernel_provenance has
@@ -1558,6 +1560,7 @@ tasks:
       expect: absent
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/geometry_post_process.rs
   - name: post-process-derived-case
     binding: producer-self (R18) — θ's signal gains a case whose measurement argument
       is post-process-derived (e.g. a feature computed from volume(box(..)) that trips

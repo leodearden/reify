@@ -23,6 +23,27 @@ tasks:
           pattern: 'fn eval_builtin\(.*\) -> BuiltinOutcome'
           paths: ["crates/reify-stdlib/src/lib.rs"]
           expect: present
+  - label: "S8-ψ"
+    task_id: 9418
+    title: "Relation binding kind: the 12 relation rows mint RelationKind; one home for relation name, arity and result type"
+    note: "Added by the retro-critic sitting 2026-10-20 (plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6); carved out of #6944's τ9 relation half. Both checks confirmed red at main 66dcd71ef5."
+    capabilities:
+      - name: "relation-rows-mint-relation-kind"
+        binding: "producer:S8-ψ — crates/reify-builtins/src/registry.rs has no Relation group at main; RelationKind exists nowhere (git grep RelationKind -- crates/ = 0)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'Relation => RelationKind'
+          paths: ["crates/reify-builtins/src/registry.rs"]
+          expect: present
+      - name: "relation-binding-kind-exists"
+        binding: "producer:S8-ψ — BindingKind declares EvalBuiltin, ExprIntercept, EnginePostProcess, GeometryOp, CompileOnly at main; relations are documented CompileOnly though residual_dispatch binds them at runtime"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'BindingKind::Relation\b'
+          paths: ["crates/reify-builtins/src"]
+          expect: present
   - label: "S8-α2"
     task_id: 8889
     title: "Success-path advisories for dfm, flexure and snapshot; three emit fns deleted"
@@ -34,6 +55,14 @@ tasks:
           kind: grep
           pattern: 'fn emit_(dfm|flexure|snapshot)_diagnostics'
           paths: ["crates/reify-expr/src"]
+          expect: absent
+      - name: "flexure-geometry-reclassifier-deleted"
+        binding: "grep: flexures/common.rs defines classify_geometry_invalid (13-name positional layout table re-deriving E_FlexureGeometryInvalid from a rejected ctor's raw args) at main c7bbfe2519; gap-fill 2026-10-16 K6-D5 (fk-5e611b84370d)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn classify_geometry_invalid'
+          paths: ["crates/reify-stdlib/src/flexures"]
           expect: absent
   - label: "S8-β1"
     task_id: 8890
@@ -133,6 +162,27 @@ tasks:
           kind: grep
           pattern: 'pub fn classify_call\('
           paths: ["crates/reify-expr/src"]
+          expect: present
+  - label: "S8-χ"
+    task_id: 9289
+    title: "Smoothness column on reify-builtins rows; dual_eval's name-keyed differentiability tables deleted"
+    note: "Added by gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K9-D4; fk-819257c68b82). Both checks confirmed red at main c7bbfe2519."
+    capabilities:
+      - name: "dual-eval-name-tables-deleted"
+        binding: "grep: dual_eval.rs defines is_kink_builtin, is_differentiable_builtin and builtin_partials as hand-written (name, arity) matches at main; #8480 moves them within reify-expr, so the check stays red until S8-χ"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn (is_kink_builtin|is_differentiable_builtin|builtin_partials)\('
+          paths: ["crates/reify-expr/src"]
+          expect: absent
+      - name: "smoothness-column-exists"
+        binding: "producer:S8-χ — reify-builtins has no smoothness/kink fact at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'enum Smoothness'
+          paths: ["crates/reify-builtins/src"]
           expect: present
   - label: "S8-ζ"
     task_id: 8897
@@ -350,7 +400,7 @@ tasks:
         delivered_check:
           kind: grep
           pattern: 'crate::completion::\{BODY_KEYWORDS'
-          paths: ["crates/reify-lsp/src/references.rs"]
+          paths: ["crates/reify-lsp/src/references"]
           expect: absent
   - label: "S8-τ"
     task_id: 8911

@@ -1164,7 +1164,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Shared primitive op used as a leaf source.
         let prim_box = || CompiledGeometryOp::Primitive {
@@ -1300,7 +1300,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1411,7 +1411,7 @@
             TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1489,7 +1489,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1627,7 +1627,7 @@
 
         // ── (A) registered VolumeMesh-demanding consumer → body → VolumeMesh ──
         let module = build_module(Some("test::vm-demand"));
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_volume_mesh_demand("test::vm-demand");
         let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
         assert_eq!(result.len(), 1, "one template → one outer entry");
@@ -1640,7 +1640,7 @@
         );
 
         // ── (B) same module, NO registration → body stays at Step BRep ──
-        let engine_unreg = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine_unreg = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result_unreg = engine_unreg.compute_demanded_reprs(&module, ExportFormat::Step);
         assert_eq!(
             result_unreg[0][0],
@@ -1651,7 +1651,7 @@
 
         // ── (C) consumer target NOT registered → no false override ──
         let module_other = build_module(Some("test::other"));
-        let mut engine_c = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine_c = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine_c.register_volume_mesh_demand("test::vm-demand"); // a DIFFERENT target
         let result_c = engine_c.compute_demanded_reprs(&module_other, ExportFormat::Step);
         assert_eq!(
@@ -1703,7 +1703,7 @@
             .template(template_d)
             .function(consumer_fn(Some("test::vm-demand")))
             .build();
-        let mut engine_d = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine_d = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine_d.register_volume_mesh_demand("test::vm-demand");
         let result_d = engine_d.compute_demanded_reprs(&module_d, ExportFormat::Step);
         assert_eq!(
@@ -1809,7 +1809,7 @@
                 .template(template)
                 .build();
 
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         // Seed the consumer fn ONLY into `engine.functions` — simulating the
         // post-`check()`/`eval()` merged stdlib+module function table without
         // running a real build.

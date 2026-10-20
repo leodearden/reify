@@ -261,6 +261,7 @@ fn boolean_union_drop_produces_warning_diagnostic() {
         SweepOpHistoryRecords::default(),
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -346,6 +347,7 @@ fn extrude_drop_produces_warning_diagnostic() {
         },
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -399,6 +401,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
         ..Default::default()
     });
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -467,6 +470,7 @@ fn clean_local_feature_produces_no_drop_warning() {
         SweepOpHistoryRecords::default(),
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -514,6 +518,7 @@ fn two_boolean_drops_in_same_realization_aggregate_to_one_diagnostic() {
         SweepOpHistoryRecords::default(),
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

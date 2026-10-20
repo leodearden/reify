@@ -1,6 +1,6 @@
 # PRD: Tooling front end — one compile front end per surface, one LSP method table, one member-scope oracle
 
-**Milestone:** v0_6 · **Status:** active — decomposed 2026-10-12 (pass 2); lead rulings OQ1–OQ4 applied (§7) · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active — decomposed 2026-10-12 (pass 2); lead rulings OQ1–OQ4 applied (§7); gap-fill 2026-10-16: ψ₂ #9324, ψ₃ #9325, γ₂ #9326, ε₂ #9327; retro-critic sitting 2026-10-20 (R3, see the closing section) · **Approach:** B + H
 
 Authored 2026-10-12 by the S27 `/prd` seat of program `review-all-reify-20261010`
 (`plans/review-all-program-reify-20261012.md`, stream **S27 Tooling front end**, wave 1,
@@ -43,9 +43,11 @@ After this PRD lands, a user observes:
 - `reify doc --stdlib --out <dir>` renders real default text for stdlib params. Today the
   HTML carries 269 `&lt;default&gt;` placeholders (probe, §2.3).
 - `reify dev inspect-node` accepts the node id it prints on its own `node:` line.
-- An MCP client's `notifications/initialized` gets no reply line. Today the stdio
-  transport answers it with `{"id":null,"error":{"code":-32700,"message":"Parse error"}}`
-  (probe, §2.3).
+- **[Amended 2026-10-20, retro-critic R3]** The `reify-mcp` stdio transport answers no line to a `notifications/initialized`
+  notification. Before ο it answers `{"id":null,"error":{"code":-32700,"message":"Parse error"}}`
+  (probe, §2.3, historical). This is a transport-level contract asserted by B10 through the
+  transport's own streams: since #6665 deleted `reify mcp-server`, no host runs the stdio
+  transport, so no user observes this outcome until a headless host exists.
 - Adding an LSP method, a declaration kind, a doc chunk or an `AutoTypeParam*` code reds a
   test that names the missing site, instead of compiling cleanly through a `_` arm or a
   hand-copied list.
@@ -93,7 +95,7 @@ reify-compiler, reify-eval, reify-runtime, gui/src-tauri); ξ uses five.
 
 ### §2.1 The CLI MCP context is ruled for deletion (task #6665)
 
-The S27 ruling names "MCP context" as a front-end consumer. Task **#6665** (pending, high)
+The S27 ruling names "MCP context" as a front-end consumer. Task **#6665**
 carries Leo's 2026-08-26 ruling: *delete `reify mcp-server` and `CliToolContext` outright —
 dangerous cruft, zero consumers*, deleting `crates/reify-cli/src/mcp_context.rs` wholesale
 and **keeping** the `reify-mcp` crate (registry, stdio and in-process transports, chunk
@@ -122,13 +124,18 @@ the same region (`module_dag.rs`, `lib.rs`). → **OQ2**.
 
 ### §2.3 Probes (target/debug/reify at main)
 
+**[Amended 2026-10-20, retro-critic R3]** The three rows that drive `reify mcp-server` are historical: #6665 deleted that command on
+2026-10-14 (bbfbc7dd29), so they cannot be reproduced. The stdlib-enum divergence they recorded
+existed only in the deleted no-prelude MCP context; LSP diagnostics are empty on
+`tooling_fe_stdlib_enum.ri` and hover resolves the enum (MAJ-1).
+
 | probe | result |
 |---|---|
 | `reify check tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri` | exit 0, `All constraints satisfied.` |
-| `reify mcp-server tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri` → `reify_get_diagnostics` | `unresolved type: InfillPattern`, `unknown enum type 'InfillPattern'` — the no-prelude `compile` divergence is live for stdlib enums |
-| same, a module using only `mm`/`deg` units | `[]` — units now resolve without a prelude, so the `reify_compiler::compile` rustdoc's "nine previously hard-coded units … unresolved-name diagnostics" sentence is stale; the finding's claim holds for stdlib enums and traits, not for units |
+| *(historical)* `reify mcp-server tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri` → `reify_get_diagnostics` | `unresolved type: InfillPattern`, `unknown enum type 'InfillPattern'` — the no-prelude `compile` divergence is live for stdlib enums |
+| *(historical)* same, a module using only `mm`/`deg` units | `[]` — units now resolve without a prelude, so the `reify_compiler::compile` rustdoc's "nine previously hard-coded units … unresolved-name diagnostics" sentence is stale; the finding's claim holds for stdlib enums and traits, not for units |
 | `reify check` / `reify eval tests/prd-gate/fixtures/tooling_fe_unrepresentable_generic.ri` | exit 101, debug panic `unrepresentable cell_type: value cell 'Bearing.seal' has cell_type TypeParam("T")` — zero compile diagnostics, so no severity gate can catch it (#6851 "shape 2", re-verified here on the CLI) |
-| `reify mcp-server` stdio: `initialize`, then `{"jsonrpc":"2.0","method":"notifications/initialized"}` | second output line `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}` |
+| *(historical)* `reify mcp-server` stdio: `initialize`, then `{"jsonrpc":"2.0","method":"notifications/initialized"}` | second output line `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}` |
 | `reify doc --stdlib --out <dir>` | 269 occurrences of `&lt;default&gt;` in the generated HTML |
 | `reify check` on every `tests/prd-gate/fixtures/tooling_fe_*.ri` other than the generic | exit 0; all four parse with 0 ERROR nodes under `tree-sitter parse --quiet` |
 
@@ -185,6 +192,13 @@ The contract the LSP relies on, and γ asserts from the consumer side:
 - one call per surface turns `(path or URI, source text, checker)` into the parsed module,
   the compiled module, and rendered parse errors; no surface derives a `ModulePath` from a
   path or URI itself;
+- **[Amended 2026-10-20, retro-critic R3]** the path-to-`ModulePath` derivation has one home: γ (after #5516) exports
+  `reify_compiler::module_path_for_entry(&Path) -> ModulePath`, which `compile_program` uses
+  internally and which the LSP's parse-only paths call: `DocumentStore::open`/`update`
+  (document.rs), goto_def's two parse wrappers (goto_def.rs) and the outline (symbols.rs). A
+  test asserts that the cached parse's module path equals `compile_program`'s entry path.
+  `module_name_from_uri` and the inline copy in `compute_diagnostics_with_state` are deleted;
+  the front-end ratchet row target stays 0;
 - the module-path rule (`check_module_path_decl`) is applied inside that call, exactly once;
 - the checker is a parameter (CLI and LSP pass `SimpleConstraintChecker`), never a hidden
   default;
@@ -199,7 +213,7 @@ The contract the LSP relies on, and γ asserts from the consumer side:
 ### §4.3 LspMethod (κ)
 
 ```rust
-// reify-lsp — one home for the method set
+// reify-lsp src/lsp_method.rs — one home for the method set; imports no crate module
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LspMethod { Initialize, Initialized, DidOpen, DidChange, DidClose, Completion, Hover,
     Definition, DocumentSymbol, DocumentHighlight, PrepareRename, Rename, References, Shutdown }
@@ -214,6 +228,11 @@ impl LspMethod {
 impl FromStr for LspMethod { type Err = UnsupportedLspMethod; }
 ```
 
+- **[Amended 2026-10-20, retro-critic R3]** `LspMethod` lives in a new leaf module `crates/reify-lsp/src/lsp_method.rs` that
+  imports no crate module; `bridge`, `server`, `blocking_work` and the GUI import it. Homing
+  it in `bridge.rs` or `server.rs` would close the SCC {blocking_work, bridge, server},
+  because `blocking_work::test_support` counts as production for the SCC ratchet.
+  `python3 scripts/assert-module-scc.py check` green is a κ done-criterion.
 - `InProcessLsp::handle_request` parses the string once and matches on `LspMethod`; an
   unknown name keeps today's `unsupported LSP method:` error text.
 - `gui/src-tauri/src/lsp_bridge.rs::lane_for_method` routes on
@@ -256,6 +275,12 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
 - Tests assert constraint outcomes through `check_result`, never through `EvalState`'s
   private `engine`, `last_content_hash` or `version_counter`; the `#[cfg(test)]`
   `ReifyLanguageServer::eval_state()` accessor is deleted if no test needs it after the port.
+- **[Amended 2026-10-20, retro-critic R3]** No `EvalState` bookkeeping pin is simply deleted: ε replaces each test that pins an
+  `EvalState` invariant through `engine`, `last_content_hash` or `version_counter` (the skip
+  guard placed before any state mutation; `content_unchanged` requiring
+  `is_engine_initialized`) with a behavioural two-call test (for example, after a skipped
+  version the next clean version still reports its eval diagnostics), and lists the replaced
+  pins in its done-criteria.
 
 ### §4.6 Registries
 
@@ -306,7 +331,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
 | B4 | method table ↔ GUI lanes | reify-lsp ↔ gui/src-tauri | `LspMethod::ALL` | every member dispatches through `handle_request` without `unsupported`; lane equals `concurrency()`; an unknown name keeps the ordered lane and the unsupported error |
 | B5 | placement | stdio server ↔ blocking pool | the existing `stdio_server_queues_its_blocking_work_behind_the_pool` rig | hover and completion are among the requests that queue behind the pool |
 | B6 | one diagnostics pipeline | tests ↔ server path | any fixture with a parse error | `compute_diagnostics` returns exactly the parse-error diagnostics `compute_diagnostics_with_state` returns (today it also compiles the partial AST) |
-| B7 | guarded members | compiler ↔ LSP emitters | fixture authored by ζ: an `@optimized` result reaching a constraint through a `where`-guarded `let` | `fea-not-evaluated` Info hint present; with the guard false the hint is absent |
+| B7 | guarded members | compiler ↔ LSP emitters | fixture authored by ζ: an `@optimized` result reaching a constraint through a `where`-guarded `let` | `fea-not-evaluated` Info hint present; with the guard false the hint is absent. **[Amended 2026-10-20, retro-critic R3]** Guard-aware: ζ reads the guard cell's value from `check_result` and walks guarded constraints through S9 ν #8743's `all_constraints()`; ζ probes both halves in-leaf |
 | B8 | eval readiness | reify-eval ↔ LSP (and any adopting surface) | `tooling_fe_unrepresentable_generic.ri` | predicate answers `Bearing.seal`; the LSP emits its Warning and skips eval; a clean fixture answers `None` |
 | B9 | chunk registry | reify-mcp ↔ fence gate | a chunk file added on disk but not to `CHUNKS` | the fence gate reds naming the file; reformatting `language_chunks.rs` changes nothing |
 | B10 | JSON-RPC notification | client ↔ stdio transport | `initialize`, then `notifications/initialized` | exactly one output line (the initialize reply) |
@@ -331,19 +356,26 @@ deliberately absent — it belongs to #6805 (§9).
    A loader has no named consumer (G1), and wiring it means routing the CLI's and GUI's
    Engine construction through `with_registered_kernels_and_manifest(.., Some(..))`, which
    is S1's Engine-constructor seam.
-5. **No new cross-surface harness.** The compile-parity signal for γ extends #6805's
-   fixture set (`tooling_fe_stdlib_enum.ri`) rather than adding a fourth harness.
+5. **No new cross-surface harness.** ~~The compile-parity signal for γ extends #6805's
+   fixture set (`tooling_fe_stdlib_enum.ri`) rather than adding a fourth harness.~~
+   (superseded by R3) **[Amended 2026-10-20, retro-critic R3]** `tooling_fe_stdlib_enum.ri` stays only as a non-regression row: the
+   divergence it recorded lived in the MCP context #6665 deleted, so it is green before γ. γ's
+   RED signal is multi-file: hover and completion on an importing entry resolve an imported
+   `pub` template. No fourth harness is added.
 6. **h14 partitions are move-only and land before the semantic leaves in the same files.**
    Each partition leaf moves tests with their unit so no child module reaches back into a
    parent's privates through `use super::*`; imports point downward only (program INV
    candidate 7: no intra-crate module SCC grows).
 7. **Every extraction leaf names its ratchet row in α's member** (INV candidate 5): front
-   end (`reify_compiler::compile(` and hand module-name derivations in CLI/LSP production
+   end (~~`reify_compiler::compile(` and~~ (superseded by R3) hand module-name derivations in CLI/LSP production
    code), stdlib root (`"crates/reify-compiler/stdlib"` literals; `resolve_import_path`
    closures in `server.rs`), LspMethod (`"textDocument/` literals outside its home in
    reify-lsp and gui/src-tauri production code), member scopes (wildcard member-list matches
    over `Declaration` in reify-lsp). The `else_members.iter()` chains are counted by S9's
    ratchet for its `all_value_cells()` accessor, not a second copy here.
+   **[Amended 2026-10-20, retro-critic R3]** α's rows live on S9 α #8730's `rust_construct_ratchet` engine: α's member imports it and
+   writes no engine of its own (no third ratchet vehicle beside `adoption_ratchet.py`). The
+   `reify_compiler::compile(` row is dropped: it counts 0 in production since #6665.
 8. **The docs-truth gate is not triggered.** No grammar, builtin, stdlib signature or `.ri`
    semantics changes; the LSP, MCP and doc-output changes restore parity with the CLI. No
    chunk text changes (ν changes only the registry's shape and its content is pinned
@@ -358,13 +390,21 @@ options considered are in the pass-1 record; only the rulings are restated here.
   are deleted. δ is not filed. The MCP portion of fk-f5264d76e3ad (three no-prelude
   `compile` calls, three parse-error policies, ungated `engine.eval`) and
   fk-5854202d4aed's `CliState.engine_construction_count` close by that deletion, recorded on
-  #6665. ο lands at the `reify-mcp` stdio-transport level, which #6665 keeps.
+  #6665. ο lands at the `reify-mcp` stdio-transport level, which #6665 keeps. ~~(as a
+  user-observable outcome)~~ (superseded by R3) **[Amended 2026-10-20, retro-critic R3]** #6665
+  kept the transport code but deleted its only host, so ο's §0 outcome is a transport-level
+  contract: no host exists until a headless one does.
 - **OQ2 → (A).** `compile_program` (#5516) is the one front end. γ moves
   `AnalysisContext::from_parsed` and the remaining LSP compile sites onto it, deletes
   `module_name_from_uri` and the inline copy in `compute_diagnostics_with_state`, and depends
   on #5516 and #5520. The G4 row "reify_compiler compile entry points" is owned by
   resolution-unification β; S12's `CheckEnginePlan`/`MeasurementContext` layer under
   `compile_program`/`CompiledProgram`. τ creates no `front_end.rs`.
+  **[Amended 2026-10-20, retro-critic R3]** OQ2-A stands; its acceptance criteria are satisfiable because γ also exports
+  `reify_compiler::module_path_for_entry(&Path) -> ModulePath`. `compile_program` uses it, and
+  so do document.rs, goto_def.rs and symbols.rs (γ's files widened). A parity test asserts the
+  cached parse's module path equals `compile_program`'s entry path, and `module_name_from_uri`
+  is deleted (§4.2).
 - **OQ3 → (A).** β moves the predicate to reify-eval and the LSP consumes it. The CLI is
   unchanged; its exit policy is #5403's and the shape-2 panic is #6851's.
 - **OQ4 → (A).** reify.toml: docs only (decision 4).
@@ -375,8 +415,9 @@ options considered are in the pass-1 record; only the rulings are restated here.
 - S9 ν #8743 (`TopologyTemplate::all_value_cells()`) is ζ's hard dependency; S9 μ #8742
   (`ParseErrorKind::diagnostic_code`) is π's.
 - #5516 and #5520 (resolution-unification β, ζ) are γ's hard dependencies.
-- α's wrapper takes a `tests/infra/run-all-classification.manifest` row in its own diff, in
-  the format S19 owns.
+- **[Amended 2026-10-20, retro-critic R3]** α's member is registered by a `# run-all-bucket:` pragma if S19 υ #9303 has landed,
+  else by a `tests/infra/run-all-classification.manifest` row in its own diff. α depends on
+  #8730 (`rust_construct_ratchet`).
 
 ## §9 — Cross-PRD relationship
 
@@ -385,16 +426,16 @@ options considered are in the pass-1 record; only the rulings are restated here.
 | `resolution-unification.md` (#5516 β, #5517–#5520) | consumes | `compile_program` / `CompiledProgram` | resolution-unification β (#5516) | γ depends on #5516, #5520 (OQ2-A) |
 | task #6665 | consumes | deletion of `crates/reify-cli/src/mcp_context.rs`, `cmd_mcp_server` | #6665 | closes the MCP parts of fk-f5264d76e3ad and fk-5854202d4aed (OQ1-A); υ orders after it |
 | `driver-contract-implementation.md` #6797 ο | adjacent | LSP module-header assertion | driver-contract | unchanged under OQ2-A |
-| `driver-contract-implementation.md` #6805 χ (extends #6700, #5521) | consumes | cross-driver diagnostic-set parity | driver-contract | γ adds `tooling_fe_stdlib_enum.ri` to its corpus via cross-reference, not a new harness |
+| `driver-contract-implementation.md` #6805 χ (extends #6700, #5521) | consumes | cross-driver diagnostic-set parity | driver-contract | **[Amended 2026-10-20, retro-critic R3]** `tooling_fe_stdlib_enum.ri` is a non-regression row only (§6 decision 5); γ's RED signal is multi-file |
 | `solver-driver-parity.md` #6695 η | adjacent | LSP engine construction sites | solver-driver-parity | ε makes `compute_diagnostics` a wrapper: three construction sites, not four |
 | task #6851 | adjacent | unrepresentable-cell root fix | #6851 | β moves the predicate only (OQ3-A) |
-| S9 compiler declaration passes | consumes | `TopologyTemplate::all_value_cells()` (ν #8743); ratchet row R4 in `tests/infra/test_compiler_decl_pass_ratchets.py` (α #8730); `ParseErrorKind::diagnostic_code` (μ #8742) | S9 | ζ depends on #8743 and lowers R4's reify-lsp/reify-cli rows; π depends on #8742 |
+| S9 compiler declaration passes | consumes | `TopologyTemplate::all_value_cells()` and `all_constraints()` (ν #8743); ratchet row R4 in `tests/infra/test_compiler_decl_pass_ratchets.py` and the `rust_construct_ratchet` engine (α #8730); `ParseErrorKind::diagnostic_code` (μ #8742) | S9 | ζ depends on #8743 and lowers R4's reify-lsp/reify-cli rows; β depends on #8743; S27 α's rows sit on #8730's engine; π depends on #8742 (**[Amended 2026-10-20, retro-critic R3]**) |
 | S9 | adjacent | `MemberDecl` variants in reify-ast (S9) vs `Declaration::member_scopes` (η) | each its own | disjoint symbols in `decl.rs` |
 | S1 Engine state partition (wave 3) | consumes | `scripts/check-compute-trampoline-registration.sh` `KNOWN_SITES` path for the CLI Engine site | S1 | φ held |
 | S26 GUI frontend (wave 3) | consumes | generated TS wire types | S26 | λ held |
 | S25 GUI backend (wave 2) | produces for | `dev_stdlib_root` | S27 | cross-reference only |
 | S12 check surface (wave 2) | adjacent | S12 layers `CheckEnginePlan` under `compile_program` | resolution-unification | OQ2-A |
-| S19 infra harness | consumes | `run-all-classification.manifest` row format | S19 | α adds its row |
+| S19 infra harness | consumes | `# run-all-bucket:` pragma (S19 υ #9303), else a `run-all-classification.manifest` row | S19 | α registers its member (**[Amended 2026-10-20, retro-critic R3]**) |
 | S3 + S7 | consumes | INV candidate 7 SCC baseline | S3/S7 | partitions must not grow an SCC |
 | S18 verify.sh | consumes | `scripts/verify-pipeline-infra-tests.txt` row naming `crates/reify-cli/src/main.rs` | S18 | φ moves the row with the code; full gate |
 
@@ -411,14 +452,17 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
 **Phase 0 — ratchet**
 
 - **α #8755 — Tooling front-end adoption ratchet member** *(intermediate → γ, η, κ, μ)*.
-  `tests/infra/test_tooling_front_end_ratchet.py` (stdlib unittest, no wall-clock bound) +
-  `test_tooling_front_end_ratchet.sh` wrapper + manifest row, same diff. One row per pattern
-  in decision 7 (the guarded-member union is S9's R4 row in
-  `tests/infra/test_compiler_decl_pass_ratchets.py`, #8730 — not a second member), each with today's measured production-code count as baseline, counted over
-  `scripts/lib_rust_production_view.sh`'s production view (no second Rust lexer). Reds when a
+  **[Amended 2026-10-20, retro-critic R3]** `tests/infra/test_tooling_front_end_ratchet.py` (stdlib unittest, no wall-clock bound) +
+  `test_tooling_front_end_ratchet.sh` wrapper, same diff, registered by `# run-all-bucket:`
+  pragma if S19 υ #9303 has landed, else by a manifest row. The member declares its rows on
+  S9 α #8730's `rust_construct_ratchet` engine (it imports the engine, in the shape of
+  `test_compiler_decl_pass_ratchets.py`) and writes no engine or lexer of its own. One row per
+  pattern in decision 7, without the dropped `reify_compiler::compile(` row (the guarded-member
+  union is S9's R4 row in `tests/infra/test_compiler_decl_pass_ratchets.py`, #8730 — not a
+  second member), each with today's measured production-code count as baseline. Reds when a
   count rises; a vacuity floor reds when a pattern matches nothing it should. Signal: green
-  on main; a scratch extra copy of each pattern reds naming the row. Keys: none (INV-5
-  mechanism). Priority medium.
+  on main; a scratch extra copy of each pattern reds naming the row. Depends: #8730. Keys:
+  none (INV-5 mechanism). Priority medium.
 
 **Phase 1 — partitions (move-only)**
 
@@ -437,8 +481,19 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
   `report.rs`, `module_capabilities.rs` (no `front_end.rs`: OQ2-A), tests moved
   with their unit. Signal: CLI suite green; `main.rs` holds no `fn module_has_*`, no
   `CheckErrorAllowlist*`. Keys: none. medium.
+  **[Amended 2026-10-20, retro-critic R3]** Same-diff obligation (as S19 υ, R1 B2): in the diff that empties a file, re-scan every
+  task's `delivered_checks` for that file and re-scope each in three writes (yaml twin, md
+  twin, task metadata): a present check points at the post-move file or the crate src dir, an
+  absent check widens to the crate src dir, so no open task's check changes polarity. Known
+  at 2026-10-19 (present on main.rs): #6800 #6970 #5406 #8395.
 - **υ #8775 — Partition `reify-cli/src/main.rs`, commands** into `cmd/<name>.rs`; main.rs dispatches
   only. After τ and after #6665 deletes `cmd_mcp_server`. Keys: none. medium.
+  **[Amended 2026-10-20, retro-critic R3]** Same-diff obligation (as S19 υ, R1 B2): in the diff that empties a file, re-scan every
+  task's `delivered_checks` for that file and re-scope each in three writes (yaml twin, md
+  twin, task metadata): a present check points at the post-move file or the crate src dir, an
+  absent check widens to the crate src dir, so no open task's check changes polarity. Known
+  at 2026-10-19: present on main.rs #5517 #6733 #6777 #6923 #6171 #5399; absent #6898; #6740
+  retired.
 - **φ #8776 — HELD on S1 — `reify-cli/src/engine_config.rs`** (register_compute_trampolines,
   configured_eval_engine). `x_seam_wait = {stream: S1, contract: "KNOWN_SITES entry for the
   CLI Engine site and S1's EngineConfig"}`. The diff moves the `KNOWN_SITES` path and the
@@ -450,12 +505,23 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
 - **ε #8759 — One diagnostics pipeline; `DiagnosticsResult.check_result`** (§4.5). Ports the 18
   `compute_diagnostics` test callers and the ~56 private-field reads to the result; deletes
   the posture lock's stand-in probe engine. Signal: B6; `git grep -n "state\.engine\b"` over
-  diagnostics tests empty. Keys: fk-41819ea934bd, fk-5854202d4aed. medium.
+  diagnostics tests empty. **[Amended 2026-10-20, retro-critic R3]** Each `EvalState` bookkeeping pin is replaced by a behavioural
+  two-call test (§4.5) and the replaced pins are listed in the done-criteria. Keys:
+  fk-41819ea934bd, fk-5854202d4aed. medium.
 - **ω #8770 — Partition `reify-lsp/src/diagnostics.rs`** into `diagnostics.rs` + `diagnostics/tests.rs`
   using only the public result. After ε. Keys: none. medium.
-- **ζ #8771 — Guarded members in every LSP value-cell walk.** The freshness loop and the FEA
-  hint's `value_cell_exprs` map in `compute_diagnostics_with_state`, the three chains in
-  analysis, and `eval_guard`'s stage-one scan all call S9's `all_value_cells()`; a bare
+  **[Amended 2026-10-20, retro-critic R3]** Same-diff obligation (as S19 υ, R1 B2): in the diff that empties a file, re-scan every
+  task's `delivered_checks` for that file and re-scope each in three writes (yaml twin, md
+  twin, task metadata): a present check points at the post-move file or the crate src dir, an
+  absent check widens to the crate src dir, so no open task's check changes polarity. Known
+  at 2026-10-19: absent #8997 (`ALL_PRODUCTION_COMPUTE_TARGETS` moves with the test module).
+- **ζ #8771 — Guarded members in every LSP value-cell walk.** **[Amended 2026-10-20, retro-critic R3]** The freshness loop and the FEA
+  hint's `value_cell_exprs` map in `compute_diagnostics_with_state` and the three chains in
+  analysis all call S9's `all_value_cells()` (`eval_guard`'s stage-one scan leaves ζ's scope:
+  β moves it); ζ is guard-aware: it reads the guard cell's value from `check_result`, filters
+  value-cell walks by it, and walks guarded constraints through `all_constraints()`, a
+  widening of S9 ν #8743 beside `all_value_cells()`. B7 closes in-leaf with the measured
+  outcome of both halves; a bare
   `value_cells` read survives only where excluding guarded members is the point, and the
   line says so; ζ lowers the reify-lsp and reify-cli rows of S9's R4 ratchet
   (`tests/infra/test_compiler_decl_pass_ratchets.py`) to 0. Signal: B7 (fixture authored by
@@ -467,7 +533,8 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
   through a wildcard-free match on `Declaration`; add Field, Purpose, Constraint, Joint;
   hover becomes a `NAMED_DECL_SNIPPETS` consumer. Signal: B1, B3. Depends: η. Keys:
   fk-d9b1ed83ed62. medium.
-- **κ #8760 — `LspMethod`** (§4.3) in reify-lsp, `handle_request` on the enum, `lane_for_method`
+- **κ #8760 — `LspMethod`** (§4.3) in reify-lsp (**[Amended 2026-10-20, retro-critic R3]** homed in the leaf module
+  `crates/reify-lsp/src/lsp_method.rs`; `assert-module-scc.py check` green is a done-criterion), `handle_request` on the enum, `lane_for_method`
   and the routing tests on `ALL`; drop the "Breaking change" paragraph and correct the
   documented `Ok(Value)` list. Subsumes #8447 (cancel with reason "subsumed by κ"). Signal:
   B4. Ratchet row → 0 in reify-lsp and gui/src-tauri production code. Depends: α. Keys:
@@ -480,7 +547,10 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
   completion move into `self.blocking_work.run`; `blocking_work_requests` derives from
   `LspMethod::runs_blocking_work`; the stale `server.rs:268-284` pointer in AnalysisContext's
   Send note becomes a symbol cite. didOpen/didChange per §12 Q2. Signal: B5. Depends: κ.
-  Keys: fk-1a772d160168. medium.
+  **[Amended 2026-10-20, retro-critic R3]** The manifest's hover-placed check (`\.run\("hover"` in server.rs) binds the literal run
+  label; if ι labels runs from `LspMethod`, it re-anchors that check in three writes (yaml,
+  md twin, task metadata) before landing, or keeps the literal label. The blocking-work set is
+  derived in `blocking_work`, not in server.rs. Keys: fk-1a772d160168. medium.
 - **μ #8769 — One import resolver; stdlib root resolved once** (§4.7). Subsumes #8557 (cancel
   with reason "subsumed by μ"). The CLI's literal in `parse_and_compile_with_cfg` moves to
   `dev_stdlib_root`, unless OQ2-A's #5517 has already removed that function; the GUI literal
@@ -497,17 +567,22 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
 **Phase 3 — front end**
 
 - **β #8761 — Eval-readiness predicate in reify-eval** (§4.1); `reify-lsp`'s `eval_guard` keeps
-  reporting and asks reify-eval. CLI unchanged (OQ3-A). Signal: B8. Contributes to
+  reporting and asks reify-eval. CLI unchanged (OQ3-A). **[Amended 2026-10-20, retro-critic R3]** Depends on S9 ν #8743; the moved
+  stage-one scan calls `TopologyTemplate::all_value_cells()`, so no inline
+  `members`/`else_members` chain lands in reify-eval. Signal: B8. Contributes to
   fk-f5264d76e3ad (closed by γ). high.
 - **γ #8778 — LSP onto `compile_program`: AnalysisContext and the remaining compile sites** (§4.2).
   `AnalysisContext::from_parsed` and every LSP compile site still on
   `compile_with_stdlib_checked` after #5520 build through `compile_program`;
+  **[Amended 2026-10-20, retro-critic R3]** γ exports `reify_compiler::module_path_for_entry(&Path) -> ModulePath`, used by
+  `compile_program` and by document.rs, goto_def.rs and symbols.rs (files widened), with a
+  test that the cached parse's module path equals `compile_program`'s entry path;
   `module_name_from_uri` and the inline copy in `compute_diagnostics_with_state` are
   deleted; the stale "nine previously hard-coded units" sentence in the
-  `reify_compiler::compile` rustdoc is corrected. Signal: `tooling_fe_stdlib_enum.ri`
-  produces the same diagnostic set through `reify check`, LSP diagnostics and hover's
-  AnalysisContext, asserted by adding the fixture to #6805's corpus (no new harness); hover
-  on an importing entry shows the imported sub's values; the LSP front-end ratchet rows → 0.
+  `reify_compiler::compile` rustdoc is corrected. Signal (RED, multi-file): hover and
+  completion on an importing entry resolve an imported `pub` template;
+  `tooling_fe_stdlib_enum.ri` stays a non-regression row (§6 decision 5); the LSP front-end
+  ratchet rows → 0.
   Depends: α, β, χ, #5516, #5520. Keys: fk-f5264d76e3ad (the MCP part closes by #6665).
   high.
 - **δ — not filed (OQ1-A).** The MCP context is deleted by #6665.
@@ -522,7 +597,8 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
   `docs/notes/reify-toml-schema.md` state the inert status; the reify-config rustdoc no
   longer says "no other workspace crate consumes it yet". Keys: fk-677d67cb2ac8. medium.
 - **ο #8765 — Typed JSON-RPC id; notifications get no reply** (§4.6). Signal: B10 through the
-  stdio transport. Keys: fk-bed8cadb429f. low.
+  stdio transport. **[Amended 2026-10-20, retro-critic R3]** The outcome is a transport-level contract; no host runs the stdio
+  transport until a headless one exists (§0). Keys: fk-bed8cadb429f. low.
 - **ρ #8767 — One expression-text renderer; stdlib sources in the doc model** (§4.6); corrects
   the "Structures then Occurrences" and `cross_refs` docs. Signal: B12. Keys:
   fk-10941c98934e. low.
@@ -539,7 +615,8 @@ Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are 
 
 DAG summary: α → {γ, η, κ, μ}; χ → {ζ, η, γ}; ψ → η → θ; ε → ω; κ → {ι, λ}; τ → {υ, φ};
 β → γ; #5516, #5520 → γ; #8743 → ζ; #8742 → π; #6665 → υ; S1 → φ; S26 → λ; every leaf → Ω. Drift-guard registrations ride in
-the diff of the leaf adding the test (α's manifest row; any new nextest entry).
+the diff of the leaf adding the test (α's pragma or manifest row; any new nextest entry).
+**[Amended 2026-10-20, retro-critic R3]** The DAG gains #8730 → α; #8743 → β; θ → ψ₃ and η → ψ₃.
 
 ## §11 — Out of scope
 
@@ -559,6 +636,13 @@ the diff of the leaf adding the test (α's manifest row; any new nextest entry).
    driver-contract leaves) list in `metadata.files` as `crates/reify-cli/src/main.rs`.
    Suggested: land each partition as one move-only commit while no main.rs task is in
    flight, and let architects re-acquire footprints (BRE). Decide at decompose.
+   **[Amended 2026-10-20, retro-critic R3]** Widened from `metadata.files` to `delivered_checks`: τ, υ and ω (and ε₂ #9327 for
+   #9025 and #9292) carry the same-diff obligation in §10. In the diff that empties a file,
+   the leaf re-scans every task's `delivered_checks` for that file and re-scopes each in three
+   writes: a present check to the post-move file or the crate src dir, an absent check widened
+   to the crate src dir, so no open task's check changes polarity. Known at 2026-10-19: present
+   on main.rs #5517 #6733 #6777 #6923 #6171 #5399 (υ) and #6800 #6970 #5406 #8395 (τ); absent
+   #6898 (υ) and #8997 (ω); #6740 retired.
 2. **didOpen/didChange placement (ι).** They compile and evaluate under `eval_state`'s
    `std::sync::Mutex`. Suggested: move them into the blocking pool too, awaiting the work so
    the handler's ordering is unchanged; decide in ι after reading tower-lsp's notification
@@ -603,3 +687,32 @@ the diff of the leaf adding the test (α's manifest row; any new nextest entry).
   `parse-is-value-faithful`: no hit. No waivers.
 - **META** — complete and coherent: the rulings fix Phase 3's shape (γ consumes
   `compile_program`; δ not filed; β moves the predicate only).
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from the attended gap-fill sitting, `plans/gap-fill-deliberation-reify-20261016.md`. They add four leaves; the sections above are unchanged except the status line. Machine-readable rows: `tooling-front-end.capability-manifest.yaml` (ψ₂, ψ₃, γ₂, ε₂).
+
+- **ψ₂ #9324 — member-segment matchers onto the shared enumeration** (§K2-D2; medium; part of fk-8d86383441a3, whose leaf is S9 ρ #9321). `cursor_on_member_segment` and `expr_member_segment_hit` (references/local.rs) and every references/walk.rs caller are rewritten onto S9 ρ's `Expr::for_each_child` / `MemberDecl::for_each_direct_expr` / `MemberDecl::child_scopes`; walk.rs's five child helpers are deleted; derived-sub prototype and operand uses become collected (rename RED tests). Depends on ψ #8757 (done) and S9 ρ #9321. Per the ruling this rewrite may land ahead of ψ₃.
+- **ψ₃ #9325 — `cursor.rs`: `resolve_cursor -> CursorTarget`** (§K2-D3, the held "A" half; medium; fk-dd82750298e2, plus the systemic half of fk-406a3917737c). `CursorTarget { DeclName | ValueUse { binding } | MemberSegment { base } | TypeUse | Keyword | Trivia(Comment | String) | None }`, consumed by hover, goto_def, references, rename, highlight and completion's DotAccess/TypePosition as wildcard-free matches; goto_def Phase C and the member-segment guard subsumed. #7607 is cancelled with `x_subsumed_by` #9325 (its three measured cases and its flip-the-pin acceptance criterion are ported). Depends on S9 ρ #9321 and ψ₂ #9324 (**[Amended 2026-10-20, retro-critic R3]** and on θ #8773 and η #8772: `CursorTarget::DeclName` dispatches to θ's renderers and member resolution uses η's `member_scopes`). The ruling strikes §11's completion-context exclusion for this leaf; §11 as written carries no such line (its only completion bullet is the `KEYWORDS` dependency from rename, which stands), so this bullet records that completion's context classification is in ψ₃'s scope. The immediate `determine_context` named-argument fix is the standalone low task #9328 (K2-D3 B), which ψ₃ later deletes. The derived-sub reference walk (`derivation: _` in references/walk.rs) is covered by S9 ρ's `for_each_direct_expr` and ψ₂.
+- **γ₂ #9326 — `analysis::analyse`: one compile+check per document version** (§K2-D4 leaf 1; medium; fk-4034ccf5b655; K1-D4's items folded in). `analyse(parsed, mode) -> Analysis { compiled, skipped, check, engine }` built on `compile_program` (OQ2-A), memoised per version on `DocumentState` beside `parsed_cache`, the only place naming the checker and calling the eval-readiness predicate; `AnalysisContext` becomes a view; `EngineMode` decides undef-cause capture once; ratchet row "reify-lsp compile-entry call sites = 1" in α #8755's member. Depends on γ #8778, β #8761, ε #8759, ι #8774 and α #8755. **[Amended 2026-10-20, retro-critic R3]** `Analysis.skipped` holds `reify_eval::UnrepresentableCell` (β's type), and analysis.rs imports nothing from `crate::diagnostics`, so no {analysis, diagnostics} SCC forms; γ₂ names the engine factory that `EvalState` uses; `python3 scripts/assert-module-scc.py check` (module_scc_ratchet) green is an explicit done-criterion. γ #8778 is not widened: analyse() wraps γ's `compile_program` call and γ's check stays satisfied (cross-reference recorded on #8778). ι #8774 keeps its scope; after γ₂ only cache misses go through `BlockingWorkPlacement`.
+- **ε₂ #9327 — diagnostics stage split and typed codes** (§K2-D4 leaf 2; medium; fk-ce2e01ebfe43). `compute_diagnostics_with_state` becomes stage functions with `eval_stage` the sole `EvalState` writer committing on success; `enum LspDiagnosticCode` and one `lsp_diagnostic` constructor. Depends on ε #8759, ζ #8771, ω #8770 and γ₂ #9326. **[Amended 2026-10-20, retro-critic R3]** module_scc_ratchet green is an explicit done-criterion; ε₂ carries the §10 same-diff obligation for the checks of #9025 and #9292 if it moves stages out of diagnostics.rs.
+- **Survey record.** fk-dd82750298e2 and fk-ce2e01ebfe43 had swapped anchor/verdict-notes fields in `docs/notes/bug-hotspot-survey-2026-10-15-full-findings.json`; corrected 2026-10-16 before either key was stamped (keys kept as identities; see the record's `corrections` field).
+- **Cross-references.** β #8761 (K1-D1): `first_unrepresentable_cell` and its LSP callers become deletable once the generic-instantiation stream's β makes its hydration check always-on; β lands unchanged first. #6012 / #8910 (K2-D8): completion.rs is re-measured after both land; a move-only split only if it is still above 2,000 raw lines and ψ₃ has not taken `determine_context`.
+- **Close leaf.** Ω #8779 depends on every filed leaf; adding ψ₂, ψ₃, γ₂ and ε₂ to Ω's dependencies is left to the S27 lead (this sitting's applier did not write #8779).
+
+## Retro-critic sitting amendments (2026-10-20)
+
+Rulings R3 of the attended retro-critic sitting. Pointer for every bullet:
+`plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R3`.
+
+- **BLK-1** (τ #8758, υ #8775, ω #8770, ε₂ #9327): same-diff obligation. Each partition leaf, in the diff that empties a file, re-scopes every task's `delivered_checks` on that file in three writes so no open task's check changes polarity. §12 Q1 widened from `metadata.files` to delivered checks; §10 τ/υ/ω carry the known id lists (present on main.rs #5517 #6733 #6777 #6923 #6171 #5399 (υ), #6800 #6970 #5406 #8395 (τ); absent #6898 (υ), #8997 (ω); #6740 retired); ε₂ carries it for #9025 and #9292.
+- **BLK-2** (γ #8778): γ exports `reify_compiler::module_path_for_entry(&Path) -> ModulePath`, used by `compile_program` and by document.rs, goto_def.rs and symbols.rs (γ's files widened); parity test (cached parse's module path = `compile_program`'s entry path); `module_name_from_uri` deleted; front-end ratchet row target stays 0. §4.2 and §7 OQ2-A amended; OQ2-A stands.
+- **MAJ-1** (γ #8778): `supersedes:` §6 decision 5's compile-parity signal. `tooling_fe_stdlib_enum.ri` is a non-regression row; γ's RED signal is multi-file (hover/completion on an importing entry resolve an imported `pub` template). §2.3's `reify mcp-server` rows marked historical; §9 #6805 row amended.
+- **MAJ-2** (γ₂ #9326, ε₂ #9327): `Analysis.skipped` holds `reify_eval::UnrepresentableCell`; analysis.rs imports nothing from `crate::diagnostics`; γ₂ names the engine factory `EvalState` uses; module_scc_ratchet green is a done-criterion of both.
+- **MAJ-3** (κ #8760): `LspMethod` homed in the leaf module `crates/reify-lsp/src/lsp_method.rs` (§4.3; κ's files widened); module_scc_ratchet green is a done-criterion.
+- **MAJ-4** (β #8761, ζ #8771): edge #8761 ← #8743; β's moved scan calls `TopologyTemplate::all_value_cells()`; `eval_guard` leaves ζ's scope (ζ's files narrowed).
+- **MAJ-5** (α #8755): rows on #8730's `rust_construct_ratchet` engine (a member that imports it, no third engine); the dead `reify_compiler::compile(` row is dropped (§6 decision 7); registration by `# run-all-bucket:` pragma if S19 υ #9303 has landed, else a manifest row (§8, §9); DAG gains #8730 → α. α's delivered checks gain `rows-on-the-shared-construct-engine` (`rust_construct_ratchet` present in the member).
+- **MAJ-6** (ζ #8771): guard-aware. ζ reads the guard cell's value from `check_result` and walks guarded constraints through `all_constraints()`, realised as a widening of S9 ν #8743 beside `all_value_cells()` (cross-PRD obligation on compiler-declaration-passes). B7's guard-false half stands; the manifest's OPEN verdict closes in-leaf with the measured outcome.
+- **MAJ-7** (ψ₃ #9325): edges #9325 ← #8773, #8772; DAG θ, η → ψ₃.
+- **MAJ-8** (ε #8759): each `EvalState` bookkeeping pin is replaced by a behavioural two-call test and the replaced pins are listed (§4.5, §10 ε).
+- **Polarity**: ι #8774 re-anchors its hover-placed check in three writes if it labels runs from `LspMethod` (§10 ι, manifest note); α's check adds `rust_construct_ratchet` present in the member; ο #8765's §0 outcome restated as a transport-level contract (`supersedes:` OQ1-A's user-observable clause: no host exists until a headless one does).

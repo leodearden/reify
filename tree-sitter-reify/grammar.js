@@ -331,6 +331,8 @@ module.exports = grammar({
       '}',
     ),
 
+    // `port_declaration` is deliberately absent: trait-required ports are deferred.
+    // See docs/prds/v0_6/generic-assemblies-interface-traits.md (milestone #7882).
     trait_member: $ => choice(
       $.param_declaration,
       $.let_declaration,

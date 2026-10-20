@@ -410,3 +410,59 @@ tasks:
       expect: present
       paths:
       - docs/prds/v0_6/cell-eval-transaction-closure.md
+- label: φ
+  task_id: 9292
+  title: 'cell-eval-transaction-closure φ: eval_cached reduced to Engine::replay_last_eval (gap-fill K3-D1)'
+  capabilities:
+  - name: replay-entry-absent
+    binding: 'No replay_last_eval exists in crates/reify-eval/src (git grep at main c7bbfe2519); the LSP re-diagnose of unchanged content calls Engine::eval_cached (crates/reify-lsp/src/diagnostics.rs, the content_unchanged branch).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn replay_last_eval
+      expect: present
+      paths:
+      - crates/reify-eval/src/
+  - name: lsp-calls-replay
+    binding: 'reify-lsp diagnostics.rs is the one non-test caller of eval_cached; it gates the call on unchanged content and an initialized engine, on a kernel-less, solver-less Engine that never calls edit_param (gap-fill record §K3-D1, verified at main 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: replay_last_eval
+      expect: present
+      paths:
+      - crates/reify-lsp/src/diagnostics.rs
+  - name: eval-cached-twin-present
+    binding: 'pub fn eval_cached( (engine_eval.rs::Engine.eval_cached) and fn dispatch_merged_cluster_solve_cached (engine_eval.rs) (about 1,870 lines); 20 test files under crates/*/tests call .eval_cached( (git grep -l at main c7bbfe2519).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn eval_cached\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src/
+  - name: dirty-reasons-only-serve-eval-cached
+    binding: 'CacheStore.dirty_reasons (cache.rs::CacheStore.dirty_reasons) and invalidate_dependents / is_dirty / clear_dirty / clear_dependents_dirty are read only on the eval_cached path; set_param_and_invalidate calls invalidate_dependents only to feed it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dirty_reasons
+      expect: absent
+      paths:
+      - crates/reify-eval/src/cache.rs
+- label: χ
+  task_id: 9294
+  title: 'cell-eval-transaction-closure χ: delete set_param_and_invalidate after ε (gap-fill K3-D5)'
+  capabilities:
+  - name: no-production-caller
+    binding: 'Engine::set_param_and_invalidate (engine_edit.rs::Engine.set_param_and_invalidate) has no production caller since bbfbc7dd29 (#6665) deleted reify-cli mcp_context.rs; callers at main c7bbfe2519 are cache.rs in-file tests (5), reify-eval integration tests and one reify-lsp diagnostics.rs test.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn set_param_and_invalidate
+      expect: absent
+      paths:
+      - crates/reify-eval/src/
+  - name: pin-recorded-by-transaction
+    binding: 'ε #8863 makes the EditTransaction record the user pin first (gap-fill K3-D5), so a committer no longer needs a second call to persist its pin.'
+    verdict: PASS

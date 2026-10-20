@@ -66,14 +66,6 @@ impl reify_ir::GeometryKernel for BrepKernel {
         self.tessellated.lock().unwrap().push(handle);
         Ok(minimal_valid_mesh(false))
     }
-
-    /// The default kernel assembles the multi-body export.
-    fn make_compound(
-        &mut self,
-        handles: &[GeometryHandleId],
-    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-        self.inner.make_compound(handles)
-    }
 }
 
 /// The Mesh kernel: accepts ingested meshes under fresh ids and runs the
@@ -120,6 +112,15 @@ impl reify_ir::GeometryKernel for MeshKernel {
         self.next_ingest_id += 1;
         Ok(reify_ir::GeometryHandle { id, repr: None })
     }
+
+    /// Every product body is a translate, so this kernel owns them all and
+    /// assembles the multi-body export.
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+        self.inner.make_compound(handles)
+    }
 }
 
 fn engine_over_brep_and_mesh_kernels(tessellated: &Tessellated) -> Engine {
@@ -160,6 +161,7 @@ fn engine_over_brep_and_mesh_kernels(tessellated: &Tessellated) -> Engine {
         },
     );
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         kernels,
         registry,
@@ -192,7 +194,8 @@ fn an_external_conversion_intermediate_follows_its_owners_family() {
 }
 pub structure H {
     param h : Length = 5mm
-    let k = box(h, 5mm, 5mm)
+    let b = box(h, 5mm, 5mm)
+    let k = translate(b, 1mm, 0mm, 0mm)
 }"#;
     let mut module = compile_source(SRC);
     for (purpose, _) in [("mfg_g", "G"), ("mfg_h", "H")] {

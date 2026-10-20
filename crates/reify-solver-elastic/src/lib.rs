@@ -36,7 +36,6 @@
 //!     // Task 4068: degenerate-shell substrate public surface
 //!     shell_element_stiffness_degenerate, Director, ShellRefCoord3, directors_from_facets,
 //!     IsotropicElastic,
-//!     ShellStress,
 //!     ShellElementStress, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
@@ -119,14 +118,6 @@
 //! let k_deg = shell_element_stiffness_degenerate(&nodes, &[dirs[0], dirs[1], dirs[2]], &[0.05; 3], &mat);
 //! assert_eq!(k_deg.n_dofs, 18);
 //! assert_eq!(k_deg.data.len(), 324);
-//!
-//! // ShellStress smoke test (T16): use a non-trivial value so a regression where
-//! // one channel is left default would surface here.
-//! let field = reify_ir::Value::Real(1.0);
-//! let ss = ShellStress::homogeneous(field.clone());
-//! assert_eq!(ss.top, field, "homogeneous: top must equal input");
-//! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
-//! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
 //!
 //! // T7 smoke tests: local_to_global orthonormality + shell_element_stress API typecheck.
 //! let frame_mat: [[f64; 3]; 3] = build_shell_frame(&nodes).local_to_global();
@@ -628,6 +619,7 @@ pub use elements::{
     // Task 4417/ζ: dedicated CST membrane element K_e.
     membrane_cst::element_stiffness_membrane_cst,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
+    shell_frame::{ShellFrame, build_shell_frame, plane_stress_d},
     tet_p1::TetP1,
     tet_p2::TetP2,
     wedge_p1::WedgeP1,
@@ -673,15 +665,13 @@ pub use result::{
     recover_nodal_stress_p1, tet_volume_p1,
 };
 pub use shell_assembly::{
-    ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
-    shell_element_stiffness_degenerate, shell_element_stiffness_degenerate_ans,
-    shell_element_stiffness_degenerate_ans_bubble, shell_element_stiffness_mitc3_plus,
+    shell_element_stiffness, shell_element_stiffness_degenerate,
+    shell_element_stiffness_degenerate_ans, shell_element_stiffness_degenerate_ans_bubble,
+    shell_element_stiffness_mitc3_plus,
 };
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
-pub use shell_result::{
-    ShellElementStress, ShellStress, flatten_shell_channels, shell_element_stress,
-};
+pub use shell_result::{ShellElementStress, flatten_shell_channels, shell_element_stress};
 // Task 3594/δ: flat-plate MITC3 cantilever shell driver (neutral types only).
 pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.

@@ -1,12 +1,21 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { createLineReader } from './ipc.js';
-import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
+import type { InboundMessage, NoticeMessage, OutboundMessage, SendMessage } from './types.js';
 import type { PermissionServer } from './permission-server.js';
 import { wrapClaudeArgs } from './sandbox.js';
-import { allowedTools, sidecarMcpServers } from './tool-surface.js';
+import { sidecarMcpServers } from './tool-surface.js';
+import { buildClaudeArgs } from './claudeArgs.js';
+import {
+  claimToolUse,
+  forgetToolUses,
+  initialStreamState,
+  mapStreamEvent,
+  type StreamState,
+} from './streamEvents.js';
+import { errorMessage } from './utils.js';
 
 export interface SessionConfig {
   model: string;
@@ -16,7 +25,8 @@ export interface SessionConfig {
   timeoutMs?: number;
   /**
    * Optional permission-prompt MCP server to wire Claude CLI's --permission-prompt-tool.
-   * When provided, invokeSdk appends --mcp-config and --permission-prompt-tool args.
+   * When provided, buildClaudeArgs adds --permission-prompt-tool and the MCP config
+   * gains a reify-permission entry.
    */
   permissionMcp?: {
     /** The MCP endpoint URL (e.g. http://127.0.0.1:<port>/mcp) */
@@ -63,8 +73,9 @@ export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
  * Manages a Claude Code SDK session, dispatching inbound messages
  * and emitting outbound messages via the onOutput callback.
  *
- * Uses `claude --print --output-format stream-json` for streaming
- * responses, and `--resume <session_id>` for conversation continuity.
+ * Spawns the claude CLI in stream-json print mode (argv: claudeArgs.ts::buildClaudeArgs),
+ * maps its stdout through streamEvents.ts::mapStreamEvent, and resumes with the CLI
+ * session id for conversation continuity.
  */
 export class SidecarSession {
   private config: SessionConfig;
@@ -72,10 +83,8 @@ export class SidecarSession {
   private abortController: AbortController | null = null;
   private destroyed = false;
 
-  /** Maps tool_use_id → tool_name for outbound tool_result rendering. */
-  private toolNameById: Map<string, string> = new Map();
-  /** Maps tool_name → FIFO queue of pending tool_use_ids for correlation. */
-  private pendingToolUseIds: Map<string, string[]> = new Map();
+  /** The in-flight invocation's stream state (delta offsets, tool_use correlation), if any. */
+  private stream: StreamState | null = null;
   /** The stdin of the currently in-flight claude CLI process, if any. */
   private currentStdin: NodeJS.WritableStream | null = null;
 
@@ -130,7 +139,7 @@ export class SidecarSession {
         // since there is no decision lifecycle to track.
         if (this.currentInvocationId === null) {
           config.permissionMcp!.server.decide(req.request_id, { behavior: 'deny' });
-          this.onOutput({
+          this.emitNotice({
             type: 'notice',
             id: '',
             code: 'permission_request_orphaned',
@@ -174,8 +183,6 @@ export class SidecarSession {
     // Cancel any pending permission requests so suspended HTTP handlers are unblocked.
     this.config.permissionMcp?.server.cancelAll();
     this.sessionId = null;
-    this.toolNameById.clear();
-    this.pendingToolUseIds.clear();
     this.pendingPermissionRequests.clear();
     this.currentInvocationId = null;
     // Clean up the cached MCP config file and its temp directory.
@@ -276,88 +283,8 @@ export class SidecarSession {
    * Invoke Claude Code CLI in streaming JSON mode and emit events.
    */
   private async invokeSdk(id: string, prompt: string): Promise<void> {
-    // Clear correlation state from any prior invocation before building args.
-    // This guarantees a fresh start regardless of how the previous invocation ended
-    // (normal exit, error, abort, or stream-error path).
-    this.toolNameById.clear();
-    this.pendingToolUseIds.clear();
-
-    const args = [
-      '--print',
-      '--verbose',
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-      '--input-format', 'stream-json',
-      '--model', this.config.model,
-      '--system-prompt', this.config.systemPrompt,
-    ];
-
-    if (this.sessionId) {
-      args.push('--resume', this.sessionId);
-    }
-
-    // Write the MCP config file lazily on the first invokeSdk call and cache it for the
-    // session lifetime (mcpConfigTmpFile / mcpConfigTmpDir fields), so subsequent turns
-    // avoid repeated mkdtemp+writeFile I/O. Cleanup happens in destroy().
-    // The reify-debug entry is present only when the host's server is live, and the
-    // reify-permission entry only when a permission server is configured.
-    if (!this.mcpConfigTmpFile) {
-      this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
-      this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
-      const mcpConfig = {
-        mcpServers: sidecarMcpServers({
-          reifyDebugMcpUrl: this.config.reifyDebugMcpUrl,
-          permissionUrl: this.config.permissionMcp?.url,
-        }),
-      };
-      fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
-    }
-    // --strict-mcp-config: load ONLY this file, never ~/.claude.json or a project
-    // .mcp.json, which can define a foreign reify-debug server (the reify repo's does).
-    args.push('--mcp-config', this.mcpConfigTmpFile, '--strict-mcp-config');
-    if (this.config.permissionMcp) {
-      args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
-    }
-
-    // Always bypass per-call permission prompts using an explicit allowlist.
-    // This prevents the GUI from silently stalling on missing permission-UI (see task #3206).
-    // The allowlist is strictly tighter than --dangerously-skip-permissions (which allows all tools).
-    //
-    // Precedence note: --permission-mode bypassPermissions auto-approves ALL tool calls without
-    // asking — so --permission-prompt-tool (reify-permission) is NOT consulted for any tool in
-    // bypassPermissions mode. The two flags are complementary in purpose but operate on different
-    // axes: --allowed-tools restricts which tools Claude is permitted to invoke (anything outside
-    // the list is rejected outright); --permission-mode bypassPermissions means approved tool
-    // calls need no further confirmation prompt. The permission MCP (reify-permission) would only
-    // become active if a future configuration uses a non-bypass permission mode.
-    args.push('--permission-mode', 'bypassPermissions');
-    args.push('--allowed-tools', allowedTools(this.config.reifyDebugMcpUrl));
-
-    // Read the landlock probe result that was settled at sidecar startup by
-    // probeLandlockAsync() in index.ts. Defaults to false when the field is absent
-    // (e.g. unit-test invocations that do not set landlockAvailable in config).
-    const landlockOk = this.config.landlockAvailable ?? false;
-
-    // When a sandbox was requested (landlockExec set) but the kernel can't deliver it,
-    // emit a one-shot notice so the frontend can surface a toast. The !sandboxNoticeEmitted
-    // guard prevents spamming the notice on every subsequent turn of the same session.
-    if (this.config.landlockExec && !landlockOk && !this.sandboxNoticeEmitted) {
-      this.sandboxNoticeEmitted = true;
-      this.onOutput({
-        type: 'notice',
-        id,
-        code: 'sandbox_unavailable',
-        message: 'Sandbox unavailable; Claude will run unrestricted.',
-      });
-      console.warn('[sidecar] sandbox unavailable; claude will run unrestricted');
-    }
-
-    // Wrap the claude args with the landlock sandbox when available.
-    // effectiveLandlockExec is set to undefined if the probe failed so wrapClaudeArgs
-    // returns {cmd:'claude', args:[...args]} (passthrough, no python3 wrap).
-    const effectiveLandlockExec = landlockOk ? this.config.landlockExec : undefined;
-    const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
-    const { cmd, args: wrappedArgs } = wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
+    const args = buildClaudeArgs(this.config, this.sessionId, this.mcpConfigPath());
+    const { cmd, args: wrappedArgs } = this.sandboxedCommand(id, args);
 
     const proc = spawn(cmd, wrappedArgs, {
       cwd: this.config.workingDirectory,
@@ -399,8 +326,8 @@ export class SidecarSession {
     // from handleSendMessage instead.
     let warnedOrphanStdinError = false;
     proc.stdin?.on('error', (err: Error) => {
-      // One-shot guard (mirrors notifiedMissingMessageId below) prevents log spam if the
-      // kernel/Node fires repeated errors on the same stream after an external fd close.
+      // One-shot guard prevents log spam if the kernel/Node fires repeated errors on the
+      // same stream after an external fd close.
       if (!warnedOrphanStdinError) {
         warnedOrphanStdinError = true;
         console.warn(`[sidecar] stdin error (orphan, no pending write): ${err.message}`);
@@ -420,8 +347,10 @@ export class SidecarSession {
       }
     );
 
-    // Register the in-flight stdin so handleToolResult can write to it.
+    // Register the in-flight stdin and a fresh stream state so handleToolResult can
+    // claim this invocation's tool_uses and write their results.
     this.currentStdin = proc.stdin ?? null;
+    this.stream = initialStreamState(id);
 
     // Start timeout timer
     const timeoutMs = this.config.timeoutMs ?? 300_000;
@@ -440,108 +369,12 @@ export class SidecarSession {
       proc.on('close', (code: number | null) => resolve(code));
     });
 
-    // Track content lengths for delta extraction from partial messages
-    let lastTextLen = 0;
-    let lastThinkingLen = 0;
-    let currentAssistantMessageId: string | null = null;
-    // One-shot guard: notify (stderr + host via onOutput) at most once per invocation if message.id is absent.
-    let notifiedMissingMessageId = false;
-
-    // Parse streaming JSON events from stdout
     try {
-      for await (const line of createLineReader(proc.stdout!)) {
-        try {
-          const event = JSON.parse(line);
-
-          if (event.type === 'assistant' && event.message?.content) {
-            // Detect new turn from the streaming envelope's message.id. Each new
-            // assistant turn within a single --print invocation gets a new Message.id;
-            // partial updates within the same turn share the same id. Reset both length
-            // counters deterministically on id change so deltas emit from offset 0 for
-            // the new turn. If event.message.id is absent (malformed mock or future
-            // format change), skip the reset — degrading gracefully to single-turn
-            // behavior. Tool-correlation maps (toolNameById, pendingToolUseIds) are NOT
-            // cleared here — pending tool_uses from a prior turn may still be awaiting
-            // a tool_result from the host. Maps are only cleared at the three lifecycle
-            // boundaries: invokeSdk start, destroy(), and handleClearSession.
-            if (typeof event.message.id === 'string' && event.message.id !== currentAssistantMessageId) {
-              lastTextLen = 0;
-              lastThinkingLen = 0;
-              currentAssistantMessageId = event.message.id;
-            } else if (typeof event.message.id !== 'string' && !notifiedMissingMessageId) {
-              notifiedMissingMessageId = true;
-              const DEGRADED_TURN_BOUNDARY_DETAIL =
-                'assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
-                'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.';
-              console.error(`[sidecar] ${DEGRADED_TURN_BOUNDARY_DETAIL}`);
-              this.onOutput({
-                type: 'notice',
-                id,
-                code: 'degraded_turn_boundary',
-                message: DEGRADED_TURN_BOUNDARY_DETAIL,
-              });
-            }
-            for (const block of event.message.content) {
-              if (block.type === 'text' && block.text) {
-                if (block.text.length > lastTextLen) {
-                  const delta = block.text.slice(lastTextLen);
-                  lastTextLen = block.text.length;
-                  this.onOutput({ type: 'text_delta', id, content: delta });
-                }
-              } else if (block.type === 'thinking' && block.thinking) {
-                if (block.thinking.length > lastThinkingLen) {
-                  const delta = block.thinking.slice(lastThinkingLen);
-                  lastThinkingLen = block.thinking.length;
-                  this.onOutput({ type: 'thinking_delta', id, content: delta });
-                }
-              } else if (block.type === 'tool_use' && block.id && !this.toolNameById.has(block.id)) {
-                this.toolNameById.set(block.id, block.name);
-                // Maintain a FIFO queue of tool_use_ids per tool_name as a fallback
-                // correlation mechanism for hosts that do not echo back tool_use_id.
-                // CONTRACT: the fallback assumes the host returns tool_results in the
-                // same order Claude CLI emitted tool_uses for the same tool_name;
-                // out-of-order same-name results will be mis-correlated. Hosts should
-                // echo tool_use_id (included in the tool_call outbound below) in their
-                // InboundToolResult to enable correct id-based correlation instead.
-                const queue = this.pendingToolUseIds.get(block.name) ?? [];
-                queue.push(block.id);
-                this.pendingToolUseIds.set(block.name, queue);
-                this.onOutput({
-                  type: 'tool_call',
-                  id,
-                  tool_use_id: block.id,
-                  tool_name: block.name,
-                  tool_input: block.input ?? {},
-                });
-              } else if (block.type === 'tool_result') {
-                this.onOutput({
-                  type: 'tool_result',
-                  id,
-                  tool_name: this.toolNameById.get(block.tool_use_id) ?? '',
-                  result: block.content,
-                });
-              }
-            }
-          } else if (event.type === 'result' && event.session_id) {
-            this.sessionId = event.session_id;
-            // Close stdin now that the invocation is complete. No further tool_results
-            // are expected after a 'result' event; keeping stdin open would prevent
-            // claude CLI from exiting deterministically.
-            proc.stdin?.end();
-            // Null currentStdin immediately so any tool_result arriving between this
-            // point and the finally block hits the clean "no in-flight" guard rather
-            // than writing to an already-ended stream (Bug #2: close-on-result race).
-            this.currentStdin = null;
-          }
-        } catch {
-          // Skip unparseable lines
-        }
-      }
+      await this.consumeStream(proc);
     } finally {
       clearTimeout(timeoutId);
       this.currentStdin = null;
-      // MCP config file cleanup is deferred to destroy() since the file is
-      // now cached for the session lifetime rather than written per-turn.
+      this.stream = null;
     }
 
     // Wait for process exit and check exit code
@@ -549,6 +382,116 @@ export class SidecarSession {
     if (exitCode !== 0 && exitCode !== null) {
       throw new Error(stderr || `Claude CLI exited with code ${exitCode}`);
     }
+  }
+
+  /**
+   * Read the claude child's stream-json stdout to its end, applying each event. A line
+   * that is not JSON is skipped with a warning. If applying an event throws, the child is
+   * killed (it would otherwise keep running tools for a turn that has already failed)
+   * and the error propagates, so the turn ends with an error outbound.
+   */
+  private async consumeStream(proc: ChildProcess): Promise<void> {
+    for await (const line of createLineReader(proc.stdout!)) {
+      let event: unknown;
+      try {
+        event = JSON.parse(line);
+      } catch (parseError) {
+        console.warn(`[sidecar] skipping unparseable stream-json line: ${errorMessage(parseError)}`);
+        continue;
+      }
+      try {
+        this.applyStreamEvent(event, proc);
+      } catch (error) {
+        proc.kill();
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Advance the in-flight stream state by one event and forward the outputs it implies.
+   * The state is re-read from `this.stream` on every event, so claims and forgets made
+   * between events survive, and it is committed BEFORE forwarding, so a host answering a
+   * tool_call synchronously finds its tool_use.
+   */
+  private applyStreamEvent(event: unknown, proc: ChildProcess): void {
+    if (this.stream === null) throw new Error('stream event received with no in-flight invocation state');
+    const step = mapStreamEvent(event, this.stream);
+    this.stream = step.state;
+    for (const msg of step.outputs) {
+      if (msg.type === 'notice') {
+        this.emitNotice(msg);
+      } else {
+        this.onOutput(msg);
+      }
+    }
+    if (step.finished !== undefined) this.finishTurn(step.finished.sessionId, proc);
+  }
+
+  /**
+   * Record the CLI session id for --resume and close stdin: no tool_result follows a
+   * result event, and the CLI in stream-json input mode exits only once stdin closes.
+   * currentStdin is nulled at once so a late tool_result hits the "no in-flight" guard
+   * rather than writing to an ended stream.
+   */
+  private finishTurn(sessionId: string, proc: ChildProcess): void {
+    this.sessionId = sessionId;
+    proc.stdin?.end();
+    this.currentStdin = null;
+  }
+
+  /**
+   * The MCP config file handed to the claude CLI, written on first use and cached for
+   * the session lifetime (cleaned up in destroy()) so later turns skip the
+   * mkdtemp+writeFile I/O. The reify-debug entry is present only when the host's server
+   * is live, and the reify-permission entry only when a permission server is configured.
+   */
+  private mcpConfigPath(): string {
+    if (!this.mcpConfigTmpFile) {
+      this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
+      this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
+      const mcpConfig = {
+        mcpServers: sidecarMcpServers({
+          reifyDebugMcpUrl: this.config.reifyDebugMcpUrl,
+          permissionUrl: this.config.permissionMcp?.url,
+        }),
+      };
+      fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
+    }
+    return this.mcpConfigTmpFile;
+  }
+
+  /**
+   * The command that runs `claude <args>`: wrapped in the landlock sandbox when the
+   * startup probe (config.landlockAvailable, settled by probeLandlockAsync() in index.ts)
+   * says the kernel supports it, otherwise a direct spawn. When a sandbox was requested
+   * but is unavailable, emits a one-shot sandbox_unavailable notice for invocation `id`
+   * so the frontend can surface a toast once per session rather than every turn.
+   */
+  private sandboxedCommand(id: string, args: string[]): { cmd: string; args: string[] } {
+    const landlockOk = this.config.landlockAvailable ?? false;
+    if (this.config.landlockExec && !landlockOk && !this.sandboxNoticeEmitted) {
+      this.sandboxNoticeEmitted = true;
+      this.emitNotice({
+        type: 'notice',
+        id,
+        code: 'sandbox_unavailable',
+        message: 'Sandbox unavailable; Claude will run unrestricted.',
+      });
+    }
+    const effectiveLandlockExec = landlockOk ? this.config.landlockExec : undefined;
+    const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
+    return wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
+  }
+
+  /**
+   * The one rule for notices: every notice goes to the host AND to stderr (the GUI
+   * process's log, which the sidecar inherits), so a degraded mode stays diagnosable
+   * when the chat never renders it.
+   */
+  private emitNotice(notice: NoticeMessage): void {
+    console.warn(`[sidecar] notice ${notice.code}: ${notice.message}`);
+    this.onOutput(notice);
   }
 
   /**
@@ -565,90 +508,30 @@ export class SidecarSession {
   }
 
   /**
-   * Forward a tool_result inbound from the host to the in-flight claude CLI's stdin.
-   * Correlates tool_name → tool_use_id using the FIFO pendingToolUseIds queue.
-   * Emits an error outbound if no matching tool_use_id is found.
+   * Forward a tool_result inbound from the host to the in-flight claude CLI's stdin,
+   * claiming the tool_use it answers (streamEvents.ts::claimToolUse). Emits an error
+   * outbound when no invocation is in flight or no announced tool_use matches.
    */
   private handleToolResult(toolName: string, result: unknown, id: string, inboundToolUseId?: string): void {
-    // Validate currentStdin BEFORE consuming the FIFO queue. If we shifted first and
-    // then found currentStdin is null, we'd silently drain the queue and corrupt
-    // subsequent matching results.
-    if (this.currentStdin === null) {
-      // Distinct message: no claude CLI process is running at all.
-      this.onOutput({
-        type: 'error',
-        id,
-        message: 'no in-flight claude CLI process',
-      });
+    if (this.currentStdin === null || this.stream === null) {
+      this.onOutput({ type: 'error', id, message: 'no in-flight claude CLI process' });
       return;
     }
-
-    let toolUseId: string | undefined;
-    if (inboundToolUseId !== undefined) {
-      // Preferred path: host echoed back the tool_use_id from the tool_call outbound.
-      // Validate it before accepting: the id must be registered AND match the tool_name.
-      if (!this.toolNameById.has(inboundToolUseId)) {
-        this.onOutput({
-          type: 'error',
-          id,
-          message: `unknown tool_use_id=${inboundToolUseId} for tool_name=${toolName}`,
-        });
-        return;
-      }
-      const registeredName = this.toolNameById.get(inboundToolUseId);
-      if (registeredName !== toolName) {
-        this.onOutput({
-          type: 'error',
-          id,
-          message: `tool_use_id=${inboundToolUseId} does not match tool_name=${toolName} (registered as ${registeredName})`,
-        });
-        return;
-      }
-      // Validation passed: use the echoed id directly — no FIFO consumed, correct for out-of-order results.
-      toolUseId = inboundToolUseId;
-      // Drain the matched id from the FIFO (splice, not shift, to preserve other ids at different
-      // positions — out-of-order delivery between distinct ids is the reason echoed-id exists).
-      const queue = this.pendingToolUseIds.get(toolName);
-      if (queue) {
-        const idx = queue.indexOf(inboundToolUseId);
-        if (idx !== -1) queue.splice(idx, 1);
-        if (queue.length === 0) this.pendingToolUseIds.delete(toolName);
-      }
-    } else {
-      // Fallback path: FIFO queue by tool_name.
-      // See the in-order-only CONTRACT documented in invokeSdk's tool_use handler.
-      const queue = this.pendingToolUseIds.get(toolName);
-      toolUseId = queue?.shift();
-      // Clean up an emptied FIFO entry to avoid stale map entries.
-      if (queue && queue.length === 0) this.pendingToolUseIds.delete(toolName);
-    }
-
-    if (toolUseId === undefined) {
-      // Distinct message: a process is running but this tool_name has no queued id.
-      this.onOutput({
-        type: 'error',
-        id,
-        message: `no pending tool_use for tool_name=${toolName}`,
-      });
+    const claim = claimToolUse(this.stream, toolName, inboundToolUseId);
+    if (!claim.ok) {
+      this.onOutput({ type: 'error', id, message: claim.error });
       return;
     }
-    // Remove the consumed id from toolNameById BEFORE the write so the maps stay consistent
-    // regardless of write outcome — the tool_use is "consumed" once we commit to forwarding it.
-    //
-    // Contract: each emitted tool_use_id is valid for exactly one tool_result forward. If the
-    // write fails (EPIPE reported via the per-write callback below), the host should treat the
-    // original send_message as failed and retry as a new send_message rather than re-dispatching
-    // the same tool_result. Retrying a tool_result with a consumed id will hit the 'unknown
-    // tool_use_id' validation guard and produce a clean structured error.
-    this.toolNameById.delete(toolUseId);
-    // Per-write callback captures the tool_result id for correct error correlation.
-    // No synchronous try/catch needed: stream-write failures surface via the callback.
+    // The tool_use is consumed whether or not the write below succeeds: on a write error
+    // the host retries the whole send_message, and re-sending this tool_result would
+    // hit the unknown tool_use_id error.
+    this.stream = claim.state;
     this.currentStdin.write(
       JSON.stringify({
         type: 'user',
         message: {
           role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }],
+          content: [{ type: 'tool_result', tool_use_id: claim.toolUseId, content: result }],
         },
       }) + '\n',
       (err) => {
@@ -671,8 +554,7 @@ export class SidecarSession {
    */
   private handleClearSession(): void {
     this.sessionId = null;
-    this.toolNameById.clear();
-    this.pendingToolUseIds.clear();
+    if (this.stream !== null) this.stream = forgetToolUses(this.stream);
     // Cancel any in-flight permission requests before clearing the tracking map.
     // Without this, the HTTP handlers awaiting pendingPromises in the permission
     // server would hang forever (no one calls decide() after the map is cleared).

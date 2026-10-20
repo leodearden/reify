@@ -78,7 +78,9 @@ mass-properties demand. No new seam.
   to `EvaluationGraph.connections` at eval/build time — nothing reads them structurally yet, but
   the enumeration channel exists (leaf α wires it, does not invent it). Measured gaps that are
   leaf scope, not fictions: **nested port paths fail** (`a.b.port` → "invalid port reference";
-  `resolve_port_name` in `connect.rs` matches one `MemberAccess` level only — α extends it, a
+  `resolve_port_name` in `connect.rs` matches one `MemberAccess` level only — α extends
+  `PortPath` members (ε₂ #9323 of compiler-declaration-passes keeps the typed `PortPath` through
+  `compile_connection` first), a
   printer-depth assembly needs it); the `sub xs[i in 0..N] = …` construction-arm indexer is a
   documented no-op owned by #5482 (the `List<T>` collection arm + indexing works and is what this
   PRD relies on).
@@ -245,8 +247,8 @@ legal — two bearings between the same pair), cycles legal. Each edge carries: 
 connector is not a joint value is not a graph edge (signal-flow connections coexist untouched).
 Extraction mechanism (probed): the connector is already a synthetic sub-component instance
 (`__connector_N`) and `EvaluationGraph.connections` carries the `CompiledConnection` list to
-eval/build — α reads these, extending `resolve_port_name` to nested port paths (measured
-one-level limit) and adding the world/ground endpoint form.
+eval/build — α reads these, extending `PortPath` members (ε₂ #9323 of compiler-declaration-passes)
+to nested port paths (measured one-level limit) and adding the world/ground endpoint form.
 
 ### C2 — joint compliance semantics
 
@@ -332,7 +334,7 @@ Phase 3 — full contract. Phase 4 — consumer + docs-truth + close.
 
 | Label | Task | Modules | Observable signal | Prereqs |
 |---|---|---|---|---|
-| α | Graph IR + extraction (`EvaluationGraph.connections` + `__connector_N` instances) + nested `resolve_port_name` paths + world/ground | reify-compiler connect, reify-eval | a two-body `.ri` with a joint-connector edge round-trips to a dumped graph (debug surface); nested `a.b.port` endpoints resolve (today: hard error); non-joint connectors ignored | — |
+| α | Graph IR + extraction (`EvaluationGraph.connections` + `__connector_N` instances) + nested port paths extending `PortPath` members (ε₂ #9323 of compiler-declaration-passes) + world/ground | reify-compiler connect, reify-eval | a two-body `.ri` with a joint-connector edge round-trips to a dumped graph (debug surface); nested `a.b.port` endpoints resolve (today: hard error); non-joint connectors ignored | — |
 | β | MassProperties realization demand + the pose seam (pose chain composed so mass/COM/inertia reach assembly in the assembly frame) + N≥2 consumption-keying contract | reify-eval engine_build, dynamics_ops | B8 green; a translated copy of a body yields translated COM (pose observably consumed) | — |
 | γ | Constrained-DOF compliance surface on kinematic.ri joints | reify-compiler stdlib | fixture checks green; kinematics byte-identical (B1 slice) | — |
 | δ | 6-DOF assembly: rigid blocks (via `SpatialInertia6`), frame-to-frame spring element, congruence constraint reduction on (K, M), ground | reify-solver-elastic | B3 + B5 + B9 green against closed forms | α, γ |
@@ -394,3 +396,7 @@ Contested-pair check: none of the three known contested seams is touched.
    IR is the contract, the spelling is not.
 5. **Builder lowering vs deprecation** for `mechanism()`/`body()`. Decide in α; either way one
    graph IR.
+
+## Gap-fill amendments (2026-10-16)
+
+- **§Uncontested block K9-D1** (`plans/gap-fill-deliberation-reify-20261016.md`): α no longer extends the String route through `resolve_port_name`. Nested `a.b.port` endpoints extend `PortPath` members; the typed carry through `compile_connection` (own vs sub-member from `PortRoot`) is the new S9 leaf ε₂ #9323 in `docs/prds/v0_6/compiler-declaration-passes.md`, and α #7162 depends on it. Reworded in place: the C1 substrate paragraph, the extraction-mechanism paragraph and the §9 α row (fk-98a6b0d91a7f).

@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
 LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
+VERIFY_EVENTS="$SCRIPT_DIR/verify_events.py"
 ORCHESTRATOR_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
 # Harness-global default (task #5142 review remediation): isolate the ENTIRE
@@ -1363,6 +1364,19 @@ else
     assert "T18c: all-pass run Summary carries NO flaky-retried clause (got: ${t11b_out:-<unset>})" false
 fi
 
+# _events_count <channel> <event> [FIELD=VALUE...] -- prints how many <event>
+# records of the REIFY_VERIFY_EVENT_LOG file <channel> carry every FIELD=VALUE
+# (tests/infra/README.md "Verify event channel").
+_events_count() {
+    local _channel="$1" _event="$2" _where=() _clause
+    shift 2
+    for _clause in "$@"; do
+        _where+=(--where "$_clause")
+    done
+    python3 -I "$VERIFY_EVENTS" query "$_channel" --event "$_event" \
+        ${_where[@]+"${_where[@]}"} --count
+}
+
 # -- Test 19: pool discovery/partition-stage death emits a root-cause diagnostic
 # (task #5123, esc-5080-9): under fleet-wide host overload, run_all.sh's pool
 # path was observed to die IMMEDIATELY after the "INFO: run_all.sh pool: N="
@@ -1389,14 +1403,13 @@ chmod +x "$TMPDIR_T19/test_pool_1.sh"
 PSI_HOT_T19="$TMPDIR_T19/psi_hot"
 printf 'some avg10=95.00 avg60=90.00 avg300=80.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PSI_HOT_T19"
 
-# Poisoned TMPDIR: a NONEXISTENT NESTED path (never mkdir'd). Discovery
-# and partition (pure in-memory) are unaffected; the block's workdir
-# `mktemp -d "${TMPDIR}/reify-run-all-pool.XXXXXX"` is the ONLY
-# TMPDIR-dependent command in the guarded block, so it fails
-# deterministically while everything upstream of it succeeds.
-# REIFY_RUN_ALL_POOL_LOCK is pinned to a GOOD path so the pre-block
-# `_H2_POOL_LOCK` default (which also falls back to TMPDIR) is
-# untouched -- the poisoning must reach exactly one command.
+# Poisoned TMPDIR: a NONEXISTENT NESTED path (never mkdir'd). It fails
+# run_all's pool scratch-workdir setup, which sits inside the guarded
+# partition -> workdir-setup span (run_all.sh header, "Partition diagnostic
+# guard"). 19g (the marker comes after the INFO line that opens the span) and
+# 19i (no run_start, the record written right after the span) bound the death
+# to that span from run_all's declared outputs.
+# REIFY_RUN_ALL_POOL_LOCK is the private lock every pool fixture here uses.
 TMPDIR_T19_POISON="$TMPDIR_T19/nope/deeper"
 
 t19_rc=0
@@ -1404,6 +1417,7 @@ t19_out="$(TMPDIR="$TMPDIR_T19_POISON" \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T19" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T19/pool.lock" \
     REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T19" \
+    REIFY_VERIFY_EVENT_LOG="$TMPDIR_T19/events-poisoned.jsonl" \
     bash "$RUN_ALL" "$TMPDIR_T19" 2>&1)" || t19_rc=$?
 
 # 19a: re-raise preserved -- run_all.sh still exits nonzero (regression
@@ -1467,6 +1481,7 @@ t19h_out="$(TMPDIR="$TMPDIR_T19_GOOD" \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T19" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T19/pool-good.lock" \
     REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T19" \
+    REIFY_VERIFY_EVENT_LOG="$TMPDIR_T19/events-good.jsonl" \
     bash "$RUN_ALL" "$TMPDIR_T19" 2>&1)" || t19h_rc=$?
 
 if ! grep -qE 'ERROR: run_all\.sh pool: discovery/partition' <<<"$t19h_out"; then
@@ -1477,6 +1492,25 @@ fi
 
 assert "T19h: normal pool run exits 0" \
     test "$t19h_rc" -eq 0
+
+# 19i-19k: the same two runs, read from the event channel each one wrote (a
+# file per run). run_start is written right after the guarded span ends, so a
+# run that dies inside the span leaves none; with 19g (the marker comes after
+# the INFO line that opens the span) that bounds the death to the span.
+# 19j anchors 19i against vacuity (the same env-passing shape does write
+# records once a run starts); 19k shows the normal run really ran its member,
+# which 19h's exit 0 alone would also report with no member run.
+t19i_starts="$(_events_count "$TMPDIR_T19/events-poisoned.jsonl" run_start)" || t19i_starts=reader-failed
+assert "T19i: the poisoned run wrote no run_start record -- it died in its setup span, before the run began (got $t19i_starts)" \
+    test "$t19i_starts" = 0
+
+t19j_starts="$(_events_count "$TMPDIR_T19/events-good.jsonl" run_start branch=pool)" || t19j_starts=reader-failed
+assert "T19j: the normal pool run wrote exactly one run_start record, branch=pool (got $t19j_starts)" \
+    test "$t19j_starts" = 1
+
+t19k_passes="$(_events_count "$TMPDIR_T19/events-good.jsonl" member_finish member=test_pool_1.sh verdict=PASS)" || t19k_passes=reader-failed
+assert "T19k: the normal pool run wrote exactly one PASS member_finish record for test_pool_1.sh (got $t19k_passes)" \
+    test "$t19k_passes" = 1
 
 # -- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) -----------------
 # Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1):
@@ -2067,7 +2101,7 @@ _HOLDER_T24=$!
 # slot-1 before invoking run_all.sh: under host load the holder's own
 # `flock -x` might not land within a fixed 0.2s window, letting the pool
 # worker acquire the uncontended slot with no wait and emit no marker --
-# a false T24a (the same class of race Test 25's state poll avoids).
+# a false T24a.
 # A non-blocking acquire attempt on the same slot file that FAILS is proof
 # the holder holds it. That barrier is now stated once, in
 # tests/infra/slot_holder_handshake_lib.sh, together with its self-healing
@@ -2127,25 +2161,44 @@ assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member pass
 # line and dark-factory's classifier falls through to a tree_sitter_generate_error
 # mislabel instead of test_failure. RED sub-case: a fast-failing pool member
 # ("boom") plus a pool member ("hang") that is held until the test releases it,
-# under REIFY_RUN_ALL_POOL_CONCURRENCY=2
-# (both admitted concurrently, no lock contention -- keeps this test's markers
-# independent of Test 24's). The harness polls (bounded, not a fixed sleep)
-# for boom's ACTUAL `.rc` bookkeeping write inside the real _H2_WORKDIR
-# (discovered via a private TMPDIR override -- the same authoritative state
-# _ra_partial_failed_names itself scans), then waits for hang's READY
-# announcement, confirming the failure landed and the run is still mid-flight
-# before firing SIGTERM itself -- decoupling the signal's timing from
-# absolute wall-clock guesswork under host load -- while the parent is
-# blocked in the Phase-1 `wait` for hang, into the new trap. Output is
-# captured to a FILE, not `$(...)`: the
-# orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
-# an inherited copy of the original pipe's write end until the test releases
-# it) would otherwise hold a command-substitution pipe open long past
-# run_all.sh's own death. GREEN regression sub-case: an all-pass run with NO
-# timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
+# under REIFY_RUN_ALL_POOL_CONCURRENCY=1 (one member admitted at a time on a
+# private lock, so no lock contention -- keeps this test's markers independent
+# of Test 24's). The harness waits (bounded, not a fixed sleep) on the run's
+# verify event channel for the second member_start: under a bound of 1 that
+# means boom's attempt is over, and its failure is on record. It then waits for
+# hang's READY announcement, confirming the run is still mid-flight, before
+# firing SIGTERM itself -- decoupling the signal's timing from absolute
+# wall-clock guesswork under host load -- while the parent is blocked in the
+# Phase-1 `wait` for hang, into the new trap. Output is captured to a FILE, not
+# `$(...)`: the orphaned hang-worker subshell (reparented on run_all.sh's
+# death, still holding an inherited copy of the original pipe's write end until
+# the test releases it) would otherwise hold a command-substitution pipe open
+# long past run_all.sh's own death. GREEN regression sub-case: an all-pass run
+# with NO timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
 # Summary) -- proves the trap is signal-only and never fires on the normal path.
 echo ""
 echo "--- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM ---"
+
+# _t25_write_hold_member <script-path> <hold-dir> -- writes an executable member
+# that announces READY with its PID (tmp+mv, so READY is never seen empty), then
+# stays until the test releases it. <hold-dir>/{ready,release,outcome} are its
+# READY/RELEASE/OUTCOME paths. Its 600-iteration wait is only a broken-infra
+# backstop and is recorded as `backstop` if it ever ends the hold.
+_t25_write_hold_member() {
+    local _script="$1" _hold_dir="$2"
+    {
+        printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+        printf 'source %q\n' "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+        printf 'READY=%q\nRELEASE=%q\nOUTCOME=%q\n' \
+            "$_hold_dir/ready" "$_hold_dir/release" "$_hold_dir/outcome"
+        cat <<'HANGBODY'
+echo "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"
+if holder_wait_for_marker "$RELEASE" 600; then echo released > "$OUTCOME"; else echo backstop > "$OUTCOME"; fi
+exit 0
+HANGBODY
+    } > "$_script"
+    chmod +x "$_script"
+}
 
 # -- RED sub-case: mid-run SIGTERM ---------------------------------------
 TMPDIR_T25="$(mktemp -d)"
@@ -2162,100 +2215,37 @@ test_pool_boom.sh pool
 test_pool_hang.sh pool
 EOF
 printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T25/test_pool_boom.sh"
-# hang announces READY with its PID (tmp+mv, so READY is never seen empty),
-# then stays until the test releases it. Its 600-iteration wait is only a
-# broken-infra backstop and is recorded as `backstop` if it ever ends the hold.
-{
-    printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-    printf 'source %q\n' "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
-    printf 'READY=%q\nRELEASE=%q\nOUTCOME=%q\n' \
-        "$T25_HANG_DIR/ready" "$T25_HANG_DIR/release" "$T25_HANG_DIR/outcome"
-    cat <<'HANGBODY'
-echo "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"
-if holder_wait_for_marker "$RELEASE" 600; then echo released > "$OUTCOME"; else echo backstop > "$OUTCOME"; fi
-exit 0
-HANGBODY
-} > "$TMPDIR_T25/test_pool_hang.sh"
-chmod +x "$TMPDIR_T25/test_pool_boom.sh" "$TMPDIR_T25/test_pool_hang.sh"
+chmod +x "$TMPDIR_T25/test_pool_boom.sh"
+_t25_write_hold_member "$TMPDIR_T25/test_pool_hang.sh" "$T25_HANG_DIR"
 
 LOCK_T25="$TMPDIR_T25/pool-t25.lock"
 T25_OUT="$TMPDIR_T25/out.txt"
+T25_CHANNEL="$TMPDIR_T25/events.jsonl"
 t25_rc=0
 
-# run_all.sh's pool workdir (_H2_WORKDIR) is created via
-# `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the pool
-# path's ONLY use of TMPDIR (Test 19 relies on the same contract). Pointing
-# TMPDIR at a private, empty directory lets the harness below discover
-# the real workdir and poll for boom's ACTUAL `.rc` bookkeeping write --
-# the same authoritative state _ra_partial_failed_names itself scans --
-# before firing SIGTERM. A child-side signal (e.g. boom touching its own
-# "done" marker) would still race the *parent* pool-worker subshell's
-# separate `.rc` write; polling the `.rc` file itself removes that race
-# entirely rather than trading one fixed wall-clock guess for another.
-H2WD_PARENT_T25="$TMPDIR_T25/h2wd"
-mkdir -p "$H2WD_PARENT_T25"
-
 # Launch run_all.sh directly (rather than under a fixed `timeout N`) so
-# the SIGTERM can be fired once boom's `.rc` write confirms its failure
-# landed and hang has announced READY. The bounded poll below reacts as
-# soon as the write lands rather than always waiting the full window. A
-# background SIGKILL fallback mirrors `timeout`'s -k grace period, in case
-# the TERM trap somehow doesn't reap it.
+# the SIGTERM can be fired once the run's event channel shows boom's
+# attempt is over and hang has announced READY. The bounded wait below
+# reacts as soon as the record lands rather than always waiting the full
+# window. A background SIGKILL fallback mirrors `timeout`'s -k grace
+# period, in case the TERM trap somehow doesn't reap it.
 env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
     REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
-    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
-    TMPDIR="$H2WD_PARENT_T25" \
+    REIFY_VERIFY_EVENT_LOG="$T25_CHANNEL" \
     bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
 t25_pid=$!
 
-# Poll bound: a broken-infra backstop only. hang is held until the test
-# releases it, so it always outlives this poll. Worst case
-# 100 x 0.1s x CAP 8 = 80s < hang's own backstop, 600 x 0.2s = 120s.
+# Under the pool bound of 1, the second member_start means the first
+# member's attempt has closed. hang is held until released, so the closed
+# one is boom, and its failure is recorded before SIGTERM. The timeout is a
+# broken-infra backstop only: 10s x the load factor (at most 80s), under
+# hang's own backstop, 600 x 0.2s = 120s.
 source "$LOAD_TOLERANCE_LIB"
-t25_poll_attempts=$(load_tolerant_attempts 100)
-
-t25_wd=""
-t25_rc_file=""
-t25_i=0
-while [ "$t25_i" -lt "$t25_poll_attempts" ]; do
-    if [ -z "$t25_wd" ]; then
-        for _d in "$H2WD_PARENT_T25"/reify-run-all-pool.*; do
-            [ -d "$_d" ] && t25_wd="$_d"
-            break
-        done
-    fi
-    if [ -n "$t25_wd" ]; then
-        for _f in "$t25_wd"/*.rc; do
-            case "$_f" in
-                *.retry.rc) continue ;;
-            esac
-            # Gate on nonzero CONTENT, not mere existence. run_all.sh
-            # writes each `.rc` atomically (tmp+mv), so a visible file is
-            # never empty and this gate is belt-and-braces; it mirrors
-            # _ra_partial_failed_names, which treats an empty/unreadable
-            # read as rc=0 ("not failed"), so the poll can never hand off
-            # to SIGTERM on a file T25c's attribution would not count.
-            if [ -s "$_f" ] && [ "$(cat "$_f" 2>/dev/null)" != 0 ]; then
-                t25_rc_file="$_f"
-            fi
-            break
-        done
-    fi
-    [ -n "$t25_rc_file" ] && break
-    sleep 0.1
-    t25_i=$((t25_i + 1))
-done
-
-# Confirm the poll actually observed boom's failure before firing
-# SIGTERM. A timeout here (host severely overloaded) would otherwise
-# surface downstream as an ambiguous T25b/T25c failure (empty partial-name
-# attribution) that reads like an attribution bug rather than a timing
-# miss -- say so plainly instead.
-if [ -z "$t25_rc_file" ]; then
-    echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
-fi
+t25_wait_secs="$(load_tolerant_attempts 10)"
+if python3 -I "$VERIFY_EVENTS" wait "$T25_CHANNEL" --event member_start --where attempt=1 --count 2 --timeout "$t25_wait_secs"; then t25_both_started=1; else t25_both_started=0; fi
 
 # SIGTERM must land on a run still mid-flight: wait for hang's READY
 # rather than assuming it from timing.
@@ -2293,8 +2283,17 @@ else
     assert "T25c: the partial FAILED line names test_pool_boom.sh (got: $(sed 's/^/  | /' "$T25_OUT"))" false
 fi
 
+# 25i: the channel closes the interrupted run with the same names T25c reads
+# off the text line. A list field matches by its JSON spelling.
+t25i_closes="$(_events_count "$T25_CHANNEL" run_finish interrupted=true 'failed=["test_pool_boom.sh"]')" || t25i_closes=reader-failed
+assert "T25i: the event channel closes the interrupted run with failed=[test_pool_boom.sh] (got $t25i_closes matching run_finish records)" \
+    test "$t25i_closes" = 1
+
 assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
     test "$t25_rc" -ne 0
+
+assert "T25 control: both pool members had started under a pool bound of 1 before SIGTERM fired (two member_start records) -- boom's attempt was over" \
+    test "$t25_both_started" -eq 1
 
 assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight" \
     test "$t25_hang_started" -eq 1
@@ -2320,6 +2319,7 @@ t25b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25B" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T25B/pool.lock" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_VERIFY_EVENT_LOG="$TMPDIR_T25B/events.jsonl" \
     bash "$RUN_ALL" "$TMPDIR_T25B" 2>&1)" || t25b_rc=$?
 
 if [[ "$t25b_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
@@ -2342,6 +2342,129 @@ fi
 
 assert "T25h: GREEN regression -- normal path exits 0" \
     test "$t25b_rc" -eq 0
+
+# 25j/25k: the same normal run, read from its own channel. 25j shows the member
+# really ran and passed; 25k is the channel twin of 25f -- the trap never fired.
+t25j_passes="$(_events_count "$TMPDIR_T25B/events.jsonl" member_finish member=test_pool_1.sh verdict=PASS)" || t25j_passes=reader-failed
+assert "T25j: GREEN regression -- the event channel records exactly one PASS member_finish for test_pool_1.sh (got $t25j_passes)" \
+    test "$t25j_passes" = 1
+
+t25k_clean_ends="$(_events_count "$TMPDIR_T25B/events.jsonl" run_finish interrupted=false)" || t25k_clean_ends=reader-failed
+assert "T25k: GREEN regression -- the event channel records exactly one run_finish, not interrupted (got $t25k_clean_ends)" \
+    test "$t25k_clean_ends" = 1
+
+# -- Test 25 (continued): the same markers when SIGTERM lands during a
+# CAPTURE-mode serial member (task 9412) -----------------------------------
+# The TERM trap runs in the main shell, and so does a Phase-2 serial member:
+# `_ra_run_member` capture mode redirects fd 1/2 to the member's out file for
+# the whole spawn. Bash defers the trap until the foreground member exits and
+# then runs it INSIDE that still-active redirect, so a handler that writes to
+# plain fd 1 puts its markers in the member's capture file and the verify
+# stream shows no Summary/FAILED line at all. The pool-phase sub-case above
+# cannot see this: there the parent is blocked in the `wait` builtin with fd 1
+# untouched. stdout and stderr go to SEPARATE files, so "on run_all's own
+# stdout" is asserted literally.
+echo ""
+echo "--- Test 25 (continued): partial FAILED/INTERRUPTED marker reaches run_all's own stdout when SIGTERM lands during a capture-mode serial member ---"
+
+TMPDIR_T25S="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T25S")
+
+T25S_HANG_DIR="$TMPDIR_T25S/hang"
+mkdir -p "$T25S_HANG_DIR"
+# TMPDIR points at a test-owned dir for hygiene only: no assertion reads it.
+mkdir "$TMPDIR_T25S/tmp"
+
+MANIFEST_T25S="$TMPDIR_T25S/classification.manifest"
+cat > "$MANIFEST_T25S" <<'EOF'
+test_pool_boom.sh pool
+test_serial_hang.sh intra-run-serial
+EOF
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T25S/test_pool_boom.sh"
+chmod +x "$TMPDIR_T25S/test_pool_boom.sh"
+_t25_write_hold_member "$TMPDIR_T25S/test_serial_hang.sh" "$T25S_HANG_DIR"
+
+T25S_OUT="$TMPDIR_T25S/stdout.txt"
+T25S_ERR="$TMPDIR_T25S/stderr.txt"
+T25S_CHANNEL="$TMPDIR_T25S/events.jsonl"
+t25s_rc=0
+
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY \
+    -u REIFY_RUN_ALL_CONTENT_SKIP -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25S" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T25S/pool.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_VERIFY_EVENT_LOG="$T25S_CHANNEL" \
+    TMPDIR="$TMPDIR_T25S/tmp" \
+    bash "$RUN_ALL" "$TMPDIR_T25S" >"$T25S_OUT" 2>"$T25S_ERR" &
+t25s_pid=$!
+
+# Phase 2 starts only after the Phase-1 join, so the capture-mode member_start
+# means boom's rc=1 is already on record. The timeout is a broken-infra
+# backstop only: 10s x the load factor, under the hold member's own backstop.
+t25s_wait_secs="$(load_tolerant_attempts 10)"
+if python3 -I "$VERIFY_EVENTS" wait "$T25S_CHANNEL" --event member_start --where member=test_serial_hang.sh --where mode=capture --where attempt=1 --timeout "$t25s_wait_secs"; then t25s_serial_started=1; else t25s_serial_started=0; fi
+if holder_wait_for_marker "$T25S_HANG_DIR/ready"; then t25s_hang_started=1; else t25s_hang_started=0; fi
+
+# The member is the foreground child, so this TERM stays pending until the
+# release below ends the member; the deferred trap then fires inside the
+# capture redirect.
+kill -TERM "$t25s_pid" 2>/dev/null || true
+t25s_hang_pid="$(cat "$T25S_HANG_DIR/ready" 2>/dev/null || true)"
+if [ -n "$t25s_hang_pid" ]; then
+    holder_release "$T25S_HANG_DIR/release" "$t25s_hang_pid" || true
+else
+    touch "$T25S_HANG_DIR/release"
+fi
+# run_all must now die of its re-raised SIGTERM: wait for that, and SIGKILL it
+# only if a broken run_all outlives the load-scaled backstop. No `( sleep; kill )
+# &` helper here: killed straight after its fork (run_all is usually dead by
+# now), such a subshell still runs this script's EXIT trap and wipes the
+# fixtures before the assertions read them.
+t25s_budget="$(load_tolerant_attempts 25)"
+t25s_polls=0
+while kill -0 "$t25s_pid" 2>/dev/null && [ "$t25s_polls" -lt "$t25s_budget" ]; do
+    sleep 0.2
+    t25s_polls=$((t25s_polls + 1))
+done
+if kill -0 "$t25s_pid" 2>/dev/null; then kill -KILL "$t25s_pid" 2>/dev/null || true; fi
+wait "$t25s_pid" 2>/dev/null || t25s_rc=$?
+
+t25s_dump="stdout: $(sed 's/^/  | /' "$T25S_OUT" 2>&1) stderr: $(sed 's/^/  | /' "$T25S_ERR" 2>&1)" || true
+
+if grep -qxF '=== Summary: INTERRUPTED (outer timeout; partial results) ===' "$T25S_OUT"; then
+    assert "T25l: SIGTERM during a capture-mode serial member puts the INTERRUPTED summary line on run_all's own stdout" true
+else
+    assert "T25l: SIGTERM during a capture-mode serial member puts the INTERRUPTED summary line on run_all's own stdout (got: $t25s_dump)" false
+fi
+
+if grep -Eq '^FAILED .*test_pool_boom\.sh.*\(partial\)$' "$T25S_OUT"; then
+    assert "T25m: SIGTERM during a capture-mode serial member puts the '^FAILED ... test_pool_boom.sh ... (partial)' classifier line on run_all's own stdout" true
+else
+    assert "T25m: SIGTERM during a capture-mode serial member puts the '^FAILED ... test_pool_boom.sh ... (partial)' classifier line on run_all's own stdout (got: $t25s_dump)" false
+fi
+
+if grep -Eq '^=== FAILED: .*test_pool_boom\.sh.* \(partial\) ===$' "$T25S_OUT"; then
+    assert "T25n: SIGTERM during a capture-mode serial member puts the '=== FAILED: ... test_pool_boom.sh ... (partial) ===' line on run_all's own stdout" true
+else
+    assert "T25n: SIGTERM during a capture-mode serial member puts the '=== FAILED: ... test_pool_boom.sh ... (partial) ===' line on run_all's own stdout (got: $t25s_dump)" false
+fi
+
+assert "T25o: run_all.sh exits 143 (the handler re-raises SIGTERM) after a SIGTERM during a capture-mode serial member (got rc $t25s_rc)" \
+    test "$t25s_rc" -eq 143
+
+assert "T25 (continued) control: the capture-mode member_start record for test_serial_hang.sh was observed before SIGTERM fired -- boom's Phase-1 failure was already on record" \
+    test "$t25s_serial_started" -eq 1
+
+assert "T25 (continued) control: the serial hang member had started (READY observed) before SIGTERM fired -- the signal landed on a run still mid-member" \
+    test "$t25s_hang_started" -eq 1
+
+t25s_hang_outcome="$(cat "$T25S_HANG_DIR/outcome" 2>/dev/null || true)"
+if [ "$t25s_hang_outcome" = released ]; then
+    assert "T25 (continued) control: the serial hang member held until the test released it (outcome: released), not until its own backstop" true
+else
+    assert "T25 (continued) control: the serial hang member held until the test released it (outcome: ${t25s_hang_outcome:-none}), not until its own backstop" false
+fi
 
 # -- Test 26: INTERRUPTED-worktree marker (task #5261, PRD merge-gate-health.md W4e) --
 # Proves run_all.sh detects its OWN worktree (INFRA_DIR) being removed out
@@ -3778,12 +3901,15 @@ for _t33_leg in pool legacy subset host-infra; do
 done
 
 # -- Test 34: member spawn hygiene is uniform across branches (task #8681) ------
-# Every branch spawns a member with FD 9 closed and REIFY_RUN_ALL_MEMBER_SUBSET
-# unset. Each probe member FAILs if it inherited either. run_all.sh is started
-# with FD 9 already open (a command-scoped redirect, as a caller holding a lock
-# would leave it), and every leg but subset carries the subset knob SET: the
-# pool and legacy legs as whitespace-only, which keeps the default path, and
-# the host-infra leg as a real name, which --scope host-infra overrides.
+# Every branch spawns a member with FD 9 closed, no fd onto run_all.sh's own
+# output open (task 9412) and REIFY_RUN_ALL_MEMBER_SUBSET unset. Each probe
+# member FAILs if it inherited any. run_all.sh is started with FD 9 already open
+# (a command-scoped redirect, as a caller holding a lock would leave it) and
+# with its output in a known file, so a probe can tell an inherited copy of the
+# run's stdout/stderr from its own fd 1/2, which are never that file. Every leg
+# but subset carries the subset knob SET: the pool and legacy legs as
+# whitespace-only, which keeps the default path, and the host-infra leg as a
+# real name, which --scope host-infra overrides.
 echo ""
 echo "--- Test 34: member spawn hygiene is uniform across branches ---"
 
@@ -3791,6 +3917,9 @@ TMPDIR_T34="$(mktemp -d)"
 _TMPDIRS+=("$TMPDIR_T34")
 T34_INFRA="$TMPDIR_T34/infra"
 mkdir "$T34_INFRA"
+# Canonical: a probe's readlink of /proc/<pid>/fd/N resolves symlinks, so a
+# symlinked TMPDIR would otherwise never match and the check would pass vacuously.
+T34_RUN_OUT="$(readlink -f "$TMPDIR_T34")/run.out"
 for _t34_name in test_p_pool.sh test_q_hx.sh; do
     cat > "$T34_INFRA/$_t34_name" <<T34EOF
 #!/usr/bin/env bash
@@ -3799,6 +3928,11 @@ if [ -e /proc/self/fd/9 ]; then
     echo "  FAIL: $_t34_name inherited fd 9"
     bad=1
 fi
+for _fd in /proc/\$\$/fd/*; do
+    [ "\$(readlink "\$_fd" 2>/dev/null)" = "$T34_RUN_OUT" ] || continue
+    echo "  FAIL: $_t34_name inherited fd \${_fd##*/} onto run_all.sh's own output"
+    bad=1
+done
 if [ -n "\${REIFY_RUN_ALL_MEMBER_SUBSET+x}" ]; then
     echo "  FAIL: $_t34_name inherited REIFY_RUN_ALL_MEMBER_SUBSET"
     bad=1
@@ -3813,18 +3947,19 @@ printf 'test_p_pool.sh pool\ntest_q_hx.sh host-exclusive\n' > "$MANIFEST_T34"
 
 # (pool) default path; the subset knob is set but whitespace-only.
 t34p_rc=0
-t34p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/pool.lock" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
-    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34p_rc=$?
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34p_rc=$?
+t34p_out="$(cat "$T34_RUN_OUT")"
 
 # (legacy) the same, all-serial.
 t34l_rc=0
-t34l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
@@ -3832,23 +3967,25 @@ t34l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_POOL_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
-    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34l_rc=$?
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34l_rc=$?
+t34l_out="$(cat "$T34_RUN_OUT")"
 
 # (subset) both probes named.
 t34s_rc=0
-t34s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/subset.lock" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET="test_p_pool.sh test_q_hx.sh" \
-    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34s_rc=$?
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34s_rc=$?
+t34s_out="$(cat "$T34_RUN_OUT")"
 
 # (host-infra) --scope host-infra takes precedence over the named subset.
 LOCK_T34="$TMPDIR_T34/lane-x.lock"
 t34h_rc=0
-t34h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
     -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
@@ -3856,7 +3993,8 @@ t34h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_RUN_ALL_MEMBER_SUBSET="test_q_hx.sh" \
     REIFY_LANE_X_FLOCK_LOCK="$LOCK_T34" \
-    bash "$RUN_ALL" --scope host-infra "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34h_rc=$?
+    bash "$RUN_ALL" --scope host-infra "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" >"$T34_RUN_OUT" 2>&1 || t34h_rc=$?
+t34h_out="$(cat "$T34_RUN_OUT")"
 rm -f "$LOCK_T34" "${LOCK_T34}.slot-1"
 
 for _t34_leg in pool legacy subset host-infra; do
@@ -3868,10 +4006,11 @@ for _t34_leg in pool legacy subset host-infra; do
     esac
     _t34_summary="$(grep -E '^=== Summary: ' <<<"$_t34_out")" || true
     _t34_failed="$(sed -n 's/^  RESULT: FAIL (\(.*\))$/\1/p' <<<"$_t34_out" | tr '\n' ' ')" || true
+    _t34_probe_fails="$(grep -E '^  FAIL: ' <<<"$_t34_out" | sort -u | tr '\n' ' ')" || true
     if [ "$_t34_rc" -eq 0 ] && [ "$_t34_summary" = "$_t34_want" ]; then
-        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0)" true
+        assert "T34 [$_t34_leg]: no member inherits fd 9, run_all's own output fds or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0)" true
     else
-        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0) (got rc=$_t34_rc, failing: $_t34_failed)" false
+        assert "T34 [$_t34_leg]: no member inherits fd 9, run_all's own output fds or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0) (got rc=$_t34_rc, failing: $_t34_failed, probes: $_t34_probe_fails)" false
     fi
 done
 

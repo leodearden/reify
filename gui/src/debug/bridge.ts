@@ -14,13 +14,7 @@ import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 import { pathToUri } from '../utils/pathUtils';
-import {
-  DEFAULT_EDITOR_WIDTH,
-  DEFAULT_SIDE_WIDTH,
-  DEFAULT_DESIGN_TREE_HEIGHT,
-  DEFAULT_PROPERTY_HEIGHT,
-  DEFAULT_CONSTRAINT_HEIGHT,
-} from '../stores/layoutStore';
+import { LAYOUT_DIMENSIONS } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
 import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 import { describePlacement } from './elementPlacement';
@@ -31,6 +25,10 @@ import { describePlacement } from './elementPlacement';
 // the Tauri WebView IPC channel (observed in task-3634 / commit 412aa4b8bd).
 // ascii base64 data URLs are 1 char ≈ 1 byte, so string length is a valid proxy.
 const MAX_SCREENSHOT_CHARS = 16 * 1024 * 1024;
+
+// resize_panes sets exactly the layout's px rows.
+const PX_LAYOUT_DIMENSIONS = LAYOUT_DIMENSIONS.filter((d) => d.kind === 'px');
+type PxLayoutKey = (typeof PX_LAYOUT_DIMENSIONS)[number]['key'];
 
 // Default curated CSS property subset for get_computed_style (step-8 GREEN).
 // PRD §4 resolved decision #2: avoid dumping all ~400 computed properties.
@@ -1736,26 +1734,17 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- C2: layout-control tools (task-4302) ---
 
     resize_panes: (params) => {
-      const DIMS = [
-        ['editorWidth',      'setEditorWidth'],
-        ['sideWidth',        'setSideWidth'],
-        ['designTreeHeight', 'setDesignTreeHeight'],
-        ['propertyHeight',   'setPropertyHeight'],
-        ['constraintHeight', 'setConstraintHeight'],
-        ['problemsHeight',   'setProblemsHeight'],
-      ] as const;
-
       // Validate first pass — reject any invalid value before applying anything.
-      let anyProvided = false;
-      for (const [dim] of DIMS) {
-        const raw = params[dim];
+      const resizes: { key: PxLayoutKey; value: number }[] = [];
+      for (const { key } of PX_LAYOUT_DIMENSIONS) {
+        const raw = params[key];
         if (raw === undefined) continue;
-        anyProvided = true;
         if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
-          return { error: `${dim} must be a non-negative finite number` };
+          return { error: `${key} must be a non-negative finite number` };
         }
+        resizes.push({ key, value: raw });
       }
-      if (!anyProvided) return { error: 'no pane dimensions provided' };
+      if (resizes.length === 0) return { error: 'no pane dimensions provided' };
 
       // Apply pass — all values validated.
       // NOTE: Values are applied as-is without clamping to the interactive splitter
@@ -1764,12 +1753,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // the caller full programmatic control; the caller is responsible for staying in a
       // valid range. Setting a dimension to 0 is allowed (e.g. to collapse a pane
       // programmatically) even though the splitter UI prevents this interactively.
-      const layout = ctx.stores.layout;
-      for (const [dim, setter] of DIMS) {
-        const raw = params[dim];
-        if (raw !== undefined) {
-          (layout[setter] as (v: number) => void)(raw as number);
-        }
+      for (const { key, value } of resizes) {
+        ctx.stores.layout.set(key, value);
       }
 
       return { ok: true, layout: { ...ctx.stores.layout.state } };
@@ -2100,11 +2085,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       engine.setCompileDiagnostics([]);
       engine.setTessellationDiagnostics([]);
 
-      layout.setEditorWidth(DEFAULT_EDITOR_WIDTH);
-      layout.setSideWidth(DEFAULT_SIDE_WIDTH);
-      layout.setDesignTreeHeight(DEFAULT_DESIGN_TREE_HEIGHT);
-      layout.setPropertyHeight(DEFAULT_PROPERTY_HEIGHT);
-      layout.setConstraintHeight(DEFAULT_CONSTRAINT_HEIGHT);
+      layout.reset();
 
       return { ok: true };
     },

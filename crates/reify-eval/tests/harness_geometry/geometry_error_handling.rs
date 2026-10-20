@@ -157,7 +157,7 @@ fn build_returns_no_geometry_when_all_kernel_ops_fail() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Should have no geometry output when all ops fail
@@ -200,7 +200,7 @@ fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
     // Use standard MockGeometryKernel — kernel.execute() should never be called
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -271,7 +271,7 @@ fn build_no_export_error_when_all_ops_fail() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingExportMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Export should not have been attempted
@@ -299,7 +299,7 @@ fn build_with_no_realizations_still_exports() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -354,7 +354,7 @@ fn loft_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     // Inspect the recorded operations
@@ -445,7 +445,7 @@ fn cascading_compile_failures_aborted_after_first() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // All 3 ops are attempted with sentinel — each emits its own diagnostic
@@ -520,7 +520,7 @@ fn cascading_kernel_failures_aborted_after_first() {
 
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let kernel_errors: Vec<_> = result
@@ -583,7 +583,7 @@ fn realization_abort_is_per_realization() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) exactly 1 compile-failure diagnostic from realization 0
@@ -662,7 +662,7 @@ fn tessellate_aborts_cascading_compile_failures() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
     // All 3 ops attempted with sentinel → 3 compile-failure diagnostics
@@ -743,7 +743,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) kernel received exactly 1 execute call (the Box from op0)
@@ -833,7 +833,7 @@ fn partial_failure_tessellate_produces_no_mesh() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
     // (a) The failing realization should produce NO mesh — the intermediate
@@ -880,7 +880,7 @@ fn partial_failure_tessellate_produces_no_mesh() {
 #[test]
 fn tessellate_sentinel_placeholder_continues_independent_ops() {
     let (module, checker, kernel, ops_ref) = make_sentinel_module("test_tess_sentinel_continues");
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
     let kernel_ops = ops_ref.lock().unwrap();
@@ -936,7 +936,7 @@ fn partial_failure_build_produces_no_geometry() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) geometry_output should be None — the intermediate Box handle must
@@ -1022,7 +1022,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     {
         let checker = MockConstraintChecker::new();
         let kernel = MockGeometryKernel::new();
-        let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
         let result = engine.tessellate_realizations(&module);
 
         // (a) exactly 1 mesh produced (from realization 1 only)
@@ -1059,7 +1059,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     {
         let checker = MockConstraintChecker::new();
         let kernel = MockGeometryKernel::new();
-        let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
         let result = engine.build(&module, ExportFormat::Step);
 
         // (d) geometry_output is Some (realization 1 succeeded)
@@ -1122,7 +1122,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Only test exercising the None (zero kernel ops) path of assert_rejected_at_compile.
@@ -1181,7 +1181,7 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) Exactly one Warning containing the missing-arg message and 'width'.
@@ -1349,7 +1349,7 @@ fn build_modify_missing_arg_case(
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1535,7 +1535,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1618,7 +1618,7 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1689,7 +1689,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1764,7 +1764,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1790,7 +1790,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
 #[test]
 fn sentinel_placeholder_continues_independent_ops() {
     let (module, checker, kernel, ops_ref) = make_sentinel_module("test_sentinel_continues");
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let kernel_ops = ops_ref.lock().unwrap();
@@ -1846,7 +1846,7 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) kernel received exactly 1 execute call (Sphere from op0)
@@ -1954,7 +1954,7 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) Kernel received exactly 1 execute call — only the Sphere from op0.
@@ -2019,7 +2019,7 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
 fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
     let (module, checker, kernel, ops_ref) =
         make_sentinel_module("test_build_snapshot_sentinel_continues");
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Populate the snapshot first so build_snapshot returns Some(...).
     // Eval runs constraint solving only, not geometry compilation, so the bad
@@ -2064,7 +2064,7 @@ fn build_zero_ops_result(path: &str) -> reify_eval::BuildResult {
     let module = build_module_with_ops(path, &[]);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     engine.build(&module, ExportFormat::Step)
 }
 
@@ -2141,7 +2141,7 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
     let module = module_with_box_realization(); // total_ops=1
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel; // all execute() calls return Err
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -2215,7 +2215,7 @@ fn build_extrude_distance_just_below_threshold_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2269,7 +2269,7 @@ fn build_extrude_distance_at_threshold_accepted() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -2357,7 +2357,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2414,7 +2414,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2479,7 +2479,7 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2539,7 +2539,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2593,7 +2593,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2740,7 +2740,7 @@ fn run_boolean_unresolved_ref_case(
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
     (result, ops_ref)
 }

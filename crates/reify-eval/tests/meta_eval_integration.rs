@@ -50,7 +50,7 @@ fn eval_meta_access_sub_structure() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -95,7 +95,7 @@ fn eval_meta_access_survives_edit_param() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
 
     // edit_param: change size from 10.0 to 20.0
@@ -134,7 +134,7 @@ fn eval_meta_access_in_let_binding() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -201,7 +201,7 @@ fn eval_meta_access_in_guarded_group() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -271,7 +271,7 @@ fn eval_meta_access_collection_sub_component() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -340,7 +340,7 @@ fn eval_meta_access_in_else_members_when_guard_false() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -383,7 +383,7 @@ fn eval_meta_access_cached_eval() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Call eval_cached directly (no prior eval())
     let result = engine.eval_cached(&module, VersionId(1));

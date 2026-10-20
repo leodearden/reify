@@ -71,6 +71,7 @@ fn fillet_curated_edges_3205_e2e() {
     let volumes_ref = recording_kernel.volumes_ref();
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(recording_kernel)),
     );
@@ -237,6 +238,7 @@ fn bottom_deck_selectors_example_builds_clean_e2e() {
     let volumes_ref = recording_kernel.volumes_ref();
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(recording_kernel)),
     );

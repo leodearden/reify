@@ -32,6 +32,7 @@
 #   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
 #   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
+#   LAND — landed-ness guard: a --landed-commit that is not an ancestor of refs/heads/main (or a repo without it, or an ancestry check git cannot evaluate) is refused before any copy; main's tip and its strict ancestors are accepted
 #   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
 #   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
 #
@@ -213,7 +214,7 @@ mk_git_advancing() {
     local lane_dir="$parent_dir/lane"
     mkdir -p "$lane_dir"
     printf 'placeholder\n' > "$lane_dir/.placeholder"
-    git -C "$lane_dir" init -q
+    git -C "$lane_dir" init -q -b main
     git -C "$lane_dir" add -- .placeholder
     git -C "$lane_dir" \
         -c user.email="warm-lane-test@localhost" \
@@ -832,6 +833,148 @@ assert "I3: refusal advises committing" \
 # that reaches for the word again should fail here and be reconsidered.
 assert "I4: refusal does NOT advise stashing" \
     bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block LAND — the landed-ness guard (task 9180)
+#
+# inv.9: only a commit already on refs/heads/main may advance the base. A clean
+# lane whose HEAD is committed-but-unlanded work satisfies HEAD == --landed-commit
+# and must still be refused before any staging copy.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block LAND: landed-ness guard ---"
+
+# _commit_tracked_change <lane> <msg> — commit a change to a TRACKED file on
+# whatever HEAD the lane has checked out, leaving the worktree clean.
+_commit_tracked_change() {
+    local lane="$1" msg="$2"
+    printf '%s\n' "$msg" >> "$lane/.placeholder"
+    git -C "$lane" add -- .placeholder
+    git -C "$lane" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        -c commit.gpgsign=false \
+        commit -q --no-verify -m "$msg"
+}
+
+# LAND1: committed but unlanded — clean task branch, HEAD == --landed-commit.
+LAND1_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land1-XXXXXX)"
+_TMPDIRS+=("$LAND1_TMP")
+LAND1_LANE="$(mk_git_advancing "$LAND1_TMP")"
+LAND1_C1="$(git -C "$LAND1_LANE" rev-parse HEAD)"
+git -C "$LAND1_LANE" switch -q -c task/unlanded
+_commit_tracked_change "$LAND1_LANE" "fixture: committed but unlanded task work"
+LAND1_C2="$(git -C "$LAND1_LANE" rev-parse HEAD)"
+echo "content" > "$LAND1_LANE/advancing/file.txt"
+LAND1_BASE="$LAND1_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND1_LANE/advancing" "$LAND1_BASE" --landed-commit "$LAND1_C2"
+assert "LAND1: unlanded --landed-commit is refused (non-zero)" test "$RC" -ne 0
+assert "LAND1: refusal names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+assert "LAND1: refusal names the full --landed-commit sha" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$LAND1_C2"
+assert "LAND1: refusal names refs/heads/main's tip sha" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$LAND1_C1"
+assert "LAND1: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND1_BASE"
+assert "LAND1: no <base>.gen.* entry exists (no gen dir, no .basecommit)" \
+    bash -c '_n=0; for _p in "${1}".gen.*; do { [ -e "$_p" ] || [ -L "$_p" ]; } && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LAND1_BASE"
+assert "LAND1: no staging cp ran (refused inside the provenance guard)" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# LAND2: control on the SAME lane — fast-forward main to C2, re-run identically.
+git -C "$LAND1_LANE" branch -f main HEAD
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND1_LANE/advancing" "$LAND1_BASE" --landed-commit "$LAND1_C2"
+assert "LAND2: same commit once landed on main is accepted (exit 0)" test "$RC" -eq 0
+assert "LAND2: promoted gen .basecommit == the landed commit" \
+    bash -c '[ "$(cat "$(readlink "$1").basecommit")" = "$2" ]' _ "$LAND1_BASE" "$LAND1_C2"
+
+# LAND3: a strict ancestor of main is landed — main's TIP is not required.
+LAND3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land3-XXXXXX)"
+_TMPDIRS+=("$LAND3_TMP")
+LAND3_LANE="$(mk_git_advancing "$LAND3_TMP")"
+LAND3_C1="$(git -C "$LAND3_LANE" rev-parse HEAD)"
+_commit_tracked_change "$LAND3_LANE" "fixture: main moves past the landed commit"
+git -C "$LAND3_LANE" checkout -q --detach HEAD~1
+echo "content" > "$LAND3_LANE/advancing/file.txt"
+LAND3_BASE="$LAND3_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND3_LANE/advancing" "$LAND3_BASE" --landed-commit "$LAND3_C1"
+assert "LAND3: strict ancestor of refs/heads/main is accepted (exit 0)" test "$RC" -eq 0
+assert "LAND3: promoted gen .basecommit == the ancestor commit" \
+    bash -c '[ "$(cat "$(readlink "$1").basecommit")" = "$2" ]' _ "$LAND3_BASE" "$LAND3_C1"
+
+# LAND4: fail-closed when refs/heads/main does not resolve.
+LAND4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land4-XXXXXX)"
+_TMPDIRS+=("$LAND4_TMP")
+LAND4_LANE="$(mk_git_advancing "$LAND4_TMP")"
+git -C "$LAND4_LANE" branch -m main trunk
+echo "content" > "$LAND4_LANE/advancing/file.txt"
+LAND4_BASE="$LAND4_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND4_LANE/advancing" "$LAND4_BASE" \
+    --landed-commit "$(git -C "$LAND4_LANE" rev-parse HEAD)"
+assert "LAND4: absent refs/heads/main is refused (non-zero)" test "$RC" -ne 0
+assert "LAND4: refusal names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+assert "LAND4: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND4_BASE"
+assert "LAND4: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# LAND5: the missing-flag hint points at refs/heads/main as the sha's source.
+LAND5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land5-XXXXXX)"
+_TMPDIRS+=("$LAND5_TMP")
+LAND5_LANE="$(mk_git_advancing "$LAND5_TMP")"
+echo "content" > "$LAND5_LANE/advancing/file.txt"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND5_LANE/advancing" "$LAND5_TMP/base"
+assert "LAND5: missing --landed-commit is refused (non-zero)" test "$RC" -ne 0
+assert "LAND5: missing-flag hint names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+
+# LAND6: an ancestry check git cannot evaluate is refused, and not misreported
+# as "has not landed". A git wrapper fails every `merge-base` with rc 128 (as a
+# corrupt object store would) and execs the real git for everything else.
+LAND6_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land6-XXXXXX)"
+_TMPDIRS+=("$LAND6_TMP")
+LAND6_LANE="$(mk_git_advancing "$LAND6_TMP")"
+echo "content" > "$LAND6_LANE/advancing/file.txt"
+LAND6_BASE="$LAND6_TMP/base"
+LAND6_GIT_STUB_DIR="$LAND6_TMP/git-stub"
+mkdir -p "$LAND6_GIT_STUB_DIR"
+_REAL_GIT="$(command -v git)"
+cat > "$LAND6_GIT_STUB_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for _a in "\$@"; do
+    if [ "\$_a" = "merge-base" ]; then
+        echo "fatal: SIMULATED merge-base failure" >&2
+        exit 128
+    fi
+done
+exec "${_REAL_GIT}" "\$@"
+STUB_EOF
+chmod +x "$LAND6_GIT_STUB_DIR/git"
+
+reset_calls
+PATH="$LAND6_GIT_STUB_DIR:$PATH" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$LAND6_LANE/advancing" "$LAND6_BASE" \
+    --landed-commit "$(git -C "$LAND6_LANE" rev-parse HEAD)"
+assert "LAND6: unevaluable ancestry is refused (non-zero)" test "$RC" -ne 0
+assert "LAND6: refusal reports git's exit code" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "rc=128"' _ "$ERR_OUT"
+assert "LAND6: refusal does not claim the commit has not landed" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "has not landed"' _ "$ERR_OUT"
+assert "LAND6: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND6_BASE"
+assert "LAND6: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block DEPS — debug/deps faithful copy (task 8366)

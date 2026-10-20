@@ -1417,9 +1417,11 @@ D_ROSTER=(
     test_run_all_content_skip.sh
     test_run_all_pool_lock_host_global.sh
     test_run_all.sh
+    test_run_all_timing.sh
     test_slot_event_log.sh
     test_test_run_semaphore.sh
     test_verify_env_ambient_isolation.sh
+    test_verify_events.sh
     test_verify_semaphore_e2e.sh
 )
 
@@ -1533,6 +1535,13 @@ D_ROSTER=(
 #   on it, scanning the lib); what leaks is the DESCRIPTION channel one step
 #   later, which stays out of scope here and is filed separately (ticket
 #   tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
+#   test_run_all_timing.sh (task 7424) -- bucket pool; route run_all.sh
+#   through its `.py` sibling (RUN_ALL bound at module level, exec'd as
+#   `["bash", str(RUN_ALL), ...]` in Fixture.run). Measured CLEAN on the SITE
+#   channel: that one subprocess.run funnel passes capture_output=True, and
+#   the fixture INFRA_DIR's members never reach a pool deadline (private pool
+#   lock, concurrency 2). Kept static-only for the same wall-clock reason as
+#   test_run_all.sh: each class runs a nested run_all.sh.
 #   test_verify_env_ambient_isolation.sh -- bucket pool; route
 #   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
 #   2>&1` :177). The capture at the site is correct (into $amb_out,
@@ -1541,6 +1550,17 @@ D_ROSTER=(
 #   key on, which E1's own preamble names as out of its grammar. Same
 #   disposition as the entry above: measured, recorded, filed, not fixed
 #   here.
+#   test_verify_events.sh (task 8685) -- bucket pool; direct route through
+#   its `.py` sibling, whose bash snippets source lib_slot_acquire.sh and run
+#   lib_test_semaphore.sh, cargo-test-occt-gated.sh and lib_lane_x_flock.sh to
+#   a REAL deadline on every green run, each against a private lock the test
+#   holds in-process. Measured CLEAN on the SITE channel: G scores 2 sites /
+#   0 unredirected -- the subprocess.run funnel (capture_output=True) and the
+#   SIGTERM case's Popen (stdout=PIPE, stderr=STDOUT). CLEAN on the
+#   DESCRIPTION channel by construction: its failure messages carry counts and
+#   record fields only, never captured stderr, and it assembles the sentinel
+#   prefix at runtime. Kept static-only for the wall clock, as
+#   test_run_all_timing.sh is.
 #   test_verify_semaphore_e2e.sh -- bucket intra-run-serial (run-all-
 #   classification.manifest:56 -- mutates the invoking lane's own shared
 #   state: CoW target/, working-tree parser.c). Section D forks its members
@@ -3110,6 +3130,10 @@ G_MEMBERS=(
     # Route run_all.sh: RUN_ALL bound :19; Test 24 forces a real pool deadline
     # every green run (30s holder on slot-1 vs REIFY_RUN_ALL_POOL_WAIT=2).
     test_run_all.sh
+    # Route run_all.sh via its `.py` sibling (task 7424): RUN_ALL bound at
+    # module level, exec'd by Fixture.run's single subprocess.run funnel, which
+    # is therefore the site -- see G_SCAN below.
+    test_run_all_timing.sh
     # DIRECT route: it execs the acquire wrappers themselves, bound at :17-19
     # (LIB=lib_slot_acquire.sh, SEM=lib_test_semaphore.sh,
     # OCCT=cargo-test-occt-gated.sh), whose WAIT defaults are finite.
@@ -3118,6 +3142,11 @@ G_MEMBERS=(
     # PORTED TO PYTHON (task 7626): the site that must divert is no longer in
     # this file -- see G_SCAN below.
     test_verify_env_ambient_isolation.sh
+    # DIRECT route via its `.py` sibling (task 8685): its bash snippets run the
+    # acquire wrappers through one diverted subprocess.run funnel, and its
+    # SIGTERM case runs run_all.sh through one diverted Popen; those two spawns
+    # are therefore the sites -- see G_SCAN below.
+    test_verify_events.sh
     # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
     # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
     # :528), but its deadline-capable INVOCATION is scripts/verify.sh -- and
@@ -3137,8 +3166,10 @@ G_SITE=(
     '"\$RUN_ALL"'
     '"\$REAL_RUN_ALL"'
     '"\$RUN_ALL"'
+    'subprocess\.run\('
     '"\$(SEM|OCCT|LIB)"'
     'subprocess\.Popen\('
+    'subprocess\.(run|Popen)\('
     '"\$REPO_ROOT/scripts/verify\.sh"'
 )
 # Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
@@ -3187,8 +3218,11 @@ G_SITE=(
 G_SCAN=(
     ''
     run_all_ambient_isolation_lib.sh
-    '' '' '' '' ''
+    '' '' '' ''
+    test_run_all_timing.py
+    ''
     test_verify_env_ambient_isolation.py
+    test_verify_events.py
     ''
 )
 

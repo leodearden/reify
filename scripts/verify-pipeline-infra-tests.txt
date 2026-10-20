@@ -257,6 +257,7 @@ scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
 # (see that manifest's TRADEOFF BREADCRUMB). The pole fires only for tasks
 # touching that exact doc, bounded by the map's existing per-test timeout.
 docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_compile_gate.sh
+docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_policy.sh
 docs/notes/verify-scope-throughput.md                        tests/infra/test_verify_throughput.sh
 docs/notes/linker-rustlld-vs-mold-bench.md                   tests/infra/test_linker_config.sh
 docs/notes/lean-debuginfo-bench.md                           tests/infra/test_lean_debuginfo_profile.sh
@@ -271,6 +272,9 @@ docs/notes/cargo-incremental-persistent-lane-bench.md        tests/infra/test_ca
 # scripts/verify.sh build_plan's DF_VERIFY_ROLE=merge gate).
 scripts/occt-scope-lib.sh            tests/infra/test_verify_*.sh
 scripts/affected-crates-lib.sh       tests/infra/test_verify_*.sh
+# The path-attribution and compile-closure home both libs above read (task 8662).
+scripts/reify_path_attribution.py    tests/infra/test_affected_crates_lib.sh
+scripts/reify_path_attribution.py    tests/infra/test_verify_*.sh
 scripts/release-scope-lib.sh         tests/infra/test_verify_*.sh
 scripts/cpu-admit.sh                 tests/infra/test_verify_*.sh
 # cpu-admit.sh also gets its own dedicated integration guard (task 5125
@@ -293,6 +297,17 @@ hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate
 # select_infra_tests() dedups globs by whole token, so both suites are selected.
 hooks/reference-transaction          tests/infra/test_stash_guard.sh
 hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
+# Task 8671: dark-factory's mark/unmark CLI and the yaml commands that name it
+# (test_reference_transaction_gate.sh's B8 runs both faces).
+scripts/main-gate-mark.sh            tests/infra/test_reference_transaction_gate.sh
+scripts/main-gate-mark.sh            tests/infra/test_land_*.sh
+dark-factory-orchestrator.yaml       tests/infra/test_reference_transaction_gate.sh
+# Task 8671: test_land_script.sh runs the real lib and reference-transaction
+# and asserts their bound-sanction log lines; test_reference_transaction_gate.sh
+# (B5') runs the real pre-commit as a mark site.
+hooks/main-gate-lib.sh               tests/infra/test_land_*.sh
+hooks/reference-transaction          tests/infra/test_land_*.sh
+hooks/pre-commit                     tests/infra/test_reference_transaction_gate.sh
 
 # Task 5259 (W4c): the ambient-isolation lib's hostile+baseline disambiguation
 # is guarded by BOTH the consumer (test_run_all_ambient_isolation.sh) and the
@@ -409,12 +424,15 @@ tests/infra/jcodemunch_pin_guard_lib.sh    tests/infra/test_jcodemunch_index_rei
 scripts/verify-pipeline-guard.sh     tests/infra/test_verify_pipeline_guard.sh
 scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
 
-# Task 6343: the OCCT presence/SONAME preflight arm of
+# Task 6343: the native-dep presence/SONAME preflight arms of
 # scripts/check-manifold-deps.sh. Same one-artifact-multiple-rows pattern as
 # check-infra-classification-manifest.sh above — the gate script itself, plus
-# each artifact whose content the guard's drift-pins mirror:
-#   - crates/reify-build-utils/src/lib.rs   (NativeDep::Occt candidate lists +
-#     sentinels; the bash block is a declared MIRROR, pinned equal order-wise)
+# each artifact whose content the guard reads or is pinned against:
+#   - crates/reify-build-utils/native-deps.toml (task 8634: the per-dep
+#     discovery table, one row per gate arm, which the build also decodes)
+#   - scripts/native_deps_table.py          (the stdlib reader the guard evals)
+#   - crates/reify-build-utils/src/lib.rs   (decodes the same table for the
+#     build's has_<dep> verdict)
 #   - scripts/setup-dev.sh                  (its dpkg OCCT expectation must be
 #     a member of OCCT_ACCEPTED_SONAMES)
 # check-manifold-deps.sh needs no scripts/verify-pipeline-paths.txt row: it is
@@ -425,7 +443,15 @@ scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
 # regardless.
 scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
 crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
+crates/reify-build-utils/native-deps.toml  tests/infra/test_occt_deps_preflight.sh
+scripts/native_deps_table.py            tests/infra/test_occt_deps_preflight.sh
 scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
+# Task 8654: the runtime loader-path helper. Its class outputs are pinned in the
+# ld-scope member; its launcher consumer (lib_gui_launch.sh) in run_gui_scripts.
+scripts/lib_native_ld_path.sh           tests/infra/test_verify_ld_library_path_scope.sh
+scripts/lib_native_ld_path.sh           tests/infra/test_run_gui_scripts.sh
+# The cargo runner's only behavioural guard is that member's Section H.
+.cargo/run-with-occt.sh                 tests/infra/test_verify_ld_library_path_scope.sh
 
 # Task 5888: the host-global systemd unit ExecStart pinning guard. The suite's
 # Part B EXTRACTS install_build_services() out of scripts/setup-dev.sh and runs
@@ -771,3 +797,37 @@ hooks/main-gate-lib.sh    tests/infra/test_hooks_armed_guard.sh
 # an edit to it selects both suites.
 scripts/lib_worktree_hooks_pin.sh    tests/infra/test_hooks_armed_guard.sh
 scripts/lib_worktree_hooks_pin.sh    tests/infra/test_main_gate_worktree_config.sh
+# Task 7424: scripts/verify-ledger.py (the verify instrumentation ledger) is
+# pinned by three .py suites behind thin .sh wrappers, same pair shape. The two
+# verify-named wrappers are also selected by the scripts/verify.sh glob at the
+# top, and tests/infra/run_all.sh's test_run_all*.sh glob already selects the
+# run_all timing wrapper. seed-warm-lane.sh and agent-bin/cargo select the
+# lane-seed wrapper because its suite executes both for real.
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_cli.sh
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_e2e.sh
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_lane_seed.sh
+tests/infra/test_verify_ledger_cli.py    tests/infra/test_verify_ledger_cli.sh
+tests/infra/test_verify_ledger_e2e.py    tests/infra/test_verify_ledger_e2e.sh
+tests/infra/test_verify_ledger_lane_seed.py    tests/infra/test_verify_ledger_lane_seed.sh
+tests/infra/test_run_all_timing.py    tests/infra/test_run_all_timing.sh
+scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
+scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
+
+# S18 α (#9095, PRD verify-structured-plan-and-role-table D14): the Python verify package.
+# The glob rows keep task-tier selection from narrowing as logic moves out of verify.sh; leaf τ replaces this map.
+scripts/verify.py    tests/infra/test_verify_*.sh
+scripts/verify.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_policy.sh
+tests/infra/test_verify_policy.py    tests/infra/test_verify_policy.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh

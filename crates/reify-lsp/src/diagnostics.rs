@@ -8,7 +8,7 @@ use reify_core::{
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
-use crate::analysis::module_name_from_uri;
+use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
 
 /// The eval/check-pass containment guard shared by all three LSP production
@@ -43,7 +43,7 @@ impl EvalState {
     pub fn new() -> Self {
         let checker = SimpleConstraintChecker;
         Self {
-            engine: reify_eval::Engine::new(Box::new(checker), None),
+            engine: reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None),
             version_counter: 0,
             last_content_hash: None,
         }
@@ -334,7 +334,7 @@ pub fn compute_diagnostics_with_state(
             });
         }
         let checker = SimpleConstraintChecker;
-        state.engine = reify_eval::Engine::new(Box::new(checker), None);
+        state.engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         state.engine.eval(&compiled).diagnostics
     };
 
@@ -906,7 +906,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
 
     // Check (eval with constraint checker, no geometry kernel)
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let check_result = engine.check(&compiled);
 
     // Convert eval diagnostics
@@ -925,7 +925,8 @@ pub(crate) mod auto_type_param_fixtures;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
+    use crate::decl_oracle::test_fixtures::test_uri;
+    use tower_lsp::lsp_types::DiagnosticSeverity;
 
     // Shared `auto:` fixtures + anti-vacuity guards, also imported by
     // `crate::analysis::tests` so the two entry-point test families cannot
@@ -948,10 +949,6 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Compile `parsed` exactly the way the LSP's three production compile
     /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
@@ -1721,7 +1718,7 @@ structure S {
     fn fresh_engine_check_snapshot_returns_none() {
         // A fresh Engine (without prior eval) should have no snapshot
         let checker = SimpleConstraintChecker;
-        let engine = reify_eval::Engine::new(Box::new(checker), None);
+        let engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let source = reify_test_support::bracket_source();
         let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
         let compiled = reify_compiler::compile(&parsed);
@@ -2323,7 +2320,7 @@ structure S {
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let result = engine.eval(&compiled);
 
         // Sanity: eval must emit at least one diagnostic for the circular let-binding
@@ -2380,7 +2377,7 @@ structure S {
         let source = "structure S { param width: Length = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let _ = engine.eval(&compiled);
         engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
         engine.eval(&compiled).diagnostics
@@ -2398,7 +2395,7 @@ structure S {
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
         let counter = solver.counter_handle();
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(solver));
         let diagnostics = engine.eval(&compiled).diagnostics;
         (counter, diagnostics)
@@ -2506,7 +2503,7 @@ structure S {
         let source = "structure S { sub x = Unknown() }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let diags = engine.eval(&compiled).diagnostics;
 
         assert!(
@@ -2612,7 +2609,7 @@ structure S {
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
         // Pass 1: cold eval — initialises the cache (all cells → Final).
         let _ = engine.eval(&compiled);
@@ -2726,7 +2723,7 @@ structure S {
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
         // Pass 1: cold eval — initialises cache (all cells → Final).
         let _ = engine.eval(&compiled);
@@ -2800,7 +2797,7 @@ structure S {
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
         // Pass 1: cold eval — initialises cache (all cells → Final).
         let _ = engine.eval(&compiled);
@@ -3257,7 +3254,7 @@ structure S {
     /// Does NOT catch an upstream ADDITION — see the const's own doc for why
     /// that half is out of this leaf's scope.
     fn assert_all_production_compute_targets_are_registrable() {
-        let mut registered_probe = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut registered_probe = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         reify_eval::compute_targets::register_compute_fns(&mut registered_probe);
         for target in ALL_PRODUCTION_COMPUTE_TARGETS {
             assert!(
@@ -3342,7 +3339,7 @@ structure S {
         let stateless_diags = compute_diagnostics(FEA_BEARING_SRC, &uri);
 
         let checker = SimpleConstraintChecker;
-        let mut stateless_probe = reify_eval::Engine::new(Box::new(checker), None);
+        let mut stateless_probe = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         for target in ALL_PRODUCTION_COMPUTE_TARGETS {
             assert!(
                 stateless_probe.compute_dispatch(target).is_none(),

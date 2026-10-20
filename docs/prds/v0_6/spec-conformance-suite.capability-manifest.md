@@ -354,3 +354,9 @@ no-lockstep-duplication invariant at four separate places.
 *Every binding resolves to PASS. No binding resolved to `declared-only`, `test-only`, `producer-downstream`,
 `producer-absent`, `producer-extent-short`, `fixture-ERROR`, `bound≤floor` or `rejection-absent`, so no leaf was
 re-scoped, re-homed or relaxed to clear the gate.*
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `decide_scope-docs-arm-is-the-live-coupling-gap-and-it-is-real`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `reify-language-spec`.

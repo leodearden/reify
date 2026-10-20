@@ -64,12 +64,6 @@
         "log_capture"
       ]
     ],
-    "reify-lsp": [
-      [
-        "analysis",
-        "diagnostics"
-      ]
-    ],
     "reify-shell-extract": [
       [
         "medial",
@@ -80,7 +74,6 @@
       [
         "assembly",
         "elements",
-        "shell_assembly",
         "shell_kinematics"
       ]
     ],

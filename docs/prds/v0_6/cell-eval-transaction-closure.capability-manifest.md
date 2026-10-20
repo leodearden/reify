@@ -1,6 +1,6 @@
 # Capability manifest — cell-eval-transaction-closure
 
-PRD: `docs/prds/v0_6/cell-eval-transaction-closure.md`. Machine-readable twin: `cell-eval-transaction-closure.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`, 21 task blocks, 54 capabilities). Task ids stamped by `commit_planning` 2026-10-13: α #8858, β #8859, ν #8860, γ #8861, δ #8862, ε #8863, η #8864, ι #8865, θ #8866, ζ #8867, κ #8868, λ #8869, μ #8870, σ #8871, τ #8872, ξ #8873, ο #8874, π #8875, ρ #8876, υ #8877, ω #8878. The milestone MS (§9) is not a leaf and has no block.
+PRD: `docs/prds/v0_6/cell-eval-transaction-closure.md`. Machine-readable twin: `cell-eval-transaction-closure.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`, 23 task blocks, 60 capabilities; φ and χ added by the 2026-10-16 gap-fill, `plans/gap-fill-deliberation-reify-20261016.md` §K3-D1 / §K3-D5). Task ids stamped by `commit_planning` 2026-10-13: α #8858, β #8859, ν #8860, γ #8861, δ #8862, ε #8863, η #8864, ι #8865, θ #8866, ζ #8867, κ #8868, λ #8869, μ #8870, σ #8871, τ #8872, ξ #8873, ο #8874, π #8875, ρ #8876, υ #8877, ω #8878; 2026-10-16: φ #9292, χ #9294. The milestone MS (§9) is not a leaf and has no block.
 
 **Code anchors** verified against main `a4a8862bcc` (2026-10-13). Cite-by-symbol; re-locate lines at implementation time.
 
@@ -62,3 +62,9 @@ Verdicts: PASS = the binding held at authoring (read or probed this session, or 
 | ρ | shims-are-s7 | #8551 pending | PASS | — |
 | υ | differential-harness-exists | `tests/common/differential.rs` included by `harness_cache` binaries; fixture sources inlined | PASS | manual |
 | ω | terminal-status-stamped | overlay closed terminal vocabulary | PASS | grep `^\*\*Status:\*\* SHIPPED` present in the PRD |
+| φ | replay-entry-absent | no `replay_last_eval` in `crates/reify-eval/src` at main c7bbfe2519 (gap-fill K3-D1) | PASS | grep `fn replay_last_eval` present in `crates/reify-eval/src/` |
+| φ | lsp-calls-replay | reify-lsp `diagnostics.rs` is `eval_cached`'s one non-test caller, on unchanged content only, kernel-less and solver-less | PASS | grep `replay_last_eval` present in `crates/reify-lsp/src/diagnostics.rs` |
+| φ | eval-cached-twin-present | `pub fn eval_cached(` (`engine_eval.rs::Engine.eval_cached`) + `dispatch_merged_cluster_solve_cached`, ~1,870 lines; 20 test files call `.eval_cached(` | PASS | grep `pub fn eval_cached\(` absent in `crates/reify-eval/src/` |
+| φ | dirty-reasons-only-serve-eval-cached | `CacheStore.dirty_reasons` and its four methods are read only on the `eval_cached` path | PASS | grep `dirty_reasons` absent in `crates/reify-eval/src/cache.rs` |
+| χ | no-production-caller | `set_param_and_invalidate` has no production caller since bbfbc7dd29 (#6665); callers are cache.rs tests (5), reify-eval integration tests, one reify-lsp test (gap-fill K3-D5) | PASS | grep `fn set_param_and_invalidate` absent in `crates/reify-eval/src/` |
+| χ | pin-recorded-by-transaction | ε #8863's `EditTransaction` records the user pin first (gap-fill K3-D5) | PASS | — |

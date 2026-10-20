@@ -44,16 +44,17 @@ tasks:
       reason: dependency edge is the enforcement
 - label: γ
   task_id: 8830
-  title: RelationKind in reify-ir; RelationInstance.kind (C2)
+  title: reify_builtins::RelationKind bound; RelationInstance.kind (C2; amended 2026-10-20, retro-critic R6)
+  note: 'Retro-critic R6 (plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6): RelationKind is the registry''s generated Relation sub-enum from S8-ψ #9418 (γ depends on it); relation-kind-in-ir (pub enum RelationKind in crates/reify-ir/src) replaced by relation-kind-is-the-registry-enum. Files: crates/reify-constraints/src/{relate_solve,solvespace,classifier}.rs, crates/reify-eval/src/relate_solve.rs, crates/reify-constraints/Cargo.toml, crates/reify-eval/Cargo.toml (reify-ir relation_kind.rs and lib.rs dropped).'
   capabilities:
-  - name: relation-kind-in-ir
-    binding: producer-self — no RelationKind anywhere at main
+  - name: relation-kind-is-the-registry-enum
+    binding: 'grep: no `reify_builtins::RelationKind` path in reify-constraints/src at main (the registry Relation sub-enum does not exist until S8-ψ #9418; red today, green when γ binds it — producer-true). Replaces the first R6 draft (`fn from_name` absent), which was already green at main; the no-from_name rule stays as I-REG-1 prose, not a check.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: pub enum RelationKind
+      pattern: reify_builtins::RelationKind
       paths:
-      - crates/reify-ir/src
+      - crates/reify-constraints/src
       expect: present
   - name: instance-carries-kind
     binding: 'grep: RelationInstance { name: String, operands, nominal_delta_dof } in reify-constraints relate_solve.rs; one construction site reify-eval relate_solve::relation_instance'
@@ -507,6 +508,29 @@ tasks:
       pattern: fn code_str\(
       paths:
       - crates/reify-stdlib/src/trajectory/tots.rs
+      expect: absent
+- label: φ₂
+  task_id: 9281
+  title: gcode_import outcomes coded (gap-fill 2026-10-16 §K6-D5)
+  note: 'Added by gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K6-D5; fk-5d64b909dfdf). Both checks confirmed red at main c7bbfe2519.'
+  capabilities:
+  - name: gcode-parse-error-code
+    binding: 'grep: no GcodeParseError in reify-core DiagnosticCode at main; E_GcodeParseError exists only as a reify_gcode::ParseError carried in GcodeImportResult and dropped by eval_gcode_import (silent Undef)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GcodeParseError
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: gcode-dead-code-allow-gone
+    binding: 'grep: gcode_import.rs carries a module-wide #![allow(dead_code)] because its warnings are never read outside tests'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#!\[allow\(dead_code\)\]'
+      paths:
+      - crates/reify-stdlib/src/trajectory/gcode_import.rs
       expect: absent
 - label: χ
   task_id: 8851

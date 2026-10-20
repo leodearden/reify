@@ -277,8 +277,8 @@ fn identity_transform() -> Value {
 /// consumer — `chain_transform`, `chain_jacobian_fd`,
 /// `loop_residual_jacobian_by_joint` — therefore consumes it with no
 /// signature change, and `extract_loop_closure_chains` resolves it to the
-/// 0-DOF sentinel without making it a solver free variable (see
-/// `is_zero_dof_joint`, loop_closure.rs).
+/// 0-DOF sentinel without making it a solver free variable: it is not a
+/// driving joint (`loop_closure::is_driving_kind`).
 pub(crate) fn pose_link(pose: &Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(

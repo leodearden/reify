@@ -347,26 +347,13 @@ fi
 echo "==> Building reify-gui (debug)..."
 cargo build -p reify-gui --bin reify-gui --features gui
 
-# -- 7. Set debug-mode env vars ----------------------------------------------
+# -- 7. Debug mode + launch environment --------------------------------------
 # REIFY_DEBUG=1 enables the MCP debug listener on 127.0.0.1:$REIFY_DEBUG_PORT
-# (see gui/src-tauri/src/main.rs). LD_LIBRARY_PATH is required for direct
-# binary invocation since the cargo runner only fires for `cargo run`.
+# (see gui/src-tauri/src/main.rs).
 export REIFY_DEBUG=1
-# Only prepend the snap path if it exists — the PPA install (default in
-# scripts/setup-dev.sh) puts OCCT in /usr/lib where the loader finds it
-# without help.
-SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
-if [ -d "$SNAP_OCCT_LIB" ]; then
-    export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
 
-# The oneTBB LD_LIBRARY_PATH pin + the WebKit renderer default, shared with
-# scripts/run-gui.sh — see scripts/lib_gui_launch.sh for both rationales.
-#
-# MUST come after the snap prepend above: gui_launch_env_pin PREPENDS the pin
-# dir, so anything that edits LD_LIBRARY_PATH afterwards would land ahead of it
-# and defeat #5192's pin. It is deliberately not nested in the snap conditional
-# either — the snap dir does not exist on a PPA host.
+# The whole launch loader path and the WebKit renderer default, shared with
+# scripts/run-gui.sh: scripts/lib_gui_launch.sh.
 gui_launch_env_pin
 
 # -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------

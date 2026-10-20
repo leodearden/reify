@@ -50,7 +50,7 @@ fn eval_cached_emits_circular_let_binding_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert!(
@@ -87,7 +87,7 @@ fn eval_cached_emits_param_override_type_kind_mismatch_warning() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a Bool override into a Length param — type-kind mismatch
     engine.set_param_and_invalidate(&x_id, Value::Bool(true));
 
@@ -123,7 +123,7 @@ fn eval_cached_emits_param_override_dimension_mismatch_warning() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a Mass-dimensioned scalar into a Length param — dimension mismatch
     engine.set_param_and_invalidate(
         &x_id,
@@ -161,7 +161,7 @@ fn eval_cached_emits_sub_component_unknown_structure_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert!(
@@ -195,7 +195,7 @@ fn eval_cached_emits_solver_infeasible_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver));
 
     let result = engine.eval_cached(&module, VersionId(1));
@@ -226,7 +226,7 @@ fn eval_cached_emits_solver_no_progress_warning() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver));
 
     let result = engine.eval_cached(&module, VersionId(1));
@@ -272,7 +272,7 @@ fn eval_cached_solver_solved_arm_is_intentional_noop() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver));
 
     let result = engine.eval_cached(&module, VersionId(1));
@@ -322,7 +322,7 @@ fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert!(
@@ -367,7 +367,7 @@ fn eval_cached_repeat_call_re_emits_param_override_type_kind_mismatch_warning() 
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a Bool override into a Length param — type-kind mismatch
     engine.set_param_and_invalidate(&x_id, Value::Bool(true));
     let matches = |d: &Diagnostic| {
@@ -467,7 +467,7 @@ fn eval_cached_repeat_call_re_emits_param_override_dimension_mismatch_warning() 
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a Mass-dimensioned scalar into a Length param — dimension mismatch
     engine.set_param_and_invalidate(
         &x_id,
@@ -572,7 +572,7 @@ fn eval_cached_applies_valid_param_override_on_repeat_call() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a valid Length override: mm(12.0) = 0.012 m (SI), matching the Length cell type.
     engine.set_param_and_invalidate(&x_id, mm(12.0));
 
@@ -647,7 +647,7 @@ fn eval_cached_rejected_param_override_no_default_caches_undef_undetermined() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Push a Bool override into a Length param — triggers Err(TypeKindMismatch).
     engine.set_param_and_invalidate(&x_id, Value::Bool(true));
 
@@ -719,7 +719,7 @@ fn eval_cached_no_override_no_default_param_caches_undef_determined() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     // Deliberately no call to set_param_and_invalidate — None arm is exercised.
 
     let result = engine.eval_cached(&module, VersionId(1));
@@ -783,7 +783,7 @@ fn eval_cached_repeat_call_re_emits_solver_infeasible_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver));
 
     // First call — cold start (any_auto_miss = true, solver runs, diagnostic surfaces)
@@ -828,7 +828,7 @@ fn eval_cached_repeat_call_re_emits_solver_no_progress_warning() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver));
 
     // First call — cold start
@@ -889,7 +889,7 @@ fn eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic() 
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
 
     // First call — cold start
     let result1 = engine.eval_cached(&module, VersionId(1));
@@ -944,7 +944,7 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let matches = |d: &Diagnostic| {
         d.message.contains("sub-component")
             && d.message.contains("references unknown structure")
@@ -1054,11 +1054,11 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
     let node_b = NodeId::Value(cell_b.clone());
 
     // Engine A: eval() path (the reference / known-good side)
-    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_a = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result_a = engine_a.eval(&module);
 
     // Engine B: eval_cached() path (the side under fix)
-    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_b = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
 
     // Helper: asserts the three engine_b-side invariants (cache parity, value-map parity,
     // diagnostic count) for a single eval_cached call.  `eng` is passed explicitly rather
@@ -1224,11 +1224,11 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
             .template(template)
             .build();
 
-        let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_a = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
         engine_a.set_param_and_invalidate(&x_id, Value::Bool(true));
         let result_a = engine_a.eval(&module);
 
-        let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_b = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
         engine_b.set_param_and_invalidate(&x_id, Value::Bool(true));
         let result_b = engine_b.eval_cached(&module, VersionId(1));
 
@@ -1264,11 +1264,11 @@ fn eval_and_eval_cached_emit_byte_identical_param_override_rejection_warnings() 
             dimension: DimensionVector::MASS,
         };
 
-        let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_a = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
         engine_a.set_param_and_invalidate(&x_id, mass_val.clone());
         let result_a = engine_a.eval(&module);
 
-        let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+        let mut engine_b = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
         engine_b.set_param_and_invalidate(&x_id, mass_val);
         let result_b = engine_b.eval_cached(&module, VersionId(1));
 
@@ -1315,10 +1315,10 @@ fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_a = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result_a = engine_a.eval(&module);
 
-    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_b = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
     assert_diag_parity(
@@ -1356,11 +1356,11 @@ fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
         .template(template)
         .build();
 
-    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine_a = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver_a));
     let result_a = engine_a.eval(&module);
 
-    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    let mut engine_b = Engine::with_prelude(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None, &[])
         .with_solver(Box::new(solver_b));
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
@@ -1460,7 +1460,7 @@ fn eval_cached_caches_non_cyclic_let_cell_with_param_dependency_trace() {
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result = engine.eval_cached(&module, VersionId(1));
 
     let y_node = NodeId::Value(y_id.clone());

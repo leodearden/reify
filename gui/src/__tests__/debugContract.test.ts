@@ -27,6 +27,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
+import { makeLayoutStore } from './debugBridgeTestHelpers';
 import type { ViewStateStore } from '../stores/viewStateStore';
 // The REAL editor store, for the `apply_gui_state` `file`-member cases: the
 // dirty/clean split they pin lives in editorStore.openFile, so a mock would
@@ -84,20 +85,7 @@ function makeStores(): DebugStores {
       },
     },
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout: makeLayoutStore(),
   };
 }
 

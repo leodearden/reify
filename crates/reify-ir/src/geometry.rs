@@ -4287,6 +4287,44 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+// `InvalidReference` is the only invalid-handle case; every other
+// `GeometryError` is a failure carrying its cause.
+impl GeometryError {
+    fn into_failure_text(self) -> String {
+        match self {
+            GeometryError::OperationFailed(msg) => msg,
+            other => other.to_string(),
+        }
+    }
+}
+
+impl From<GeometryError> for QueryError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => QueryError::InvalidHandle(id),
+            other => QueryError::QueryFailed(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for ExportError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => ExportError::InvalidHandle(id),
+            other => ExportError::FormatError(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for TessError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => TessError::InvalidHandle(id),
+            other => TessError::TessellationFailed(other.into_failure_text()),
+        }
+    }
+}
+
 /// Errors from constructing a [`BooleanOpParents`] value with mismatched
 /// slice lengths.
 #[derive(Debug, Clone, PartialEq, Eq)]

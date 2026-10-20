@@ -1,0 +1,338 @@
+prd: docs/prds/v0_6/gui-engine-admission.md
+schema_version: 1
+signal_leaves: [α, β, γ, δ, ε, ζ, η]
+tasks:
+- label: α
+  task_id: 9387
+  title: 'gui-engine-admission α: EntryDocument — resolve_target admits every source write; persistable_source'
+  note: 'high (fk-efe244a6697a), gate #9171; x_finding_key [fk-efe244a6697a, fk-0ea9b4872587] (R5); update_source returns SourceUpdateError (R11); counts measured at b77273634a and re-measured unchanged at eb0a855dad'
+  capabilities:
+  - name: resolve-target-present
+    binding: 'producer-self — 0 matches in engine.rs at b77273634a (the unrelated private fn resolve_target in write_confinement.rs is outside the path; γ renames it); behaviour cover BT1/BT1'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn resolve_target\(
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: update-source-path-param-gone
+    binding: 'producer-self — 1 match (the update_source signature line) in engine.rs at b77273634a; behaviour cover BT1–BT3'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub fn update_source\(&mut self, path: &str'
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: rejected-buffer-convention-gone
+    binding: 'producer-self — 1 match (the definition) in engine.rs at b77273634a; behaviour cover BT4'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn holds_rejected_source
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: source-update-error-one-home
+    binding: 'producer-self — 0 matches in engine.rs at eb0a855dad (R11: the doors use it; no second refusal enum in commands.rs); behaviour cover BT5'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum SourceUpdateError
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: door-spelling-fallback
+    binding: 'producer-self — update_source_impl asks resolve_target with the raw spelling first, then the canonical one (PRD §3 row 21; lead decisions, §4; critic C7); behaviour cover BT2'', BT3'', BT3'''''
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: 'a fallback order has no construct-scoped spelling that a test fixture would not also match; BT2'', BT3'' and BT3'''' are the cover'
+  - name: named-guard-fn-deleted
+    binding: 'producer-self — ξ #8950 names the host guard function at its landing; α deletes it (the name is not known at authoring)'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: 'the symbol is named by #8950 at landing; re-pin as a grep absent check once #8950 lands, if wanted'
+  - name: one-reload-entry
+    binding: 'producer:#8942 upstream (S25 ζ: one EngineSession::reload(); update_source routes to it)'
+    verdict: PASS
+  - name: host-tool-context
+    binding: 'producer:#8950 upstream (ξ: TauriToolContext<''e>, delegated_tool_job, the named guard fn, with_engine_lock in the host, the host save interlock)'
+    verdict: PASS
+  - name: debug-originals-deleted
+    binding: 'producer:#8951 upstream (ο: deletes debug_server update_source/save_file originals, update_source_target_matches_active and the debug holds_rejected_source consumer)'
+    verdict: PASS
+  - name: session-events
+    binding: 'producer:#8947 upstream (λ: SessionEvents; every leaf follows it)'
+    verdict: PASS
+- label: β
+  task_id: 9388
+  title: 'gui-engine-admission β: published state names the entry; FileTabs badges non-entry tabs "not live"'
+  note: 'medium per R10 (x_finding_part fk-efe244a6697a does not set priority); no gate edge'
+  capabilities:
+  - name: entry-path-wire-field
+    binding: 'producer-self — 0 matches in types.rs at b77273634a (fields in the gui_state! macro are spelled pub <name>: <type>); behaviour cover BT17'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub entry_path: Option<String>'
+      expect: present
+      paths:
+      - gui/src-tauri/src/types.rs
+  - name: not-live-badge
+    binding: 'producer-self — 0 matches in FileTabs.tsx at b77273634a (the only not-live string in gui/src is a test label in sidecarReifyDebugGating.test.ts, outside the path); behaviour cover BT17'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: not-live-indicator
+      expect: present
+      paths:
+      - gui/src/editor/FileTabs.tsx
+  - name: entry-admission
+    binding: 'producer:α in-batch (resolve_target refuses a stray non-entry write)'
+    verdict: PASS
+  - name: committed-bindings
+    binding: 'producer:#9070 upstream (gui/src/bindings.ts, rule 4a, bindings_ts_is_current)'
+    verdict: PASS
+  - name: gui-state-builder
+    binding: 'producer:#8943 upstream (S25 η: assemble_gui_state, the one post-tessellation builder)'
+    verdict: PASS
+- label: γ
+  task_id: 9389
+  title: 'gui-engine-admission γ: WriteTarget::admit — one admission for every caller-named write (absorbs #8471)'
+  note: 'low (fk-9f1803be198c); R8 admitted roots = design dir ∪ assistant_temp_root() (R12); #9174 ← γ (R7); η ← γ'
+  capabilities:
+  - name: write-target-admit-present
+    binding: 'producer-self — 0 matches in write_confinement.rs at b77273634a; behaviour cover BT11–BT13'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn admit\(
+      expect: present
+      paths:
+      - gui/src-tauri/src/write_confinement.rs
+  - name: design-dir-confinement-fn-gone
+    binding: 'producer-self — 1 match (the definition) in write_confinement.rs at b77273634a'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn confine_to_design_dir
+      expect: absent
+      paths:
+      - gui/src-tauri/src/write_confinement.rs
+  - name: save-path-shape-check-gone
+    binding: 'producer-self — 1 match (the definition) in screenshot_save.rs at b77273634a; behaviour cover BT11'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn take_save_path
+      expect: absent
+      paths:
+      - gui/src-tauri/src/screenshot_save.rs
+  - name: temp-root-one-home
+    binding: 'producer-self — 0 matches in write_confinement.rs at eb0a855dad (R12: the one home of the assistant temp root; η consumes it)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn assistant_temp_root\(
+      expect: present
+      paths:
+      - gui/src-tauri/src/write_confinement.rs
+  - name: door-raw-fs-write-ceiling
+    binding: 'producer-self — the post-γ residue is measured at landing (PRD §12 OQ4; expected 5 or 4)'
+    verdict: OPEN
+  - name: host-save-export
+    binding: 'producer:#8950 upstream (ξ: host save_file/export inside the job, placement row 6)'
+    verdict: PASS
+  - name: debug-confined-write-target-deleted
+    binding: 'producer:#8951 upstream (ο: deletes confined_write_target, DesignChanged, path_while_open)'
+    verdict: PASS
+  - name: queued-engine-read
+    binding: 'producer:#8954 upstream (ρ: QueuedEngine; handle_image_tool reads the design path through it)'
+    verdict: PASS
+- label: δ
+  task_id: 9390
+  title: 'gui-engine-admission δ: PreviewState — one transition table for the live preview'
+  note: 'medium (fk-e9fa33e06157); export premise refuted, R2 re-applies the preview; preview_live is full_reload_only, read through engine_state_json (lead decision; no μ #8948 edge); γ alone changes export''s signature'
+  capabilities:
+  - name: preview-state-present
+    binding: 'producer-self — 0 matches across gui/src-tauri/src at b77273634a; behaviour cover BT6–BT9'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum PreviewState
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: preview-liveness-guess-gone
+    binding: 'producer-self — 1 match (the commit_parameter comment) in engine.rs at b77273634a'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cannot know whether a preview is live
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: preview-live-wire-field
+    binding: 'producer-self — 0 matches in types.rs at b77273634a; behaviour cover BT10'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub preview_live:'
+      expect: present
+      paths:
+      - gui/src-tauri/src/types.rs
+  - name: engine-state-preview-key
+    binding: 'producer-self — 0 matches in commands.rs at ff82a1049b (engine_state_json is a hand-built projection, PRD §3 row 28); behaviour cover BT10'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"preview_live":'
+      expect: present
+      paths:
+      - gui/src-tauri/src/commands.rs
+  - name: gui-state-builder
+    binding: 'producer:#8943 upstream (S25 η: assemble_gui_state; preview_live joins its inputs)'
+    verdict: PASS
+  - name: committed-bindings
+    binding: 'producer:#9070 upstream (gui/src/bindings.ts, rule 4a)'
+    verdict: PASS
+  - name: incremental-edit-check
+    binding: 'existing substrate — reify-eval Engine::edit_check (crates/reify-eval/src/engine_edit.rs) at b77273634a'
+    verdict: PASS
+- label: ε
+  task_id: 9391
+  title: 'gui-engine-admission ε: DesignWatch — the watcher follows design_loaded (absorbs #8574''s watcher half)'
+  note: 'medium (fk-33bb6efd23ac); R9 deletes AppState.initial_file; #9279 ← ε; never edits watcher.rs or claude_bridge.rs (R4)'
+  capabilities:
+  - name: design-watch-module
+    binding: 'producer-self — the file is absent at b77273634a'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/design_watch.rs
+      expect: present
+  - name: reconcile-present
+    binding: 'producer-self — 0 matches at b77273634a (the file does not exist); behaviour cover BT14–BT15'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn reconcile\(
+      expect: present
+      paths:
+      - gui/src-tauri/src/design_watch.rs
+  - name: watch-file-gone
+    binding: 'producer-self — 3 matches (definition + 2 calls) in main.rs at b77273634a; tauri_commands.rs is listed because #9070 may move open_file_engine there first'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: watch_file\(
+      expect: absent
+      paths:
+      - gui/src-tauri/src/main.rs
+      - gui/src-tauri/src/tauri_commands.rs
+  - name: design-loaded-event
+    binding: 'producer:#8947 upstream (λ: backend-only design_loaded(canonical_path), emitted by reload() on a load)'
+    verdict: PASS
+  - name: debug-open-funnel
+    binding: 'producer:#8954 upstream (ρ: the debug open funnel is a snapshot job over load_initial_file_impl)'
+    verdict: PASS
+  - name: host-open-funnel
+    binding: 'producer:#8950 upstream (ξ placement row 9: host open_file = canonicalize_debug_open_path + load_initial_file_impl)'
+    verdict: PASS
+  - name: file-watcher
+    binding: 'existing substrate — watcher::FileWatcher::new at b77273634a'
+    verdict: PASS
+- label: ζ
+  task_id: 9392
+  title: 'gui-engine-admission ζ: SidecarState::require_ready owns the not-ready refusal'
+  note: 'low (fk-2513539f4913); G4 owner of the claude_bridge.rs SidecarState table; ζ ← #9076, #9279 ← ζ (R4)'
+  capabilities:
+  - name: require-ready-present
+    binding: 'producer-self — 0 matches in claude_bridge.rs at b77273634a; behaviour cover BT16'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn require_ready\(
+      expect: present
+      paths:
+      - gui/src-tauri/src/claude_bridge.rs
+  - name: caller-duty-note-gone
+    binding: 'producer-self — 2 matches (send_message and permission_decision docs) in claude_bridge.rs at b77273634a'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: caller is responsible for ensuring the sidecar
+      expect: absent
+      paths:
+      - gui/src-tauri/src/claude_bridge.rs
+  - name: duplicated-ready-match-gone
+    binding: 'producer-self — 2 matches (the literal-bearing arms of claude_send_message_impl and claude_permission_decision_impl) at ff82a1049b; scoped to the literal so require_ready''s own SidecarState::Starting => Err(SidecarUnavailable::Starting) arm does not match (critic C4); behaviour cover BT16'''
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SidecarState::Starting => Err\("sidecar not ready
+      expect: absent
+      paths:
+      - gui/src-tauri/src/claude_bridge.rs
+  - name: msg-counter-deleted
+    binding: 'producer:#9076 upstream (S26 ξ: deletes MSG_COUNTER in send_message)'
+    verdict: PASS
+- label: η
+  task_id: 9393
+  title: 'gui-engine-admission η: sidecar temp grant follows the GUI''s admitted temp root'
+  note: 'low; x_finding_part [fk-9f1803be198c] (session ruling R12); depends on γ and ζ; #9279 ← η; claude_bridge.rs chain #9076 → ζ → η → #9279; gated coverage = BT18, the new Python infra member BT18'''' (+ .sh wrapper + run-all-classification row) and these checks; the sidecar vitest case BT18'' is not gated (PRD §3 row 27)'
+  capabilities:
+  - name: sidecar-tmpdir-exported
+    binding: 'producer-self — 0 matches in claude_bridge.rs at eb0a855dad; behaviour cover BT18'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"TMPDIR"'
+      expect: present
+      paths:
+      - gui/src-tauri/src/claude_bridge.rs
+  - name: sidecar-tmp-literal-grant-gone
+    binding: 'producer-self — 1 match (the wrapClaudeArgs grant) in sandbox.ts at eb0a855dad; sandbox.test.ts carries the same literal but is outside the path; behaviour cover BT18'' (sidecar vitest, not gated)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: "'--writable', '/tmp'"
+      expect: absent
+      paths:
+      - gui/sidecar/src/sandbox.ts
+  - name: helper-temp-grant-reads-tmpdir
+    binding: 'producer-self — 0 matches in landlock_exec.py at ff82a1049b; a present check, so the natural inline fix satisfies it (critic C5); behaviour cover BT18'''' (mandatory new infra member) and tests/infra/test_landlock_exec_refer.sh'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TMPDIR
+      expect: present
+      paths:
+      - gui/src-tauri/sandbox/landlock_exec.py
+  - name: assistant-temp-root
+    binding: 'producer:γ in-batch (write_confinement::assistant_temp_root)'
+    verdict: PASS
+  - name: sidecar-state-table
+    binding: 'producer:ζ in-batch (R4 claude_bridge.rs order)'
+    verdict: PASS
+  - name: sidecar-env-builder
+    binding: 'existing substrate — claude_bridge::compute_sidecar_env, sandbox.ts::wrapClaudeArgs, landlock_exec.py built-in temp grant, all present at eb0a855dad'
+    verdict: PASS
+- label: ω
+  task_id: 9394
+  title: 'gui-engine-admission ω: PRD close stamp (SHIPPED header, landed ids, AS-AUTHORED freeze)'
+  note: 'depends on α–η; a cancelled sibling counts as satisfied'
+  capabilities:
+  - name: prd-shipped
+    binding: 'producer-self — 0 matches in the PRD at authoring (its Status reads active)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*Status:\*\* \*\*SHIPPED
+      expect: present
+      paths:
+      - docs/prds/v0_6/gui-engine-admission.md

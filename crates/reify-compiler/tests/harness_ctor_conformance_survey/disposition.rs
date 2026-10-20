@@ -137,9 +137,10 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// How each owning leaf reads its signal instead is recorded once, in
 /// `docs/notes/ctor-conformance-flip-leaf-signals.md`.
 /// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
-/// show that the units-CORRECT `force: 1000N` contributes exactly ZERO force to
-/// `solve_elastic_static` while the bare control contributes 1000 N. Dimension
-/// the call site and the measurement it encodes is gone.
+/// show that the units-CORRECT `force: 1000N` contributed exactly ZERO force to
+/// `solve_elastic_static` while the bare control contributed 1000 N (until γ1
+/// #6922 widened the reader). Dimension the call site and the measurement it
+/// encodes is gone.
 ///
 /// So these are NOT un-migrated call sites that nobody got around to. That
 /// distinction is the entire reason this table carries a `why` column.
@@ -216,23 +217,26 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "ex",
-        "#6922",
-        "leaf η: `FDMCouponOverride(ex: 2mm)` stores 0.002 m and the dimension-blind \
-         opt_f64 reads it as 0.002 Pa",
+        "#8008",
+        "deliberately-wrong before-image `FDMCouponOverride(ex: 2mm)`, kept failing at \
+         compile (#5306 ArgTypeMismatch); the reader gate landed in #6922 (η), which \
+         rejects a LENGTH ex as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "line_width",
-        "#6922",
-        "leaf η: `AsPrintedOptions(line_width: 0.4)` is read as 0.4 METRES by \
-         field_scalar — a 1000x error on a 0.4mm extrusion",
+        "#8008",
+        "deliberately-wrong before-image `AsPrintedOptions(line_width: 0.4)`, kept \
+         failing at compile (#5306 ArgTypeMismatch); the reader gate landed in #6922 \
+         (η), which rejects a bare line_width as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "mass",
-        "#6922",
-        "leaf ε: `MassProperties(mass: 2m)` is read as 2.0 kg by the blind cell_f64 \
-         copy, while the dimension-checking cell_mass_f64 sits unused ~300 lines away",
+        "#8008",
+        "deliberately-wrong before-image `MassProperties(mass: 2m)`, kept failing at \
+         compile (#5306 ArgTypeMismatch); the reader gate landed in #6922 (ε), whose \
+         MassProperties reader rejects a LENGTH mass as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
@@ -251,10 +255,10 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
     (
         "tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri",
         "force",
-        "#6922",
-        "leaf γ1 headline inversion: the units-CORRECT `force: 1000N` contributes \
-         EXACTLY ZERO force to solve_elastic_static (max_von_mises 0, iterations 0) \
-         where the bare control contributes 1000 N",
+        "#6941",
+        "leaf γ2: γ1 #6922 widened the load reader, so a FORCE-dimensioned PointLoad \
+         now applies exactly the bare control's force; the site fails at compile only \
+         because PointLoad.force is still declared `Real`, which γ2 retypes",
     ),
     (
         "tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri",
@@ -340,7 +344,7 @@ pub(crate) const CTOR_CONFORMANCE_SITE_SEVERITY: &str = "Error";
 /// `a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot` pins the
 /// current classification so the gap is visible rather than silent. The cure is
 /// a structured ctor-vs-fn-call discriminator on the diagnostic itself, not more
-/// prose matching — tracked as a follow-up to #5306.
+/// prose matching — owned by #7870.
 ///
 /// Both prefixes are already this survey's, read here rather than re-spelled:
 /// `epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters`

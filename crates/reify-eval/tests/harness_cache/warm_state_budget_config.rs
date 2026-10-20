@@ -23,6 +23,7 @@ fn manifest_warm_state_budget_wires_into_engine() {
         .expect("manifest with [warm_state] must parse");
 
     let (engine, _diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(&manifest),
     );
@@ -44,6 +45,7 @@ fn empty_manifest_leaves_warm_pool_at_env_or_default() {
     let manifest = Manifest::from_toml_str("").expect("empty manifest must parse");
 
     let (engine, _diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(&manifest),
     );
@@ -63,6 +65,7 @@ fn empty_manifest_leaves_warm_pool_at_env_or_default() {
 #[test]
 fn set_warm_state_budget_updates_pool_budget() {
     let (mut engine, _diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         None,
     );
@@ -80,6 +83,7 @@ fn set_warm_state_budget_updates_pool_budget() {
 #[test]
 fn set_warm_state_budget_none_uses_env_or_default() {
     let (mut engine, _diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         None,
     );

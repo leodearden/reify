@@ -56,6 +56,13 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 | `ArgRejection` exists to convert | `reify_ir::arg_acceptance::ArgRejection` | PASS |
 | delivered | `pub struct Rejection` present in `crates/reify-core/src/diagnostics.rs`; `fn eval_builtin(…) -> BuiltinOutcome` present in `crates/reify-stdlib/src/lib.rs` | — |
 
+### S8-ψ — Relation binding kind; the relation rows mint `RelationKind` (retro-critic 2026-10-20, R6)
+| Capability | Evidence | Verdict |
+|---|---|---|
+| the minting mechanism exists | `registry!` (`macros.rs`) emits one typed sub-enum per `BindingKind` group with `strum::EnumIter`, plus a narrowing `BuiltinId::as_<kind>()`; `lookup(name, argc)` already disambiguates arity overloads | PASS |
+| the leaf DAG admits it | reify-builtins depends on reify-core and strum only (`dag_invariant.rs`); the relation facts it rows today live in reify-compiler `relation_signatures.rs` (`RELATION_FN_NAMES`, `relation_fn_result_type`) | PASS |
+| delivered | `Relation => RelationKind` present in `crates/reify-builtins/src/registry.rs`; `BindingKind::Relation\b` present in `crates/reify-builtins/src` | — |
+
 ### S8-α2 — Success-path advisories (dfm, flexure, snapshot)
 | Capability | Evidence | Verdict |
 |---|---|---|
@@ -63,6 +70,9 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 | constraint-path DFM consumer exists | `engine_constraints::measure_dfm_rules` calls `dfm_diagnose` at 4 sites | PASS |
 | S6 σ₀ #8846 moves the CoM group first | dependency edge (PRD §6) | PASS |
 | delivered | `fn emit_(dfm\|flexure\|snapshot)_diagnostics` absent in `crates/reify-expr/src` | — |
+| flexure re-classifier deleted (gap-fill 2026-10-16, K6-D5) | `flexures/common.rs::classify_geometry_invalid` + its 13-name positional layout table re-derive `E_FlexureGeometryInvalid` from a rejected ctor's raw args at main `c7bbfe2519`; the `parse_*_inputs` return `Option` | PASS |
+| delivered (gap-fill 2026-10-16) | `fn classify_geometry_invalid` absent in `crates/reify-stdlib/src/flexures` | — |
+| enumerated corrections (gap-fill 2026-10-16, K6-D5) | `examples/flexures/yield_warning.ri` and `examples/process/std_process_dfm.ri` stay byte-identical. The flexure input classes that are silent Undef today gain coded rejections from `FlexureInputError` (naming field and value): missing E, non-positive width or E, a non-unit axis, wrong arity. These are the only flexure diagnostic changes S8-α2 may make | — |
 
 ### S8-β1 — Geometry: the 19 diagnosed names become rejections
 | Capability | Evidence | Verdict |
@@ -107,6 +117,13 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 | the intercepted set and guards | 20 names; guards `Always`, `Arg0Lambda` (`fn_field`), `Arg0Field`, `Arg0FieldArg1BoundingBox` cover every measured arm (seat rt-intercept §B; critic) | PASS |
 | no intercepted name is `.ri`-declared | critic: no `fn sample/restrict/flat_map/generate/…` in `crates/reify-compiler/stdlib` | PASS |
 | delivered | `fn (reduction_kind_of\|field_reduction_kind)\(` absent in `crates/reify-expr/src/dual_eval.rs`; `pub fn classify_call\(` present in `crates/reify-expr/src` | — |
+
+### S8-χ — Smoothness column; dual_eval name tables deleted (gap-fill 2026-10-16, K9-D4)
+| Capability | Evidence | Verdict |
+|---|---|---|
+| the second home is real | `dual_eval.rs` `is_kink_builtin`, `is_differentiable_builtin` (13 smooth builtins), `builtin_partials` are `(name, arity)` matches; `crates/reify-builtins/src` has no `differentiab`/`kink` hit (review R96, fk-819257c68b82) | PASS |
+| S8-ε and #8480 do not cover it | #8896's checks name only `reduction_kind_of`/`field_reduction_kind`; #8480 moves the three tables within reify-expr | PASS |
+| delivered | `fn (is_kink_builtin\|is_differentiable_builtin\|builtin_partials)\(` absent in `crates/reify-expr/src`; `enum Smoothness` present in `crates/reify-builtins/src` | — |
 
 ### S8-ζ — Stdlib intrinsics; one shadowing rule
 | Capability | Evidence | Verdict |
@@ -193,7 +210,7 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 | Capability | Evidence | Verdict |
 |---|---|---|
 | grammar has no reserved-word API | `tree-sitter-reify/grammar.js` declares no `word:` rule | PASS (the table carries `Reserved`/`Contextual`, pinned by a parse test) |
-| delivered | `path` `crates/reify-syntax/src/keywords.rs` present; `crate::completion::\{BODY_KEYWORDS` absent in `crates/reify-lsp/src/references.rs` | — |
+| delivered | `path` `crates/reify-syntax/src/keywords.rs` present; `crate::completion::\{BODY_KEYWORDS` absent in `crates/reify-lsp/src/references/` | — |
 
 ### S8-τ — reify-expr `lib.rs` partition
 | delivered | `path` `crates/reify-expr/src/context.rs` present | — |
@@ -210,3 +227,16 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 ### S8-ω — PRD close
 | delivered | `^Status: \*\*SHIPPED` present in the PRD | — |
 |---|---|---|
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from `plans/gap-fill-deliberation-reify-20261016.md`. Every new or changed check below was confirmed red at main `c7bbfe2519` with `git grep -E`.
+
+- §K6-D5: S8-α2 #8889 gains `flexure-geometry-reclassifier-deleted` (`fn classify_geometry_invalid` absent in `crates/reify-stdlib/src/flexures`) and the enumerated flexure corrections above (three writes: this row, the `.yaml`, #8889's `metadata.delivered_checks`).
+- §K9-D4: new leaf S8-χ #9289 (smoothness column), two checks above.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+Ruling R6 (`plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`). Both new checks confirmed red at main `66dcd71ef5` with `git grep -E`.
+
+- R6 (S9 B1 → C1): new leaf S8-ψ #9418 (relation binding kind, 12 relation rows minting `RelationKind`), two checks above (three writes: this section, the `.yaml`, #9418's `metadata.delivered_checks`). #6944 loses its τ9 relation half and its dependency on #8741, and gains a dependency on S8-ψ. Its checks are unchanged, since none names a relation.

@@ -633,7 +633,7 @@ _b7_init_git_lane() {
     if [ -d "$lane/.git" ]; then
         return 0
     fi
-    git -C "$lane" init -q
+    git -C "$lane" init -q -b main
     # Add all sources EXCLUDING target/ (too large + not source)
     git -C "$lane" add -- . ':!target'
     git -C "$lane" \
@@ -688,7 +688,7 @@ _b11_concurrent_clone_during_flip() {
 
     # Step 2: git-init the lane with the source tree committed (target/ excluded)
     # so the provenance guard (git status --porcelain --untracked-files=no) passes.
-    git -C "$_b11_lane" init -q
+    git -C "$_b11_lane" init -q -b main
     git -C "$_b11_lane" add -- . ':!target'
     git -C "$_b11_lane" \
         -c user.email="warm-lane-test@localhost" \
@@ -1334,7 +1334,7 @@ TOML_EOF
     printf 'pub fn hello() -> u64 { 42 }\n' > "$lane_dir/src/lib.rs"
     # target/ stays untracked; the committed tree is Cargo.toml + src/
     printf 'artifact-placeholder\n' > "$lane_dir/target/debug/placeholder"
-    git -C "$lane_dir" init -q
+    git -C "$lane_dir" init -q -b main
     git -C "$lane_dir" add -- . ':!target'
     git -C "$lane_dir" \
         -c user.email="warm-lane-test@localhost" \

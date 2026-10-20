@@ -10,18 +10,25 @@
 //! each test's path becomes `p1::tests::<name>` — matching the p5.rs/p2.rs
 //! convention.
 //!
-//! All tests use in-memory rusqlite + MockJCodemunchOps + MockGitOps so they
-//! remain hermetic (P1 issues zero SQL; the in-memory connection satisfies
+//! All tests are hermetic: in-memory rusqlite + MockGitOps, and
+//! MockJCodemunchOps — or, where the production seam itself is under test,
+//! RealJCodemunchOps over the loopback mock in `tests/common/mcp_mock.rs`
+//! (P1 issues zero SQL; the in-memory connection satisfies
 //! AuditContext.conn without requiring a schema).
+
+mod common;
 
 mod p1 {
 
+use crate::common::mcp_mock::spawn_mock_mcp;
+use reify_audit::jcodemunch_client::RealJCodemunchOps;
 use reify_audit::{
     AuditContext, ChangedSymbol, DeadSymbol, DeclSuppression, DoneProvenance, EvidenceRef, Finding,
     JCodemunchOps, LayerViolation, MockGitOps, MockJCodemunchOps, Pattern, Severity,
     SymbolReference, TaskMetadata, UntestedSymbol, p1_producer_orphan,
 };
 use rusqlite::Connection;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -330,6 +337,102 @@ mod tests {
             )),
             "new_widget (real caller) must not appear; got {:?}",
             f.evidence
+        );
+    }
+
+    const SEAM_DECLARING_FILE: &str = "crates/reify-audit/src/lib.rs";
+    const SEAM_NON_TEST_IMPORTER: &str = "crates/reify-audit/src/bin/reify-audit.rs";
+    const SEAM_TEST_IMPORTER: &str = "crates/reify-audit/tests/p1.rs";
+
+    /// Runs P1 over [`RealJCodemunchOps`] for one done task, past its grace
+    /// window, whose commit introduced `JCodemunchOps` in
+    /// [`SEAM_DECLARING_FILE`]. The mock serve answers `find_references` with
+    /// one row per file in `importers`. The tempdir holds the declaring file,
+    /// so the enrichment pass locates the declaration and finds no opt-out:
+    /// only the reference check can suppress.
+    fn p1_findings_over_real_ops(importers: &[&str]) -> Vec<Finding> {
+        let changed = json!({
+            "added_symbols": [{"name": "JCodemunchOps", "file": SEAM_DECLARING_FILE, "line": 1}],
+        });
+        let references = json!({
+            "__rows__": importers
+                .iter()
+                .map(|file| json!({"file": file, "specifier": "reify_audit", "match_type": "named"}))
+                .collect::<Vec<_>>(),
+        });
+        // The mock hands its responder only `arguments`, so each tool is told
+        // apart by the argument it alone sends.
+        let mock = spawn_mock_mcp(move |args| {
+            if args.get("identifier").is_some() {
+                Some(references.clone())
+            } else if args.get("since_sha").is_some() {
+                Some(changed.clone())
+            } else {
+                None
+            }
+        });
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let declaring_file = tmp.path().join(SEAM_DECLARING_FILE);
+        std::fs::create_dir_all(declaring_file.parent().expect("a nested path has a parent"))
+            .expect("create the declaring file's dir");
+        std::fs::write(&declaring_file, "pub trait JCodemunchOps {}\n")
+            .expect("write the declaring file");
+
+        let ops = RealJCodemunchOps::new(mock.url(), "test-repo", tmp.path())
+            .expect("handshake against the mock MCP serve must succeed");
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert("6504".to_string(), done_meta("6504", NOW - 30 * DAY, None));
+
+        let ctx = AuditContext {
+            project_root: tmp.path().to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &ops,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+        let findings = p1_producer_orphan::check(&ctx);
+        mock.stop();
+        findings
+    }
+
+    /// The production-seam counterpart of
+    /// `non_test_caller_in_workspace_suppresses_finding`. jcodemunch's
+    /// `find_references` lists the files that IMPORT the identifier, and the
+    /// declaring file never imports its own item, so a seam that narrowed the
+    /// answer to `symbol.file` would empty it and report every symbol (#6504).
+    #[test]
+    fn cross_file_importer_suppresses_finding_through_real_ops() {
+        let findings = p1_findings_over_real_ops(&[SEAM_NON_TEST_IMPORTER, SEAM_TEST_IMPORTER]);
+        assert!(
+            findings.is_empty(),
+            "{SEAM_NON_TEST_IMPORTER} is a non-test caller in another file than \
+             the declaring {SEAM_DECLARING_FILE}, so it suppresses the \
+             producer-orphan; got {findings:?}",
+        );
+
+        // Control: drop the non-test importer and P1 must report, so the empty
+        // result above is suppression rather than a sweep that never reached
+        // the reference check.
+        let control = p1_findings_over_real_ops(&[SEAM_TEST_IMPORTER]);
+        assert_eq!(
+            control.len(),
+            1,
+            "a symbol whose only importer is a test file is a producer-orphan; \
+             got {control:?}",
+        );
+        assert_eq!(control[0].pattern, Pattern::P1ProducerOrphan);
+        assert_eq!(
+            control[0].evidence,
+            vec![EvidenceRef::File {
+                path: SEAM_DECLARING_FILE.to_string(),
+            }],
         );
     }
 
@@ -967,20 +1070,19 @@ mod tests {
         );
     }
 
-    /// Step 7 (RED→GREEN via step 8) — `find_references` must disambiguate
-    /// by declaration site (file + name), not just by bare name.
+    /// P1 queries references per symbol and charges each answer to that
+    /// symbol's own declaration, so when a seam CAN disambiguate same-named
+    /// symbols, P1 does not re-conflate them. Declaration-site
+    /// disambiguation is an optional seam capability that the mock has and
+    /// the jcodemunch-backed impl lacks (see `JCodemunchOps::find_references`).
     ///
     /// One done task introduces two symbols both named "Builder" in different
     /// files: `crates/x/src/widget.rs` and `crates/y/src/widget.rs`. A single
     /// non-test caller is registered ONLY for the `(crates/y/..., "Builder")`
     /// pair. Expected: exactly one finding — for `crates/x/...` (no caller) —
     /// and the finding's evidence cites `crates/x/src/widget.rs`.
-    ///
-    /// RED: current bare-name keying in the mock (`HashMap<String, ...>`)
-    /// means `set_find_references("Builder", refs)` covers BOTH symbols,
-    /// suppressing both — the detector fires zero findings instead of one.
     #[test]
-    fn find_references_disambiguates_by_declaration_site() {
+    fn p1_attributes_each_reference_answer_to_its_own_declaration_site() {
         let done_at = NOW - 15 * DAY;
         let sha = task_sha("5000");
 

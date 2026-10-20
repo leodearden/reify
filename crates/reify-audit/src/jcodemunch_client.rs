@@ -1226,31 +1226,6 @@ fn extract_g_allow(line: &str) -> Option<String> {
 }
 
 // -----------------------------------------------------------------------
-// filter_refs_to_file
-// -----------------------------------------------------------------------
-
-/// Retain only references whose `.file == file`. Input order is preserved.
-///
-/// This is the key client-side scoping step: jcodemunch's `find_references`
-/// API has no server-side file-scope parameter, so filtering is done here.
-///
-/// KNOWN LIMITATION: this discards every cross-file reference, not only
-/// same-named symbols declared in other files. A symbol consumed ONLY from
-/// another file — arguably the strongest evidence that it is NOT an
-/// orphan — ends up with an empty reference list after this filter runs.
-/// `p1_producer_orphan.rs`'s non-test-caller check therefore only ever sees
-/// same-file callers, even though its own condition does not spell out a
-/// same-file conjunct. Loosening this (e.g. if jcodemunch ever grows a
-/// server-side file-scope parameter — see the
-/// [`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references)
-/// doc, which is what states the MUST — or having P1 treat cross-file refs
-/// as their own signal) is tracked as a follow-up (#6504) rather than
-/// fixed here.
-fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
-    refs.into_iter().filter(|r| r.file == file).collect()
-}
-
-// -----------------------------------------------------------------------
 // HTTP transport
 // -----------------------------------------------------------------------
 
@@ -1596,13 +1571,10 @@ impl JCodemunchOps for RealJCodemunchOps {
         };
         // Diagnosed against the table the decoder ACTUALLY read, which is
         // why it travels back with the rows: `__rows__` today, any other
-        // table on the fallback scan. Counted BEFORE `filter_refs_to_file`,
-        // since scoping to the declaring file is a deliberate narrowing,
-        // not a decode failure. What must be loud is rows the decoder could
-        // not read at all — an empty result there is indistinguishable
-        // from the genuine zero-reference answer P1 reads as a producer
-        // orphan.
-        let refs = match find_references_from_wire(&decoded) {
+        // table on the fallback scan. Rows the decoder could not read must
+        // be loud, because an empty answer is indistinguishable from the
+        // genuine zero-reference answer P1 reads as a producer orphan.
+        match find_references_from_wire(&decoded) {
             Some(DecodedReferences { table, refs }) => {
                 if let Some(msg) =
                     dropped_rows_diagnostic("find_references", &decoded, table, refs.len())
@@ -1614,8 +1586,7 @@ impl JCodemunchOps for RealJCodemunchOps {
             // No table carried references at all, so there were no rows to
             // drop and nothing to report.
             None => Vec::new(),
-        };
-        filter_refs_to_file(refs, &symbol.file)
+        }
     }
 
     fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
@@ -2463,30 +2434,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // step-15 / step-16: filter_refs_to_file
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn filter_refs_to_file_keeps_matching() {
-        let refs = vec![
-            SymbolReference { file: "a.rs".to_string(), line: 1 },
-            SymbolReference { file: "b.rs".to_string(), line: 2 },
-            SymbolReference { file: "a.rs".to_string(), line: 3 },
-            SymbolReference { file: "c.rs".to_string(), line: 4 },
-        ];
-        let filtered = filter_refs_to_file(refs, "a.rs");
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].line, 1);
-        assert_eq!(filtered[1].line, 3);
-    }
-
-    #[test]
-    fn filter_refs_to_file_empty_input() {
-        let filtered = filter_refs_to_file(Vec::new(), "a.rs");
-        assert!(filtered.is_empty());
-    }
-
-    // ------------------------------------------------------------------
     // step-17 / step-18: find_references_from_wire (inline MUNCH)
     // ------------------------------------------------------------------
 
@@ -2590,9 +2537,10 @@ mod tests {
     /// storm, the opposite direction to the decoy-table hazard the
     /// selector's doc reasons about.
     ///
-    /// Dropping the rows stays correct (a reference with no file is not
-    /// something `filter_refs_to_file` can scope). Dropping them SILENTLY
-    /// is not, so this pins the diagnostic rather than the empty vec alone.
+    /// Dropping the rows stays correct: a reference with no file cannot be
+    /// classified test/non-test by P1's `has_non_test_caller`. Dropping
+    /// them SILENTLY is not, so this pins the diagnostic rather than the
+    /// empty vec alone.
     #[test]
     fn find_references_from_wire_is_loud_when_rows_carry_no_file_column() {
         let decoded = json!({
@@ -2607,8 +2555,8 @@ mod tests {
         let refs = selected.refs;
         assert!(
             refs.is_empty(),
-            "a reference with no `file` cannot be scoped by filter_refs_to_file; \
-             got {refs:?}"
+            "a reference with no `file` cannot be classified test/non-test by \
+             P1's has_non_test_caller; got {refs:?}"
         );
         let msg = dropped_rows_diagnostic("find_references", &decoded, selected.table, refs.len())
             .expect(
@@ -4156,48 +4104,65 @@ mod tests {
             );
         }
 
-        /// Pins today's `RealJCodemunchOps::find_references` scoping
-        /// contract ([`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references):
-        /// production impls MUST scope to `symbol.file`) through the
-        /// production route, over the live 3-segment `__rows__` payload.
-        /// Only the first row's file matches `symbol.file`, so exactly one
-        /// reference must survive `filter_refs_to_file`.
-        #[test]
-        fn find_references_decodes_the_real_wire_through_real_ops() {
-            const MUNCH_REAL_WIRE: &str = concat!(
-                "#MUNCH/1 tool=find_references enc=gen1\n",
-                "\n",
-                "@1=crates/reify-audit/\n",
-                "\n",
-                "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
-                "r,@1src/jcodemunch_client.rs,crate,named\n",
-                "r,@1tests/p1.rs,reify_audit,named\n",
-            );
+        // --------------------------------------------------------------
+        // #6504: cross-file references survive the production seam
+        // --------------------------------------------------------------
 
+        /// The measured live `find_references` answer for identifier
+        /// `JCodemunchOps` (esc-6447-1, jcodemunch 1.108.54): one row per
+        /// file that IMPORTS it. The declaring file,
+        /// `crates/reify-audit/src/lib.rs`, is not among them, because a
+        /// Rust file never `use`s its own item.
+        const MUNCH_JCODEMUNCHOPS_IMPORTERS: &str = concat!(
+            "#MUNCH/1 tool=find_references enc=gen1\n",
+            "\n",
+            "@1=crates/reify-audit/\n",
+            "\n",
+            "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+            "r,@1src/bin/ptodo-baseline-gen.rs,reify_audit,named\n",
+            "r,@1src/bin/reify-audit.rs,reify_audit,named\n",
+            "r,@1src/jcodemunch_client.rs,crate,named\n",
+            "r,@1tests/p1.rs,reify_audit,named\n",
+        );
+
+        /// `RealJCodemunchOps::find_references` hands back every importer
+        /// the wire reports, through the production decode route.
+        #[test]
+        fn find_references_returns_cross_file_importers_through_real_ops() {
             let tmp = tempfile::TempDir::new().expect("create tempdir");
             let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(&[(
                 "find_references",
-                MUNCH_REAL_WIRE,
+                MUNCH_JCODEMUNCHOPS_IMPORTERS,
             )]));
             let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
                 .expect("handshake against the recording stub must succeed");
 
             let symbol = ChangedSymbol {
                 name: "JCodemunchOps".to_string(),
-                file: "crates/reify-audit/src/jcodemunch_client.rs".to_string(),
+                file: "crates/reify-audit/src/lib.rs".to_string(),
                 line: 1,
                 suppression: None,
             };
             let refs = ops.find_references(&symbol);
 
+            let files: Vec<&str> = refs.iter().map(|r| r.file.as_str()).collect();
             assert_eq!(
-                refs.len(),
-                1,
-                "find_references must scope to symbol.file per the \
-                 JCodemunchOps::find_references doc in lib.rs; got {refs:?}",
+                files,
+                vec![
+                    "crates/reify-audit/src/bin/ptodo-baseline-gen.rs",
+                    "crates/reify-audit/src/bin/reify-audit.rs",
+                    "crates/reify-audit/src/jcodemunch_client.rs",
+                    "crates/reify-audit/tests/p1.rs",
+                ],
+                "an import-based lookup never lists the declaring file ({}), so \
+                 narrowing the answer to it empties it; every importer must come \
+                 back, in wire order",
+                symbol.file,
             );
-            assert_eq!(refs[0].file, symbol.file);
-            assert_eq!(refs[0].line, 0, "the real wire reports no line");
+            assert!(
+                refs.iter().all(|r| r.line == 0),
+                "the real wire reports no line; got {refs:?}",
+            );
         }
     }
 }

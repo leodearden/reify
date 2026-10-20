@@ -26,7 +26,7 @@ const SOURCE: &str = r#"
 
 fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile_with_stdlib(source);
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.eval(&compiled)
 }
 

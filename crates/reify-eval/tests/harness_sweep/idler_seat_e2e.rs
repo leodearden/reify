@@ -269,7 +269,7 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
     let cells = CellSpans::of(compiled);
 
     let mut engine =
-        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
+        reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None);
     let result = engine.check(compiled);
 
     let (volume_errors, rest): (Vec<_>, Vec<_>) = result

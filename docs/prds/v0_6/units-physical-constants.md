@@ -1,6 +1,6 @@
 # PRD: `std.units.constants` — complete the named physical constants
 
-**Status:** draft · **Authored:** 2026-06-01 · **Milestone:** v0_6
+**Status: SHIPPED.** All 5 decomposition leaves have landed — α #4173, β #4174, γ #4175, δ #4176, ε #4177. **Authored:** 2026-06-01 · **Milestone:** v0_6 · shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its "remain entirely absent" gap descriptions, substrate measurements and anchors are dated 2026-06-01 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** LIVE — §3 item 8 ("Return-type is NOT a dimensional checksum"), which `crates/reify-eval/src/modal_ops.rs` rustdoc defers to. AS-AUTHORED — everything else; the shipped constants surface is stated by `docs/reify-stdlib-reference.md` §2.4/§2.2, reconciled by ε #4177.
 **Closes gap-register cluster:** P8 units-constants (`docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md`)
 **Source doc:** `docs/reify-stdlib-reference.md` §2.4 (and §2.2)
 **Approach:** bare **B** (self-contained stdlib feature; not a high-stakes seam — see §5 G5).

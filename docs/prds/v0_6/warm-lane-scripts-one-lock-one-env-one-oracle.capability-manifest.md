@@ -10,10 +10,10 @@ Status: authored (pass 1). Task ids are stamped by `commit_planning` at decompos
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| The probe substrate exists | `scripts/lib_lane_lock.sh::lane_lock_probe`. It is shared, non-blocking and read-only. An absent file reports IDLE, and BUSY is reported only on rc 124. | PASS |
+| Delivered (check `probe-substrate-exists`): `lane_lock_assert_held` defined | **[Amended 2026-10-20, retro-critic R7]** Relabelled: the check asserts the deliverable, grep `^lane_lock_assert_held\(\) \{` present in `scripts/lib_lane_lock.sh`, not the substrate. The substrate, `lane_lock_probe`, is shared, non-blocking and read-only; an absent file reports IDLE, and BUSY is reported only on rc 124. | PASS |
 | Dark-factory holders use flock(2) on the sibling path | `git_ops.py::_seed_warm_lane` uses `flock -x -w 30 -E 124 <lane_dir>.lock` (TAKE). `HELD_BY_CALLER` holds `fcntl.flock(LOCK_EX)`. `verify_cancel.py::lane_lock_path` gives `<name>.lock`. | PASS |
 | rc 70 lands in FAULT | `_seed_rc_to_unavailable` handles 75, 76, 77, 124 and 127 explicitly; every other code is FAULT. Seed uses no exit 70 at main. | PASS |
-| Delivered: `lane_lock_assert_held` defined; seed and thin no longer compose `${LANE_DIR}.lock` | grep `^lane_lock_assert_held\(\) \{` is present in the lib. grep `LANE_LOCK="\$\{LANE_DIR\}\.lock"` is absent from seed and thin; it is present at main in both. | PASS |
+| Delivered (check `seed-acquires-through-the-lib`): seed and thin no longer compose `${LANE_DIR}.lock` | grep `LANE_LOCK="\$\{LANE_DIR\}\.lock"` is absent from seed and thin; it is present at main in both. **[Amended 2026-10-20, retro-critic R7]** The check is anchored on one spelling (`"$LANE_DIR.lock"` or `"${LANE_DIR%/}.lock"` would also satisfy absent), so it is acceptable only together with the `adoption-ratchet.manifest` rows `lane-lock-path-construction` and `lane-lock-exec-open` at ceiling 0. | PASS |
 
 ## L2 — `REIFY_WARM_LANE_WORKTREES`
 
@@ -21,7 +21,13 @@ Status: authored (pass 1). Task ids are stamped by `commit_planning` at decompos
 |---|---|---|
 | Two meanings measured | `git grep REIFY_WARM_LANE_MOUNT` returns two kinds of reader. Mount-meaning readers: provision, preflight, seed, thin. Worktrees-meaning readers: audit `_probe_live "$MOUNT/$name.lock"` and lock-guard `$MOUNT/$LANE.lock`. | PASS |
 | The four retired names have no production setter | `reify-warm-lane-gc.service` passes `--mount` explicitly. The orchestrator drop-in sets only `REIFY_LANE_LEAK_STATUS_CMD`. dark-factory `orchestrator/src` and `shared` have 0 hits. | PASS |
-| Delivered: the five readers name the new env var | grep `REIFY_WARM_LANE_WORKTREES` is present in lock-guard, audit, gc, sweep and preflight. | PASS |
+| Delivered (check `lock-guard-reads-new-name-warm-lane-lock-guard.sh`): `warm-lane-lock-guard.sh` reads the new env var | grep `\$\{REIFY_WARM_LANE_WORKTREES` is present in `scripts/warm-lane-lock-guard.sh`. | PASS |
+| Delivered (check `lock-guard-reads-new-name-warm-lane-audit.sh`): `warm-lane-audit.sh` reads the new env var | grep `\$\{REIFY_WARM_LANE_WORKTREES` is present in `scripts/warm-lane-audit.sh`. | PASS |
+| Delivered (check `lock-guard-reads-new-name-warm-lane-gc.sh`): `warm-lane-gc.sh` reads the new env var | grep `\$\{REIFY_WARM_LANE_WORKTREES` is present in `scripts/warm-lane-gc.sh`. | PASS |
+| Delivered (check `lock-guard-reads-new-name-warm-lane-gc-sweep.sh`): `warm-lane-gc-sweep.sh` reads the new env var | grep `\$\{REIFY_WARM_LANE_WORKTREES` is present in `scripts/warm-lane-gc-sweep.sh`. | PASS |
+| Delivered (check `lock-guard-reads-new-name-warm-lane-preflight.sh`): `warm-lane-preflight.sh` reads the new env var | grep `\$\{REIFY_WARM_LANE_WORKTREES` is present in `scripts/warm-lane-preflight.sh`. | PASS |
+
+**[Amended 2026-10-20, retro-critic R7]** The former single check over five paths went green on any one hit, comment lines included; it is split into one check per script, anchored on the read.
 
 ## L3 — `lib_task_status.sh` / `lib_lane_entry.sh`
 
@@ -43,14 +49,14 @@ Status: authored (pass 1). Task ids are stamped by `commit_planning` at decompos
 | Capability | Evidence | Verdict |
 |---|---|---|
 | The producer serialisers are located | dark-factory `lane_lifecycle.py::LaneRecord.to_json` is `json.dumps(…, indent=2)`. `LaneState` has six values. `plan.json` is written by `orchestrator/mcp/plan_tools.py`. | PASS |
-| Delivered: golden records checked in | path `tests/infra/fixtures/warm_lane_golden/{plan.json,lane-state.json}` is present. The content comes from companion D5 (dark_factory). | PASS |
+| Delivered: golden records checked in | **[Amended 2026-10-20, retro-critic R7]** path `tests/infra/fixtures/warm_lane_golden/{plan.json,lane-state.json,lane-state-released.json,lane-states.json}` is present (the null-field golden and the `L_CASES` source added; a partial vendor no longer passes). The content comes from companion D5 (dark_factory). | PASS |
 
 ## L6 — `_do_reclaim` factoring
 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | Shape measured | `preserved_count` is incremented at 10 sites. There are two `flock -n 8` gates and two `live_ref_present` gates. The file is unchanged since `a030ee7528`. | PASS |
-| Delivered: one gate helper | grep `^_with_entry_gate\(\) \{` is present in gc. | PASS |
+| Delivered: one gate helper | **[Amended 2026-10-20, retro-critic R7]** grep `^_with_entry_gate\(\) [{(]` is present in gc (widened to match gc's subshell-bodied house style; the helper is `_with_entry_gate <entry> <precheck_fn> <act_fn>`). | PASS |
 
 ## L7 — adopt #8541
 
@@ -64,6 +70,8 @@ Status: authored (pass 1). Task ids are stamped by `commit_planning` at decompos
 |---|---|---|
 | The dark-factory probe is a substring test | `_seed_script_supports` does `flag in _seed_script_text(...)`. | PASS |
 | Delivered: parser arm | grep `^ *--capabilities\)` is present in seed. | PASS |
+
+**[Amended 2026-10-20, retro-critic R7 M3]** Companion D8 (dark_factory:6855): exact-line membership covers the capability-gated flags only (the `CAPABILITIES` array: `--assume-lane-lock-held`, `--distinct-lock-refusal-rc`), never the base flags.
 
 ## L9 — tip-bound sentinel (Phase A)
 
