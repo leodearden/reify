@@ -359,7 +359,9 @@ class TestNotPortedActions(unittest.TestCase):
 
 
 class TestKnobRegistry(unittest.TestCase):
-    """`--print-knobs` lists every knob verify.sh reads, resolved as bash does."""
+    """`--print-knobs` record shape, the six duration knobs against bash's walls,
+    one sampled knob per other parser, and the doc. It does not check that the
+    registry covers every knob verify.sh reads."""
 
     RECORD_KEYS = {"v", "name", "parser", "default", "meaning", "value"}
     PARSERS = {"duration", "text", "text-unset-only", "flag-one", "flag-set"}
