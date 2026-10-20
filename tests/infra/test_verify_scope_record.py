@@ -56,6 +56,13 @@ FIXTURE_REFERENCE = r"tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri"
 REVIEWED_MARKER = "pg-drift:allow"
 GUI_PINS = "gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"
 STAGED_SCOPE = ["test", "--scope", "staged", "--print-scope"]
+NARROWING_HEADER = re.compile(
+    r"^# narrowing — NARROW_ACTIVE=(\d+) affected=(.*?) closure=(.*?) from_diff=(\d+)$",
+    re.MULTILINE | re.DOTALL,
+)
+RETRY_SPECS_MARK = "REIFY_GUI_RETRY_SPECS"
+CLOSURE_WITHOUT_GUI = "crates/reify-doc/src/lib.rs"
+CLOSURE_WITH_GUI = "crates/reify-eval/src/lib.rs"
 
 
 def base_env(**overrides):
@@ -121,6 +128,20 @@ def header_fields(stdout, prefix=SCOPE_HEADER):
     lines = [line for line in stdout.splitlines() if line.startswith(prefix)]
     assert len(lines) == 1, f"{len(lines)} plan lines start {prefix!r}"
     return dict(token.split("=", 1) for token in lines[0][len(prefix):].split())
+
+
+def bash_narrowing(stdout):
+    """bash's `# narrowing —` header, which spans lines while a crate list holds newlines (defect 7)."""
+    found = NARROWING_HEADER.findall(stdout)
+    assert len(found) == 1, f"{len(found)} narrowing headers"
+    narrow_active, affected, closure, from_diff = found[0]
+    return {
+        "narrow_active": int(narrow_active),
+        "affected": affected.split(),
+        "closure": closure.split(),
+        "from_diff": int(from_diff),
+        "run_gui_vitest": int(header_fields(stdout)["RUN_GUI_VITEST"]),
+    }
 
 
 def is_subsequence(lines, of):
@@ -698,6 +719,99 @@ class TestDerivedFixtureCoupling(InClone):
         scope, py = self.staged_alone_on_top(fixture(self.UNREFERENCED))
         self.assertEqual(scope["run_gui"], 1, "an unreadable pins file fails wide")
         self.assertEqual(len([line for line in py.stderr.splitlines() if GUI_PINS in line]), 1, py.stderr)
+
+
+class TestNarrowingMatchesBash(InClone):
+    """The closure, narrowing and the vitest lane as bash's Phase-2 block computes them."""
+
+    def assert_narrowing(self, scope, change=None, env=None, flags=(), label=""):
+        if change is not None:
+            change(self.clone)
+        record, py, bash = self.side_by_side(scope, env, flags)
+        expected = bash_narrowing(bash.stdout)
+        narrowing = record["narrowing"]
+        for key, value in expected.items():
+            self.assertEqual(narrowing[key], value, f"{label}: {key}")
+        self.assert_stderr_within_bash(py, bash, label)
+        return narrowing, py, bash
+
+    def test_staged_crate_computes_the_closure(self):
+        narrowing, _, _ = self.assert_narrowing("staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI))
+        self.assertEqual((narrowing["from_diff"], narrowing["narrow_active"]), (1, 0))
+        self.assertIn("reify-doc", narrowing["closure"])
+        self.assertEqual(narrowing["run_gui_vitest"], 0, "a closure without reify-gui skips vitest")
+
+    def test_staged_narrow_narrows_to_the_closure(self):
+        narrowing, _, _ = self.assert_narrowing(
+            "staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI), flags=("--narrow",)
+        )
+        self.assertEqual(narrowing["narrow_active"], 1)
+        self.assertEqual(narrowing["affected"], narrowing["closure"])
+        self.assertEqual(narrowing["packages"], narrowing["closure"])
+
+    def test_branch_narrows(self):
+        def change(clone):
+            clone.start_branch()
+            clone.commit_change(CLOSURE_WITHOUT_GUI)
+
+        narrowing, _, _ = self.assert_narrowing("branch", change)
+        self.assertEqual(narrowing["narrow_active"], 1)
+
+    def test_computed_empty_closure(self):
+        narrowing, _, _ = self.assert_narrowing("staged", lambda c: c.stage("tests/infra/test_helpers.sh"))
+        self.assertEqual((narrowing["from_diff"], narrowing["closure"]), (1, []))
+        self.assertEqual(narrowing["run_gui_vitest"], 1, "gui_path_signal still runs vitest")
+
+    def test_a_closure_reaching_reify_gui_runs_vitest(self):
+        narrowing, _, _ = self.assert_narrowing("staged", lambda c: c.stage(CLOSURE_WITH_GUI))
+        self.assertIn("reify-gui", narrowing["closure"])
+        self.assertEqual(narrowing["run_gui_vitest"], 1)
+
+    def test_the_override_shapes(self):
+        for override in ("reify-eval", "   ", "*", "ALL", "reify-gui"):
+            with self.subTest(override=override):
+                self.clone.reset()
+                narrowing, _, _ = self.assert_narrowing(
+                    "staged",
+                    lambda c: c.stage(CLOSURE_WITHOUT_GUI),
+                    env=base_env(REIFY_AFFECTED_CRATES_OVERRIDE=override),
+                    flags=("--narrow",),
+                    label=f"override {override!r}",
+                )
+                self.assertEqual(narrowing["from_diff"], 0)
+
+    def test_retry_specs_without_a_vitest_lane_warn(self):
+        env = base_env(REIFY_GUI_RETRY_SPECS="src/__tests__/bridge.test.ts")
+        narrowing, py, bash = self.assert_narrowing("staged", lambda c: c.stage(DOCS_PATH), env=env)
+        self.assertEqual(narrowing["run_gui_vitest"], 0)
+        py_warnings = [line for line in py.stderr.splitlines() if RETRY_SPECS_MARK in line]
+        bash_warnings = [line for line in bash.stderr.splitlines() if RETRY_SPECS_MARK in line]
+        self.assertEqual(len(py_warnings), 1, py.stderr)
+        self.assertEqual(py_warnings, bash_warnings)
+
+    def test_retry_specs_force_the_vitest_lane(self):
+        env = base_env(REIFY_GUI_RETRY_SPECS="src/__tests__/bridge.test.ts")
+        narrowing, py, _ = self.assert_narrowing("staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI), env=env)
+        self.assertEqual(narrowing["run_gui_vitest"], 1)
+        self.assertNotIn(RETRY_SPECS_MARK, py.stderr)
+
+    def test_no_closure_without_rust(self):
+        narrowing, _, _ = self.assert_narrowing("staged", lambda c: c.stage(DOCS_PATH))
+        self.assertEqual((narrowing["from_diff"], narrowing["closure"]), (0, []))
+
+    def test_scope_all(self):
+        narrowing, _, _ = self.assert_narrowing("all")
+        self.assertEqual(narrowing["run_gui_vitest"], 1)
+
+    def test_a_fail_wide_scope_never_reads_a_closure(self):
+        rename_failure = next(case for case in FAILING_GIT if case.label == "staged rename source")
+        with tempfile.TemporaryDirectory() as scratch:
+            farm = rename_failure.farm(Path(scratch) / "farm")
+            env = base_env(PATH=f"{farm}{os.pathsep}{base_env()['PATH']}")
+            narrowing, _, _ = self.assert_narrowing(
+                "staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI), env=env
+            )
+        self.assertEqual((narrowing["from_diff"], narrowing["run_gui_vitest"]), (0, 1))
 
 
 if __name__ == "__main__":
