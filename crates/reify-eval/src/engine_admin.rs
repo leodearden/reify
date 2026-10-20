@@ -2701,7 +2701,8 @@ impl Engine {
     /// a `StalenessPolicy::Fresh` profile: a persistent cache serves results
     /// from an earlier session, which that profile does not permit. `None` is
     /// always accepted, and so is a `SolverFree` engine, which carries no
-    /// resolution profile.
+    /// resolution profile (see [`SolverPosture::SolverFree`] for why that gap is
+    /// bounded).
     pub fn set_persistent_cache_dir(&mut self, dir: Option<std::path::PathBuf>) {
         if dir.is_some()
             && let SolverPosture::Solve(profile) = self.solver_posture()

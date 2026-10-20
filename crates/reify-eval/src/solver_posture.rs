@@ -14,6 +14,12 @@ pub enum SolverPosture {
     /// Resolve through the production solver registry under this profile.
     Solve(ResolutionProfile),
     /// Resolve nothing: every `auto` parameter stays unresolved.
+    ///
+    /// Carries no [`ResolutionProfile`], so it declares no staleness policy
+    /// either, and `Engine::set_persistent_cache_dir` cannot check one. That
+    /// gap is bounded by the PRD's end state, where every production driver
+    /// resolves and so holds a profile (§4.1 I1, §4.5 I5); until then no
+    /// solver-free production driver attaches a persistent cache.
     SolverFree,
 }
 
