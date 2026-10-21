@@ -109,6 +109,7 @@ test_find_uses_smoke_runner.sh pool
 test_flake_density_report.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_gc_worktree_targets.sh pool
 test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
 test_graph_task_conflation_census.sh pool
