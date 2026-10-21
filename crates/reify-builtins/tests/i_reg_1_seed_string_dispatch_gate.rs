@@ -1,21 +1,22 @@
-//! **I-REG-1**, seed-scoped: `reify_builtins::lookup` is the only
-//! string→builtin resolution in the workspace, so no `"<seed name>" =>` match
-//! arm and no re-entrant `eval_builtin("<seed name>", …)` call may live
-//! outside `crates/reify-builtins`.
+//! **I-REG-1**, registry-scoped: `reify_builtins::lookup` is the only
+//! string→builtin resolution in the workspace, so no `"<registered name>" =>`
+//! match arm and no re-entrant `eval_builtin("<registered name>", …)` call may
+//! live outside `crates/reify-builtins`.
 //!
 //! Task #6001 α, `docs/prds/v0_6/builtin-signature-registry.md` §7.2.
 //!
-//! # Scope: seed-scoped with a ledger, not workspace-wide
+//! # Scope: registry-scoped with a ledger, not workspace-wide
 //!
-//! α migrated two families, so this gate sweeps the SEED names only. The
-//! residue it finds is REAL string dispatch on registered names, and it is
-//! all outside α's charter — so it is COUNTED in
-//! [`SEED_STRING_DISPATCH_LEDGER`], one entry per (file, name) pair with its
-//! exact site count and a one-sentence WHY naming the leaf that owns re-homing
-//! it, rather than hidden by narrowing the
-//! scan or "fixed" by editing a crate this task does not own. An UNLEDGERED
-//! site fails, naming the file, line and seed name. The workspace-wide grep
-//! gate (every builtin name, not just the seeds) arrives at task ω.
+//! This gate sweeps the REGISTERED names only — α's seeds and every row added
+//! since — not every builtin name. The residue it finds is REAL string
+//! dispatch on registered names, outside the charter of the leaf that
+//! registered them — so it is COUNTED in [`SEED_STRING_DISPATCH_LEDGER`], one
+//! entry per (file, name) pair with its exact site count and a one-sentence
+//! WHY naming the leaf that owns re-homing it, rather than hidden by narrowing
+//! the scan or "fixed" by editing a crate the registering task does not own.
+//! An UNLEDGERED site fails, naming the file, line and name. The
+//! workspace-wide grep gate (every builtin name, not just the registered ones)
+//! arrives at task ω.
 //!
 //! The name list is derived from [`reify_builtins::rows`], never restated —
 //! mirroring `reify-compiler`'s `units.rs` disjointness list — so a row added
