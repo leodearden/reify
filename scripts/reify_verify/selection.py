@@ -1,8 +1,13 @@
 """selection — the per-artifact infra tests a task-tier run selects from what changed (PRD D5, D14).
 
-select_infra runs bash's six selectors in bash's order and returns the
+select_infra runs bash's selectors in bash's order and returns the
 Selection and the selection stage's stderr lines. Each selector appends a
 test glob at most once (bash's whole-token dedup).
+
+The whole-tree gates share one trigger, any staged change at all
+(select_staged_whole_tree_gate; landing-contract §3 R3,
+docs/legibility/landing-contract.md), so STAGED_WHOLE_TREE_LEAVES is the one
+place a new gate is added.
 
 The kloc guard's crate set is read from its one owner, harness-layout-lib.sh.
 The ptodo, pdiag and pdoccover predicates are copies of reify-audit's
@@ -34,6 +39,8 @@ PTODO_LEAF = "tests/infra/test_reify_audit_ptodo.sh"
 PDIAG_LEAF = "tests/infra/test_reify_audit_pdiag.sh"
 PDOCCOVER_LEAF = "tests/infra/test_reify_audit_pdoccover.sh"
 CITED_TEST_PATH_LEAF = "tests/infra/test_cited_test_paths_resolve.sh"
+CANONICAL_CONFIG_PATH_LEAF = "tests/infra/test_orchestrator_config_canonical_path.sh"
+STAGED_WHOLE_TREE_LEAVES = (CITED_TEST_PATH_LEAF, CANONICAL_CONFIG_PATH_LEAF)
 
 PTODO_SWEPT_EXTENSIONS = (".rs", ".ri", ".sh", ".py", ".ts", ".tsx", ".js")
 PDIAG_BASELINE = "crates/reify-audit/pdiag-baseline.txt"
@@ -80,7 +87,7 @@ def select_infra(
         *_ptodo(decision),
         *_branch_ratchet(decision, repo_root, env, PDIAG_LEAF, _pdiag_input_path, "--diff-filter=AM"),
         *_branch_ratchet(decision, repo_root, env, PDOCCOVER_LEAF, _pdoccover_input_path),
-        *_cited_test_paths(decision),
+        *_staged_whole_tree_gates(decision),
     )
     for glob in candidates:
         if glob not in globs:
@@ -202,8 +209,8 @@ def _pdoccover_input_path(path: str) -> bool:
     return any(fnmatchcase(path, glob) for glob in PDOCCOVER_INPUTS)
 
 
-def _cited_test_paths(decision: ScopeDecision) -> tuple[str, ...]:
-    """select_cited_test_path_gate: any staged change."""
+def _staged_whole_tree_gates(decision: ScopeDecision) -> tuple[str, ...]:
+    """select_staged_whole_tree_gate: any staged change selects every whole-tree gate."""
     if decision.mode is Scope.STAGED and decision.changed_paths:
-        return (CITED_TEST_PATH_LEAF,)
+        return STAGED_WHOLE_TREE_LEAVES
     return ()
