@@ -50,8 +50,8 @@ fn declared_value_type(kind: &DefaultKind) -> Option<&Type> {
 /// The `Type::Error` fallback arm is anti-cascade defense in depth: actual callers either
 /// hold an annotation (`cell_type` is `Some`) or have a valid inferred expression (an
 /// unannotated let that failed to compile is [`DefaultDisposition::CompileError`] and never
-/// reaches this helper); the `debug_assert!` at site 1 fires in dev to catch drift, and the
-/// `Type::Error` fallback ensures release-mode safety if the assert is bypassed.
+/// reaches this helper). A missing one at site 1 is [phase drift](report_phase_drift), which
+/// injection reports; the fallback keeps the advertisement from cascading meanwhile.
 pub(super) fn resolve_let_advertised_type(
     cell_type: &Option<Type>,
     inferred: Option<&CompiledExpr>,
@@ -347,20 +347,8 @@ pub(super) fn check_phase_collect_trait_bounds(
 
 /// The output of [`check_phase_pre_register_default_types`]: one [`DefaultDisposition`] per
 /// named `param`/`let` default, keyed by `(name, kind)`, plus the expression Pass 2 compiled
-/// for each unannotated `let` it records as `Inject`.
-///
-/// `collect_all_requirements` keeps at most one default per `(name, kind)` for a name the
-/// conformer does not declare. Several same-name `let` defaults survive only when the conformer
-/// declares the name, and they all share [`DefaultDisposition::OverriddenByConformer`]. So
-/// one disposition per key is well defined, and the inferred-let cache is keyed by name alone.
-///
-/// # DESIGN LIMITATION
-///
-/// Pass 2 still walks `ctx.defaults` in source order. Two *unannotated* lets that
-/// forward-reference each other will fail inference for the forward-referencing binding
-/// (`b` is not in scope when `a`'s expression is compiled), yielding an `unresolved name`
-/// diagnostic. Annotating *either* binding unblocks the case. A topological ordering pass
-/// would remove the limitation but is out of scope ("documenting as intentional simplification").
+/// for each unannotated `let` it records as `Inject`. A lookup that finds no record is
+/// [phase drift](report_phase_drift).
 #[derive(Default)]
 pub(super) struct PreRegisterOutput {
     dispositions: HashMap<(String, AvailableDefaultKind), DefaultDisposition>,
@@ -387,16 +375,12 @@ pub(super) enum DefaultDisposition {
 
 impl PreRegisterOutput {
     /// The disposition of the named default of `kind`.
-    pub(super) fn disposition(&self, name: &str, kind: AvailableDefaultKind) -> DefaultDisposition {
-        *self
-            .dispositions
-            .get(&(name.to_string(), kind))
-            .unwrap_or_else(|| {
-                panic!(
-                    "every named param/let default in ctx.defaults gets a disposition from \
-                     check_phase_pre_register_default_types; none for `{name}` ({kind:?})"
-                )
-            })
+    pub(super) fn disposition(
+        &self,
+        name: &str,
+        kind: AvailableDefaultKind,
+    ) -> Option<DefaultDisposition> {
+        self.dispositions.get(&(name.to_string(), kind)).copied()
     }
 
     /// The expression Pass 2 compiled for the unannotated `let` default `name`.
@@ -442,9 +426,16 @@ impl PreRegisterOutput {
 ///
 /// Splitting the passes lets an unannotated `let` forward-reference any annotated member, and
 /// both run before the advertisement map is built so inferred types feed requirement
-/// matching. Poisoning suppresses a cascade only for dependents that come later in
-/// `ctx.defaults`: in `let c = a  let a = b` with `b` undefined, `c` compiles first and reports
-/// `a` unresolved before `a` fails (see [`PreRegisterOutput`]'s DESIGN LIMITATION).
+/// matching.
+///
+/// # DESIGN LIMITATION
+///
+/// Pass 2 compiles unannotated lets in `ctx.defaults` order, so one cannot forward-reference
+/// another: in `let a = b  let b = 1.0`, `b` is not in scope when `a` compiles, and `a` reports
+/// `b` unresolved. Annotating either binding unblocks the case; a topological ordering of
+/// Pass 2 would remove the limitation. Poisoning has the same order dependence: in
+/// `let c = a  let a = b` with `b` undefined, `c` compiles first and reports `a` unresolved
+/// before `a` fails.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn check_phase_pre_register_default_types(
     ctx: &MergeContext,
@@ -598,7 +589,8 @@ fn compile_inferred_let(
 /// [`PreRegisterOutput::disposition`]: an injected default under its declared type (an
 /// unannotated let under the type Pass 2 inferred), a default the conformer overrides under
 /// its declared type if it has one, and a default that lost its scope slot or failed to
-/// compile not at all.
+/// compile not at all. Nor is a default with no disposition, which injection reports as
+/// [phase drift](report_phase_drift).
 pub(super) fn check_phase_build_available_defaults_map(
     ctx: &MergeContext,
     pre: &PreRegisterOutput,
@@ -608,18 +600,10 @@ pub(super) fn check_phase_build_available_defaults_map(
         .filter_map(|d| {
             let name = d.name.as_deref()?;
             let kind = AvailableDefaultKind::of(&d.kind)?;
-            let ty = match pre.disposition(name, kind) {
+            let ty = match pre.disposition(name, kind)? {
                 DefaultDisposition::Inject => match declared_value_type(&d.kind) {
                     Some(declared_ty) => declared_ty.clone(),
-                    None => {
-                        let inferred = pre.inferred_let(name);
-                        debug_assert!(
-                            inferred.is_some(),
-                            "unannotated let '{name}' has an Inject disposition without a \
-                             cached inferred expression"
-                        );
-                        resolve_let_advertised_type(&None, inferred)
-                    }
+                    None => resolve_let_advertised_type(&None, pre.inferred_let(name)),
                 },
                 DefaultDisposition::OverriddenByConformer => declared_value_type(&d.kind)?.clone(),
                 DefaultDisposition::SlotTaken | DefaultDisposition::CompileError => return None,
@@ -1554,9 +1538,7 @@ pub(super) fn check_phase_check_members_against_requirements(
 ///
 /// Creates a `ValueCellKind::Let` cell. For **annotated** lets (`cell_type: Some(_)`) the
 /// expression is compiled freshly. For **unannotated** lets the expression Pass 2 compiled is
-/// reused. A missing one means the phases drifted apart: `debug_assert!` fires in dev/test, and
-/// release reports an internal error rather than recompiling, which would duplicate the
-/// diagnostics Pass 2 already pushed for the same expression.
+/// reused; a missing one is [phase drift](report_phase_drift).
 ///
 /// ### Annotation-vs-expression type check
 ///
@@ -1599,11 +1581,14 @@ pub(super) fn check_phase_inject_defaults(
                     .name
                     .as_deref()
                     .expect("DefaultKind::Param always has Some(name)");
-                match pre.disposition(name, AvailableDefaultKind::Param) {
-                    DefaultDisposition::Inject => {}
-                    DefaultDisposition::OverriddenByConformer
-                    | DefaultDisposition::SlotTaken
-                    | DefaultDisposition::CompileError => continue,
+                if !is_injected(
+                    &pre,
+                    name,
+                    AvailableDefaultKind::Param,
+                    default.span,
+                    diagnostics,
+                ) {
+                    continue;
                 }
                 let cell_id = ValueCellId {
                     entity: structure.name.to_string(),
@@ -1634,11 +1619,14 @@ pub(super) fn check_phase_inject_defaults(
                     .name
                     .as_deref()
                     .expect("DefaultKind::Let always has Some(name)");
-                match pre.disposition(name, AvailableDefaultKind::Let) {
-                    DefaultDisposition::Inject => {}
-                    DefaultDisposition::OverriddenByConformer
-                    | DefaultDisposition::SlotTaken
-                    | DefaultDisposition::CompileError => continue,
+                if !is_injected(
+                    &pre,
+                    name,
+                    AvailableDefaultKind::Let,
+                    default.span,
+                    diagnostics,
+                ) {
+                    continue;
                 }
                 let cell_id = ValueCellId {
                     entity: structure.name.to_string(),
@@ -1652,24 +1640,11 @@ pub(super) fn check_phase_inject_defaults(
                     None => match pre.take_inferred_let(name) {
                         Some(compiled_expr) => compiled_expr,
                         None => {
-                            debug_assert!(
-                                false,
-                                "unannotated let '{name}' has an Inject disposition without a \
-                                 cached inferred expression — drift between \
-                                 check_phase_pre_register_default_types and \
-                                 check_phase_inject_defaults"
-                            );
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "internal error: unannotated trait let '{name}' has an \
-                                     Inject disposition without a cached inferred expression; \
-                                     check_phase_pre_register_default_types and \
-                                     check_phase_inject_defaults have drifted apart"
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    default.span,
-                                    "internal consistency",
-                                )),
+                            report_phase_drift(
+                                name,
+                                default.span,
+                                "is recorded as Inject without a cached inferred expression",
+                                diagnostics,
                             );
                             continue;
                         }
@@ -1761,6 +1736,57 @@ pub(super) fn check_phase_inject_defaults(
             DefaultKind::AssocType(_) => {}
         }
     }
+}
+
+/// Whether the named default of `kind` is injected: exactly when its disposition is
+/// [`DefaultDisposition::Inject`]. A default with no disposition is reported as phase drift
+/// and not injected.
+fn is_injected(
+    pre: &PreRegisterOutput,
+    name: &str,
+    kind: AvailableDefaultKind,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    match pre.disposition(name, kind) {
+        Some(DefaultDisposition::Inject) => true,
+        Some(
+            DefaultDisposition::OverriddenByConformer
+            | DefaultDisposition::SlotTaken
+            | DefaultDisposition::CompileError,
+        ) => false,
+        None => {
+            report_phase_drift(name, span, "has no recorded disposition", diagnostics);
+            false
+        }
+    }
+}
+
+/// Reports phase drift: a consumer of [`PreRegisterOutput`] found no record for a named trait
+/// default, either no disposition or no cached expression for an unannotated `Inject` let.
+///
+/// Drift is a compiler bug, never an input condition, and has one policy: no consumer panics.
+/// The default is not injected, and nothing is recompiled, which would duplicate the
+/// diagnostics Pass 2 already pushed. `check_phase_inject_defaults` visits every default
+/// after the advertisement map is built, so it alone reports the drift: `debug_assert!` fails
+/// in dev/test, and release gets this one internal-error diagnostic.
+fn report_phase_drift(
+    name: &str,
+    span: SourceSpan,
+    problem: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    debug_assert!(
+        false,
+        "conformance phase drift: trait default '{name}' {problem}"
+    );
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "internal error: trait default '{name}' {problem}; \
+             check_phase_pre_register_default_types and its consumers have drifted apart"
+        ))
+        .with_label(DiagnosticLabel::new(span, "internal consistency")),
+    );
 }
 
 /// Ambient-default injection phase (task 4497, ambient-default-material B).

@@ -2968,10 +2968,9 @@ mod tests {
 
     /// Pass 2, unannotated-`let` loser whose slot was claimed in Pass 1: `A`'s
     /// `param x` owns the scope slot, so `B`'s unannotated `let x` is dropped without
-    /// being injected — and without the "not cached" internal error that would flag the
-    /// Pass-2 and injection guards drifting apart. Bound order must not matter, because
-    /// Pass 1 runs over every default before Pass 2 does. The Bool `let` makes a
-    /// wrongly injected Let visibly distinct from the Real `param`.
+    /// being injected, and without being reported as phase drift. Bound order must not
+    /// matter, because Pass 1 runs over every default before Pass 2 does. The Bool `let`
+    /// makes a wrongly injected Let visibly distinct from the Real `param`.
     #[test]
     fn unannotated_trait_let_losing_to_same_name_param_is_not_injected() {
         let traits = r"
@@ -3022,12 +3021,13 @@ mod tests {
         );
     }
 
-    /// Characterizes current behaviour: a trait default the conformer overrides is still
-    /// advertised under its declared type, so `A`'s `param x` default satisfies `C`'s
-    /// `param x` requirement even though `S`'s own `let x` replaces it. The control
-    /// without `A` is `let_member_does_not_satisfy_param_requirement`.
+    /// Pins a known defect, #9410: a trait default the conformer overrides is still
+    /// advertised, so `A`'s `param x` default falsely satisfies `C`'s `param x` requirement
+    /// although `S`'s own `let x` replaces it and `S` has no `param x`. The fix flips the
+    /// first assertion to the missing-member diagnostic of the control without `A`,
+    /// `let_member_does_not_satisfy_param_requirement`.
     #[test]
-    fn trait_param_default_overridden_by_conformer_let_is_advertised_but_not_injected() {
+    fn overridden_trait_param_default_falsely_satisfies_param_requirement() {
         let run = conform_source(
             r"
             trait A { param x : Real = 1.0 }
@@ -3038,7 +3038,8 @@ mod tests {
 
         assert!(
             run.diagnostics.is_empty(),
-            "C's `param x` must be satisfied by A's advertised default; got: {:?}",
+            "current behaviour (#9410): A's overridden default still satisfies C's \
+             `param x`, so nothing is reported; got: {:?}",
             run.diagnostics
         );
         assert!(
@@ -3677,10 +3678,10 @@ mod tests {
     ///
     /// When neither a cell_type annotation nor an inferred expression is available,
     /// the helper returns `Type::Error` (anti-cascade poison). This arm should not be
-    /// reached in practice — the `debug_assert!` at the advertisement call site
-    /// (site 1) catches drift;
-    /// the `Type::Error` fallback is defense in depth for release builds where the
-    /// `debug_assert!` is a no-op (task 3749, tightening of the 3639 G-allow carve-out).
+    /// reached in practice: at the advertisement call site (site 1) it means phase drift,
+    /// which injection reports. The `Type::Error` fallback is defense in depth for release
+    /// builds, where that report's `debug_assert!` is a no-op (task 3749, tightening of the
+    /// 3639 G-allow carve-out).
     #[test]
     fn resolve_let_advertised_type_falls_back_to_error_when_neither_annotation_nor_inferred() {
         let result = resolve_let_advertised_type(&None, None);
