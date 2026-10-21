@@ -1598,8 +1598,7 @@ mod tests {
             accept_field(&ratio, "poisson_ratio", &dimensionless_spec()),
             FieldAcceptance::Accepted(0.3),
             "a bare Real at a dimensionless_spec field must be Accepted \
-             (common.rs's material_numeric_field records that poisson_ratio \
-             lands as a bare Real at runtime)"
+             (a material's poisson_ratio lands as a bare Real at runtime)"
         );
         let bare_at_pressure = steel_instance(&[("youngs_modulus", Value::Real(2.0e11))]);
         assert!(

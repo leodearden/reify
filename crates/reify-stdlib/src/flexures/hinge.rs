@@ -13,9 +13,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    attach_compliance, cantilever_sigma_at, length_si, make_compliance_record, make_flexure_joint,
-    material_field_si, material_numeric_field, neutral_angle_si, parse_declared_range,
-    symmetric_angle_range, RangeKind, PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, cantilever_sigma_at, declared_range, length_arg, make_compliance_record,
+    make_flexure_joint, neutral, poisson_ratio, symmetric_angle_range, yield_stress,
+    youngs_modulus, InputFault, RangeKind, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Howell §5.7 small-length flexural pivot (SLFP) stiffness coefficient.
@@ -39,10 +39,38 @@ const CROSS_SPRING_GAMMA: f64 = 2.0;
 /// `Some(Value::Undef)` on validation failure) and `None` for any unknown
 /// name, so the caller can fall through to the next module.
 pub(crate) fn eval_hinge(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match hinge_ctor(name)? {
+        HingeCtor::Bending(build) => {
+            parse_bending_hinge_inputs(args).map_or(Value::Undef, |b| build(&b))
+        }
+        HingeCtor::Let => parse_let_inputs(args).map_or(Value::Undef, |l| prb_let_joint(&l)),
+    })
+}
+
+/// Why the hinge ctor `name` refuses `args`; `None` for an accepted call or a
+/// name that is not a hinge ctor.
+pub(super) fn input_fault(name: &str, args: &[Value]) -> Option<InputFault> {
+    match hinge_ctor(name)? {
+        HingeCtor::Bending(_) => parse_bending_hinge_inputs(args).err(),
+        HingeCtor::Let => parse_let_inputs(args).err(),
+    }
+}
+
+/// A hinge ctor, by the layout it parses.
+enum HingeCtor {
+    /// The bending-hinge layout, built by the given ctor.
+    Bending(fn(&BendingHingeInputs<'_>) -> Value),
+    /// The LET-joint layout.
+    Let,
+}
+
+/// The hinge ctors by name — the one table [`eval_hinge`] and [`input_fault`]
+/// share, so a ctor and its classifier parse one layout.
+fn hinge_ctor(name: &str) -> Option<HingeCtor> {
     match name {
-        "prb_living_hinge" => Some(prb_living_hinge(args)),
-        "prb_cross_spring_pivot" => Some(prb_cross_spring_pivot(args)),
-        "prb_let_joint" => Some(prb_let_joint(args)),
+        "prb_living_hinge" => Some(HingeCtor::Bending(prb_living_hinge)),
+        "prb_cross_spring_pivot" => Some(HingeCtor::Bending(prb_cross_spring_pivot)),
+        "prb_let_joint" => Some(HingeCtor::Let),
         _ => None,
     }
 }
@@ -60,46 +88,46 @@ struct BendingHingeInputs<'a> {
     yield_si: Option<f64>,
     axis: &'a Value,
     pivot: &'a Value,
-    neutral_arg: Option<&'a Value>,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 8-arg form). When present, its endpoint — an ANGLE half-angle — not
-    /// the auto cap, drives the joint range and the §5.3 `max_stress` endpoint.
-    declared_range_arg: Option<&'a Value>,
+    /// The neutral angle (7- and 8-arg forms; default 0) in radians.
+    neutral_si: f64,
+    /// The declared operating-range half-angle (8-arg form only). When present,
+    /// its endpoint — not the auto cap — drives the joint range and the §5.3
+    /// `max_stress` endpoint.
+    declared: Option<f64>,
 }
 
 /// Parse and validate the shared bending-hinge argument layout:
 /// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
-/// non-finite geometry; thickness ≥ length; missing or non-positive
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {6, 7, 8}; non-positive
+/// or non-finite geometry; thickness ≥ length; missing or non-positive
 /// `youngs_modulus`; or an invalid axis.
-fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> {
+fn parse_bending_hinge_inputs(args: &[Value]) -> Result<BendingHingeInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
-        return None;
+        return Err(InputFault::Invalid);
     }
-    let length = length_si(&args[0])?;
-    let width = length_si(&args[1])?;
-    let thickness = length_si(&args[2])?;
+    let length = length_arg(&args[0], "length")?;
+    let width = length_arg(&args[1], "width")?;
+    let thickness = length_arg(&args[2], "thickness")?;
     if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return None;
+        return Err(InputFault::Invalid);
     }
     let material = &args[3];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
+    let e = youngs_modulus(material)?;
+    let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
-    Some(BendingHingeInputs {
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    Ok(BendingHingeInputs {
         length,
         thickness,
         e,
         i: width * thickness.powi(3) / 12.0,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
-        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        neutral_si: neutral(args.get(6), &RangeKind::Angle)?,
+        declared: declared_range(args.get(7), &RangeKind::Angle)?,
     })
 }
 
@@ -130,11 +158,9 @@ fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
 
     // An optional user-declared operating range (±half-angle) OVERRIDES the auto
     // cap for the joint range and the §5.3 stress endpoint.
-    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
-    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_endpoint = b.declared.unwrap_or(theta_lim);
     let range = symmetric_angle_range(range_endpoint);
-
-    let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+    let neutral_si = b.neutral_si;
 
     let joint = make_flexure_joint(
         "revolute",
@@ -172,11 +198,8 @@ fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
 /// stiffness `k_θ = E·I/L` (γ_lh = 1.0 — no PRB characteristic-radius
 /// amplification; the SLFP segment IS the torsional spring). Validity range
 /// `±min(θ_yield, 5°)` where `θ_yield = yield·L/(E·t/2)`.
-fn prb_living_hinge(args: &[Value]) -> Value {
-    match parse_bending_hinge_inputs(args) {
-        Some(b) => bending_hinge_revolute(&b, LIVING_HINGE_GAMMA),
-        None => Value::Undef,
-    }
+fn prb_living_hinge(b: &BendingHingeInputs<'_>) -> Value {
+    bending_hinge_revolute(b, LIVING_HINGE_GAMMA)
 }
 
 /// `prb_cross_spring_pivot(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`
@@ -184,11 +207,8 @@ fn prb_living_hinge(args: &[Value]) -> Value {
 ///
 /// Same closed-form structure as `prb_living_hinge` but with `γ_cs = 2.0`
 /// (two crossed leaves each contributing EI/L at the mid-length intersection).
-fn prb_cross_spring_pivot(args: &[Value]) -> Value {
-    match parse_bending_hinge_inputs(args) {
-        Some(b) => bending_hinge_revolute(&b, CROSS_SPRING_GAMMA),
-        None => Value::Undef,
-    }
+fn prb_cross_spring_pivot(b: &BendingHingeInputs<'_>) -> Value {
+    bending_hinge_revolute(b, CROSS_SPRING_GAMMA)
 }
 
 /// Validated inputs for `prb_let_joint`.
@@ -202,58 +222,57 @@ struct LetInputs<'a> {
     yield_si: Option<f64>,
     axis: &'a Value,
     pivot: &'a Value,
-    neutral_arg: Option<&'a Value>,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 9-arg form). When present, its endpoint — an ANGLE half-angle — not
-    /// the auto cap, drives the joint range and the §5.3 `max_stress` endpoint.
-    declared_range_arg: Option<&'a Value>,
+    /// The neutral angle (8- and 9-arg forms; default 0) in radians.
+    neutral_si: f64,
+    /// The declared operating-range half-angle (9-arg form only). When present,
+    /// its endpoint — not the auto cap — drives the joint range and the §5.3
+    /// `max_stress` endpoint.
+    declared: Option<f64>,
 }
 
 /// Parse and validate LET joint arguments:
 /// `(length, width, thickness, n_blades, material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` on: arity ∉ {7, 8, 9}; non-positive or non-finite geometry;
-/// thickness ≥ length; n_blades < 1 or non-integer; missing/non-positive
-/// `youngs_modulus`; missing `poisson_ratio` or ν ∉ [0, 0.5); invalid axis.
-fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension (a dimensioned `poisson_ratio` included);
+/// [`InputFault::Invalid`] on: arity ∉ {7, 8, 9}; non-positive or non-finite
+/// geometry; thickness ≥ length; n_blades < 1 or non-integer;
+/// missing/non-positive `youngs_modulus`; missing `poisson_ratio` or
+/// ν ∉ [0, 0.5); invalid axis.
+fn parse_let_inputs(args: &[Value]) -> Result<LetInputs<'_>, InputFault> {
     if args.len() < 7 || args.len() > 9 {
-        return None;
+        return Err(InputFault::Invalid);
     }
-    let length = length_si(&args[0])?;
-    let width = length_si(&args[1])?;
-    let thickness = length_si(&args[2])?;
+    let length = length_arg(&args[0], "length")?;
+    let width = length_arg(&args[1], "width")?;
+    let thickness = length_arg(&args[2], "thickness")?;
     if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return None;
+        return Err(InputFault::Invalid);
     }
     // n_blades: positive integer (Int or whole-valued finite Real).
     let n_blades = match &args[3] {
         Value::Int(n) if *n >= 1 => *n as f64,
         Value::Real(r) if r.is_finite() && *r >= 1.0 && r.fract() == 0.0 => *r,
-        _ => return None,
+        _ => return Err(InputFault::Invalid),
     };
     let material = &args[4];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
-    let nu = material_numeric_field(material, "poisson_ratio")?;
-    if !(0.0..0.5).contains(&nu) {
-        return None;
-    }
+    let e = youngs_modulus(material)?;
+    let nu = poisson_ratio(material)?;
+    let yield_si = yield_stress(material)?;
     let g = e / (2.0 * (1.0 + nu));
     let axis = &args[6];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
-    Some(LetInputs {
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    Ok(LetInputs {
         length,
         thickness,
         width,
         n_blades,
         g,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis,
         pivot: &args[5],
-        neutral_arg: if args.len() >= 8 { Some(&args[7]) } else { None },
-        declared_range_arg: if args.len() == 9 { Some(&args[8]) } else { None },
+        neutral_si: neutral(args.get(7), &RangeKind::Angle)?,
+        declared: declared_range(args.get(8), &RangeKind::Angle)?,
     })
 }
 
@@ -289,10 +308,7 @@ fn let_vm_sigma_at(theta: f64, length: f64, thickness: f64, g: f64) -> f64 {
 /// joint range and the cached §5.3 `max_stress` endpoint (stored as the von
 /// Mises tensile-equivalent σ_eq = √3·G·t·θ/L, see [`let_vm_sigma_at`]); the
 /// auto cap is retained as the SAFE `prb_validity_range` in the compliance record.
-fn prb_let_joint(args: &[Value]) -> Value {
-    let Some(l) = parse_let_inputs(args) else {
-        return Value::Undef;
-    };
+fn prb_let_joint(l: &LetInputs<'_>) -> Value {
 
     let j = l.width * l.thickness.powi(3) / 3.0;
     let k_theta = l.n_blades * l.g * j / l.length;
@@ -309,11 +325,9 @@ fn prb_let_joint(args: &[Value]) -> Value {
 
     // An optional user-declared operating range (±half-angle) OVERRIDES the auto
     // cap for the joint range and the §5.3 stress endpoint.
-    let declared = parse_declared_range(l.declared_range_arg, RangeKind::Angle);
-    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_endpoint = l.declared.unwrap_or(theta_lim);
     let range = symmetric_angle_range(range_endpoint);
-
-    let neutral_si = l.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+    let neutral_si = l.neutral_si;
 
     let joint = make_flexure_joint(
         "revolute",

@@ -22,9 +22,9 @@ use reify_ir::Value;
 use std::collections::BTreeMap;
 
 use super::common::{
-    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, length_si, make_compliance_record,
-    make_flexure_joint, material_field_si, parse_declared_range, symmetric_angle_range,
-    symmetric_length_range, RangeKind,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range, length_arg,
+    make_compliance_record, make_flexure_joint, neutral, symmetric_angle_range,
+    symmetric_length_range, yield_stress, youngs_modulus, InputFault, RangeKind,
 };
 
 /// Single-cantilever-blade PRB transverse stiffness coefficient (Howell §6.2).
@@ -46,9 +46,27 @@ const SMALL_DEFLECTION_FRACTION: f64 = 0.1;
 /// `Some(Value::Undef)` on validation failure) and `None` for any unknown
 /// name, so `eval_builtin` falls through to the next module.
 pub(crate) fn eval_prismatic(name: &str, args: &[Value]) -> Option<Value> {
+    let (kind, build) = prismatic_ctor(name)?;
+    Some(parse_prismatic_inputs(args, kind).map_or(Value::Undef, |b| build(&b)))
+}
+
+/// Why the prismatic-family ctor `name` refuses `args`; `None` for an accepted
+/// call or a name that is not one of this family's ctors.
+pub(super) fn input_fault(name: &str, args: &[Value]) -> Option<InputFault> {
+    let (kind, _) = prismatic_ctor(name)?;
+    parse_prismatic_inputs(args, kind).err()
+}
+
+/// A prismatic-family ctor: the motion kind of its trailing arguments and its
+/// joint builder.
+type PrismaticCtor = (RangeKind, fn(&PrismaticInputs<'_>) -> Value);
+
+/// The prismatic-family ctors by name — the one table [`eval_prismatic`] and
+/// [`input_fault`] share, so a ctor and its classifier parse one layout.
+fn prismatic_ctor(name: &str) -> Option<PrismaticCtor> {
     match name {
-        "prb_prismatic_blade" => Some(prb_prismatic_blade(args)),
-        "prb_two_axis_pivot" => Some(prb_two_axis_pivot(args)),
+        "prb_prismatic_blade" => Some((RangeKind::Length, prb_prismatic_blade)),
+        "prb_two_axis_pivot" => Some((RangeKind::Angle, prb_two_axis_pivot)),
         _ => None,
     }
 }
@@ -69,49 +87,50 @@ struct PrismaticInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument.
     pivot: &'a Value,
-    /// Optional trailing `neutral` argument (present in the 7- and 8-arg forms).
-    neutral_arg: Option<&'a Value>,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
-    /// the joint range and the §5.3 `max_stress` stress-check: a LENGTH
-    /// half-displacement for `prb_prismatic_blade`, an ANGLE half-angle for
-    /// `prb_two_axis_pivot` (each ctor selects the `RangeKind`).
-    declared_range_arg: Option<&'a Value>,
+    /// The neutral offset (7- and 8-arg forms; default 0) in SI. The spherical
+    /// `prb_two_axis_pivot` has no neutral and ignores it.
+    neutral_si: f64,
+    /// The declared operating-range half-width (8-arg form only). When present,
+    /// its endpoint — not the auto cap — drives the joint range and the §5.3
+    /// `max_stress` stress-check: a LENGTH half-displacement for
+    /// `prb_prismatic_blade`, an ANGLE half-angle for `prb_two_axis_pivot`
+    /// (each ctor selects the `RangeKind`).
+    declared: Option<f64>,
 }
 
 /// Parse and validate the shared positional argument layout:
-/// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`.
+/// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`,
+/// the trailing pair read as `kind`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
-/// non-finite geometry; thickness ≥ length; missing or non-positive
-/// `youngs_modulus`; or an invalid axis.
-fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {6, 7, 8};
+/// non-positive or non-finite geometry; thickness ≥ length; missing or
+/// non-positive `youngs_modulus`; or an invalid axis.
+fn parse_prismatic_inputs(args: &[Value], kind: RangeKind) -> Result<PrismaticInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
-        return None;
+        return Err(InputFault::Invalid);
     }
-    let length = length_si(&args[0])?;
-    let width = length_si(&args[1])?;
-    let thickness = length_si(&args[2])?;
+    let length = length_arg(&args[0], "length")?;
+    let width = length_arg(&args[1], "width")?;
+    let thickness = length_arg(&args[2], "thickness")?;
     if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return None;
+        return Err(InputFault::Invalid);
     }
     let material = &args[3];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
+    let e = youngs_modulus(material)?;
+    let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
-    Some(PrismaticInputs {
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    Ok(PrismaticInputs {
         length,
         thickness,
         e,
         i: width * thickness.powi(3) / 12.0,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
-        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        neutral_si: neutral(args.get(6), &kind)?,
+        declared: declared_range(args.get(7), &kind)?,
     })
 }
 
@@ -128,21 +147,6 @@ fn cantilever_transverse_sigma_at(delta: f64, length: f64, thickness: f64, e: f6
     1.5 * e * thickness * delta.abs() / length.powi(2)
 }
 
-/// Extract a neutral transverse offset in metres from a trailing constructor
-/// argument (the prismatic counterpart of `common::neutral_angle_si`).
-///
-/// Accepts a LENGTH-dimensioned `Value::Scalar` (e.g. `Value::length`), a bare
-/// `Value::Real` / `Value::Int` interpreted as metres, or a `Value::Option`
-/// wrapping any of those. `Option(None)` and any value that fails extraction
-/// default to `0.0`.
-fn neutral_length_si(v: &Value) -> f64 {
-    match v {
-        Value::Option(Some(inner)) => neutral_length_si(inner),
-        Value::Option(None) => 0.0,
-        other => length_si(other).unwrap_or(0.0),
-    }
-}
-
 /// `prb_prismatic_blade(length, width, thickness, material, pivot, axis[, neutral])`
 /// — Howell §6.2 single-cantilever-blade flexure presented as a prismatic joint.
 ///
@@ -157,11 +161,9 @@ fn neutral_length_si(v: &Value) -> f64 {
 /// The range shape (finite, LENGTH-dimensioned, symmetric, non-zero) is tested;
 /// its magnitude is a design choice, not an externally-validated bound.
 ///
-/// Returns `Value::Undef` on the invalid-input classes in [`parse_prismatic_inputs`].
-fn prb_prismatic_blade(args: &[Value]) -> Value {
-    let Some(b) = parse_prismatic_inputs(args) else {
-        return Value::Undef;
-    };
+/// [`eval_prismatic`] returns `Value::Undef` on the input faults in
+/// [`parse_prismatic_inputs`].
+fn prb_prismatic_blade(b: &PrismaticInputs<'_>) -> Value {
 
     // Cantilever transverse stiffness k_trans = γ_pb · E · I / L³ (γ = 3, Howell §6.2).
     let k_trans = PRISMATIC_BLADE_GAMMA * b.e * b.i / b.length.powi(3);
@@ -177,8 +179,7 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
 
     // An optional user-declared operating range (±half-displacement LENGTH)
     // OVERRIDES δ_auto for the joint range and the §5.3 stress endpoint.
-    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Length);
-    let range_endpoint = declared.unwrap_or(delta_auto);
+    let range_endpoint = b.declared.unwrap_or(delta_auto);
     let range = Value::range(
         Some(Value::length(-range_endpoint)),
         Some(Value::length(range_endpoint)),
@@ -186,8 +187,7 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
         true,
     );
 
-    // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
-    let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
+    let neutral_si = b.neutral_si;
 
     let joint = make_flexure_joint(
         "prismatic",
@@ -243,12 +243,9 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
 /// — the spherical joint is axis-isotropic and the canonical spherical Map has
 /// no `axis` key.
 ///
-/// Returns `Value::Undef` on the same invalid-input classes as
+/// [`eval_prismatic`] returns `Value::Undef` on the same input faults as
 /// [`prb_prismatic_blade`] (see [`parse_prismatic_inputs`]).
-fn prb_two_axis_pivot(args: &[Value]) -> Value {
-    let Some(b) = parse_prismatic_inputs(args) else {
-        return Value::Undef;
-    };
+fn prb_two_axis_pivot(b: &PrismaticInputs<'_>) -> Value {
 
     // Symmetric per-axis rotational stiffness k_axis = E·I/L (γ = 1, Henein 2010).
     let k_axis = b.e * b.i / b.length;
@@ -261,8 +258,7 @@ fn prb_two_axis_pivot(args: &[Value]) -> Value {
     // An optional user-declared angular operating range (±half-angle) OVERRIDES
     // θ_lim for the joint range and the §5.3 stress endpoint; θ_lim is retained
     // as the SAFE/suggested range in the compliance record.
-    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
-    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_endpoint = b.declared.unwrap_or(theta_lim);
     let range_angle = symmetric_angle_range(range_endpoint);
 
     // Build the spherical joint Map directly (NOT make_flexure_joint, which

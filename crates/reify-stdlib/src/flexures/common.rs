@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use reify_core::DimensionVector;
+use reify_ir::arg_acceptance::{
+    Acceptance, ArgSpec, FieldAcceptance, FieldRejection, accept_arg, accept_field, angle_spec,
+    dimensionless_spec, length_spec, pressure_spec,
+};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// PRB validity limit on flexure rotation: ±5°, expressed in radians. Beyond
@@ -89,78 +93,127 @@ pub(super) fn make_flexure_joint(
     Value::Map(m)
 }
 
-/// Extract a length in metres: a finite LENGTH-dimensioned `Value::Scalar`, or a
-/// bare finite `Value::Real` / `Value::Int` interpreted as metres. Mirrors
-/// `joints::length_input`. Returns `None` for any other variant.
-pub(super) fn length_si(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } if *dimension == DimensionVector::LENGTH && si_value.is_finite() => Some(*si_value),
-        Value::Real(r) if r.is_finite() => Some(*r),
-        Value::Int(i) => Some(*i as f64),
-        _ => None,
+/// Why a PRB constructor refused its arguments: the one verdict both the ctor
+/// (⇒ `Value::Undef`) and its classifier ([`super::input_fault`]) read, so the
+/// acceptance and the diagnostic come from one expectation (PRD 5 §7 I1).
+pub(super) enum InputFault {
+    /// A present argument or material field of the wrong dimension or kind,
+    /// named by its argument path (`length`, `material.youngs_modulus`, …).
+    Rejected(FieldRejection),
+    /// Any other refusal: arity, non-positive / non-finite / degenerate
+    /// geometry, a bad axis or count, a material that is not a structure or has
+    /// no positive `youngs_modulus`.
+    Invalid,
+}
+
+/// `accept_arg(v, spec)` as a reader of the positional argument `arg`:
+/// `Ok(Some(si))` accepted, `Ok(None)` unresolved, a refusal named `arg`.
+fn positional(v: &Value, spec: &ArgSpec, arg: &str) -> Result<Option<f64>, InputFault> {
+    match accept_arg(v, spec) {
+        Acceptance::Accepted(si) => Ok(Some(si)),
+        Acceptance::Undefined => Ok(None),
+        Acceptance::Rejected(rejection) => Err(InputFault::Rejected(FieldRejection {
+            path: arg.to_string(),
+            rejection,
+        })),
     }
 }
 
-/// Unwrap a finite Scalar `si_value` from a `Value::Scalar` or a
-/// `Value::Option(Some(Scalar))`.
-pub(super) fn scalar_si(v: &Value) -> Option<f64> {
+/// A required LENGTH argument in metres. A bare number is refused — it would
+/// otherwise read as metres, the 10-vs-10mm hazard — and an unresolved or
+/// non-finite one is [`InputFault::Invalid`].
+pub(super) fn length_arg(v: &Value, arg: &str) -> Result<f64, InputFault> {
+    positional(v, &length_spec(), arg)?
+        .filter(|si| si.is_finite())
+        .ok_or(InputFault::Invalid)
+}
+
+/// An ANGLE argument in radians with [`crate::helpers::trig_input`]'s accept
+/// set: a bare number still reads as radians (retiring that is PRD 3's), and
+/// any other present value must be an ANGLE.
+fn angle_arg(v: &Value, arg: &str) -> Result<Option<f64>, InputFault> {
     match v {
-        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
-        Value::Option(Some(inner)) => scalar_si(inner),
-        _ => None,
+        Value::Real(_) | Value::Int(_) => Ok(crate::helpers::trig_input(v)),
+        other => positional(other, &angle_spec(), arg),
     }
 }
 
-/// Extract a finite Scalar `si_value` for `key` from a material
-/// `Value::StructureInstance`'s fields.
-///
-/// The field may be stored either as a bare `Value::Scalar` or wrapped in
-/// `Value::Option(Some(Scalar))` (mirroring the `ElasticMaterial` contract,
-/// where `yield_stress` is `Option<Pressure>`). Returns `None` if `material` is
-/// not a `StructureInstance`, the field is absent, the option is `None`, or the
-/// stored value is not a finite Scalar — so an absent or `None` field reads the
-/// same as "not provided".
-pub(super) fn material_field_si(material: &Value, key: &str) -> Option<f64> {
-    let fields = match material {
-        Value::StructureInstance(data) => &data.fields,
-        _ => return None,
+/// The material field `key` in SI, read against `spec`: absent, `none` or
+/// unresolved ⇒ `Ok(None)`; a refusal is named `material.<key>`.
+fn material_field(material: &Value, key: &str, spec: &ArgSpec) -> Result<Option<f64>, InputFault> {
+    let Value::StructureInstance(data) = material else {
+        return Err(InputFault::Invalid);
     };
-    scalar_si(fields.get(&key.to_string())?)
-}
-
-/// Extract a numeric `f64` from a material `Value::StructureInstance` field,
-/// accepting `Value::Scalar{si_value}`, `Value::Option(Some(inner))`,
-/// `Value::Real`, or `Value::Int` — the `read_scalar_si` pattern
-/// (reify-eval/src/modal_ops.rs:839).
-///
-/// Unlike [`material_field_si`] (which only matches `Scalar` / `Option<Scalar>`),
-/// this also accepts bare `Value::Real` and `Value::Int`, making it suitable
-/// for fields such as `poisson_ratio` that land as a bare `Value::Real` at
-/// runtime. `Option(Some(_))` is unwrapped recursively for parity with
-/// [`material_field_si`]'s option-handling — so if `poisson_ratio` is ever
-/// stored as `Option<Real>`, it still reads correctly rather than returning
-/// `None`.
-pub(super) fn material_numeric_field(material: &Value, key: &str) -> Option<f64> {
-    let fields = match material {
-        Value::StructureInstance(data) => &data.fields,
-        _ => return None,
-    };
-    numeric_from_value(fields.get(&key.to_string())?)
-}
-
-/// Unwrap a numeric `f64` from any scalar-like `Value` variant, recursing into
-/// `Option(Some(_))` wrappers.
-fn numeric_from_value(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(*si_value),
-        Value::Option(Some(inner)) => numeric_from_value(inner),
-        Value::Real(r) if r.is_finite() => Some(*r),
-        Value::Int(i) => Some(*i as f64),
-        _ => None,
+    match accept_field(data, key, spec) {
+        FieldAcceptance::Accepted(si) => Ok(si.is_finite().then_some(si)),
+        FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
+        FieldAcceptance::Rejected(rejection) => Err(InputFault::Rejected(FieldRejection::new(
+            "material", key, rejection,
+        ))),
     }
+}
+
+/// The material's Young's modulus E (Pa): a PRESSURE that must be present,
+/// finite and positive.
+pub(super) fn youngs_modulus(material: &Value) -> Result<f64, InputFault> {
+    material_field(material, "youngs_modulus", &pressure_spec())?
+        .filter(|e| *e > 0.0)
+        .ok_or(InputFault::Invalid)
+}
+
+/// The material's yield stress (Pa), or `None` when the material carries none
+/// — the documented small-deflection / 5° fallback.
+pub(super) fn yield_stress(material: &Value) -> Result<Option<f64>, InputFault> {
+    material_field(material, "yield_stress", &pressure_spec())
+}
+
+/// The material's Poisson ratio ν: dimensionless (a bare number is correct
+/// here), present and in `[0, 0.5)`.
+pub(super) fn poisson_ratio(material: &Value) -> Result<f64, InputFault> {
+    material_field(material, "poisson_ratio", &dimensionless_spec())?
+        .filter(|nu| (0.0..0.5).contains(nu))
+        .ok_or(InputFault::Invalid)
+}
+
+/// The dimensional kind of a flexure's motion coordinate, selecting how its
+/// optional trailing `neutral` and `declared_range` arguments are read.
+pub(super) enum RangeKind {
+    /// Revolute / rotational joints: radians (an ANGLE `Value::Scalar`, or a
+    /// bare `Value::Real` / `Value::Int` read as radians).
+    Angle,
+    /// Prismatic / displacement joints: metres (a LENGTH `Value::Scalar`; a
+    /// bare number is refused).
+    Length,
+}
+
+/// An optional trailing motion argument `arg` of `kind`: absent, `none`,
+/// unresolved or non-finite ⇒ `Ok(None)` (the ctor's documented default); a
+/// present value of the wrong dimension or kind is refused rather than read as
+/// that default.
+fn optional_motion(v: Option<&Value>, kind: &RangeKind, arg: &str) -> Result<Option<f64>, InputFault> {
+    let si = match v {
+        None | Some(Value::Option(None)) => return Ok(None),
+        Some(Value::Option(Some(inner))) => return optional_motion(Some(inner), kind, arg),
+        Some(other) => match kind {
+            RangeKind::Angle => angle_arg(other, arg)?,
+            RangeKind::Length => positional(other, &length_spec(), arg)?,
+        },
+    };
+    Ok(si.filter(|si| si.is_finite()))
+}
+
+/// The optional trailing `neutral` offset of `kind` in SI (radians or metres),
+/// defaulting to `0.0`.
+pub(super) fn neutral(v: Option<&Value>, kind: &RangeKind) -> Result<f64, InputFault> {
+    Ok(optional_motion(v, kind, "neutral")?.unwrap_or(0.0))
+}
+
+/// The optional trailing declared operating range of `kind` as its SI
+/// half-width magnitude (always non-negative — the symmetric `±h` interval the
+/// §5.3 stress-check evaluates at its endpoint). `None` means "no user-declared
+/// range, fall back to the auto-computed safe cap".
+pub(super) fn declared_range(v: Option<&Value>, kind: &RangeKind) -> Result<Option<f64>, InputFault> {
+    Ok(optional_motion(v, kind, "declared_range")?.map(f64::abs))
 }
 
 /// Compute the cantilever surface-yield rotation limit θ_lim, capped at the
@@ -198,65 +251,6 @@ pub(super) fn fixed_guided_delta_max(
     match yield_si {
         Some(y) => y * length.powi(2) / (3.0 * e * thickness),
         None => SMALL_DEFLECTION_FRACTION * length,
-    }
-}
-
-/// Extract a neutral angle in radians from a trailing constructor argument.
-///
-/// Accepts an ANGLE-dimensioned `Value::Scalar` (e.g. `Value::angle`), a bare
-/// `Value::Real` / `Value::Int` interpreted as radians (via
-/// [`crate::helpers::trig_input`]), or a `Value::Option` wrapping any of those.
-/// `Option(None)` and any value that fails extraction default to `0.0` — the
-/// neutral angle is an optional offset, so an absent/unreadable value is the
-/// natural zero rather than a hard error.
-pub(super) fn neutral_angle_si(v: &Value) -> f64 {
-    match v {
-        Value::Option(Some(inner)) => neutral_angle_si(inner),
-        Value::Option(None) => 0.0,
-        other => crate::helpers::trig_input(other).unwrap_or(0.0),
-    }
-}
-
-/// The dimensional kind of a declared operating-range argument, selecting how
-/// [`parse_declared_range`] extracts the SI half-width magnitude.
-pub(super) enum RangeKind {
-    /// Revolute / rotational joints: a half-angle in radians (an ANGLE
-    /// `Value::Scalar`, or a bare `Value::Real` / `Value::Int` read as radians).
-    Angle,
-    /// Prismatic / displacement joints: a half-displacement in metres (a LENGTH
-    /// `Value::Scalar`, or a bare `Value::Real` / `Value::Int` read as metres).
-    ///
-    /// Used by the displacement-family ctors `beam::prb_fixed_fixed_beam` and
-    /// `prismatic::prb_prismatic_blade` to parse their optional trailing declared
-    /// operating range.
-    Length,
-}
-
-/// Parse an optional trailing declared operating-range argument into its SI
-/// half-width magnitude (always non-negative — the operating range is the
-/// symmetric `±h` interval the §5.3 stress-check evaluates at its endpoint).
-///
-/// `arg` is the raw trailing slot, or `None` when the ctor was called below the
-/// declared-range arity. Accepts an ANGLE-/LENGTH-dimensioned `Value::Scalar`
-/// (per `kind`), a bare `Value::Real` / `Value::Int`, or a `Value::Option`
-/// wrapping any of those. A missing arg, `Value::Option(None)`, or an
-/// unreadable / non-finite value all yield `None` — meaning "no user-declared
-/// range, fall back to the auto-computed safe cap".
-pub(super) fn parse_declared_range(arg: Option<&Value>, kind: RangeKind) -> Option<f64> {
-    parse_declared_range_value(arg?, &kind)
-}
-
-fn parse_declared_range_value(v: &Value, kind: &RangeKind) -> Option<f64> {
-    match v {
-        Value::Option(Some(inner)) => parse_declared_range_value(inner, kind),
-        Value::Option(None) => None,
-        other => {
-            let si = match kind {
-                RangeKind::Angle => crate::helpers::trig_input(other),
-                RangeKind::Length => length_si(other),
-            }?;
-            si.is_finite().then_some(si.abs())
-        }
     }
 }
 
@@ -457,18 +451,18 @@ pub(super) fn classify_geometry_invalid(name: &str, args: &[Value]) -> Option<Ge
         | "prb_two_axis_pivot"
         | "prb_parallelogram_flexure"
         | "prb_double_parallelogram_flexure" => {
-            let length = length_si(args.first()?)?;
-            let thickness = length_si(args.get(2)?)?;
+            let length = length_arg(args.first()?, "length").ok()?;
+            let thickness = length_arg(args.get(2)?, "thickness").ok()?;
             thickness_vs_length(thickness, length)
         }
         "prb_cartwheel_flexure" => {
-            let length = length_si(args.get(1)?)?;
-            let thickness = length_si(args.get(3)?)?;
+            let length = length_arg(args.get(1)?, "blade_length").ok()?;
+            let thickness = length_arg(args.get(3)?, "blade_thickness").ok()?;
             thickness_vs_length(thickness, length)
         }
         "prb_notch_circular" | "prb_notch_elliptical" | "prb_notch_right_circular" => {
-            let radius = length_si(args.first()?)?;
-            let thickness = length_si(args.get(1)?)?;
+            let radius = length_arg(args.first()?, "notch_radius").ok()?;
+            let thickness = length_arg(args.get(1)?, "web_thickness").ok()?;
             (radius > 0.0 && thickness > 0.0 && thickness >= 2.0 * radius)
                 .then_some(GeometryViolation::WebExceedsNotchDiameter { thickness, radius })
         }
@@ -487,8 +481,6 @@ fn thickness_vs_length(thickness: f64, length: f64) -> Option<GeometryViolation>
 mod tests {
     use super::super::test_util::angle_range_half_si;
     use super::*;
-    use reify_core::DimensionVector;
-    use reify_ir::Value;
 
     /// Read a field `Value` by name from a `FlexureCompliance` StructureInstance.
     fn field<'a>(rec: &'a Value, key: &str) -> &'a Value {
@@ -503,16 +495,9 @@ mod tests {
 
     /// Assert `v` is a PRESSURE-dimensioned Scalar and return its si_value.
     fn pressure_si(v: &Value, label: &str) -> f64 {
-        match v {
-            Value::Scalar { si_value, dimension } => {
-                assert_eq!(
-                    *dimension,
-                    DimensionVector::PRESSURE,
-                    "{label}: carries PRESSURE dimension"
-                );
-                *si_value
-            }
-            other => panic!("{label}: expected PRESSURE Scalar, got {other:?}"),
+        match accept_arg(v, &pressure_spec()) {
+            Acceptance::Accepted(si) => si,
+            other => panic!("{label}: expected PRESSURE Scalar, got {v:?} ({other:?})"),
         }
     }
 
@@ -647,12 +632,11 @@ mod tests {
 
         // parasitic Some(1µm) ⇒ Option(Some(Length)).
         match field(&rec, "parasitic_error") {
-            Value::Option(Some(inner)) => match inner.as_ref() {
-                Value::Scalar { si_value, dimension } => {
-                    assert_eq!(*dimension, DimensionVector::LENGTH, "parasitic is a LENGTH");
-                    assert!((si_value - 1e-6).abs() < 1e-15, "parasitic si {si_value}");
+            Value::Option(Some(inner)) => match accept_arg(inner, &length_spec()) {
+                Acceptance::Accepted(si) => {
+                    assert!((si - 1e-6).abs() < 1e-15, "parasitic si {si}");
                 }
-                other => panic!("parasitic inner: expected Length Scalar, got {other:?}"),
+                other => panic!("parasitic inner: expected Length Scalar, got {inner:?} ({other:?})"),
             },
             other => panic!("expected Option(Some(Length)), got {other:?}"),
         }

@@ -25,11 +25,10 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
-    fixed_guided_sigma_at, length_si, make_compliance_record, make_flexure_joint,
-    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range,
-    symmetric_length_range, RangeKind,
-    CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range,
+    fixed_guided_delta_max, fixed_guided_sigma_at, length_arg, make_compliance_record,
+    make_flexure_joint, neutral, symmetric_angle_range, symmetric_length_range, yield_stress,
+    youngs_modulus, InputFault, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// Shared validated inputs for compound-flexure constructors.
@@ -53,56 +52,54 @@ struct CompoundInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument (stored verbatim on the joint Map).
     pivot: &'a Value,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 8-arg form). When present, its endpoint — a LENGTH half-displacement —
-    /// not the auto δ cap, drives the joint range and the §5.3 `max_stress`
-    /// stress-check.
-    declared_range_arg: Option<&'a Value>,
+    /// The declared operating-range half-displacement (8-arg form only). When
+    /// present, its endpoint — not the auto δ cap — drives the joint range and
+    /// the §5.3 `max_stress` stress-check.
+    declared: Option<f64>,
 }
 
 /// Parse and validate the shared positional argument layout of both
 /// compound-flexure constructors:
 /// `(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8}; non-positive or
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {7, 8}; non-positive or
 /// non-finite geometry (including `blade_spacing`); thickness ≥ length; a
 /// material that is not a `Value::StructureInstance` with a finite positive
 /// `youngs_modulus`; or a motion_axis that is not a finite, non-zero,
 /// dimensionless 3-vector. The optional 8th slot is the declared operating range.
-fn parse_compound_inputs(args: &[Value]) -> Option<CompoundInputs<'_>> {
+fn parse_compound_inputs(args: &[Value]) -> Result<CompoundInputs<'_>, InputFault> {
     if args.len() != 7 && args.len() != 8 {
-        return None;
+        return Err(InputFault::Invalid);
     }
-    let length = length_si(&args[0])?;
-    let width = length_si(&args[1])?;
-    let thickness = length_si(&args[2])?;
-    // `_blade_spacing`: validated (positive, finite, LENGTH) for signature fidelity
+    let length = length_arg(&args[0], "length")?;
+    let width = length_arg(&args[1], "width")?;
+    let thickness = length_arg(&args[2], "thickness")?;
+    // `blade_spacing`: validated (positive, finite, LENGTH) for signature fidelity
     // (PRD §6.1 prescribes the argument) but intentionally does NOT enter the
     // §6.1/§6.2 closed forms — stiffness and parasitic depend only on L,b,t,E.
-    let _blade_spacing = length_si(&args[3])?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || _blade_spacing <= 0.0 {
-        return None;
+    let blade_spacing = length_arg(&args[3], "blade_spacing")?;
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || blade_spacing <= 0.0 {
+        return Err(InputFault::Invalid);
     }
     if thickness >= length {
-        return None;
+        return Err(InputFault::Invalid);
     }
     let material = &args[4];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
+    let e = youngs_modulus(material)?;
+    let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
-    Some(CompoundInputs {
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    Ok(CompoundInputs {
         length,
         width,
         thickness,
         e,
         i: width * thickness.powi(3) / 12.0,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis,
         pivot: &args[6],
-        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        declared: declared_range(args.get(7), &RangeKind::Length)?,
     })
 }
 
@@ -132,8 +129,7 @@ where
     // An optional user-declared operating range (±half-displacement LENGTH)
     // OVERRIDES δ_auto for the joint range, the parasitic arc, and the §5.3 stress
     // endpoint; δ_auto stays the SAFE/suggested range in the compliance record.
-    let declared = parse_declared_range(c.declared_range_arg, RangeKind::Length);
-    let range_endpoint = declared.unwrap_or(delta_auto);
+    let range_endpoint = c.declared.unwrap_or(delta_auto);
     let range = Value::range(
         Some(Value::length(-range_endpoint)),
         Some(Value::length(range_endpoint)),
@@ -198,10 +194,42 @@ where
 /// validation failure) and `None` for any unknown name, so `eval_builtin` falls
 /// through to the next module.
 pub(crate) fn eval_compound(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match compound_ctor(name)? {
+        CompoundCtor::Parallelogram(build) => {
+            parse_compound_inputs(args).map_or(Value::Undef, |c| build(&c))
+        }
+        CompoundCtor::Cartwheel => {
+            parse_cartwheel_inputs(args).map_or(Value::Undef, |c| prb_cartwheel_flexure(&c))
+        }
+    })
+}
+
+/// Why the compound ctor `name` refuses `args`; `None` for an accepted call or
+/// a name that is not a compound ctor.
+pub(super) fn input_fault(name: &str, args: &[Value]) -> Option<InputFault> {
+    match compound_ctor(name)? {
+        CompoundCtor::Parallelogram(_) => parse_compound_inputs(args).err(),
+        CompoundCtor::Cartwheel => parse_cartwheel_inputs(args).err(),
+    }
+}
+
+/// A compound ctor, by the layout it parses.
+enum CompoundCtor {
+    /// The parallelogram-stage layout, built by the given ctor.
+    Parallelogram(fn(&CompoundInputs<'_>) -> Value),
+    /// The cartwheel layout.
+    Cartwheel,
+}
+
+/// The compound ctors by name — the one table [`eval_compound`] and
+/// [`input_fault`] share, so a ctor and its classifier parse one layout.
+fn compound_ctor(name: &str) -> Option<CompoundCtor> {
     match name {
-        "prb_parallelogram_flexure" => Some(prb_parallelogram_flexure(args)),
-        "prb_double_parallelogram_flexure" => Some(prb_double_parallelogram_flexure(args)),
-        "prb_cartwheel_flexure" => Some(prb_cartwheel_flexure(args)),
+        "prb_parallelogram_flexure" => Some(CompoundCtor::Parallelogram(prb_parallelogram_flexure)),
+        "prb_double_parallelogram_flexure" => {
+            Some(CompoundCtor::Parallelogram(prb_double_parallelogram_flexure))
+        }
+        "prb_cartwheel_flexure" => Some(CompoundCtor::Cartwheel),
         _ => None,
     }
 }
@@ -231,58 +259,57 @@ struct CartwheelInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument (stored verbatim on the joint Map).
     pivot: &'a Value,
-    /// Optional trailing `neutral` argument (present in the 8- and 9-arg forms).
-    neutral_arg: Option<&'a Value>,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 9-arg form). When present, its endpoint — an ANGLE half-angle — not
-    /// the auto θ_lim cap, drives the joint range and the §5.3 `max_stress` endpoint.
-    declared_range_arg: Option<&'a Value>,
+    /// The neutral angle (8- and 9-arg forms; default 0) in radians.
+    neutral_si: f64,
+    /// The declared operating-range half-angle (9-arg form only). When present,
+    /// its endpoint — not the auto θ_lim cap — drives the joint range and the
+    /// §5.3 `max_stress` endpoint.
+    declared: Option<f64>,
 }
 
 /// Parse and validate the cartwheel flexure argument layout:
 /// `(blade_count:Int, blade_length, blade_width, blade_thickness,
 /// material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {7, 8, 9}; blade_count not an
-/// integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite `Real`
-/// ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {7, 8, 9}; blade_count
+/// not an integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite
+/// `Real` ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
 /// non-finite geometry; thickness ≥ length; a material without a finite
 /// positive `youngs_modulus`; or an axis that is not a finite, non-zero,
 /// dimensionless 3-vector. The optional 9th slot is the declared operating range.
-fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
+fn parse_cartwheel_inputs(args: &[Value]) -> Result<CartwheelInputs<'_>, InputFault> {
     if args.len() < 7 || args.len() > 9 {
-        return None;
+        return Err(InputFault::Invalid);
     }
     // Strict blade_count: Int ≥ 1, or a whole finite Real ≥ 1.
     // Mirrors parse_let_inputs n_blades arm (hinge.rs).
     let blade_count = match &args[0] {
         Value::Int(n) if *n >= 1 => *n as f64,
         Value::Real(r) if r.is_finite() && *r >= 1.0 && r.fract() == 0.0 => *r,
-        _ => return None,
+        _ => return Err(InputFault::Invalid),
     };
-    let length = length_si(&args[1])?;
-    let width = length_si(&args[2])?;
-    let thickness = length_si(&args[3])?;
+    let length = length_arg(&args[1], "blade_length")?;
+    let width = length_arg(&args[2], "blade_width")?;
+    let thickness = length_arg(&args[3], "blade_thickness")?;
     if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return None;
+        return Err(InputFault::Invalid);
     }
     let material = &args[4];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
-    crate::helpers::validate_dimensionless_unit_axis_vec3(&args[6])?;
-    Some(CartwheelInputs {
+    let e = youngs_modulus(material)?;
+    let yield_si = yield_stress(material)?;
+    crate::helpers::validate_dimensionless_unit_axis_vec3(&args[6]).ok_or(InputFault::Invalid)?;
+    Ok(CartwheelInputs {
         blade_count,
         length,
         thickness,
         i: width * thickness.powi(3) / 12.0,
         e,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis: &args[6],
         pivot: &args[5],
-        neutral_arg: if args.len() >= 8 { Some(&args[7]) } else { None },
-        declared_range_arg: if args.len() == 9 { Some(&args[8]) } else { None },
+        neutral_si: neutral(args.get(7), &RangeKind::Angle)?,
+        declared: declared_range(args.get(8), &RangeKind::Angle)?,
     })
 }
 
@@ -300,12 +327,9 @@ fn parse_cartwheel_inputs(args: &[Value]) -> Option<CartwheelInputs<'_>> {
 /// per-blade rotation). When the material carries no `yield_stress`, only
 /// the 5° PRB limit applies.
 ///
-/// Returns `Value::Undef` on the invalid-input classes enumerated in
+/// [`eval_compound`] returns `Value::Undef` on the input faults enumerated in
 /// [`parse_cartwheel_inputs`].
-fn prb_cartwheel_flexure(args: &[Value]) -> Value {
-    let Some(c) = parse_cartwheel_inputs(args) else {
-        return Value::Undef;
-    };
+fn prb_cartwheel_flexure(c: &CartwheelInputs<'_>) -> Value {
 
     // PRB pivot stiffness: k_pivot = N · γ · E · I / L (§6.3).
     // Each blade contributes k_blade = γ·E·I/L (Howell §5.1 cantilever).
@@ -320,12 +344,9 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
     // An optional user-declared operating range (±half-angle) OVERRIDES the auto
     // θ_lim cap for the joint range and the §5.3 stress endpoint; θ_lim is retained
     // as the SAFE/suggested range in the compliance record.
-    let declared = parse_declared_range(c.declared_range_arg, RangeKind::Angle);
-    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_endpoint = c.declared.unwrap_or(theta_lim);
     let range = symmetric_angle_range(range_endpoint);
-
-    // Optional trailing neutral angle (default 0 for the 7-arg form).
-    let neutral_si = c.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+    let neutral_si = c.neutral_si;
 
     let joint = make_flexure_joint(
         "revolute",
@@ -366,12 +387,10 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
 /// - `range` = ±δ_max (symmetric LENGTH-bounded range)
 /// - `parasitic_error` = Option(Some(Length(δ_rot))) where δ_rot = L·(1−cos(δ_max/L))
 ///
-/// Returns `Value::Undef` on the invalid-input classes in [`parse_compound_inputs`].
-fn prb_parallelogram_flexure(args: &[Value]) -> Value {
-    let Some(c) = parse_compound_inputs(args) else {
-        return Value::Undef;
-    };
-    build_compound_joint(&c, 1.0, |delta_rot_single, _delta, _length| delta_rot_single)
+/// [`eval_compound`] returns `Value::Undef` on the input faults in
+/// [`parse_compound_inputs`].
+fn prb_parallelogram_flexure(c: &CompoundInputs<'_>) -> Value {
+    build_compound_joint(c, 1.0, |delta_rot_single, _delta, _length| delta_rot_single)
 }
 
 /// `prb_double_parallelogram_flexure(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`
@@ -386,14 +405,12 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
 /// - `range` = ±δ_max (same per-stage range as single, for apples-to-apples §10.1 comparison)
 /// - `parasitic_error` = Option(Some(Length(δ_rot_double))) (added in step-12)
 ///
-/// Returns `Value::Undef` on the same invalid-input classes as [`prb_parallelogram_flexure`].
-fn prb_double_parallelogram_flexure(args: &[Value]) -> Value {
-    let Some(c) = parse_compound_inputs(args) else {
-        return Value::Undef;
-    };
+/// [`eval_compound`] returns `Value::Undef` on the same input faults as
+/// [`prb_parallelogram_flexure`].
+fn prb_double_parallelogram_flexure(c: &CompoundInputs<'_>) -> Value {
     // Mirror symmetry cancels the first-order parasitic; residual scales as (δ/L)³
     // instead of (δ/L) — reduction factor (δ_max/L)² (PRD §6.2).
-    build_compound_joint(&c, 2.0, |delta_rot_single, delta, length| {
+    build_compound_joint(c, 2.0, |delta_rot_single, delta, length| {
         delta_rot_single * (delta / length).powi(2)
     })
 }
@@ -669,7 +686,7 @@ mod tests {
         undef(with(3, Value::length(0.0)), "blade_spacing = 0");
         undef(with(3, Value::length(-0.01)), "blade_spacing < 0");
 
-        // NaN (non-finite) geometry — length_si rejects NaN already:
+        // NaN (non-finite) geometry — length_arg rejects NaN already:
         undef(with(2, Value::length(f64::NAN)), "thickness = NaN");
 
         // Degenerate beam: thickness >= length (FAILS before step-8):

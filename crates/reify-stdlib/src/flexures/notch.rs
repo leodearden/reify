@@ -13,8 +13,9 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    attach_compliance, length_si, make_compliance_record, make_flexure_joint, material_field_si,
-    neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind, PRB_ANGLE_LIMIT_RAD,
+    attach_compliance, declared_range, length_arg, make_compliance_record, make_flexure_joint,
+    neutral, symmetric_angle_range, yield_stress, youngs_modulus, InputFault, RangeKind,
+    PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Shape factors for the standard circular notch flexure hinge
@@ -60,10 +61,24 @@ const RIGHT_CIRCULAR_SIGMA: f64 = 0.74;
 /// `Some(Value::Undef)` on validation failure) and `None` for any unknown
 /// name, so the caller can fall through to the next module.
 pub(crate) fn eval_notch(name: &str, args: &[Value]) -> Option<Value> {
+    let build = notch_ctor(name)?;
+    Some(parse_notch_inputs(args).map_or(Value::Undef, |inputs| build(&inputs)))
+}
+
+/// Why the notch ctor `name` refuses `args`; `None` for an accepted call or a
+/// name that is not a notch ctor.
+pub(super) fn input_fault(name: &str, args: &[Value]) -> Option<InputFault> {
+    notch_ctor(name)?;
+    parse_notch_inputs(args).err()
+}
+
+/// The notch ctors by name — the one table [`eval_notch`] and [`input_fault`]
+/// share. All three parse one layout and differ only in their shape factors.
+fn notch_ctor(name: &str) -> Option<fn(&NotchInputs<'_>) -> Value> {
     match name {
-        "prb_notch_circular" => Some(prb_notch_circular(args)),
-        "prb_notch_elliptical" => Some(prb_notch_elliptical(args)),
-        "prb_notch_right_circular" => Some(prb_notch_right_circular(args)),
+        "prb_notch_circular" => Some(prb_notch_circular),
+        "prb_notch_elliptical" => Some(prb_notch_elliptical),
+        "prb_notch_right_circular" => Some(prb_notch_right_circular),
         _ => None,
     }
 }
@@ -84,59 +99,54 @@ struct NotchInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
-    /// The optional trailing `neutral` argument (present in the 7- and 8-arg forms).
-    neutral_arg: Option<&'a Value>,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
-    /// the joint range and the §5.3 `max_stress` stress-check (an ANGLE
-    /// half-angle, since all three notch ctors are revolute).
-    declared_range_arg: Option<&'a Value>,
+    /// The neutral angle (7- and 8-arg forms; default 0) in radians.
+    neutral_si: f64,
+    /// The declared operating-range half-angle (8-arg form only). When present,
+    /// its endpoint — not the auto cap — drives the joint range and the §5.3
+    /// `max_stress` stress-check.
+    declared: Option<f64>,
 }
 
 /// Parse and validate the shared positional argument layout of all three
 /// notch-flexure constructors: `(notch_radius, web_thickness, width,
 /// material, pivot, axis[, neutral[, declared_range]])`.
 ///
-/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7, 8};
-/// non-positive or non-finite geometry (r, t, or b ≤ 0); degenerate geometry
-/// (t ≥ 2·r — web at least as thick as the notch diameter, the
-/// E_FlexureGeometryInvalid regime whose diagnostic λ owns); a material that
-/// is not a `Value::StructureInstance` with a finite `youngs_modulus` > 0; or
-/// an axis that is not a finite, non-zero, dimensionless 3-vector.
-///
-/// δ emits NO diagnostics and returns Value::Undef on invalid input
-/// (W_Flexure* emission is λ's responsibility).
-fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension (a bare geometry length included). [`InputFault::Invalid`]
+/// on: arity ∉ {6, 7, 8}; non-positive or non-finite geometry (r, t, or b ≤ 0);
+/// degenerate geometry (t ≥ 2·r — web at least as thick as the notch diameter,
+/// the E_FlexureGeometryInvalid regime); a material that is not a
+/// `Value::StructureInstance` with a finite `youngs_modulus` > 0; or an axis
+/// that is not a finite, non-zero, dimensionless 3-vector.
+fn parse_notch_inputs(args: &[Value]) -> Result<NotchInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
-        return None;
+        return Err(InputFault::Invalid);
     }
-    let r = length_si(&args[0])?;
-    let t = length_si(&args[1])?;
-    let b = length_si(&args[2])?;
+    let r = length_arg(&args[0], "notch_radius")?;
+    let t = length_arg(&args[1], "web_thickness")?;
+    let b = length_arg(&args[2], "width")?;
     if r <= 0.0 || t <= 0.0 || b <= 0.0 {
-        return None;
+        return Err(InputFault::Invalid);
     }
     // Degenerate: web ≥ notch diameter — no hinge ligament exists.
     if t >= 2.0 * r {
-        return None;
+        return Err(InputFault::Invalid);
     }
     let material = &args[3];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
+    let e = youngs_modulus(material)?;
+    let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
-    Some(NotchInputs {
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    Ok(NotchInputs {
         r,
         t,
         b,
         e,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
-        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        neutral_si: neutral(args.get(6), &RangeKind::Angle)?,
+        declared: declared_range(args.get(7), &RangeKind::Angle)?,
     })
 }
 
@@ -188,12 +198,9 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
     // An optional user-declared operating range (±half-angle) OVERRIDES the auto
     // ±min(θ_yield, 5°) cap for the joint range and the §5.3 stress endpoint; the
     // auto θ_lim is retained as the SAFE/suggested range in the compliance record.
-    let declared = parse_declared_range(inputs.declared_range_arg, RangeKind::Angle);
-    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_endpoint = inputs.declared.unwrap_or(theta_lim);
     let range = symmetric_angle_range(range_endpoint);
-
-    // Optional trailing neutral angle (default 0 for the 6-arg form).
-    let neutral_si = inputs.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+    let neutral_si = inputs.neutral_si;
 
     let joint = make_flexure_joint(
         "revolute",
@@ -233,11 +240,8 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
 /// Returns a joint `Value::Map` (`kind == "revolute"`) with rotational stiffness
 /// `k_θ = 2·E·b·t^2.5 / (9π·r^0.5)` (PRD §5.2). PRD §10.1 row 2 gate:
 /// r=1mm, t=0.2mm, b=5mm, Steel_AISI_1045 ⇒ k_θ ≈ 1.297 N·m/rad² (within 2%).
-fn prb_notch_circular(args: &[Value]) -> Value {
-    match parse_notch_inputs(args) {
-        Some(inputs) => notch_revolute(&inputs, CIRCULAR_K, CIRCULAR_SIGMA),
-        None => Value::Undef,
-    }
+fn prb_notch_circular(inputs: &NotchInputs<'_>) -> Value {
+    notch_revolute(inputs, CIRCULAR_K, CIRCULAR_SIGMA)
 }
 
 /// `prb_notch_elliptical(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
@@ -245,11 +249,8 @@ fn prb_notch_circular(args: &[Value]) -> Value {
 ///
 /// Same closed-form structure as `prb_notch_circular` but with a shape factor
 /// κ = 0.85 (softer than circular, κ → 1 in the circular-profile limit).
-fn prb_notch_elliptical(args: &[Value]) -> Value {
-    match parse_notch_inputs(args) {
-        Some(inputs) => notch_revolute(&inputs, ELLIPTICAL_K, ELLIPTICAL_SIGMA),
-        None => Value::Undef,
-    }
+fn prb_notch_elliptical(inputs: &NotchInputs<'_>) -> Value {
+    notch_revolute(inputs, ELLIPTICAL_K, ELLIPTICAL_SIGMA)
 }
 
 /// `prb_notch_right_circular(notch_radius, web_thickness, width, material, pivot, axis[, neutral[, declared_range]])`
@@ -257,11 +258,8 @@ fn prb_notch_elliptical(args: &[Value]) -> Value {
 ///
 /// Same closed-form structure as `prb_notch_circular` but with a shape factor
 /// κ = 0.74 (most compliant of the three profiles, κ → 1 in the planar limit).
-fn prb_notch_right_circular(args: &[Value]) -> Value {
-    match parse_notch_inputs(args) {
-        Some(inputs) => notch_revolute(&inputs, RIGHT_CIRCULAR_K, RIGHT_CIRCULAR_SIGMA),
-        None => Value::Undef,
-    }
+fn prb_notch_right_circular(inputs: &NotchInputs<'_>) -> Value {
+    notch_revolute(inputs, RIGHT_CIRCULAR_K, RIGHT_CIRCULAR_SIGMA)
 }
 
 #[cfg(test)]

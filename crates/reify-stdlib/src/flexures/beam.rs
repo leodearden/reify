@@ -10,12 +10,24 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use super::common::{
-    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
-    fixed_guided_sigma_at, length_si, make_compliance_record, make_flexure_joint,
-    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range,
-    symmetric_length_range, RangeKind,
-    CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
+    attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range,
+    fixed_guided_delta_max, fixed_guided_sigma_at, length_arg, make_compliance_record,
+    make_flexure_joint, neutral, symmetric_angle_range, symmetric_length_range, yield_stress,
+    youngs_modulus, InputFault, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
+
+/// A beam ctor: the motion kind of its trailing arguments and its joint builder.
+type BeamCtor = (RangeKind, fn(&BeamInputs<'_>) -> Value);
+
+/// The beam ctors by name — the one table [`eval_beam`] and [`input_fault`]
+/// share, so a ctor and its classifier parse one layout.
+fn beam_ctor(name: &str) -> Option<BeamCtor> {
+    match name {
+        "prb_cantilever_beam" => Some((RangeKind::Angle, prb_cantilever_beam)),
+        "prb_fixed_fixed_beam" => Some((RangeKind::Length, prb_fixed_fixed_beam)),
+        _ => None,
+    }
+}
 
 /// Evaluate a beam-flexure constructor by name.
 ///
@@ -23,11 +35,15 @@ use super::common::{
 /// `Some(Value::Undef)` on validation failure) and `None` for any unknown
 /// name, so `eval_builtin` falls through to the next module.
 pub(crate) fn eval_beam(name: &str, args: &[Value]) -> Option<Value> {
-    match name {
-        "prb_cantilever_beam" => Some(prb_cantilever_beam(args)),
-        "prb_fixed_fixed_beam" => Some(prb_fixed_fixed_beam(args)),
-        _ => None,
-    }
+    let (kind, build) = beam_ctor(name)?;
+    Some(parse_beam_inputs(args, kind).map_or(Value::Undef, |b| build(&b)))
+}
+
+/// Why the beam ctor `name` refuses `args`; `None` for an accepted call or a
+/// name that is not a beam ctor.
+pub(super) fn input_fault(name: &str, args: &[Value]) -> Option<InputFault> {
+    let (kind, _) = beam_ctor(name)?;
+    parse_beam_inputs(args, kind).err()
 }
 
 /// Shared, validated inputs for both beam-flexure constructors.
@@ -46,51 +62,50 @@ struct BeamInputs<'a> {
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
-    /// The optional trailing `neutral` argument (present in the 7- and 8-arg forms).
-    neutral_arg: Option<&'a Value>,
-    /// The optional trailing declared operating-range argument (present only in
-    /// the 8-arg form). When present, its endpoint — not the auto cap — drives
-    /// the joint range and the §5.3 `max_stress` stress-check.
-    declared_range_arg: Option<&'a Value>,
+    /// The neutral offset (7- and 8-arg forms; default 0) in SI.
+    neutral_si: f64,
+    /// The declared operating-range half-width (8-arg form only). When present,
+    /// its endpoint — not the auto cap — drives the joint range and the §5.3
+    /// `max_stress` stress-check.
+    declared: Option<f64>,
 }
 
 /// Parse and validate the shared positional argument layout of both
 /// beam-flexure constructors: `(length, width, thickness, material, pivot,
-/// axis[, neutral[, declared_range]])`.
+/// axis[, neutral[, declared_range]])`, the trailing pair read as `kind`.
 ///
-/// Returns `None` (⇒ the caller returns `Value::Undef`) on: arity ∉ {6, 7, 8};
-/// non-positive or non-finite geometry; a degenerate beam (thickness ≥ length —
-/// the `E_FlexureGeometryInvalid` regime, whose diagnostic task λ (3821) owns);
-/// a material that is not a `Value::StructureInstance` with a finite
+/// [`InputFault::Rejected`] for a present argument or material field of the
+/// wrong dimension (a bare geometry length included). [`InputFault::Invalid`]
+/// on: arity ∉ {6, 7, 8}; non-positive or non-finite geometry; a degenerate
+/// beam (thickness ≥ length — the `E_FlexureGeometryInvalid` regime); a
+/// material that is not a `Value::StructureInstance` with a finite
 /// `youngs_modulus` > 0; or an axis that is not a finite, non-zero,
 /// dimensionless 3-vector.
-fn parse_beam_inputs(args: &[Value]) -> Option<BeamInputs<'_>> {
+fn parse_beam_inputs(args: &[Value], kind: RangeKind) -> Result<BeamInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
-        return None;
+        return Err(InputFault::Invalid);
     }
-    let length = length_si(&args[0])?;
-    let width = length_si(&args[1])?;
-    let thickness = length_si(&args[2])?;
+    let length = length_arg(&args[0], "length")?;
+    let width = length_arg(&args[1], "width")?;
+    let thickness = length_arg(&args[2], "thickness")?;
     if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return None;
+        return Err(InputFault::Invalid);
     }
     let material = &args[3];
-    let e = material_field_si(material, "youngs_modulus")?;
-    if e <= 0.0 {
-        return None;
-    }
+    let e = youngs_modulus(material)?;
+    let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
-    Some(BeamInputs {
+    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    Ok(BeamInputs {
         length,
         thickness,
         e,
         i: width * thickness.powi(3) / 12.0,
-        yield_si: material_field_si(material, "yield_stress"),
+        yield_si,
         axis,
         pivot: &args[4],
-        neutral_arg: if args.len() >= 7 { Some(&args[6]) } else { None },
-        declared_range_arg: if args.len() == 8 { Some(&args[7]) } else { None },
+        neutral_si: neutral(args.get(6), &kind)?,
+        declared: declared_range(args.get(7), &kind)?,
     })
 }
 
@@ -111,13 +126,9 @@ fn parse_beam_inputs(args: &[Value]) -> Option<BeamInputs<'_>> {
 /// stress at the declared endpoint); the auto cap is retained as
 /// `prb_validity_range` in the compliance record as the SAFE/suggested bound.
 ///
-/// Returns `Value::Undef` on the invalid-input classes enumerated in
+/// [`eval_beam`] returns `Value::Undef` on the input faults enumerated in
 /// [`parse_beam_inputs`].
-fn prb_cantilever_beam(args: &[Value]) -> Value {
-    let Some(b) = parse_beam_inputs(args) else {
-        return Value::Undef;
-    };
-
+fn prb_cantilever_beam(b: &BeamInputs<'_>) -> Value {
     // Howell PRB rotational stiffness k_θ = γ·E·I / L (Howell §5.1, γ = 2.65).
     let k_theta = CANTILEVER_GAMMA * b.e * b.i / b.length;
 
@@ -130,12 +141,9 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
     // An optional user-declared operating range (±half-angle) OVERRIDES the auto
     // ±min(θ_yield, 5°) cap for the joint range and the §5.3 stress endpoint; the
     // auto θ_lim is retained as the SAFE/suggested range in the compliance record.
-    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Angle);
-    let range_endpoint = declared.unwrap_or(theta_lim);
+    let range_endpoint = b.declared.unwrap_or(theta_lim);
     let range = symmetric_angle_range(range_endpoint);
-
-    // Optional trailing neutral angle (default 0 for the 6-arg form).
-    let neutral_si = b.neutral_arg.map(neutral_angle_si).unwrap_or(0.0);
+    let neutral_si = b.neutral_si;
 
     let joint = make_flexure_joint(
         "revolute",
@@ -182,13 +190,9 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
 /// shape (finite, symmetric, LENGTH-dimensioned) — its magnitude is a design
 /// choice, not an externally-validated bound.
 ///
-/// Returns `Value::Undef` on the same invalid-input classes as
+/// [`eval_beam`] returns `Value::Undef` on the same input faults as
 /// [`prb_cantilever_beam`] (see [`parse_beam_inputs`]).
-fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
-    let Some(b) = parse_beam_inputs(args) else {
-        return Value::Undef;
-    };
-
+fn prb_fixed_fixed_beam(b: &BeamInputs<'_>) -> Value {
     // Fixed-guided transverse stiffness k_trans = γ_ff·E·I / L³ (γ_ff = 12).
     let k_trans = FIXED_GUIDED_GAMMA * b.e * b.i / b.length.powi(3);
 
@@ -201,8 +205,7 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
     // An optional user-declared operating range (±half-displacement LENGTH)
     // OVERRIDES the auto δ_auto for the joint range and the §5.3 stress endpoint;
     // δ_auto is retained as the SAFE/suggested range in the compliance record.
-    let declared = parse_declared_range(b.declared_range_arg, RangeKind::Length);
-    let range_endpoint = declared.unwrap_or(delta_auto);
+    let range_endpoint = b.declared.unwrap_or(delta_auto);
     let range = Value::range(
         Some(Value::length(-range_endpoint)),
         Some(Value::length(range_endpoint)),
@@ -210,8 +213,7 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
         true,
     );
 
-    // Optional trailing neutral transverse offset (default 0 for the 6-arg form).
-    let neutral_si = b.neutral_arg.map(neutral_length_si).unwrap_or(0.0);
+    let neutral_si = b.neutral_si;
 
     let joint = make_flexure_joint(
         "prismatic",
@@ -241,21 +243,6 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
         symmetric_length_range(delta_auto),
     );
     attach_compliance(joint, record)
-}
-
-/// Extract a neutral transverse offset in metres from a trailing constructor
-/// argument (the prismatic counterpart of `common::neutral_angle_si`).
-///
-/// Accepts a LENGTH-dimensioned `Value::Scalar` (e.g. `Value::length`), a bare
-/// `Value::Real` / `Value::Int` interpreted as metres (via [`length_si`]), or a
-/// `Value::Option` wrapping any of those. `Option(None)` and any value that
-/// fails extraction default to `0.0`.
-fn neutral_length_si(v: &Value) -> f64 {
-    match v {
-        Value::Option(Some(inner)) => neutral_length_si(inner),
-        Value::Option(None) => 0.0,
-        other => length_si(other).unwrap_or(0.0),
-    }
 }
 
 #[cfg(test)]

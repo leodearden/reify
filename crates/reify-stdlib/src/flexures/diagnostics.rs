@@ -9,6 +9,7 @@
 //! signals at once (PRD `docs/prds/v0_3/compliant-joints.md` §1 / §5.3):
 //!   • `W_FlexureYielding`            (Warning) — cached `at_yield == true`
 //!   • `W_FlexurePrbOutOfRange`       (Warning) — declared range exceeds ±5°
+//!   • `DimensionedArgRejected`       (Error)   — a wrong-dimension input on Undef
 //!   • `E_FlexureGeometryInvalid`     (Error)   — degenerate geometry on Undef
 //!   • `W_FlexureFatigueCheckMissing` (Info)    — standing advisory, every call
 //!
@@ -20,7 +21,8 @@ use std::collections::BTreeMap;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{PersistentMap, Value};
 
-use super::common::{classify_geometry_invalid, PRB_ANGLE_LIMIT_RAD};
+use super::common::{classify_geometry_invalid, InputFault, PRB_ANGLE_LIMIT_RAD};
+use super::input_fault;
 
 /// PRB rotational small-deflection bound in degrees — the human-facing spelling
 /// of [`PRB_ANGLE_LIMIT_RAD`] cited by the `W_FlexurePrbOutOfRange` advisory.
@@ -36,8 +38,10 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// recognised PRB ctor it then reads `result`:
 /// - a constructed joint `Value::Map` surfaces `W_FlexureYielding` (cached
 ///   `at_yield`) and `W_FlexurePrbOutOfRange` (declared angular range past ±5°);
-/// - a `Value::Undef` is re-classified via [`classify_geometry_invalid`] and
-///   surfaces `E_FlexureGeometryInvalid` ONLY for degenerate geometry.
+/// - a `Value::Undef` is re-classified: a refused wrong-dimension argument or
+///   material field ([`input_fault`]) surfaces one `DimensionedArgRejected`
+///   Error naming it; otherwise [`classify_geometry_invalid`] surfaces
+///   `E_FlexureGeometryInvalid` ONLY for degenerate geometry.
 ///
 /// Every recognised PRB ctor call also appends the standing
 /// `W_FlexureFatigueCheckMissing` Info advisory; its once-per-eval-session
@@ -123,11 +127,14 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
                 diags.push(prb_out_of_range_diagnostic(endpoint));
             }
         }
-        // Undef path: re-classify the rejection. Emit E_FlexureGeometryInvalid
-        // ONLY for degenerate geometry; non-geometry rejections (bad material /
-        // axis / arity) stay silent.
+        // Undef path: re-classify the rejection. A wrong-dimension input is
+        // named by the shared reader's wording; otherwise emit
+        // E_FlexureGeometryInvalid ONLY for degenerate geometry, and the other
+        // rejections (bad material / axis / arity) stay silent.
         Value::Undef => {
-            if let Some(violation) = classify_geometry_invalid(name, args) {
+            if let Some(InputFault::Rejected(rejection)) = input_fault(name, args) {
+                diags.push(rejection.to_error(name));
+            } else if let Some(violation) = classify_geometry_invalid(name, args) {
                 diags.push(
                     Diagnostic::error(format!(
                         "E_FLEXURE_GEOMETRY_INVALID: {}",
