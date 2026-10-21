@@ -26,6 +26,9 @@ pub enum Family {
     Parse,
     /// FEA stress-analysis reduction builtins (FEA-5, task #2884).
     Analysis,
+    /// The geometric-relation vocabulary (geometric-relations γ #4383, η #4387,
+    /// tangent #5540).
+    Relation,
 }
 
 /// How a builtin is bound to an implementation — PRD §3 decision 4.
@@ -37,9 +40,10 @@ pub enum Family {
 /// eventual variants — including ones it has no business knowing — just to stay
 /// `_`-free.
 ///
-/// All five variants are declared now even though α seeds only
-/// [`BindingKind::EvalBuiltin`], so a later τ adds rows rather than widening
-/// the vocabulary.
+/// All six variants are declared now even though only [`BindingKind::EvalBuiltin`]
+/// and [`BindingKind::Relation`] hold rows, so a later τ adds rows rather than
+/// widening the vocabulary. The first five are PRD decision 4's; `Relation` was
+/// added by R6 / S8-ψ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BindingKind {
     /// Dispatched by `reify_stdlib::eval_builtin`.
@@ -50,8 +54,12 @@ pub enum BindingKind {
     EnginePostProcess,
     /// Lowered to a `CompiledGeometryOp` in reify-ir.
     GeometryOp,
-    /// Relations and markers — no runtime binding at all.
+    /// Markers — no runtime binding at all.
     CompileOnly,
+    /// Bound by reify-constraints' `relate_solve`. Relations have a per-kind
+    /// runtime binding (`residual_dispatch`), so they are not `CompileOnly`.
+    /// Its generated sub-enum is `RelationKind`.
+    Relation,
 }
 
 /// How many arguments a row accepts.
