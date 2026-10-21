@@ -291,7 +291,7 @@ no-lockstep-duplication invariant at four separate places.
 - **`indeterminate-is-not-a-pass-under-the-ruled-semantics`** — The wave's headline clause and a G6 branch 4 case: the harness applies the RULED @test semantics — Indeterminate is NOT a pass unless the fixture is explicitly annotated indeterminate-tolerant — INDEPENDENTLY of today's `reify test` exit behaviour, whose fix is the driver-contract PRD's. The signal is fast-tier-only for exactly this reason.
   - verdict **PASS** · check: `manual` — A verdict-semantics assertion, observed by running a seeded Indeterminate fixture.
 - **`check---purpose-EXISTS-today-so-the-CLI-purpose-arm-is-producible`** — G3, verified at decompose: `--purpose` flag parsing is live in crates/reify-cli/src/main.rs (`parse_purpose_flag`, `PurposeActivation`). Purpose activation fixtures via `check --purpose` need nothing unlanded. The GUI-driver purpose fixtures DO wait on the GUI purpose-surface PRD's `activate_purpose_session()` seam — that PRD was UNCOMMITTED at this decompose, so no edge could be wired; those fixtures are explicitly OUT of this leaf's signal.
-  - verdict **PASS** · check: `grep -E 'fn parse_purpose_flag'` in `crates/reify-cli/src/main.rs` → **present**
+  - verdict **PASS** · check: `grep -E 'fn parse_purpose_flag'` in `crates/reify-cli/src/main.rs` → **present** **[Amended 2026-10-20, τ #8758 BLK-1]** delivered check re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `fn parse_purpose_flag` moved to `crates/reify-cli/src/args.rs`.
 - **`cli-tier-@test-rows-are-deferred-not-silently-included`** — Scope honesty: CLI-tier @test rows are gated on the driver-contract PRD's test-runner fix. They are named as deferred in the leaf text rather than authored against today's exit behaviour, which would bake a divergence into a fixture.
   - verdict **PASS** · check: `manual` — A deferral, recorded in the leaf text and in the fixture directives' `deferred` tags.
 
@@ -354,3 +354,9 @@ no-lockstep-duplication invariant at four separate places.
 *Every binding resolves to PASS. No binding resolved to `declared-only`, `test-only`, `producer-downstream`,
 `producer-absent`, `producer-extent-short`, `fixture-ERROR`, `bound≤floor` or `rejection-absent`, so no leaf was
 re-scoped, re-homed or relaxed to clear the gate.*
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `decide_scope-docs-arm-is-the-live-coupling-gap-and-it-is-real`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `reify-language-spec`.

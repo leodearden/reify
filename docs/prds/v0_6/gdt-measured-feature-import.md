@@ -4,6 +4,11 @@
 `gdt-geometric-zones-and-containment.md` §6. Do **not** decompose; a deferred bookmark task
 points here. Promote to a full B+H PRD only when the activation gate below is met.
 
+> **Seam re-pointed (step-assembly-import ο #8067).** The "first B-rep import seam" cited under
+> #4289 below is now C3 (foreign-module provider) of `docs/prds/v0_6/step-assembly-import.md`,
+> which rewrites #4289; a scanned/CMM-fitted B-rep would ride that provider, not a single-shape
+> `step_import`.
+
 ## Goal (when activated)
 
 Feed Reify's geometric conformance check (`Conforms(tolerance: t, actual: <measured>)`) with
@@ -24,7 +29,7 @@ actual feature, registered + aligned to the nominal frame.
 - **#4290 (deferred forward-stub):** PointCloud type + PLY/PCD/XYZ/LAS readers — explicitly
   waiting for a named consumer; THIS PRD is that consumer when promoted. Activate 4290, don't
   re-file readers.
-- **#4289 (pending):** STEP import — the first B-rep import seam; a scanned/CMM-fitted B-rep
+- **#4289:** STEP import — the first B-rep import seam; a scanned/CMM-fitted B-rep
   would ride it.
 - VDB scalar-field import is live end-to-end (`FieldSource::Imported` →
   `read_vdb_file` → `SampledField`, `engine_eval.rs:1154-1165`) — a pre-fitted SDF deviation

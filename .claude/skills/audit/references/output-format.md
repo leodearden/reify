@@ -49,7 +49,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
       "task_id_filed": "3901",               // task_id returned by submit_task
 
       // Present only when action_taken == "escalated":
-      "escalation_id": "esc-abc123",         // ID returned by escalate_info (if available)
+      "escalation_id": "esc-abc123",         // ID returned by escalate_info (if available); batched PDOCCOVER findings share one escalation_id (severity-routing.md §2)
 
       // Present only when action_taken == "deduped":
       "prior_finding_id": "f-20260510T120000Z-1"  // finding_id from the prior run
@@ -90,6 +90,18 @@ The `scope` field carries exactly the flags used for the invocation. When flags 
 ```
 ```json
 { "patterns": ["PLAYER"] }
+```
+```json
+{ "patterns": ["PDSSENTINEL"] }
+```
+```json
+{ "patterns": ["PDIAG"] }
+```
+```json
+{ "patterns": ["PDOCCOVER"] }
+```
+```json
+{ "patterns": ["PDCHECK"] }
 ```
 
 > **Advisory P-\* patterns:** PDEAD, PUNTESTED, and PLAYER findings always carry `action_taken: "logged"` (Severity Low) — they are never escalated or auto-filed. See `references/severity-routing.md` for routing details.

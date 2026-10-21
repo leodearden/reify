@@ -12,54 +12,21 @@
 //! this harness root is an integration-test crate root, where a bare `mod <file>;` would
 //! resolve to the sibling `tests/<file>.rs`, not the `harness_cache/` subdir.
 //!
-//! # Shared `differential` module — the tests/common dedup
+//! Task #7033 then folded in the `selective_demand_*` cluster, previously its own root
+//! (`harness_selective_demand`, split out of `harness_topology_selector` by task #5620).
+//! Those modules test demand-scoped incremental recompute (warm tessellate pruning, cone
+//! maintenance across structural edits, re-demand staleness), which is this unit's
+//! subsystem, and their fixtures already live in `differential.rs`. Same layout-only
+//! contract: stems preserved, only the binary id moved.
 //!
-//! `differential` (tests/common/differential.rs) is declared ONCE here rather than once
-//! per includer. Four submodules below reference it —
-//! `unified_dag_boundary_cases`, `unified_dag_differential_corpus`,
-//! `unified_dag_edit_path`, `unified_dag_warm_path` — and each previously carried its own
-//! `#[path = "common/differential.rs"] mod differential;`, so the same source was
-//! compiled four times. One shared copy removes 3 of those 4 duplicate compilations of
-//! `differential.rs` with no behavioral difference: differential.rs declares 0
-//! `#[test]` fns, so collapsing the copies cannot change the nextest test count.
-//! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
-//! at this root — differential.rs carries its own `#![allow(dead_code)]`.
+//! # Shared `differential` module
 //!
-//! # Residual — what the BONUS asked for vs. what shipped
-//!
-//! Stated rather than silently dropped, and stated against the ask so the delta is on the
-//! record rather than inferred. Task #5282's BONUS was to dedup `tests/common/` "as a
-//! single `mod common;` under the harnesses". What shipped is deliberately NARROWER:
-//!
-//! DONE — `common/differential.rs`, by far the largest member of `tests/common/`, is now
-//! declared once per compile unit instead of once per includer. Inside this unit that is
-//! 4 copies collapsed to the 1 declaration below, which is where nearly all of the
-//! available duplicated-compilation payload lived.
-//!
-//! NOT DONE — `differential.rs` is still compiled separately into `harness_engine` and
-//! `harness_selective_demand` (one root-level declaration each). That is not an oversight
-//! and no further `#[path]` bookkeeping can fix it: each integration-test root is its own
-//! crate, so a module cannot be shared across binaries. Removing those two compilations
-//! means merging the three units into one, which the PRD §7 cap forbids outright — their
-//! combined size, even after the two duplicate `differential` copies are netted out, is
-//! well past the cap, and `harness_engine` is already the unit that cap forced a split
-//! out of (see `harness_auto_resolution`). Re-measure with
-//! `tests/infra/test_harness_kloc_cap.sh` rather than trusting a number pinned here.
-//!
-//! NOT DONE — the `mod common;` half of the BONUS is untouched. Its includers are left
-//! standalone, each for a reason that consolidating would violate:
-//!   - `realization_cache_alloc` and `realization_cache_alloc_rotating_options_hash` each
-//!     declare their own `#[global_allocator] static GLOBAL`. Rust permits exactly one
-//!     global allocator per compile unit, so folding both here is a hard rustc error, and
-//!     folding either would instrument every allocation in this harness. Both files'
-//!     headers state the process isolation as deliberate design.
-//!   - `fdm_bracket_e2e` and `fdm_progressive_refinement_e2e` (`common::as_printed`
-//!     users) belong to `harness_fea_solver_e2e`, which already sits close to the PRD §7
-//!     20,000-line cap — folding them would risk breaching the band.
-//!   - `edit_source` and `guard_eval` are ~8 kLOC of out-of-subsystem tests, and their
-//!     only use of `common` is the single small `ten_bool_guarded_groups` helper; pulling
-//!     two foreign harnesses in here just to dedup that helper is not a trade worth
-//!     making.
+//! `differential` (tests/common/differential.rs) is declared ONCE here. This unit holds
+//! EVERY consumer of `differential.rs`, so it is compiled into exactly one integration-test
+//! binary. Keep those consumers together: moving one into another root re-adds a full copy
+//! of `differential.rs` there, and rule (a) charges each unit for its copy. Submodules reach
+//! it via `use crate::differential::{…}`. No extra `#![allow]` is needed at this root —
+//! differential.rs carries its own `#![allow(dead_code)]`.
 //!
 //! # Path fixups
 //!
@@ -72,6 +39,12 @@
 //! as well as compiled so the fixture/example *content* is confirmed to still reach the
 //! assertions.
 //!
+//! The `selective_eviction_*` modules (task #6925) test keyed realization-cache eviction
+//! at the edit seam (PRD selective-realization-eviction δ/ε), the eviction half of the
+//! same incremental-recompute subsystem. `selective_eviction_conversion_intermediate`
+//! (task #8443) pins that a cross-kernel conversion intermediate leaves with its owner's
+//! eviction family, over a two-kernel test registry.
+//!
 //! Whole-unit size — this root, every `harness_cache/*.rs` module below, and the
 //! `common/differential.rs` include above, which escapes the module directory — is
 //! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
@@ -82,6 +55,8 @@ mod differential;
 mod compute_cache_key_population;
 #[path = "harness_cache/eval_cached_diagnostics.rs"]
 mod eval_cached_diagnostics;
+#[path = "harness_cache/flat_sort_kahn_core_delegation.rs"]
+mod flat_sort_kahn_core_delegation;
 #[path = "harness_cache/freshness_only_production_trigger.rs"]
 mod freshness_only_production_trigger;
 #[path = "harness_cache/freshness_only_propagation.rs"]
@@ -92,6 +67,26 @@ mod freshness_pending_compute_dispatch;
 mod freshness_propagation;
 #[path = "harness_cache/persistent_cache_compute_round_trip.rs"]
 mod persistent_cache_compute_round_trip;
+#[path = "harness_cache/selective_demand_alpha.rs"]
+mod selective_demand_alpha;
+#[path = "harness_cache/selective_demand_beta.rs"]
+mod selective_demand_beta;
+#[path = "harness_cache/selective_demand_cone_structural_edit.rs"]
+mod selective_demand_cone_structural_edit;
+#[path = "harness_cache/selective_demand_epsilon.rs"]
+mod selective_demand_epsilon;
+#[path = "harness_cache/selective_demand_gamma.rs"]
+mod selective_demand_gamma;
+#[path = "harness_cache/selective_demand_measurement.rs"]
+mod selective_demand_measurement;
+#[path = "harness_cache/selective_demand_redemand_staleness.rs"]
+mod selective_demand_redemand_staleness;
+#[path = "harness_cache/selective_eviction_conversion_intermediate.rs"]
+mod selective_eviction_conversion_intermediate;
+#[path = "harness_cache/selective_eviction_slider_drag_dispatch_e2e.rs"]
+mod selective_eviction_slider_drag_dispatch_e2e;
+#[path = "harness_cache/selective_eviction_staleness_differential.rs"]
+mod selective_eviction_staleness_differential;
 #[path = "harness_cache/snapshot_cache_divergence_gate.rs"]
 mod snapshot_cache_divergence_gate;
 #[path = "harness_cache/unified_dag_boundary_cases.rs"]

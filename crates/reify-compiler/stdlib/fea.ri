@@ -19,11 +19,13 @@
 // can pass these fields where a `Pressure`/`Pressure2`/`Pressure3` is demanded,
 // and `Real` breaks that at overload resolution.
 //
-// This deliberately DIVERGES from the `AnalysisResult` trait in analysis.ri,
-// which KEEPS its `Real` placeholders. That is not an oversight to be tidied
-// up: it is documented there as a structural contract that does not participate
-// in dimension checking, and analysis.ri is `#no_prelude`, so it cannot see
-// these aliases in the first place.
+// The `AnalysisResult` trait in analysis.ri is dimensioned too as of task
+// #6165, which retyped its five stress params from `Real` to `Stress`; there
+// is no `Real`-placeholder posture left there to diverge from. What still
+// differs is only alias VISIBILITY: analysis.ri is `#no_prelude` and
+// `Pressure2`/`Pressure3` are `.ri` aliases declared in units.ri, so that
+// module cannot name them at all — `Stress` works there only because it
+// resolves to the built-in `Pressure` dimension, not to a units.ri alias.
 //
 // Module placement: registered after `std.analysis` in `stdlib_loader.rs`
 // so the growing prelude carries `Stress`/`AnalysisResult` when this module

@@ -15,6 +15,10 @@ use reify_eval::SweptKind;
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::*;
 
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
+
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.
 ///
@@ -60,7 +64,7 @@ fn engine_swept_kind_table_records_extrude_realization() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -151,7 +155,7 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let table = engine.swept_kind_table();
@@ -237,7 +241,7 @@ fn engine_swept_kind_table_resets_between_builds() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // ── Build #1: classifier records exactly one entry ───────────────────
     let _result_1 = engine.build(&module_1, ExportFormat::Step);
@@ -311,9 +315,10 @@ fn engine_swept_kind_table_records_revolve_realization() {
     };
 
     // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The axis ORIGIN is
-    // length-typed (task 5623's units gate rejects a bare Real there); the axis
-    // direction and the angle stay Type::dimensionless_scalar(). Reverting
-    // ox/oy/oz to real_literal here re-trips the gate, not a golden.
+    // length-typed (task 5623's units gate rejects a bare Real there) and the
+    // angle is a dimensioned Angle (PRD 3 leaf γ); only the axis DIRECTION
+    // stays Type::dimensionless_scalar(). Reverting ox/oy/oz or the angle to
+    // real_literal here re-trips a gate, not a golden.
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
@@ -324,7 +329,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(std::f64::consts::FRAC_PI_2)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
     };
 
@@ -340,7 +345,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -462,7 +467,7 @@ fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();

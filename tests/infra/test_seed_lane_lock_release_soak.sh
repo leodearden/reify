@@ -145,8 +145,8 @@ _wait_until() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# The probe primitive — BYTE-FOR-BYTE the form test_seed_warm_lane.sh's H4 uses
-# (`bash -c 'exec 8>"$1"; flock -n 8' _ "$LOCK"`), so this harness and H4 can
+# The probe primitive — BYTE-FOR-BYTE the form test_seed_warm_lane.sh's Q4 uses
+# (`bash -c 'exec 8>"$1"; flock -n 8' _ "$LOCK"`), so this harness and Q4 can
 # never disagree about what "the lock is free" means. A separate PROCESS is
 # mandatory: flock is not re-entrant across a process tree, but a lock held by
 # THIS shell on another descriptor would also read back as free from within

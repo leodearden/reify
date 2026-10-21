@@ -5,7 +5,7 @@
 #
 # Part of PRD docs/prds/warm-lane-pool-sizing-lifecycle.md §9.1, §10 B1/B2.
 # Consumer: reify ζ (integration gate), dark-factory θ (soft-floor dispatch
-# throttle), the operator, and a health timer (§13 open-Q 3).
+# throttle), and the operator.
 #
 # Usage:
 #   scripts/warm-lane-audit.sh [--mount WORKTREES_DIR] [--format table|json] \
@@ -43,22 +43,25 @@
 #              state_unknown=… reclaimable=… leaked=… leak_unknown=…
 #              divergent_gib=… free_gib=… budget_gib=… plan_stranded=…
 #              plan_unknown=… plan_rewritten=… plan_mismatch=… stash_entries=…
+#              stash_unknown=…
 #     PINNED   total=… pending=… infra-hold=… blocked=… terminal=… other=…
 #              unknown=…
-#     STASH    total=…
+#     STASH    total=… unknown=…
 #     STASH    entry ref=… branch=… message=…      (one line per entry)
 #
 # HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION --
 # `resident = live + pinned + quarantined + free`, with `free` the residue --
-# while `assigned`, `state_unknown`, the four `plan_*` fields and
-# `stash_entries` are CROSS-CUTS never added into it (see
+# while `assigned`, `state_unknown`, the four `plan_*` fields,
+# `stash_entries` and `stash_unknown` are CROSS-CUTS never added into it (see
 # the counter block at the resident walk, which is where that identity is
 # enforced). PINNED breaks `pinned` down by WHY each pin is held: a fixed,
 # closed bucket vocabulary in a fixed order, always emitted, zeros included
 # (JSON: a sibling "pinned_by_status" object whose total is headroom.pinned).
 # STASH is the shared stash stack -- HOST-scoped, not per-lane, since refs/stash
 # is one ref in the shared common git dir -- always emitted, zeros included
-# (JSON: headroom.stash_entries plus a sibling "stash_stack" array). Read-only
+# (JSON: headroom.stash_entries / headroom.stash_unknown plus a sibling
+# "stash_stack" array). stash_unknown=1 marks a stack that could not be
+# measured, so its stash_entries=0 is not an all-clear. Read-only
 # and NON-GATING, like everything else here; see the emit block for why.
 #
 # Why the columns are split this way, the two pool misreads that motivated it,
@@ -90,13 +93,18 @@
 # Additional env knobs (no dedicated CLI flag):
 #   REIFY_WARM_LANE_AUDIT_DF             df command override (default: df),
 #                                         mirrors REIFY_WARM_LANE_DISK_GUARD_DF.
+#   REIFY_WARM_LANE_AUDIT_FLOCK          flock command override (default:
+#                                         flock), mirrors
+#                                         REIFY_WARM_LANE_LOCK_GUARD_FLOCK.
 #   REIFY_WARM_LANE_AUDIT_STASH_REPO     Repo to query for the shared stash
 #                                         stack (default: the first resident
 #                                         lane that resolves as a git worktree
 #                                         -- refs/stash is shared, so one query
-#                                         answers for the pool). Unresolvable or
-#                                         a failed query => stash_entries=0
-#                                         plus a stderr note; still exit 0.
+#                                         answers for the pool). Unresolvable,
+#                                         not a git worktree, or a failed query
+#                                         => stash_entries=0 with
+#                                         stash_unknown=1, plus a stderr note
+#                                         naming the cause; still exit 0.
 #   REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB   Glob (or comma-separated globs)
 #                                         matching "residue" dirty paths that
 #                                         don't count as unrecoverable WIP
@@ -122,8 +130,9 @@
 # Invariants:
 #   A1 — read-only: never mutates a lane (no reset/rm/reclaim). This binds
 #        BOTH on-disk surfaces the audit touches, and identically:
-#          · the LIVE/IDLE probe opens an EXISTING <dir>.lock read-only and
-#            never creates a missing one;
+#          · the LIVE/IDLE probe (lane_lock_probe, scripts/lib_lane_lock.sh)
+#            opens an EXISTING <dir>.lock read-only and never creates a
+#            missing one;
 #          · the assignment-state read opens an EXISTING
 #            <state-dir>/<lane>.json read-only and never creates the record
 #            OR the directory -- neither a default <mount>/.lane-state nor an
@@ -136,14 +145,25 @@
 #        but never contends with another concurrent reader (e.g. a second
 #        audit run) — only a genuine writer's non-blocking attempt could
 #        ever be perturbed, and only for the instant this probe's fd is
-#        open.
+#        open. A1's and A2's guarantees over that probe are the SHARED
+#        helper's: lane_lock_probe in scripts/lib_lane_lock.sh is the one
+#        implementation, used identically by scripts/warm-lane-lock-guard.sh.
+#        What stays THIS script's own is the fail direction below.
 #   A3 — a status-lookup failure degrades that lane to `unknown` (never
 #        aborts, never reclassifies as reclaimable/leaked). When this
 #        suppresses what would otherwise be a LEAKED verdict, the lane is
 #        still reported PRESERVED-OK (conservative default), but a stderr
 #        warning fires and the lane is counted in the HEADROOM
 #        `leak_unknown` field, so "no leaks" stays distinguishable from
-#        "leaks could not be evaluated".
+#        "leaks could not be evaluated". The liveness probe degrades the
+#        same way and UNIFORMLY: any cause that makes it unmeasurable — a
+#        broken or missing flock, an unreadable lock file — counts that lane
+#        LIVE with a stderr warning, fail-CLOSED. (Until task 5738 this was
+#        inconsistent: a broken flock read LIVE, but an unreadable lock file
+#        fell through to IDLE, silently fail-OPEN on the same axis.)
+#        scripts/warm-lane-lock-guard.sh takes the OPPOSITE direction on the
+#        identical state, deliberately; why each is right for its own
+#        consumer is stated once, in seam doc §3.
 #   A4 — `stale` is always the relation age_min >= stale_age_min against the
 #        declared knob — never an inline/undeclared literal.
 #   A5 — the assignment-state read is fail-safe: a missing state dir, a
@@ -188,6 +208,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=scripts/lib_portable.sh
 source "$SCRIPT_DIR/lib_portable.sh"
+
+# The liveness probe itself — shared with scripts/warm-lane-lock-guard.sh,
+# which applies the OPPOSITE fail direction to the same measurement.
+# shellcheck source=scripts/lib_lane_lock.sh
+source "$SCRIPT_DIR/lib_lane_lock.sh"
 
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -245,6 +270,7 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               \`assigned\`, \`state_unknown\` and \`plan_stranded\` /
               \`plan_unknown\` / \`plan_rewritten\` / \`plan_mismatch\` are
               cross-cuts, not partition members: they may overlap any bucket.
+              So are \`stash_entries\` / \`stash_unknown\` (1 = not measured).
               plan_rewritten
               counts routine rebases and is expected to DOMINATE a healthy
               pool — it is emitted so the stranded figure is readable in
@@ -280,6 +306,7 @@ STALE_AGE_MIN="${REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN:-60}"
 MAIN_REF="${REIFY_WARM_LANE_AUDIT_MAIN_REF:-main}"
 SAFETY="${REIFY_WARM_LANE_AUDIT_SAFETY:-1.5}"
 DF="${REIFY_WARM_LANE_AUDIT_DF:-df}"
+FLOCK_BIN="${REIFY_WARM_LANE_AUDIT_FLOCK:-flock}"
 RESIDUE_GLOB="${REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB:-data/queue/*.db*}"
 # Repo to query for the shared stash stack. Default (empty): the FIRST resident
 # lane that resolves as a git worktree — refs/stash lives in the shared common
@@ -379,38 +406,34 @@ _lane_role() {
 # IDLE while remaining very much assigned (see _read_lane_assignment, the
 # separate answer).
 #
-# Opens an EXISTING <dir>.lock read-only and attempts a non-blocking SHARED
-# flock on that read-only fd: success (lock acquired) => IDLE, released
-# immediately; failure (blocked by a live consumer's exclusive flock) =>
-# LIVE. A missing lock file is IDLE and is NEVER created (no `>`-open/
-# truncation, no `flock <file> <cmd>` convenience form -- both would mutate
-# the pool).
+# The MEASUREMENT is `lane_lock_probe` in scripts/lib_lane_lock.sh, shared
+# with scripts/warm-lane-lock-guard.sh: it answers IDLE / BUSY /
+# UNMEASURABLE and carries no fail direction of its own. This script's
+# contribution is the mapping below, and it fails CLOSED — an unmeasurable
+# probe counts LIVE, where the guard sends the same state to IDLE. Why each
+# direction is right for its own consumer: seam doc §3 —
+# docs/design/merge-verify-lane-dispatch-seam.md.
 #
-# Shared (-s), not exclusive (-x): this probe is a pure reader, and every
-# real lane-assignment consumer holds an EXCLUSIVE flock while live
-# (mirroring warm-lane-gc.sh's own `flock -n <lock>` reclaim-eligibility
-# check, which defaults to exclusive because IT proceeds to a real mutation
-# on success -- this script never does). A shared request still correctly
-# fails against a live consumer's exclusive lock, so LIVE detection is
-# unchanged; but two readers (e.g. two concurrent audit runs) never contend
-# with each other. Only a genuine writer's non-blocking attempt could still
-# be transiently perturbed, and only for the instant this fd is open (A2) --
-# an unavoidable characteristic of any momentary lock-state probe, and
-# benign for this script's advisory-only output.
+# The warning reaches stderr even though the sole call site is a `$( )`:
+# command substitution captures stdout only. It is the A3 ethos applied to
+# this axis — every degradation is paired with a stderr warning, so "no
+# leaks" stays distinguishable from "leaks could not be evaluated".
 _probe_live() {
     local lock="$1"
-    local result='IDLE'
-    if [ -e "$lock" ]; then
-        if exec 7<"$lock" 2>/dev/null; then
-            if flock -n -s 7 2>/dev/null; then
-                flock -u 7 2>/dev/null || true
-            else
-                result='LIVE'
-            fi
-            exec 7<&- 2>/dev/null || true
-        fi
-    fi
-    printf '%s' "$result"
+    lane_lock_probe "$lock" "$FLOCK_BIN"
+    case "$LANE_LOCK_PROBE_STATE" in
+        BUSY) printf 'LIVE' ;;
+        UNMEASURABLE)
+            warn "lock probe unmeasurable for $lock ($LANE_LOCK_PROBE_DETAIL); counted LIVE (fail-CLOSED)."
+            printf 'LIVE' ;;
+        IDLE) printf 'IDLE' ;;
+        # Total by construction, so the mapping cannot go silently partial under
+        # a later edit to the lib's state set: an unrecognised state is itself
+        # an unmeasurable probe, and takes this script's fail direction.
+        *)
+            warn "lock probe returned an unrecognised state '$LANE_LOCK_PROBE_STATE' for $lock; counted LIVE (fail-CLOSED)."
+            printf 'LIVE' ;;
+    esac
     return 0
 }
 
@@ -443,10 +466,11 @@ _record_text() {
 # `null`).
 #
 # No jq/python3 dependency by design: this script has none today (it even
-# hand-rolls _json_escape), runs from a systemd timer and from the disk-pressure
-# paths, and is forbidden from ever aborting -- a hard jq requirement would be a
-# new environmental failure mode for an advisory-only tool. Only two flat
-# top-level string scalars are ever needed (`state`, `task_id`).
+# hand-rolls _json_escape), is meant to run unattended (timer-friendly, PRD
+# §13 Q3) and runs from the disk-pressure paths, and is forbidden from ever
+# aborting -- a hard jq requirement would be a new environmental failure mode
+# for an advisory-only tool. Only two flat top-level string scalars are ever
+# needed (`state`, `task_id`).
 #
 # Two properties the regex depends on: the BARE double quote before <key> is
 # what makes it safe against a value CONTAINING the key text (json escapes any
@@ -755,14 +779,13 @@ _plan_record_parses() {
 # The LAST done entry rather than every done entry, because steps execute in
 # order and each commits atop the previous: if the deepest done commit is an
 # ancestor of the tip then every earlier one is too. Two git calls per lane,
-# which matters for a pool walked by a timer. Because `prerequisites` precedes
-# `steps` in the emitted document, plain document order already yields the
-# required traversal -- no separate array handling.
+# which matters for a pool walked unattended or repeatedly. Because
+# `prerequisites` precedes `steps` in the emitted document, plain document
+# order already yields the required traversal -- no separate array handling.
 #
 # awk, not jq/python3: this script declares no-jq/no-python3 as a design
-# property (see _record_scalar) because it runs from a systemd timer and the
-# disk-pressure paths and is forbidden from ever aborting. awk is already used
-# here for the df/du arithmetic, so this adds no dependency.
+# property (see _record_scalar). awk is already used here for the df/du
+# arithmetic, so this adds no dependency.
 #
 # A pending entry's commit is unquoted `null`, and the required quotes below
 # read that as empty -- the same property that makes _record_scalar report an
@@ -1523,20 +1546,29 @@ fi
 # whole fleet on a warning nobody reads. (dark-factory learned this in the
 # adjacent subsystem: merge_gates.py halts the whole merge queue on
 # 'stash_failed' rather than bouncing N tasks one at a time.)
+#
+# STASH_UNKNOWN_CAUSE: no-repo-resolved | not-a-git-worktree | stash-list-failed:exit=<rc>
 STASH_ENTRIES=0
+STASH_UNKNOWN_CAUSE=""
 STASH_TEXT_LINES=()
 STASH_JSON_OBJS=()
 _stash_repo="$STASH_REPO"
 [ -n "$_stash_repo" ] || _stash_repo="$FIRST_GIT_LANE"
+_stash_out=""
 if [ -z "$_stash_repo" ]; then
-    warn "no repo resolved for the shared stash query (no resident lane is a git worktree; set REIFY_WARM_LANE_AUDIT_STASH_REPO); stash_entries degraded to 0."
+    STASH_UNKNOWN_CAUSE="no-repo-resolved"
 elif ! _is_git_worktree "$_stash_repo"; then
-    warn "stash query repo '$_stash_repo' is not a git worktree; stash_entries degraded to 0."
+    STASH_UNKNOWN_CAUSE="not-a-git-worktree"
 else
     # ONE query, US-separated (\x1f) so a message containing spaces or colons
-    # cannot corrupt the split. A failure degrades to 0 with a note rather than
-    # aborting — this script must never abort (PRD §9.5 inv.12).
-    _stash_out="$(git -C "$_stash_repo" stash list --format='%gd%x1f%gs' 2>/dev/null)" || _stash_out=""
+    # cannot corrupt the split. git's stderr is discarded, not merged: a
+    # success-path warning ("ignoring broken ref") would otherwise be parsed as
+    # an entry. A failed query is a cause, never an empty stack.
+    _stash_rc=0
+    _stash_out="$(git -C "$_stash_repo" stash list --format='%gd%x1f%gs' 2>/dev/null)" || _stash_rc=$?
+    [ "$_stash_rc" -eq 0 ] || STASH_UNKNOWN_CAUSE="stash-list-failed:exit=$_stash_rc"
+fi
+if [ -z "$STASH_UNKNOWN_CAUSE" ]; then
     while IFS= read -r _sline; do
         [ -n "$_sline" ] || continue
         _sref="${_sline%%$'\x1f'*}"
@@ -1572,6 +1604,11 @@ else
 $_stash_out
 STASH_EOF
 fi
+STASH_UNKNOWN=0
+if [ -n "$STASH_UNKNOWN_CAUSE" ]; then
+    STASH_UNKNOWN=1
+    warn "shared stash stack could not be measured ($STASH_UNKNOWN_CAUSE) at repo '${_stash_repo:-<none>}'; stash_entries reported 0 with stash_unknown=1 -- an unmeasured stack, not an empty one. REIFY_WARM_LANE_AUDIT_STASH_REPO selects the repo queried. See HEADROOM stash_unknown."
+fi
 
 # ── emit: table (default) or json ─────────────────────────────────────────────
 # The machine report goes to stdout; all diagnostics above went to stderr
@@ -1602,8 +1639,8 @@ if [ "$FORMAT" = "json" ]; then
         stash_json="${STASH_JSON_OBJS[*]}"
         unset IFS
     fi
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d,"plan_mismatch":%d,"stash_entries":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d},"stash_stack":[%s]}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES" \
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d,"plan_mismatch":%d,"stash_entries":%d,"stash_unknown":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d},"stash_stack":[%s]}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES" "$STASH_UNKNOWN" \
         "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT" "$stash_json"
 else
     printf '%s' "$TABLE_OUT"
@@ -1611,16 +1648,17 @@ else
     # existing field's position untouched, so a consumer matching a prefix or a
     # fixed field order keeps working (the runbook's append-never-interpose
     # convention).
-    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d plan_mismatch=%d stash_entries=%d\n' \
-        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES"
+    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d plan_mismatch=%d stash_entries=%d stash_unknown=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES" "$STASH_UNKNOWN"
     # Always emitted, zeros included: a stable grep shape means "no pins" reads
     # as a value an operator can see, never as an absent line.
     printf 'PINNED total=%d pending=%d infra-hold=%d blocked=%d terminal=%d other=%d unknown=%d\n' \
         "$PINNED_COUNT" "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
     # Same always-emitted, zeros-included rule: an empty shared stack must read
-    # as a value an operator can see, never as an absent line. One detail line
-    # per entry, message LAST so its spaces are unambiguous.
-    printf 'STASH total=%d\n' "$STASH_ENTRIES"
+    # as a value an operator can see, never as an absent line -- and `unknown=`
+    # keeps an unmeasured one from reading as empty. One detail line per entry,
+    # message LAST so its spaces are unambiguous.
+    printf 'STASH total=%d unknown=%d\n' "$STASH_ENTRIES" "$STASH_UNKNOWN"
     for _sl in "${STASH_TEXT_LINES[@]+${STASH_TEXT_LINES[@]}}"; do
         printf '%s\n' "$_sl"
     done

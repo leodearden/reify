@@ -1,6 +1,6 @@
 # GUI code-intelligence & navigation (IDE affordances)
 
-**Status:** active · version-agnostic GUI/tooling foundation · approach **B+H** (contract + two-way boundary tests) · 2026-06-02
+**Status: SHIPPED.** All 11 decomposition leaves have landed — α #4201, β #4202, γ #4203, δ #4204, ε #4205, ζ #4206, η #4207, θ #4208, ι #4209, κ #4210, λ #4211 — plus the follow-ups #4238 and #4466. Version-agnostic GUI/tooling foundation · approach **B+H** (contract + two-way boundary tests) · authored 2026-06-02; shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its substrate survey, gap descriptions and anchors are dated 2026-06-02 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — no production code defers to this document, so the whole body, including the `reify-lsp` ↔ frontend contract section, is AS-AUTHORED.
 
 ## Goal
 

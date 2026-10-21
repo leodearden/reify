@@ -1,0 +1,10 @@
+{
+  "probes": [
+    {
+      "capability": "POST (leaf beta landed, S-4): a headed type-param-carrying argument (the leaky Applied{Result,[T,E]} from or_else(Ok{..}, Ok{..})) no longer wildcard-matches a concrete Length parameter — tier 3 requires heads_unifiable for headed args. PRE (2026-09-29): check exit 0, eval W.v = Result::Ok (debug) / undef (release).",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "no matching overload for fl(" } }
+    }
+  ]
+}

@@ -14,10 +14,10 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, find_moi_principal_constraint,
+    assert_rigid_mass_props_determined, bounded_bracket_source, find_moi_principal_constraint,
     rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
 };
 use crate::types::EntityTreeNode;
@@ -26,14 +26,14 @@ use crate::types::EntityTreeNode;
 fn engine_session_new_with_mock_kernel() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let _session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let _session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 }
 
 #[test]
 fn load_from_source_returns_gui_state_with_values() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -51,7 +51,7 @@ fn load_from_source_returns_gui_state_with_values() {
 fn load_from_source_returns_gui_state_with_constraints() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -60,11 +60,80 @@ fn load_from_source_returns_gui_state_with_constraints() {
     assert_eq!(state.constraints.len(), 3, "bracket has 3 constraints");
 }
 
+/// A source producing one constraint of each `Satisfaction` verdict (task 6723).
+///
+/// Inline rather than a file under `gui/test/fixtures/`: no Rust test reads that
+/// directory (it serves the debug-MCP `load_fixture` allowlist and the
+/// Playwright/visual harnesses), and the gui-crate convention for a single-use
+/// `.ri` source is an inline `&str` const.
+///
+///   - `width > 10mm`        — Satisfied (80mm > 10mm)
+///   - `thickness > 2mm`     — Violated  (1mm ≯ 2mm). A statically-violated
+///     constraint does not block the load: `ConstraintViolated` never reaches
+///     `Severity::Error` (see `bracket_source_violating`'s tests below).
+///   - `tolerance > 0.1mm`   — Indeterminate. `EngineSession::new` installs no
+///     solver, so `= auto` stays `Value::Undef` and `SimpleConstraintChecker`
+///     returns Indeterminate. The cell is not geometry-derived, so
+///     `surface_geometry_derived_cells`' re-check re-evaluates it to
+///     Indeterminate and leaves it alone — this leg does not flip.
+const TRI_VERDICT_SRC: &str = r#"structure def TriVerdict {
+    param width: Length = 80mm
+    param thickness: Length = 1mm
+    param tolerance: Length = auto
+
+    constraint width > 10mm
+    constraint thickness > 2mm
+    constraint tolerance > 0.1mm
+}"#;
+
+/// End-to-end fidelity of all three verdict tokens on a real load, and the
+/// payload ORDER the GUI receives them in (task 6723).
+///
+/// This is the Rust-side counterpart to
+/// `gui/src/__tests__/constraintVerdictParity.test.ts`, and the source of that
+/// test's fixture ordering: `build_constraints` sorts by `node_id` ascending, so
+/// `TriVerdict#constraint[0]/[1]/[2]` is deterministic and the payload arrives
+/// ✓ / ✗ / ? in that order (PRD-4 §5 B1's signal).
+///
+/// That is the PAYLOAD order, deliberately not the RENDERED order:
+/// `ConstraintPanel`'s `STATUS_PRIORITY` re-sorts violated-first for display, so
+/// the DOM order for this 1/1/1 fixture is ✗, ?, ✓. The frontend test pins both
+/// separately.
+#[test]
+fn load_from_source_emits_all_three_verdict_tokens_in_node_id_order() {
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+
+    let state = session
+        .load_from_source(TRI_VERDICT_SRC, "tri_verdict")
+        .expect("TRI_VERDICT_SRC should load (a violated constraint is not a load error)");
+
+    let observed: Vec<(&str, &str)> = state
+        .constraints
+        .iter()
+        .map(|c| (c.node_id.as_str(), c.status.as_str()))
+        .collect();
+
+    assert_eq!(
+        observed,
+        vec![
+            ("TriVerdict#constraint[0]", "satisfied"),
+            ("TriVerdict#constraint[1]", "violated"),
+            ("TriVerdict#constraint[2]", "indeterminate"),
+        ],
+        "all three verdict tokens must reach the GUI payload lower-case, in \
+         node_id-ascending order"
+    );
+}
+
 #[test]
 fn load_from_source_width_value_is_80mm() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -91,7 +160,7 @@ fn load_from_source_resolves_stdlib_enum_access_without_inline_redecl() {
     // step now consults stdlib enums.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Minimal synthetic source — references stdlib enum `CorrosionClass.C5` only,
     // no inline redecl, no stdlib trait bounds (keeps the test focused on the
@@ -111,25 +180,25 @@ fn load_from_source_resolves_stdlib_enum_access_without_inline_redecl() {
 fn load_from_source_with_invalid_source_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = session.load_from_source("this is not valid reify syntax {{{}}", "bad");
     assert!(result.is_err(), "invalid source should return Err");
 }
 
 #[test]
-fn set_parameter_changes_width() {
+fn preview_parameter_changes_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
     let state = session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let width = state
         .values
@@ -200,7 +269,7 @@ structure Kinematic {
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -230,6 +299,7 @@ pub structure Top {
 /// usage at the `sync_demand` harness below.
 fn make_nested_composed_session() -> EngineSession {
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -245,7 +315,7 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
     // for m2 (bodies_count=2) has two joints with correct kind/dimension/range.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
         .expect("load kinematic");
@@ -342,7 +412,7 @@ fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
 fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket");
@@ -377,7 +447,7 @@ fn get_mechanism_descriptors_filters_errored_mechanisms() {
     // `bodies_count == 2` is no longer a clean discriminator.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(DUPLICATE_SOLID_SOURCE, "kinematic")
         .expect(
@@ -399,7 +469,7 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
     // range_lower_si=None, range_upper_si=None.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(COUPLING_FIXED_SOURCE, "kinematic")
         .expect("load coupling/fixed mechanism");
@@ -565,7 +635,7 @@ fn get_mechanism_descriptors_resolves_driving_param_via_ast() {
     // should have driving_param_cell_id = Some("Kinematic.y_pos").
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -600,7 +670,7 @@ fn get_mechanism_descriptors_literal_bind_yields_no_driving_param() {
     // cannot be resolved → driving_param_cell_id must be None.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
         .expect("load snapshot+literal source");
@@ -628,7 +698,7 @@ fn get_mechanism_descriptors_current_value_si_reflects_initial_param() {
     // descriptor should have current_value_si = Some(0.1) (y_pos = 100mm = 0.1 SI).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -657,20 +727,20 @@ fn get_mechanism_descriptors_current_value_si_reflects_initial_param() {
 }
 
 #[test]
-fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
-    // Step-23 RED (part 2): after set_parameter("Kinematic.y_pos", "150mm"), a
+fn get_mechanism_descriptors_current_value_si_updates_after_preview_parameter() {
+    // Step-23 RED (part 2): after preview_parameter("Kinematic.y_pos", "150mm"), a
     // fresh get_mechanism_descriptors call must report current_value_si = Some(0.15).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
 
     // Scrub the slider by setting y_pos to 150mm.
     session
-        .set_parameter("Kinematic.y_pos", "150mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Kinematic.y_pos", "150mm")
+        .expect("preview_parameter should succeed");
 
     // Re-fetch descriptors after the edit.
     let descriptors = session.get_mechanism_descriptors();
@@ -684,7 +754,7 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
     assert_eq!(
         joint.current_value_si,
         Some(0.15),
-        "current_value_si should be 0.15 (150mm) after set_parameter; got {:?}",
+        "current_value_si should be 0.15 (150mm) after preview_parameter; got {:?}",
         joint.current_value_si
     );
 }
@@ -713,7 +783,7 @@ structure Kinematic {
 fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -753,20 +823,20 @@ fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
     );
 }
 
-/// After `set_parameter("Kinematic.y_pos", "150mm")` the `binding` field on the
+/// After `preview_parameter("Kinematic.y_pos", "150mm")` the `binding` field on the
 /// joint descriptor must reflect the updated value in `ParamBound.current_value_si`.
 #[test]
-fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
+fn get_mechanism_descriptors_param_bind_binding_updates_after_preview_parameter() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
 
     session
-        .set_parameter("Kinematic.y_pos", "150mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Kinematic.y_pos", "150mm")
+        .expect("preview_parameter should succeed");
 
     let descriptors = session.get_mechanism_descriptors();
     let m1_desc = descriptors
@@ -781,7 +851,7 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
             param_cell_id: "Kinematic.y_pos".to_string(),
             current_value_si: Some(0.15),
         },
-        "after set_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
+        "after preview_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
         joint.binding
     );
 }
@@ -790,14 +860,13 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
 
 /// User-observable signal: `bind(y_axis, 50mm)` must produce
 /// `JointBinding::LiteralBound { synth_param_name: "__joint_y_axis_v",
-/// initial_value_si: Some(0.05), scrubbable: true }`.
-///
-/// This is the primary contract test for the η-engine task.
+/// initial_value_si: Some(0.05), scrubbable: false }` — read-only, because no
+/// cell resolves the synth name (task #7375).
 #[test]
-fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_binding() {
+fn get_mechanism_descriptors_literal_bind_produces_read_only_literal_bound_binding() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
         .expect("load snapshot+literal source");
@@ -816,10 +885,10 @@ fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_bind
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_y_axis_v".to_string(),
             initial_value_si: Some(0.05),
-            scrubbable: true,
+            scrubbable: false,
         },
         "bind(y_axis, 50mm) must produce LiteralBound {{ synth_param_name: \"__joint_y_axis_v\", \
-         initial_value_si: Some(0.05), scrubbable: true }}; got {:?}",
+         initial_value_si: Some(0.05), scrubbable: false }}; got {:?}",
         joint.binding
     );
 
@@ -837,7 +906,7 @@ fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_bind
 fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE, "kinematic")
         .expect("load snapshot+number-literal source");
@@ -855,11 +924,71 @@ fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_y_axis_v".to_string(),
             initial_value_si: Some(0.5),
-            scrubbable: true,
+            scrubbable: false,
         },
         "bind(y_axis, 0.5) must produce LiteralBound {{ initial_value_si: Some(0.5) }}; got {:?}",
         joint.binding
     );
+}
+
+/// Sibling of `SNAPSHOT_LITERAL_BIND_SOURCE` with no `snapshot()`: the prismatic
+/// joint keeps the kind-based `LiteralBound` default with no literal value.
+const UNBOUND_PRISMATIC_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+}
+"#;
+
+/// Task #7375: a descriptor must never advertise a scrub the engine cannot
+/// honour. A literal-bound joint is `scrubbable` exactly when the engine accepts
+/// a preview under its `synth_param_name`.
+#[test]
+fn literal_bound_joint_is_scrubbable_only_if_the_engine_accepts_its_synth_name() {
+    for source in [SNAPSHOT_LITERAL_BIND_SOURCE, UNBOUND_PRISMATIC_SOURCE] {
+        let mut session = make_session();
+        session
+            .load_from_source(source, "kinematic")
+            .expect("load literal-bound mechanism source");
+
+        let literal_bound: Vec<(usize, String, bool)> = session
+            .get_mechanism_descriptors()
+            .into_iter()
+            .flat_map(|d| d.joints)
+            .filter_map(|j| match j.binding {
+                crate::types::JointBinding::LiteralBound {
+                    synth_param_name,
+                    scrubbable,
+                    ..
+                } => Some((j.joint_index, synth_param_name, scrubbable)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !literal_bound.is_empty(),
+            "fixture must yield at least one LiteralBound joint; source:\n{source}"
+        );
+
+        for (joint_index, synth_param_name, scrubbable) in literal_bound {
+            let preview = session.preview_parameter(&synth_param_name, "100mm");
+            assert_eq!(
+                scrubbable,
+                preview.is_ok(),
+                "joint {joint_index} ({synth_param_name}) advertises scrubbable={scrubbable} \
+                 but preview_parameter returned {:?}",
+                preview.as_ref().err()
+            );
+            if let Err(refusal) = preview {
+                assert!(
+                    refusal.starts_with("Invalid cell ID")
+                        || refusal.starts_with("Unknown parameter"),
+                    "joint {joint_index}: the preview of {synth_param_name} must be refused because \
+                     it names no cell, not for an unrelated reason; got {refusal:?}"
+                );
+            }
+        }
+    }
 }
 
 // ---- edge case tests (amendment pass, suggestion 8) -------------------------
@@ -1298,24 +1427,24 @@ fn resolve_driving_params_emits_debug_for_param_checked_match() {
 }
 
 #[test]
-fn set_parameter_invalid_cell_id_returns_err() {
+fn preview_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let result = session.set_parameter("Nonexistent.param", "50mm");
+    let result = session.preview_parameter("Nonexistent.param", "50mm");
     assert!(result.is_err(), "invalid cell_id should return Err");
 }
 
 #[test]
-fn set_parameter_constraints_still_correct() {
+fn preview_parameter_constraints_still_correct() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1323,13 +1452,13 @@ fn set_parameter_constraints_still_correct() {
 
     // width = 120mm, thickness = 5mm → thickness > 2mm satisfied, thickness < 120/4=30mm satisfied
     let state = session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     assert_eq!(state.constraints.len(), 3);
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied",
             c.node_id
         );
@@ -1340,7 +1469,7 @@ fn set_parameter_constraints_still_correct() {
 fn load_file_returns_gui_state() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Use the examples/bracket.ri file from project root
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1360,7 +1489,7 @@ fn load_file_returns_gui_state() {
 fn update_source_changes_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1384,7 +1513,7 @@ fn update_source_changes_width() {
 fn update_source_with_invalid_source_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1400,7 +1529,7 @@ fn update_source_with_invalid_source_returns_err() {
 fn constraint_violation_roundtrip() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1408,10 +1537,10 @@ fn constraint_violation_roundtrip() {
 
     // Set thickness=1mm → violates "thickness > 2mm"
     let state = session
-        .set_parameter("Bracket.thickness", "1mm")
+        .preview_parameter("Bracket.thickness", "1mm")
         .expect("set thickness should succeed");
 
-    let violated = state.constraints.iter().any(|c| c.status == "Violated");
+    let violated = state.constraints.iter().any(|c| c.status == "violated");
     assert!(
         violated,
         "should have at least one violated constraint when thickness=1mm"
@@ -1419,12 +1548,12 @@ fn constraint_violation_roundtrip() {
 
     // Set back to 5mm → all satisfied again
     let state = session
-        .set_parameter("Bracket.thickness", "5mm")
+        .preview_parameter("Bracket.thickness", "5mm")
         .expect("set thickness back should succeed");
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied after restoring thickness",
             c.node_id
         );
@@ -1435,7 +1564,7 @@ fn constraint_violation_roundtrip() {
 fn get_source_location_end_to_end() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1467,7 +1596,7 @@ fn get_source_location_end_to_end() {
 fn get_source_location_accepts_template_name_returns_first_cell_span() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1512,7 +1641,7 @@ fn get_source_location_accepts_template_name_returns_first_cell_span() {
 fn get_source_location_returns_source_location_info() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1525,11 +1654,21 @@ fn get_source_location_returns_source_location_info() {
     assert_eq!(loc.file_path, "bracket.ri");
 }
 
+/// The GUI export happy path — and, since task 6190, the C2 negative bounding the η
+/// refusal's blast radius (PRD C2 / §3.1(f)).
+///
+/// Plain `bracket_source()` declares no `RepresentationWithin`, so the gate must leave
+/// this path exactly as it was: an over-broad gate would break every existing GUI
+/// export and none of the η positives below would catch it. Byte equality rather than
+/// `!is_empty()` also catches a regression that silently emptied the artifact instead
+/// of refusing it. The CLI pins the same property as
+/// `build_dash_o_still_exports_a_module_without_a_bound`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:589`).
 #[test]
 fn export_end_to_end() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1541,8 +1680,118 @@ fn export_end_to_end() {
     let result = session.export(ExportFormat::Step, &path);
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
 
-    let data = std::fs::read(&path).expect("exported file should be readable");
-    assert!(!data.is_empty(), "exported file should not be empty");
+    assert_eq!(
+        std::fs::read(&path).expect("exported file should be readable"),
+        b"MOCK_EXPORT_DATA",
+        "an UNBOUNDED design must still export the mock kernel's payload byte-for-byte"
+    );
+}
+
+// --- eta export refusal: the GUI surface (task 6190) ---
+//
+// PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
+// `EngineSession::export` is the single chokepoint every GUI export caller reaches.
+// There are THREE of them: `commands::export_impl` (the Tauri command the frontend
+// calls), `mcp_context::TauriToolContext::export` (the MCP tool context) and
+// `debug_server::reify_export_on_engine_and_refresh_baseline` (the `reify_export` AI
+// write tool). That all three delegate is PINNED rather than asserted — one refusal
+// test per caller lives in `commands_tests.rs`, so a refactor giving any of them its
+// own build path goes red instead of silently reopening the bypass.
+//
+// Two properties recur across those tests and are argued once, here:
+//
+//  * `starts_with`, never `contains`. Every site moves the shared helper's message
+//    VERBATIM (`EngineSession::export` returns `diag.message`; `export_impl` is
+//    `and_then(identity)`; the MCP context is `map_err(ToolError::EngineError)`; the
+//    write tool propagates with `?`), so no site legitimately wraps it — and
+//    `contains` would stay green under precisely the `"Build error: {}"` regression
+//    these assertions exist to catch, which pushes the stable `E_*` token off the
+//    front of a string the callers surface unmodified.
+//  * The C2 negative bounding the gate's blast radius is `export_end_to_end` directly
+//    above — the unbounded happy path, which the gate must leave untouched. It is not
+//    restated as a standalone test: a twin of that body would have to be kept in step
+//    with it, and both would be pinning the one export-success contract.
+
+/// η / C-SURFACE (2) at the GUI export boundary: a design declaring a
+/// `RepresentationWithin` bound the export path cannot demonstrate it honours must
+/// REFUSE, not write the artifact and report success (PRD §1.1).
+///
+/// The op-count assertion is PRD §6's gate-cost property asserted STRUCTURALLY, since
+/// `tests/infra/test_no_new_wallclock_upper_bounds.sh` forbids a wall clock.
+/// `load_from_source` already realizes, so snapshot the baseline, never assert zero.
+#[test]
+fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Clone the recorder BEFORE the kernel is boxed — it is unreachable through the
+    // boxed `dyn GeometryKernel` afterwards (see `MockGeometryKernel::reset_calls_ref`).
+    let ops = kernel.operations_ref();
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.step");
+
+    let ops_before = ops.lock().unwrap().len();
+    let result = session.export(ExportFormat::Step, &path);
+    let ops_after = ops.lock().unwrap().len();
+
+    let err = result.expect_err(
+        "GUI export of a design declaring a RepresentationWithin bound must refuse \
+         (PRD §1.1: refused, not written-and-reported-successful)",
+    );
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must LEAD with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export"
+    );
+    assert_eq!(
+        ops_after, ops_before,
+        "a refused export must dispatch no geometry op — the refusal has to precede \
+         realization"
+    );
+}
+
+/// The refusal gates the WRITE, not merely the return value: `EngineSession::export`
+/// calls `std::fs::write(path, &data)`, which truncates on open, so a refusal bolted on
+/// downstream of the build would still destroy whatever sits at the target before
+/// refusing. Mirrors `build_dash_o_refusal_does_not_overwrite_an_existing_file`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:511`).
+#[test]
+fn export_refusal_does_not_overwrite_an_existing_file() {
+    const SENTINEL: &[u8] = b"pre-existing bytes that must survive a refused export";
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.step");
+    std::fs::write(&target, SENTINEL).expect("failed to seed the export target");
+
+    let err = session
+        .export(ExportFormat::Step, &target)
+        .expect_err("a bounded design must be refused at the GUI export boundary");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must LEAD with the stable E_* token; got: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("the export target must still exist"),
+        SENTINEL,
+        "a refused export must NOT truncate or overwrite a pre-existing file at the \
+         target"
+    );
 }
 
 // --- Source-map consistency after load/update ---
@@ -1554,7 +1803,7 @@ fn export_end_to_end() {
 fn source_map_consistent_after_load_file_then_update() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1586,7 +1835,7 @@ fn source_map_consistent_after_load_file_then_update() {
 fn get_source_location_correct_after_load_file_then_update() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1620,7 +1869,7 @@ fn get_source_location_correct_after_load_file_then_update() {
 fn export_no_unnecessary_clone() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1655,7 +1904,7 @@ fn export_no_unnecessary_clone() {
 fn get_source_location_correct_after_failed_update() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (1) Load valid source
     session
@@ -1717,7 +1966,7 @@ fn get_source_location_correct_after_failed_update() {
 fn get_source_location_uses_explicit_key_lookup() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -2629,7 +2878,7 @@ fn parse_value_string_widening_does_not_disturb_the_non_ladder_paths() {
     assert!(parse_value_string("10zPa").is_err(), "`10zPa` must not parse");
 }
 
-// --- set_parameter: bare numbers are not valid for a dimensioned cell ---
+// --- preview_parameter: bare numbers are not valid for a dimensioned cell ---
 //
 // Task #5757 defect 1. `parse_value_string("120")` yields `Value::Int(120)`,
 // and reify-eval then ACCEPTS it into a `Length` cell: `value_type_kind_matches`
@@ -2669,7 +2918,7 @@ const BARE_NUMBER_GATE_SRC: &str = r#"structure def GateScope {
 /// `USD` lives only in the compiler's per-module `UnitRegistry`, which the
 /// composed index deliberately excludes. Pairing it with a `Length` neighbour
 /// is what lets the covered and uncovered rules be shown DISCRIMINATED in one
-/// session, the way `set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
+/// session, the way `preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
 /// already does for the dimensionless axis.
 const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
     param cost : Money = 5USD
@@ -2677,19 +2926,31 @@ const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
     let body = box(width, width, width)
 }"#;
 
+/// One cell per declared-type shape `ValueData.declared_dimension` must
+/// report: an `Option<Length>` holding `none` (value-side dimension empty), a
+/// plain `Length`, a named-but-unladdered `Money`, a dimensionless `Real`, and
+/// a non-scalar `let`.
+const DECLARED_DIMENSION_SRC: &str = r#"structure def DeclaredScope {
+    param gap : Option<Length> = none
+    param width : Length = 80mm
+    param cost : Money = 5USD
+    param scale : Real = 1.0
+    let body = box(width, width, width)
+}"#;
+
 /// A bare number typed into a dimensioned cell is refused, and the message
 /// names both the expected dimension and the offending input.
 #[test]
-fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
+fn preview_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
     let err = session
-        .set_parameter("Bracket.width", "120")
+        .preview_parameter("Bracket.width", "120")
         .expect_err("a bare number must not be accepted for a Length cell");
     assert!(
         err.contains("Length"),
@@ -2704,7 +2965,7 @@ fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
     // The float spelling is the same defect, and reify-eval's Int/Real wildcard
     // covers both — so the gate must too.
     let err = session
-        .set_parameter("Bracket.width", "120.5")
+        .preview_parameter("Bracket.width", "120.5")
         .expect_err("a bare float must not be accepted for a Length cell either");
     assert!(
         err.contains("Length") && err.contains("120.5"),
@@ -2715,22 +2976,22 @@ fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
 /// The gate must not narrow what a dimensioned cell accepts WITH a unit —
 /// including a unit the retired five-entry table lacked.
 #[test]
-fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
+fn preview_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
     session
-        .set_parameter("Bracket.width", "120mm")
+        .preview_parameter("Bracket.width", "120mm")
         .expect("a Length literal in a legacy-table unit must still be accepted");
 
     // `in` was in the DSL builtin registry all along and absent from the GUI's
     // five-entry table — PRD §6 boundary row 17.
     session
-        .set_parameter("Bracket.width", "3in")
+        .preview_parameter("Bracket.width", "3in")
         .expect("`in` must be accepted now that the accept-set is composed");
 }
 
@@ -2760,7 +3021,7 @@ fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
 /// `EngineError::DimensionMismatch`'s message instead of freezing a snapshot of
 /// it.
 #[test]
-fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_mismatch() {
+fn preview_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_mismatch() {
     use reify_core::{DimensionVector, Type};
 
     // (1) The GUI boundary does NOT refuse it, and does not coerce it either:
@@ -2791,13 +3052,13 @@ fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_misma
     // (2) …and the engine refuses it, naming both dimensions.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
     let err = session
-        .set_parameter("Bracket.width", "5kg")
+        .preview_parameter("Bracket.width", "5kg")
         .expect_err("a Mass literal in a Length cell must be a hard error, not a warning");
     assert!(
         err.contains(&format!(
@@ -2813,7 +3074,7 @@ fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_misma
     // Refused BEFORE anything is committed, so the session is untouched and a
     // subsequent good edit still lands.
     session
-        .set_parameter("Bracket.width", "120mm")
+        .preview_parameter("Bracket.width", "120mm")
         .expect("the failed cross-dimension edit must not have poisoned the session");
 }
 
@@ -2823,24 +3084,39 @@ fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_misma
 /// `Scalar { DIMENSIONLESS }` cells are untouched. Without this the gate would
 /// break every dimensionless slider in the panel.
 #[test]
-fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
+fn preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
         .expect("initial load");
 
-    session
-        .set_parameter("GateScope.scale", "2.0")
+    let state = session
+        .preview_parameter("GateScope.scale", "2.0")
         .expect("a Real cell must still take a bare number");
+    // A dimensionless cell's bare number is not reinterpreted as a Scalar.
+    let scale = state
+        .values
+        .iter()
+        .find(|v| v.name == "scale")
+        .expect("the Real cell must be in the payload");
+    assert_eq!(
+        (
+            scale.declared_dimension.as_str(),
+            scale.dimension.as_str(),
+            scale.unit.as_str()
+        ),
+        ("", "", ""),
+        "a dimensionless cell has no dimension or badge to carry; got {scale:?}"
+    );
     session
-        .set_parameter("GateScope.scale", "3")
+        .preview_parameter("GateScope.scale", "3")
         .expect("a Real cell must still take a bare integer");
 
     // Same session, same panel: the dimensioned neighbour is still gated.
     let err = session
-        .set_parameter("GateScope.width", "120")
+        .preview_parameter("GateScope.width", "120")
         .expect_err("the dimensioned neighbour must still reject a bare number");
     assert!(err.contains("Length"), "got {err:?}");
 }
@@ -2853,14 +3129,15 @@ fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
 /// for ANY non-dimensionless `Type::Scalar`, but `parse_value_string` can only
 /// resolve the ten curated ladders' rungs plus `BUILTIN_UNITS` — so a dimension
 /// outside that union has NO accepted input at all and its cells become
-/// permanently uneditable through `set_parameter` (property editor AND the GUI
-/// MCP surface). Accepting the bare number restores the pre-#5757 SI-number
+/// permanently uneditable through every cadence that parses a value string
+/// (preview, commit, and the GUI MCP surface). Accepting the bare number
+/// restores the pre-#5757 SI-number
 /// behaviour for exactly those cells rather than inventing a new one.
 ///
 /// Asserts the RULE — EXPRESSIBILITY, not dimensionedness — never an
 /// enumeration of dimension names.
 #[test]
-fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers() {
+fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers() {
     use reify_core::DimensionVector;
 
     // (a) PREMISE, asserted not assumed. If a future task adds a Money ladder
@@ -2884,7 +3161,7 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let loaded = session
         .load_from_source(BARE_NUMBER_COVERAGE_SRC, "bare_number_coverage")
         .expect("initial load");
@@ -2898,19 +3175,14 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
             .expect("the Money cell must be in the payload")
     }
 
-    // (b) The uncovered cell takes a bare number, and the magnitude lands
-    // verbatim as the canonical SI number.
+    // (b) The uncovered cell takes a bare number, the magnitude lands verbatim
+    // as the canonical SI number, and the cell keeps its dimension and badge.
     //
-    // Asserted in BOTH states because the transition is the observable cost of
-    // leaving the Int/Real coercion to reify-eval (see
-    // `parse_value_string_for_cell`, which explains why this gate deliberately
-    // does not touch it). The `5USD` default compiles to a
-    // `Value::Scalar { MONEY }`, so the cell starts out carrying a dimension and
-    // an `si_value`; a bare-number edit replaces it with a `Value::Int`, which
-    // reify-eval accepts through that wildcard — and a non-Scalar has no
-    // dimension to report, so `dimension`/`si_value` go empty and `value` alone
-    // carries the magnitude. Pinned rather than described so a future change to
-    // that coercion surfaces here.
+    // reify-eval admits the bare number as a `Value::Int` through its
+    // dimension wildcard (see `parse_value_string_for_cell`). The payload reads
+    // a bare Int/Real held by a declared-dimensioned cell as that dimension's
+    // SI magnitude, so `value`/`unit`/`si_value`/`dimension` stay one coherent
+    // set across the edit instead of the badge dropping to "".
     let before = cost_cell(&loaded);
     assert_eq!(before.dimension, "Money", "the default is a dimensioned literal");
     assert_eq!(
@@ -2918,9 +3190,14 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
         Some(5.0),
         "the default carries its SI magnitude; got {before:?}"
     );
+    assert_eq!(before.declared_dimension, "Money", "got {before:?}");
+    assert!(
+        !before.unit.is_empty(),
+        "premise: the default shows a unit badge for the edit to preserve; got {before:?}"
+    );
 
     let state = session
-        .set_parameter("MoneyScope.cost", "6")
+        .preview_parameter("MoneyScope.cost", "6")
         .expect("a Money cell has no expressible unit, so its bare number must be accepted");
     let cost = cost_cell(&state);
     assert_eq!(
@@ -2928,20 +3205,25 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
         "the bare number must land verbatim as the canonical SI magnitude; got {cost:?}"
     );
     assert_eq!(
-        (cost.dimension.as_str(), cost.si_value),
-        ("", None),
-        "a bare number lands as a `Value::Int`, which has no dimension to report — \
-         the pre-#5757 behaviour this relaxation restores; got {cost:?}"
+        cost.unit, before.unit,
+        "the unit badge the cell showed before the edit must survive it; got {cost:?}"
     );
+    assert_eq!(cost.dimension, "Money", "got {cost:?}");
+    assert_eq!(
+        cost.si_value,
+        Some(6.0),
+        "the bare number is the canonical SI magnitude; got {cost:?}"
+    );
+    assert_eq!(cost.declared_dimension, "Money", "got {cost:?}");
 
     // (c) The COVERED neighbour, in the SAME session, is untouched by the
     // relaxation — it has a ladder, so a unit is expressible and required.
     let err = session
-        .set_parameter("MoneyScope.width", "120")
+        .preview_parameter("MoneyScope.width", "120")
         .expect_err("a Length cell has a curated ladder, so it must still reject a bare number");
     assert!(err.contains("Length"), "got {err:?}");
     session
-        .set_parameter("MoneyScope.width", "120mm")
+        .preview_parameter("MoneyScope.width", "120mm")
         .expect("a united Length literal must still be accepted");
 
     // (d) The honest statement of what makes (b) necessary: `USD` is NOT
@@ -2949,12 +3231,90 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
     // `UnitRegistry`, which the composed index deliberately excludes — so
     // refusing the bare number would leave the cell with no accepted input.
     let err = session
-        .set_parameter("MoneyScope.cost", "6USD")
+        .preview_parameter("MoneyScope.cost", "6USD")
         .expect_err("`USD` is outside the composed index — pinned as fact, not aspiration");
     assert!(
         err.contains("Cannot parse value") && err.contains("6USD"),
         "got {err:?}"
     );
+}
+
+/// Every cell carries the dimension its DECLARED type requires, whatever its
+/// runtime value holds — and that field and the backend's bare-number gate
+/// read one fact.
+///
+/// The panel's input gate keys on this field; the backend gate keys on the
+/// declared `cell_type`. (c) makes their agreement executable: for every
+/// param, "a curated ladder covers its declared dimension" holds exactly when
+/// `preview_parameter(id, "120")` is refused as a bare number.
+#[test]
+fn every_value_cell_reports_its_declared_dimension_whatever_its_value_holds() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
+    let loaded = session
+        .load_from_source(DECLARED_DIMENSION_SRC, "declared_dimension")
+        .expect("initial load");
+
+    let cell = |name: &str| -> crate::types::ValueData {
+        loaded
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("cell `{name}` must be in the payload"))
+            .clone()
+    };
+
+    // (a) PREMISE, asserted not assumed: a `none`-valued `Option<Length>` has
+    // no value-side dimension, which is the divergence this field closes.
+    let gap = cell("gap");
+    assert_eq!(gap.determinacy, "determined", "got {gap:?}");
+    assert_eq!(
+        gap.dimension, "",
+        "the value-side dimension of a `none` Option cell is empty; got {gap:?}"
+    );
+
+    // (b) The declared dimension, per shape.
+    for (name, expected) in [
+        ("gap", "Length"),
+        ("width", "Length"),
+        ("cost", "Money"),
+        ("scale", ""),
+        ("body", ""),
+    ] {
+        let v = cell(name);
+        assert_eq!(
+            v.declared_dimension, expected,
+            "`{name}` must report its declared dimension; got {v:?}"
+        );
+    }
+
+    // (c) GATE PARITY. Collected up front so each preview below starts from
+    // the loaded payload, not from an earlier accepted edit.
+    let params: Vec<(String, String)> = loaded
+        .values
+        .iter()
+        .filter(|v| v.kind == "Param")
+        .map(|v| (v.cell_id.clone(), v.declared_dimension.clone()))
+        .collect();
+    assert!(
+        params.len() >= 4,
+        "premise: the fixture's four params must all be in the payload; got {params:?}"
+    );
+    let ladders = crate::display_units::unit_ladders();
+    for (cell_id, declared) in params {
+        let covered = !declared.is_empty() && ladders.iter().any(|l| l.dimension == declared);
+        let result = session.preview_parameter(&cell_id, "120");
+        let refused = matches!(&result, Err(e) if e.contains("bare number"));
+        assert_eq!(
+            covered,
+            refused,
+            "`{cell_id}` (declared_dimension {declared:?}): the panel's coverage of the \
+             declared dimension must match the backend gate's verdict on a bare `120`; \
+             got {:?}",
+            result.as_ref().map(|_| "accepted")
+        );
+    }
 }
 
 /// NAMEDNESS IS NOT THE KEY — EXPRESSIBILITY IS.
@@ -2971,7 +3331,7 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
 /// gate on namedness (either polarity) splits them and fails here.
 ///
 /// Driven at `parse_value_string_for_cell` directly rather than through
-/// `set_parameter`, because no `.ri` param type reaches that function carrying a
+/// `preview_parameter`, because no `.ri` param type reaches that function carrying a
 /// nameless dimension: the surface syntax names its dimension, so every compiled
 /// cell that gets here has a canonical name.
 #[test]
@@ -3043,10 +3403,9 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
 /// Option<Length> = none`), `crates/reify-compiler/stdlib/flexures.ri`
 /// (`parasitic_error`), four `Option<Pressure>` params in
 /// `stdlib/fdm_correlations.ri`. Matching `Type::Scalar` directly skipped every
-/// one of them, and the `none`-valued state is reachable from the panel's own
-/// gate: `display_scalar` returns `None` for `Value::Option(None)`, so
-/// `format_determined_cell` emits `dimension: ""` and `acceptsBareNumber('', …)`
-/// lets the bare number through to be refused here.
+/// one of them. A `none`-valued Option cell reports `dimension: ""`, so the
+/// panel gates on `declared_dimension` instead, which peels the wrapper the
+/// same way (`every_value_cell_reports_its_declared_dimension_whatever_its_value_holds`).
 ///
 /// Not a corruption either way — reify-eval maps `Value::Int` onto
 /// `Type::Int | Type::Scalar { .. }` only, so the Option cell hard-errors
@@ -3249,7 +3608,7 @@ fn every_dimension_the_frontend_floor_gates_is_gated_here_too() {
             panic!(
                 "the frontend's static floor gates {dimension_name} unconditionally, so this \
                  side must gate it too — otherwise a ladders-less panel refuses a bare number \
-                 inline that `set_parameter` would have accepted"
+                 inline that `preview_parameter` would have accepted"
             )
         });
         assert_eq!(
@@ -3380,19 +3739,19 @@ fn the_bare_number_refusal_suggests_a_literal_in_the_canonical_spelling() {
 ///
 /// The gate is scoped to `Value::Int`/`Value::Real` precisely so every other
 /// variant keeps producing reify-eval's own diagnostics — here the
-/// `TypeKindMismatch` that `set_parameter_edit_check_err_still_fires_solve_finished`
+/// `TypeKindMismatch` that `preview_parameter_edit_check_err_still_fires_solve_finished`
 /// depends on. A broader gate would silently change that test's observable.
 #[test]
-fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
+fn preview_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
     let err = session
-        .set_parameter("Bracket.width", "true")
+        .preview_parameter("Bracket.width", "true")
         .expect_err("a Bool for a Length cell must still be rejected");
     assert!(
         err.contains("type-kind mismatch"),
@@ -3404,16 +3763,16 @@ fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismat
 /// An unknown cell still reports "Unknown parameter", which also locks in the
 /// cell-lookup-before-parse ordering the dimension-aware parse requires.
 #[test]
-fn set_parameter_unknown_cell_still_reports_unknown_parameter() {
+fn preview_parameter_unknown_cell_still_reports_unknown_parameter() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
     let err = session
-        .set_parameter("Nonexistent.param", "50mm")
+        .preview_parameter("Nonexistent.param", "50mm")
         .expect_err("an unknown cell must still be rejected");
     assert!(
         err.contains("Unknown parameter"),
@@ -3427,7 +3786,7 @@ fn set_parameter_unknown_cell_still_reports_unknown_parameter() {
 fn build_gui_state_includes_meshes_from_tessellation() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3443,7 +3802,7 @@ fn build_gui_state_includes_meshes_from_tessellation() {
 fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3482,7 +3841,7 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
 fn build_gui_state_no_kernel_returns_empty_meshes() {
     let checker = SimpleConstraintChecker;
     // No geometry kernel
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3512,7 +3871,7 @@ fn build_gui_state_no_kernel_returns_empty_meshes() {
 fn build_gui_state_tessellation_preserves_values_and_constraints() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3538,10 +3897,10 @@ fn build_gui_state_tessellation_preserves_values_and_constraints() {
 }
 
 #[test]
-fn set_parameter_produces_updated_meshes() {
+fn preview_parameter_produces_updated_meshes() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let initial_state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3554,12 +3913,12 @@ fn set_parameter_produces_updated_meshes() {
 
     // Set parameter and verify meshes are still produced
     let updated_state = session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     assert!(
         !updated_state.meshes.is_empty(),
-        "updated state should have meshes after set_parameter"
+        "updated state should have meshes after preview_parameter"
     );
 }
 
@@ -3567,7 +3926,7 @@ fn set_parameter_produces_updated_meshes() {
 fn update_source_produces_meshes() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3591,7 +3950,7 @@ fn update_source_produces_meshes() {
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
@@ -3615,7 +3974,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
 #[test]
 fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let source = warn_source_with_unknown_port_type();
 
@@ -3687,7 +4046,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
 fn engine_get_diagnostics_clean_source_returns_empty() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3709,7 +4068,7 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
 #[test]
 fn get_source_location_returns_none_without_module() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let loc = session.get_source_location("Bracket.width");
     assert!(
@@ -3729,7 +4088,7 @@ fn get_source_location_returns_none_without_module() {
 #[test]
 fn get_source_location_returns_none_when_module_name_broken() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3752,7 +4111,7 @@ fn get_source_location_returns_none_when_module_name_broken() {
 #[test]
 fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let source = warn_source_with_unknown_port_type_with_width();
 
@@ -3793,7 +4152,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
 #[test]
 fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(warn_source_with_unknown_port_type(), "initial")
@@ -3847,7 +4206,7 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3911,13 +4270,18 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 /// the returned severity strings match the centralized helper. This ensures
 /// the step-4 refactor (replacing the hand-rolled match with as_wire_str())
 /// cannot silently diverge.
+///
+/// This is now the sole transport pin of #2638's cross-transport
+/// severity-casing guard: its CLI half
+/// (`get_diagnostics_severity_is_pascal_case_wire_format` in reify-cli's
+/// `mcp_context.rs`) was retired with `reify mcp-server` by #6665.
 #[test]
 fn get_diagnostics_severity_strings_match_as_wire_str() {
     use reify_core::{Diagnostic, Severity};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3961,7 +4325,7 @@ fn get_diagnostics_severity_strings_match_as_wire_str() {
 fn resolve_source_fallback_when_source_map_missing() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3997,7 +4361,7 @@ fn resolve_source_fallback_when_source_map_missing() {
 fn resolve_source_fallback_when_module_name_missing() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4082,7 +4446,7 @@ fn build_line_offsets_only_newlines() {
 fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load warning source — establishes a non-empty diagnostics state
     session
@@ -4118,7 +4482,7 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     // including the optimised offset_to_line_col_fast path.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = bracket_source();
     session
@@ -4315,7 +4679,7 @@ fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = bracket_source();
     session
@@ -4397,7 +4761,7 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4551,7 +4915,7 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
 #[test]
 fn resolve_source_returns_none_without_loaded_module() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // No load — compiled is None. resolve_source should return None gracefully.
     assert_eq!(session.resolve_source_for_test(), None);
 }
@@ -4563,7 +4927,7 @@ fn resolve_source_returns_none_without_loaded_module() {
 #[test]
 fn resolve_source_returns_none_when_module_name_broken() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4578,7 +4942,7 @@ fn resolve_source_returns_none_when_module_name_broken() {
 #[test]
 fn resolve_source_returns_none_when_source_map_broken() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4610,7 +4974,7 @@ fn module_key_underscored_name() {
 fn module_key_matches_load_from_source_insertion() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4631,7 +4995,7 @@ fn module_key_matches_load_from_source_insertion() {
 fn module_key_matches_update_source_insertion() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .update_source("bracket.ri", bracket_source())
         .expect("update_source should succeed");
@@ -4664,7 +5028,7 @@ fn module_key_empty_name_panics() {
 #[test]
 fn resolve_source_returns_key_and_source_after_load() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed with bracket source");
@@ -4693,7 +5057,7 @@ fn get_diagnostics_returns_empty_when_module_name_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4727,7 +5091,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4759,7 +5123,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken() {
 #[test]
 fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // This source reliably produces a compiler warning (unknown port type), not
     // an error — the same fixture used by engine_get_diagnostics_returns_populated_warning.
@@ -4795,7 +5159,7 @@ fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
 #[test]
 fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Same real warning-producing fixture as above.
 
@@ -4832,7 +5196,7 @@ fn get_diagnostics_debug_asserts_when_module_name_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4857,7 +5221,7 @@ fn get_diagnostics_debug_asserts_when_source_map_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4880,7 +5244,7 @@ fn get_diagnostics_debug_asserts_when_source_map_broken() {
 #[test]
 fn resolve_source_returns_updated_content_after_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed with bracket source");
@@ -4913,7 +5277,7 @@ fn resolve_source_returns_updated_content_after_update_source() {
 #[test]
 fn get_source_location_file_key_updates_after_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Load with a warning-producing source that has an S.width parameter.
     session
@@ -5047,7 +5411,7 @@ fn entity_tree_node_default_type_name_is_none() {
 #[test]
 fn get_entity_tree_no_module_returns_empty_vec() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let tree = session.get_entity_tree();
     assert!(tree.is_empty(), "no module loaded → empty tree");
 }
@@ -5056,7 +5420,7 @@ fn get_entity_tree_no_module_returns_empty_vec() {
 fn get_entity_tree_bracket_returns_single_root_node() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5071,7 +5435,7 @@ fn get_entity_tree_bracket_returns_single_root_node() {
 fn get_entity_tree_bracket_children_have_correct_kinds() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5105,7 +5469,7 @@ fn get_entity_tree_bracket_children_have_correct_kinds() {
 fn get_entity_tree_bracket_param_entity_paths_correct() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5125,7 +5489,7 @@ fn get_entity_tree_bracket_param_entity_paths_correct() {
 fn get_entity_tree_has_mesh_true_when_realization_exists() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5139,7 +5503,7 @@ fn get_entity_tree_has_mesh_true_when_realization_exists() {
 #[test]
 fn get_entity_tree_no_realization_has_mesh_false() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Load a module with no realizations via source (no geometry ops)
     session
@@ -5155,11 +5519,11 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 #[test]
 fn get_entity_tree_sub_component_produces_nested_node() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Length = 1 }
+            r#"structure Bolt { param mass: Length = 1mm }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -5206,7 +5570,7 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5240,7 +5604,7 @@ fn load_from_compiled_yields_valid_session() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.load_from_compiled(compiled, "test");
 
     assert!(result.is_ok(), "load_from_compiled should return Ok");
@@ -5275,7 +5639,7 @@ fn get_entity_tree_has_mesh_true_via_injected_compiled() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5299,7 +5663,7 @@ fn get_entity_tree_has_mesh_false_via_injected_compiled() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5324,7 +5688,7 @@ fn parse_dependent_apis_return_none_on_load_from_compiled_session() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5351,7 +5715,7 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
     // Verify type_name for value cells is cell_type.to_string()
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5382,10 +5746,10 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
 fn get_entity_tree_sub_node_type_name_from_structure_name() {
     // Load source with a sub-component, verify type_name = structure_name
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Length = 1 }
+            r#"structure Bolt { param mass: Length = 1mm }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -5445,7 +5809,7 @@ fn get_entity_identity_map_no_module_returns_empty() {
     use crate::types::EntityIdentity;
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
     assert!(map.is_empty(), "no module loaded → empty identity map");
 }
@@ -5458,7 +5822,7 @@ fn get_entity_identity_map_bracket_has_expected_keys() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5484,7 +5848,7 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5519,7 +5883,7 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5553,7 +5917,7 @@ fn get_entity_identity_map_value_cell_structural_fingerprint_format() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5582,7 +5946,7 @@ fn get_entity_identity_map_value_cell_has_source_span() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5604,7 +5968,7 @@ fn get_entity_identity_map_root_template_has_no_source_span() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5636,7 +6000,7 @@ fn def_info_serialization_roundtrip() {
 #[test]
 fn get_containing_definition_no_module_returns_none() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.get_containing_definition(1, 1);
     assert!(result.is_none(), "no module loaded → None");
 }
@@ -5645,8 +6009,8 @@ fn get_containing_definition_no_module_returns_none() {
 #[test]
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Length = 1 }";
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
+    let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5661,9 +6025,9 @@ fn get_containing_definition_inside_structure_returns_some() {
 #[test]
 fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
-    let source = "structure Foo { param x: Length = 1 }\n// outside any def";
+    let source = "structure Foo { param x: Length = 1mm }\n// outside any def";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5680,7 +6044,7 @@ fn get_containing_definition_outside_def_returns_none() {
 #[test]
 fn get_containing_definition_occurrence_returns_occurrence_kind() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // Foo is on line 1; Bar (occurrence) is on line 2.
     let source = "structure Foo {}\noccurrence Bar {}";
     session
@@ -5697,8 +6061,8 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 #[test]
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Length = 1 }";
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
+    let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5720,7 +6084,7 @@ fn get_containing_definition_span_valid_and_starts_at_zero() {
 #[test]
 fn get_def_preview_no_module_returns_error() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.get_def_preview("Bracket");
     assert!(result.is_err(), "no module loaded → Err");
 }
@@ -5730,7 +6094,7 @@ fn get_def_preview_no_module_returns_error() {
 fn get_def_preview_unknown_name_returns_error() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5746,7 +6110,7 @@ fn get_def_preview_unknown_name_returns_error() {
 fn get_def_preview_valid_name_returns_gui_state_with_values() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5764,7 +6128,7 @@ fn get_def_preview_valid_name_returns_gui_state_with_values() {
 fn get_def_preview_param_defaults_are_evaluated() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5787,7 +6151,7 @@ fn get_def_preview_param_defaults_are_evaluated() {
 #[test]
 fn get_def_preview_no_default_param_is_undetermined() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // 'x' has no default expression — must be Undetermined in preview.
     session
         .load_from_source("structure Bar { param x: Length }", "test")
@@ -5813,7 +6177,7 @@ fn get_def_preview_no_default_param_is_undetermined() {
 fn get_def_preview_result_is_cached() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5834,7 +6198,7 @@ fn get_def_preview_result_is_cached() {
 fn get_def_preview_cache_invalidated_on_reload() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -5843,7 +6207,7 @@ fn get_def_preview_cache_invalidated_on_reload() {
     // Reload with a different width default.
     let checker2 = SimpleConstraintChecker;
     let kernel2 = MockGeometryKernel::new();
-    let mut session2 = EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+    let mut session2 = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(kernel2)));
     session2
         .load_from_source(&bracket_source_with_width("120mm"), "bracket")
         .expect("reload with different width");
@@ -5884,7 +6248,7 @@ fn entity_tree_and_identity_map_entity_paths_are_consistent() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5977,7 +6341,8 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
-    let node = build_template_node(a_template, "A", &compiled, None, false);
+    let node =
+        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
 
     let sub_x = node
         .children
@@ -6021,8 +6386,10 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
-    let node_a = build_template_node(a_template, "A", &compiled, None, false);
-    let node_b = build_template_node(b_template, "B", &compiled, None, false);
+    let node_a =
+        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
+    let node_b =
+        build_template_node(b_template, "B", &compiled, &MergedTraitDefs::empty(), None, false);
 
     let sub_b = node_a
         .children
@@ -6077,7 +6444,14 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
     // recursive A) has empty children instead of expanding A.
-    let node = build_template_node(container_template, "Container", &compiled, None, false);
+    let node = build_template_node(
+        container_template,
+        "Container",
+        &compiled,
+        &MergedTraitDefs::empty(),
+        None,
+        false,
+    );
 
     // Container should have exactly one sub child
     let sub_a = node
@@ -6109,7 +6483,7 @@ fn all_new_commands_callable_on_bracket_fixture() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6160,7 +6534,7 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6187,7 +6561,7 @@ fn build_duplicate_template_session() -> EngineSession {
         .template(dup2)
         .build();
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session.inject_compiled_for_test(compiled);
     session
 }
@@ -6258,7 +6632,7 @@ fn get_entity_tree_warns_on_duplicate_template_names_in_release() {
 #[test]
 fn commit_state_populates_parsed_cache() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Before load → None.
     assert!(
@@ -6303,7 +6677,7 @@ fn commit_state_populates_line_offsets_cache() {
     // - "structure B {}" = 14 chars → '\n' at byte 29
     let source = "structure A {}\nstructure B {}\nstructure C {}";
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Before load → None.
     assert!(
@@ -6340,10 +6714,10 @@ fn commit_state_populates_line_offsets_cache() {
 #[test]
 fn commit_state_refreshes_caches_on_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
-    let source1 = "structure A { param x: Length = 1 }";
+    let source1 = "structure A { param x: Length = 1mm }";
     session
         .load_from_source(source1, "test_refresh")
         .expect("first load should succeed");
@@ -6359,7 +6733,7 @@ fn commit_state_refreshes_caches_on_update_source() {
         .len();
 
     // Update with a two-structure source split across two lines (1 newline).
-    let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length = 2 }";
+    let source2 = "structure A { param x: Length = 1mm }\nstructure B { param y: Length = 2mm }";
     session
         .update_source("test_refresh.ri", source2)
         .expect("update_source should succeed");
@@ -6393,7 +6767,7 @@ fn commit_state_refreshes_caches_on_update_source() {
 #[test]
 fn get_containing_definition_reads_from_parsed_cache() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6438,7 +6812,7 @@ fn get_containing_definition_reads_from_parsed_cache() {
 #[test]
 fn get_containing_definition_reads_from_line_offsets_cache() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6669,7 +7043,7 @@ fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_
         .template(t3)
         .build();
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session.inject_compiled_for_test(compiled);
     session.recheck_for_test();
     // parsed_cache remains None — broken-invariant state.
@@ -6703,7 +7077,7 @@ fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
         .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -6725,7 +7099,7 @@ fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
     // pipeline to emit Diagnostic::error("geometry error: ...") via
     // tessellate_from_values.
     let kernel = FailingMockGeometryKernel;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -6773,7 +7147,7 @@ fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
 fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel = FailingMockGeometryKernel;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // load_from_source succeeds even when the geometry kernel will fail
     // (tessellation happens inside build_gui_state, not during load).
@@ -6821,7 +7195,7 @@ fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
 fn build_gui_state_compile_diagnostics_populated_from_warning() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(warn_source_with_unknown_port_type(), "warn_test")
@@ -6866,7 +7240,7 @@ fn build_gui_state_compile_diagnostics_empty_on_clean_source() {
     let kernel = MockGeometryKernel::new()
         .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![]);
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -6899,7 +7273,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
 
     let checker = SimpleConstraintChecker;
     // No geometry kernel — freshness wiring is independent of tessellation.
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(&source, "bracket")
@@ -6951,7 +7325,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
     let violated_constraints: Vec<_> = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .collect();
 
     assert!(
@@ -7016,7 +7390,7 @@ fn freshness_wires_through_get_entity_tree_for_realization_failure() {
     // FailingMockGeometryKernel causes all geometry operations to fail, which
     // makes engine.build() call mark_realization_failed on the realization.
     let kernel = FailingMockGeometryKernel;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -7122,7 +7496,7 @@ structure Parent {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "parent_child")
@@ -7307,7 +7681,7 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
 fn is_idle_returns_false_on_fresh_session() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     assert!(
         !session.is_idle(),
         "fresh session should not be idle (compiled and last_check are None)"
@@ -7318,7 +7692,7 @@ fn is_idle_returns_false_on_fresh_session() {
 fn is_idle_returns_true_after_load_from_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -7351,7 +7725,7 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // 1 + 2: engine builds GuiState with compile_diagnostics populated
     let gui_state = session
@@ -7432,7 +7806,7 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 fn load_file_with_user_import_resolves_imported_structure() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7498,7 +7872,7 @@ fn load_file_with_user_import_resolves_imported_structure() {
 fn load_file_solo_helper_no_imports_works() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7550,7 +7924,7 @@ fn load_file_solo_helper_no_imports_works() {
 fn load_file_unresolved_import_returns_clear_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7605,7 +7979,7 @@ fn load_file_unresolved_import_returns_clear_err() {
 fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::PathBuf, String) {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7732,7 +8106,7 @@ fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
 fn update_source_after_load_file_with_unresolved_import_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7788,7 +8162,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
 fn update_source_with_divergent_path_keeps_loaded_module_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7860,7 +8234,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = "structure Solo { param w: Length = 7mm }\n";
     let state = session
@@ -7996,7 +8370,7 @@ fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_fi
 fn setup_collision_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Return the first Warning diagnostic whose `message` mentions both `name` and
@@ -8199,7 +8573,7 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
 fn load_file_with_std_import_does_not_double_seed_stdlib() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -8265,7 +8639,7 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
 fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let bad_source = "this is not valid {{{}}}";
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
@@ -8331,7 +8705,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
 fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let bad_source = "this is not valid reify syntax {{{}}}";
     // A parse-error source — `{{{` is invalid reify syntax so `parsed.errors` is non-empty.
@@ -8403,7 +8777,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
 fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // First, induce a parse error so compile_failure is populated (ColdStart kind).
     let _ = session
@@ -8444,7 +8818,7 @@ fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
 fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a successful compiled state (compiled is Some).
     session
@@ -8485,7 +8859,7 @@ fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
 fn compile_failure_records_cold_start_then_live_edit_kinds() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // 1. Cold-start failure: compiled is None at failure time → ColdStart kind.
     let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
@@ -8540,7 +8914,7 @@ fn compile_failure_records_cold_start_then_live_edit_kinds() {
 fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .build_gui_state()
@@ -8575,7 +8949,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let err = session
         .load_file(&file_path)
@@ -8645,7 +9019,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
 {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a successful compiled state (Ok return guarantees compiled is Some).
     session
@@ -8707,7 +9081,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
  {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load valid source via load_from_source — sets compiled = Some, file_path = None,
     // so update_source takes the single-file branch.
@@ -8776,7 +9150,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // load_file sets compiled = Some AND file_path = Some(...)
     session
@@ -8841,7 +9215,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_file(&file_path)
@@ -8909,7 +9283,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a successful compiled state.
     session
@@ -8977,7 +9351,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
 #[test]
 fn get_entity_at_source_location_no_module_returns_none() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.get_entity_at_source_location(1, 1);
     assert!(
         result.is_none(),
@@ -8991,7 +9365,7 @@ fn get_entity_at_source_location_no_module_returns_none() {
 fn get_entity_at_source_location_zero_line_or_col_returns_none() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9017,7 +9391,7 @@ fn get_entity_at_source_location_zero_line_or_col_returns_none() {
 fn get_entity_at_source_location_width_cell_returns_bracket_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9037,7 +9411,7 @@ fn get_entity_at_source_location_width_cell_returns_bracket_width() {
 fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9061,7 +9435,7 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
 fn get_entity_at_source_location_structure_header_returns_none_or_template_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9083,7 +9457,7 @@ fn get_entity_at_source_location_structure_header_returns_none_or_template_name(
 fn get_entity_at_source_location_constraint_line_returns_template_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9103,7 +9477,7 @@ fn get_entity_at_source_location_constraint_line_returns_template_name() {
 fn get_entity_at_source_location_past_end_of_source_returns_none() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9144,7 +9518,7 @@ fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_st
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(THREE_STRUCT_SOURCE, "multi")
         .expect("load should succeed");
@@ -9221,7 +9595,7 @@ impl crate::engine::AutoResolveEmitter for RecordingEmitter {
 fn engine_session_no_auto_resolve_emission_when_source_has_no_auto_params() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let recorder = RecordingEmitter::new();
     let events = std::sync::Arc::clone(&recorder.events);
@@ -9272,7 +9646,7 @@ fn engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9317,7 +9691,7 @@ fn engine_session_auto_resolve_iteration_parameter_payload_matches_resolved_valu
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9380,7 +9754,7 @@ fn engine_session_auto_resolve_constraint_progress_projects_satisfaction_to_bool
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9429,7 +9803,7 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9469,13 +9843,13 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
     }
 }
 
-/// Step-11: `set_parameter` must re-fire the emit sequence when the solver resolves auto params.
+/// Step-11: `preview_parameter` must re-fire the emit sequence when the solver resolves auto params.
 ///
 /// Setup: session with `S.x` (regular param, settable) + `S.thickness` (auto param).
-/// After initial check drains the recorder, `set_parameter("S.x", "10mm")` triggers
+/// After initial check drains the recorder, `preview_parameter("S.x", "10mm")` triggers
 /// `edit_check` → solver resolves `thickness` again → [Start, Iteration, Complete].
 #[test]
-fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present() {
+fn engine_session_auto_resolve_emitter_fires_on_preview_parameter_when_solver_present() {
     use std::sync::Arc;
 
     let thickness_id = ValueCellId::new("S", "thickness");
@@ -9501,7 +9875,7 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9510,19 +9884,19 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
 
     // Initial check: gives engine a snapshot and fires 3 events.
     session.check_and_emit_for_test(&compiled);
-    // Inject compiled so set_parameter can validate the cell exists.
+    // Inject compiled so preview_parameter can validate the cell exists.
     session.inject_compiled_for_test(compiled);
-    // Drain recorder before the set_parameter call.
+    // Drain recorder before the preview_parameter call.
     events.lock().unwrap().clear();
 
     // Changing S.x dirties the constraint (which reads S.x) → solver re-runs → emit fires.
-    session.set_parameter("S.x", "10mm").expect("set_parameter should succeed");
+    session.preview_parameter("S.x", "10mm").expect("preview_parameter should succeed");
 
     let events = events.lock().unwrap();
     assert_eq!(
         events.len(),
         3,
-        "set_parameter must emit [Start, Iteration, Complete], got {} events",
+        "preview_parameter must emit [Start, Iteration, Complete], got {} events",
         events.len()
     );
     assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
@@ -9565,7 +9939,7 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9647,7 +10021,7 @@ fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_r
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9706,7 +10080,7 @@ fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_r
 ///
 /// Pins that load_from_source emits AFTER state is committed (correct ordering).
 /// Acts as a characterization safety-net for the step-7 reorder of load_file /
-/// update_source / set_parameter.
+/// update_source / preview_parameter.
 ///
 /// Expected to pass immediately — load_from_source already has correct ordering.
 #[test]
@@ -9724,7 +10098,7 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     let solver = MockConstraintSolver::new_solved(solved);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9809,6 +10183,26 @@ fn with_registered_kernel_production_session_resolves_auto_param() {
     );
 }
 
+/// Task #6689 (solver-driver-parity I1): the GUI's production session names
+/// its solver posture, and `EngineSession::new` holds the posture it is given.
+#[test]
+fn with_registered_kernel_session_names_a_fresh_solve_posture() {
+    use reify_eval::SolverPosture;
+    use reify_ir::ResolutionProfile;
+
+    let production = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+    assert_eq!(
+        production.core_state_for_test().engine().solver_posture(),
+        SolverPosture::Solve(ResolutionProfile::FRESH),
+    );
+    let solver_free =
+        EngineSession::new(SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
+    assert_eq!(
+        solver_free.core_state_for_test().engine().solver_posture(),
+        SolverPosture::SolverFree,
+    );
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
@@ -9822,7 +10216,7 @@ fn engine_session_exposes_core_state_with_read_accessors() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -9861,19 +10255,19 @@ fn engine_session_exposes_core_state_with_read_accessors() {
 }
 
 /// Behavioral test for `CoreState::commit_check`:
-/// `set_parameter` must update `last_check` and leave the other five core fields
+/// `preview_parameter` must update `last_check` and leave the other five core fields
 /// (`engine`, `compiled`, `source_map`, `file_path`, `module_name`) untouched.
 #[test]
-fn set_parameter_updates_only_last_check_via_commit_check() {
+fn preview_parameter_updates_only_last_check_via_commit_check() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
 
-    // Snapshot the five non-last_check core fields before calling set_parameter.
+    // Snapshot the five non-last_check core fields before calling preview_parameter.
     let pre_module_name: Option<String> = session
         .core_state_for_test()
         .module_name()
@@ -9890,15 +10284,15 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
         .file_path()
         .map(|p| p.to_path_buf());
 
-    // Trigger commit_check internally via set_parameter.
+    // Trigger commit_check internally via preview_parameter.
     session
-        .set_parameter("Bracket.width", "100mm")
-        .expect("set_parameter ok");
+        .preview_parameter("Bracket.width", "100mm")
+        .expect("preview_parameter ok");
 
-    // last_check must be Some after set_parameter.
+    // last_check must be Some after preview_parameter.
     assert!(
         session.core_state_for_test().last_check().is_some(),
-        "last_check must be Some after set_parameter"
+        "last_check must be Some after preview_parameter"
     );
 
     // The other five core fields must be byte-for-byte identical to the pre-call
@@ -9906,12 +10300,12 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     assert_eq!(
         session.core_state_for_test().module_name().map(|s| s.to_string()),
         pre_module_name,
-        "module_name must not change after set_parameter"
+        "module_name must not change after preview_parameter"
     );
     assert_eq!(
         session.core_state_for_test().compiled().is_some(),
         pre_compiled_is_some,
-        "compiled presence must not change after set_parameter"
+        "compiled presence must not change after preview_parameter"
     );
     let post_source_map_keys: std::collections::BTreeSet<String> = session
         .core_state_for_test()
@@ -9922,21 +10316,21 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     assert_eq!(
         post_source_map_keys,
         pre_source_map_keys,
-        "source_map keys must not change after set_parameter"
+        "source_map keys must not change after preview_parameter"
     );
     assert_eq!(
         session.core_state_for_test().file_path().map(|p| p.to_path_buf()),
         pre_file_path,
-        "file_path must not change after set_parameter"
+        "file_path must not change after preview_parameter"
     );
 
-    // A second set_parameter call must also keep last_check Some.
+    // A second preview_parameter call must also keep last_check Some.
     session
-        .set_parameter("Bracket.width", "80mm")
-        .expect("second set_parameter ok");
+        .preview_parameter("Bracket.width", "80mm")
+        .expect("second preview_parameter ok");
     assert!(
         session.core_state_for_test().last_check().is_some(),
-        "last_check must remain Some after second set_parameter"
+        "last_check must remain Some after second preview_parameter"
     );
 }
 
@@ -9949,7 +10343,7 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
 fn load_file_commits_file_path_atomically_via_commit_state() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Pre-load: file_path must be None on a fresh session.
     assert!(
@@ -10017,7 +10411,7 @@ fn load_file_commits_file_path_atomically_via_commit_state() {
 fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Write bracket.ri to a tempdir and load it — file_path becomes Some(tmp_path).
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -10106,7 +10500,7 @@ fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() 
     use reify_core::ValueCellId;
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingWarmPoolEventEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10260,7 +10654,7 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
     use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10306,7 +10700,7 @@ fn fea_case_emitter_no_fire_when_no_multi_case() {
     use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10351,7 +10745,7 @@ fn fea_case_emitter_re_fires_on_each_check() {
     use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10407,7 +10801,7 @@ fn fea_case_emitter_wires_through_real_commit_path() {
 }"#;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10499,7 +10893,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_coupling() {
 }
 
 /// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
-/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = true`
+/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = false`
 /// for a prismatic joint at joint_index 2.
 ///
 /// Note: joint_index is 0-based within the mechanism. To get index=2 we add 3 bodies
@@ -10550,7 +10944,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
         JointBinding::LiteralBound {
             synth_param_name: "__joint_2_v".to_string(),
             initial_value_si: None,
-            scrubbable: true,
+            scrubbable: false,
         },
         "prismatic at joint_index=2 must have synth_param_name='__joint_2_v'; got {:?}",
         joints[2].binding
@@ -10558,7 +10952,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
 }
 
 /// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
-/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = true`
+/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = false`
 /// for a revolute joint at joint_index 0.
 #[test]
 fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
@@ -10574,7 +10968,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
         JointBinding::LiteralBound {
             synth_param_name: "__joint_0_v".to_string(),
             initial_value_si: None,
-            scrubbable: true,
+            scrubbable: false,
         },
         "revolute at joint_index=0 must have synth_param_name='__joint_0_v'; got {:?}",
         joints[0].binding
@@ -10681,7 +11075,7 @@ structure Kinematic {
 "#;
 
 /// `bind(y_axis, 50inch)` — "inch" is not a resolvable DSL unit symbol — must
-/// produce `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// produce `JointBinding::LiteralBound { initial_value_si: None, .. }`
 /// AND emit exactly one DEBUG event at the `literal_bind` target.
 #[test]
 fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {
@@ -11087,7 +11481,7 @@ structure def TPrism {
 fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(t_prism_source(), "t_prism")
@@ -11146,7 +11540,7 @@ fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
 fn build_gui_state_yields_empty_wires_for_non_tensegrity_module() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -11194,7 +11588,7 @@ structure def TOnly {
 fn build_tensegrity_wires_filters_non_tensegrity_wire_struct_instances() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(tensegrity_struct_no_wires_source(), "tonly")
@@ -11317,7 +11711,7 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingModeShapeFrameEmitter::new();
     let captured = Arc::clone(&recorder.frames);
@@ -11416,7 +11810,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // No emitter installed.
 
     let mut values = ValueMap::new();
@@ -11449,7 +11843,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
     use reify_ir::{ValueMap, Value};
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingModeShapeFrameEmitter::new();
     let captured = Arc::clone(&recorder.frames);
@@ -11556,7 +11950,7 @@ fn mode_shape_scale_verified_geometry_matches_hand_computed() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingModeShapeFrameEmitter::new();
     let captured = Arc::clone(&recorder.frames);
@@ -11631,7 +12025,7 @@ fn mode_shape_scale_degenerate_fallback() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // ── Case A: zero displacement ───────────────────────────────────────────
     {
@@ -11738,7 +12132,7 @@ fn cantilever_fixture_realizes_body() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "FeaCantileverSmoke")
@@ -11794,7 +12188,7 @@ fn register_compute_fns_dispatch_yields_real_elastic_result() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "FeaCantileverSmoke")
@@ -11923,7 +12317,7 @@ fn solve_publishes_then_clears_cancel_handle() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
@@ -11974,39 +12368,39 @@ fn solve_publishes_then_clears_cancel_handle() {
     let _ = handle;
 }
 
-/// set_parameter success path fires the solve-cancel slot lifecycle.
+/// preview_parameter success path fires the solve-cancel slot lifecycle.
 ///
-/// Exercises the `with_solve_slot` wrapper inside `set_parameter` on the happy
+/// Exercises the `with_solve_slot` wrapper inside `preview_parameter` on the happy
 /// path — edit_check succeeds, so [Started, Finished] must be recorded in
 /// order.  Complements `solve_publishes_then_clears_cancel_handle` (which
 /// exercises `load_from_source` → `check_with_solve_slot` path).
 #[test]
-fn set_parameter_success_fires_solve_lifecycle() {
+fn preview_parameter_success_fires_solve_lifecycle() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
     session.set_solve_cancel_sink(Arc::new(sink));
 
-    // load_from_source also fires the lifecycle; clear before set_parameter.
+    // load_from_source also fires the lifecycle; clear before preview_parameter.
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
     captured_events.lock().unwrap().clear();
 
     session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let events = captured_events.lock().unwrap();
     assert_eq!(
         events.len(),
         2,
-        "expected exactly [Started, Finished] from set_parameter success path; got {} events",
+        "expected exactly [Started, Finished] from preview_parameter success path; got {} events",
         events.len()
     );
     assert!(
@@ -12019,7 +12413,7 @@ fn set_parameter_success_fires_solve_lifecycle() {
     );
 }
 
-/// set_parameter edit_check Err path still fires solve_finished.
+/// preview_parameter edit_check Err path still fires solve_finished.
 ///
 /// Passing a `Bool` value for a `Length` cell causes `edit_check` to return
 /// `EngineError::TypeKindMismatch`, which is mapped to `Err(String)` and
@@ -12029,12 +12423,12 @@ fn set_parameter_success_fires_solve_lifecycle() {
 ///
 /// This is the specific failure mode the guard was introduced to handle.
 #[test]
-fn set_parameter_edit_check_err_still_fires_solve_finished() {
+fn preview_parameter_edit_check_err_still_fires_solve_finished() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish the eval snapshot via load_from_source so edit_check runs
     // (without a snapshot edit_check returns NotInitialized before the lifecycle).
@@ -12042,7 +12436,7 @@ fn set_parameter_edit_check_err_still_fires_solve_finished() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    // Install sink AFTER load so only set_parameter events are captured.
+    // Install sink AFTER load so only preview_parameter events are captured.
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
     session.set_solve_cancel_sink(Arc::new(sink));
@@ -12050,10 +12444,10 @@ fn set_parameter_edit_check_err_still_fires_solve_finished() {
     // "true" parses to Value::Bool(true).  Bracket.width expects a Length →
     // validate_param_override returns TypeKindMismatch → edit_check returns Err
     // → the `?` inside with_solve_slot short-circuits.
-    let result = session.set_parameter("Bracket.width", "true");
+    let result = session.preview_parameter("Bracket.width", "true");
     assert!(
         result.is_err(),
-        "type-mismatched value must produce Err from set_parameter"
+        "type-mismatched value must produce Err from preview_parameter"
     );
 
     let events = captured_events.lock().unwrap();
@@ -13183,7 +13577,7 @@ fn build_gui_state_shell_flexure_populates_element_kind_and_von_mises_top() {
     let source = include_str!("../../../../examples/fea_shell_flexure.ri");
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "FeaShellFlexure")
@@ -13248,7 +13642,7 @@ fn build_gui_state_fea_cantilever_smoke_has_von_mises_and_displaced_positions() 
     let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "FeaCantileverSmoke")
@@ -13488,18 +13882,20 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
 /// #5195 step-3 RED: the realization node for a `Physical` structure's
 /// `geometry` member must carry `trait_geometry == true`, matching its
 /// value-cell sibling (`build_template_node`'s value-cell loop already sets
-/// `is_geometry_member && parent_has_physical`). A non-trait `let helper`
+/// `is_geometry_member && geometry_is_trait_mandated`). A non-trait `let helper`
 /// realization stays `false`.
 ///
 /// Fails today because the realization loop hard-codes `trait_geometry: false`
 /// for every realization.
 ///
-/// `: Physical` is spelled literally so the existing `trait_bounds` substring
-/// heuristic fires — `trait_bounds` holds DECLARED names only, so a `: Rigid`
-/// structure (which refines Physical) does NOT match. That gap is pre-existing
-/// on the value-cell side and deliberately out of scope here; the feature's
-/// observable does not depend on it (see the consumed-downstream test above,
-/// which uses `: Rigid` and passes regardless).
+/// `: Physical` is spelled literally, so this covers the DIRECT bound. The
+/// transitive case (`: Rigid`, which refines Physical) is covered by
+/// `get_entity_tree_trait_geometry_follows_refinement_chain` below — the two
+/// read as a pair, one per side of `conforms_to_trait`'s
+/// equality-or-refinement contract (#5558). This test's body is deliberately
+/// unmodified by that change: a direct bound matches at pop time before the
+/// refinement walk, so it passing unchanged is the regression signal that
+/// #5558 was additive rather than a rewrite of the direct-bound case.
 ///
 /// `helper` is consumed by nothing, so it also stays `default_visible == true`
 /// — this test is independent of the consumed-downstream rule.
@@ -13551,6 +13947,196 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
     );
 }
 
+// ---- #5558: trait_geometry follows the refinement chain ----
+
+/// #5558 step-1 RED: `trait_geometry` must fire for a structure that reaches
+/// `Physical` TRANSITIVELY, not just one that spells `: Physical` literally.
+///
+/// WHY this fails today: `template.trait_bounds` holds DECLARED trait names
+/// only — for `structure def Flange : Rigid` it is exactly `["Rigid"]`. The
+/// current test is a substring probe (`b.contains("Physical")`), which never
+/// sees that `trait Rigid : Physical`
+/// (`crates/reify-compiler/stdlib/structural_physical.ri`) refines it. So
+/// both `geometry` nodes report `trait_geometry == false`.
+///
+/// The `Rigid -> Physical` refinement edge lives in the PRELUDE, not in the
+/// user module: a user module's own `CompiledModule.trait_defs` holds only the
+/// traits it declares, and this source declares none. Driving the public
+/// `get_entity_tree()` (rather than `build_template_node` directly) is
+/// therefore what makes this test meaningful — it pins the module + prelude
+/// trait-def threading end-to-end, which a hand-built fixture could not.
+///
+/// A geometry binding emits BOTH a value cell and a realization node (#4954)
+/// and the flag is shared between them (#5195), so both are asserted; the
+/// non-trait `let helper` pins that nothing unrelated is swept in.
+#[test]
+fn get_entity_tree_trait_geometry_follows_refinement_chain() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let helper = box(5mm, 5mm, 5mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "flange").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Flange.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `geometry` of a `: Rigid` structure must have \
+         trait_geometry == true — `Rigid : Physical` refines Physical, so the \
+         trait-mandated geometry member is reached through the refinement chain"
+    );
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization of a `: Rigid` structure must have \
+         trait_geometry == true, matching its value-cell sibling (#4954/#5195)"
+    );
+    assert!(
+        !realization("helper").trait_geometry,
+        "a plain `let helper` realization must have trait_geometry == false — \
+         resolving the refinement chain must not widen which members qualify"
+    );
+}
+
+/// #5558: the merged trait defs must survive the RECURSION, not just reach the
+/// top-level templates.
+///
+/// `build_template_node` forwards `trait_defs` verbatim into its sub-component
+/// recursion. Every other `trait_geometry` test asserts on a ROOT template's
+/// children, so all of them stay green if that forwarding is replaced by an
+/// empty set — which is exactly the silent degradation (refinement chain back
+/// down to direct-bound matching) that the MERGED-set precondition on
+/// `MergedTraitDefs` exists to prevent.
+///
+/// `Assembly` declares no trait bounds of its own; the `: Rigid` structure is
+/// reached only as `sub flange : Flange`, so the assertions below read
+/// `Assembly.flange`'s children and are false unless the merged set survives
+/// one level of recursion. The root `Flange` node in the same tree is
+/// deliberately NOT what this test reads — it would pass either way.
+#[test]
+fn get_entity_tree_trait_geometry_follows_refinement_chain_in_sub_component() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+}
+structure Assembly {
+    sub flange : Flange at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "assembly").expect("load");
+
+    let tree = session.get_entity_tree();
+    let assembly = tree
+        .iter()
+        .find(|n| n.entity_path == "Assembly")
+        .expect("Assembly root must exist");
+    let flange = assembly
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Assembly.flange")
+        .expect("Assembly.flange sub node must exist");
+
+    let geometry_cell = flange
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Assembly.flange.geometry" && n.kind != "realization")
+        .expect("value-cell node for the nested 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `Assembly.flange.geometry` must report trait_geometry — the \
+         merged module + prelude trait defs must be forwarded into the \
+         sub-component recursion, not only used at the top level"
+    );
+
+    let geometry_realization = flange
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("geometry"))
+        .expect("realization node for the nested 'geometry' must be present");
+    assert!(
+        geometry_realization.trait_geometry,
+        "the nested `geometry` realization must agree with its value-cell \
+         sibling (#4954/#5195) one level down as well"
+    );
+}
+
+/// #5558 step-2 RED: the OTHER direction of the substring bug — a user trait
+/// merely NAMED like `Physical` must not be mistaken for it.
+///
+/// `PhysicalMock` neither IS `Physical` nor refines it (it declares no
+/// refinements at all), so `Mock.geometry` is not a trait-mandated geometry
+/// member. The substring form matches it purely on the spelling of the name.
+///
+/// The negative direction matters for the wire contract, not just tidiness: a
+/// spurious `trait_geometry == true` promotes an unrelated member in the
+/// frontend's auto-view heuristic, so a loose match is a user-visible defect
+/// rather than a harmless over-approximation.
+///
+/// Both nodes the binding emits (#4954) are asserted, since the flag is
+/// computed once and shared by the value-cell and realization branches (#5195).
+///
+/// Fails today: `"PhysicalMock".contains("Physical")` is `true`, so both nodes
+/// report `trait_geometry == true`.
+#[test]
+fn get_entity_tree_trait_geometry_rejects_lookalike_trait_name() {
+    let source = r#"trait PhysicalMock {
+    param geometry : Solid
+}
+structure def Mock : PhysicalMock {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "mock").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Mock")
+        .expect("Mock root must exist");
+
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Mock.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        !geometry_cell.trait_geometry,
+        "value-cell `geometry` of a `: PhysicalMock` structure must have \
+         trait_geometry == false — `PhysicalMock` neither equals `Physical` \
+         nor refines it; only the name looks alike"
+    );
+
+    let geometry_realization = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("geometry"))
+        .expect("realization node for 'geometry' must be present");
+    assert!(
+        !geometry_realization.trait_geometry,
+        "the `geometry` realization of a `: PhysicalMock` structure must have \
+         trait_geometry == false, matching its value-cell sibling"
+    );
+}
+
 /// #5195 step-11 end-to-end: the task's stated observable, asserted against the
 /// COMMITTED example rather than a hand-modelled copy of it.
 ///
@@ -13565,7 +14151,7 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
 ///
 /// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
 /// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
-/// `reify-compiler/tests/examples_smoke.rs`).
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`).
 #[test]
 fn examples_m5_geometry_flange_hides_consumed_intermediates() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
@@ -13628,6 +14214,12 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
             .find(|n| n.entity_path == path && n.kind != "realization")
             .unwrap_or_else(|| panic!("value-cell node '{path}' must be present"))
     };
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
     for member in ["body", "hole", "holes", "geometry"] {
         assert_eq!(
             value_cell(member).type_name.as_deref(),
@@ -13654,31 +14246,62 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
          rule 2 cannot hide the finished part's outline row"
     );
 
-    // ── `: Rigid` does NOT set trait_geometry (KNOWN LIMITATION pin) ──
+    // ── `: Rigid` DOES set trait_geometry (#5558 — flipped pin) ──
     //
-    // `parent_has_physical` matches DECLARED trait names only, so the
-    // refinement `Rigid : Physical` is invisible to it and every committed
-    // example — including this one — evaluates the flag to false. Pinned at the
-    // CURRENT value deliberately: the follow-up that resolves the refinement
-    // chain via `reify_eval::conforms_to_trait` must land as a visible flip of
-    // this assertion rather than silently. See `build_template_node`'s
-    // `parent_has_physical` comment.
+    // This block previously pinned the inverse ("no BoltFlange node may report
+    // trait_geometry") as a KNOWN LIMITATION of the declared-name-only
+    // substring heuristic, and required the follow-up resolving the refinement
+    // chain to land as a VISIBLE flip rather than silently. #5558 is that
+    // follow-up, and this is that flip.
     //
-    // The observable does not depend on the flag: `geometry` is un-consumed, so
-    // `default_visible == true` shows it either way (asserted above).
+    // Resolved contract: the flag follows the refinement chain
+    // `BoltFlange : Rigid : Physical` (stdlib/structural_physical.ri),
+    // resolved by `reify_eval::conforms_to_trait` against the merged module +
+    // prelude trait defs. See `build_template_node`'s
+    // `geometry_is_trait_mandated`.
+    //
+    // Asserted node-by-node rather than as a blanket count: a blanket
+    // `any(|n| n.trait_geometry)` would also be satisfied by the flag being
+    // wrongly set on `body`/`hole`/`holes`, so naming exactly which nodes flip
+    // is what pins the true scope of the change.
+    //
+    // The consumed-intermediate observable above is independent of this flag:
+    // `geometry` is un-consumed, so `default_visible == true` either way.
     assert!(
-        !root
-            .children
-            .iter()
-            .any(|n| n.trait_geometry),
-        "no BoltFlange node may report trait_geometry while the heuristic is \
-         declared-name-only and the example declares `: Rigid`; got {:?}",
-        root.children
-            .iter()
-            .filter(|n| n.trait_geometry)
-            .map(|n| &n.entity_path)
-            .collect::<Vec<_>>()
+        value_cell("geometry").trait_geometry,
+        "value cell `BoltFlange.geometry` must report trait_geometry — \
+         `BoltFlange : Rigid : Physical` reaches Physical transitively"
     );
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization must report trait_geometry, matching its \
+         value-cell sibling (#4954/#5195)"
+    );
+    // Construction-step realizations are not the trait-mandated member.
+    for name in ["body", "hole", "holes"] {
+        assert!(
+            !realization(name).trait_geometry,
+            "construction-step realization '{name}' must NOT report \
+             trait_geometry — only the `geometry` member is trait-mandated"
+        );
+    }
+    // …nor are the plain scalar params, nor the intermediates' value cells.
+    for member in [
+        "body",
+        "hole",
+        "holes",
+        "outer_radius",
+        "height",
+        "hole_count",
+        "bolt_circle_radius",
+        "hole_radius",
+    ] {
+        assert!(
+            !value_cell(member).trait_geometry,
+            "value cell '{member}' must NOT report trait_geometry — exactly \
+             the `geometry` nodes flip, nothing else"
+        );
+    }
 }
 
 /// #5195 amendment (reviewer: robustness): a CONTAINER-typed geometry binding
@@ -14013,7 +14636,7 @@ fn set_solver_progress_sink_forwards_to_engine_and_emits_on_cantilever() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let (sink, captured_updates) = RecordingSolverProgressSink::new();
     session.set_solver_progress_sink(Arc::new(sink));
@@ -14063,7 +14686,7 @@ fn with_solve_slot_wires_published_handle_to_engine() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
@@ -14103,7 +14726,7 @@ fn with_solve_slot_wires_published_handle_to_engine() {
 fn staleness_api_clean_after_successful_load() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -14131,7 +14754,7 @@ fn staleness_api_clean_after_successful_load() {
 fn staleness_api_record_reload_error_appends_diagnostic() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -14209,7 +14832,7 @@ fn staleness_api_cold_start_reload_error_has_no_location() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     // Fresh session — never loaded, so core.compiled() is None.
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Inject a reload error without a prior successful load (cold-start path).
     session.record_reload_error("cold-boom".to_string());
@@ -14250,7 +14873,7 @@ fn staleness_api_cold_start_reload_error_has_no_location() {
 fn staleness_api_cleared_after_successful_reload() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -14296,7 +14919,7 @@ fn staleness_api_cleared_after_successful_reload() {
 fn build_gui_state_live_edit_failure_content_matches_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (1) Load valid bracket source successfully.
     session
@@ -14397,7 +15020,7 @@ fn build_gui_state_cold_start_failure_surfaces_failing_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     // Fresh session — no prior successful load, so compiled is None.
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (1) Attempt a cold-start load with a failing source: replace `thickness` in the
     //     box() call with an unresolved name `bogus_thk`.
@@ -14579,7 +15202,7 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
 fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a good compile state keyed to "bracket.ri".
     session
@@ -14659,7 +15282,7 @@ fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
 fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positions_are_last_good() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load a source that produces a Warning at a known line.
     // warn_source_with_unknown_port_type() is:
@@ -15019,7 +15642,7 @@ fn engine_session_active_fea_case_default_then_switch() {
     let kernel = MockGeometryKernel::new();
     let tess_arc = kernel.tessellate_tolerances_ref();
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load bracket_source: this is a non-FEA scene, so tess_mesh_cache is NOT
     // populated (gated on FEA presence since amendment 3).
@@ -15163,7 +15786,7 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "FeaMultiCaseBracket")
@@ -15276,7 +15899,7 @@ fn gui_auto_type_resolution_no_op_contract() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _state = session
         .load_from_source(source, "beta_inject_no_op")
@@ -15357,7 +15980,7 @@ structure def MembranePatch {
 fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(membrane_patch_source(), "membrane_patch")
@@ -15424,7 +16047,7 @@ fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
 fn build_gui_state_yields_empty_surfaces_for_non_surface_module() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -15483,7 +16106,7 @@ fn surface_data_from_instance_returns_none_for_malformed_field() {
 fn build_tensegrity_surfaces_filters_non_tensegrity_surface_struct_instances() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Re-use the tensegrity-only source that has no tensegrity_surfaces() call.
     let source = r#"
@@ -15545,16 +16168,19 @@ fn build_constraints_sorts_constraints_by_node_id() {
                 id: ConstraintNodeId::new("Zeta", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Alpha", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Mid", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
         ],
         diagnostics: vec![],
@@ -15605,6 +16231,7 @@ fn build_constraints_sorts_constraints_by_node_id() {
 fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     // ── Control run: NO observed-demand sync ─────────────────────────────────
     let mut control = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -15612,8 +16239,8 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         .load_from_source(bracket_source(), "bracket")
         .expect("control load_from_source should succeed");
     let control_state = control
-        .set_parameter("Bracket.thickness", "2mm")
-        .expect("control set_parameter should succeed");
+        .preview_parameter("Bracket.thickness", "2mm")
+        .expect("control preview_parameter should succeed");
     let control_eval_set: Vec<_> = control
         .core_state_for_test()
         .engine()
@@ -15624,6 +16251,7 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     //    cell as observed demand BEFORE editing. No panel constraints, so the
     //    constraints fall OUTSIDE the observed cone (would-prune). ────────────
     let mut synced = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -15636,8 +16264,8 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         &[],
     );
     let synced_state = synced
-        .set_parameter("Bracket.thickness", "2mm")
-        .expect("synced set_parameter should succeed");
+        .preview_parameter("Bracket.thickness", "2mm")
+        .expect("synced preview_parameter should succeed");
     let synced_eval_set: Vec<_> = synced
         .core_state_for_test()
         .engine()
@@ -15728,6 +16356,54 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     );
 }
 
+/// `sync_observed_demand` must SKIP a displayed cell id that names no single
+/// cell, never mis-split it into a demand root for a cell that does not exist.
+///
+/// An `auto` sub arg is minted under a dotted entity (`E.bolt` + `length`) and
+/// displayed verbatim as `"E.bolt.length"`. A first-dot split registers
+/// `(E, bolt.length)` instead, and roots enter the observed cone
+/// unconditionally, so that bogus cell would read as demanded.
+#[test]
+fn sync_observed_demand_skips_an_auto_sub_arg_cell_rather_than_mis_splitting_it() {
+    use reify_eval::cache::NodeId;
+
+    let source = r#"
+structure Bolt {
+    param length : Length = 5mm
+}
+structure E {
+    param width : Length = 20mm
+    sub bolt = Bolt(length: auto)
+}
+"#;
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(source, "auto_sub_arg")
+        .expect("load_from_source should succeed");
+    let displayed: Vec<String> = state.values.iter().map(|v| v.cell_id.clone()).collect();
+    assert!(
+        displayed.iter().any(|id| id == "E.bolt.length"),
+        "fixture must display the auto sub-arg cell under its dotted entity; \
+         displayed: {displayed:?}"
+    );
+
+    session.sync_observed_demand(&[], &displayed, &[]);
+
+    let engine = session.core_state_for_test().engine();
+    assert!(
+        !engine.observed_demand_is_demanded(&NodeId::Value(ValueCellId::new("E", "bolt.length"))),
+        "the auto sub-arg cell must be skipped, not registered as (E, bolt.length)"
+    );
+    assert!(
+        engine.observed_demand_is_demanded(&NodeId::Value(ValueCellId::new("E", "width"))),
+        "a well-formed displayed cell in the same sync must still be registered"
+    );
+}
+
 // ── Production-demand sync (selective ENFORCEMENT, task 4737 α) ───────────────
 
 /// step-9 (task 4737 α, RED until step-10): `EngineSession::sync_demand`
@@ -15777,6 +16453,7 @@ fn sync_demand_populates_production_demand_selectively() {
     let sb = NodeId::Value(ValueCellId::new(entity, "sb"));
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -15970,6 +16647,7 @@ fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
     let sb = NodeId::Value(ValueCellId::new(entity, "sb"));
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16050,6 +16728,7 @@ structure Tank {
 "#;
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16107,6 +16786,7 @@ structure Part {
 }
 "#;
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16141,6 +16821,7 @@ structure Part {
 }
 "#;
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16203,7 +16884,7 @@ structure def BearingAssembly {
     // Mirrors the GUI binary's construction at gui/src-tauri/src/main.rs:651.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = session
         .load_from_source(BEARING_CONSTRAINT_SELECT_SOURCE, "bearing_constraint_select");
@@ -16247,7 +16928,7 @@ structure def BearingAssembly {
 fn build_gui_state_populates_reason_for_unbound_param() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Source with one unbound param (outer_d) and one determined literal param (width).
     let source = r#"
@@ -16296,7 +16977,7 @@ fn get_parameters_mcp_carries_reason_for_unbound_param() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = r#"
 structure UndefMcpTest {
@@ -16346,7 +17027,7 @@ structure UndefMcpTest {
 fn build_gui_state_populates_reason_for_propagated_undef() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // `derived_r` is a Let cell whose Undef is propagated from the unbound
     // param `outer_d`.  PRD A3: the origins side-map has no entry for
@@ -16390,7 +17071,7 @@ structure UndefEpsilonPropagatedTest {
 fn build_gui_state_bt12_wall_thickness_reason_names_both_causes_no_invented_cause() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = r#"
 structure Tube {
@@ -16517,7 +17198,7 @@ fn multi_pane_source() -> &'static str {
 fn build_gui_state_extracts_display_routing_happy_path() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(multi_pane_source(), "multi_pane")
@@ -16587,7 +17268,7 @@ fn build_gui_state_display_only_gate_excludes_stl_output() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "gated")
@@ -16613,7 +17294,7 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
     // inv.2 empty: bracket_source() has no DisplayOutput subs → display_panes must be empty.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -16666,7 +17347,7 @@ fn build_gui_state_drops_display_output_with_unresolved_subject() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "partial")
@@ -16725,7 +17406,7 @@ fn build_gui_state_extracts_display_appearance_happy_path() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "styled")
@@ -16790,7 +17471,7 @@ fn build_gui_state_drops_dangling_appearance_directive() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "partial_styled")
@@ -16849,7 +17530,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "no_style_output")
@@ -16875,7 +17556,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
     // (b) No DisplayOutput at all → display_appearance is also empty.
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let kernel2 = reify_test_support::MockGeometryKernel::new();
-    let mut session2 = crate::engine::EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+    let mut session2 = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(kernel2)));
 
     let state2 = session2
         .load_from_source(bracket_source(), "bracket")
@@ -16920,14 +17601,14 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 fn examples_multi_pane_viewport_realizes_section8_display_routing() {
     // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
     // ../../examples resolves to the repo-root examples/ directory — same idiom as
-    // crates/reify-compiler/tests/examples_smoke.rs (EXAMPLES_DIR).
+    // crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (EXAMPLES_DIR).
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "multi_pane_viewport")
@@ -17135,7 +17816,7 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(appearance_wiring_source(), "app_wiring")
@@ -17240,7 +17921,7 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "appearance_viewport_egress")
@@ -17582,7 +18263,7 @@ fn build_gui_state_fea_diagnostics_populated_from_unconstrained_structured_detai
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -17638,7 +18319,7 @@ fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve(
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -17708,7 +18389,7 @@ fn set_active_fea_case_carries_fea_diagnostics_from_structured_detail() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -17799,7 +18480,7 @@ fn fea_diagnostics_emitter_fires_unconstrained_modes() {
     use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -17859,7 +18540,7 @@ fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
     use reify_eval::CheckResult;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -17889,46 +18570,46 @@ fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
     );
 }
 
-/// fea_diagnostics_emitter_fires_on_set_parameter.
+/// fea_diagnostics_emitter_fires_on_preview_parameter.
 ///
-/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
-/// invokes and then discards the GuiState from — emits a `fea-diagnostics-changed`
-/// event via the installed emitter.
+/// Pins that `preview_parameter` — the per-frame path a slider drag drives and
+/// then discards the GuiState from — emits a `fea-diagnostics-changed` event via
+/// the installed emitter.
 ///
 /// Setup:
 ///   1. Load bracket_source() (non-FEA design, no structured_detail).
 ///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from here).
-///   3. Call set_parameter("Bracket.width", "120mm").
+///   3. Call preview_parameter("Bracket.width", "120mm").
 ///
 /// Assert: recorder captured exactly ONE event (empty Vec for non-FEA design).
 ///
-/// RED: emit_fea_diagnostics is not yet called from set_parameter, so zero events
+/// RED: emit_fea_diagnostics is not yet called from preview_parameter, so zero events
 /// are recorded.
 #[test]
-fn fea_diagnostics_emitter_fires_on_set_parameter() {
+fn fea_diagnostics_emitter_fires_on_preview_parameter() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
 
-    // Install AFTER load so that only set_parameter's emit is counted.
+    // Install AFTER load so that only preview_parameter's emit is counted.
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
     session.set_fea_diagnostics_emitter(Arc::new(recorder));
 
     session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let events = captured.lock().unwrap();
     assert_eq!(
         events.len(),
         1,
-        "set_parameter must fire exactly one fea-diagnostics-changed event; got {}",
+        "preview_parameter must fire exactly one fea-diagnostics-changed event; got {}",
         events.len()
     );
     assert!(
@@ -17949,7 +18630,7 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
 ///
 /// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
 /// `load_from_compiled` (there is no prior load to exclude here, unlike
-/// `fea_diagnostics_emitter_fires_on_set_parameter`).
+/// `fea_diagnostics_emitter_fires_on_preview_parameter`).
 ///
 /// RED on current main: load_from_compiled never calls emit_fea_diagnostics,
 /// so zero events are recorded.
@@ -17963,7 +18644,7 @@ fn load_from_compiled_emits_fea_diagnostics() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18004,7 +18685,7 @@ fn load_from_source_emits_fea_diagnostics() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18041,7 +18722,7 @@ fn load_file_emits_fea_diagnostics() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -18078,7 +18759,7 @@ fn load_file_emits_fea_diagnostics() {
 ///   1. Load bracket_source() (non-FEA design, no structured_detail) to prime
 ///      the session.
 ///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from
-///      here), mirroring fea_diagnostics_emitter_fires_on_set_parameter.
+///      here), mirroring fea_diagnostics_emitter_fires_on_preview_parameter.
 ///   3. Call update_source("bracket.ri", bracket_source_with_width("120mm")).
 #[test]
 fn update_source_emits_fea_diagnostics() {
@@ -18086,7 +18767,7 @@ fn update_source_emits_fea_diagnostics() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -18208,7 +18889,7 @@ fn fea_convergence_emitter_fires_converged() {
     let values = make_elastic_result_value_map_with_convergence(convergence_status);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18256,7 +18937,7 @@ fn fea_convergence_emitter_fires_none_for_no_elastic_result() {
     use reify_eval::CheckResult;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18320,7 +19001,7 @@ fn fea_convergence_emitter_fires_not_converged_with_reason() {
     let values = make_elastic_result_value_map_with_convergence(convergence_status);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18353,16 +19034,16 @@ fn fea_convergence_emitter_fires_not_converged_with_reason() {
     );
 }
 
-/// fea_convergence_emitter_fires_on_set_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
+/// fea_convergence_emitter_fires_on_preview_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
 ///
-/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
-/// invokes and then discards the GuiState from — emits a `fea-convergence-changed`
+/// Pins that `preview_parameter` — the per-frame path a slider drag drives and
+/// then discards the GuiState from — emits a `fea-convergence-changed`
 /// event via the installed emitter.
 ///
 /// Setup:
 ///   1. Load bracket_source() (non-FEA design, no ElasticResult).
 ///   2. THEN install RecordingFeaConvergenceEmitter (events only counted from here).
-///   3. Call set_parameter("Bracket.width", "120mm").
+///   3. Call preview_parameter("Bracket.width", "120mm").
 ///
 /// Assert: recorder captured exactly ONE event with payload None (non-FEA design
 /// has no ElasticResult).
@@ -18370,30 +19051,30 @@ fn fea_convergence_emitter_fires_not_converged_with_reason() {
 /// RED: emit_fea_convergence is not yet called from the post_engine_call_telemetry
 /// commit path, so zero events are recorded.
 #[test]
-fn fea_convergence_emitter_fires_on_set_parameter() {
+fn fea_convergence_emitter_fires_on_preview_parameter() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
 
-    // Install AFTER load so that only set_parameter's emit is counted.
+    // Install AFTER load so that only preview_parameter's emit is counted.
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
     session.set_fea_convergence_emitter(Arc::new(recorder));
 
     session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let events = captured.lock().unwrap();
     assert_eq!(
         events.len(),
         1,
-        "set_parameter must fire exactly one fea-convergence-changed event; got {}",
+        "preview_parameter must fire exactly one fea-convergence-changed event; got {}",
         events.len()
     );
     assert_eq!(
@@ -18467,7 +19148,7 @@ fn build_gui_state_surfaces_finish_process_polished_as_gloss() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -18532,7 +19213,7 @@ fn build_gui_state_surfaces_coating_anodize_dark() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -18596,7 +19277,7 @@ fn build_gui_state_coating_wins_over_finish_process() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -18659,7 +19340,7 @@ fn build_gui_state_coating_only_no_material_resolves() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -18726,7 +19407,7 @@ fn build_gui_state_uncoated_coating_with_material_resolves_material() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -18789,7 +19470,7 @@ fn build_gui_state_uncoated_coating_with_material_resolves_material() {
 fn build_gui_state_finish_process_without_material_resolves_none() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -18855,7 +19536,7 @@ fn load_surface_finish_viewport_state() -> crate::types::GuiState {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "surface_finish_viewport")
@@ -19116,7 +19797,7 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "affine_tapered_spacer")
@@ -19169,8 +19850,8 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 ///     (head_solid + dock_solid).
 ///   - The prismatic `j_x` joint (`bind(j_x, 0mm)`) is exposed as
 ///     `JointBinding::LiteralBound { synth_param_name: "__joint_j_x_v",
-///     initial_value_si: Some(0.0), scrubbable: true }` — i.e.
-///     `MechanismPanel` would render a functional scrub slider for it.
+///     initial_value_si: Some(0.0), scrubbable: false }` — i.e.
+///     `MechanismPanel` renders a read-only literal row for it (task #7375).
 ///   - The `dock_solid` body's `fixed()` joint yields
 ///     `JointBinding::FixedNoMotion` (no scrubbable slider).
 ///   - A second `get_mechanism_descriptors()` call still reports
@@ -19181,7 +19862,7 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 /// debug-MCP `mechanism-descriptors` command wraps. The frontend scrub
 /// itself is covered by `gui/src/__tests__/MechanismPanel.test.tsx`.
 #[test]
-fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
+fn dock_pickup_mechanism_exposes_read_only_literal_bound_joint_smoke() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/kinematic/dock_pickup.ri"
@@ -19208,7 +19889,7 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
             )
         });
 
-    // j_x: prismatic, literal-bound at 0mm -> scrubbable slider.
+    // j_x: prismatic, literal-bound at 0mm -> read-only literal row.
     //
     // Note: dock_pickup.ri also drives j_x via `sweep(m2, j_x, 0mm .. 500mm, 11)`
     // (cell `snaps`), independently of the `snapshot(m2, [bind(j_x, 0mm)])`
@@ -19228,9 +19909,9 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_j_x_v".to_string(),
             initial_value_si: Some(0.0),
-            scrubbable: true,
+            scrubbable: false,
         },
-        "j_x (bind(j_x, 0mm)) must produce a scrubbable LiteralBound slider descriptor; got {:?}",
+        "j_x (bind(j_x, 0mm)) must produce a read-only LiteralBound descriptor; got {:?}",
         j_x.binding
     );
 
@@ -19308,18 +19989,18 @@ fn rigid_mass_props_surface_as_determined_on_load() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must be Satisfied once \
          moi_principal resolves; got status={:?}",
         pd.status
     );
 }
 
-/// Task 5194 (step-3): after a warm `set_parameter` edit, the `: Rigid` body's
+/// Task 5194 (step-3): after a warm `preview_parameter` edit, the `: Rigid` body's
 /// auto-derived mass-property cells must STAY `determined` (and the PD constraint
 /// Satisfied) — the surfacing fix must be path-agnostic across load and warm edit.
 ///
-/// `set_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
+/// `preview_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
 /// `tessellate_snapshot` clears the realization cache and re-executes the box,
 /// allocating a FRESH `GeometryHandleId` (the mock's `next_id` is monotonic and
 /// not reset between builds). The overlay keys on `ValueCellId`, not the kernel
@@ -19336,8 +20017,8 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
     // Warm edit: perturb the box depth. This clears the realization cache, so the
     // subsequent build re-executes the box under a fresh kernel handle.
     let state = session
-        .set_parameter("RigidMassSmoke.depth", "250mm")
-        .expect("set_parameter(RigidMassSmoke.depth, 250mm) should succeed");
+        .preview_parameter("RigidMassSmoke.depth", "250mm")
+        .expect("preview_parameter(RigidMassSmoke.depth, 250mm) should succeed");
 
     // The edit must have taken effect (depth == 250mm), proving we rebuilt.
     let depth = state
@@ -19364,7 +20045,7 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
             });
         assert_eq!(
             cell.determinacy, "determined",
-            "`{name}` must remain `determined` after a warm set_parameter edit \
+            "`{name}` must remain `determined` after a warm preview_parameter edit \
              (re-surfaced from the fresh-handle rebuild); got determinacy={:?}, reason={:?}",
             cell.determinacy, cell.reason
         );
@@ -19377,7 +20058,7 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
          warm edit; got status={:?}",
         pd.status
@@ -19623,6 +20304,7 @@ fn full_scene_debug_read_does_not_leak_hidden_meshes_into_the_fea_case_switch() 
 #[test]
 fn engine_session_registers_fea_and_shell_extract_dispatch() {
     let session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -19677,6 +20359,7 @@ mod gui_feature_tests {
     #[test]
     fn from_engine_registers_mesh_morph_producer() {
         let session = EngineSession::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -19709,7 +20392,7 @@ fn slice_bracket(span: reify_core::SourceSpan) -> &'static str {
 
 #[test]
 fn resolve_param_default_span_slices_the_default_literal_only() {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -19738,7 +20421,7 @@ fn resolve_param_default_span_slices_the_default_literal_only() {
 fn resolve_param_default_span_resolves_a_non_first_member() {
     // `thickness` is the THIRD param in bracket_source(). A single case on the
     // first member would not catch a first-member / off-by-one bias.
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -19753,13 +20436,13 @@ fn resolve_param_default_span_resolves_a_non_first_member() {
 fn resolve_param_default_span_returns_none_with_no_module_loaded() {
     // parsed_cache is None on a fresh session (and on load_from_compiled-injected
     // sessions). Must degrade to None, never panic.
-    let session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
 }
 
 #[test]
 fn resolve_param_default_span_returns_none_for_unknown_entity() {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -19768,7 +20451,7 @@ fn resolve_param_default_span_returns_none_for_unknown_entity() {
 
 #[test]
 fn resolve_param_default_span_returns_none_for_unknown_member() {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -19778,16 +20461,36 @@ fn resolve_param_default_span_returns_none_for_unknown_member() {
 #[test]
 fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
     // No '.' — parse_cell_id returns Err, which this method maps to None.
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     assert_eq!(session.resolve_param_default_span("width"), None);
 }
 
+/// The instance-path source shared by the tests below. `Holder` declares its
+/// OWN `width` as well as a `child` whose `width` it overrides, so
+/// "Holder.child.width" is an instance path that really exists AND collides
+/// with a real bare-member cell on the same entity. That collision is what
+/// gives each of those tests teeth, so they must reason about one fixture —
+/// two copies would let the collision be edited out of one and not the other.
+const INSTANCE_PATH_SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
+                                 structure def Holder {\n\
+                                     param width : Length = 10mm\n\
+                                     sub child : Leaf { width = 90mm }\n\
+                                 }";
+
+fn instance_path_session() -> EngineSession {
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(INSTANCE_PATH_SRC, "holder")
+        .expect("load should succeed");
+    session
+}
+
 #[test]
 fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
-    // The source below declares a REAL `sub` with a specialization override, so
+    // `INSTANCE_PATH_SRC` declares a REAL `sub` with a specialization override, so
     // "Holder.child.width" is an instance path that actually exists rather than a
     // name nothing could ever match. That distinction is what gives this test
     // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
@@ -19797,26 +20500,23 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
     // structure default when the user only asked to change one instance's value.
     // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
     //
-    // `parse_cell_id` splits on the FIRST '.', so the member is "child.width",
-    // which matches no ParamDecl.name (member names never contain a '.') — hence
-    // None, which γ surfaces as a structured error.
-    const SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
-                       structure def Holder {\n\
-                           param width : Length = 10mm\n\
-                           sub child : Leaf { width = 90mm }\n\
-                       }";
-
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
-    session
-        .load_from_source(SRC, "holder")
-        .expect("load should succeed");
+    // `parse_cell_id` refuses the id outright — "Holder.child.width" renders
+    // identically to (entity "Holder", member "child.width"), so it names no
+    // single cell — and this method maps that Err to None, which γ surfaces as
+    // a structured error. The outcome predates the refusal: the id used to be
+    // split on the FIRST '.' and then miss the ParamDecl lookup, reaching the
+    // same None by accident rather than on purpose.
+    let session = instance_path_session();
 
     // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
     // below cannot be blamed on the entity or the source failing to load.
     let own = session
         .resolve_param_default_span("Holder.width")
         .expect("Holder.width is a plain param with a default");
-    assert_eq!(&SRC[own.start as usize..own.end as usize], "10mm");
+    assert_eq!(
+        &INSTANCE_PATH_SRC[own.start as usize..own.end as usize],
+        "10mm"
+    );
 
     assert_eq!(
         session.resolve_param_default_span("Holder.child.width"),
@@ -19826,11 +20526,93 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
 }
 
 #[test]
+fn preview_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
+    // "Holder.child.width" renders identically to a hypothetical cell
+    // (entity "Holder", member "child.width"), so the string cannot say which
+    // is meant. It USED to be rejected only by ACCIDENT: the first-dot split
+    // yielded member "child.width", which matched no cell, so the existence
+    // gate said "Unknown parameter" — a true outcome reached for a false
+    // reason, and one that would silently have become a WRONG WRITE if anyone
+    // ever "fixed" the split to rsplit_once. This pins the accurate refusal,
+    // so that repair can no longer be mistaken for a safe one.
+    let mut session = instance_path_session();
+
+    // Positive control first: the bare-member cell on the same entity is
+    // settable, so a failure below cannot be blamed on the fixture.
+    session
+        .preview_parameter("Holder.width", "50mm")
+        .expect("Holder.width is a plain settable param");
+
+    let err = session
+        .preview_parameter("Holder.child.width", "50mm")
+        .expect_err("an instance path names no single cell, so it must be refused");
+
+    // Substrings, not exact prose — the taxonomy is the contract, the wording
+    // is not (see `apply_param_to_source_discriminates_its_resolve_phase_rejections`).
+    for needle in ["Holder.child.width", "ambiguous"] {
+        assert!(
+            err.contains(needle),
+            "refusal should mention {needle:?}, got: {err}"
+        );
+    }
+    assert!(
+        !err.contains("Unknown parameter"),
+        "the id is refused for AMBIGUITY, not for naming a cell that happens \
+         to be absent — misattributing the cause is the defect: {err}"
+    );
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_an_instance_path_cell_id() {
+    // Same id through the WRITE-BACK entry point. This is the path where a
+    // mis-split would have been most dangerous: taking "Holder" + "width" would
+    // splice over the SHARED structure default, changing every instance when
+    // the user asked to change one.
+    let mut session = instance_path_session();
+
+    let err = session
+        .apply_param_to_source_str("Holder.child.width", "50mm")
+        .expect_err("an instance path must be refused before any splice");
+
+    for needle in ["Holder.child.width", "ambiguous"] {
+        assert!(
+            err.contains(needle),
+            "refusal should mention {needle:?}, got: {err}"
+        );
+    }
+    assert!(
+        !err.contains("Unknown parameter"),
+        "write-back must refuse for the same reason preview_parameter does: {err}"
+    );
+}
+
+#[test]
+fn preview_parameter_still_reports_unknown_parameter_for_a_well_formed_unknown_two_segment_id() {
+    // The new ambiguity refusal must not swallow the pre-existing, DISTINCT
+    // category. A two-segment id names exactly one cell; that the cell does not
+    // exist is a different complaint with a different remedy.
+    let mut session = instance_path_session();
+
+    let err = session
+        .preview_parameter("Nope.width", "50mm")
+        .expect_err("Nope is not a declared entity");
+
+    assert!(
+        err.contains("Unknown parameter"),
+        "a well-formed id naming no cell is still an unknown-parameter error: {err}"
+    );
+    assert!(
+        !err.contains("ambiguous"),
+        "a two-segment id is unambiguous — it just names nothing: {err}"
+    );
+}
+
+#[test]
 fn resolve_param_default_span_returns_none_for_param_without_default() {
     // PRD §6.1's explicit "returns None if the param has no default literal to
     // rewrite". Shape verified against real source (examples/appearance_surface.ri:16,
     // `param name : String` inside a structure def).
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source("structure def S { param t : Length }", "s")
         .expect("load should succeed");
@@ -19848,7 +20630,7 @@ fn resolve_param_default_span_resolves_an_occurrence_entity() {
     // the walk get_containing_definition already delegates to, matches BOTH.
     const SRC: &str = "occurrence def Machining { param feed_rate : Real = 100 }";
 
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(SRC, "machining")
         .expect("load should succeed");
@@ -19916,7 +20698,7 @@ fn broken_curated_fillet_source() -> &'static str {
 fn build_gui_state_surfaces_build_time_geometry_error_in_compile_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(broken_curated_fillet_source(), "broken_fillet")
@@ -19986,7 +20768,7 @@ fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
         .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -20096,12 +20878,30 @@ fn writeback_session_from(source: &str) -> (tempfile::TempDir, std::path::PathBu
     std::fs::write(&path, source).expect("write part.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
     session.load_file(&path).expect("load_file should succeed");
 
     (dir, path, session)
+}
+
+/// Every entry name in `dir`, sorted — the exact listing the no-litter checks
+/// compare against, so they pin "nothing but the design is left" rather than
+/// any temp-file naming format.
+fn sorted_entry_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 #[test]
@@ -20281,7 +21081,7 @@ fn assert_writeback_untouched(
 
 #[test]
 fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
-    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `set_parameter` tool)
+    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `reify_set_parameter` tool)
     // is the consumer that must map "you named something that does not exist"
     // apart from "that param's default is not a literal I may rewrite". α's
     // `Option`-returning span resolver collapses all of these into one `None`,
@@ -20431,7 +21231,7 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
     // Trigger: replace the `.ri` with a DIRECTORY at the same path. `fs::write`
     // then fails EISDIR deterministically — and unlike a `chmod 0444` trigger,
     // it still fails when the suite happens to run as root.
-    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    let (dir, path, mut session) = writeback_session_from(writeback_rejection_source());
     std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
     std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
 
@@ -20450,22 +21250,14 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
 
     // A failed write must also clean up after itself: the write goes through a
     // sibling temp file, and the rename is what consumes it, so a rename that
-    // fails leaves the temp behind unless the error path removes it. One
-    // `part.ri.<pid>.<seq>.tmp` per failed edit accumulating next to the user's
-    // design would be a user-visible regression.
-    let litter: Vec<String> = std::fs::read_dir(_dir.path())
-        .expect("the fixture directory should be readable")
-        .map(|e| {
-            e.expect("directory entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|name| name.ends_with(".tmp"))
-        .collect();
-    assert!(
-        litter.is_empty(),
-        "a failed write-back must leave no temp file behind, found: {litter:?}"
+    // fails leaves the temp behind unless the error path removes it. One temp
+    // sibling per failed edit accumulating next to the user's design would be a
+    // user-visible regression. `part.ri` is the directory planted above, and it
+    // must be the only entry.
+    assert_eq!(
+        sorted_entry_names(dir.path()),
+        vec!["part.ri"],
+        "a failed write-back must leave no temp file behind"
     );
 
     // Disk is deliberately not read back here — it is a directory now, so
@@ -20829,26 +21621,16 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
     // The write is temp-file-plus-rename (so a partial write can never leave a
     // truncated `.ri` for the watcher to reload). The temp is an implementation
     // detail and must stay one: the rename consumes it on success, and the
-    // failure path removes it — a project directory accumulating
-    // `part.ri.1234.0.tmp` siblings would be a user-visible regression.
+    // failure path removes it — a project directory accumulating temp siblings
+    // would be a user-visible regression.
     let (dir, path, mut session) = writeback_session();
 
     session
         .apply_param_to_source("Part.width", &mm(120.0))
         .expect("apply_param_to_source should succeed");
 
-    let mut entries: Vec<String> = std::fs::read_dir(dir.path())
-        .expect("the fixture directory should be readable")
-        .map(|e| {
-            e.expect("directory entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    entries.sort();
     assert_eq!(
-        entries,
+        sorted_entry_names(dir.path()),
         vec![
             path.file_name()
                 .expect("fixture path has a file name")
@@ -20856,6 +21638,46 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
                 .into_owned()
         ],
         "a successful write-back must leave the design file and nothing else"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_param_to_source_preserves_the_design_files_permission_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, path, mut session) = writeback_session();
+    // 0o604 is neither a temp file's default creation mode (0o600) nor what any
+    // common umask gives a fresh file, so only a real carry-over produces it;
+    // the owner keeps rw so the engine's own read-back still works.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o604))
+        .expect("chmod of the fixture design should succeed");
+    let before = inode_of(&path);
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    assert_ne!(
+        inode_of(&path),
+        before,
+        "the write-back must REPLACE the design file, or the mode check below \
+         would pass through an in-place write"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_source().replace("80mm", "120mm"),
+        "the replacement must carry the edited text"
+    );
+    let mode = std::fs::metadata(&path)
+        .expect("the design should still exist")
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        format!("{mode:o}"),
+        "604",
+        "a write-back must keep the design's mode"
     );
 }
 
@@ -20883,6 +21705,7 @@ fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing
     std::os::unix::fs::symlink(&target, &link).expect("creating the symlink should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -20912,23 +21735,18 @@ fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing
     // directories: the temp is a sibling of the RESOLVED target (rename is only
     // atomic within one filesystem), so it must not appear beside the link
     // either.
-    for probe in [dir.path(), target_dir.as_path()] {
-        let litter: Vec<String> = std::fs::read_dir(probe)
-            .expect("the probed directory should be readable")
-            .map(|e| {
-                e.expect("directory entry should be readable")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .filter(|name| name.ends_with(".tmp"))
-            .collect();
-        assert!(
-            litter.is_empty(),
-            "a successful write-back must leave no temp file in {}, found: {litter:?}",
-            probe.display()
-        );
-    }
+    assert_eq!(
+        sorted_entry_names(dir.path()),
+        vec!["current.ri", "versions"],
+        "a successful write-back must leave nothing but the link and its \
+         target directory beside the link"
+    );
+    assert_eq!(
+        sorted_entry_names(&target_dir),
+        vec!["v3.ri"],
+        "a successful write-back must leave nothing but the design beside the \
+         link's target"
+    );
 }
 
 #[test]
@@ -20951,6 +21769,7 @@ fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
     std::fs::write(&entry_path, entry_source).expect("write main.ri");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -21003,7 +21822,7 @@ fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
         "an imported param is known, just not rewritable here, got: {err}"
     );
     session
-        .set_parameter("Helper.x", "20mm")
+        .preview_parameter("Helper.x", "20mm")
         .expect("the ephemeral edit path must still accept the same cell id");
 }
 
@@ -21129,6 +21948,7 @@ fn apply_param_to_source_refuses_a_session_with_no_file_on_disk() {
     // must be refused rather than silently degrading to an engine-state-only
     // edit, which is the ephemeral behaviour INV-GUI-3 exists to replace.
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -21207,12 +22027,517 @@ fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects(
     assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
 }
 
+#[test]
+fn commit_parameter_refuses_a_fileless_session_and_still_discards_the_preview() {
+    // A `load_from_source` session has no canonical `.ri` to be canonical about,
+    // so INV-GUI-3 requires a REFUSAL rather than a silent degrade to the
+    // ephemeral path — degrading is precisely the behaviour the invariant
+    // replaces. The refusal must still leave the postcondition intact: state ≡
+    // source, with the preview gone.
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    let previewed = session
+        .preview_parameter("Bracket.width", "100mm")
+        .expect("preview_parameter should succeed on a fileless session");
+    let width = previewed
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Bracket.width")
+        .expect("Bracket.width should be present in the preview GuiState");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("100", "mm"),
+        "the preview must have taken, or this test is not exercising a discard"
+    );
+
+    let err = session
+        .commit_parameter("Bracket.width", "100mm")
+        .expect_err("a session with no on-disk .ri must be REFUSED");
+    assert!(
+        err.contains("session has no on-disk .ri file to write"),
+        "the write-back's own refusal must stay readable — an unmasked discard \
+         failure would report the wrong problem, got: {err}"
+    );
+
+    assert_eq!(
+        gui_value_of(&mut session, "Bracket.width"),
+        ("80".to_string(), "mm".to_string()),
+        "the discard must run on a session with no file_path too — the preview \
+         may not outlive the commit that refused it"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::apply_param_to_source_str (string-typed front
+// door for the reify-debug `reify_set_parameter` write tool)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn apply_param_to_source_str_parses_a_unit_bearing_literal() {
+    // The δ front door must be a pure PARSE in front of γ's write-back — not a
+    // second write path. Pinned by byte-equality against what the landed
+    // `apply_param_to_source(&mm(120.0))` produces on the same fixture
+    // (`apply_param_to_source_rewrites_only_the_default_span`): only the
+    // `80mm` span moves, the non-ASCII header comment and the `0.5m` default
+    // survive byte for byte.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source_str("Part.width", "120mm")
+        .expect("apply_param_to_source_str should succeed on a unit-bearing literal");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "the string front door must splice exactly the span the Value-typed \
+         entry point does — only the default, never a reformat"
+    );
+
+    // eval state ≡ source, exactly as the Value-typed entry point reports it.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_a_bare_number_on_a_dimensioned_cell() {
+    // The parse is the SAME dimension-aware one the property-panel slider runs
+    // (task #5757): `parse_value_string_for_cell` owns the rule and the
+    // ladder-rung suggestion, so the AI path and the slider can never disagree
+    // about what a value string denotes. Asserted on the message this front
+    // door must NOT re-author, plus the full no-mutation ledger — a refused
+    // parse must not have touched disk, source_map, compile_failure or eval
+    // state.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.width", "120")
+        .expect_err("a bare number on a Length cell must be REFUSED");
+    assert!(
+        err.contains("bare number '120'"),
+        "the refusal must be the one parse_value_string_for_cell owns, got: {err}"
+    );
+    assert!(
+        err.contains("120mm"),
+        "the refusal must carry the ladder-rung suggestion (#5757), got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+#[test]
+fn apply_param_to_source_str_rejects_an_unknown_cell() {
+    // Cell resolution precedes the parse, so an unknown cell reads as
+    // "Unknown parameter" rather than as a parse diagnostic — the same
+    // ordering `preview_parameter` documents, and the taxonomy δ maps into its
+    // tool result.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        err.contains("Unknown parameter"),
+        "expected the shared unknown-cell rejection, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5099 η — the user-path cadence pair: `preview_parameter` (TRANSIENT drag
+// feedback) and `commit_parameter` (the durable INV-GUI-3 write-back)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `(value, unit)` for `cell_id` in a freshly built `GuiState` of `session`.
+fn gui_value_of(session: &mut EngineSession, cell_id: &str) -> (String, String) {
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed");
+    let cell = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == cell_id)
+        .unwrap_or_else(|| panic!("{cell_id} should be present in the GuiState"));
+    (cell.value.clone(), cell.unit.clone())
+}
+
+/// `(value, unit)` for `cell_id` as a session that has only just `load_file`d
+/// `path` reads it.
+///
+/// This is the EXPORT half of esc-7281-4, pinned at the level this crate can
+/// observe. `EngineSession::export` calls `engine.build(compiled, …)`, which
+/// re-resolves every param from the module's DECLARED DEFAULTS
+/// (`Snapshot::from_compiled_module`) and therefore discards an ephemeral
+/// engine-state override — so a fresh `load_file` of the written file reads
+/// exactly what a later export would build from. Asserting on the exported
+/// BYTES instead would prove nothing: `MockGeometryKernel::export` writes a
+/// fixed `b"MOCK_EXPORT_DATA"` whatever the geometry.
+fn reloaded_value_of(path: &Path, cell_id: &str) -> (String, String) {
+    let mut fresh = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    fresh.load_file(path).expect("load_file should succeed");
+    gui_value_of(&mut fresh, cell_id)
+}
+
+#[test]
+fn commit_parameter_makes_the_edit_durable_in_the_module_defaults() {
+    // The whole point of η: the user path's commit is the SAME source-canonical
+    // mechanism δ already routes the MCP tool through, so the four INV-GUI-3
+    // surfaces (disk, source_map, eval state, and what a later build re-resolves
+    // from) all agree after a slider release.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .commit_parameter("Part.width", "120mm")
+        .expect("commit_parameter should succeed on a literal-defaulted cell");
+
+    // (a) disk carries the edit.
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param width: Length = 120mm"),
+        "disk text should carry the committed default, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("80mm"),
+        "disk text should no longer carry the pre-edit default, got: {disk_text}"
+    );
+
+    // (b) source_map ≡ disk.
+    let (_key, source_map_text) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should succeed after a commit");
+    assert_eq!(
+        source_map_text, disk_text,
+        "source_map text must equal disk text after a commit (INV-GUI-3)"
+    );
+
+    // (c) the returned GuiState already reports the new value.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+
+    // (d) the export half: what a fresh build re-resolves from moved too.
+    assert_eq!(
+        reloaded_value_of(&path, "Part.width"),
+        ("120".to_string(), "mm".to_string()),
+        "a freshly loaded session must read the committed default — this is what \
+         `Engine::build` re-resolves from on export (esc-7281-4)"
+    );
+}
+
+#[test]
+fn preview_parameter_leaves_the_ri_file_untouched() {
+    // The negative control for the test above, and the honest statement of what
+    // the renamed method does: a preview is TRANSIENT drag feedback living only
+    // in `last_check`. It must move the eval state (or the viewport would not
+    // track the drag) and must move nothing else.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("120", "mm"),
+        "a preview must move the eval state so the viewport tracks the drag"
+    );
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_text,
+        writeback_source(),
+        "a preview must leave the canonical .ri byte-identical"
+    );
+    assert_eq!(
+        reloaded_value_of(&path, "Part.width"),
+        ("80".to_string(), "mm".to_string()),
+        "a preview must not move the declared default a later build resolves from"
+    );
+}
+
+#[test]
+fn commit_parameter_discards_a_live_preview_when_the_write_back_is_refused() {
+    // The refusal path is where INV-GUI-3 is easiest to break. γ's ledger
+    // guarantees a refused write-back moves NONE of its four surfaces — but the
+    // preview was a separate, earlier call whose override lives in `last_check`,
+    // which γ never sees. Returning the refusal without discarding it would
+    // strand exactly the ephemeral-second-source divergence the invariant
+    // forbids, and leave a later `export` building from a value nothing on disk
+    // carries: esc-7281-4 merely relocated to the error path.
+    let (_dir, path, mut session) = writeback_session();
+
+    let previewed = session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+    let width = previewed
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the preview GuiState");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("120", "mm"),
+        "the preview must have taken, or this test is not exercising a discard"
+    );
+
+    // Provoke γ's disk-divergence refusal: another writer lands between the
+    // preview and the commit.
+    let external_text = format!("{}\n// an external editor was here\n", writeback_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let err = session
+        .commit_parameter("Part.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        err.contains("no longer matches the source this session compiled"),
+        "the refusal must stay readable through the discard, got: {err}"
+    );
+
+    // The preview is gone: the engine reports the value its OWN compiled source
+    // carries, not the stranded 120mm.
+    assert_eq!(
+        gui_value_of(&mut session, "Part.width"),
+        ("80".to_string(), "mm".to_string()),
+        "a refused commit must discard a live preview — the engine may not be \
+         left holding a value no source carries"
+    );
+
+    // The discard rolled back the ENGINE and did not touch disk: the other
+    // writer's text survives, which is the whole point of refusing.
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        external_text,
+        "the discard must not clobber the writer the refusal exists to protect"
+    );
+}
+
+#[test]
+fn commit_parameter_preserves_an_existing_staleness_banner_when_the_write_back_is_refused() {
+    // The staleness sibling of
+    // `commit_parameter_discards_a_live_preview_when_the_write_back_is_refused`
+    // — same disk-divergence trigger, one extra precondition — and it needs its
+    // own test because the discard is a `commit_state` path like any other.
+    // γ's ledger restores its OWN failure surfaces before handing back the
+    // refusal; `commit_parameter` then recompiles the canonical source to drop
+    // the preview, and that successful `commit_state` clears `compile_failure`
+    // and `last_reload_error` unconditionally — including a banner that
+    // predates the commit entirely.
+    //
+    // The sibling assertions around here only ever check `!is_stale()` on a
+    // session that was never stale, which cannot fail whatever the restore
+    // does. This one starts the session STALE, so the assertion has a
+    // direction to regress in. That direction matters most on exactly this
+    // arm: disk divergence is the MOST common refusal, and it is also what a
+    // failed hot reload produces — so the banner silently cleared would be
+    // precisely the one the user just earned, with `is_stale()` then claiming
+    // a sync with a reload that never succeeded.
+    let (_dir, path, mut session) = writeback_session();
+
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+
+    // The same trigger as the sibling: another writer lands between the preview
+    // and the commit, so γ refuses before anything reaches disk.
+    let external_text = format!("{}\n// an external editor was here\n", writeback_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let err = session
+        .commit_parameter("Part.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        err.contains("no longer matches the source this session compiled"),
+        "precondition: the failure must be the divergence REFUSAL, got: {err}"
+    );
+
+    assert!(
+        session.is_stale(),
+        "a refused commit must leave the staleness banner standing — its discard \
+         recompile SUCCEEDS, and `commit_state` would otherwise clear a banner \
+         this call never earned the right to clear"
+    );
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "the banner left standing must be the ORIGINAL one, not a replacement"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the discard must not leave diagnostics either — its own recompile of the \
+         canonical source succeeds cleanly"
+    );
+}
+
+/// The inode `path` currently resolves to — the observable that distinguishes
+/// "the file was left alone" from "the file was rewritten with the same bytes".
+///
+/// `write_file_atomically` writes a sibling temp file and `rename`s it over the
+/// target, so ANY write it performs replaces the inode. Comparing content could
+/// not tell the two apart, and comparing mtimes would race the filesystem's
+/// timestamp granularity.
+#[cfg(unix)]
+fn inode_of(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .expect("the fixture file should be readable")
+        .ino()
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_parameter_writes_no_file_when_the_value_is_already_the_source_value() {
+    // Committing the value a cell already holds is not a rare accident. The
+    // property panel's edit box commits on BLUR against a field `editSeed`
+    // pre-filled with the cell's own value, so focusing a field and clicking
+    // away commits exactly this; a slider dragged back to where it started
+    // releases on one too. Before the skip, each of those cost an atomic file
+    // rewrite, and then a second recompile when the FS-watcher handed the
+    // bytes straight back.
+    let (_dir, path, mut session) = writeback_session();
+    let before = inode_of(&path);
+
+    let state = session
+        .commit_parameter("Part.width", "80mm")
+        .expect("committing the value already in the source must SUCCEED, not refuse");
+
+    assert_eq!(
+        inode_of(&path),
+        before,
+        "a commit whose splice changed nothing must not rewrite the file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_source(),
+        "and the bytes must be the untouched original"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Part.width" && v.value == "80" && v.unit == "mm"),
+        "the returned GuiState must still report the committed value"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_parameter_still_discards_a_live_preview_when_it_writes_no_file() {
+    // The hazard the skip has to step around, and the reason it drops only the
+    // WRITE and not the recompile. `commit_parameter`'s postcondition is
+    // unconditional — it returns only with engine state ≡ source — and a
+    // no-op-on-disk commit is no exception: the preview's override lives in
+    // `last_check` and need not equal the value being committed. One frame is
+    // all it takes to produce that, a drag that previews 120mm and then
+    // releases back on the original 80mm, and returning early on byte equality
+    // would leave the engine showing 120 while every source surface says 80.
+    let (_dir, path, mut session) = writeback_session();
+    let before = inode_of(&path);
+
+    session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+    assert_eq!(
+        gui_value_of(&mut session, "Part.width"),
+        ("120".to_string(), "mm".to_string()),
+        "precondition: the preview's override must be live in the engine"
+    );
+
+    session
+        .commit_parameter("Part.width", "80mm")
+        .expect("committing the source's own value must succeed");
+
+    assert_eq!(
+        gui_value_of(&mut session, "Part.width"),
+        ("80".to_string(), "mm".to_string()),
+        "the commit must have reconciled the engine with the source it did not \
+         need to write"
+    );
+    assert_eq!(
+        inode_of(&path),
+        before,
+        "and it must still not have rewritten the file to do it"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn holds_rejected_source_tracks_the_compile_failure() {
+    // `build_gui_state().files[].content` is NOT unconditionally the committed
+    // buffer: `build_files_with_live_edit` deliberately SPLICES a recorded
+    // `LiveEdit` failure's rejected source into the matching entry to hold its
+    // one-snapshot invariant (so `files[]` and `compile_diagnostics` come from
+    // the same snapshot). Correct for a read-only snapshot; catastrophic for
+    // any consumer that PERSISTS that content — which is exactly what the
+    // reify-debug `reify_save_file` write tool does.
+    //
+    // This is the predicate such a consumer must consult first. Asserted over
+    // the full round trip, so it cannot regress into a permanent wedge: a
+    // successful recompile clears it via `commit_state`.
+    let (_dir, _path, mut session) = writeback_session();
+
+    assert!(
+        !session.holds_rejected_source(),
+        "a freshly loaded session holds no rejected buffer"
+    );
+
+    session
+        .update_source("part.ri", "structure def Part { param width: Length = ")
+        .expect_err("source that does not parse must be REFUSED");
+    assert!(
+        session.holds_rejected_source(),
+        "a refused recompile RECORDS the rejected source (record_compile_failure), \
+         which build_files_with_live_edit then surfaces in files[].content"
+    );
+
+    session
+        .update_source("part.ri", writeback_source())
+        .expect("a buffer that compiles must be accepted");
+    assert!(
+        !session.holds_rejected_source(),
+        "a successful commit_state clears compile_failure — the interlock is \
+         transient, not a permanent wedge"
+    );
+}
+
 /// Task 5212 (GUI reload wiring): every whole-file reload entry
 /// (`load_from_source` / `load_file` / `update_source`) funnels through
 /// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
 /// — freeing the prior design's resident native shapes — and clear the
 /// realization cache exactly once per reload (via
-/// `Engine::reset_geometry_for_reload`). The slider path (`set_parameter` →
+/// `Engine::reset_geometry_for_reload`). The slider path (`preview_parameter` →
 /// `edit_check`) deliberately BYPASSES that funnel, so a parameter edit must
 /// NOT reset the kernel (otherwise every slider tick would wipe the warm
 /// shapes). Together these two facts bound OCCT native-shape memory across a
@@ -21235,7 +22560,7 @@ fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
     // `reset_count()` needs `&MockGeometryKernel`, which the boxed
     // `dyn GeometryKernel` inside the engine no longer exposes.
     let reset_calls = kernel.reset_calls_ref();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     assert_eq!(
         *reset_calls.lock().unwrap(),
@@ -21266,17 +22591,67 @@ fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
          (== 2 after two reloads)",
     );
 
-    // Slider path — set_parameter → edit_check BYPASSES check_with_solve_slot,
+    // Slider path — preview_parameter → edit_check BYPASSES check_with_solve_slot,
     // so it must NOT reset (a reset here would wipe warm shapes on every tick).
     session
-        .set_parameter("Bracket.width", "120mm")
+        .preview_parameter("Bracket.width", "120mm")
         .expect("slider edit should succeed");
     assert_eq!(
         *reset_calls.lock().unwrap(),
         2,
-        "a slider (set_parameter) edit must NOT reset the geometry kernel — the \
+        "a slider (preview_parameter) edit must NOT reset the geometry kernel — the \
          reload wiring lives on the check_with_solve_slot funnel, which the \
          slider path bypasses",
     );
 }
 
+
+/// `source_key_matches_path` is DIRECTIONAL, and both of its live call sites
+/// depend on that. `debug_server::filter_diagnostics_for_file` calls it
+/// `(stamped_key, caller_path)`; `update_source_target_matches_active` calls
+/// it `(caller_spelling, active_path)`. Both put the possibly-stem-only
+/// spelling first and the real filesystem path second — but only the second
+/// argument's stem is ever taken, so swapping them changes the answer.
+///
+/// Pinned here (rather than only through the two debug_server predicates that
+/// consume it) so a future tightening — rejecting an absolute first argument,
+/// or taking stems on BOTH sides — cannot silently break the active-file guard
+/// while the diagnostics filter stays green (task #5097 δ, review finding).
+#[cfg(feature = "gui")]
+#[test]
+fn source_key_matches_path_is_directional() {
+    use crate::engine::source_key_matches_path;
+
+    // Direction 1 — the diagnostics filter: the engine stamps the stem-only
+    // module key, the caller supplies a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/tmp/x/part.ri"),
+        "the stamped module key must match the caller's real path"
+    );
+    // Direction 2 — the active-file guard: an AI client echoes back the
+    // stem-only key it read off a diagnostic, the session holds a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/home/u/proj/part.ri"),
+        "the guard must accept the stem-only spelling of the active file"
+    );
+    // Verbatim equality is accepted in either direction (the `==` arm).
+    assert!(source_key_matches_path("/tmp/x/part.ri", "/tmp/x/part.ri"));
+    assert!(source_key_matches_path("part.ri", "part.ri"));
+
+    // THE ASYMMETRY. Only the SECOND argument's stem is taken, so the reverse
+    // of the accepting case above is a REJECT. This is not an accident to be
+    // "cleaned up": both call sites are written to it.
+    assert!(
+        !source_key_matches_path("/tmp/x/part.ri", "part.ri"),
+        "the loose (stem-only) side is the FIRST argument, never the second"
+    );
+
+    // It still discriminates on the stem — a different file is not the same
+    // file in either direction.
+    assert!(!source_key_matches_path("other.ri", "/tmp/x/part.ri"));
+    assert!(!source_key_matches_path("part.ri", "/tmp/x/other.ri"));
+
+    // A path with no file stem cannot match anything but itself.
+    assert!(!source_key_matches_path("part.ri", "/"));
+    assert!(source_key_matches_path("/", "/"));
+}

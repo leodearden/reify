@@ -1163,14 +1163,16 @@ pub struct ValueData {
     /// `reason`) keeps older payloads without this key deserializing cleanly.
     #[serde(default)]
     pub last_substantive_value: Option<String>,
-    /// Canonical dimension name for this cell's value (e.g. `"Volume"`,
-    /// `"Length"`), from `DimensionVector::canonical_name()`. Empty string
-    /// for non-scalar, dimensionless, or composed-dimension values that
-    /// have no named ladder (task #5199: drives the Parameters panel's
-    /// per-cell unit picker — only cells with a non-empty `dimension` AND a
-    /// ladder of \u{2265}2 units get a `<select>` instead of the static unit
-    /// badge). `#[serde(default)]` (mirroring `reason`/`last_substantive_value`)
-    /// keeps older payloads without this key deserializing cleanly.
+    /// Canonical dimension name for this cell's current VALUE (e.g.
+    /// `"Volume"`, `"Length"`), from `DimensionVector::canonical_name()`.
+    /// Empty string for non-scalar, dimensionless, or composed-dimension
+    /// values that have no named ladder (task #5199: drives the Parameters
+    /// panel's per-cell unit picker — only cells with a non-empty `dimension`
+    /// AND a ladder of \u{2265}2 units get a `<select>` instead of the static
+    /// unit badge). Value-derived and paired with `si_value`; for what the
+    /// cell's TYPE requires, see `declared_dimension`. `#[serde(default)]`
+    /// (mirroring `reason`/`last_substantive_value`) keeps older payloads
+    /// without this key deserializing cleanly.
     #[serde(default)]
     pub dimension: String,
     /// The cell's raw canonical SI magnitude (e.g. cubic metres for a Volume
@@ -1183,6 +1185,15 @@ pub struct ValueData {
     /// the IPC wire (task #5199 engine_state decision: additive-only).
     #[serde(default)]
     pub si_value: Option<f64>,
+    /// Canonical name of the dimension the cell's DECLARED type requires
+    /// (`Option` wrappers peeled), whatever its value currently holds. `""`
+    /// for a non-scalar, dimensionless, or unnamed (composed) dimension.
+    /// Drives the panel's input-side decisions — bare-number gate, unit
+    /// alphabet, edit-seed unit — and is the same fact
+    /// `engine::parse_value_string_for_cell` gates on (task #6962).
+    /// `#[serde(default)]` keeps older payloads deserializing cleanly.
+    #[serde(default)]
+    pub declared_dimension: String,
 }
 
 /// A constraint with its check status.
@@ -1190,6 +1201,28 @@ pub struct ValueData {
 pub struct ConstraintData {
     pub node_id: String,
     pub expression: String,
+    /// THE WIRE CONTRACT for a constraint verdict, canonical on both sides of
+    /// the IPC boundary (`gui/src/types.ts` mirrors a pointer to it).
+    ///
+    /// Lower-case token: `"satisfied"`, `"violated"` or `"indeterminate"`,
+    /// compared as an exact string by every frontend consumer —
+    /// `ConstraintPanel`'s `STATUS_PRIORITY`/`statusIcon`/`statusTitle`,
+    /// `StatusBar`'s `constraintSummary`, `ChatPanel`'s
+    /// `hasViolatedConstraints`, and the `[data-status="…"]` CSS selectors.
+    ///
+    /// `engine::satisfaction_token` is the only permitted producer; do not
+    /// hand-write the literal. Pinned two-way (task 6723): on this side by
+    /// `tests/types_tests.rs::constraint_data_status_wire_tokens_are_lowercase`,
+    /// on the consumer side by `gui/src/__tests__/constraintVerdictParity.test.ts`,
+    /// which reads the producer's own match arms and drives the real components
+    /// with them. Neither half alone suffices: before that task both sides were
+    /// green while disagreeing, each asserting only that it agreed with itself.
+    ///
+    /// The token set is CLOSED at three, enforced by `satisfaction_token`'s
+    /// exhaustive match. PRD §4.2 C2 forbids collapsing the tri-state, and
+    /// `gui-on-demand-measurement.md` routes kernel-MEASURED verdicts through
+    /// this same three-valued `Satisfaction` with measurement state as an
+    /// orthogonal axis — not a fourth status token.
     pub status: String,
     pub label: Option<String>,
     pub parameter_ids: Vec<String>,
@@ -1271,7 +1304,7 @@ pub struct JointDescriptor {
 /// | Variant | bind() form | Description |
 /// |---------|-------------|-------------|
 /// | `ParamBound` | `bind(j, param_ref)` | Joint driven by a named `param` cell; the param slider controls the joint position. |
-/// | `LiteralBound` | `bind(j, 100mm)` | Joint driven by a literal constant; surfaced as a scrub-virtual-param slider in the GUI. |
+/// | `LiteralBound` | `bind(j, 100mm)` / unbound | Joint driven by a literal constant, or by nothing; read-only in the GUI (no write target). |
 /// | `CouplingDerived` | coupling joint (no bind) | Joint position is geometrically derived from another driving joint. `source_joint` detection is deferred to ζ work. |
 /// | `FixedNoMotion` | fixed joint / default | Joint has no independent motion variable; position is fully constrained. |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1283,13 +1316,17 @@ pub enum JointBinding {
         param_cell_id: String,
         current_value_si: Option<f64>,
     },
-    /// Joint is driven by a literal constant via `bind(joint, <literal>)`.
-    /// Surfaced as a scrubbable synth-virtual-param slider in the GUI.
-    /// `synth_param_name` is the virtual param name used internally (e.g. `__joint_y_axis_v`).
-    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`).
+    /// Joint is driven by a literal constant via `bind(joint, <literal>)`, or by
+    /// no `bind()` at all. Construct with [`JointBinding::literal_bound`].
+    /// `synth_param_name` is the reserved `__joint_*_v` name (namespace guarded by
+    /// `W_KinematicReservedParamName`); it is NOT a resolvable cell id and not a write target.
+    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`); `None` when
+    /// unbound, or when the literal does not resolve here (non-builtin unit, compound expression).
     LiteralBound {
         synth_param_name: String,
         initial_value_si: Option<f64>,
+        /// Vestigial wire slot, always `false`; the GUI never reads it, since only
+        /// `ParamBound` has a write target.
         scrubbable: bool,
     },
     /// Joint position is derived from another driving joint (coupling joint).
@@ -1299,12 +1336,32 @@ pub enum JointBinding {
     FixedNoMotion,
 }
 
+impl JointBinding {
+    /// A literal-bound joint has no write target — no cell or source span resolves
+    /// its synth name — so it is never scrubbable.
+    /// See docs/prds/v0_3/kinematic-constraints-completion.md §8.3.
+    pub fn literal_bound(synth_param_name: String, initial_value_si: Option<f64>) -> Self {
+        JointBinding::LiteralBound {
+            synth_param_name,
+            initial_value_si,
+            scrubbable: false,
+        }
+    }
+}
+
 /// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluationStatus {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<f64>,
+}
+
+/// The `eval-generation` payload: an edit or evaluation of `generation` is
+/// about to run (mirrors frontend EvalGeneration interface).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvalGeneration {
+    pub generation: u64,
 }
 
 /// A node in the hierarchical entity tree emitted by `get_entity_tree`.
@@ -1341,7 +1398,10 @@ pub struct EntityTreeNode {
     pub display_name: Option<String>,
     /// Whether this entity has at least one realization (tessellatable geometry).
     pub has_mesh: bool,
-    /// Heuristic: member is named `"geometry"` AND the parent template has `"Physical"` in `trait_bounds`.
+    /// Member is named `"geometry"` AND the parent template's trait bounds
+    /// equal-or-transitively-refine `Physical` — resolved against the merged
+    /// module + prelude trait defs, so `: Rigid` matches via `Rigid : Physical`
+    /// while a lookalike name such as `PhysicalMock` does not.
     pub trait_geometry: bool,
     /// Child nodes (value cells, sub-components, ports of this template).
     pub children: Vec<EntityTreeNode>,

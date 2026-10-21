@@ -1755,6 +1755,133 @@ fn half_space_at_bounded_param_emits_geometry_unbounded_diagnostic() {
     );
 }
 
+/// A transform of an unbounded producer stays unbounded at a `Bounded` slot
+/// (task #6188): the transform must see its direct-call operand rather than
+/// falling back to the all-traits default.
+#[test]
+fn translate_of_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: translate(half_space(0mm, 0mm, 0mm, 0, 0, 1), 0mm, 0mm, 1mm))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected at least one GeometryUnbounded diagnostic for translate(half_space(...)) \
+         at a Bounded slot, but got no such diagnostic. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// POSITIVE CONTROL for the test above: a transform of a bounded producer at a
+/// `Bounded` slot emits no `GeometryUnbounded`.
+#[test]
+fn translate_of_box_at_bounded_param_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: translate(box(1mm, 1mm, 1mm), 0mm, 0mm, 1mm))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected no GeometryUnbounded diagnostic for translate(box(...)) at a Bounded \
+         slot, but got: {:?}",
+        geometry_unbounded
+    );
+}
+
+// ─── binary booleans see their direct-call operands (task #6188 / #8191) ─────
+
+const HALF_SPACE: &str = "half_space(0mm, 0mm, 0mm, 0, 0, 1)";
+const UNIT_BOX: &str = "box(1mm, 1mm, 1mm)";
+
+/// How many `GeometryUnbounded` diagnostics compiling `geometry` at a
+/// `param g : Bounded` slot produces.
+fn geometry_unbounded_count_at_bounded_param(geometry: &str) -> usize {
+    let source = format!(
+        r#"
+        structure def Foo {{
+            param g : Bounded
+        }}
+        structure def Top {{
+            sub x = Foo(g: {geometry})
+        }}
+    "#
+    );
+    compile_source_with_stdlib(&source)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .count()
+}
+
+/// A union with an unbounded operand is unbounded.
+#[test]
+fn union_of_half_space_and_box_at_bounded_param_emits_geometry_unbounded() {
+    let geometry = format!("union({HALF_SPACE}, {UNIT_BOX})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        1,
+        "{geometry}"
+    );
+}
+
+/// A difference inherits boundedness from its cuttee.
+#[test]
+fn difference_from_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let geometry = format!("difference({HALF_SPACE}, {UNIT_BOX})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        1,
+        "{geometry}"
+    );
+}
+
+/// POSITIVE CONTROL: a bounded operand bounds an intersection.
+#[test]
+fn intersection_of_half_space_and_box_at_bounded_param_emits_no_geometry_unbounded() {
+    let geometry = format!("intersection({HALF_SPACE}, {UNIT_BOX})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        0,
+        "{geometry}"
+    );
+}
+
+/// POSITIVE CONTROL: cutting an unbounded cutter from a bounded cuttee stays
+/// bounded.
+#[test]
+fn difference_of_half_space_from_box_at_bounded_param_emits_no_geometry_unbounded() {
+    let geometry = format!("difference({UNIT_BOX}, {HALF_SPACE})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        0,
+        "{geometry}"
+    );
+}
+
 // ─── extrude_infinite: Bounded=false producer (task #3466) ──────────────────
 
 /// Negative end-to-end: `extrude_infinite(...)` at a `param g : Bounded` slot
@@ -1818,5 +1945,172 @@ fn intersection_of_extrude_infinite_with_box_at_bounded_slot_emits_no_geometry_u
         "expected NO GeometryUnbounded diagnostic when `extrude_infinite(...)` result \
          is bounded by intersection with `box(...)`, but got: {:?}",
         geometry_unbounded
+    );
+}
+
+// ─── task #5385 / review esc-5385-4: union_all over a geometry LIST ─────────
+
+/// End-to-end negative conformance test for the list form made legal by task
+/// #5385: `union_all([box(...), half_space(...)])` at a `param g : Bounded`
+/// slot MUST emit `DiagnosticCode::GeometryUnbounded`.
+///
+/// This is the integration counterpart the unit test in
+/// `geometry_traits_inference::tests` cannot be: it compiles real source, so
+/// the arg reaching `geometry_operand_traits_in_env` carries whatever
+/// `result_type` the expression compiler really assigns. That matters because
+/// geometry builtin calls are typed `Type::dimensionless_scalar()`, so the list
+/// literal compiles to `List<Real>` — gating the fold's list arm on
+/// `List<Geometry>` (as the first cut of #5385 did) makes it dead code and the
+/// boundedness check silently inert.
+#[test]
+fn union_all_over_a_geometry_list_literal_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all([box(1mm, 1mm, 1mm), half_space(0mm, 0mm, 0mm, 0, 0, 1)]))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `union_all([box(...), \
+         half_space(...)])` at a Bounded slot, but got none. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// Positive control for the test above: the SAME list form with only bounded
+/// elements must NOT emit `GeometryUnbounded`. Without this, the negative test
+/// above would still pass if the fold started failing CLOSED (claiming
+/// not-`bounded` for every list), which would break the very idiom #5385 exists
+/// to make legal.
+#[test]
+fn union_all_over_an_all_bounded_geometry_list_literal_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all([box(1mm, 1mm, 1mm), box(2mm, 2mm, 2mm)]))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected NO GeometryUnbounded diagnostic for an all-bounded geometry \
+         list, got: {geometry_unbounded:?}"
+    );
+}
+
+/// The multi-ARGUMENT form shares `fold_geometry_args_in_env` with the list
+/// form and was filtered out by the same `result_type == Type::Geometry` gate,
+/// so it took the `all()` default too. Pin it here: `union_all(box(...),
+/// half_space(...))` at a Bounded slot must also diagnose.
+#[test]
+fn union_all_multi_arg_with_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all(box(1mm, 1mm, 1mm), half_space(0mm, 0mm, 0mm, 0, 0, 1)))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `union_all(box(...), \
+         half_space(...))` at a Bounded slot, but got none. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// Review esc-5385-7: the INLINE `generate` fold form that #5385 made legal —
+/// `union_all(generate(2, |i| half_space(...)))` — must diagnose exactly like
+/// the syntactically-equivalent list literal above.
+///
+/// `resolve_geometry_list_arg` accepts `generate(<literal>, |i| <geom>)` as a
+/// single fold argument, but the arg reaching `geometry_operand_traits_in_env`
+/// is a `FunctionCall` whose callee (`generate`) is not a geometry builtin, so
+/// it is neither a geometry operand nor a `ListLiteral`: it contributed ZERO
+/// operands and the fold's `.unwrap_or(InferredTraits::all())` default silently
+/// claimed `bounded`. This is NOT the documented named-let residual (#6418) —
+/// the lambda body is syntactically visible right here and needs no list-aware
+/// `LetBindingEnv`.
+#[test]
+fn union_all_over_an_inline_generate_of_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all(generate(2, |i| half_space(0mm, 0mm, 0mm, 0, 0, 1))))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected a GeometryUnbounded diagnostic for `union_all(generate(2, |i| \
+         half_space(...)))` at a Bounded slot, but got none. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// Positive control for the test above: an all-bounded inline `generate` fold
+/// must NOT diagnose. Without this, the negative test would still pass if the
+/// new arm started failing CLOSED for every `generate` fold, breaking the idiom
+/// #5385 exists to make legal.
+#[test]
+fn union_all_over_an_all_bounded_inline_generate_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: union_all(generate(3, |i| box(1mm, 1mm, 1mm))))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected NO GeometryUnbounded diagnostic for an all-bounded inline \
+         `generate` fold, got: {geometry_unbounded:?}"
     );
 }

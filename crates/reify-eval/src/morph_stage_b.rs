@@ -64,8 +64,8 @@ pub enum SubShapeSide {
 pub enum NamingLayerErrorReason {
     /// No attributes exist for any handle on either side — signals imported
     /// geometry that bypassed the per-op populator path (STEP/STL/...).
-    /// Mirrors the imported-geometry pre-pass in
-    /// `topology_attribute_resolver.rs:172`.
+    /// Mirrors the imported-geometry fallback pre-pass in
+    /// `resolve_unique_by_attribute` (topology_attribute_resolver.rs).
     Imported,
     /// Some handles are attributed, others are not — indicates malformed engine
     /// state (e.g. a partial re-build that populated some ops but not others).
@@ -213,7 +213,8 @@ pub fn stage_b_eligible(
 ///    asymmetric case).
 /// 2. **Distinct-handle precondition** (debug builds only) — assert `old` and
 ///    `new` each contain no duplicate `GeometryHandleId` values.
-/// 3. **Imported-geometry pre-pass** (mirrors `topology_attribute_resolver.rs:172`)
+/// 3. **Imported-geometry pre-pass** (mirrors the imported-geometry fallback
+///    pre-pass in topology_attribute_resolver.rs's `resolve_unique_by_attribute`)
 ///    — reached only when BOTH sides are non-empty. If no handle on either side
 ///    carries an attribute, signal imported geometry as `NamingLayerError::Imported`.
 /// 4. **Partial-attribution guard** — if some handles are attributed and

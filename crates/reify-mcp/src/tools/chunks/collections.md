@@ -23,7 +23,7 @@
 
 ## Literals
 
-```
+```reify-schematic
 [1, 2, 3]                           // List
 set{a, b, c}                        // Set (prefix avoids block ambiguity)
 map{"key" => value, "k2" => v2}     // Map
@@ -37,7 +37,7 @@ map{"key" => value, "k2" => v2}     // Map
 
 ## Counted Sub-structures
 
-```
+```reify-fragment
 sub vents : List<Vent>
 constraint vents.count == vent_count
 ```

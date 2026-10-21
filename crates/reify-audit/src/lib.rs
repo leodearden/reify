@@ -23,7 +23,7 @@
 //!    (gated behind `feature = "test-support"`) with HashMap-backed canned
 //!    answers keyed on `(since_sha, until_sha)` for changed-symbol queries
 //!    and `(file, name)` for reference queries, enabling per-commit and
-//!    file-level disambiguation. Per `f-infra-design.md` §5 P1.
+//!    declaration-site disambiguation. Per `f-infra-design.md` §5 P1.
 //!
 //! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
 //! every code path (happy path + false-positive guards + `check_pre_done`
@@ -46,10 +46,32 @@ pub mod puntested;
 pub mod player;
 pub mod ptodo;
 pub mod pdssentinel;
+pub mod pdiag;
 pub mod pdoccover;
+pub mod pdoccover_baseline;
+pub mod ratchet_ledger;
+pub mod pdcheck;
+pub mod pcite;
+pub mod pprdstatus;
+pub mod plinecite;
+pub mod plinecite_baseline;
+pub mod pattern_flag;
+/// Crate-internal: shared scaffolding for the lanes that read the task DB.
+/// Not part of the detector API surface — the lanes are.
+pub(crate) mod task_rows;
+/// Crate-internal: shared text-scanning primitives for the structural
+/// detectors. Not part of the detector API surface — the detectors are.
+pub(crate) mod scan_util;
+/// Not a detector: public only so the live-serve test harnesses decode MCP
+/// response bodies with the same function both clients use.
+pub mod mcp_wire;
+/// Crate-internal: the one rule for what counts as a completed MCP
+/// `initialize`, shared by both MCP clients.
+pub(crate) mod mcp_handshake;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
+pub mod jcodemunch_seam;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -76,6 +98,10 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
+/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — P1 / P5 H2 examined
+///   nothing where it should have. Per-task form: that task's
+///   `get_changed_symbols` query failed. Run-level form, `task_id` empty: the
+///   run had no usable jcodemunch seam from the start.
 /// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
@@ -102,6 +128,23 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
+    /// P1 — task-unexamined: P1 examined nothing where it should have. Two
+    /// forms, told apart by `task_id` alone:
+    ///
+    /// - **per-task** (`task_id` = the task): a `done` task P1 could not
+    ///   examine because its `get_changed_symbols` query failed (see
+    ///   [`JCodemunchCallFailed`]);
+    /// - **run-level** (`task_id` empty, the convention the corpus-level
+    ///   detectors use): the run had no usable jcodemunch seam from the start
+    ///   — unreachable, handshake refused, or an unusable index — so P1
+    ///   examined no task. At most one per run; the summary names the reason
+    ///   ([`jcodemunch_seam::SeamUnavailable`]).
+    ///
+    /// Always Low, so it never moves the exit code. Its presence is what
+    /// stops such a sweep from reading as clean: without it, zero
+    /// producer-orphan findings would be indistinguishable from a range that
+    /// introduced nothing.
+    P1TaskUnexamined,
     /// Metadata-hygiene: one or more entries in `metadata.files` are
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
     /// (medium-severity cleanliness signal, not a phantom-done).
@@ -137,6 +180,19 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
+    /// P5 — live-path-unexamined: H2 examined nothing where it should have.
+    /// H2's counterpart of [`Pattern::P1TaskUnexamined`], with the same two
+    /// forms told apart by `task_id`:
+    ///
+    /// - **per-task**: a cross-crate `done` task whose `get_changed_symbols`
+    ///   query failed;
+    /// - **run-level** (`task_id` empty): the run had no usable jcodemunch
+    ///   seam from the start, and it sweeps at least one task H2 would have
+    ///   queried for. At most one per run.
+    ///
+    /// Always Low, so it never moves the exit code; its presence stops zero
+    /// `P5LivePathStranded` findings from reading as clean.
+    P5LivePathUnexamined,
     /// PTODO — TODO-tracking-invariant: a TODO-family marker that is not backed
     /// by a *live* canonical `#NNNN` task citation. The §8.3 finding `kind` is
     /// carried as a stable summary prefix rather than a per-kind variant. Three
@@ -182,33 +238,114 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
     PDsSentinel,
+    /// PDIAG — codes-mandatory ratchet (`INV-SF-6 diagnostics-carry-codes`):
+    /// a `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction
+    /// site in scoped Rust source with no `.with_code(...)` attached within a
+    /// bounded forward line window, and not marked with a `// pdiag:allow —
+    /// reason` escape. The escape is forward-scoped and bounded by the next
+    /// constructor as well as by the window, so one escape covers exactly one
+    /// site and can never reach backwards over the site above it. Per-file
+    /// counts ratchet against the committed
+    /// `crates/reify-audit/pdiag-baseline.txt` manifest.
+    ///
+    /// **High** severity for a count that exceeds its baseline row (or a file
+    /// with sites and no row) — unlike PTODO/PDSSENTINEL this pattern DOES
+    /// move the process exit code, which is the hard gate PRD §8 boundary
+    /// row 8 requires. Under-count and orphan-row advisories are Medium and
+    /// exit-neutral, so an opportunistic fix never turns a diff RED. OPT-IN
+    /// via `is_some_and` (mirroring `run_pdead`), NOT a member of the
+    /// no-`--pattern` default sweep: because its verdicts move the exit code,
+    /// joining that sweep would make every consumer which omits `--pattern`
+    /// go RED the moment this ratchet drifted. Structural: reads the working
+    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch or the
+    /// task DB.
+    ///
+    /// Scope: `crates/<name>/src/**.rs` + `gui/src-tauri/src/**.rs`, minus the
+    /// detector's own crate, `reify-test-support`, `tests/`-segment paths and
+    /// `#[cfg(test)]` bodies.
+    ///
+    /// Reference: `docs/prds/v0_6/eradicate-silent-undef.md` §3 Leg C / §7;
+    /// remediation: `docs/notes/diagnostic-severity-policy.md` §3.
+    PDiag,
     /// PDOCCOVER — bidirectional registry↔chunk name drift between the
     /// compiler's builtin-name registries and the MCP language-reference
     /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
-    /// directions, five finding categories carried as a stable summary prefix
+    /// directions, its finding categories carried as a stable summary prefix
     /// (PTODO's `kind`-as-prefix convention above), all at
     /// [`Severity::High`]:
     ///
     /// - **Omission lane** — a `*_NAMES` registry entry in
     ///   `crates/reify-compiler/src/units.rs` that is not documented in any
-    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not listed in
-    ///   `crates/reify-audit/pdoccover-baseline.txt` → `undocumented-name:`.
-    ///   Ratchet-honesty siblings: `stale-baseline-entry:` (a baselined name
-    ///   that IS documented) and `stale-allow-entry:` (an allow-marked name
-    ///   that IS documented).
+    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not ledgered
+    ///   as a bare-name row → `undocumented-name:`. Ratchet-honesty sibling:
+    ///   `stale-allow-entry:` (an allow-marked name that IS documented).
     /// - **Fabrication lane** — a call-shaped name documented in a chunk that
-    ///   exists nowhere in the compiler/stdlib sources → `fabricated-name:`.
+    ///   exists nowhere in the compiler/stdlib sources and is not ledgered as
+    ///   a `<chunk path>:<name>` row → `fabricated-name:`.
     /// - Both lanes share `allow-missing-reason:` — a `pdoccover:allow` token
     ///   with a blank reason body confers NO exemption and is itself a finding.
+    /// - `stale-baseline-entry:` — a row of the committed ledger
+    ///   `crates/reify-audit/pdoccover-baseline.txt` that settles no live debt.
+    /// - `census-empty:` / `no-chunks:` — no registry name, or no readable
+    ///   chunk (a failed `git ls-files` is both): the run's ONLY finding, so a
+    ///   tree PDOCCOVER never read cannot report clean.
     ///
-    /// **Opt-in only** (`is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER): the
-    /// census is non-empty until #5480 seeds the baseline, and the CLI exit
-    /// code is the High-severity count, so joining the no-`--pattern` default
-    /// sweep would drown every other detector. Structural: reads the working
-    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch.
+    /// **Opt-in only**, like PDIAG: the exit code is the High-severity count,
+    /// so a drifting ledger in the no-`--pattern` default sweep would move
+    /// every bare `reify-audit` exit code. The hard gate over the committed
+    /// ledger is `tests/infra/test_reify_audit_pdoccover.sh`. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch.
     ///
     /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
     PDocCover,
+    /// PDCHECK — `delivered_checks` dead-path lane: a non-terminal task's
+    /// `kind: grep` capability-check row whose pathspec no longer resolves
+    /// against the tracked-file set. TWO finding kinds, carried as a stable
+    /// summary prefix (PTODO's `kind`-as-prefix convention above) and split on
+    /// the row's `expect` polarity, because both readings of the runner's rc=1
+    /// on an empty pathspec are silent but they are opposite defects:
+    ///
+    /// - `delivered-check-unsatisfiable-path` (**High**) — `expect: present`
+    ///   and every path in the row absent. rc=1 reads as FAILED, so every
+    ///   dependent blocks forever at `DEP_CAPABILITY_NOT_DELIVERED`.
+    /// - `delivered-check-vacuous-absent-path` (**Medium**) — `expect: absent`
+    ///   and every path absent. The identical rc=1 reads as PASSED, so the
+    ///   check succeeds while asserting nothing.
+    ///
+    /// Quantified over the WHOLE row: a multi-`paths` row runs as ONE
+    /// `git grep -E -e <pattern> <ref> -- <paths...>`, an ANY-match, so one
+    /// dead path among live ones leaves the row satisfiable and yields no
+    /// finding. Rename-vs-delete changes only the repair hint and is carried as
+    /// [`EvidenceRef`], not as a third and fourth kind.
+    ///
+    /// **Opt-in only** (`is_some_and`, mirroring PDIAG/PDOCCOVER): the High
+    /// kind moves the process exit code, which is the High-severity count.
+    /// Reads `ls_files()` plus a read-only `.taskmaster/tasks/tasks.db`; never
+    /// contacts jcodemunch.
+    ///
+    /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
+    PDeliveredCheckPath,
+    /// PCITE — capability-manifest cite lane: a symbol a
+    /// `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence
+    /// that no tracked source outside `docs/` and markdown contains. Two kinds,
+    /// carried as a stable summary prefix (PTODO's `kind`-as-prefix convention
+    /// above): `fabricated-cite:` (one per manifest and name) and
+    /// `allow-missing-reason:` (a `pcite:allow` marker with no reason body,
+    /// which exempts nothing). Each carries one [`EvidenceRef::FileLine`]:
+    /// the manifest line, and the cited symbol for `fabricated-cite:`.
+    ///
+    /// **Medium only** — report-only and exit-neutral, so the lane cannot gate
+    /// even when selected. Opt-in, like PDIAG/PDOCCOVER/PDCHECK. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch. Grammar, oracle and their measured basis: `pcite.rs`.
+    PManifestCite,
+    /// PPRDSTATUS — PRD status-prose drift. The [`pprdstatus`] module doc is
+    /// the canonical definition of its lanes, inputs and opt-in rationale.
+    PPrdStatus,
+    /// PLINECITE — stale hard line cites. The [`plinecite`] module doc is the
+    /// canonical definition.
+    PLineCite,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -218,10 +355,29 @@ pub enum Pattern {
 pub enum EvidenceRef {
     /// Filesystem path relative to `project_root`.
     File { path: String },
+    /// One line of a file relative to `project_root`, and the `symbol` on it
+    /// the finding is about — `None` when the finding is about the line
+    /// itself. A detector that reports several findings per file carries
+    /// each one's handle here, so a consumer (the `/audit` dedupe key, a
+    /// follow-up title) reads it rather than parsing it out of the summary.
+    FileLine {
+        path: String,
+        line: usize,
+        symbol: Option<String>,
+    },
     /// A git commit by SHA + first-line subject.
     Commit { sha: String, subject: String },
     /// One or more entries from a task's `metadata.files`.
     MetadataFiles { entries: Vec<String> },
+    /// One row of a task's `metadata.delivered_checks`, located by its `name`
+    /// — the handle a fixer needs to find the row — plus the `paths` pathspec
+    /// the row asserts over.
+    ///
+    /// Deliberately NOT [`EvidenceRef::MetadataFiles`], whose doc above pins
+    /// its meaning to "entries from a task's `metadata.files`": a
+    /// delivered_check row is a different thing with a different repair, and
+    /// collapsing the two would make the fixer guess which they were handed.
+    DeliveredCheck { check_name: String, paths: Vec<String> },
     /// A row in `data/orchestrator/runs.db`. `key` is a free-form locator
     /// (e.g. `"task_id=3242"`) — humans, not parsers, consume this.
     RunsDb { table: String, key: String },
@@ -339,6 +495,26 @@ pub struct AuditContext<'a> {
     pub producer_branch: Option<String>,
 }
 
+impl AuditContext<'_> {
+    /// Contents of tracked file `path` (root-relative), or `None` when it
+    /// cannot be read.
+    ///
+    /// The tracked-file read for PTODO, PDSSENTINEL and PDOCCOVER. Only
+    /// ENUMERATION is a git seam — those detectors take path membership from
+    /// `git.ls_files()` and then read the working tree directly through here,
+    /// so a path that is tracked but absent, unreadable, a directory, or not
+    /// valid UTF-8 is SKIPPED fail-safe: no finding, no panic. That matters
+    /// because the callers are scanners run over the whole repo, where one
+    /// unreadable file must not be able to take the detector — or the verify
+    /// gate it runs in — down.
+    ///
+    /// Not every such read in the crate: `pdiag.rs` hand-rolls two more, and
+    /// converging them is #7740.
+    pub(crate) fn read_relative(&self, path: &str) -> Option<String> {
+        std::fs::read_to_string(self.project_root.join(path)).ok()
+    }
+}
+
 // -----------------------------------------------------------------------
 // GitOps seam
 // -----------------------------------------------------------------------
@@ -419,9 +595,28 @@ pub trait GitOps {
     /// the correct question is "what did this commit change".
     fn changed_paths_in_commit(&self, commit: &str) -> Vec<String>;
 
-    /// `git check-ignore <path>` — true iff `path` is gitignored
+    /// `git check-ignore -- <path>` — true iff `path` is gitignored
     /// (or matches a negated rule that re-ignores).
-    fn is_gitignored(&self, path: &str) -> bool;
+    ///
+    /// Fail-safe: `false` on any git error, so "not ignored" and "could not
+    /// tell" are indistinguishable. Callers for whom that collapse is unsafe
+    /// must use [`GitOps::try_is_gitignored`] — see its note.
+    fn is_gitignored(&self, path: &str) -> bool {
+        self.try_is_gitignored(path).unwrap_or(false)
+    }
+
+    /// Fallible variant of [`GitOps::is_gitignored`]: `Ok(false)` means git ran
+    /// and the path is not ignored; `Err(description)` means git did not run or
+    /// failed, and the question is UNANSWERED.
+    ///
+    /// Exists for the same inverted-fail-safe reason as
+    /// [`GitOps::try_log_grep`]. The P5 pre-done gate builds its declared set by
+    /// SUBTRACTING the gitignored subset from `metadata.files`, so a `false`
+    /// from a failed `git check-ignore` keeps the entry in `declared` — the
+    /// first half of a blocking refusal. The gate routes the `Err` into its
+    /// advisory channel instead, downgrading any surviving refusal to a
+    /// non-blocking `Low`.
+    fn try_is_gitignored(&self, path: &str) -> Result<bool, String>;
 
     /// Returns `true` iff `path` resolves on `branch` to a tracked file OR a
     /// directory containing tracked files (git does not track empty dirs),
@@ -555,11 +750,13 @@ pub trait GitOps {
 /// **Construct exactly once per `project_root`.** The private
 /// `gitignore_unavailable` field is a per-instance `AtomicBool` that
 /// short-circuits all subsequent
-/// [`is_gitignored`](GitOps::is_gitignored) calls after the first
+/// [`try_is_gitignored`](GitOps::try_is_gitignored) calls after the first
 /// unrecoverable `git check-ignore` exit, so a task with N files against
 /// a broken git repo emits at most one
 /// `reify-audit: git check-ignore exited …` breadcrumb rather than N
-/// copies of the same line.
+/// copies of the same line. It is a BREADCRUMB budget, not a cached
+/// answer: a short-circuited call returns `Err` like the one that latched
+/// it, silently.
 ///
 /// This dedup is silently defeated by constructing a fresh [`RealGitOps`]
 /// per task, per file, or per worker: each new instance starts with a
@@ -576,11 +773,12 @@ pub trait GitOps {
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
-    /// Set to `true` the first time `is_gitignored` encounters a genuine
+    /// Set to `true` the first time `try_is_gitignored` encounters a genuine
     /// non-0/1 exit status from `git check-ignore` (exit code other than 0 or
-    /// 1). Subsequent calls short-circuit and return `false` silently, so a
-    /// task with N files against a broken git repo emits at most one breadcrumb
-    /// rather than N copies of the same line.
+    /// 1). Subsequent calls short-circuit to `Err` silently, so a task with N
+    /// files against a broken git repo emits at most one breadcrumb rather than
+    /// N copies of the same line. `Err`, not `Ok(false)`: the flag budgets the
+    /// breadcrumb and makes no claim that the answer is known.
     ///
     /// A spawn-level `Err` (EAGAIN/ENOMEM transient) does **not** latch this
     /// flag — a transient OS failure is not evidence that `git check-ignore` is
@@ -915,10 +1113,14 @@ impl GitOps for RealGitOps {
             .collect()
     }
 
-    fn is_gitignored(&self, path: &str) -> bool {
+    fn try_is_gitignored(&self, path: &str) -> Result<bool, String> {
         // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
         // Any other outcome (spawn error, exit code other than 0/1) is a git
-        // failure — log a breadcrumb and default to false.
+        // failure — log a breadcrumb and report the question as unanswered.
+        //
+        // `--` is load-bearing: `metadata.files` is hand-authored and
+        // unescaped, so an entry beginning with `-` would otherwise be parsed
+        // as an option and exit 129.
         //
         // Use `.output()` (not `.status()`) to capture git's own stderr so
         // that "fatal: not a git repository" and similar diagnostics do not
@@ -929,31 +1131,27 @@ impl GitOps for RealGitOps {
         // code), `gitignore_unavailable` is latched so subsequent calls
         // short-circuit without forking git again — a task with N files
         // against a broken repo emits at most one breadcrumb rather than N
-        // identical lines.  A spawn-level Err (EAGAIN/ENOMEM transient) does
-        // NOT latch the flag: a transient OS failure is not evidence that git
-        // check-ignore is permanently broken for this repo.
+        // identical lines.  The latch budgets the BREADCRUMB only: a
+        // short-circuited call is still an unanswered question and returns
+        // `Err`, never `Ok(false)`.  A spawn-level Err (EAGAIN/ENOMEM
+        // transient) does NOT latch the flag: a transient OS failure is not
+        // evidence that git check-ignore is permanently broken for this repo.
         if self.gitignore_unavailable.load(Ordering::Relaxed) {
-            return false;
+            return Err("git check-ignore previously unavailable in this repository".to_string());
         }
         // Intentionally calls Command::output() directly rather than going
-        // through spawn_with_retry.  is_gitignored() has its own per-session
+        // through spawn_with_retry.  This seam has its own per-session
         // AtomicBool dedup latch (gitignore_unavailable) that a retry loop
         // would complicate; a spawn-level transient EAGAIN here already does
         // NOT set the latch (see Err branch below), so recovery is possible
         // on the next call.  The shell-layer run_audit retry in the PTODO infra
         // test provides defense-in-depth against persistent spawn pressure.
-        //
-        // Residual transient risk: a spawn failure here returns false
-        // (not-ignored), potentially scanning a file that should be excluded
-        // and surfacing a spurious finding (exit 0→1).  That is the
-        // conservative / extra-finding direction — the opposite of the exit 1→0
-        // flake task #4800 targets — and caught by re-running.
         match crate::git_env::command(&self.project_root)
-            .args(["check-ignore", "--quiet", path])
+            .args(["check-ignore", "--quiet", "--", path])
             .output()
         {
-            Ok(out) if out.status.code() == Some(0) => true,
-            Ok(out) if out.status.code() == Some(1) => false,
+            Ok(out) if out.status.code() == Some(0) => Ok(true),
+            Ok(out) if out.status.code() == Some(1) => Ok(false),
             Ok(out) => {
                 self.gitignore_unavailable.store(true, Ordering::Relaxed);
                 eprintln!(
@@ -961,23 +1159,21 @@ impl GitOps for RealGitOps {
                     out.status.code(),
                     self.project_root.display()
                 );
-                false
+                Err(format!("git check-ignore exited {:?}", out.status.code()))
             }
             Err(e) => {
                 // Spawn failure (EAGAIN/ENOMEM under load) — do NOT latch
                 // `gitignore_unavailable`.  A transient spawn error is not
                 // evidence that git check-ignore is permanently unavailable;
                 // latching here would silently disable ignore-filtering for
-                // the entire session after a single resource blip, potentially
-                // surfacing spurious findings for files that should be
-                // excluded.  Only a genuine non-0/1 exit status (above)
-                // warrants the dedup latch.
+                // the entire session after a single resource blip.  Only a
+                // genuine non-0/1 exit status (above) warrants the dedup latch.
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",
                     self.project_root.display(),
                     e
                 );
-                false
+                Err(format!("git check-ignore failed: {e}"))
             }
         }
     }
@@ -1117,6 +1313,10 @@ pub struct MockGitOps {
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
     changed_paths_in_commit: HashMap<String, Vec<String>>,
     is_gitignored: HashMap<String, bool>,
+    /// Simulated `git check-ignore` FAILURES, keyed like `is_gitignored`. An
+    /// entry here makes `try_is_gitignored` return `Err`, which is a different
+    /// observation from `Ok(false)` — see [`GitOps::try_is_gitignored`].
+    is_gitignored_errors: HashMap<String, String>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
@@ -1185,6 +1385,18 @@ impl MockGitOps {
     pub fn set_path_tracked_on_error(&mut self, branch: &str, path: &str, err: &str) {
         self.path_tracked_on_errors
             .insert((branch.to_string(), path.to_string()), err.to_string());
+    }
+
+    /// Make `git check-ignore -- <path>` FAIL rather than answer.
+    ///
+    /// Distinct from `set_is_gitignored(.., false)`: that is git answering
+    /// "not ignored", this is git not answering at all. The P5 pre-done gate
+    /// subtracts the ignored set from the declared set, so it must not read the
+    /// latter as the former.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_is_gitignored_error(&mut self, path: &str, err: &str) {
+        self.is_gitignored_errors
+            .insert(path.to_string(), err.to_string());
     }
 
     /// Make `git log <branch> --grep=<pattern>` FAIL rather than answer.
@@ -1271,8 +1483,11 @@ impl GitOps for MockGitOps {
             .unwrap_or_default()
     }
 
-    fn is_gitignored(&self, path: &str) -> bool {
-        self.is_gitignored.get(path).copied().unwrap_or(false)
+    fn try_is_gitignored(&self, path: &str) -> Result<bool, String> {
+        if let Some(err) = self.is_gitignored_errors.get(path) {
+            return Err(err.clone());
+        }
+        Ok(self.is_gitignored.get(path).copied().unwrap_or(false))
     }
 
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
@@ -1330,19 +1545,12 @@ impl GitOps for MockGitOps {
 // JCodemunchOps seam (P1)
 // -----------------------------------------------------------------------
 
-/// A public symbol introduced (or changed) by a `done` task, as reported by
-/// `mcp__jcodemunch__get_changed_symbols`. Carries pre-extracted suppression
-/// metadata so the detector stays pure-logic (it never reads source files —
-/// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
-/// Per `f-infra-design.md` §3 and §5 P1.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChangedSymbol {
-    /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
-    pub name: String,
-    /// Workspace-relative path of the file declaring the symbol.
-    pub file: String,
-    /// 1-based line of the declaration (forensic evidence locator).
-    pub line: usize,
+/// The opt-outs a declaration carries, as READ by the suppression-enrichment
+/// pass (`jcodemunch_client`'s `extract_suppression`). Reaches a detector only
+/// inside [`ChangedSymbol::suppression`], whose `Option` carries the separate
+/// question of whether the declaration was located at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclSuppression {
     /// `true` when the declaration carries `#[allow(dead_code)]` — an
     /// intentional-orphan opt-out (suppresses the finding). Per
     /// `f-infra-design.md` §5 P1.
@@ -1352,9 +1560,95 @@ pub struct ChangedSymbol {
     pub has_cfg_test: bool,
     /// The reason text of a `// G-allow:` marker on the declaration, if any.
     /// A `Some` with non-blank content suppresses the finding; `Some("")` /
-    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh:150`
-    /// `G_ALLOW_RE = //\s*G-allow:\s*(.+)` where `(.+)` requires content).
+    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh`'s
+    /// `G_ALLOW_RE` pattern, `//\s*G-allow:\s*(.+)`, where `(.+)` requires
+    /// content).
     pub g_allow_marker: Option<String>,
+}
+
+impl DeclSuppression {
+    /// `true` when the declaration carries ANY of the opt-outs above — the
+    /// single home of the rule P1 and P5 H2 both apply, so the two cannot
+    /// drift. Per `f-infra-design.md` §5 P1/P5.
+    // G-allow: single home of the opt-out rule; callers are intra-crate (is_symbol_suppressed) — orphan-audit script counts only inter-crate call sites
+    pub fn opts_out(&self) -> bool {
+        self.has_allow_dead_code
+            || self.has_cfg_test
+            || self
+                .g_allow_marker
+                .as_deref()
+                .is_some_and(|r| !r.trim().is_empty())
+    }
+}
+
+/// A public symbol introduced (or changed) by a `done` task, as reported by
+/// `mcp__jcodemunch__get_changed_symbols`. Carries pre-extracted suppression
+/// metadata so the detector stays pure-logic (it never reads source files —
+/// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
+/// Per `f-infra-design.md` §3 and §5 P1.
+///
+/// Suppression is THREE-state, and [`decl_located`](Self::decl_located) is the
+/// state a consumer branches on FIRST: `None` means the declaration was never
+/// located, so no opt-out judgement was possible; a default
+/// [`DeclSuppression`] means it was read and carries none; one with a flag set
+/// means it was read and opted out. All three causes of `None` — the wire
+/// reported no `line`, the line is past the declaring file's current end
+/// (a stale index), or the declaring file could not be read — are carried
+/// here per symbol, not merely summarised to the operator on stderr by the
+/// enrichment pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedSymbol {
+    /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
+    pub name: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// 1-based line of the declaration (forensic evidence locator) WHEN
+    /// the wire reports one. `0` is the sentinel for "not reported",
+    /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
+    /// that omits the `line` column still yields the symbol, located at
+    /// `0`, rather than dropping it. The sentinel is for forensic display
+    /// only — it covers just one of the three ways a declaration goes
+    /// unlocatable, so a consumer asks
+    /// [`decl_located`](Self::decl_located), never `line == 0`.
+    pub line: usize,
+    /// The opt-outs this symbol's declaration carries, or `None` when the
+    /// declaration was never located — see the three-state note on the struct.
+    pub suppression: Option<DeclSuppression>,
+}
+
+impl ChangedSymbol {
+    /// `true` when the suppression-enrichment pass actually read this symbol's
+    /// declaration, so [`suppression`](Self::suppression) is a judgement about
+    /// the source rather than an absence of one.
+    ///
+    /// `false` reports a degradation of the jcodemunch substrate, never a
+    /// statement about the code: the wire reported no `line` (the grammar
+    /// drift release 1.108.54 already shipped for `find_references`), the
+    /// reported line is past the declaring file's current end (a stale index),
+    /// or the declaring file could not be read. A consumer that skips this
+    /// question and reads `None` as "the author declined every opt-out" turns
+    /// any of the three into a false positive over every intentionally
+    /// suppressed symbol.
+    // G-allow: accessor on the public ChangedSymbol API; every caller is intra-crate or a test — orphan-audit script counts only inter-crate call sites
+    pub fn decl_located(&self) -> bool {
+        self.suppression.is_some()
+    }
+
+    /// `true` when this symbol's declaration was located AND carries one of
+    /// [`DeclSuppression`]'s opt-outs — the `Option`-lifting of
+    /// [`DeclSuppression::opts_out`] onto a symbol, so no detector rewrites
+    /// it inline.
+    ///
+    /// An unlocatable declaration answers `false`: it made no opt-out claim
+    /// either way. That is NOT permission to report the symbol — ask
+    /// [`decl_located`](Self::decl_located) first; this answers only "did
+    /// the author opt out".
+    // G-allow: accessor on the public ChangedSymbol API; every caller is intra-crate or a test — orphan-audit script counts only inter-crate call sites
+    pub fn opts_out(&self) -> bool {
+        self.suppression
+            .as_ref()
+            .is_some_and(DeclSuppression::opts_out)
+    }
 }
 
 /// A non-declaration reference (caller site) of a symbol, as reported by
@@ -1364,7 +1658,9 @@ pub struct ChangedSymbol {
 pub struct SymbolReference {
     /// Workspace-relative path of the referencing file.
     pub file: String,
-    /// 1-based line of the reference.
+    /// 1-based line of the reference WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported": jcodemunch's `find_references` records
+    /// carry only `file`/`specifier`/`match_type`, no line number.
     pub line: usize,
 }
 
@@ -1386,7 +1682,11 @@ pub struct DeadSymbol {
     pub kind: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration.
+    /// 1-based line of the declaration WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported", mirroring [`ChangedSymbol::line`] and
+    /// [`SymbolReference::line`]: a `get_dead_code_v2` payload that omits the
+    /// `line` column still yields the symbol, located at `0`, rather than
+    /// dropping it from the PDEAD sweep.
     pub line: usize,
     /// Jcodemunch's confidence score that the symbol is truly unreachable
     /// (0.0 = uncertain; 1.0 = certain). Filtered by `min_confidence` in
@@ -1434,12 +1734,33 @@ pub struct LayerViolation {
     pub rule: String,
 }
 
+/// A [`JCodemunchOps`] query that failed outright, as distinct from one that
+/// answered with nothing. Carried by
+/// [`JCodemunchOps::get_changed_symbols`]'s `Err` so a caller can report the
+/// range it could not examine instead of reading the failure as empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JCodemunchCallFailed {
+    /// The jcodemunch tool whose call failed, e.g. `"get_changed_symbols"`.
+    pub tool: &'static str,
+    /// The client's description of the failure (transport, timeout, or an
+    /// error envelope).
+    pub detail: String,
+}
+
+impl std::fmt::Display for JCodemunchCallFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "jcodemunch {} call failed: {}", self.tool, self.detail)
+    }
+}
+
+impl std::error::Error for JCodemunchCallFailed {}
+
 /// Source-introspection operations the P1 detector needs. Production: a
 /// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
 /// canned answers keyed on `(since_sha, until_sha)` for changed-symbol
 /// queries and `(file, name)` for reference queries, enabling per-commit and
-/// file-level disambiguation. Per `f-infra-design.md` §3 and §5 P1.
+/// declaration-site disambiguation. Per `f-infra-design.md` §3 and §5 P1.
 ///
 /// Object-safe by design — `AuditContext` holds `&'a dyn JCodemunchOps` so
 /// the production and mock impls coexist behind the same vtable (mirrors
@@ -1450,15 +1771,33 @@ pub trait JCodemunchOps {
     /// commit range `since_sha..until_sha`. Typically `since_sha = "{commit}^1"`
     /// and `until_sha = "{commit}"` for a single merged commit (mirrors the
     /// `^1..commit` convention from `RealGitOps::diff_added_lines_in_commit`).
-    /// Returns an empty vec when the range is empty or the commits are not found.
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol>;
+    ///
+    /// `Ok` with an empty vec means the range introduced nothing (or its
+    /// commits are not in the index). `Err` means the query itself failed —
+    /// unreachable mid-sweep, timed out, an error envelope — and must never
+    /// be read as empty: the range went unexamined.
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed>;
 
-    /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
-    /// non-declaration reference of the symbol across the workspace, scoped
-    /// to the symbol's declaring file so that two same-named symbols in
-    /// different files are not conflated. Production impls MUST scope the
-    /// lookup to `symbol.file` (e.g. pass the file path to jcodemunch-MCP
-    /// for module-level disambiguation); tests key on `(file, name)`.
+    /// Equivalent of `mcp__jcodemunch__find_references(identifier = symbol.name)`:
+    /// the workspace references to `symbol`, where each
+    /// [`SymbolReference::file`] is the REFERENCING site.
+    ///
+    /// Impls MUST NOT narrow the result by the referencing file. jcodemunch's
+    /// lookup is import-based, so the declaring file is never in it, and a
+    /// cross-file caller is exactly the evidence P1 and P5 H2 read as "any
+    /// non-test reference" (#6504).
+    ///
+    /// Impls MAY drop references to same-named symbols declared elsewhere
+    /// when their substrate can tell them apart (`MockJCodemunchOps` keys on
+    /// `(file, name)`). The jcodemunch-backed impl cannot: its lookup is
+    /// name-based with no file parameter, so it over-approximates, counting
+    /// a same-named symbol's importer as a caller. That is a false-negative
+    /// bias, accepted for a low-false-positive detector.
+    ///
     /// Returns an empty vec when the symbol has no callers (an orphan
     /// candidate). Per `f-infra-design.md` §5 P1.
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
@@ -1480,6 +1819,48 @@ pub trait JCodemunchOps {
     fn get_layer_violations(&self) -> Vec<LayerViolation>;
 }
 
+/// Inert [`JCodemunchOps`] — every query answers "nothing".
+///
+/// Its `Ok(vec![])` from `get_changed_symbols` is not a statement about any
+/// range: no query was made. Unlike [`MockJCodemunchOps`] this is NOT
+/// test-support: it is the production binding whenever a run has no live
+/// seam, and it is ungated for exactly that reason. Its production call sites:
+///
+/// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
+///    produces zero findings without opening a socket.
+/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`).
+/// 3. The fallback for a needed seam that is unreachable, refused the
+///    handshake, or sits over an unusable index
+///    ([`jcodemunch_seam::Seam::Unavailable`]). The bin records the affected
+///    detectors as unexamined in that case, so their silence is not read as
+///    a clean result.
+/// 4. The `*-baseline-gen` structural censuses, which still have to populate
+///    [`AuditContext`]'s field.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopJCodemunchOps;
+
+impl JCodemunchOps for NoopJCodemunchOps {
+    fn get_changed_symbols(
+        &self,
+        _since_sha: &str,
+        _until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
+        Ok(vec![])
+    }
+    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
+        vec![]
+    }
+    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
+        vec![]
+    }
+    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
+        vec![]
+    }
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
+        vec![]
+    }
+}
+
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
 /// `feature = "test-support"` so it never pollutes the production public API
 /// (mirrors [`MockGitOps`]). The crate self-pulls this feature in its own
@@ -1487,13 +1868,16 @@ pub trait JCodemunchOps {
 ///
 /// Changed-symbol queries are keyed on `(since_sha, until_sha)` (the
 /// commit-range surface per jcodemunch v1.108.27+); reference queries are
-/// keyed on `(file, name)` for file-level disambiguation.
+/// keyed on `(file, name)` for declaration-site disambiguation, which the
+/// [`JCodemunchOps::find_references`] contract permits but the
+/// jcodemunch-backed impl cannot provide.
 /// Dead-code / untested-symbol data is stored as a flat Vec and filtered by
 /// `min_confidence` at query time (mirrors the real tool's semantics).
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
-    get_changed_symbols: HashMap<(String, String), Vec<ChangedSymbol>>,
+    get_changed_symbols:
+        HashMap<(String, String), Result<Vec<ChangedSymbol>, JCodemunchCallFailed>>,
     find_references: HashMap<(String, String), Vec<SymbolReference>>,
     dead_code: Vec<DeadSymbol>,
     untested: Vec<UntestedSymbol>,
@@ -1518,7 +1902,17 @@ impl MockJCodemunchOps {
         symbols: Vec<ChangedSymbol>,
     ) {
         self.get_changed_symbols
-            .insert((since_sha.to_string(), until_sha.to_string()), symbols);
+            .insert((since_sha.to_string(), until_sha.to_string()), Ok(symbols));
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_changed_symbols(&mut self, since_sha: &str, until_sha: &str, detail: &str) {
+        let failure = JCodemunchCallFailed {
+            tool: "get_changed_symbols",
+            detail: detail.to_string(),
+        };
+        self.get_changed_symbols
+            .insert((since_sha.to_string(), until_sha.to_string()), Err(failure));
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -1549,11 +1943,15 @@ impl MockJCodemunchOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl JCodemunchOps for MockJCodemunchOps {
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
         self.get_changed_symbols
             .get(&(since_sha.to_string(), until_sha.to_string()))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| Ok(vec![]))
     }
 
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
@@ -1610,32 +2008,42 @@ fn is_test_path(p: &str) -> bool {
         || p.contains(".spec.")  // JS/TS: foo.spec.ts
 }
 
-/// Combined suppression predicate for detector passes that check changed symbols.
+/// Combined OPT-OUT predicate for P5 H2 (`check_live_path_stranded`): the
+/// author's own opt-out, plus the `crates/reify-stdlib/` scope-exclude (every
+/// `.ri` structure def is technically orphan until something calls it).
 ///
-/// Returns `true` when the symbol should be silently skipped — it is a stdlib
-/// def, an intentional orphan, or carries a G-allow marker:
+/// Answers "did the author opt out", NOT "should this be reported". A symbol
+/// whose declaration was never located answers `false`, because no opt-out
+/// was ever observed; whether it is reportable is the SEPARATE question
+/// [`ChangedSymbol::decl_located`] asks, and folding the two into one
+/// predicate is what made an unlocatable declaration indistinguishable from a
+/// clean one.
 ///
-/// - File starts with `crates/reify-stdlib/` (scope-exclude: every
-///   `.ri` structure def is technically orphan until something calls it).
-/// - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
-/// - Non-blank `// G-allow:` marker (mirrors
-///   `scripts/audit-orphan-producers.sh:150` `G_ALLOW_RE =
-///   //\s*G-allow:\s*(.+)` where `(.+)` requires at least one non-whitespace
-///   character; a blank/whitespace-only marker does NOT suppress).
-///
-/// Used by both P1 (`p1_producer_orphan`) and P5 H2 (`check_live_path_stranded`)
-/// so the opt-out semantics stay in lockstep. `p1_producer_orphan` still holds
-/// its own private `is_g_allow_suppressed` copy; this crate-level helper is the
-/// canonical reference for future callers. Per `f-infra-design.md` §5 P1/P5.
+/// P1 (`p1_producer_orphan`) calls [`ChangedSymbol::opts_out`] on its own, so
+/// the stdlib clause below is the whole of the difference between the two
+/// detectors. Per `f-infra-design.md` §5 P1/P5.
 // G-allow: shared suppression predicate; callers are intra-crate (p5_phantom_done::check_live_path_stranded) — orphan-audit script counts only inter-crate call sites
 pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
-    symbol.file.starts_with("crates/reify-stdlib/")
-        || symbol.has_allow_dead_code
-        || symbol.has_cfg_test
-        || symbol
-            .g_allow_marker
-            .as_deref()
-            .is_some_and(|r| !r.trim().is_empty())
+    symbol.file.starts_with("crates/reify-stdlib/") || symbol.opts_out()
+}
+
+/// `Some(n)` when `symbols` carries `n >= 1` entries and NOT ONE of their
+/// declarations could be located, so a detector's per-symbol pass examined
+/// nothing it was handed; `None` when at least one was examinable.
+///
+/// Such a sweep reports zero findings for the same reason an empty one does —
+/// it looked at nothing — but it is invisible to an `is_empty()` check, so
+/// the two states need separate detection. The cause is a degraded jcodemunch
+/// substrate (see [`ChangedSymbol::decl_located`]); before unlocatable symbols
+/// were skipped, that degradation announced itself as a false-positive storm,
+/// and without this it would announce itself as nothing at all.
+///
+/// An EMPTY sweep is deliberately not folded in: "received nothing" and
+/// "examined nothing of what was received" have different remedies, so each
+/// detector words them as separate clauses.
+// G-allow: shared vacuity rule; callers are intra-crate (p1_producer_orphan, p5_phantom_done) — orphan-audit script counts only inter-crate call sites
+pub(crate) fn wholly_unlocatable_count(symbols: &[ChangedSymbol]) -> Option<usize> {
+    (!symbols.is_empty() && symbols.iter().all(|s| !s.decl_located())).then_some(symbols.len())
 }
 
 // -----------------------------------------------------------------------
@@ -1716,6 +2124,68 @@ mod tests {
             parse_rename_target("", "old.rs"),
             None,
             "empty stdout (e.g. a merge commit) must not resolve a rename target",
+        );
+    }
+
+    /// Every arm of the tracked-file read that PTODO, PDSSENTINEL and
+    /// PDOCCOVER each used to inline separately and none of them tested
+    /// directly: the path resolves against `project_root` rather than the
+    /// process cwd, and anything unreadable — absent, a directory, or not
+    /// valid UTF-8 — yields `None` rather than a finding or a panic.
+    ///
+    /// The encoding arm is the one a real corpus reaches: `read_to_string`
+    /// fails on invalid UTF-8, so any tracked file with a swept extension and
+    /// binary-ish content exercises it, and it is what the detectors'
+    /// `files_scanned` accounting means when it excludes paths whose read
+    /// yielded `None`.
+    #[test]
+    fn read_relative_resolves_against_project_root_and_skips_unreadable() {
+        use super::{AuditContext, MockGitOps, MockJCodemunchOps};
+        use rusqlite::Connection;
+        use std::collections::HashMap;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("crates/x/src")).expect("mkdir src");
+        std::fs::write(root.path().join("crates/x/src/a.rs"), "fn a() {}\n").expect("write");
+        std::fs::create_dir_all(root.path().join("crates/x/tests")).expect("mkdir tests");
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.path().to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        assert_eq!(
+            ctx.read_relative("crates/x/src/a.rs").as_deref(),
+            Some("fn a() {}\n"),
+            "the path is resolved against project_root, not the process cwd",
+        );
+        assert_eq!(
+            ctx.read_relative("crates/x/src/absent.rs"),
+            None,
+            "an absent file is skipped fail-safe",
+        );
+        assert_eq!(
+            ctx.read_relative("crates/x/tests"),
+            None,
+            "a directory is unreadable — `None`, never a panic",
+        );
+
+        std::fs::write(root.path().join("crates/x/src/bad.rs"), [0xFF, 0xFE, 0x00])
+            .expect("write non-UTF-8");
+        assert_eq!(
+            ctx.read_relative("crates/x/src/bad.rs"),
+            None,
+            "a non-UTF-8 file is skipped fail-safe, not a panic",
         );
     }
 }

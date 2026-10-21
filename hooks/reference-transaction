@@ -5,6 +5,9 @@
 # Both are lightweight tripwires over the same staged warn → enforce →
 # break-glass rollout, with INDEPENDENT switches; neither is a verify-runner.
 #
+# Whether git actually runs this hook in a given worktree (the core.hooksPath
+# clobber): scripts/hooks-armed-guard.sh.
+#
 # This is the ONLY git hook that fires on a *local* `git reset` / `git update-ref`
 # / fast-forward of a branch ref — the exact operations that pre-commit and
 # pre-merge-commit miss (those fire only when a commit / merge-commit is created).
@@ -15,10 +18,10 @@
 # return fast for everything that is not a refs/heads/main move in the 'prepared'
 # state.
 #
-# Sanctioned vs unsanctioned is decided by a file sentinel (hooks/main-gate-lib.sh):
-# the sanctioned paths (pre-commit after project-checks pass, pre-merge-commit
-# after verify passes, scripts/land.sh) mark it; this hook consumes it. A main
-# move WITH the sentinel is sanctioned; WITHOUT it is unsanctioned.
+# Sanctioned vs unsanctioned is decided by a file sentinel (hooks/main-gate-lib.sh)
+# that carries the main tip it sanctions: a move is sanctioned only when that tip
+# equals the move's old oid. Token table:
+# docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md D9.
 #
 # Rollout is staged (warn now, enforce later). ENFORCE and BYPASS are each
 # resolved by main_gate_{enforce,bypass}_on (hooks/main-gate-lib.sh) from a
@@ -197,9 +200,17 @@ STASH_REFUSAL
 
     sentinel="$(main_gate_sentinel)"
     if [ -e "$sentinel" ]; then
+        _token="$(main_gate_token)"
         rm -f "$sentinel" 2>/dev/null
-        main_gate_log "sanctioned main move ${_old} -> ${_new}"
-        continue
+        if [ -z "$_token" ]; then
+            main_gate_log "sanctioned (legacy unbound sentinel) main move ${_old} -> ${_new}"
+            continue
+        fi
+        if [ "$_token" = "$_old" ]; then
+            main_gate_log "sanctioned main move ${_old} -> ${_new}"
+            continue
+        fi
+        main_gate_log "stale sentinel ${_token} discarded"
     fi
 
     main_gate_log "UNSANCTIONED main move ${_old} -> ${_new}"

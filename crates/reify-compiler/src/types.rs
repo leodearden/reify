@@ -6,6 +6,8 @@ use reify_core::{
 };
 use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
+use crate::port_path::PortPath;
+
 pub use reify_ir::{CompiledFnBody, CompiledFunction};
 
 /// A compiled import declaration.
@@ -621,44 +623,23 @@ pub enum CompiledForallBody {
     },
     /// Per-element connection body: `forall v in coll: connect <l> <op> <r> [: T(...)]`.
     ///
-    /// Task 2690 — wired. The substituted `coll[0]` placeholder appears
-    /// pre-baked in `left_port_template` and `right_port_template` (e.g.
-    /// `"vents[0].inlet"`); at runtime the engine rewrites each occurrence
-    /// of `format!("{coll_sub_name}[0]")` to `format!("{coll_sub_name}[{i}]")`
-    /// to materialise per-element connections.
+    /// Both endpoints are typed [`PortPath`]s; the bound variable is
+    /// [`PortRoot::Element`](crate::PortRoot::Element), and
+    /// [`PortPath::at_element`] is the only materialiser of it. A
+    /// source-written literal index (`coll[0]`, `bays["intake"]`) is a
+    /// `Literal` root and is never rewritten, so each element's connection
+    /// names the same ports the resolved (non-deferred) path names.
     ///
-    /// **Semantic divergence vs. the resolved (non-deferred) path** (mirrors
-    /// the Constraint variant's `body_expr` doc): a user-written explicit
-    /// `coll[0]` reference inside the connect body — vanishingly rare in
-    /// practice — is *also* rewritten to `coll[i]` for each `i`. Anchoring
-    /// the substring on `coll_sub_name` (not just `[0]`) reduces the risk of
-    /// accidentally rewriting an unrelated literal `[0]` in a port name.
-    ///
-    /// At runtime emission, the engine synthesises a fresh
-    /// compatibility-constraint `ConstraintNodeId` per element and pushes a
-    /// fresh `CompiledConnection` into `EvaluationGraph::connections`. The
-    /// synthetic compatibility constraint is a `Bool::True` literal — the
-    /// connect-time direction-check is NOT replicated at runtime; this
-    /// mirrors the Constraint arm's "compile substitution; trust at runtime"
-    /// policy. Auto-creation of `connector_sub` / `frame_constraint` is
-    /// deferred to a future task.
-    ///
-    /// **Connector-spec drop at runtime** (task 2690 amendment): for the
-    /// rich form (`forall v in coll: connect a -> b : T(p = e, ...)`) the
-    /// captured `connector_type` and `params` fields are populated here at
-    /// compile time, but `engine_edit.rs`'s re-emission drops them — only
-    /// the port-to-port connection is materialised, with `connector_sub`
-    /// set to `None` and `port_mappings` carried verbatim. The deferred
-    /// compile-time path emits an info diagnostic surfacing this limitation;
-    /// the captured fields are kept for a future task that wires
-    /// connector-spec-aware runtime emission.
+    /// At runtime each element gets a fresh `CompiledConnection` paired with a
+    /// synthetic `Bool::True` compatibility constraint: the connect-time
+    /// direction check is not replayed, and `connector_type` / `params` are
+    /// dropped — no `connector_sub` or `frame_constraint` is created, and
+    /// `port_mappings` is carried verbatim.
     Connect {
-        /// Substituted left-side port name (e.g. `"vents[0].inlet"`).
-        left_port_template: String,
+        left: PortPath,
         /// Direction operator from the source `connect` declaration.
         operator: reify_ast::ConnectOp,
-        /// Substituted right-side port name (e.g. `"air_channel"`).
-        right_port_template: String,
+        right: PortPath,
         /// Optional explicit connector type name (e.g. `BoltSet`).
         connector_type: Option<String>,
         /// Pre-substituted, pre-compiled connect parameters
@@ -1325,6 +1306,38 @@ pub struct CompiledConstraint {
     pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
+/// Marks a `RealizationDecl` as one element of a *geometry-list let* —
+/// a `let` whose initializer statically unrolls to a fixed-length sequence of
+/// geometry expressions (`[<geom>, ...]` or `generate(<int literal>, |i|
+/// <geom>)`).
+///
+/// Realizations are compile-time-declared IR nodes that eval hydrates *by
+/// name*, so a list of geometry is represented as N sibling realizations
+/// rather than one realization holding N shapes. This binding is what lets
+/// eval regroup those siblings back into a single `Value::List` cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryListBinding {
+    /// The user-facing name of the geometry-list `let` this element belongs to.
+    pub list_name: String,
+    /// This element's 0-based position within the list.
+    pub index: usize,
+    /// The list's COMPILE-TIME element count — i.e. `index < len` for every
+    /// sibling, and every sibling of one list carries the same `len`.
+    ///
+    /// Deliberately not derivable from the emitted siblings. Eval's
+    /// all-or-nothing regrouping must compare what resolved against what the
+    /// compiler *intended*, not against what it managed to emit: the emission
+    /// loop drops an element whenever `compile_geometry_call` returns `None`,
+    /// and two of those returns are diagnostic-free. Counting emitted
+    /// realizations would make a dropped element look like a complete shorter
+    /// list, which would then disagree with the `<list>.count` already
+    /// constant-folded from `scope.geometry_list_elements[name].len()` —
+    /// silently, and in exactly
+    /// the silent-wrong-value class task #5385 exists to eliminate (review
+    /// esc-5385-3).
+    pub len: usize,
+}
+
 /// A realization declaration — specifies geometry to produce.
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
@@ -1383,6 +1396,13 @@ pub struct RealizationDecl {
     /// `named_steps`/`terminal_handles` recording — the query reads its handle
     /// from exactly there.
     pub is_query_only: bool,
+    /// `Some(..)` iff this realization is element `index` of the geometry-list
+    /// let named `list_name`; its `name` is then the synthetic
+    /// `"{list_name}#{index}"`, which cannot collide with a user identifier
+    /// because `#` is not an identifier character.
+    ///
+    /// `None` for every ordinary (single-geometry) realization.
+    pub list_binding: Option<GeometryListBinding>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }
@@ -1590,7 +1610,7 @@ pub enum ModifyKind {
     /// Offset a surface along its normal by a scalar distance
     /// `offset_surface(surface, distance)` (θ, task 4192). Uses the Skin
     /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape`, distinct from
-    /// `OffsetSolid`'s `PerformBySimple` solid mode. Produces a fresh Surface.
+    /// `OffsetSolid`, which takes a solid, not a face. Produces a fresh Surface.
     /// Collapses to `Operation::ModifyOffsetSurface` (BRep kernel capability).
     OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
@@ -1749,13 +1769,28 @@ impl PatternKind {
     pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
+/// CONTRACT: these labels are USER-FACING, not variant nicknames.
+///
+/// `reify_eval::geometry_ops` interpolates this `Display` as the `kind_label`
+/// of its Contract C diagnostics (`{kind_label}: 'spacing' argument expects
+/// Length, got Int`), so each label MUST be the builtin name the `.ri` author
+/// actually TYPED — the only token they can grep for. Rendering the internal
+/// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
+/// nowhere in their source.
+///
+/// Non-compliant today, and user-reachable on this same surface: `Circular`,
+/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
+/// deleting this sentence.
+///
+/// Pinned by `pattern_kind_display` below — change a label there and here
+/// together, and migrate the call sites the change newly rejects (C6).
 impl std::fmt::Display for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PatternKind::Linear => f.write_str("linear"),
+            PatternKind::Linear => f.write_str("linear_pattern"),
             PatternKind::Circular => f.write_str("circular"),
             PatternKind::Mirror => f.write_str("mirror"),
-            PatternKind::Linear2D => f.write_str("linear_2d"),
+            PatternKind::Linear2D => f.write_str("linear_pattern_2d"),
             PatternKind::Arbitrary => f.write_str("arbitrary"),
         }
     }
@@ -2224,10 +2259,10 @@ mod kind_display_tests {
     #[test]
     fn pattern_kind_display() {
         check(&[
-            (PatternKind::Linear, "linear"),
+            (PatternKind::Linear, "linear_pattern"),
             (PatternKind::Circular, "circular"),
             (PatternKind::Mirror, "mirror"),
-            (PatternKind::Linear2D, "linear_2d"),
+            (PatternKind::Linear2D, "linear_pattern_2d"),
             (PatternKind::Arbitrary, "arbitrary"),
         ]);
     }

@@ -734,11 +734,6 @@ echo "--- sync_comments_test.sh structural checks ---"
 if ! _has_if_n_guard "$SYNC_FILE"; then ok=true; else ok=false; fi
 check "sync_comments_test.sh has no defensive non-empty guard" "$ok"
 
-# (b) extract_fn comment describes the actual broad awk pattern modifier prefixes
-#     (task-1309: broadened from /^[^/]*fn/ to mirror assert_sync_ref_exists regex)
-if grep '^#' "$SYNC_FILE" 2>/dev/null | grep -qF 'Allowed prefixes'; then ok=true; else ok=false; fi
-check "extract_fn comment describes allowed prefixes for broad awk pattern" "$ok"
-
 # (c) extract_fn awk pattern is anchored with [[:space:](<] after fn_name to prevent prefix collisions
 if grep -q 'fn_name.*\[\[:space:\](<\]' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "extract_fn awk pattern is anchored with [[:space:](<] after fn_name" "$ok"
@@ -1323,31 +1318,6 @@ else
     ok=false
 fi
 check "_ws_label case statement maps single-space to readable label" "$ok"
-
-# Self-check: defensive trap comment warns about the single main-shell EXIT trap.
-# Grep for the comment marker to verify the defensive trap comment exists.
-if grep -q '# only main-shell EXIT trap' "${BASH_SOURCE[0]}"; then
-    ok=true
-else
-    ok=false
-fi
-check "trap line has defensive comment about single main-shell EXIT trap invariant" "$ok"
-
-# Self-check: no self-check comment contains stale 'absent until step-N adds it' phrasing.
-if ! grep -qE 'absent until step-[23] adds it' "${BASH_SOURCE[0]}"; then
-    ok=true
-else
-    ok=false
-fi
-check "self-check comments contain no stale 'absent until step-N adds it' phrasing" "$ok"
-
-# Self-check: defensive trap comment has no drifting 'lines ~NNN' references.
-if ! grep -qE 'lines [~][34][0-9]{2}' "${BASH_SOURCE[0]}"; then
-    ok=true
-else
-    ok=false
-fi
-check "defensive trap comment has no drifting 'lines ~NNN' references" "$ok"
 
 echo ""
 echo "--- Robustness: EXPR_FILE guard fires when reify-expr source file absent ---"

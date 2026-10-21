@@ -1,0 +1,41 @@
+module dwr_cantilever_energy
+
+// PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf γ (BT5), the
+// ENERGY-NORM twin of dwr_cantilever_qoi.ri. The two files are byte-identical
+// except for the `target_quantity_of_interest` lines: this one leaves it at
+// its `none` default, so the adaptive loop steers on the Zienkiewicz–Zhu
+// global relative energy-norm error exactly as it does today (contract C1:
+// with no QoI, every field is byte-identical to the pre-PRD result).
+//
+// Solver path: the DIMS overload, deliberately. Measured 2026-09-11 at main
+// 191d6c85ba on THIS file with a cold REIFY_CACHE_DIR (release and debug
+// binaries agree): `reify eval` reaches the adaptive (uniform) lane from the
+// CLI — stderr "adaptive refinement finished at 90375 DOFs on a 240×4×24 grid",
+// result `convergence_status: ConvergenceStatus::NotConverged`,
+// `global_relative_energy_error: Some(0.10577012532863311)`, `iterations: 719`.
+// That is the contract-C1 baseline. A warm cache returns byte-identical stdout
+// and NO stderr (diagnostics are not replayed on a hit), so compare against a
+// fresh cache dir. The `body : Solid` overload cannot run from the CLI at all
+// (no gmsh kernel is registered there). The synthetic box spans
+// x ∈ [0, length], y ∈ [0, width], z ∈ [0, height]; it is clamped at x = 0
+// ("root") and loaded at x = length ("tip").
+structure DwrCantileverEnergy {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(
+            adaptive: true,
+            target_accuracy: 0.02,
+            max_refinement_iterations: 2,
+            max_dofs: 2000000,
+        )
+    )
+}

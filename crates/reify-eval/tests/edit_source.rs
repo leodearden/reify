@@ -6,7 +6,8 @@
 //! `CompiledModule` whose `content_hash` differs from the current one and
 //! re-evaluates only the dependency cones touched by the structural diff.
 
-mod common;
+#[path = "common/guarded_groups.rs"]
+mod guarded_groups;
 
 use std::collections::HashSet;
 
@@ -21,11 +22,11 @@ use reify_compiler::CompiledModule;
 use reify_core::{ConstraintNodeId, RealizationNodeId, ValueCellId};
 use reify_ir::{Satisfaction, SnapshotProvenance, Value, ValueMap};
 
-use common::ten_bool_guarded_groups;
+use guarded_groups::ten_bool_guarded_groups;
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
-    Engine::new(Box::new(SimpleConstraintChecker), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None)
 }
 
 /// Cross-check two value maps entry-for-entry via key-union.
@@ -1900,7 +1901,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
     let captured = spy.captured_problems();
 
     let mut incremental =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     incremental.eval(&module_a);
     let incr = incremental
         .edit_source(&module_b)
@@ -1908,7 +1909,7 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
 
     // Cold engine: single call (eval(module_b)) should receive Maximize and return mm(15.0).
     let cold_solver = MockConstraintSolver::new_solved(max_solved.clone());
-    let mut cold = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut cold = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(cold_solver));
     let cold_result = cold.eval(&module_b);
 
@@ -2858,7 +2859,7 @@ fn edit_source_wave2_does_not_corrupt_inactive_members() {
     let fixture = wave2_flip_fixture();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(fixture.solver);
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(fixture.solver);
 
     // Initial eval: x=10mm, guard=true, solver→depth=10mm, m=depth=10mm.
     let initial = engine.eval(&fixture.module_initial);
@@ -3059,7 +3060,7 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval(A): x=-1mm, guard=false, solver→depth=8mm.
     // m=Undef (members inactive), n=42mm (else_members active).
@@ -3120,7 +3121,7 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
     }]);
     let cold_checker = MockConstraintChecker::new();
     let mut cold_engine =
-        Engine::new(Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
     let cold = cold_engine.eval(&module_b);
 
     assert_eq!(
@@ -3369,7 +3370,7 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval(A): x=10mm, guard_1=true, solver→depth=10mm, m=10mm, n=1mm.
     let initial = engine.eval(&module_a);

@@ -168,6 +168,13 @@ Twenty-two tasks. Several depend on v0.2 work (multi-kernel mesh path, per-purpo
 **Stdlib surface (independent of v0.2 gates):**
 
 1. `ElasticMaterial` trait + starter material library (`Steel_AISI_1045`, `Aluminium_6061_T6`, `Titanium_Ti6Al4V`, `ABS_Plastic`) with per-property provenance metadata. Fields: `youngs_modulus : Pressure`, `poisson_ratio : Number` (constrained `[0, 0.5)`), `density : Density`, `yield_stress : Pressure` (optional).
+   > **NOTE 2026-09-03 (#6877).** The four fields listed above are what **v0.3 delivered**, and the
+   > `ElasticMaterial` **trait** named here still carries exactly them today (`materials_fea.ri:130-146`)
+   > — so this deliverable reads unchanged. Separately, in v0.6 the four **library presets** gained
+   > `loss_factor : Real` + `loss_factor_provenance` and now declare `: DampedMaterial + Visual`
+   > (`materials_fea.ri:272` Steel, `:329` Al, `:386` Ti, `:446` ABS), where
+   > `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) refines the v0.3 bound. `loss_factor`
+   > lives on the `Damped` mixin (`:194-202`), **not** on `ElasticMaterial`.
 2. `Load` stdlib hierarchy: `PointLoad`, `PressureLoad`, `TractionLoad`, `BodyForce` / `Gravity`, all targeting topology selectors. Constructor signatures + selector validation.
 3. `Support` stdlib hierarchy: `FixedSupport`, `DisplacementSupport`, `RollerSupport`. Constructor signatures + selector validation.
 4. `ElasticOptions` stdlib type and `ElasticResult` struct. Options include: `element_order` (default `P1`, override `P2`), `mesh_size` override, `max_iter`, `cg_tolerance`, `threads` (default `num_cpus::get()`, single-threaded auto-fallback under 10K DOF). Result includes: displacement field, stress field, max von Mises, converged flag, iterations.
@@ -181,7 +188,7 @@ Twenty-two tasks. Several depend on v0.2 work (multi-kernel mesh path, per-purpo
 9. Global sparse-matrix assembly via `faer-rs` (CSR format). Parallel-default with per-thread scratch + fixed-order merge for `#deterministic` mode.
 10. Dirichlet BC application (row-elimination preferred over penalty for cleaner conditioning).
 11. Neumann BC application: surface-traction integrals over selector-targeted faces, body-force integrals over the volume.
-12. CG solver with diagonal (Jacobi) preconditioner via faer-rs. Parallel-default (row-partitioned SpMV, all hardware threads); `#deterministic` mode forces single-threaded with pairwise-tree reductions. AMG preconditioner deferred — Jacobi is enough for v0.3 first-cut.
+12. CG solver with diagonal (Jacobi) preconditioner via faer-rs. Parallel-default (row-partitioned SpMV, all hardware threads); `#deterministic` mode forces single-threaded with pairwise-tree reductions. AMG preconditioner deferred — Jacobi is enough for v0.3 first-cut. (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) Resolved: the deferral is closed by `docs/prds/v0_6/elastic-static-solver-performance.md`, which replaces Jacobi-PCG with a tiered SPD solve (sparse direct Cholesky within a budget, SA-AMG-PCG above it), removes the parallel mode and `PARALLEL_DOF_THRESHOLD`, and makes every solve single-threaded and bit-identical across `threads` values on one machine.
 13. Result interpolation: evaluate displacement at any point as `Field<Point3, Vector3<Length>>`; recover stress at any point as `Field<Point3, Tensor<2,3,Pressure>>` via gradient recovery from displacement (smooths P1 piecewise-constant element stress to a continuous field).
 14. Warm-state plumbing: prior-iterate carry-through across solves; opaque state attached to ComputeNode.
 15. Progressive solve framework: coarse-mesh + loose-CG-tolerance first pass; refinement passes increase mesh resolution and tighten CG tolerance on demand. Implements ComputeNode `progressive` trait. Auto-resolve loop reads partial results to short-circuit clearly-infeasible / clearly-feasible parameter regions.

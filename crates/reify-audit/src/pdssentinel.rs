@@ -192,10 +192,8 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
     paths.sort();
 
     for path in &paths {
-        let full = ctx.project_root.join(path);
-        let content = match std::fs::read_to_string(&full) {
-            Ok(c) => c,
-            Err(_) => continue, // fail-safe: skip unreadable files
+        let Some(content) = ctx.read_relative(path) else {
+            continue;
         };
         for (line_no, line_text) in scan_content(&content) {
             findings.push(Finding {

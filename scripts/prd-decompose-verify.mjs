@@ -26,9 +26,22 @@
 // Uses ONLY Workflow-injected globals: agent, parallel, pipeline, log, phase,
 // args, budget, workflow.  Does NOT use tmp_file or shell (not injected).
 //
-// Batch verdict: blocks on any FAIL/UNPROVABLE/HARNESS_ERROR from any leaf.
-// The script returns a summary object with per-leaf verdicts and aggregate
-// blocking status.
+// Batch verdict: blocks on any FAIL/UNPROVABLE from any leaf that carries
+// executed-probe evidence, and on any HARNESS_ERROR whether or not it does (it
+// is the verdict that reports "nothing could be run", so absent evidence is its
+// message).  The script returns a summary object with per-leaf verdicts,
+// aggregate blocking status, and probed-vs-total counters.
+//
+// Two lines of defence against a verdict with no evidence behind it:
+//   1. RESULT_RECORD_SCHEMA (below) — an agent cannot EMIT a record without a
+//      capability, a verdict from the closed vocabulary, an argv-array command
+//      and an integer exit_code.  VERDICT_SCHEMA likewise requires the
+//      executed/total counters, so a Synthesize agent cannot drop them and have
+//      the batch silently read as INCOMPLETE.
+//   2. The Python harness (has_probe_evidence / classify_record) — a
+//      FAIL/UNPROVABLE that still arrives evidence-free is reported as
+//      MALFORMED rather than tabulated as a premise falsification (PRD §6
+//      decision 4).
 //
 // Committed under scripts/ (not .claude/workflows/ which is .gitignored) so
 // β can reference it by a stable path and D4 can re-run it.  .mjs extension
@@ -61,7 +74,7 @@ const PREMISES_SCHEMA = {
                 properties: {
                     text:           { type: "string" },
                     assertion_kind: { type: "string",
-                                      enum: ["rejection", "parses", "resolves", "produces", "ir"] },
+                                      enum: ["rejection", "parses", "resolves", "produces", "ir", "value"] },
                     fixture:        { type: "string" },
                     match:          { type: "object" },
                     capability:     { type: "string" },
@@ -71,22 +84,96 @@ const PREMISES_SCHEMA = {
     },
 };
 
+// One α --json result record (prd-capability-check.py's --json record shape).
+//
+// This is the FIRST line of defence for the evidence gate; the Python harness
+// (has_probe_evidence / classify_record) is the second.  Left as the former
+// `{type:"object"}`, the schema accepted three shapes that all reached the
+// synthesis step and were tabulated as premise falsifications:
+//
+//   - a PREMISE record (no verdict key at all) validating as a RESULT record;
+//   - a record with no `command`/`exit_code` — an unexecuted promise;
+//   - `command: "target/release/reify eval f.ri"` (a STRING), which the report
+//     builder then rendered character-by-character.
+//
+// Requiring capability/verdict/command/exit_code, pinning `verdict` to the
+// PRD §6 decision 3 vocabulary, and typing `command` as an array of strings
+// makes all three unrepresentable at the agent boundary.
+const RESULT_RECORD_SCHEMA = {
+    type: "object",
+    required: ["capability", "verdict", "command", "exit_code"],
+    properties: {
+        capability: { type: "string" },
+        probe_kind: { type: "string" },
+        verdict:    { type: "string",
+                      enum: ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"] },
+        // argv TOKENS, never a ready-to-paste shell string.
+        command:    { type: "array", items: { type: "string" } },
+        // A real process outcome.  -1 when no process ran (HARNESS_ERROR).
+        exit_code:  { type: "integer" },
+        stdout:     { type: "string" },
+        stderr:     { type: "string" },
+    },
+};
+
+// The record-shape contract in prose, stated ONCE and interpolated into BOTH
+// role prompts.  This is the human-readable form of RESULT_RECORD_SCHEMA above;
+// it was duplicated near-verbatim into the Prover and Adversary prompts and the
+// two copies had ALREADY drifted in their closing paragraph.  Prose that drifts
+// from the schema is prose an agent will follow into a rejected response.
+const RECORD_SHAPE_RULES = `RECORD SHAPE — every result record MUST carry all four of capability, verdict,
+command and exit_code, and:
+  - \`command\` MUST be an ARRAY OF STRINGS (argv tokens, e.g.
+    ["python3", "scripts/prd-capability-check.py", "--json", "/tmp/ps.json"]).
+    Do NOT return a single ready-to-paste shell string — it is not re-runnable
+    as captured evidence and the schema rejects it.
+  - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
+  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+A FAIL or UNPROVABLE you did not actually RUN is not a falsification — the
+harness discards any such record with no captured command+exit_code as an
+unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
+the ONE exception: it reports that the probe machinery itself could not run, so
+it blocks the batch whether or not it carries evidence.  Use it — never a bare
+FAIL — when a step of your own procedure died.`;
+
 const RESULTS_SCHEMA = {
     type: "object",
     required: ["prover"],
     properties: {
-        prover:    { type: "array", items: { type: "object" } },
-        adversary: { type: "array", items: { type: "object" } },
+        prover:    { type: "array", items: RESULT_RECORD_SCHEMA },
+        adversary: { type: "array", items: RESULT_RECORD_SCHEMA },
     },
 };
 
+// `executed` and `total` are REQUIRED.  The earlier reasoning for leaving them
+// optional — "an older harness build might not emit them" — describes a skew
+// that cannot occur: the Synthesize agent shells `python3
+// scripts/prd-decompose-verify.py` out of the SAME checkout as this file, so
+// harness and orchestrator always ship together.  The scenario a loose schema
+// actually admits is an LLM Synthesize agent that drops the fields despite the
+// prompt; `executed ?? 0` then dispositions EVERY leaf NOT_VERIFIED and the
+// batch INCOMPLETE, indistinguishable from genuine incompleteness — a relay bug
+// laundered into a verification result.  The schema is the enforcement point
+// that makes the agent retry instead.
+//
+// `malformed` and `fixture_absent` stay optional: their empty-list default is
+// genuinely benign (an absent list and an empty list mean the same thing), and
+// they carry no disposition weight of their own beyond the counters.
+//
+// Stage 3 keeps its `?? []` / `?? 0` defaults as belt-and-braces for the
+// null-verdict fallback path, which constructs a verdict locally rather than
+// receiving one through this schema.
 const VERDICT_SCHEMA = {
     type: "object",
-    required: ["blocks", "blocking", "report"],
+    required: ["blocks", "blocking", "report", "executed", "total"],
     properties: {
-        blocks:   { type: "boolean" },
-        blocking: { type: "array", items: { type: "string" } },
-        report:   { type: "string" },
+        blocks:         { type: "boolean" },
+        blocking:       { type: "array", items: { type: "string" } },
+        report:         { type: "string" },
+        malformed:      { type: "array", items: { type: "string" } },
+        fixture_absent: { type: "array", items: { type: "string" } },
+        executed:       { type: "integer" },
+        total:          { type: "integer" },
     },
 };
 
@@ -131,6 +218,88 @@ function normalizeLeaves(rawArgs, warn) {
 }
 
 // ---------------------------------------------------------------------------
+// leafLabelFor — a leaf's display label (task #7369)
+//
+// SPOT: the single definition of "what a leaf is called for display purposes".
+// Both the per-leaf pipeline (Stage 1, which has a live leaf) and the
+// dropped-leaf labelling below (which has no live leafLabel — the leaf was
+// dropped before Stage 1 could compute one, but the ORIGINAL leaf object is
+// still available by index) derive it the same way.
+// ---------------------------------------------------------------------------
+
+function leafLabelFor(leaf, idx) {
+    if (leaf == null) return `leaf-${idx}`;
+    return typeof leaf === "string" ? leaf
+        : (leaf.signal || leaf.text || `leaf-${idx}`);
+}
+
+// ---------------------------------------------------------------------------
+// droppedLeafLabels — name the leaves the pipeline could not adjudicate
+// (task #7369)
+//
+// A leaf whose Enumerate/Prove/Adversary/Synthesize stage raised is dropped to
+// null by the pipeline AT ITS ORIGINAL INDEX — leaf_verdicts stays the same
+// length as leaves, with a hole at every dropped position. Each hole's own
+// position is therefore always knowable, so — unlike the pre-fix arithmetic —
+// no index guessing is needed to find it. The label AT that position is
+// leafLabelFor(leaves[j], j): the leaf's own signal/text, falling back to the
+// index only when the leaf has neither.
+//
+// The label carries the index explicitly (`<dropped-leaf:${j}:...>`), not
+// just the name: two dropped leaves can share an identical signal, and the
+// index is what lines this label up with both the per-leaf `[idx] ...` log
+// line below and the runtime's own `pipeline[<index>] failed: ...` record.
+//
+// Defense in depth (task #7369 review): the above assumes leaf_verdicts is
+// really leaves.length long. That contract lives in the pipeline() runtime,
+// outside this file, and nothing here can pin it. If it's ever violated by a
+// runtime that COMPACTS failures out of the array instead of nulling them in
+// place, leaf_verdicts comes back shorter than leaves — the submitted leaves
+// past its end have no hole to find, and would otherwise vanish with no
+// label and no count. Name that gap explicitly so a batch that lost leaves
+// this way still blocks instead of silently reporting PASS. (A leaf_verdicts
+// LONGER than leaves is a different, benign case already handled above —
+// leafLabelFor's own null guard labels the unmatched index — not a leaf
+// going unrepresented, so it is not treated as a violation here.)
+// ---------------------------------------------------------------------------
+
+function droppedLeafLabels(leaves, leaf_verdicts) {
+    const labels = leaf_verdicts
+        .map((v, j) => (v ? null : `<dropped-leaf:${j}:${leafLabelFor(leaves[j], j)}>`))
+        .filter(Boolean);
+    if (leaf_verdicts.length < leaves.length) {
+        labels.push(
+            `<dropped-leaf:contract-violation:${leaves.length - leaf_verdicts.length}>`);
+    }
+    return labels;
+}
+
+// ---------------------------------------------------------------------------
+// batchVerdict — the one shape every return path constructs (task #7369
+// review, SPOT)
+//
+// The zero-leaf early return and the aggregation tail used to be two
+// independent object literals for the same 13-key consumer contract; a field
+// added to one silently missed the other — exactly the class of bug task
+// #7369 fixed for the dropped-leaf labels themselves. Routing both paths
+// through one function means the key set exists in exactly one place: adding
+// a 14th field here makes it appear (at worst as `undefined`, which is
+// visible) on both paths, rather than silently absent on one.
+// ---------------------------------------------------------------------------
+
+function batchVerdict({
+    blocks, blocking, leaf_verdicts, summary, disposition,
+    leaves_total, leaves_probed, leaves_unenumerated, leaves_not_verified,
+    unenumerated_leaves, not_verified_leaves, malformed_records, fixture_absent_records,
+}) {
+    return {
+        blocks, blocking, leaf_verdicts, summary, disposition,
+        leaves_total, leaves_probed, leaves_unenumerated, leaves_not_verified,
+        unenumerated_leaves, not_verified_leaves, malformed_records, fixture_absent_records,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Main workflow body
 //
 // The Workflow harness wraps this script body in an async function and takes
@@ -153,7 +322,26 @@ const _wfResult = await (async function runWorkflow() {
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
-        return { blocks: false, leaf_verdicts: [], summary: "No leaves to verify." };
+        // Zero leaves is vacuously PASS by the same rule the aggregation tail
+        // applies below: nothing blocked, and there is no unenumerated/
+        // not-verified/malformed/fixture-absent leaf to make it INCOMPLETE.
+        // Built via batchVerdict (task #7369 review) so this path can never
+        // drift from the tail's key set again.
+        return batchVerdict({
+            blocks: false,
+            blocking: [],
+            leaf_verdicts: [],
+            summary: "No leaves to verify.",
+            disposition: "PASS",
+            leaves_total: 0,
+            leaves_probed: 0,
+            leaves_unenumerated: 0,
+            leaves_not_verified: 0,
+            unenumerated_leaves: [],
+            not_verified_leaves: [],
+            malformed_records: 0,
+            fixture_absent_records: 0,
+        });
     }
 
     log(`γ verification: ${leaves.length} leaf(ves)`); // eslint-disable-line no-undef
@@ -174,8 +362,7 @@ const _wfResult = await (async function runWorkflow() {
 
         // Stage 1: Enumerator — extract premises from leaf signal
         async (leaf, originalLeaf, idx) => {
-            const leafLabel = typeof leaf === "string" ? leaf
-                : (leaf.signal || leaf.text || `leaf-${idx}`);
+            const leafLabel = leafLabelFor(leaf, idx);
 
             const enumerated = await agent( // eslint-disable-line no-undef
                 `You are the Enumerator for γ decompose-phase verification (PRD §11 γ).
@@ -198,7 +385,26 @@ Instructions:
    - "parses":    tree-sitter parses the fixture without errors
    - "resolves":  reify check passes (exit_code:0)
    - "produces":  reify eval exits non-zero with this signature in stderr
-   - "ir":        reify eval exits 0 (clean, no error) — observation=absent
+   - "ir":        reify eval exits 0 (clean, no error) — observation=absent.
+                  This proves ONLY "eval exits 0, clean".  It CANNOT see what
+                  was printed: the ir arm answers on exit 0 without reading the
+                  match dict at all.
+   - "value":     reify eval exits 0 AND the value it printed satisfies a
+                  numeric constraint.  Any premise asserting the printed value
+                  is finite / nonzero / in range / equals X must use "value",
+                  NOT "ir" — bound as "ir" such a premise asserts only that
+                  eval did not crash, and passes on a fixture that printed 0 or
+                  undef.
+                  A "value" premise's match must be:
+                    {"stdout_value": {"pattern": "<regex with >=1 capture
+                      group>", "group": <int|str, optional, default 1>,
+                      "min": <number>, "max": <number>, "finite": <bool>}}
+                  with AT LEAST ONE of min/max/finite — a pattern alone asserts
+                  nothing about the value and is rejected at bind time.  The
+                  pattern must match what reify eval actually prints
+                  ("Structure.field = <value> [unit]"): a pattern that locates
+                  nothing is UNPROVABLE, not a failure, because a mis-aimed
+                  probe is indistinguishable from an absent capability.
 5. Each premise needs a fixture path (repo-relative). If the leaf doesn't
    specify one, you may need to reference an existing fixture in
    tests/prd-gate/fixtures/ or note that a new fixture is needed.
@@ -216,8 +422,12 @@ Return a JSON object {premises: [...]} matching the schema.`,
         // to write temp files and shell out — no tmp_file/shell globals needed.
         async ({ leaf, leafLabel, enumerated, idx }) => {
             if (!enumerated || !enumerated.premises || enumerated.premises.length === 0) {
-                log(`[${idx}] No premises enumerated for leaf: ${leafLabel} — skipping proof.`); // eslint-disable-line no-undef
-                return { leaf, leafLabel, idx, prover: [], adversary: [] };
+                // Carry the reason forward. Without this marker stage 3 cannot tell
+                // "nothing was asserted" from "everything asserted held", because
+                // synthesizing an empty record set is vacuously non-blocking.
+                log(`[${idx}] UNENUMERATED — Enumerator returned zero premises for leaf: ${leafLabel}. ` // eslint-disable-line no-undef
+                    + `NO probe will run and this leaf is NOT verified.`);
+                return { leaf, leafLabel, idx, prover: [], adversary: [], unenumerated: true };
             }
 
             const premisesJson = JSON.stringify(enumerated, null, 2);
@@ -245,7 +455,13 @@ Steps (use your own shell/file tools):
    Capture the full stdout JSON. Parse the "results" array from it.
 5. Return {prover: [result_records...], adversary: []}.
 
-If any step fails, return a single HARNESS_ERROR result record:
+${RECORD_SHAPE_RULES}
+Pass through α's captured command/exit_code/stdout/stderr VERBATIM — do not
+reconstruct, re-quote or summarize them.
+
+If any step fails, return a single HARNESS_ERROR result record (this record is
+EXEMPT from the evidence rule above and DOES block — it is how "I could not run
+anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
    command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
@@ -274,6 +490,9 @@ Instructions:
 4. You can only ADD blocking signals — if you find nothing new, return empty
    adversary list.
 
+${RECORD_SHAPE_RULES}
+Report only what you probed, with α's captured output verbatim.
+
 Return JSON: {prover: [], adversary: [result_records...]}`,
                     { label: `adversary:${idx}`, phase: "Adversary", schema: RESULTS_SCHEMA, model: "opus", effort: "xhigh" }
                 ),
@@ -287,7 +506,28 @@ Return JSON: {prover: [], adversary: [result_records...]}`,
 
         // Stage 3: Synthesize — agent receives combined records inline, runs
         // deterministic harness, returns BatchVerdict via VERDICT_SCHEMA.
-        async ({ leaf, leafLabel, idx, prover, adversary }) => {
+        async ({ leaf, leafLabel, idx, prover, adversary, unenumerated }) => {
+            // A leaf whose Enumerator produced nothing was never probed. Do NOT
+            // pay a Synthesize agent to adjudicate an empty record set: α over {}
+            // is vacuously non-blocking, so the call could only ever come back
+            // clean — which is precisely how "nothing ran" gets laundered into
+            // "nothing failed". Short-circuit with an explicit disposition.
+            if (unenumerated) {
+                log(`[${idx}] ${leafLabel}: UNENUMERATED — no probe executed.`); // eslint-disable-line no-undef
+                return {
+                    leafLabel,
+                    blocks: false,
+                    blocking: [],
+                    report: `${leafLabel} — Enumerator returned zero premises; NO probe `
+                        + `was executed for this leaf. This is NOT a verified pass.`,
+                    disposition: "UNENUMERATED",
+                    malformed: [],
+                    fixture_absent: [],
+                    executed: 0,
+                    total: 0,
+                };
+            }
+
             const resultsJson = JSON.stringify({ prover, adversary }, null, 2);
 
             const synthesized = await agent( // eslint-disable-line no-undef
@@ -304,24 +544,63 @@ Steps (use your own shell/file tools):
      /tmp/pdv_results_${idx}.json
 2. Run: python3 scripts/prd-decompose-verify.py synthesize /tmp/pdv_results_${idx}.json
    Capture stdout VERBATIM.
-3. Parse the stdout as JSON — it is a BatchVerdict object {blocks, blocking, report}.
-4. Return that object directly. Do NOT summarize or alter the report field.
+3. Parse the stdout as JSON — it is a BatchVerdict object
+     {blocks, blocking, report, malformed, fixture_absent, executed, total}.
+4. Return that object VERBATIM, including malformed, fixture_absent, executed
+   and total. Do NOT summarize or alter the report field, do NOT drop fields you
+   do not recognize, and do NOT recompute \`blocks\` yourself — the harness is
+   the adjudicator and you are relaying its answer.
 
-If the command fails or stdout is not valid JSON, return:
-  {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>"}`,
+NOTE: exit code 0 from the harness does NOT mean "verified". Malformed and
+fixture-absent records do not block, so a batch can exit 0 having probed
+nothing. Relay executed/total unchanged so the caller can tell the difference.
+
+If the command fails or stdout is not valid JSON, return (executed/total are
+REQUIRED by the schema — report 0/0, because nothing was adjudicated):
+  {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>",
+   malformed: [], fixture_absent: [], executed: 0, total: 0}`,
                 { label: `synthesize:${idx}`, phase: "Synthesize", schema: VERDICT_SCHEMA, model: "haiku", effort: "medium" }
             );
 
+            // The agent died or returned nothing: fail closed, and say so in the
+            // counters.  executed/total are 0 BY CONSTRUCTION here — no harness
+            // output was adjudicated — so this leaf must not be counted as
+            // probed even though it blocks.
             const verdict = synthesized || {
                 blocks: true,
                 blocking: [leafLabel],
                 report: `synthesize agent returned null for leaf: ${leafLabel}`,
+                malformed: [],
+                fixture_absent: [],
+                executed: 0,
+                total: 0,
             };
 
-            log(`[${idx}] ${leafLabel}: ${verdict.blocks ? "BLOCKS" : "PASS"}` // eslint-disable-line no-undef
+            // Per-leaf disposition. `blocks: false` is NOT the same as verified:
+            // the harness does not block on MALFORMED or fixture-absent records,
+            // so a leaf can come back clean having executed no probe at all.
+            //   BLOCKS       — an evidence-backed falsification
+            //   NOT_VERIFIED — nothing was executed (malformed / fixture-absent only)
+            //   VERIFIED     — at least one probe ran and nothing blocked
+            // The new fields default (`?? []` / `?? 0`) so a Synthesize agent
+            // relaying an older harness build still produces a usable verdict.
+            const executed = verdict.executed ?? 0;
+            const disposition = verdict.blocks
+                ? "BLOCKS"
+                : (executed === 0 ? "NOT_VERIFIED" : "VERIFIED");
+
+            log(`[${idx}] ${leafLabel}: ${disposition}` // eslint-disable-line no-undef
                 + (verdict.blocking && verdict.blocking.length > 0 ? ` — ${verdict.blocking.join(", ")}` : ""));
 
-            return { leafLabel, ...verdict };
+            return {
+                leafLabel,
+                ...verdict,
+                disposition,
+                malformed: verdict.malformed ?? [],
+                fixture_absent: verdict.fixture_absent ?? [],
+                executed,
+                total: verdict.total ?? 0,
+            };
         },
     );
 
@@ -333,11 +612,17 @@ If the command fails or stdout is not valid JSON, return:
     // (agent death, malformed output) is dropped to null by the pipeline and
     // filtered out above.  Treating 'could not evaluate' as PASS is a false
     // negative for a verification gate — block instead.
-    const dropped = leaves.length - filtered.length;
-    const droppedBlocking = Array.from({ length: dropped }, (_, i) => {
-        const originalIdx = leaf_verdicts.findIndex((v, j) => !v && j >= (leaves.length - dropped - i));
-        return `<dropped-leaf:${originalIdx >= 0 ? originalIdx : "?"}>`;
-    });
+    //
+    // `dropped` is droppedBlocking.length, not a second, independent length-
+    // diff check: pipeline() is documented to return an array of exactly
+    // leaves.length, with null at each failed item's own index, so under that
+    // contract leaves.length - filtered.length and the count of named holes
+    // are the same fact read two ways. droppedLeafLabels() itself guards the
+    // case where that contract is violated (see its own comment), so
+    // `dropped` stays the one number a reader needs even then, rather than
+    // adding a second count that could silently drift from `blocking`.
+    const droppedBlocking = droppedLeafLabels(leaves, leaf_verdicts);
+    const dropped = droppedBlocking.length;
 
     const anyBlocks = dropped > 0 || filtered.some(v => v.blocks);
     const allBlocking = [
@@ -345,18 +630,89 @@ If the command fails or stdout is not valid JSON, return:
         ...filtered.filter(v => v.blocks).flatMap(v => v.blocking || []),
     ];
 
-    const summary = anyBlocks
-        ? `γ BLOCKS — ${allBlocking.length} premise(s)/leaf(ves) failed or dropped`
-            + (dropped > 0 ? ` (${dropped} leaf(ves) dropped by pipeline errors)` : "")
-        : `γ PASS — all ${filtered.length} leaf(ves) verified`;
+    // ── Probed-vs-unprobed accounting (task #7257 ARM 2) ─────────────────────
+    //
+    // `blocks: false` was the ONLY batch-level signal, and it cannot distinguish
+    // "every premise held" from "no premise was ever checked" — a batch of
+    // zero-premise leaves reported "γ PASS — all N leaf(ves) verified".  These
+    // counters make the basis of the verdict readable straight off the return,
+    // without opening journal.jsonl.
+    //
+    // `leaves_total` is the SUBMITTED batch size (leaves.length), not the
+    // survivor count: a leaf the pipeline dropped is still part of "how big
+    // was this batch", and BLOCKS already names it in `blocking` — shrinking
+    // the denominator to `filtered.length` made a batch that lost leaves read
+    // as full coverage (task #7369 review).
+    const leaves_total = leaves.length;
+    const unenumerated_leaves = filtered
+        .filter(v => v.disposition === "UNENUMERATED")
+        .map(v => v.leafLabel);
+    const not_verified_leaves = filtered
+        .filter(v => v.disposition === "NOT_VERIFIED")
+        .map(v => v.leafLabel);
+    // A leaf counts as probed only when a probe actually EXECUTED — read the
+    // counter, never the disposition.  BLOCKS does NOT imply executed evidence:
+    // it is also reached with executed === 0 by the null-synthesize fallback
+    // above, by the agent-side error template (which returns blocks: true after
+    // the harness call failed), and by a HARNESS_ERROR record, which the Python
+    // gate blocks on precisely BECAUSE nothing ran.  Deriving the count from
+    // the disposition overstated coverage on exactly the failure paths a reader
+    // consults this number to check.
+    const leaves_probed = filtered.filter(v => (v.executed ?? 0) > 0).length;
+    const leaves_unenumerated = unenumerated_leaves.length;
+    const leaves_not_verified = not_verified_leaves.length;
+
+    const malformed_records = filtered.reduce(
+        (n, v) => n + (v.malformed ?? []).length, 0);
+    const fixture_absent_records = filtered.reduce(
+        (n, v) => n + (v.fixture_absent ?? []).length, 0);
+
+    // Three outcomes, not two.  INCOMPLETE sits between BLOCKS and PASS: nothing
+    // was falsified, but nothing was verified either, so it is NOT a pass.
+    const disposition = anyBlocks
+        ? "BLOCKS"
+        : ((leaves_unenumerated > 0 || leaves_not_verified > 0
+            || malformed_records > 0 || fixture_absent_records > 0)
+            ? "INCOMPLETE"
+            : "PASS");
+
+    const unprobedLabels = [...unenumerated_leaves, ...not_verified_leaves];
+
+    let summary;
+    if (disposition === "BLOCKS") {
+        summary = `γ BLOCKS — ${allBlocking.length} premise(s)/leaf(ves) failed or dropped`
+            + (dropped > 0 ? ` (${dropped} leaf(ves) dropped by pipeline errors)` : "");
+    } else if (disposition === "INCOMPLETE") {
+        summary = `γ INCOMPLETE — ${leaves_probed} of ${leaves_total} leaf(ves) had a `
+            + `probe executed; nothing was falsified, but the unprobed remainder is `
+            + `NOT verified and this is NOT a pass`
+            + (unprobedLabels.length > 0
+                ? `. Never probed: ${unprobedLabels.join(", ")}` : "")
+            + (malformed_records > 0
+                ? `. ${malformed_records} record(s) had no executed-probe evidence` : "")
+            + (fixture_absent_records > 0
+                ? `. ${fixture_absent_records} probe(s) could not find their fixture` : "");
+    } else {
+        summary = `γ PASS — all ${leaves_total} leaf(ves) verified (${leaves_probed} probed)`;
+    }
 
     log(summary); // eslint-disable-line no-undef
 
-    return {
+    return batchVerdict({
         blocks: anyBlocks,
+        blocking: allBlocking,
         leaf_verdicts: filtered,
         summary,
-    };
+        disposition,
+        leaves_total,
+        leaves_probed,
+        leaves_unenumerated,
+        leaves_not_verified,
+        unenumerated_leaves,
+        not_verified_leaves,
+        malformed_records,
+        fixture_absent_records,
+    });
 
 })();
 return _wfResult;

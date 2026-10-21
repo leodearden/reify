@@ -41,6 +41,7 @@ fn arm(patterns: Vec<&str>, sub_name: &str, structure_name: &str) -> MatchArmDec
             index_binder: None,
             index_domain: None,
             relate_relations: vec![],
+            derivation: None,
             span: dummy_span(),
             content_hash: dummy_hash(),
         })),
@@ -189,6 +190,7 @@ fn walk_specialization_scope_members_visits_match_arm_decl_group_arms() {
         index_binder: None,
         index_domain: None,
         relate_relations: vec![],
+        derivation: None,
         span: dummy_span(),
         content_hash: dummy_hash(),
     };

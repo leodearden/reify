@@ -1,0 +1,49 @@
+// Deterministic cantilever fixture for the concurrent-writer regression test
+// (task #2980 case 3; PRD docs/prds/v0_3/persistent-fea-cache.md §"Concurrency").
+//
+// Modelled on `examples/fea_cantilever_smoke.ri` — same geometry, material,
+// single `PointLoad` and single `FixedSupport` — with ONE deliberate change:
+// `ElasticOptions(deterministic: true)` instead of the smoke fixture's bare
+// `ElasticOptions()`.  The `deterministic` spelling is the one used at
+// `examples/fea_multi_case_smoke.ri:51`.
+//
+// WHY deterministic matters here: `crates/reify-cli/tests/harness_cli/
+// cli_cache_concurrent_writers.rs` races two independent `reify eval
+// --cache-dir <same root>` processes over the SAME input hash and then asserts
+// the surviving entry matches a solitary reference solve.  Under the solver's
+// non-deterministic default (reduction order may vary between runs), "both
+// writers agree" would be an accident of scheduling rather than a property.
+// With `deterministic: true` the two racing solves are required to produce the
+// same result, so last-writer-wins via rename(2) is genuinely value-preserving
+// and the test asserts a contract rather than luck.
+//
+// Kept as small as the smoke fixture (single box body, one load, one support)
+// so TWO simultaneous solves stay affordable inside the merge gate.
+
+structure FeaCantileverDeterministic {
+    // Geometry: 1 m long beam with 100 mm x 100 mm square cross-section.
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, nu = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 1000 N point load applied at the beam tip.
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+
+    // Supports: fully clamped (fixed) at the beam root.
+    let mount = FixedSupport(target: "root")
+
+    // FEA solve: the @optimized dispatcher routes this call to the
+    // `solver::elastic_static` trampoline, which is what mints the persistent
+    // cache entry the concurrent-writer test races over.
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(deterministic: true)
+    )
+
+    // Geometry realization: deferred Value::GeometryHandle (GHR-beta) — no
+    // kernel call at eval time.
+    let body = box(length, width, height)
+}

@@ -1,0 +1,1720 @@
+//! Shared value-level acceptance helper for dimensioned builtin arguments.
+//!
+//! **Relocated by task 5791** (PRD `docs/prds/v0_6/dimension-checked-readers.md`
+//! §3 Leg A) from its former home `crates/reify-eval/src/arg_acceptance.rs`,
+//! where it was `pub(crate)` and therefore reachable by `reify-eval` ONLY.
+//! `reify-stdlib` cannot depend on `reify-eval` — the crate edge runs the other
+//! way — so a reader-side dimension check in `reify-stdlib` had no way to call
+//! this family and would have had to fork it. Hoisting the module into
+//! `reify-ir`, the one crate BOTH already depend on, means `reify-stdlib` and
+//! `reify-eval` now share ONE dimension-acceptance rule: a single
+//! [`accept_arg`] predicate and a single rejection wording, rather than two
+//! implementations drifting apart. The move needed no `Cargo.toml` edit —
+//! the module depends only on `reify_core` (already a `reify-ir` dep) and on
+//! `reify-ir`'s own [`crate::value::Value`] — so `reify-ir`'s
+//! reify-core + reify-ast dependency floor (pinned by
+//! `crates/reify-ir/tests/dag_invariant.rs`) is unchanged. `reify-eval` keeps
+//! its former `crate::arg_acceptance::…` spelling alive through a crate-root
+//! `pub(crate) use reify_ir::arg_acceptance;`, so every pre-existing consumer
+//! compiles unchanged.
+//!
+//! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
+//! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
+//! Contract B (`body_mass_props` density ladder in `dynamics_ops`), and
+//! Contract C — the LENGTH-semantic args: `geometry_ops`'
+//! `eval_named_arg_length`, its raw-`Value` wrapper `required_length_value`, and
+//! `resolve_length_scalar_arg` (`edges_at_height` z/tol, `geo_equiv` tol), which
+//! share the single [`length_spec`] so all of them emit identical rejection
+//! text.
+//!
+//! # WHICH POSITIONS CONTRACT C GOVERNS — the machine check, not this comment
+//!
+//! `crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs`.
+//!
+//! That guard sweeps EVERY builtin in `reify_compiler::GEOMETRY_FUNCTION_NAMES`
+//! across every arity, drives each numeric position through the eval-side op
+//! compiler with a bare number planted in it, and asserts that every position it
+//! reaches is either rejected here or carries an entry stating why it is
+//! legitimately dimensionless — a closed `Justification` taxonomy (decision D14)
+//! for the justified ones, a `Residual` row with a live task cite for the rest.
+//! Dropping any one entry makes it fire; so does stubbing out any one observed
+//! gate.
+//!
+//! This note used to carry that enumeration by hand — a per-family table of
+//! gated positions, a list of what was deliberately left bare, and a list of who
+//! owned the rest. Decision D6 replaced it: a prose list cannot go red, five
+//! successive hand audits missed the raw-`Value` passthrough class, and a
+//! position added without a matching doc edit was invisible. Add a length-
+//! semantic argument anywhere and the guard will tell you; you no longer have to
+//! remember to tell it.
+//!
+//! What stays here is what describes THIS MODULE rather than tracking work.
+//!
+//! # The three routes, and the one chokepoint
+//!
+//! THREE routes reach Contract C, all bottoming out in the same
+//! `accept_arg(&value, &length_spec())` call so their rejection wording is
+//! byte-identical by construction:
+//!
+//! * the NAMED-ARG route (`eval_named_arg_length`);
+//! * the VARIADIC route (`accept_variadic_length_args`), for the arity-open
+//!   positional coordinate streams whose args the compiler names inertly
+//!   `c0`…`cN`;
+//! * the DECODED-VALUE route (`accept_length_point3`), for a position that
+//!   arrives already assembled into a composite `Value` by a stdlib producer —
+//!   `plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point` — and so
+//!   never passes through an argument-name read at all.
+//!
+//! The variadic route carries 2-D vertex PAIRS as well as 3-D triples, which is
+//! why its coordinate renderer (`CoordName`) carries a per-point STRIDE: at
+//! stride 3 a pair stream would be named `x1,y1,z1,x2,…`, misdirecting the
+//! author on both the axis letter and the vertex number. The decoded-value route
+//! has the analogous renderer problem in a GRID rather than a stream, and answers
+//! it the same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
+//!
+//! The named-arg route has TWO ARITIES, and a new optional dimensioned slot
+//! should reuse the second rather than open-code it: `required_length_arg` (an
+//! absent arg is a diagnosed failure) and `optional_length_value` (an absent arg
+//! is `Ok(None)`, so the caller supplies its own documented default, while a
+//! PRESENT one is gated identically). Both mint their `Err` text from the same
+//! `length_arg_to_result`, so an optional slot is not a second dialect. This is
+//! an ARITY of the named-arg route, not a fourth route: the value is obtained by
+//! the same argument-name lookup + `eval_expr`, which is what "route"
+//! distinguishes. `isosurface`'s `iso` is its first caller — and note that only
+//! a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0`
+//! default (decision D12), so the absent branch is not a hole.
+//!
+//! # The raw-`Value` slots reach the same chokepoint, all at once
+//!
+//! The primitive / profile / modify / sweep fields are stored into their
+//! `GeometryOp` field as a `Value` and read by the kernel via `as_f64`, never
+//! through a named-arg `f64` helper. They reach the chokepoint through
+//! `geometry_ops`' `required_length_values` (and its `N == 1` wrapper
+//! `required_length_value`), which layers over the named-arg route
+//! (`required_length_args` → `required_length_arg` → `eval_named_arg_length`)
+//! and re-wraps each ACCEPTED SI f64 back into a dimensioned `Value` — so the
+//! stored representation is unchanged and the rejection wording is shared,
+//! rather than forked for the kernel boundary.
+//!
+//! Every builtin with MORE THAN ONE gated slot reads its whole set in ONE
+//! `required_length_values` call, so a bare `box(20, 20, 10)` is diagnosed at
+//! `width`, `height` AND `depth` — and a bare `chamfer_asymmetric(solid, 1, 2)`
+//! at BOTH `d1` and `d2` — in a single build rather than one arg name per
+//! rebuild. The named-arg route's last `?`-chained group,
+//! `pattern_arbitrary`'s per-transform `t{i}_dx`/`t{i}_dy`/`t{i}_dz` offset
+//! triple, reads through `required_length_args` for the same reason (esc-5743-4).
+//! `accept_transform_to_arrays` shape-checks a `Value::Transform` locally and
+//! hands its translation WHOLE to `accept_length_point3`, so it inherits the
+//! wording, the code, D10's `unresolved (Undef)` message and the
+//! all-failures-at-once precedence across the triple without re-deriving any of
+//! them.
+//!
+//! `reify_core::DiagnosticCode::DimensionedArgRejected` is attached to every
+//! `ArgSpec`-backed rejection emitted in `geometry_ops` (INV-SF-6). That code,
+//! not the message text, is the structured contract a consumer should match on —
+//! the closure guard above reads it, and `ArgRejection::message` remains the
+//! sole owner of the wording so the ANGLE (PRD 3) and reader (PRD 5) follow-ups
+//! inherit identical text.
+//!
+//! # Two QUIET consumers, gated but deliberately silent
+//!
+//! `interferes`/`min_clearance`'s per-body `world_transform` and
+//! `walk_templates`' `composed_world` go through `decompose_transform_to_arrays`,
+//! now a thin wrapper over `accept_transform_to_arrays` with a throwaway
+//! diagnostic sink. They ARE gated; they are deliberately SILENT, and are NOT
+//! un-gated holes. Both already treat `None` as "identity / not decomposable →
+//! use the raw handle, no kernel op", and both read transforms that are LENGTH
+//! BY CONSTRUCTION: `identity_pose_transform` and `compose_pose_chain`'s seed
+//! mint `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` hard-requires
+//! LENGTH components, and `reify_stdlib::compose_transforms` requires
+//! `t1_dim == t2_dim` so composition preserves the dimension. A rejection there
+//! is unreachable in production, and emitting one would DOUBLE-REPORT a failure
+//! the pose producer has already diagnosed.
+//!
+//! # What this module's gate CANNOT see
+//!
+//! `reify-stdlib`'s own `decompose_transform`
+//! (`crates/reify-stdlib/src/geometry.rs`) consumers `affine_from_transform` and
+//! `transform_inverse`: pure VALUE-layer builtins that never produce a
+//! `CompiledGeometryOp` and are not in `GEOMETRY_FUNCTION_NAMES`, so the closure
+//! guard cannot reach them. They are GATED and DIAGNOSED in `reify-stdlib`
+//! instead, by its Transform-operand classifier through the same
+//! [`length_spec`] wording (RULING #6089). `transform_log` was closed the same
+//! way by RULING #6126. The remaining un-gated transform sites — the
+//! `transform3` / `frame3` constructors and `transform_compose` — are owned by
+//! #7625.
+//!
+//! # ANGLES are gated, but not here
+//!
+//! They have their own spec in this module — [`angle_spec`] — owned by
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree, and
+//! the positions it governs are enumerated on that function rather than here.
+//! That PRD reuses the SAME `DimensionedArgRejected` code rather than minting a
+//! per-dimension sibling, so an angle position is tracked in ITS list and never
+//! in this one; which list a newly-added argument belongs to is decided by its
+//! dimension, not by its file.
+//!
+//! # Value-level only
+//!
+//! The helper operates on an already-resolved `Value` and has no knowledge of
+//! `CompiledExpr` or `ValueMap`. Callers are responsible for extracting the value
+//! from the expression (`resolve_density_arg`/`resolve_spec_arg` evaluate a
+//! `CompiledExpr`; `eval_named_arg_length` goes through `eval_named_arg`).
+
+/// Specification for a single builtin argument — its expected type name, the
+/// required `DimensionVector`, and an optional hint shown in rejection messages.
+pub struct ArgSpec {
+    /// Human-readable type name used in diagnostic messages (e.g. `"Density"`).
+    pub type_name: &'static str,
+    /// The `DimensionVector` that the `Value::Scalar` dimension must equal.
+    pub dimension: reify_core::DimensionVector,
+    /// Optional migration hint shown in rejection messages
+    /// (e.g. `"pass a dimensioned Density literal such as \`7850kg/m^3\`"`).
+    pub migration_hint: Option<&'static str>,
+}
+
+/// The outcome of [`accept_arg`].
+#[derive(Debug, PartialEq)]
+pub enum Acceptance {
+    /// The value has the expected dimension; carries the SI f64.
+    Accepted(f64),
+    /// The value is `Value::Undef` (or a missing cell); silently degrade.
+    Undefined,
+    /// The value is defined but the wrong type/dimension.
+    Rejected(ArgRejection),
+}
+
+/// Carried by [`Acceptance::Rejected`]; contains the information needed to
+/// format a `Severity::Warning` diagnostic via [`ArgRejection::message`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArgRejection {
+    /// Short description of the actual value type/dimension that was received.
+    pub got: String,
+    /// The expected type name from the `ArgSpec`.
+    pub expected: &'static str,
+    /// The migration hint from the `ArgSpec`, if any.
+    pub migration_hint: Option<&'static str>,
+}
+
+impl ArgRejection {
+    /// Format a `Severity::Warning` diagnostic message for this rejection.
+    ///
+    /// `builtin` is the calling builtin name (e.g. `"moment_of_inertia"`);
+    /// `arg_name` is the argument name (e.g. `"density"`).
+    ///
+    /// Example output:
+    /// `"moment_of_inertia: density argument expects Density, got Real; pass a dimensioned Density literal such as \`7850kg/m^3\`"`
+    pub fn message(&self, builtin: &str, arg_name: &str) -> String {
+        format!("{builtin}: {}", self.reason(arg_name))
+    }
+
+    /// [`ArgRejection::message`] without its `"{builtin}: "` prefix.
+    fn reason(&self, arg_name: &str) -> String {
+        let base = format!(
+            "{arg_name} argument expects {expected}, got {got}",
+            expected = self.expected,
+            got = self.got
+        );
+        if let Some(hint) = self.migration_hint {
+            format!("{base}; {hint}")
+        } else {
+            base
+        }
+    }
+
+    /// The one Error rendering of a rejection: [`ArgRejection::message`]'s
+    /// wording, coded `DimensionedArgRejected` (PRD 5 §7 I4/I6).
+    pub fn to_error(&self, builtin: &str, arg_name: &str) -> reify_core::Diagnostic {
+        reify_core::Diagnostic::error(self.message(builtin, arg_name))
+            .with_code(reify_core::DiagnosticCode::DimensionedArgRejected)
+    }
+}
+
+/// A rejected struct field, named by its dotted path (`"<Struct>.<field>"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldRejection {
+    pub path: String,
+    pub rejection: ArgRejection,
+}
+
+impl FieldRejection {
+    /// The rejection of `<owner>.<field>`: the one place the dotted path (PRD
+    /// §11 open question 3) is spelled.
+    pub fn new(owner: &str, field: &str, rejection: ArgRejection) -> Self {
+        Self {
+            path: format!("{owner}.{field}"),
+            rejection,
+        }
+    }
+
+    pub fn to_error(&self, builtin: &str) -> reify_core::Diagnostic {
+        self.rejection.to_error(builtin, &self.path)
+    }
+}
+
+/// [`FieldRejection::to_error`]'s wording without the builtin prefix.
+impl std::fmt::Display for FieldRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.rejection.reason(&self.path))
+    }
+}
+
+/// Returns the [`ArgSpec`] for the `density` argument of `center_of_mass` and
+/// `moment_of_inertia`: a `Value::Scalar` with `DimensionVector::MASS_DENSITY`
+/// (kg·m⁻³).
+pub fn density_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Density",
+        dimension: reify_core::DimensionVector::MASS_DENSITY,
+        migration_hint: Some(reify_core::units::DENSITY_MIGRATION_HINT),
+    }
+}
+
+/// Returns the [`ArgSpec`] for a LENGTH-semantic builtin argument: a
+/// `Value::Scalar` with `DimensionVector::LENGTH` (metres). Mirrors
+/// [`density_spec`].
+///
+/// Three kinds of position share this spec, because all three are lengths in
+/// every component:
+///
+/// - a DISPLACEMENT — `translate`'s `dx`/`dy`/`dz`, pattern spacing,
+///   arbitrary-pattern offsets;
+/// - a POINT in space — `rotate_around`'s pivot, `revolve`'s and
+///   `circular_pattern`'s axis origin, the mirror plane's origin,
+///   `line_segment`'s endpoints, `arc`'s centre, the variadic coordinate
+///   streams (`interp`/`bezier`/`nurbs` control points, and `polygon`'s
+///   vertices — a point in the XY PLANE, which is a plane in space);
+/// - a standalone EXTENT — `arc`'s radius, `helix`'s radius/pitch/height,
+///   `edges_at_height`'s z/tol, the primitive and profile DIMENSIONS
+///   (`box`/`cylinder`/`sphere`/`tube`/`cone`/`wedge`/`torus`,
+///   `rectangle`/`circle`/`ellipse`; task 5743), and the modify + sweep
+///   MAGNITUDES — `fillet` radius, `chamfer` distance,
+///   `chamfer_asymmetric`'s `d1`/`d2`, `shell` thickness, `thicken` offset,
+///   `zone_slab` width, `offset_solid`/`offset_curve` distance,
+///   `extrude`/`extrude_symmetric` distance and `pipe` radius (task 5744).
+///
+/// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
+/// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
+/// drives the eval-layer rejection that closes that hole (task 5214; the
+/// circular-pattern axis origin was added by 5350, the transform / sweep /
+/// curve families by 5623, the variadic curve coordinates by 5658,
+/// `polygon`'s vertex pairs by 5661, the primitive and profile dimensions by
+/// 5743 and the modify + sweep magnitudes by 5744). See the module doc for the
+/// full position table and for what stays deliberately un-gated.
+pub fn length_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Length",
+        dimension: reify_core::DimensionVector::LENGTH,
+        migration_hint: Some(reify_core::units::LENGTH_MIGRATION_HINT),
+    }
+}
+
+// ── PRD 5 §3 Leg B: the DIMENSIONED reader specs ──────────────────────────────
+//
+// Task 5791 (PRD `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg B) adds
+// the eleven ADDITIVE spec constructors the reader chokepoints of leaves β…ι
+// consume. Each mirrors the shape of [`density_spec`] / [`length_spec`] above
+// and reads its `dimension` from the `reify_core::DimensionVector` REGISTRY
+// const BY NAME — never from a hand-written `from_exps` exponent tuple — so a
+// later re-dimensioning is a one-line registry edit rather than a hunt through
+// every reader. (Precedent: task #5799 re-dimensioned `ROTATIONAL_STIFFNESS`
+// from rad⁻¹ to rad⁻²; a reader carrying its own tuple would have silently
+// disagreed with the registry from that day on.)
+//
+// # Why every one of them sets `migration_hint: None`
+//
+// `reify_core::units` today holds exactly two shared hint consts —
+// [`reify_core::units::LENGTH_MIGRATION_HINT`] and
+// [`reify_core::units::DENSITY_MIGRATION_HINT`] — and its "Why a HOIST and not
+// a copy" module doc records precisely why: those two are IRREGULAR hard-coded
+// literals that the EVAL layer (this module) and the COMPILE layer
+// (`reify-compiler::builtin_signatures`) must render byte-identically for the
+// same authoring mistake, so they genuinely can drift and that is what earns
+// them a shared const. None of the eleven below has a compile-layer twin to
+// keep byte-identical yet, so minting eleven more consts there would add an
+// edit site with nothing on the other end of it. The slot is left
+// INTENTIONALLY EMPTY until a consuming leaf (β…ι) grows that twin; the leaf
+// that does is the one that should hoist the const, following the same
+// hoist-not-a-copy argument.
+
+/// Returns the [`ArgSpec`] for a PRESSURE-semantic reader position (Pa =
+/// kg·m⁻¹·s⁻²).
+///
+/// PRD §3 Leg B routes these here: `ElasticMaterial`'s `youngs_modulus`,
+/// `yield_stress` and `shear_modulus`; the `FDMCouponOverride` orthotropic
+/// moduli `ex`/`ey`/`ez`/`gxy`; `yield_val`; `PressureLoad.magnitude`; and
+/// `TractionLoad.traction`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+/// Returns the [`ArgSpec`] for an ANGLE-semantic builtin argument: a
+/// `Value::Scalar` with `DimensionVector::ANGLE` (radians). Mirrors
+/// [`length_spec`].
+///
+/// Two families of position share this spec:
+///
+/// - the PRODUCER angles — `rotate`'s and `rotate_around`'s rotation angle,
+///   `revolve`'s sweep angle, `arc`'s `start_angle` and `end_angle`, `draft`'s
+///   draft angle and `circular_pattern`'s total sweep;
+/// - the SELECTOR tolerances — the `tol` of the four directional face
+///   selectors (`faces_by_normal` and siblings), which is an angular tolerance
+///   rather than a length.
+///
+/// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
+/// **radians** by `Value::as_f64`, so an author writing `45` meaning 45° gets
+/// 45 radians — the ≈57× analogue of the 10-vs-10mm 1000× hazard `length_spec`
+/// documents. `circular_pattern` is the one position where the bare reading
+/// was DEGREES instead, which is precisely why it cannot stay bare: two
+/// neighbouring angle slots disagreeing on what a bare number means is the
+/// hole this spec closes. See PRD
+/// `docs/prds/v0_6/angle-units-surface-convergence.md` (leaves β/γ/δ/ε).
+///
+/// Example rendered rejection:
+/// `"faces_by_normal: tol argument expects Angle, got Real; pass a dimensioned angle such as \`45deg\` or \`1.5rad\`"`
+///
+/// The rendered rejection for a dimensionless `Scalar` reads "...expects
+/// Angle, got dimensionless Scalar" — [`value_short_label`]'s existing wording,
+/// deliberately NOT overridden here, so the angle text stays uniform with the
+/// LENGTH one rather than growing a per-dimension special case.
+pub fn angle_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Angle",
+        dimension: reify_core::DimensionVector::ANGLE,
+        migration_hint: Some(reify_core::units::ANGLE_MIGRATION_HINT),
+    }
+}
+
+pub fn pressure_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Pressure",
+        dimension: reify_core::DimensionVector::PRESSURE,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a FORCE-semantic reader position (N =
+/// kg·m·s⁻²).
+///
+/// PRD §3 Leg B routes these here: `force_limit`, `reference_load` and
+/// `PointLoad.force`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn force_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Force",
+        dimension: reify_core::DimensionVector::FORCE,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a MASS-semantic reader position (kg).
+///
+/// PRD §3 Leg B routes the rigid-body / lumped `mass` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn mass_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Mass",
+        dimension: reify_core::DimensionVector::MASS,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a FREQUENCY-semantic reader position (Hz =
+/// s⁻¹).
+///
+/// PRD §3 Leg B routes the modal `target_frequency` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn frequency_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Frequency",
+        dimension: reify_core::DimensionVector::FREQUENCY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a TIME-semantic reader position (s).
+///
+/// PRD §3 Leg B routes the trajectory waypoint `t` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn time_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Time",
+        dimension: reify_core::DimensionVector::TIME,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a VELOCITY-semantic reader position (m·s⁻¹).
+///
+/// PRD §3 Leg B routes the joint `velocity_limit` reader here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn velocity_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Velocity",
+        dimension: reify_core::DimensionVector::VELOCITY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for an ACCELERATION-semantic reader position
+/// (m·s⁻²).
+///
+/// PRD §3 Leg B routes `acceleration_limit` and `max_accel` here. Note the
+/// already-shipped `validate_dimensioned_scalar` call at
+/// `reify-stdlib/src/fea/loads.rs:161` passes an `accel_dim` of
+/// `DimensionVector::ACCELERATION`, so this is the spec its consuming leaf
+/// adopts.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn acceleration_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Acceleration",
+        dimension: reify_core::DimensionVector::ACCELERATION,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a FORCE-DENSITY-semantic reader position
+/// (N·m⁻³ = kg·m⁻²·s⁻²).
+///
+/// PRD §3 Leg B routes `BodyForce.force_density` here.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn force_density_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "ForceDensity",
+        dimension: reify_core::DimensionVector::FORCE_DENSITY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a MOMENT-OF-INERTIA-semantic reader position
+/// (kg·m²).
+///
+/// PRD §3 Leg B routes the rigid-body inertia tensor cells here.
+///
+/// Not to be confused with the `moment_of_inertia` BUILTIN, whose `density`
+/// argument uses [`density_spec`].
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn moment_of_inertia_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "MomentOfInertia",
+        dimension: reify_core::DimensionVector::MOMENT_OF_INERTIA,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a PRISMATIC joint's `spring_rate` reader
+/// position (N·m⁻¹ = kg·s⁻²).
+///
+/// `DimensionVector::TRANSLATIONAL_STIFFNESS` is a NAME ALIAS of
+/// `DimensionVector::STIFFNESS` (`reify-core/src/dimension.rs:302`); the alias
+/// is used here so the reader names the joint kind it serves. Its revolute
+/// sibling [`rotational_stiffness_spec`] is a genuinely DISTINCT vector — PRD
+/// §3 Leg B routes `spring_rate` to one or the other BY JOINT KIND, so the two
+/// must never collapse. Pinned by
+/// `translational_stiffness_and_stiffness_are_the_same_vector`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn translational_stiffness_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "TranslationalStiffness",
+        dimension: reify_core::DimensionVector::TRANSLATIONAL_STIFFNESS,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a REVOLUTE joint's `spring_rate` reader
+/// position (N·m·rad⁻¹ = kg·m²·s⁻²·rad⁻²).
+///
+/// A DISTINCT vector from [`translational_stiffness_spec`], re-dimensioned
+/// from rad⁻¹ by task #5799 — which is exactly why this constructor reads
+/// `DimensionVector::ROTATIONAL_STIFFNESS` by name instead of spelling the
+/// exponents out.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn rotational_stiffness_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "RotationalStiffness",
+        dimension: reify_core::DimensionVector::ROTATIONAL_STIFFNESS,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a PRISMATIC joint's `damping` reader position
+/// (N·s·m⁻¹). Its revolute sibling is [`rotational_damping_spec`]; PRD §3
+/// Leg B routes `damping` by joint kind, exactly as it routes `spring_rate`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn translational_damping_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "TranslationalDamping",
+        dimension: reify_core::DimensionVector::TRANSLATIONAL_DAMPING,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a REVOLUTE joint's `damping` reader position
+/// (N·m·s·rad⁻²).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn rotational_damping_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "RotationalDamping",
+        dimension: reify_core::DimensionVector::ROTATIONAL_DAMPING,
+        migration_hint: None,
+    }
+}
+
+
+/// Returns the [`ArgSpec`] for a DELIBERATELY-BARE reader position — one whose
+/// quantity is genuinely dimensionless (a ratio, a count, a relative
+/// tolerance), so demanding a dimension of it would reject correct `.ri` code.
+///
+/// PRD §3 Leg B's "deliberately bare" list routes here: `poisson_ratio`,
+/// `damping_ratio`, `vibration_tolerance`, `tol`, `max_iters`, the buckling
+/// eigenvalue λ, `infill_gibson_ashby_c`/`_n`, `read_location_index`, and
+/// tensegrity's nullity-invariant relative ratios.
+///
+/// **These positions are GATED, not ungated.** Routing them through this spec
+/// rather than through a bare `as_f64()` is what makes a *dimensioned* Scalar
+/// in one of them a rejection: `poisson_ratio: 200GPa` is a real authoring
+/// mistake and stays one. What this spec adds over the dimensioned siblings is
+/// only that a bare `Real`/`Int` is ALSO accepted here — see [`accept_arg`]'s
+/// third bullet and PRD §7 I3.
+///
+/// `type_name` is `"Real"` because that is the spelling an author writes at
+/// one of these positions; `migration_hint` is `None` because there is no
+/// migration to make — the bare form is correct.
+pub fn dimensionless_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Real",
+        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        migration_hint: None,
+    }
+}
+
+/// Classify `value` against `spec`.
+///
+/// - `Value::Undef` → [`Acceptance::Undefined`] (quiet, no diagnostic needed).
+/// - `Value::Scalar { dimension, .. }` where `dimension == spec.dimension`
+///   → [`Acceptance::Accepted`] carrying the SI f64.
+/// - A bare `Value::Real`/`Value::Int`, **and only when
+///   `spec.dimension == DimensionVector::DIMENSIONLESS`** →
+///   [`Acceptance::Accepted`] carrying the value as f64. The requirement is
+///   PRD `docs/prds/v0_6/dimension-checked-readers.md` §7 I3 —
+///   "DIMENSIONLESS and bare are interchangeable ONLY at a
+///   `dimensionless_spec` position" — and §7:465's annotation of that position
+///   as `Real | Int | Scalar{DIMENSIONLESS}`.
+///
+///   This arm is the **ONLY** departure from the seam frozen by amendment A1,
+///   and it is provably INERT at every pre-existing call site: MEASURED, the
+///   only `ArgSpec`s constructed anywhere in the workspace before task 5791
+///   were [`density_spec`] (MASS_DENSITY), [`length_spec`] (LENGTH) and the
+///   single inline literal at `reify-eval/src/geometry_ops.rs:10300`, whose
+///   lone caller (`resolve_scalar_dim_arg`, :10326) passes ANGLE. None is
+///   DIMENSIONLESS, so the guard is false for all of them and their observable
+///   behaviour is byte-identical. Pinned by
+///   `bare_real_int_stay_rejected_at_every_dimensioned_spec`, which must be
+///   read as the other half of this arm: without the guard, a bare `10` at a
+///   LENGTH position would be silently read as 10 SI **metres** instead of
+///   `10mm` — the 1000x hazard task 5214 exists to close.
+/// - Any other defined value → [`Acceptance::Rejected`].
+pub fn accept_arg(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
+    match value {
+        crate::value::Value::Undef => Acceptance::Undefined,
+        crate::value::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == spec.dimension => Acceptance::Accepted(*si_value),
+        // PRD §7 I3: bare Real/Int are interchangeable with DIMENSIONLESS, and
+        // ONLY there. The guard is what keeps amendment A1's freeze intact —
+        // see the third doc bullet above for the measurement.
+        crate::value::Value::Real(r)
+            if spec.dimension == reify_core::DimensionVector::DIMENSIONLESS =>
+        {
+            Acceptance::Accepted(*r)
+        }
+        crate::value::Value::Int(i)
+            if spec.dimension == reify_core::DimensionVector::DIMENSIONLESS =>
+        {
+            Acceptance::Accepted(*i as f64)
+        }
+        other => Acceptance::Rejected(ArgRejection {
+            got: value_short_label(other),
+            expected: spec.type_name,
+            migration_hint: spec.migration_hint,
+        }),
+    }
+}
+
+/// [`accept_arg`], plus a bare `Real`/`Int` accepted as the legacy
+/// undimensioned spelling of a dimensioned reader position.
+///
+/// TRANSITIONAL, and the ONE home of that rule. Its consumers are the FEA
+/// load readers (narrowed to [`accept_arg`] by γ3 #5802) and the dynamics
+/// mass / com / inertia / joint-compliance readers. A `Scalar` must still
+/// carry `spec.dimension`; a DIMENSIONLESS `Scalar` is a dimension, not bare.
+pub fn accept_arg_or_bare(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
+    match value {
+        crate::value::Value::Real(r) => Acceptance::Accepted(*r),
+        crate::value::Value::Int(i) => Acceptance::Accepted(*i as f64),
+        other => accept_arg(other, spec),
+    }
+}
+
+/// [`accept_arg_or_bare`] as a reader's `Result`: `Ok(Some(si))` accepted,
+/// `Ok(None)` unresolved, `Err` refused.
+///
+/// The ONE refusal rule of the dimension-checked readers: every present value
+/// the position refuses — a number of the wrong dimension, or not a number at
+/// all — is an `Err`, never read as absent. It is one rejection reason (ruling
+/// A7), so [`ArgRejection::to_error`] codes it `DimensionedArgRejected` either
+/// way (INV-SF-6), exactly as the eval-side length chokepoint does.
+pub fn read_arg_or_bare(
+    value: &crate::value::Value,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, ArgRejection> {
+    match accept_arg_or_bare(value, spec) {
+        Acceptance::Accepted(si) => Ok(Some(si)),
+        Acceptance::Undefined => Ok(None),
+        Acceptance::Rejected(rejection) => Err(rejection),
+    }
+}
+
+// ── PRD 5 §7: the STRUCT-FIELD reader surface ────────────────────────────────
+
+/// The outcome of [`accept_field`] — [`Acceptance`] plus the one distinction a
+/// struct FIELD can draw that a positional argument cannot: the field may not
+/// be there at all.
+///
+/// Declared by PRD `docs/prds/v0_6/dimension-checked-readers.md` §7.
+///
+/// # `Absent` means "field absent **OR** `Option(None)`"
+///
+/// §6 decision 3 is "Absent ≠ wrong", and amendment A2 extends it: the two
+/// spellings are INDISTINGUISHABLE to a reader and both legitimately fall back
+/// to a declared default. `Steel_AISI_1045()` with no `yield_stress` in
+/// `fields` and `Steel_AISI_1045(yield_stress: none)` mean the same thing to a
+/// consumer, so collapsing them here is the honest classification, not a lost
+/// distinction.
+///
+/// `Undefined` keeps §6 decision 2's quiet degradation — an `Undef` field is a
+/// value that has not resolved yet, not a mistake. Only [`Rejected`] is a
+/// fault.
+///
+/// [`Rejected`]: FieldAcceptance::Rejected
+#[derive(Debug, PartialEq)]
+pub enum FieldAcceptance {
+    /// The field is present and has the expected dimension; carries the SI f64.
+    Accepted(f64),
+    /// The field is not in `fields` at all, **or** is `Value::Option(None)`.
+    /// Both legitimately fall back to a declared default.
+    Absent,
+    /// The field resolved to `Value::Undef` (possibly through an `Option`);
+    /// silently degrade.
+    Undefined,
+    /// The field is present and defined, but the wrong type/dimension.
+    Rejected(ArgRejection),
+}
+
+/// Classify the field `key` of a structure instance against `spec`.
+///
+/// The struct-field sibling of [`accept_arg`], and the surface PRD §3 Leg B's
+/// material / override / options readers consume. It adds exactly two things
+/// over `accept_arg` and delegates everything else to it:
+///
+/// 1. a missing key reads as [`FieldAcceptance::Absent`] rather than as a
+///    rejection;
+/// 2. `Value::Option` is unwrapped — `Option(None)` →
+///    [`FieldAcceptance::Absent`], `Option(Some(inner))` → recurse. The
+///    recursion goes all the way down, for behavioural parity with
+///    `reify-stdlib/src/flexures/common.rs`'s `scalar_si`.
+///
+/// **Option unwrapping lives here and ONLY here.** [`accept_arg`] stays frozen
+/// (amendment A1), and every Option shape amendment A2 cites is a struct
+/// FIELD — `ElasticMaterial.yield_stress : Option<Pressure>`
+/// (`crates/reify-compiler/stdlib/materials_fea.ri:132`/`:179` and its
+/// conformers), `FDMCouponOverride`'s `ex`/`ey`/`ez`/`gxy`, and
+/// `ElasticOptions.shell_voxel_size` — so `accept_field` covers all of them
+/// without widening the positional seam.
+///
+/// # Formatting a rejection
+///
+/// A caller formats [`FieldAcceptance::Rejected`] with
+/// `ArgRejection::message(builtin, "<struct>.<field>")` — the DOTTED-PATH
+/// convention decided at PRD §11 open question 3. There is no second
+/// formatter and no second wording.
+///
+/// # One expectation, one place
+///
+/// Per §7 I1, a classifier that re-derives its own dimension expectation
+/// instead of consulting the same [`ArgSpec`] this function was handed is a
+/// DEFECT: the rejection text and the acceptance predicate would then have two
+/// sources that can drift. Pass the spec down; do not restate it.
+pub fn accept_field(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> FieldAcceptance {
+    accept_present_field(data.fields.get(key), spec, accept_arg)
+}
+
+/// The strict struct-field reader: [`accept_field`] as a reader's `Result`.
+///
+/// `Ok(Some(si))` accepted; `Ok(None)` for a field that is absent, `none` or
+/// unresolved; `Err` naming `<Struct>.<key>` for any present value the spec
+/// refuses — a number of the wrong dimension, or not a number at all
+/// ([`read_arg_or_bare`]'s refusal rule).
+pub fn read_field(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    field_reading(&data.type_name, key, accept_field(data, key, spec))
+}
+
+/// [`read_field`] for a position that still takes the legacy bare spelling
+/// ([`accept_arg_or_bare`]).
+pub fn read_field_or_bare(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    read_entry_or_bare(&data.type_name, key, data.fields.get(key), spec)
+}
+
+/// [`read_field_or_bare`] for an entry looked up outside a structure instance,
+/// such as a `Value::Map` entry: `entry` is `None` when the key is absent, and
+/// a refusal is named `<owner>.<key>`.
+pub fn read_entry_or_bare(
+    owner: &str,
+    key: &str,
+    entry: Option<&crate::value::Value>,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    field_reading(
+        owner,
+        key,
+        accept_present_field(entry, spec, accept_arg_or_bare),
+    )
+}
+
+/// A field's classification as a reader's `Result`, a refusal named
+/// `<owner>.<key>`.
+fn field_reading(
+    owner: &str,
+    key: &str,
+    acceptance: FieldAcceptance,
+) -> Result<Option<f64>, FieldRejection> {
+    match acceptance {
+        FieldAcceptance::Accepted(si) => Ok(Some(si)),
+        FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
+        FieldAcceptance::Rejected(rejection) => Err(FieldRejection::new(owner, key, rejection)),
+    }
+}
+
+/// Classify a looked-up field through `accept`: a missing one is
+/// [`FieldAcceptance::Absent`], and any depth of `Value::Option` is unwrapped
+/// (see [`accept_field`] for why the recursion is unbounded).
+fn accept_present_field(
+    field: Option<&crate::value::Value>,
+    spec: &ArgSpec,
+    accept: fn(&crate::value::Value, &ArgSpec) -> Acceptance,
+) -> FieldAcceptance {
+    match field {
+        None | Some(crate::value::Value::Option(None)) => FieldAcceptance::Absent,
+        Some(crate::value::Value::Option(Some(inner))) => {
+            accept_present_field(Some(inner), spec, accept)
+        }
+        Some(other) => match accept(other, spec) {
+            Acceptance::Accepted(si) => FieldAcceptance::Accepted(si),
+            Acceptance::Undefined => FieldAcceptance::Undefined,
+            Acceptance::Rejected(rej) => FieldAcceptance::Rejected(rej),
+        },
+    }
+}
+
+/// Produce a short human-readable label for a `Value` used in rejection
+/// diagnostics (e.g. `"Real"`, `"Pressure Scalar"`, `"Bool"`).
+fn value_short_label(value: &crate::value::Value) -> String {
+    match value {
+        crate::value::Value::Real(_) => "Real".to_string(),
+        crate::value::Value::Scalar { dimension, .. } => {
+            if dimension.is_dimensionless() {
+                "dimensionless Scalar".to_string()
+            } else if let Some(name) = dimension.canonical_name() {
+                format!("{name} Scalar")
+            } else {
+                "dimensioned Scalar".to_string()
+            }
+        }
+        crate::value::Value::Bool(_) => "Bool".to_string(),
+        crate::value::Value::Int(_) => "Int".to_string(),
+        crate::value::Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accept_mass_density_scalar_returns_accepted() {
+        let value = crate::value::Value::Scalar {
+            si_value: 7850.0,
+            dimension: reify_core::DimensionVector::MASS_DENSITY,
+        };
+        let spec = density_spec();
+        assert_eq!(
+            accept_arg(&value, &spec),
+            Acceptance::Accepted(7850.0),
+            "MASS_DENSITY scalar must be accepted with its SI value"
+        );
+    }
+
+    #[test]
+    fn accept_undef_returns_undefined() {
+        let value = crate::value::Value::Undef;
+        let spec = density_spec();
+        assert_eq!(
+            accept_arg(&value, &spec),
+            Acceptance::Undefined,
+            "Undef must return Undefined (quiet degradation)"
+        );
+    }
+
+    #[test]
+    fn accept_bare_real_rejected_with_migration_hint() {
+        // Structural assertion: Real must be Rejected, the hint must be Some,
+        // and message() must include both the arg name and the hint text.
+        // The exact wording of the hint is pinned in geometry_ops'
+        // resolve_density_arg_diagnostics integration test, not here.
+        let value = crate::value::Value::Real(7850.0);
+        let spec = density_spec();
+        match accept_arg(&value, &spec) {
+            Acceptance::Rejected(rej) => {
+                assert!(
+                    rej.migration_hint.is_some(),
+                    "ArgRejection for a bare Real must carry a migration hint"
+                );
+                let hint = rej.migration_hint.unwrap();
+                let msg = rej.message("moment_of_inertia", "density");
+                assert!(
+                    msg.contains(hint),
+                    "message() must embed the migration_hint text; got: {msg:?}"
+                );
+            }
+            other => panic!("Value::Real(7850.0) must be Rejected, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_pressure_scalar_rejected_strict_dimension() {
+        let value = crate::value::Value::Scalar {
+            si_value: 2.0e11,
+            dimension: reify_core::DimensionVector::PRESSURE,
+        };
+        let spec = density_spec();
+        assert!(
+            matches!(accept_arg(&value, &spec), Acceptance::Rejected(_)),
+            "Pressure scalar must be Rejected (strict-dimension check closes Pressure-as-density hole)"
+        );
+    }
+
+    // ── PRD 5 §3 Leg B: the DIMENSIONED spec constructors ─────────────────────
+
+    /// Every PRD-5 spec constructor must read its `dimension` from the
+    /// `reify_core::DimensionVector` REGISTRY const by name, never from a
+    /// hand-written `from_exps` exponent tuple. That is what makes a later
+    /// re-dimensioning (see the ROTATIONAL_STIFFNESS re-dimensioning of task
+    /// #5799) a ONE-LINE registry change instead of a hunt through every
+    /// reader. Comparing against the const rather than against a literal
+    /// tuple is the whole point of this test — do not "strengthen" it into an
+    /// exponent assertion.
+    #[test]
+    fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
+        use reify_core::DimensionVector as DV;
+
+        let cases: [(&str, ArgSpec, DV); 13] = [
+            ("pressure_spec", pressure_spec(), DV::PRESSURE),
+            ("force_spec", force_spec(), DV::FORCE),
+            ("mass_spec", mass_spec(), DV::MASS),
+            ("frequency_spec", frequency_spec(), DV::FREQUENCY),
+            ("time_spec", time_spec(), DV::TIME),
+            ("velocity_spec", velocity_spec(), DV::VELOCITY),
+            ("acceleration_spec", acceleration_spec(), DV::ACCELERATION),
+            ("force_density_spec", force_density_spec(), DV::FORCE_DENSITY),
+            (
+                "moment_of_inertia_spec",
+                moment_of_inertia_spec(),
+                DV::MOMENT_OF_INERTIA,
+            ),
+            (
+                "translational_stiffness_spec",
+                translational_stiffness_spec(),
+                DV::TRANSLATIONAL_STIFFNESS,
+            ),
+            (
+                "rotational_stiffness_spec",
+                rotational_stiffness_spec(),
+                DV::ROTATIONAL_STIFFNESS,
+            ),
+            (
+                "translational_damping_spec",
+                translational_damping_spec(),
+                DV::TRANSLATIONAL_DAMPING,
+            ),
+            (
+                "rotational_damping_spec",
+                rotational_damping_spec(),
+                DV::ROTATIONAL_DAMPING,
+            ),
+        ];
+
+        for (name, spec, expected) in cases {
+            assert_eq!(
+                spec.dimension, expected,
+                "{name}: dimension must EQUAL the named reify_core registry const"
+            );
+            assert!(
+                !spec.type_name.is_empty(),
+                "{name}: type_name must be non-empty (it is the `expects {{…}}` \
+                 text in every rejection message)"
+            );
+        }
+    }
+
+    /// The PRD-5 constructors inherit `accept_arg`'s STRICT dimension equality:
+    /// a neighbouring dimension is as wrong as a bare `Real`.
+    #[test]
+    fn prd5_spec_constructors_enforce_strict_dimension_equality() {
+        use reify_core::DimensionVector as DV;
+
+        let pressure = crate::value::Value::Scalar {
+            si_value: 2.0e11,
+            dimension: DV::PRESSURE,
+        };
+        assert_eq!(
+            accept_arg(&pressure, &pressure_spec()),
+            Acceptance::Accepted(2.0e11),
+            "a PRESSURE Scalar must be Accepted by pressure_spec with its SI value"
+        );
+
+        let force = crate::value::Value::Scalar {
+            si_value: 5000.0,
+            dimension: DV::FORCE,
+        };
+        assert!(
+            matches!(
+                accept_arg(&force, &pressure_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a FORCE Scalar must be Rejected by pressure_spec (strict equality)"
+        );
+
+        assert!(
+            matches!(
+                accept_arg(&crate::value::Value::Real(2.0e11), &pressure_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a bare Real must be Rejected by pressure_spec"
+        );
+        assert!(
+            matches!(
+                accept_arg(
+                    &crate::value::Value::Real(1.0),
+                    &moment_of_inertia_spec()
+                ),
+                Acceptance::Rejected(_)
+            ),
+            "a bare Real must be Rejected by moment_of_inertia_spec"
+        );
+
+        assert_eq!(
+            accept_arg(&crate::value::Value::Undef, &force_spec()),
+            Acceptance::Undefined,
+            "Undef must stay quiet-degrading at a force_spec position"
+        );
+    }
+
+    /// `TRANSLATIONAL_STIFFNESS` is a NAME ALIAS of `STIFFNESS` (dimension.rs:302)
+    /// while `ROTATIONAL_STIFFNESS` (dimension.rs:283) is a DISTINCT vector,
+    /// re-dimensioned by task #5799 to carry slot 7 (angle) at -2.
+    ///
+    /// PRD §3 Leg B routes a joint's `spring_rate` to ONE OR THE OTHER by joint
+    /// kind (prismatic → translational, revolute → rotational), so a silent
+    /// collapse of the two would be a soundness hole: a revolute spring rate
+    /// would be accepted at a prismatic reader and vice versa.
+    #[test]
+    fn translational_stiffness_and_stiffness_are_the_same_vector() {
+        use reify_core::DimensionVector as DV;
+
+        assert_eq!(
+            translational_stiffness_spec().dimension,
+            DV::STIFFNESS,
+            "TRANSLATIONAL_STIFFNESS aliases STIFFNESS (dimension.rs:302)"
+        );
+        assert_ne!(
+            rotational_stiffness_spec().dimension,
+            translational_stiffness_spec().dimension,
+            "ROTATIONAL_STIFFNESS must stay a DISTINCT vector from \
+             TRANSLATIONAL_STIFFNESS — PRD §3 Leg B routes spring_rate to one \
+             or the other by joint kind"
+        );
+
+        // And the distinction is observable through accept_arg, not just through
+        // the consts: a rotational spring rate is rejected at a prismatic reader.
+        let rotational = crate::value::Value::Scalar {
+            si_value: 12.0,
+            dimension: DV::ROTATIONAL_STIFFNESS,
+        };
+        assert!(
+            matches!(
+                accept_arg(&rotational, &translational_stiffness_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a ROTATIONAL_STIFFNESS Scalar must be Rejected at a \
+             translational_stiffness_spec position"
+        );
+    }
+
+    /// The damping pair mirrors the stiffness pair: a joint's `damping` is
+    /// routed BY JOINT KIND, so the two specs must stay distinct and named.
+    #[test]
+    fn translational_and_rotational_damping_specs_are_distinct() {
+        let translational = translational_damping_spec();
+        let rotational = rotational_damping_spec();
+        assert!(!translational.type_name.is_empty());
+        assert!(!rotational.type_name.is_empty());
+        assert_ne!(translational.type_name, rotational.type_name);
+        assert_ne!(
+            translational.dimension, rotational.dimension,
+            "a revolute damping must never be accepted at a prismatic reader"
+        );
+    }
+
+    // ── accept_arg_or_bare: the transitional bare-tolerant sibling ─────────────
+
+    #[test]
+    fn accept_arg_or_bare_accepts_bare_and_the_spec_dimension_only() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let force = force_spec();
+        assert_eq!(
+            accept_arg_or_bare(&Value::Real(1000.0), &force),
+            Acceptance::Accepted(1000.0)
+        );
+        assert_eq!(
+            accept_arg_or_bare(&Value::Int(5), &force),
+            Acceptance::Accepted(5.0)
+        );
+        assert_eq!(
+            accept_arg_or_bare(
+                &Value::Scalar {
+                    si_value: 1000.0,
+                    dimension: DV::FORCE,
+                },
+                &force
+            ),
+            Acceptance::Accepted(1000.0)
+        );
+        assert_eq!(
+            accept_arg_or_bare(&Value::Undef, &force),
+            Acceptance::Undefined
+        );
+
+        let Acceptance::Rejected(rej) = accept_arg_or_bare(
+            &Value::Scalar {
+                si_value: 2.0,
+                dimension: DV::LENGTH,
+            },
+            &force,
+        ) else {
+            unreachable!("a LENGTH Scalar at a force position must be Rejected");
+        };
+        assert_eq!(rej.got, "Length Scalar");
+        assert_eq!(rej.expected, "Force");
+
+        assert!(
+            matches!(
+                accept_arg_or_bare(
+                    &Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DV::DIMENSIONLESS,
+                    },
+                    &force
+                ),
+                Acceptance::Rejected(_)
+            ),
+            "\"bare\" means literally Real/Int; a DIMENSIONLESS Scalar is a \
+             dimension, and the wrong one"
+        );
+        assert!(matches!(
+            accept_arg_or_bare(&Value::Bool(true), &force),
+            Acceptance::Rejected(_)
+        ));
+
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(1000.0), &force),
+                Acceptance::Rejected(_)
+            ),
+            "amendment A1: accept_arg itself must still reject a bare Real at \
+             a dimensioned spec"
+        );
+    }
+
+    // ── FieldRejection / ArgRejection::to_error: the one Error rendering ───────
+
+    #[test]
+    fn rejections_render_as_one_coded_error_diagnostic() {
+        use crate::value::Value;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let Acceptance::Rejected(rejection) = accept_arg(&Value::Real(0.4), &length_spec()) else {
+            unreachable!("a bare Real at a LENGTH position must be Rejected");
+        };
+        let expected_message = rejection.message("as_printed_material", "Options.line_width");
+
+        let arg_error = rejection.to_error("as_printed_material", "Options.line_width");
+        assert_eq!(arg_error.severity, Severity::Error);
+        assert_eq!(arg_error.code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(arg_error.message, expected_message);
+
+        let field = FieldRejection::new("Options", "line_width", rejection);
+        let field_error = field.to_error("as_printed_material");
+        assert_eq!(field_error.severity, Severity::Error);
+        assert_eq!(
+            field_error.code,
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
+        assert_eq!(field_error.message, expected_message);
+        assert_eq!(
+            format!("as_printed_material: {field}"),
+            expected_message,
+            "a FieldRejection displays the same wording, minus the builtin prefix"
+        );
+    }
+
+    // ── read_field / read_field_or_bare / read_entry_or_bare ──────────────────
+
+    fn point_load(force: crate::value::Value) -> crate::value::StructureInstanceData {
+        crate::value::StructureInstanceData {
+            type_id: crate::structure_registry::StructureTypeId(1),
+            type_name: "PointLoad".to_string(),
+            version: 1,
+            fields: [("force".to_string(), force)].into_iter().collect(),
+        }
+    }
+
+    /// The strict reader: `accept_field`'s absent and `Option` handling, and
+    /// no bare spelling at a dimensioned position.
+    #[test]
+    fn read_field_reads_its_dimension_and_refuses_everything_else() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let force = force_spec();
+        let newtons = Value::Scalar {
+            si_value: 5.0,
+            dimension: DV::FORCE,
+        };
+        let some = |v: Value| Value::Option(Some(Box::new(v)));
+        assert_eq!(
+            read_field(&point_load(some(newtons.clone())), "force", &force),
+            Ok(Some(5.0))
+        );
+        for unread in [Value::Option(None), Value::Undef] {
+            assert_eq!(read_field(&point_load(unread), "force", &force), Ok(None));
+        }
+        assert_eq!(
+            read_field(&point_load(newtons), "magnitude", &force),
+            Ok(None),
+            "a key that is not in `fields` reads as absent"
+        );
+        for refused in [Value::Real(5.0), Value::Int(5), Value::Bool(true)] {
+            let rejection = read_field(&point_load(refused.clone()), "force", &force);
+            assert!(
+                matches!(
+                    &rejection,
+                    Err(FieldRejection { path, rejection })
+                        if path == "PointLoad.force" && rejection.expected == "Force"
+                ),
+                "{refused:?} must be refused naming PointLoad.force, got {rejection:?}"
+            );
+        }
+    }
+
+    /// The field-level twin of `read_arg_or_bare`: `accept_field`'s absent and
+    /// `Option` handling, plus the legacy bare spelling.
+    #[test]
+    fn read_field_or_bare_unwraps_option_and_takes_the_bare_spelling() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let force = force_spec();
+        let read = |v: Value| read_field_or_bare(&point_load(v), "force", &force);
+        let newtons = Value::Scalar {
+            si_value: 5.0,
+            dimension: DV::FORCE,
+        };
+        let some = |v: Value| Value::Option(Some(Box::new(v)));
+        assert_eq!(
+            read_field_or_bare(&point_load(Value::Undef), "magnitude", &force),
+            Ok(None)
+        );
+        assert_eq!(read(Value::Option(None)), Ok(None));
+        assert_eq!(read(some(Value::Undef)), Ok(None));
+        assert_eq!(read(newtons.clone()), Ok(Some(5.0)));
+        assert_eq!(read(some(some(newtons))), Ok(Some(5.0)));
+        assert_eq!(read(some(Value::Int(5))), Ok(Some(5.0)));
+
+        let metres = Value::Scalar {
+            si_value: 5.0,
+            dimension: DV::LENGTH,
+        };
+        for refused in [some(metres.clone()), metres, Value::Bool(true)] {
+            assert_eq!(
+                read(refused.clone()).err().map(|rejection| rejection.path),
+                Some("PointLoad.force".to_string()),
+                "{refused:?} must be refused, never read as absent"
+            );
+        }
+    }
+
+    /// An entry looked up outside a structure instance reads like a field and
+    /// is named by the owner its caller gives.
+    #[test]
+    fn read_entry_or_bare_names_a_refusal_after_its_owner() {
+        use crate::value::Value;
+
+        let force = force_spec();
+        assert_eq!(
+            read_entry_or_bare("prismatic", "damping", None, &force),
+            Ok(None)
+        );
+        assert_eq!(
+            read_entry_or_bare("prismatic", "damping", Some(&Value::Real(2.0)), &force),
+            Ok(Some(2.0))
+        );
+        let rejection =
+            read_entry_or_bare("prismatic", "damping", Some(&Value::Bool(true)), &force)
+                .expect_err("a Bool at a FORCE entry must be refused");
+        assert_eq!(rejection.path, "prismatic.damping");
+        assert_eq!(
+            rejection.to_error("solve").message,
+            rejection.rejection.message("solve", "prismatic.damping")
+        );
+    }
+
+    // ── read_arg_or_bare: one refusal rule for every reader ──────────────────
+
+    #[test]
+    fn read_arg_or_bare_refuses_every_present_value_it_does_not_accept() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let mass = mass_spec();
+        assert_eq!(read_arg_or_bare(&Value::Real(2.0), &mass), Ok(Some(2.0)));
+        assert_eq!(read_arg_or_bare(&Value::Undef, &mass), Ok(None));
+        let length_mass = Value::Scalar {
+            si_value: 2.0,
+            dimension: DV::LENGTH,
+        };
+        for refused in [length_mass, Value::Bool(true)] {
+            assert!(
+                read_arg_or_bare(&refused, &mass).is_err(),
+                "{refused:?} must be refused, never read as absent"
+            );
+        }
+    }
+
+    /// One rejection reason (ruling A7): a non-number is refused with the same
+    /// coded Error as a number of the wrong dimension.
+    #[test]
+    fn a_non_number_renders_as_the_same_coded_rejection() {
+        use crate::value::Value;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let rejection = read_arg_or_bare(&Value::Bool(true), &length_spec())
+            .expect_err("a Bool at a LENGTH position must be refused");
+        let error = rejection.to_error("translate", "dx");
+        assert_eq!(error.severity, Severity::Error);
+        assert_eq!(error.code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(error.message, rejection.message("translate", "dx"));
+    }
+
+
+    // ── PRD 5 §7 I3: the dimensionless position, and the freeze floor ─────────
+
+    /// PRD §7 I3 — "DIMENSIONLESS and bare are interchangeable ONLY at a
+    /// `dimensionless_spec` position", and §7:465's annotation of that position
+    /// as `Real | Int | Scalar{DIMENSIONLESS}`.
+    ///
+    /// The deliberately-bare reader positions of PRD §3 Leg B (`poisson_ratio`,
+    /// `damping_ratio`, `vibration_tolerance`, `tol`, `max_iters`, the buckling
+    /// eigenvalue λ, …) are NOT ungated: they are gated to THIS spec, so a
+    /// *dimensioned* Scalar in one of them is still a rejection.
+    #[test]
+    fn dimensionless_spec_accepts_bare_real_int_and_dimensionless_scalar() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        assert_eq!(
+            accept_arg(&Value::Real(0.3), &dimensionless_spec()),
+            Acceptance::Accepted(0.3),
+            "a bare Real must be Accepted at a dimensionless_spec position \
+             (the poisson_ratio shape)"
+        );
+        assert_eq!(
+            accept_arg(&Value::Int(7), &dimensionless_spec()),
+            Acceptance::Accepted(7.0),
+            "a bare Int must be Accepted at a dimensionless_spec position, \
+             widened to f64 (the max_iters shape)"
+        );
+        assert_eq!(
+            accept_arg(
+                &Value::Scalar {
+                    si_value: 0.3,
+                    dimension: DV::DIMENSIONLESS,
+                },
+                &dimensionless_spec()
+            ),
+            Acceptance::Accepted(0.3),
+            "an explicitly DIMENSIONLESS Scalar must be Accepted too — bare and \
+             DIMENSIONLESS are interchangeable HERE and only here"
+        );
+
+        assert!(
+            matches!(
+                accept_arg(
+                    &Value::Scalar {
+                        si_value: 2.0e11,
+                        dimension: DV::PRESSURE,
+                    },
+                    &dimensionless_spec()
+                ),
+                Acceptance::Rejected(_)
+            ),
+            "a DIMENSIONED Scalar at a dimensionless position is still WRONG \
+             (PRD §3 Leg B: these positions are gated to dimensionless_spec so \
+             a dimensioned Scalar is still rejected)"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Bool(true), &dimensionless_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "Bool is not a number and must stay Rejected"
+        );
+    }
+
+    /// LOAD-BEARING companion to the widening above, written in the SAME step
+    /// so the two can never be separated.
+    ///
+    /// `accept_arg`'s new bare arm is GUARDED on
+    /// `spec.dimension == DimensionVector::DIMENSIONLESS`. This test is the
+    /// proof that the guard holds — that the widening did NOT leak into any
+    /// DIMENSIONED spec, where accepting a bare `Real` would silently read `10`
+    /// as SI metres instead of `10mm` (the 1000x hazard task 5214 exists to
+    /// close), and would breach amendment A1's freeze of the core seam.
+    #[test]
+    fn bare_real_int_stay_rejected_at_every_dimensioned_spec() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(10.0), &length_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at a LENGTH position must stay Rejected (10 vs 10mm)"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Int(10), &length_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Int at a LENGTH position must stay Rejected (10 vs 10mm)"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(7850.0), &density_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at a Density position must stay Rejected"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(2.0e11), &pressure_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at a PRESSURE position must stay Rejected"
+        );
+
+        // The ONLY other ArgSpec constructed anywhere in the workspace is the
+        // inline literal at `reify-eval/src/geometry_ops.rs:10300`, whose lone
+        // caller (`resolve_scalar_dim_arg`, :10326) passes ANGLE. Reconstructed
+        // here byte-for-byte so the freeze is asserted over the real shape.
+        let angle_spec = ArgSpec {
+            type_name: "Angle",
+            dimension: DV::ANGLE,
+            migration_hint: None,
+        };
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(std::f64::consts::FRAC_PI_2), &angle_spec),
+                Acceptance::Rejected(_)
+            ),
+            "bare Real at the inline ANGLE spec must stay Rejected — this is \
+             the shape geometry_ops.rs:10300 builds, and amendment A1 freezes \
+             its behaviour"
+        );
+    }
+
+
+    // ── PRD 5 §7: accept_field / FieldAcceptance, the A2 Option semantics ─────
+
+    /// Build a `StructureInstanceData` shaped like a materialised
+    /// `Steel_AISI_1045()` for the `accept_field` cases below.
+    fn steel_instance(
+        fields: &[(&str, crate::value::Value)],
+    ) -> crate::value::StructureInstanceData {
+        crate::value::StructureInstanceData {
+            type_id: crate::structure_registry::StructureTypeId(1),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields: fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        }
+    }
+
+    fn pressure(si: f64) -> crate::value::Value {
+        crate::value::Value::Scalar {
+            si_value: si,
+            dimension: reify_core::DimensionVector::PRESSURE,
+        }
+    }
+
+    #[test]
+    fn accept_field_classifies_the_struct_field_shapes_of_prd5() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        // (1) bare Scalar{PRESSURE} at a pressure_spec field.
+        let data = steel_instance(&[("youngs_modulus", pressure(2.05e11))]);
+        assert_eq!(
+            accept_field(&data, "youngs_modulus", &pressure_spec()),
+            FieldAcceptance::Accepted(2.05e11),
+            "a bare PRESSURE Scalar field must be Accepted with its SI value"
+        );
+
+        // (2) key absent from `fields` → Absent.
+        assert_eq!(
+            accept_field(&data, "shear_modulus", &pressure_spec()),
+            FieldAcceptance::Absent,
+            "a field that is not in `fields` at all must read as Absent"
+        );
+
+        // (3) Value::Undef → Undefined (§6 decision 2's quiet degradation).
+        let undef = steel_instance(&[("youngs_modulus", Value::Undef)]);
+        assert_eq!(
+            accept_field(&undef, "youngs_modulus", &pressure_spec()),
+            FieldAcceptance::Undefined,
+            "Undef must stay quiet-degrading, not become a fault"
+        );
+
+        // (4) Option(None) ≡ Absent — amendment A2's extension of §6 decision 3
+        //     ("Absent ≠ wrong"): both legitimately fall back to a declared
+        //     default, and the two are indistinguishable to a reader.
+        let none = steel_instance(&[("yield_stress", Value::Option(None))]);
+        assert_eq!(
+            accept_field(&none, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Absent,
+            "Option(None) must read as Absent, not as a rejection"
+        );
+
+        // (5) THE VALUE FLOOR amendment A2 names explicitly. The default
+        //     spelling `Steel_AISI_1045()` materialises yield_stress from its
+        //     `= some(310MPa)` default (materials_fea.ri:179) as
+        //     Option(Some(Scalar{310e6, PRESSURE})).
+        let default_spelling = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(pressure(310_000_000.0)))),
+        )]);
+        assert_eq!(
+            accept_field(&default_spelling, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Accepted(310_000_000.0),
+            "the `Steel_AISI_1045()` default spelling must still read 310 MPa \
+             through the Option — this is the regression proof that the Option \
+             path survives validate_dimensioned_scalar becoming an adapter"
+        );
+
+        //     …and `Steel_AISI_1045(yield_stress: some(310mm))` — a LENGTH
+        //     inside the same Option — must be a fault, not a silent read.
+        let wrong_dim = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(Value::Scalar {
+                si_value: 0.31,
+                dimension: DV::LENGTH,
+            }))),
+        )]);
+        assert!(
+            matches!(
+                accept_field(&wrong_dim, "yield_stress", &pressure_spec()),
+                FieldAcceptance::Rejected(_)
+            ),
+            "a LENGTH inside Option(Some(..)) at a PRESSURE field must be Rejected"
+        );
+
+        // (6) Nested Option, for behavioural parity with the recursion in
+        //     crates/reify-stdlib/src/flexures/common.rs:109 `scalar_si`.
+        let nested = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(Value::Option(Some(Box::new(pressure(
+                310_000_000.0,
+            ))))))),
+        )]);
+        assert_eq!(
+            accept_field(&nested, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Accepted(310_000_000.0),
+            "nested Option must unwrap all the way down (parity with scalar_si)"
+        );
+
+        // (7) The poisson_ratio shape: a bare Real lands at a dimensionless
+        //     field and is Accepted; the same bare Real at a PRESSURE field is
+        //     Rejected.
+        let ratio = steel_instance(&[("poisson_ratio", Value::Real(0.3))]);
+        assert_eq!(
+            accept_field(&ratio, "poisson_ratio", &dimensionless_spec()),
+            FieldAcceptance::Accepted(0.3),
+            "a bare Real at a dimensionless_spec field must be Accepted \
+             (common.rs's material_numeric_field records that poisson_ratio \
+             lands as a bare Real at runtime)"
+        );
+        let bare_at_pressure = steel_instance(&[("youngs_modulus", Value::Real(2.0e11))]);
+        assert!(
+            matches!(
+                accept_field(&bare_at_pressure, "youngs_modulus", &pressure_spec()),
+                FieldAcceptance::Rejected(_)
+            ),
+            "a bare Real at a PRESSURE field must be Rejected"
+        );
+
+        // (8) Option(Some(Undef)) → Undefined, not Rejected.
+        let opt_undef =
+            steel_instance(&[("yield_stress", Value::Option(Some(Box::new(Value::Undef))))]);
+        assert_eq!(
+            accept_field(&opt_undef, "yield_stress", &pressure_spec()),
+            FieldAcceptance::Undefined,
+            "Undef inside an Option must still be Undefined"
+        );
+    }
+
+    /// PRD §11 open question 3, DECIDED HERE: a field rejection is formatted by
+    /// the SHIPPED `ArgRejection::message`, passing a DOTTED PATH as `arg_name`.
+    /// No new formatter, no second wording.
+    #[test]
+    fn field_rejection_message_renders_a_dotted_path() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let wrong_dim = steel_instance(&[(
+            "yield_stress",
+            Value::Option(Some(Box::new(Value::Scalar {
+                si_value: 0.31,
+                dimension: DV::LENGTH,
+            }))),
+        )]);
+        let rej = match accept_field(&wrong_dim, "yield_stress", &pressure_spec()) {
+            FieldAcceptance::Rejected(rej) => rej,
+            other => panic!("expected Rejected, got {other:?}"),
+        };
+
+        let msg = rej.message("prb_cantilever_beam", "material.youngs_modulus");
+        assert!(
+            msg.contains("material.youngs_modulus"),
+            "the dotted path must appear VERBATIM in the message; got {msg:?}"
+        );
+        assert_eq!(
+            msg, "prb_cantilever_beam: material.youngs_modulus argument expects Pressure, got Length Scalar",
+            "the message must still match the shipped \
+             `{{builtin}}: {{arg_name}} argument expects {{expected}}, got {{got}}` shape"
+        );
+    }
+
+    // ── PRD angle-units-surface-convergence §C1 leaf β: angle_spec() ─────────
+
+    #[test]
+    fn angle_spec_names_the_angle_dimension() {
+        let spec = angle_spec();
+        assert_eq!(spec.type_name, "Angle");
+        assert_eq!(spec.dimension, reify_core::DimensionVector::ANGLE);
+    }
+
+    #[test]
+    fn accept_angle_scalar_returns_accepted() {
+        let value = crate::value::Value::Scalar {
+            si_value: std::f64::consts::FRAC_PI_2,
+            dimension: reify_core::DimensionVector::ANGLE,
+        };
+        assert_eq!(
+            accept_arg(&value, &angle_spec()),
+            Acceptance::Accepted(std::f64::consts::FRAC_PI_2),
+            "an ANGLE scalar must be accepted carrying its SI radians"
+        );
+    }
+
+    #[test]
+    fn accept_bare_real_angle_rejected_with_migration_hint() {
+        // Structural assertion, mirroring the density case: Real must be
+        // Rejected, the hint must be Some, and message() must embed it. The
+        // exact wording is pinned once, at the const in reify-core.
+        let value = crate::value::Value::Real(45.0);
+        match accept_arg(&value, &angle_spec()) {
+            Acceptance::Rejected(rej) => {
+                assert!(
+                    rej.migration_hint.is_some(),
+                    "ArgRejection for a bare Real angle must carry a migration hint"
+                );
+                let hint = rej.migration_hint.unwrap();
+                let msg = rej.message("faces_by_normal", "tol");
+                assert!(
+                    msg.contains(hint),
+                    "message() must embed the migration_hint text; got: {msg:?}"
+                );
+            }
+            other => panic!("Value::Real(45.0) must be Rejected, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_length_scalar_rejected_by_angle_spec() {
+        let value = crate::value::Value::Scalar {
+            si_value: 0.045,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert!(
+            matches!(accept_arg(&value, &angle_spec()), Acceptance::Rejected(_)),
+            "a LENGTH scalar must be Rejected at an angle slot (strict-dimension equality)"
+        );
+    }
+
+    #[test]
+    fn accept_undef_angle_returns_undefined() {
+        assert_eq!(
+            accept_arg(&crate::value::Value::Undef, &angle_spec()),
+            Acceptance::Undefined,
+            "Undef must return Undefined at an angle slot too"
+        );
+    }
+}

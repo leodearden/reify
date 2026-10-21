@@ -1,7 +1,7 @@
 # FEA Result-Model + GUI-FEA Integration
 
-**Milestone:** v0.4 · **Status:** deferred (contract resolving the FEA false-premise hot zone) · **Date:** 2026-05-30
-**Approach:** B + H (vertical slice + contract section + two-way boundary tests). FEA is a load-bearing seam (overlay G5).
+**Milestone:** v0.4 · **Status:** **SHIPPED.** All 17 decomposition leaves have landed — α #4084, β #4085, γ #4086, δ #4087, ε #2962, R1 #4088, ζ #3015, η #3018, θ #3026, R2 #4089, R3 #4090, R3b-1 #4802, R3b-2 #4818, ι #2966, κ #2968, the cross-PRD-gated bracket #2930, plus the R1 follow-up #4163. · **Date:** authored 2026-05-30; shipped-status recorded 2026-10-21 · **Approach:** B + H (vertical slice + contract section + two-way boundary tests). FEA is a load-bearing seam (overlay G5).
+> **The body below is the AS-AUTHORED design record, except for the LIVE sections named here.** **LIVE — maintained, must stay true:** §3's "Why a regular grid is the field domain" paragraph (the out-of-solid `NaN` sentinel), §4.1 (the `ElasticResult` field contract, including "Adaptive solves"), §4.6's channel contract (channel type, variant → outcome mapping, GUI IPC mirror, failed-solve viewport state), §5 (the boundary-test table), §6 decision 5's 2026-08-25 correction, and §11 Q2 (the out-of-bounds / sentinel policy and its measurement record). Production rustdoc *defers* to these rather than restating them (`resample.rs` calls §3's sentinel normative; `elastic_static.rs` cites §4.1 and keeps §11 Q2's figures only there; `StructuredComputeDetail` cites §4.6; `CacheStats.realization_entries` cites §5 B9), so a false claim here propagates into the code. `crates/reify-eval/tests/solve_elastic_static_body_e2e.rs` also cites §3, §4.1 and §5 by line number, so keep edits above §6 line-neutral until #9433 repoints those cites by name. Follow-ups filed against the LIVE half: #8197 and #8248 (§4.1), #8197 (§5 B2), #6647, #8031 and #7333 (§6 decision 5). **AS-AUTHORED RECORD — §§0–2, the rest of §3, §4.2–§4.5, §4.6's "Scope reality" and "Task split" paragraphs, §6's other decisions, §§7–10, and §11 Q1/Q3/Q4.** These are 2026-05-30 … 2026-06-24 *pre-implementation* measurements and plans, retained as provenance for why the decomposition was shaped as it was. **They are not current statements of fact:** their present-tense gap descriptions ("today: `Undef`", "zero GUI call sites", "no producer") describe the codebase before this PRD's own leaves closed those gaps, and their `file:line` anchors have drifted. Do not "refresh" them — cite by symbol, and re-locate lines at implementation time.
 
 ---
 
@@ -104,6 +104,8 @@ An architect implementing the producer side should need nothing beyond this sect
 
 **Grid-metadata invariant (load-bearing for multi-case):** for a fixed `(body, options.element_order, options.mesh_size)`, the resample grid (`bounds_min/max`, `spacing`, `axis_grids`) is **identical** across solves — so two `ElasticResult`s for the same geometry satisfy `grids_equal` and feed `envelope_*`/`linear_combine` without `Undef`. The grid resolution is derived deterministically from the solve mesh (document the rule in α; default: one grid axis-count per solve `nx/ny/nz`).
 
+**Adaptive solves (#8246).** When the a-posteriori refinement loop ran at least one refine, every solve-derived field (`displacement`, `stress`, `divergence`, `gradient`, `curl`, `rotation`, `shear_angles`, `max_von_mises`, `converged`, `iterations`, `warm_started`) and `error_indicator` describe the loop's FINAL iterate, resampled onto the SEED solve's grid. The grid is therefore still a function of `(body, options.element_order, options.mesh_size)`, and adaptive and non-adaptive results for the same body satisfy `grids_equal`. `global_relative_energy_error` and `convergence_status` describe that same iterate, and so does the CG non-convergence Warning, which always names the solve `converged` reports. A zero-refine run reports the seed solve unchanged. The donated CG warm state stays the seed solve's, because the next request's seed solve runs on the seed mesh. One exception remains until #8248: when the uniform lane runs as a fallback for a REALIZED body it solves a placeholder box, so the realized seed's fields are kept.
+
 ### 4.2 Resample contract (producer: α)
 
 `resample_nodal_to_grid(nodes: &[[f64;3]], elems: &[[usize;4]], nodal_values: &[f64], stride: usize, grid: &GridSpec) -> SampledField`:
@@ -141,9 +143,9 @@ producer contract for the missing emission + IPC plumbing (R3b). It was split ou
 of R3 because it is a separable **core-eval-result-model + GUI-IPC** change, not a
 GUI-overlay concern — ι/2966 cannot legitimately reach into `reify-eval` internals.
 
-**Channel type (neutral, `reify-eval`-owned).** A new enum in `reify-eval`
-(`engine_compute.rs`) wraps solver-specific structured detail so the generic
-compute-node contract never names a specific solver crate's type:
+**Channel type (neutral, compute-contract-owned).** An enum defined in `reify-compute-contract`
+(`dispatch.rs`; moved out of `reify-eval`'s `engine_compute.rs` by #4934, which `reify-eval` still re-exports at its original paths) wraps
+solver-specific structured detail so the generic compute-node contract never names a specific solver crate's type:
 
 ```rust
 pub enum StructuredComputeDetail {
@@ -153,7 +155,7 @@ pub enum StructuredComputeDetail {
 
 Both `ComputeOutcome::Completed` **and** `ComputeOutcome::Failed` gain
 `structured_detail: Vec<StructuredComputeDetail>` (legal because
-`reify-eval` already depends on `reify-solver-elastic`; `reify_core` is untouched,
+`reify-compute-contract` depends on `reify-solver-elastic`; `reify_core` is untouched,
 so the `reify-solver-elastic/src/diagnostics.rs:3-9` neutral-types boundary holds).
 This extends the `compute-node-contract.md` §4/§5 `ComputeOutcome` shape — owned
 here, and no *consumer of the existing `diagnostics` field* changes its semantics.
@@ -193,7 +195,7 @@ on main @ 959bf42094:
 | `FeaFailure` source | `FeaDiagnosticDetail` | Rides | Production site |
 |---|---|---|---|
 | `UnderConstrained{support_count:0}` | `Unconstrained{rigid_body_modes:[…6 DOF]}` | `Completed` (auto-clamp **warning**) | `elastic_static.rs:416` — **wired source** |
-| `SingularStiffness{element_id}` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs:708` (`classify_degenerate`, near-degenerate marginal case) — **wired source** |
+| `SingularStiffness(DegenerateTet)` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs` `solve_cantilever_fea` (`find_degenerate_tet`, the pre-assembly oriented shape-quality gate shared by every solve path) — **wired source** |
 | `SelectorNoMatch{selector}` | `UnresolvedSelector{selector_path}` | `Failed` | **no production source today** — `SelectorNoMatch` is never constructed in the solve path; gated on selector-BC failure emission (P2/4092, `structural-analysis-fea`). Channel-ready, data-deferred. |
 
 The headline rigid-body-arrows overlay rides **Completed-with-warning**, NOT
@@ -256,10 +258,20 @@ The integration-gate task (ε) names this table as its observable signal.
 4. **Capability (iv) is mostly pre-existing.** Only the `VonMises`-derived `max`/`argmax` reduction is net-new (β). The original "only scalar `max_von_mises` exists" premise was inaccurate.
 5. **2930 stays a bracket with the full field-reduction design loop**, gated on producer-completion. No honest-scalar interim (Leo-ratified in 2930's parked note). The free-fn `face(body,"top")` half per GR-040 is sound — a real topology-selector (`units.rs:262,379`). **The objective grammar this decision originally ratified is not.**
 
-   **CORRECTED 2026-08-25 (Leo-ruled).** This decision originally specified the objective as `minimize mass(body) where max(von_mises(fea.stress)) < material.yield_stress`, on the stated basis *"both parse, G3 verified"*. That basis was a **G3 PARSE check only** (`grammar-fixture:fea-result-model-2.ri`, 0 ERROR nodes — an ephemeral `/tmp` probe, never committed). Parsing was verified; **semantics never were.** All three clauses of that line are broken, all measured at `main` `1040b07fe3`:
+   **CORRECTED 2026-08-25 (Leo-ruled).** This decision originally specified the objective as `minimize mass(body) where max(von_mises(fea.stress)) < material.yield_stress`, on the stated basis *"both parse, G3 verified"*. That basis was a **G3 PARSE check only** (`grammar-fixture:fea-result-model-2.ri`, 0 ERROR nodes — an ephemeral `/tmp` probe, never committed). Parsing was verified; **semantics never were.** All three clauses of that line were broken as measured at `main` `1040b07fe3`. Clause 2 has since been closed by #6577; its measurement is retained below as the historical symptom, not current state. Clauses 1 and 3 still hold — their *behavioural* measurements stay dated to `1040b07fe3`, while their line anchors were re-verified against this tree and repointed on 2026-09-11:
 
-   1. **The `where` guard is silently discarded.** `ts_parser.rs:2493-2511` lowers it into `MinimizeDecl.where_clause`, but the compiler's Minimize/Maximize arms (`entity.rs:3181`, `:3298`; `traits.rs:572`, `:577`) compile only `.expr` into an `ObjectiveTerm`, which has no guard slot (`reify-ir/src/constraint.rs:80-87`). The predicate registers **zero** constraints and emits **no diagnostic**. Measured: `constraint t < 20mm` + `minimize t where t > 5.0mm` resolves `t` to **1 µm** — the auto-param lower bound — where the `constraint` spelling of the same predicate resolves it to 12.5 mm. Every other member kind routes its guard through `compile_per_decl_guard`; these two are the hole. **Ruling (Leo, 2026-08-25): reject.** The compiler emits an Error; objectives take no guard in either form (`docs/reify-language-spec.md` §6.3 and §15 amended to match). Owner: **task 6575**.
-   2. **`max(von_mises(fea.stress))` does not type-check** — `dimension mismatch in comparison: Real vs Scalar[kg*m^-1*s^-2]`. `analysis_signatures.rs:73` lowers `von_mises`/`max_shear` as `scalar_or_real(tensor_quantity(args, 0))`, and `tensor_quantity` matches only `Type::Tensor` and `Type::Matrix`, falling through to DIMENSIONLESS for a `Type::Field` argument. Owner: **task 6577**.
+   1. **The `where` guard is silently discarded.** `crates/reify-syntax/src/ts_parser.rs:2738-2750` (`lower_minimize`, via `lower_where_clause` at `:2571`; the `lower_maximize` twin at `:2752`) lowers it into `MinimizeDecl.where_clause`, but the compiler's Minimize/Maximize arms (`entity.rs:3760`, `:3877`; `traits.rs:585`, `:590`) compile only `.expr` into an `ObjectiveTerm`, which has no guard slot (`reify-ir/src/constraint.rs:80-87`). The predicate registers **zero** constraints and emits **no diagnostic**. Measured: `constraint t < 20mm` + `minimize t where t > 5.0mm` resolves `t` to **1 µm** — the auto-param lower bound — where the `constraint` spelling of the same predicate resolves it to 12.5 mm. Every other member kind routes its guard through `compile_per_decl_guard` (`crates/reify-compiler/src/guards.rs:647`); these two are the hole. **Ruling (Leo, 2026-08-25): reject.** The compiler emits an Error; objectives take no guard in either form (`docs/reify-language-spec.md` §6.3 and §15 amended to match).
+
+      *Ruling status, measured on this tree 2026-09-11:* the spec half landed, the compiler half has **not**. `min_decl.where_clause` / `max_decl.where_clause` still have zero readers anywhere under `crates/`, no rejecting diagnostic exists, and `tree-sitter-reify/test/corpus/minimize_maximize.txt` still carries passing `where`-form cases — so the behaviour above is **current state**, not history. #6575 was auto-closed `found_on_main` at `dc22d897a3` — a merge that landed one docs file, `crates/reify-mcp/src/tools/chunks/constraints.md`, while its own record's compiler-half "STILL TO DO" stayed unbuilt — so it is **not** a live owner and must not be cited as one. The live owner is **#6647** ("Implement the #6575-ruled compiler Error for minimize/maximize `where` guards"), which carries #6575's unbuilt enforcement half forward.
+
+   2. **`max(von_mises(fea.stress))` did not type-check** — `dimension mismatch in comparison: Real vs Scalar[kg*m^-1*s^-2]`. **CLOSED by #6577** (merged `929528831b`).
+
+      *Symptom, as measured at `main` `1040b07fe3`:* `analysis_fn_result_type` lowered `von_mises`/`max_shear` as `scalar_or_real(tensor_quantity(args, 0))`, and `tensor_quantity` matched only `Type::Tensor` and `Type::Matrix`, so a `Type::Field` argument — the shape `ElasticResult.stress` carries — fell through to DIMENSIONLESS, and comparing that `Real` against a `Pressure` literal mismatched.
+
+      *Fix, in-tree on main today:* `analysis_fn_result_type` (`crates/reify-compiler/src/analysis_signatures.rs:112`) gained an explicit `Type::Field` arm (`:119-139`, rationale at `:113-118`), gated by the `field_tensor_arg` shape check (`:204`) and consulted **before** the concrete-tensor ladder at `:141` — so `von_mises(.stress)` types as `Field<Point3<Length>, Scalar<Pressure>>` and `max` reduces that codomain to `Scalar<Pressure>`. Per-name arity and result forms: the Field-form table at `:78-89`; rationale at the module doc `:15-24`. With the eval half closed separately by #7129, `examples/fea_bracket_minimize_mass.ri:171-181` records in-tree that `max(von_mises(result.stress)) < yield_limit` "now compiles clean and evaluates for real".
+
+      *Travels with #6001, not lost to it:* the Field arm is ported as `field_tensor_arg`/`reduce_tensor_arg` in `crates/reify-builtins/src/resolvers.rs`, which `tensor_scalar_reduction` consults before falling back to `tensor_quantity` (that module's `:141` doc — "Why the Field form is a `Field` and not a reduced scalar (task #6577)" — carries the ported rationale). Verified on `task/6001` @`3100d29849`, **in flight, unlanded as of 2026-09-11** — re-point when it lands.
+
    3. **`mass(body)` is not a callable at all** — no `"mass"` entry in `crates/reify-compiler/src/units.rs`, no `fn mass` in any stdlib `.ri`. The nearest real primitive is `body_mass_props(body, density)`.
 
    **The honest form is a bare `minimize` plus a separate `constraint` member** — which is what `examples/fea_bracket_minimize_mass.ri` (branch `task/2930`) already does, and documents at its lines 25-34:
@@ -342,7 +354,7 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 
 **Gated cross-PRD (kept, not shipped in the prismatic batch).**
 
-- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar — a bare `minimize` plus a **separate `constraint` member**, *not* the `minimize … where …` form decision #5 originally ratified (see decision #5's 2026-08-25 correction; the guard is silently dropped, owner task **6575** — which does *not* gate 2930: 2930's implementer engineered around the defect with the separate-`constraint` form). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
+- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar — a bare `minimize` plus a **separate `constraint` member**, *not* the `minimize … where …` form decision #5 originally ratified (see decision #5's 2026-08-25 correction; the guard is silently dropped; owner is now **#6647**, not the auto-closed #6575 (see decision #5's ruling-status note) — which does *not* gate 2930: 2930's implementer engineered around the defect with the separate-`constraint` form). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
 
 ---
 

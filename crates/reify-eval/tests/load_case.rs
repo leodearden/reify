@@ -7,7 +7,7 @@
 //!
 //! These tests are the SIR-β-mlcfea closure document. Before this file existed
 //! the LoadCase ctor contract was exercised only at the compile-time param-shape
-//! level in `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`; no
+//! level in `crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs`; no
 //! dedicated eval-layer file pinned the ctor→StructureInstance path.
 //!
 //! Cross-reference:

@@ -274,7 +274,7 @@ tasks:
       pattern: enum ConstraintOutcome
       expect: present
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
   - name: fixture-parses
     binding: grammar-fixture — tests/prd-gate/fixtures/driver_contract_eval_blind_to_violation.ri,
       0 ERROR nodes.
@@ -393,6 +393,7 @@ tasks:
       expect: present
       paths:
       - gui/src-tauri/src/engine.rs
+      - gui/src-tauri/src/engine/projection.rs
   - name: code-is-available-upstream
     binding: 'observed — the source Diagnostic carries code: Option<DiagnosticCode>, and the
       same projection reads severity, message and labels off that very value. A lossy projection,
@@ -581,7 +582,7 @@ tasks:
       pattern: '"--json"'
       expect: present
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
   - name: structured-stdout-precedent-exists
     binding: capability->producer, wired on main — reify doc --format json already emits serde
       JSON of a model to stdout, and is the only structured-stdout mode on the CLI. Sigma
@@ -621,7 +622,7 @@ tasks:
       pattern: ExitCode::from\(2u8\)
       expect: absent
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
   - name: fifteen-sites
     binding: observed — fifteen ExitCode::from(2u8) sites, all inside the doc command; nothing
       else in the workspace asserts a reify exit code 2.

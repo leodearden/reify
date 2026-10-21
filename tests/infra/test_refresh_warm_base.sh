@@ -8,6 +8,14 @@
 #              else prints an error + exits 1.
 #   mv       — NOT stubbed; real mv so filesystem postconditions are observable.
 #   xfs_bmap — records argv + emits REIFY_TEST_FRAG_EXTENTS extent rows per file.
+#   rm       — records argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fails exactly the prune
+#              stage's own `rm -f --` call (the xargs batch) and execs the real rm for
+#              every other call (the EXIT trap's cleanup, GC's lock/gen removal) —
+#              isolates a simulated prune-unlink failure from the trap's own cleanup.
+#   findmnt  — records argv; REIFY_TEST_FINDMNT_FAIL=1 simulates findmnt failing (or
+#              being absent); else prints REIFY_TEST_FINDMNT_OPTIONS (default
+#              rw,relatime) as the mount's option list — an EMPTY value prints an
+#              empty line. Keeps the suite hermetic whatever /tmp's real mount options.
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -21,6 +29,12 @@
 #   D — in-flight clone independence: clone dir untouched after refresh (B6)
 #   E — base self-description stamps: .rustflags and .invocation written after swap
 #   F — --check-frag defrag signal: verdict token + extent count, read-only
+#   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
+#   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
+#   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
+#   LAND — landed-ness guard: a --landed-commit that is not an ancestor of refs/heads/main (or a repo without it, or an ancestry check git cannot evaluate) is refused before any copy; main's tip and its strict ancestors are accepted
+#   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
+#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -122,6 +136,42 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/xfs_bmap"
 
+# rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY the prune
+# stage's own `xargs -0 rm -f -- <files>` (first args "-f" "--") while every other
+# invocation — the EXIT trap's `rm -rf "$_p"` and `rm -f "$_PRUNE_SUMMARY_FILE"`,
+# GC's `rm -f lock` — execs the real rm. This isolates "the prune's own unlink
+# failed" from "the trap's cleanup afterward also failed": a filesystem-permission
+# fault cannot make that distinction, since it defeats `rm -rf` identically.
+# Real rm path embedded at stub-creation time (mirrors the cp stub).
+_REAL_RM="$(command -v rm)"
+cat > "$STUB_DIR/rm" << STUB_EOF
+#!/usr/bin/env bash
+echo "rm \$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "\${REIFY_TEST_PRUNE_RM_FAIL:-}" = "1" ] && [ "\${1:-}" = "-f" ] && [ "\${2:-}" = "--" ]; then
+    echo "rm: SIMULATED failure (REIFY_TEST_PRUNE_RM_FAIL=1)" >&2
+    exit 1
+fi
+exec "${_REAL_RM}" "\$@"
+STUB_EOF
+chmod +x "$STUB_DIR/rm"
+
+# findmnt stub: record argv; REIFY_TEST_FINDMNT_FAIL=1 simulates findmnt failing
+# (including not being installed); otherwise print REIFY_TEST_FINDMNT_OPTIONS as the
+# mount's one-line option list. `${VAR-default}` (no colon), so an empty
+# REIFY_TEST_FINDMNT_OPTIONS prints an EMPTY line rather than the default. Stubbing
+# it keeps the suite hermetic regardless of the real mount options of /tmp.
+cat > "$STUB_DIR/findmnt" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "findmnt $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "${REIFY_TEST_FINDMNT_FAIL:-}" = "1" ]; then
+    echo "findmnt: SIMULATED failure (REIFY_TEST_FINDMNT_FAIL=1)" >&2
+    exit 1
+fi
+echo "${REIFY_TEST_FINDMNT_OPTIONS-rw,relatime}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/findmnt"
+
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
 # Sets OUT (stdout), ERR_OUT (stderr), RC (exit code) as globals.
@@ -164,7 +214,7 @@ mk_git_advancing() {
     local lane_dir="$parent_dir/lane"
     mkdir -p "$lane_dir"
     printf 'placeholder\n' > "$lane_dir/.placeholder"
-    git -C "$lane_dir" init -q
+    git -C "$lane_dir" init -q -b main
     git -C "$lane_dir" add -- .placeholder
     git -C "$lane_dir" \
         -c user.email="warm-lane-test@localhost" \
@@ -783,6 +833,658 @@ assert "I3: refusal advises committing" \
 # that reaches for the word again should fail here and be reconsidered.
 assert "I4: refusal does NOT advise stashing" \
     bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block LAND — the landed-ness guard (task 9180)
+#
+# inv.9: only a commit already on refs/heads/main may advance the base. A clean
+# lane whose HEAD is committed-but-unlanded work satisfies HEAD == --landed-commit
+# and must still be refused before any staging copy.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block LAND: landed-ness guard ---"
+
+# _commit_tracked_change <lane> <msg> — commit a change to a TRACKED file on
+# whatever HEAD the lane has checked out, leaving the worktree clean.
+_commit_tracked_change() {
+    local lane="$1" msg="$2"
+    printf '%s\n' "$msg" >> "$lane/.placeholder"
+    git -C "$lane" add -- .placeholder
+    git -C "$lane" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        -c commit.gpgsign=false \
+        commit -q --no-verify -m "$msg"
+}
+
+# LAND1: committed but unlanded — clean task branch, HEAD == --landed-commit.
+LAND1_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land1-XXXXXX)"
+_TMPDIRS+=("$LAND1_TMP")
+LAND1_LANE="$(mk_git_advancing "$LAND1_TMP")"
+LAND1_C1="$(git -C "$LAND1_LANE" rev-parse HEAD)"
+git -C "$LAND1_LANE" switch -q -c task/unlanded
+_commit_tracked_change "$LAND1_LANE" "fixture: committed but unlanded task work"
+LAND1_C2="$(git -C "$LAND1_LANE" rev-parse HEAD)"
+echo "content" > "$LAND1_LANE/advancing/file.txt"
+LAND1_BASE="$LAND1_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND1_LANE/advancing" "$LAND1_BASE" --landed-commit "$LAND1_C2"
+assert "LAND1: unlanded --landed-commit is refused (non-zero)" test "$RC" -ne 0
+assert "LAND1: refusal names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+assert "LAND1: refusal names the full --landed-commit sha" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$LAND1_C2"
+assert "LAND1: refusal names refs/heads/main's tip sha" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$LAND1_C1"
+assert "LAND1: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND1_BASE"
+assert "LAND1: no <base>.gen.* entry exists (no gen dir, no .basecommit)" \
+    bash -c '_n=0; for _p in "${1}".gen.*; do { [ -e "$_p" ] || [ -L "$_p" ]; } && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LAND1_BASE"
+assert "LAND1: no staging cp ran (refused inside the provenance guard)" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# LAND2: control on the SAME lane — fast-forward main to C2, re-run identically.
+git -C "$LAND1_LANE" branch -f main HEAD
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND1_LANE/advancing" "$LAND1_BASE" --landed-commit "$LAND1_C2"
+assert "LAND2: same commit once landed on main is accepted (exit 0)" test "$RC" -eq 0
+assert "LAND2: promoted gen .basecommit == the landed commit" \
+    bash -c '[ "$(cat "$(readlink "$1").basecommit")" = "$2" ]' _ "$LAND1_BASE" "$LAND1_C2"
+
+# LAND3: a strict ancestor of main is landed — main's TIP is not required.
+LAND3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land3-XXXXXX)"
+_TMPDIRS+=("$LAND3_TMP")
+LAND3_LANE="$(mk_git_advancing "$LAND3_TMP")"
+LAND3_C1="$(git -C "$LAND3_LANE" rev-parse HEAD)"
+_commit_tracked_change "$LAND3_LANE" "fixture: main moves past the landed commit"
+git -C "$LAND3_LANE" checkout -q --detach HEAD~1
+echo "content" > "$LAND3_LANE/advancing/file.txt"
+LAND3_BASE="$LAND3_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND3_LANE/advancing" "$LAND3_BASE" --landed-commit "$LAND3_C1"
+assert "LAND3: strict ancestor of refs/heads/main is accepted (exit 0)" test "$RC" -eq 0
+assert "LAND3: promoted gen .basecommit == the ancestor commit" \
+    bash -c '[ "$(cat "$(readlink "$1").basecommit")" = "$2" ]' _ "$LAND3_BASE" "$LAND3_C1"
+
+# LAND4: fail-closed when refs/heads/main does not resolve.
+LAND4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land4-XXXXXX)"
+_TMPDIRS+=("$LAND4_TMP")
+LAND4_LANE="$(mk_git_advancing "$LAND4_TMP")"
+git -C "$LAND4_LANE" branch -m main trunk
+echo "content" > "$LAND4_LANE/advancing/file.txt"
+LAND4_BASE="$LAND4_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND4_LANE/advancing" "$LAND4_BASE" \
+    --landed-commit "$(git -C "$LAND4_LANE" rev-parse HEAD)"
+assert "LAND4: absent refs/heads/main is refused (non-zero)" test "$RC" -ne 0
+assert "LAND4: refusal names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+assert "LAND4: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND4_BASE"
+assert "LAND4: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# LAND5: the missing-flag hint points at refs/heads/main as the sha's source.
+LAND5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land5-XXXXXX)"
+_TMPDIRS+=("$LAND5_TMP")
+LAND5_LANE="$(mk_git_advancing "$LAND5_TMP")"
+echo "content" > "$LAND5_LANE/advancing/file.txt"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND5_LANE/advancing" "$LAND5_TMP/base"
+assert "LAND5: missing --landed-commit is refused (non-zero)" test "$RC" -ne 0
+assert "LAND5: missing-flag hint names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+
+# LAND6: an ancestry check git cannot evaluate is refused, and not misreported
+# as "has not landed". A git wrapper fails every `merge-base` with rc 128 (as a
+# corrupt object store would) and execs the real git for everything else.
+LAND6_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land6-XXXXXX)"
+_TMPDIRS+=("$LAND6_TMP")
+LAND6_LANE="$(mk_git_advancing "$LAND6_TMP")"
+echo "content" > "$LAND6_LANE/advancing/file.txt"
+LAND6_BASE="$LAND6_TMP/base"
+LAND6_GIT_STUB_DIR="$LAND6_TMP/git-stub"
+mkdir -p "$LAND6_GIT_STUB_DIR"
+_REAL_GIT="$(command -v git)"
+cat > "$LAND6_GIT_STUB_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for _a in "\$@"; do
+    if [ "\$_a" = "merge-base" ]; then
+        echo "fatal: SIMULATED merge-base failure" >&2
+        exit 128
+    fi
+done
+exec "${_REAL_GIT}" "\$@"
+STUB_EOF
+chmod +x "$LAND6_GIT_STUB_DIR/git"
+
+reset_calls
+PATH="$LAND6_GIT_STUB_DIR:$PATH" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$LAND6_LANE/advancing" "$LAND6_BASE" \
+    --landed-commit "$(git -C "$LAND6_LANE" rev-parse HEAD)"
+assert "LAND6: unevaluable ancestry is refused (non-zero)" test "$RC" -ne 0
+assert "LAND6: refusal reports git's exit code" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "rc=128"' _ "$ERR_OUT"
+assert "LAND6: refusal does not claim the commit has not landed" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "has not landed"' _ "$ERR_OUT"
+assert "LAND6: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND6_BASE"
+assert "LAND6: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block DEPS — debug/deps faithful copy (task 8366)
+#
+# The new gen's debug/deps must hold every artefact the advancing target holds.
+# One stem can carry several concurrently-live hashes (semver / feature / host
+# variants) that all keep the same cold-build mtime, so no mtime rule can tell
+# them from superseded generations; #7426's keep-newest-2 prune deleted them and
+# every seeded lane rebuilt them. This fixture carries no debug/.fingerprint, so
+# Block LIVE's prune has no liveness evidence here and must copy debug/deps
+# faithfully: DEPS2 and DEPS3 stay green.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block DEPS: debug/deps faithful copy ---"
+
+DEPS_TMP="$(mktemp -d /tmp/test-refresh-warm-base-deps-XXXXXX)"
+_TMPDIRS+=("$DEPS_TMP")
+DEPS_LANE="$(mk_git_advancing "$DEPS_TMP")"
+DEPS_ADV="$DEPS_LANE/advancing"
+DEPS_HEAD="$(git -C "$DEPS_LANE" rev-parse HEAD)"
+mkdir -p "$DEPS_ADV/debug/deps"
+
+# Five concurrently-live hashes of ONE registry stem, each with .rlib and
+# .rmeta, all stamped with the SAME mtime (a cold build writes them together).
+# Every hash is 16 lowercase hex chars so a prune keyed on cargo's `-<16hex>`
+# suffix grammar genuinely matches them — the RED must never be vacuous.
+DEPS_REGISTRY_HASHES=(ece35e16166057f6 985ac887cd451fe2 0123456789abcdef fedcba9876543210 5a5a5a5a5a5a5a5a)
+for h in "${DEPS_REGISTRY_HASHES[@]}"; do
+    for ext in rlib rmeta; do
+        echo "getrandom $h $ext" > "$DEPS_ADV/debug/deps/libgetrandom-$h.$ext"
+    done
+done
+touch -d '2026-08-18 00:00:00' "$DEPS_ADV"/debug/deps/libgetrandom-*
+
+# Three extensionless test-binary generations at distinct mtimes, stamped
+# explicitly via `touch -d` — no sleeps (T8).
+echo "gen1 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+echo "gen2 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+echo "gen3 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+
+DEPS_BASE="$DEPS_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$DEPS_ADV" "$DEPS_BASE" --landed-commit "$DEPS_HEAD"
+assert "DEPS1: refresh with same-mtime hash variants exits 0" test "$RC" -eq 0
+
+DEPS_GEN_DEPS="$(readlink "$DEPS_BASE")/debug/deps"
+
+assert "DEPS2: every same-mtime libgetrandom hash variant reaches the new gen, on both .rlib and .rmeta" \
+    bash -c '
+        deps="$1"; shift
+        for h in "$@"; do
+            for ext in rlib rmeta; do
+                [ -f "$deps/libgetrandom-$h.$ext" ] || { echo "missing: libgetrandom-$h.$ext"; exit 1; }
+            done
+        done
+    ' _ "$DEPS_GEN_DEPS" "${DEPS_REGISTRY_HASHES[@]}"
+
+assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filename set" \
+    bash -c '
+        s1="$(cd "$1" && find . -maxdepth 1 -type f -printf "%f\n" | sort)"
+        s2="$(cd "$2" && find . -maxdepth 1 -type f -printf "%f\n" | sort)"
+        [ -n "$s1" ] || { echo "advancing debug/deps fixture is empty"; exit 1; }
+        [ "$s1" = "$s2" ] || { diff <(printf "%s\n" "$s1") <(printf "%s\n" "$s2"); exit 1; }
+    ' _ "$DEPS_ADV/debug/deps" "$DEPS_GEN_DEPS"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block LIVE — fingerprint-consult liveness prune of debug/deps (task 8352)
+#
+# Executable spec for scripts/refresh-warm-base.sh Step 3b. A depth-1 debug/deps
+# file is a candidate iff its name, final dot-suffix stripped, ends in
+# `-<16 lowercase hex>`; it is pruned iff that hash has a debug/.fingerprint
+# dir AND no file of that dir was read or written (max of atime and mtime)
+# within 7 days of the copied tree's newest consult, the ANCHOR. Cargo reads a
+# unit's fingerprint on every build whose graph contains the unit, so a hash
+# the lanes still build is consulted continuously whatever its artefact mtime.
+#
+# Fixtures use fixed past dates: no sleeps, and the window being anchored on
+# the tree rather than on `date` is itself under test (LIVE1).
+#
+# Two guards keep the evidence honest: the stage is skipped when the advancing
+# dir's mount does not maintain atime (LIVE13-17), and a future-dated consult
+# never moves the anchor (LIVE18).
+#
+# FIXTURE RULE: a case with a dead unit also carries a unit consulted at the
+# ANCHOR. Without one, the dead unit IS the newest consult, becomes the anchor
+# and is correctly kept, so a 'gone' assertion would fail for the wrong reason.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block LIVE: fingerprint-consult liveness prune of debug/deps ---"
+
+LIVE_ANCHOR='2026-03-10 00:00:00'   # the copied tree's newest consult
+LIVE_RECENT='2026-03-08 00:00:00'   # 2 days before the anchor: inside the 7-day window
+LIVE_DEAD='2026-02-01 00:00:00'     # 37 days before the anchor: outside it
+LIVE_COLD='2026-01-01 00:00:00'     # cold-build mtime of artefacts nobody rebuilt
+
+# _mint_unit <profile_dir> <pkg> <hash> <fp_mtime> <fp_atime> [<deps_name>...]
+# One cargo unit: <profile_dir>/.fingerprint/<pkg>-<hash>/lib-<pkg>, stamped with
+# the given mtime and atime (-m before -a, so the mtime stamp cannot clobber the
+# atime), plus each named file under <profile_dir>/deps stamped with fp_mtime.
+_mint_unit() {
+    local profile="$1" pkg="$2" hash="$3" fp_mtime="$4" fp_atime="$5" fp name
+    shift 5
+    fp="$profile/.fingerprint/$pkg-$hash/lib-$pkg"
+    mkdir -p "$(dirname "$fp")" "$profile/deps"
+    echo "fingerprint $pkg-$hash" > "$fp"
+    touch -m -d "$fp_mtime" "$fp"
+    touch -a -d "$fp_atime" "$fp"
+    for name in "$@"; do
+        echo "deps $name" > "$profile/deps/$name"
+        touch -d "$fp_mtime" "$profile/deps/$name"
+    done
+}
+
+# _mint_anchor <profile_dir>: the unit consulted at the ANCHOR (FIXTURE RULE).
+_mint_anchor() {
+    _mint_unit "$1" anchor 00000000000000a1 "$LIVE_ANCHOR" "$LIVE_ANCHOR" libanchor-00000000000000a1.rlib
+}
+
+# _live_case: a fresh hermetic advancing lane for one case. Sets LIVE_ADV (the
+# advancing target dir), LIVE_PROFILE (its debug/, created by the first
+# _mint_unit so a case may leave it absent), LIVE_HEAD and LIVE_BASE.
+_live_case() {
+    local tmp lane
+    tmp="$(mktemp -d /tmp/test-refresh-warm-base-live-XXXXXX)"
+    _TMPDIRS+=("$tmp")
+    lane="$(mk_git_advancing "$tmp")"
+    LIVE_ADV="$lane/advancing"
+    LIVE_PROFILE="$LIVE_ADV/debug"
+    LIVE_HEAD="$(git -C "$lane" rev-parse HEAD)"
+    LIVE_BASE="$tmp/base"
+}
+
+# _live_refresh: run the real script over the current case (env prefixes pass
+# through). Sets LIVE_GEN to the gen dir the base now points at — empty when the
+# refresh did not advance the base.
+_live_refresh() {
+    reset_calls
+    REIFY_TEST_REFLINK_OK=1 run_helper "$LIVE_ADV" "$LIVE_BASE" --landed-commit "$LIVE_HEAD"
+    LIVE_GEN="$(readlink "$LIVE_BASE" || true)"
+}
+
+# _all_present / _none_present <dir> <relpath>...: name each offender and fail if
+# any. Both refuse an absent <dir>, so an empty LIVE_GEN can never make a 'gone'
+# check pass vacuously.
+_all_present() {
+    local dir="$1" rel rc=0
+    shift
+    [ -d "$dir" ] || { echo "no such dir: '$dir'"; return 1; }
+    for rel in "$@"; do
+        [ -f "$dir/$rel" ] || { echo "missing: $rel"; rc=1; }
+    done
+    return "$rc"
+}
+_none_present() {
+    local dir="$1" rel rc=0
+    shift
+    [ -d "$dir" ] || { echo "no such dir: '$dir'"; return 1; }
+    for rel in "$@"; do
+        [ ! -e "$dir/$rel" ] || { echo "still present: $rel"; rc=1; }
+    done
+    return "$rc"
+}
+
+# _stderr_matches <ere>: the last run_helper's stderr matches, case-insensitively.
+_stderr_matches() {
+    grep -qiE -- "$1" <<<"$ERR_OUT"
+}
+
+# LIVE1 — E19 regression, the core. Nine hashes of ONE registry stem (five with
+# .rlib+.rmeta, four .rmeta-only), every artefact and fingerprint mtime the
+# cold-build date, every fingerprint consulted at the ANCHOR by lanes that still
+# build them: all fourteen files must survive. The dead control proves the stage
+# is active, so the survivors did not survive by the stage being skipped.
+_live_case
+LIVE1_FULL_HASHES=(ece35e16166057f6 985ac887cd451fe2 0123456789abcdef fedcba9876543210 5a5a5a5a5a5a5a5a)
+LIVE1_META_HASHES=(a1a1a1a1a1a1a1a1 b2b2b2b2b2b2b2b2 c3c3c3c3c3c3c3c3 d4d4d4d4d4d4d4d4)
+LIVE1_FILES=()
+for h in "${LIVE1_FULL_HASHES[@]}"; do
+    _mint_unit "$LIVE_PROFILE" getrandom "$h" "$LIVE_COLD" "$LIVE_ANCHOR" \
+        "libgetrandom-$h.rlib" "libgetrandom-$h.rmeta"
+    LIVE1_FILES+=("libgetrandom-$h.rlib" "libgetrandom-$h.rmeta")
+done
+for h in "${LIVE1_META_HASHES[@]}"; do
+    _mint_unit "$LIVE_PROFILE" getrandom "$h" "$LIVE_COLD" "$LIVE_ANCHOR" "libgetrandom-$h.rmeta"
+    LIVE1_FILES+=("libgetrandom-$h.rmeta")
+done
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000001 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000001
+_live_refresh
+LIVE1_DEPS="$LIVE_GEN/debug/deps"
+assert "LIVE1: refresh exits 0" test "$RC" -eq 0
+assert "LIVE1: all 14 same-mtime libgetrandom files survive (E19: every variant is still consulted)" \
+    _all_present "$LIVE1_DEPS" "${LIVE1_FILES[@]}"
+assert "LIVE1: the dead control reify_old_tests-deadbeef00000001 is pruned (the stage is active)" \
+    _none_present "$LIVE1_DEPS" reify_old_tests-deadbeef00000001
+assert "LIVE1: fixture dates are months before wall-clock now (precondition for the next assert)" \
+    test "$(( $(date +%s) - $(date -d "$LIVE_ANCHOR" +%s) ))" -gt "$(( 7 * 24 * 3600 ))"
+assert "LIVE1: window is anchored on the tree's newest consult, not wall clock — libgetrandom survives although every date is months before today" \
+    _all_present "$LIVE1_DEPS" "${LIVE1_FILES[@]}"
+
+# LIVE2 — stem collision (reify_ast). One stem, three hashes with unlike shapes
+# (extensionless + .d, and two .d-only), all consulted: all four files survive.
+_live_case
+_mint_unit "$LIVE_PROFILE" reify_ast 1a2b3c4d5e6f7a8b "$LIVE_COLD" "$LIVE_ANCHOR" \
+    reify_ast-1a2b3c4d5e6f7a8b reify_ast-1a2b3c4d5e6f7a8b.d
+_mint_unit "$LIVE_PROFILE" reify_ast 2b3c4d5e6f7a8b9c "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_ast-2b3c4d5e6f7a8b9c.d
+_mint_unit "$LIVE_PROFILE" reify_ast 3c4d5e6f7a8b9cad "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_ast-3c4d5e6f7a8b9cad.d
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000002 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000002
+_live_refresh
+assert "LIVE2: refresh exits 0" test "$RC" -eq 0
+assert "LIVE2: all four reify_ast files survive (stem collision is not a liveness signal)" \
+    _all_present "$LIVE_GEN/debug/deps" reify_ast-1a2b3c4d5e6f7a8b reify_ast-1a2b3c4d5e6f7a8b.d \
+        reify_ast-2b3c4d5e6f7a8b9c.d reify_ast-3c4d5e6f7a8b9cad.d
+assert "LIVE2: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000002
+
+# LIVE3 — superseded generation. One stem, one dead hash and two live hashes,
+# each extensionless + .d: the dead hash goes on BOTH extensions, the live stay.
+_live_case
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 1111aaaa1111aaaa "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_kernel_tests-1111aaaa1111aaaa reify_kernel_tests-1111aaaa1111aaaa.d
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 2222bbbb2222bbbb "$LIVE_COLD" "$LIVE_ANCHOR" \
+    reify_kernel_tests-2222bbbb2222bbbb reify_kernel_tests-2222bbbb2222bbbb.d
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 3333cccc3333cccc "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_kernel_tests-3333cccc3333cccc reify_kernel_tests-3333cccc3333cccc.d
+_live_refresh
+assert "LIVE3: refresh exits 0" test "$RC" -eq 0
+assert "LIVE3: the superseded hash is pruned on both its extensionless and .d files" \
+    _none_present "$LIVE_GEN/debug/deps" reify_kernel_tests-1111aaaa1111aaaa reify_kernel_tests-1111aaaa1111aaaa.d
+assert "LIVE3: both live hashes keep both their files" \
+    _all_present "$LIVE_GEN/debug/deps" reify_kernel_tests-2222bbbb2222bbbb reify_kernel_tests-2222bbbb2222bbbb.d \
+        reify_kernel_tests-3333cccc3333cccc reify_kernel_tests-3333cccc3333cccc.d
+
+# LIVE4 — the window. 6 days before the anchor is inside it, 8 days is outside.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" inwindow 4a4a4a4a4a4a4a4a '2026-03-04 00:00:00' '2026-03-04 00:00:00' \
+    libinwindow-4a4a4a4a4a4a4a4a.rlib
+_mint_unit "$LIVE_PROFILE" outwindow 4b4b4b4b4b4b4b4b '2026-03-02 00:00:00' '2026-03-02 00:00:00' \
+    liboutwindow-4b4b4b4b4b4b4b4b.rlib
+_live_refresh
+assert "LIVE4: refresh exits 0" test "$RC" -eq 0
+assert "LIVE4: a unit last used 6 days before the anchor survives" \
+    _all_present "$LIVE_GEN/debug/deps" libinwindow-4a4a4a4a4a4a4a4a.rlib
+assert "LIVE4: a unit last used 8 days before the anchor is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" liboutwindow-4b4b4b4b4b4b4b4b.rlib
+
+# LIVE5 — a write counts as a use. A fingerprint last READ long ago but last
+# WRITTEN (rebuilt) inside the window is live.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" rebuilt 5c5c5c5c5c5c5c5c "$LIVE_RECENT" "$LIVE_DEAD" \
+    librebuilt-5c5c5c5c5c5c5c5c.rlib
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000005 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000005
+_live_refresh
+assert "LIVE5: refresh exits 0" test "$RC" -eq 0
+assert "LIVE5: a unit with an old atime but a recent mtime survives" \
+    _all_present "$LIVE_GEN/debug/deps" librebuilt-5c5c5c5c5c5c5c5c.rlib
+assert "LIVE5: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000005
+
+# LIVE6 — evidence required. A hashed deps file whose hash has NO fingerprint
+# dir is never a victim, however old.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+echo "no fingerprint" > "$LIVE_PROFILE/deps/libnofp-6a6a6a6a6a6a6a6a.rlib"
+touch -d '2020-01-01 00:00:00' "$LIVE_PROFILE/deps/libnofp-6a6a6a6a6a6a6a6a.rlib"
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000006 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000006
+_live_refresh
+assert "LIVE6: refresh exits 0" test "$RC" -eq 0
+assert "LIVE6: a hashed file with no fingerprint dir survives" \
+    _all_present "$LIVE_GEN/debug/deps" libnofp-6a6a6a6a6a6a6a6a.rlib
+assert "LIVE6: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000006
+
+# LIVE7 — grammar: names that are not `<stem>-<16 lowercase hex>[.<ext>]` are
+# never candidates. Each near-miss that carries a hash-like token is tied to a
+# DEAD fingerprint dir a looser grammar would key on, so its survival is
+# discriminating rather than vacuous; the dead unit's own conforming file is
+# the control.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE7_DEAD=deadbeef00000007
+_mint_unit "$LIVE_PROFILE" dead "$LIVE7_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE7_DEAD.rlib"
+echo "readme" > "$LIVE_PROFILE/deps/README"
+echo "{}" > "$LIVE_PROFILE/deps/build-plan.json"
+_mint_unit "$LIVE_PROFILE" foo abc123 "$LIVE_DEAD" "$LIVE_DEAD" foo-abc123.rlib
+_mint_unit "$LIVE_PROFILE" foo AAAABBBBCCCCDDDD "$LIVE_DEAD" "$LIVE_DEAD" foo-AAAABBBBCCCCDDDD
+_mint_unit "$LIVE_PROFILE" foo 0123456789abcdef "$LIVE_DEAD" "$LIVE_DEAD" foo-0123456789abcdef0.rlib
+LIVE7_SHARD="axum-$LIVE7_DEAD.axum.7a7a7a7a7a7a7a7a-cgu.09.rcgu.dwo"
+echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+touch -d "$LIVE_DEAD" "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+_live_refresh
+assert "LIVE7: refresh exits 0" test "$RC" -eq 0
+assert "LIVE7: README, a .json, a short hash, an uppercase hash, a 17-hex hash and a split-debuginfo shard all survive" \
+    _all_present "$LIVE_GEN/debug/deps" README build-plan.json foo-abc123.rlib foo-AAAABBBBCCCCDDDD \
+        foo-0123456789abcdef0.rlib "$LIVE7_SHARD"
+assert "LIVE7: the dead unit's own conforming file is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib"
+
+# LIVE8 — scope: only debug/deps at depth 1 is ever pruned. A dead hash's files
+# elsewhere — build/, the profile root, a nested deps dir, the whole release
+# profile, and the fingerprint dir (the evidence itself) — are untouched.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE8_DEAD=deadbeef00000008
+_mint_unit "$LIVE_PROFILE" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
+mkdir -p "$LIVE_PROFILE/build/dead-$LIVE8_DEAD" "$LIVE_PROFILE/deps/nested"
+echo "out" > "$LIVE_PROFILE/build/dead-$LIVE8_DEAD/out.txt"
+echo "root" > "$LIVE_PROFILE/dead-$LIVE8_DEAD"
+echo "nested" > "$LIVE_PROFILE/deps/nested/libdead-$LIVE8_DEAD.rlib"
+_mint_anchor "$LIVE_ADV/release"
+_mint_unit "$LIVE_ADV/release" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
+_live_refresh
+assert "LIVE8: refresh exits 0" test "$RC" -eq 0
+assert "LIVE8: the dead hash's files outside debug/deps depth 1 all survive (build/, profile root, nested, release/, .fingerprint)" \
+    _all_present "$LIVE_GEN" "debug/build/dead-$LIVE8_DEAD/out.txt" "debug/dead-$LIVE8_DEAD" \
+        "debug/deps/nested/libdead-$LIVE8_DEAD.rlib" "release/deps/libdead-$LIVE8_DEAD.rlib" \
+        "release/.fingerprint/dead-$LIVE8_DEAD/lib-dead" "debug/.fingerprint/dead-$LIVE8_DEAD/lib-dead"
+assert "LIVE8: the dead hash's debug/deps/ file is pruned (control)" \
+    _none_present "$LIVE_GEN" "debug/deps/libdead-$LIVE8_DEAD.rlib"
+assert "LIVE8: only the depth-1 file is counted as a victim (files=1) — the nested twin is never even a candidate" \
+    _stderr_matches 'prune deps=.*files=1( |$)'
+
+# LIVE9 — operator contract: stderr carries the machine-greppable summary
+# `prune deps=<path> files=N victim_bytes=N`, the byte figure being the summed
+# apparent size of exactly the victims; stdout stays empty.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" deadone 9a9a9a9a9a9a9a9a "$LIVE_DEAD" "$LIVE_DEAD" libdeadone-9a9a9a9a9a9a9a9a.rlib
+_mint_unit "$LIVE_PROFILE" deadtwo 9b9b9b9b9b9b9b9b "$LIVE_DEAD" "$LIVE_DEAD" deadtwo-9b9b9b9b9b9b9b9b
+head -c 1500 /dev/zero > "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib"
+head -c 700 /dev/zero > "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b"
+LIVE9_BYTES=$(( $(stat -c %s "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib") \
+    + $(stat -c %s "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b") ))
+LIVE9_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live9-tmp-XXXXXX)"
+_TMPDIRS+=("$LIVE9_TMPDIR")
+TMPDIR="$LIVE9_TMPDIR" _live_refresh
+assert "LIVE9: refresh exits 0" test "$RC" -eq 0
+assert "LIVE9: the stage's summary temp file is removed after a successful prune" \
+    test -z "$(ls -A "$LIVE9_TMPDIR")"
+assert "LIVE9: stderr reports the prune with files=2" \
+    _stderr_matches 'prune deps=.*files=2( |$)'
+assert "LIVE9: stderr's victim_bytes is the summed apparent size of exactly the two dead files" \
+    _stderr_matches "files=2 victim_bytes=${LIVE9_BYTES}( |\$)"
+assert "LIVE9: stdout stays empty" test -z "$OUT"
+
+# LIVE10 — skip paths: with no deps dir, or no .fingerprint to read liveness
+# from, the stage deletes nothing, says so on stderr, and the refresh still
+# succeeds.
+_live_case
+echo "content" > "$LIVE_ADV/f.txt"
+_live_refresh
+assert "LIVE10a: refresh with no debug/ at all exits 0" test "$RC" -eq 0
+assert "LIVE10a: stderr says the stage was skipped" _stderr_matches 'skip'
+assert "LIVE10a: the advancing content reaches the new gen" _all_present "$LIVE_GEN" f.txt
+assert "LIVE10a: with nothing to prune findmnt is never consulted" \
+    bash -c '! grep -q "^findmnt" "$1"' _ "$CALLS_FILE"
+
+_live_case
+mkdir -p "$LIVE_PROFILE/deps"
+echo "dead-looking" > "$LIVE_PROFILE/deps/libdead-abababababababab.rlib"
+touch -d '2020-01-01 00:00:00' "$LIVE_PROFILE/deps/libdead-abababababababab.rlib"
+_live_refresh
+assert "LIVE10b: refresh with debug/deps but no debug/.fingerprint exits 0" test "$RC" -eq 0
+assert "LIVE10b: stderr says the stage was skipped" _stderr_matches 'skip'
+assert "LIVE10b: with no liveness evidence the dead-looking file survives" \
+    _all_present "$LIVE_GEN/debug/deps" libdead-abababababababab.rlib
+assert "LIVE10b: with no evidence to read findmnt is never consulted" \
+    bash -c '! grep -q "^findmnt" "$1"' _ "$CALLS_FILE"
+
+# LIVE11 — fail-closed: a prune whose unlink fails aborts the refresh BEFORE the
+# rename, so the base is not advanced and the EXIT trap leaves no staging dir.
+# The rm stub fails only the prune's own `rm -f --`.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" failunit deadbeef00000011 "$LIVE_DEAD" "$LIVE_DEAD" libfailunit-deadbeef00000011.rlib
+LIVE11_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live11-tmp-XXXXXX)"
+_TMPDIRS+=("$LIVE11_TMPDIR")
+TMPDIR="$LIVE11_TMPDIR" REIFY_TEST_PRUNE_RM_FAIL=1 _live_refresh
+assert "LIVE11: a failing prune unlink makes the refresh exit non-zero" test "$RC" -ne 0
+assert "LIVE11: the failure is the prune's own rm (the stub fired)" _stderr_matches 'SIMULATED failure'
+assert "LIVE11: <base> is not created when the prune fails" test ! -e "$LIVE_BASE"
+assert "LIVE11: the stage's summary temp file is reclaimed by the EXIT trap even though the prune failed" \
+    test -z "$(ls -A "$LIVE11_TMPDIR")"
+assert "LIVE11: no <base>.gen.*.partial residue after a prune failure (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
+
+# LIVE12 — staging siting: refreshing over a PRE-EXISTING base prunes only the
+# .partial staging copy. The old base (bootstrapped to .gen.1) is never edited;
+# a shared flock on its lock file defers the GC reap (script Step 6) so the
+# retired gen can still be inspected.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" advdead deadbeef00000012 "$LIVE_DEAD" "$LIVE_DEAD" libadvdead-deadbeef00000012.rlib
+_mint_unit "$LIVE_BASE/debug" baseanchor bbbb0000000000a1 "$LIVE_ANCHOR" "$LIVE_ANCHOR" libbaseanchor-bbbb0000000000a1.rlib
+_mint_unit "$LIVE_BASE/debug" basedead bbbb00000000dead "$LIVE_DEAD" "$LIVE_DEAD" libbasedead-bbbb00000000dead.rlib
+LIVE12_RETIRED_GEN="${LIVE_BASE}.gen.1"
+touch "${LIVE12_RETIRED_GEN}.lock"
+exec {LIVE12_LOCK_FD}<>"${LIVE12_RETIRED_GEN}.lock"
+flock -s "$LIVE12_LOCK_FD"
+_live_refresh
+assert "LIVE12: refresh over a pre-existing base exits 0" test "$RC" -eq 0
+assert "LIVE12: retired gen.1 (the old base) still holds its own dead unit — the prune never edits it" \
+    _all_present "$LIVE12_RETIRED_GEN/debug/deps" libbasedead-bbbb00000000dead.rlib
+assert "LIVE12: the new gen lacks the advancing dead unit" \
+    _none_present "$LIVE_GEN/debug/deps" libadvdead-deadbeef00000012.rlib
+assert "LIVE12: the new gen keeps the advancing anchor unit" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib
+assert "LIVE12: no <base>.gen.*.partial remains after refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
+assert "LIVE12: <base> is a symlink to a <base>.gen.N dir" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$LIVE_BASE"
+flock -u "$LIVE12_LOCK_FD"
+exec {LIVE12_LOCK_FD}<&-
+
+# LIVE13-17 — the atime guard. Under noatime, last_use degrades to mtime alone and
+# every unchanged registry unit would read as weeks stale, so the stage must skip
+# rather than prune. One fixture shape (an anchor unit plus one dead unit) runs
+# under each mount-option answer; LIVE13 is the control proving the dead unit IS
+# pruned where atime is maintained, so LIVE14-16 cannot pass vacuously.
+LIVE_MOUNT_DEAD=libmountdead-deadbeef00000013.rlib
+_live_mount_case() {
+    _live_case
+    _mint_anchor "$LIVE_PROFILE"
+    _mint_unit "$LIVE_PROFILE" mountdead deadbeef00000013 "$LIVE_DEAD" "$LIVE_DEAD" "$LIVE_MOUNT_DEAD"
+}
+
+_live_mount_case
+_live_refresh
+assert "LIVE13: refresh on a relatime mount exits 0" test "$RC" -eq 0
+assert "LIVE13: control — where atime is maintained the dead unit is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE13: control — the anchor unit survives" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib
+assert "LIVE13: the mount asked about is the advancing dir's (findmnt -T <advancing dir>)" \
+    grep -qE -- "^findmnt( .*)? -T ${LIVE_ADV}( |\$)" "$CALLS_FILE"
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='rw,noatime' _live_refresh
+assert "LIVE14: refresh on a noatime mount exits 0" test "$RC" -eq 0
+assert "LIVE14: on a noatime mount the dead unit survives (no atime, so no liveness evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE14: stderr says the stage was skipped" _stderr_matches 'skip'
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='noatime,rw' _live_refresh
+assert "LIVE14b: noatime as the FIRST option token is recognised too (dead unit survives)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='noatime' _live_refresh
+assert "LIVE14c: noatime as the ONLY option token is recognised too (dead unit survives)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+
+_live_mount_case
+REIFY_TEST_FINDMNT_FAIL=1 _live_refresh
+assert "LIVE15: refresh with findmnt failing exits 0" test "$RC" -eq 0
+assert "LIVE15: with findmnt failing the dead unit survives (unknown mount, no evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE15: stderr says the stage was skipped" _stderr_matches 'skip'
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='' _live_refresh
+assert "LIVE16: refresh with findmnt printing nothing exits 0" test "$RC" -eq 0
+assert "LIVE16: with an empty option list the dead unit survives (unknown mount, no evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE16: stderr says the stage was skipped" _stderr_matches 'skip'
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='rw,relatime,nodiratime' _live_refresh
+assert "LIVE17: refresh on a nodiratime mount exits 0" test "$RC" -eq 0
+assert "LIVE17: nodiratime is not noatime — the dead unit is still pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+
+# LIVE18 — a future-dated consult (clock skew, a stray touch, an extracted archive)
+# must not move the anchor, or every live unit would age out against it: a mass
+# deletion of exactly the E19 class from one outlier. The future unit still counts
+# as ITS OWN unit's use, so it survives.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" liveunit 1818181818181801 '2026-03-06 00:00:00' '2026-03-06 00:00:00' \
+    libliveunit-1818181818181801.rlib
+_mint_unit "$LIVE_PROFILE" deadunit deadbeef00000018 "$LIVE_DEAD" "$LIVE_DEAD" \
+    libdeadunit-deadbeef00000018.rlib
+_mint_unit "$LIVE_PROFILE" futureunit 1818181818181802 "$LIVE_COLD" '2099-01-01 00:00:00' \
+    libfutureunit-1818181818181802.rlib
+# A second, long-stale fingerprint file in the same dir: ignoring the future-dated
+# one (rather than counting it for its own unit) would leave the unit looking dead.
+echo "stale sibling" > "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/dep-lib-futureunit"
+touch -d "$LIVE_DEAD" "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/dep-lib-futureunit"
+assert "LIVE18: fixture check — the future-dated fingerprint reads back as later than now" \
+    test "$(stat -c %X "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/lib-futureunit")" -gt "$(date +%s)"
+_live_refresh
+assert "LIVE18: refresh exits 0" test "$RC" -eq 0
+assert "LIVE18: the anchor unit and the live unit survive — a future-dated outlier does not move the anchor" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib libliveunit-1818181818181801.rlib
+assert "LIVE18: the future-dated unit itself survives (a future consult still counts as its own use)" \
+    _all_present "$LIVE_GEN/debug/deps" libfutureunit-1818181818181802.rlib
+assert "LIVE18: the dead unit is still pruned (the stage is active)" \
+    _none_present "$LIVE_GEN/debug/deps" libdeadunit-deadbeef00000018.rlib
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

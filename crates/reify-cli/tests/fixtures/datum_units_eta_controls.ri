@@ -1,0 +1,17 @@
+// datum_units_eta_controls.ri — CLI eval fixture: the POSITIVE CONTROL for
+// units-length η (task 6591). Read only by
+// `eval_dimensioned_datum_constructors_exit_0_and_print_length_origins` in
+// crates/reify-cli/tests/harness_cli/cli_eval_datum_units.rs, whose doc carries
+// the rationale for the distinct non-zero coordinates and pins the printed forms.
+//
+// Declares its module explicitly, matching its sibling fixtures.
+
+module datum_units_eta_controls
+
+structure def DatumUnitsEtaControls {
+    let a = axis_through(point3(1mm, 2mm, 3mm), point3(1mm, 2mm, 7mm))
+    let p = plane_through(point3(1mm, 2mm, 3mm), point3(5mm, 2mm, 3mm), point3(1mm, 6mm, 3mm))
+    let f = frame_at(point3(4mm, 5mm, 6mm), self.x, self.z)
+    let o = offset(plane_xy(5mm), 3mm)
+    let m = midplane(plane_xy(2mm), plane_xy(8mm))
+}

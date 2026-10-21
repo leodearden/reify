@@ -9,11 +9,12 @@
 //! `tree-sitter test` (the `test/corpus/` suite) is **not** invoked by CI —
 //! `tree-sitter-reify/package.json` has no `scripts` block, there is no
 //! Makefile, and `dark-factory-orchestrator.yaml` references tree-sitter only
-//! as a `generate` prerequisite. It is also not green on `main` (218/219, due
-//! to the pre-existing and unrelated `test/corpus/imaginary_literal.txt`
-//! failure, task #5492), so a blanket corpus gate would false-fail. The
-//! CI-enforced grammar surface is `tree-sitter-reify/tests/*.rs` — i.e. this
-//! file. `test/corpus/indexed_sub_instantiation.txt` documents the same CST
+//! as a `generate` prerequisite. The CI-enforced grammar surface is
+//! `tree-sitter-reify/tests/*.rs` — i.e. this file. Corpus health itself is
+//! not asserted here; the dated record of the `imaginary_literal.txt` red
+//! and its fix lives in the PRD manifest,
+//! `docs/prds/v0_6/indexed-sub-instantiation.capability-manifest.md`.
+//! `test/corpus/indexed_sub_instantiation.txt` documents the same CST
 //! shape in corpus form; rather than leaving that copy free to drift, this file
 //! `include_str!`s it and validates every case against the live parser in
 //! [`corpus_cases_match_the_live_parser`] — so the corpus is checked on every
@@ -388,8 +389,8 @@ fn normalize_sexp(s: &str) -> String {
 /// This is what keeps the corpus from drifting: it is `include_str!`'d, so a
 /// grammar change that alters the indexed-sub CST fails HERE, in the CI-run
 /// surface, until the corpus expectations are updated too. `tree-sitter test`
-/// remains uninvoked by CI (and 218/219 on `main`, task #5492) — this test
-/// deliberately reimplements the corpus reader rather than depending on that CLI.
+/// remains uninvoked by CI — this test deliberately reimplements the corpus
+/// reader rather than depending on that CLI.
 ///
 /// # Whole-root equality, deliberately narrow sources
 ///

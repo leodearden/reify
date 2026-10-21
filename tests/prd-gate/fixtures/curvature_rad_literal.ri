@@ -1,8 +1,11 @@
 // PRD gate fixture (angle-dimension-completion leaf α): rad/m curvature
 // literals. Grammar gate target: tree-sitter parse --quiet exit 0.
-// NOTE `param kc : Curvature = 0.2rad / 1mm` FAILS `reify check` TODAY
-// (CURVATURE is m⁻¹ pre-α; rad·m⁻¹ initializer mismatches) — that check-time
-// flip is exactly leaf α's B1 signal, not a grammar question.
+//
+// POST-α (#6179): CURVATURE is rad·m⁻¹, so `param kc : Curvature =
+// 0.2rad / 1mm` now type-checks and `reify check` exits 0. Both Errors on
+// `kc` that this fixture carried before α are gone: the param-default
+// ParamDefaultTypeMismatch and the ctor-conformance ArgTypeMismatch. Held by
+// crates/reify-compiler/tests/harness_units/curvature_dimension_tests.rs.
 
 module curvature_rad_literal
 

@@ -1,0 +1,29 @@
+module relate_wrapper_member_engine
+
+// Engine-phase un-consumable relate member: `mate` type-checks to a Relation,
+// so the compiler accepts it, but it is a `fn ... -> Relation` wrapper rather
+// than a direct geometric-relation call, so the relate solve rejects it. Its
+// operands are valid Axis datums and it restates the direct `concentric`, so
+// the wrapper shape is the fixture's only defect.
+
+fn mate<A, B>(a: A, b: B) -> Relation { concentric(a, b) }
+
+structure Pin {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+}
+
+structure Bore {
+    let hole = cylinder(3.2mm, 10mm)
+    let hole_axis : Axis = hole.axis
+}
+
+structure PinInBore {
+    sub pin : Pin at auto
+    sub bore : Bore
+
+    relate {
+        concentric(pin.shank_axis, bore.hole_axis)
+        mate(pin.shank_axis, bore.hole_axis)
+    }
+}

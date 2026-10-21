@@ -78,6 +78,20 @@
 #       positive control that pins the discard to the seed's EXIT STATUS rather
 #       than to an empty stdout; S3 covers a discard that itself fails; S4 a
 #       refusal that left nothing to discard (no false "discarded" claim)
+#   T — the base generation is pinned PER LANE, not once per pass (task 7366):
+#       gc resolves the base symlink to its concrete gen, and takes that gen's
+#       reader-refcount lock, immediately before each lane's reseed, so a
+#       refresh-warm-base.sh rotation MID-PASS cannot leave later lanes seeded
+#       from a gen that has been reaped. T1 rotates the base BETWEEN two lanes
+#       (the filed hypothesis) and asserts the second lane is seeded from the
+#       NEW gen and left warm, not discarded cold; T2 reaps the gen BETWEEN gc's
+#       resolve and its reader lock — the window that resolving per lane does not
+#       close, so only a re-check AFTER the lock passes; T3 points the base at a
+#       gen that never exists: the pin gives up in bounded time, never invokes
+#       the seed, creates no lock file, and leaves the lane cold; T4 makes the
+#       gen's lock impossible to OPEN while the caller has leaked an unrelated
+#       FD 9 into gc — the seed must still not run, rather than "lock" the
+#       leaked file and proceed with no reader lock on the gen
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -99,6 +113,13 @@ SCRIPT="$REPO_ROOT/scripts/warm-lane-gc.sh"
 }
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
+
+# slot_holder_handshake_lib.sh (task 6247) — causal holder-handshake primitives.
+# A fixed pause after backgrounding a holder can be OUTRUN under load: the
+# holder is not yet holding, so the code under test finds the resource FREE and
+# silently stops testing contention at all.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
 
 echo "=== scripts/warm-lane-gc.sh hermetic tests (task 4717) ==="
 
@@ -137,7 +158,6 @@ run_helper() {
 
 # ── git repo factory ───────────────────────────────────────────────────────────
 # make_repo DIR  — create a bare-minimum git repo at DIR with one initial commit.
-# Sets global REPO_DIR to the created path.
 # Always creates the 'main' branch (requires git >= 2.28; -b flag).
 make_repo() {
     local dir="$1"
@@ -149,8 +169,24 @@ make_repo() {
     git -C "$dir" commit -q -m "initial"
 }
 
+# make_gc_fixture ROOT — build the layout every gc block starts from:
+#   ROOT/repo       a one-commit repo on main (make_repo)
+#   ROOT/worktrees  the empty mount gc scans for lanes and orphans
+#   ROOT/base       refresh-warm-base.sh's generation layout: target -> target.gen.1,
+#                   plus that generation's sibling reader lock, target.gen.1.lock
+# base sits BESIDE worktrees because that is where `reclaim --mount` derives the
+# base from ($(dirname MOUNT)/base/target — Block H), so callers read the three
+# paths off ROOT rather than receiving them back.
+make_gc_fixture() {
+    local root="$1"
+    mkdir -p "$root/worktrees" "$root/base/target.gen.1"
+    make_repo "$root/repo"
+    touch "$root/base/target.gen.1.lock"
+    ln -sfn "$root/base/target.gen.1" "$root/base/target"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Shared scaffolding: task-lane factory + causal live-consumer-lock handshake
+# Shared scaffolding: task-lane factory, seed-stub emitters + causal handshake
 # ──────────────────────────────────────────────────────────────────────────────
 # The Tier-3 status-oracle stubs (gc-status-oracle{,-fail,-counting}.sh) were
 # removed with the Tier-3 machinery in task 5326 (always-reclaim collapses the
@@ -179,9 +215,11 @@ make_task_lane() {
 }
 
 # _seed_stub_body — printed to stdout; redirect into a seed-script stub file.
-# Logs its argv to $SEED_LOG and removes the lane's divergent marker (simulates
-# the α reflink-reseed's thinning effect). Shared by the make_task_lane-based
-# fixtures (Block K).
+# The stub for any block whose seed should succeed and thin: it logs its argv to
+# $SEED_LOG and removes the lane's divergent marker (simulates the α
+# reflink-reseed's thinning effect). gc calls the seed as
+# `<seed> <gen> <lane_dir> --fresh-checkout …`, so "$2" is the lane dir — the
+# positional contract every *_seed_stub_body emitter in this file shares.
 _seed_stub_body() {
     cat << 'STUB_EOF'
 #!/usr/bin/env bash
@@ -189,6 +227,70 @@ echo "$*" >> "$SEED_LOG"
 LANE_DIR="$2"
 rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
 exit 0
+STUB_EOF
+}
+
+# _toctou_trigger_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file (Block P-toctou). Thins like _seed_stub_body for every lane and,
+# ADDITIONALLY, when invoked for _lane-1, makes _lane-2 live before returning.
+# Reads three variables the block exports: $TOCTOU_LANE2 (the lane to make live),
+# $TOCTOU_READY2 (the marker the holder touches once its cwd is established) and
+# $TOCTOU_PIDFILE (where the holder's PID is written).
+#   - stdio MUST go to /dev/null: gc.sh runs the seed under
+#     `( ... ) 2>&1 | while IFS= read -r line; ...`, and an inherited pipe write
+#     end would keep that `while read` open for the holder's whole 300s life,
+#     hanging the pass.
+#   - the PID is written to a file because the holder reparents to init when the
+#     stub exits, so the TEST cannot learn it any other way.
+#   - the poll for READY2 is causal ordering (technique R), not a wall-clock
+#     sleep: the stub returns only once the cwd provably exists.
+_toctou_trigger_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+if [ "${LANE_DIR##*/}" = "_lane-1" ]; then
+    ( cd "$TOCTOU_LANE2/target" && touch "$TOCTOU_READY2" && exec sleep 300 ) \
+        </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$TOCTOU_PIDFILE"
+    _tick=0
+    while [ "$_tick" -lt 600 ]; do
+        [ -f "$TOCTOU_READY2" ] && break
+        sleep 0.05
+        _tick=$(( _tick + 1 ))
+    done
+fi
+exit 0
+STUB_EOF
+}
+
+# _post_clone_abort_seed_stub_body — printed to stdout; redirect into a
+# --seed-script stub file (Block S1). RECREATES <lane>/target with a HAZARD marker
+# and exits 1: it models the clone an aborting seed leaves behind, without needing
+# a reflink-capable filesystem. No chmod here; S3's _discard_fail_seed_stub_body
+# adds that.
+_post_clone_abort_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/HAZARD"
+exit 1
+STUB_EOF
+}
+
+# _empty_refusal_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file (Block S4). Removes <lane>/target and exits 1: a refusal that left
+# nothing behind to discard.
+_empty_refusal_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target"
+exit 1
 STUB_EOF
 }
 
@@ -251,32 +353,40 @@ _restore_discard_fail_lane() {
     chmod u+w "$1" 2>/dev/null || true
 }
 
-# _wait_for_reader_lock <ready-marker> <deadline-seconds>
-# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
-# task #4847): polls for the READY marker file in 0.05s ticks, returning 0
-# as soon as it appears, or non-zero once the generous anti-hang deadline
-# (technique T) elapses. The READY marker is touched by a backgrounded lock
-# holder AFTER it acquires its flock, so returning 0 causally guarantees the
-# flock is held at the caller's next statement — replacing a fixed `sleep`
-# that races the background subshell's lock acquisition under load (the
-# subshell may not have won the lock within a short fixed sleep, letting a
-# competing acquisition — e.g. the GC sweep under test — win instead).
-# Mirrors tests/infra/test_warm_lane_pool.sh's identically-named helper.
-_wait_for_reader_lock() {
-    local ready_marker="$1"
-    local deadline_s="$2"
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$ready_marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
+# ── base-generation fixture (Block T) ──────────────────────────────────────────
+# _gen_probe_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file. Models both halves of the base-rotation hazard:
+#   1. the REFUSAL. It logs "<lane> <gen> present|absent" to $SEED_LOG, and when
+#      the gen it was handed is gone it exits 76 — what seed-warm-lane.sh's
+#      base-absent guard does BEFORE it touches the lane — so the consequence is
+#      observable: gc discards the lane's target/ and counts it reset_cold.
+#   2. the ROTATION, only when $ROTATE_AFTER_LANE names this lane. After its own
+#      reseed it swaps the base symlink to a fresh target.gen.2 and reaps
+#      target.gen.1 together with its .lock, in refresh-warm-base.sh's Step 5
+#      then Step 6 order ($ROTATE_BASE is the base dir). It reaps WITHOUT Step
+#      6's `flock -n -x`: the stub runs inside gc's own reader window on gen.1,
+#      so it could never win that lock, and the state the NEXT lane then sees is
+#      the same as a refresh that ran between the two lanes.
+_gen_probe_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+gen="$1" lane="$2"
+if [ -d "$gen" ]; then state=present; else state=absent; fi
+echo "${lane##*/} $gen $state" >> "$SEED_LOG"
+[ "$state" = present ] || exit 76
+rm -rf "$lane/target/DIVERGENT_MARKER" 2>/dev/null || true
+if [ -n "${ROTATE_AFTER_LANE:-}" ] && [ "${lane##*/}" = "$ROTATE_AFTER_LANE" ]; then
+    mkdir "$ROTATE_BASE/target.gen.2"
+    ln -sfn "$ROTATE_BASE/target.gen.2" "$ROTATE_BASE/target"
+    rm -rf "$ROTATE_BASE/target.gen.1"
+    rm -f "$ROTATE_BASE/target.gen.1.lock"
+fi
+exit 0
+STUB_EOF
 }
 
 # _wait_for_exec_map <pid> <want-exe-realpath> <deadline-seconds>
-# The MMAP analogue of _wait_for_reader_lock: `exec` REPLACES the shell so it
+# The MMAP analogue of holder_wait_for_marker: `exec` REPLACES the shell so it
 # cannot touch a READY marker, so poll /proc/<pid>/exe until it resolves to the
 # exec'd binary — at which point the binary's mapping is provably established —
 # before reclaim scans (causal ordering, technique R, no wall-clock sleep).
@@ -329,21 +439,17 @@ run_helper reclaim --worktrees-dir /tmp/some-dir
 assert "A6: reclaim without --base-target exits 2" test "$RC" -eq 2
 
 # A7: reclaim with both required flags exits 0 (empty worktrees-dir is valid)
-A7_WORKTREES="$(mktemp -d /tmp/test-gc-a7-XXXXXX)"
-_TMPDIRS+=("$A7_WORKTREES")
-A7_BASE="$(mktemp -d /tmp/test-gc-a7-base-XXXXXX)"
-_TMPDIRS+=("$A7_BASE")
-# Create a gen dir so the base-target resolution works
-mkdir -p "$A7_BASE/target.gen.1"
-touch "$A7_BASE/target.gen.1.lock"
-ln -sfn "$A7_BASE/target.gen.1" "$A7_BASE/target"
+A7_ROOT="$(mktemp -d /tmp/test-gc-a7-XXXXXX)"
+_TMPDIRS+=("$A7_ROOT")
+make_gc_fixture "$A7_ROOT"
+A7_WORKTREES="$A7_ROOT/worktrees"
+A7_BASE="$A7_ROOT/base"
 run_helper reclaim --worktrees-dir "$A7_WORKTREES" --base-target "$A7_BASE/target"
 assert "A7: empty worktrees-dir exits 0" test "$RC" -eq 0
 
 # A8: --status-cmd is now an UNKNOWN flag (Tier-3 machinery removed, task 5326).
 # Locks the flag removal: reclaim --worktrees-dir … --base-target … --status-cmd X
-# must exit 2 (usage error, unknown flag), not accept it. RED against the current
-# gc.sh, which still parses --status-cmd; GREEN once step-2 deletes the flag.
+# must exit 2 (usage error, unknown flag), not accept it.
 run_helper reclaim \
     --worktrees-dir "$A7_WORKTREES" \
     --base-target "$A7_BASE/target" \
@@ -379,18 +485,10 @@ echo "--- Block B: reset a divergent FREE lane ---"
 B_ROOT="$(mktemp -d /tmp/test-gc-b-XXXXXX)"
 _TMPDIRS+=("$B_ROOT")
 
+make_gc_fixture "$B_ROOT"
 B_REPO="$B_ROOT/repo"
 B_WORKTREES="$B_ROOT/worktrees"
 B_BASE="$B_ROOT/base"
-mkdir -p "$B_WORKTREES" "$B_BASE"
-
-# Set up primary git repo
-make_repo "$B_REPO"
-
-# Create base gen directory (simulates the warm base)
-mkdir -p "$B_BASE/target.gen.1"
-touch "$B_BASE/target.gen.1.lock"
-ln -sfn "$B_BASE/target.gen.1" "$B_BASE/target"
 
 # Create _lane-1 as a git worktree (clean, HEAD == main, i.e. landed)
 git -C "$B_REPO" worktree add -q "$B_WORKTREES/_lane-1"
@@ -398,18 +496,9 @@ git -C "$B_REPO" worktree add -q "$B_WORKTREES/_lane-1"
 mkdir -p "$B_WORKTREES/_lane-1/target"
 touch "$B_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
-# Seed-script stub: records argv to a log file and simulates thinning
 B_SEED_LOG="$B_ROOT/seed_calls.log"
 B_SEED_STUB="$B_ROOT/seed_stub.sh"
-cat > "$B_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-# Seed-script stub: log all argv, simulate thinning
-echo "$*" >> "$SEED_LOG"
-# Simulate thinning: remove any DIVERGENT_MARKER in the lane's target/
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$B_SEED_STUB"
 chmod +x "$B_SEED_STUB"
 export SEED_LOG="$B_SEED_LOG"
 
@@ -443,16 +532,10 @@ echo "--- Block C: remove an orphaned-landed clean worktree ---"
 C_ROOT="$(mktemp -d /tmp/test-gc-c-XXXXXX)"
 _TMPDIRS+=("$C_ROOT")
 
+make_gc_fixture "$C_ROOT"
 C_REPO="$C_ROOT/repo"
 C_WORKTREES="$C_ROOT/worktrees"
 C_BASE="$C_ROOT/base"
-mkdir -p "$C_WORKTREES" "$C_BASE"
-
-make_repo "$C_REPO"
-
-mkdir -p "$C_BASE/target.gen.1"
-touch "$C_BASE/target.gen.1.lock"
-ln -sfn "$C_BASE/target.gen.1" "$C_BASE/target"
 
 # Create _lane-1 (pool lane, reclaimable)
 git -C "$C_REPO" worktree add -q "$C_WORKTREES/_lane-1"
@@ -468,13 +551,7 @@ touch "$C_WORKTREES/_merge-verify/PROTECTED_MARKER"
 
 C_SEED_LOG="$C_ROOT/seed_calls.log"
 C_SEED_STUB="$C_ROOT/seed_stub.sh"
-cat > "$C_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$C_SEED_STUB"
 chmod +x "$C_SEED_STUB"
 export SEED_LOG="$C_SEED_LOG"
 
@@ -500,9 +577,12 @@ assert "C5: _merge-verify protected marker intact" \
 # Block D — always-reclaim: dirty POOL LANE reclaimed, dirty ORPHAN preserved
 # Under the task-5326 always-reclaim policy, a FREE pool lane whose live-consumer
 # flock is free is reclaimed UNCONDITIONALLY — dirty tracked changes no longer
-# preserve it (acquire_lane always re-seeds; committed work lives on the branch
-# ref; reset touches only target/). A dirty ORPHAN cold worktree (Pass 2) is
-# STILL preserved by the unchanged _is_reclaimable predicate.
+# preserve it (acquire_lane always re-seeds; committed work lives on the
+# refs/heads/task/NNNN ref and is never moved; the reset REPLACES only target/,
+# and its sole effect on the source tree is an mtime re-stamp — never a content
+# change, never a deletion: sizing-lifecycle Invariant T1, pinned by
+# tests/infra/test_seed_warm_lane.sh Block X). A dirty ORPHAN cold worktree
+# (Pass 2) is STILL preserved by the unchanged _is_reclaimable predicate.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block D: always-reclaim (dirty pool lane reset, dirty orphan preserved) ---"
@@ -510,16 +590,10 @@ echo "--- Block D: always-reclaim (dirty pool lane reset, dirty orphan preserved
 D_ROOT="$(mktemp -d /tmp/test-gc-d-XXXXXX)"
 _TMPDIRS+=("$D_ROOT")
 
+make_gc_fixture "$D_ROOT"
 D_REPO="$D_ROOT/repo"
 D_WORKTREES="$D_ROOT/worktrees"
 D_BASE="$D_ROOT/base"
-mkdir -p "$D_WORKTREES" "$D_BASE"
-
-make_repo "$D_REPO"
-
-mkdir -p "$D_BASE/target.gen.1"
-touch "$D_BASE/target.gen.1.lock"
-ln -sfn "$D_BASE/target.gen.1" "$D_BASE/target"
 
 # _lane-2: dirty POOL LANE (tracked file modified but not committed) — now RECLAIMED.
 git -C "$D_REPO" worktree add -q "$D_WORKTREES/_lane-2"
@@ -531,17 +605,10 @@ touch "$D_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
 git -C "$D_REPO" worktree add -q "$D_WORKTREES/task-8888"
 echo "dirty" >> "$D_WORKTREES/task-8888/README.md"
 
-# Thinning seed stub: logs argv AND removes the lane's DIVERGENT_MARKER, so a
-# reset is observable both by the seed log and by the marker's disappearance.
+# A reset is observable both by the seed log and by the marker's disappearance.
 D_SEED_LOG="$D_ROOT/seed_calls.log"
 D_SEED_STUB="$D_ROOT/seed_stub.sh"
-cat > "$D_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$D_SEED_STUB"
 chmod +x "$D_SEED_STUB"
 export SEED_LOG="$D_SEED_LOG"
 
@@ -577,16 +644,10 @@ echo "--- Block E: always-reclaim (ahead pool lane reset, ahead orphan preserved
 E_ROOT="$(mktemp -d /tmp/test-gc-e-XXXXXX)"
 _TMPDIRS+=("$E_ROOT")
 
+make_gc_fixture "$E_ROOT"
 E_REPO="$E_ROOT/repo"
 E_WORKTREES="$E_ROOT/worktrees"
 E_BASE="$E_ROOT/base"
-mkdir -p "$E_WORKTREES" "$E_BASE"
-
-make_repo "$E_REPO"
-
-mkdir -p "$E_BASE/target.gen.1"
-touch "$E_BASE/target.gen.1.lock"
-ln -sfn "$E_BASE/target.gen.1" "$E_BASE/target"
 
 # _lane-3: clean POOL LANE with a committed change NOT in main (ahead-of-main) —
 # now RECLAIMED via always-reclaim (no --status-cmd wired).
@@ -603,16 +664,9 @@ echo "ahead" >> "$E_WORKTREES/task-7777/README.md"
 git -C "$E_WORKTREES/task-7777" add README.md
 git -C "$E_WORKTREES/task-7777" commit -q -m "ahead-of-main commit"
 
-# Thinning seed stub: logs argv AND removes the lane's DIVERGENT_MARKER.
 E_SEED_LOG="$E_ROOT/seed_calls.log"
 E_SEED_STUB="$E_ROOT/seed_stub.sh"
-cat > "$E_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$E_SEED_STUB"
 chmod +x "$E_SEED_STUB"
 export SEED_LOG="$E_SEED_LOG"
 
@@ -649,16 +703,10 @@ echo "--- Block F: live-consumer flock is the sole Pass-1 preserve gate ---"
 F_ROOT="$(mktemp -d /tmp/test-gc-f-XXXXXX)"
 _TMPDIRS+=("$F_ROOT")
 
+make_gc_fixture "$F_ROOT"
 F_REPO="$F_ROOT/repo"
 F_WORKTREES="$F_ROOT/worktrees"
 F_BASE="$F_ROOT/base"
-mkdir -p "$F_WORKTREES" "$F_BASE"
-
-make_repo "$F_REPO"
-
-mkdir -p "$F_BASE/target.gen.1"
-touch "$F_BASE/target.gen.1.lock"
-ln -sfn "$F_BASE/target.gen.1" "$F_BASE/target"
 
 # _lane-4: clean, landed, with a live consumer holding the exclusive lock.
 git -C "$F_REPO" worktree add -q "$F_WORKTREES/_lane-4"
@@ -688,18 +736,12 @@ _BGPIDS+=("$F5_LOCK_PID")
 
 # Causal handshake (technique R, #4847): proceed only once BOTH flocks are
 # provably held, so the GC sweep under test cannot race in and win either lock.
-_wait_for_reader_lock "$F4_READY" 30
-_wait_for_reader_lock "$F5_READY" 30
+holder_wait_for_marker "$F4_READY" 150
+holder_wait_for_marker "$F5_READY" 150
 
 F_SEED_LOG="$F_ROOT/seed_calls.log"
 F_SEED_STUB="$F_ROOT/seed_stub.sh"
-cat > "$F_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$F_SEED_STUB"
 chmod +x "$F_SEED_STUB"
 export SEED_LOG="$F_SEED_LOG"
 
@@ -740,16 +782,10 @@ echo "--- Block G: combined PRD delta signal (always-reclaim) ---"
 G_ROOT="$(mktemp -d /tmp/test-gc-g-XXXXXX)"
 _TMPDIRS+=("$G_ROOT")
 
+make_gc_fixture "$G_ROOT"
 G_REPO="$G_ROOT/repo"
 G_WORKTREES="$G_ROOT/worktrees"
 G_BASE="$G_ROOT/base"
-mkdir -p "$G_WORKTREES" "$G_BASE"
-
-make_repo "$G_REPO"
-
-mkdir -p "$G_BASE/target.gen.1"
-touch "$G_BASE/target.gen.1.lock"
-ln -sfn "$G_BASE/target.gen.1" "$G_BASE/target"
 
 # Fixture 1: reclaimable FREE lane (_lane-free)
 git -C "$G_REPO" worktree add -q "$G_WORKTREES/_lane-free"
@@ -776,10 +812,18 @@ git -C "$G_REPO" worktree add -q "$G_WORKTREES/_lane-locked"
 mkdir -p "$G_WORKTREES/_lane-locked/target"
 touch "$G_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
 touch "$G_WORKTREES/_lane-locked.lock"
-( flock -x 9 && sleep 300 ) 9>"$G_WORKTREES/_lane-locked.lock" &
+G_LOCK_READY="$G_WORKTREES/_lane-locked.lock.ready-marker"
+( flock -x 9 && touch "$G_LOCK_READY" && sleep 300 ) 9>"$G_WORKTREES/_lane-locked.lock" &
 G_LOCK_PID=$!
 _BGPIDS+=("$G_LOCK_PID")
-sleep 0.1
+# Causal handshake (task 6247), the straight port of Block F's F4_READY/F5_READY
+# shape above. The retired `sleep 0.1` — half the grace used anywhere else in
+# this file — races the background subshell's lock acquisition: if the flock is
+# not yet held when `run_helper reclaim` sweeps, GC reclaims the lane and
+# deletes its marker, failing G7 (DIVERGENT_MARKER intact) and G12
+# (preserved=3) for a reason that has nothing to do with GC's logic.
+assert "Fixture 5: live-consumer flock provably held before the sweep (causal barrier)" \
+    holder_wait_for_marker "$G_LOCK_READY" 150
 
 # Fixture 6: protected _merge-verify (protect-glob)
 git -C "$G_REPO" worktree add -q "$G_WORKTREES/_merge-verify"
@@ -787,13 +831,7 @@ touch "$G_WORKTREES/_merge-verify/PROTECTED_MARKER"
 
 G_SEED_LOG="$G_ROOT/seed_calls.log"
 G_SEED_STUB="$G_ROOT/seed_stub.sh"
-cat > "$G_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$G_SEED_STUB"
 chmod +x "$G_SEED_STUB"
 export SEED_LOG="$G_SEED_LOG"
 
@@ -852,19 +890,11 @@ echo "--- Block H: --mount derivation (DF consumer contract) ---"
 H_ROOT="$(mktemp -d /tmp/test-gc-h-XXXXXX)"
 _TMPDIRS+=("$H_ROOT")
 
+# <root>/worktrees is the mount; <root>/base is its sibling, where --mount derives the base.
+make_gc_fixture "$H_ROOT"
 H_REPO="$H_ROOT/repo"
 H_WORKTREES="$H_ROOT/worktrees"
 H_BASE="$H_ROOT/base"
-mkdir -p "$H_WORKTREES" "$H_BASE"
-
-# Set up primary git repo
-make_repo "$H_REPO"
-
-# Create base gen directory (simulates the warm base)
-# Layout: <root>/worktrees/ (mount) + <root>/base/target.gen.1 (sibling)
-mkdir -p "$H_BASE/target.gen.1"
-touch "$H_BASE/target.gen.1.lock"
-ln -sfn "$H_BASE/target.gen.1" "$H_BASE/target"
 
 # Create _lane-1 as a git worktree (clean, HEAD == main, i.e. landed)
 git -C "$H_REPO" worktree add -q "$H_WORKTREES/_lane-1"
@@ -872,18 +902,9 @@ git -C "$H_REPO" worktree add -q "$H_WORKTREES/_lane-1"
 mkdir -p "$H_WORKTREES/_lane-1/target"
 touch "$H_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
-# Seed-script stub: records argv to a log file and simulates thinning
 H_SEED_LOG="$H_ROOT/seed_calls.log"
 H_SEED_STUB="$H_ROOT/seed_stub.sh"
-cat > "$H_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-# Seed-script stub: log all argv, simulate thinning
-echo "$*" >> "$SEED_LOG"
-# Simulate thinning: remove any DIVERGENT_MARKER in the lane's target/
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$H_SEED_STUB"
 chmod +x "$H_SEED_STUB"
 export SEED_LOG="$H_SEED_LOG"
 
@@ -920,13 +941,7 @@ touch "$H6_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
 H6_SEED_LOG="$H6_ROOT/seed_calls.log"
 H6_SEED_STUB="$H6_ROOT/seed_stub.sh"
-cat > "$H6_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$H6_SEED_STUB"
 chmod +x "$H6_SEED_STUB"
 export SEED_LOG="$H6_SEED_LOG"
 
@@ -952,14 +967,11 @@ K_ROOT="$(mktemp -d /tmp/test-gc-k-XXXXXX)"
 _TMPDIRS+=("$K_ROOT")
 
 # ── K1: --disk-pressure deletes target/ outright, no seed-script invocation ────
-K1_REPO="$K_ROOT/k1-repo"
-K1_WORKTREES="$K_ROOT/k1-worktrees"
-K1_BASE="$K_ROOT/k1-base"
-mkdir -p "$K1_WORKTREES" "$K1_BASE"
-make_repo "$K1_REPO"
-mkdir -p "$K1_BASE/target.gen.1"
-touch "$K1_BASE/target.gen.1.lock"
-ln -sfn "$K1_BASE/target.gen.1" "$K1_BASE/target"
+K1_ROOT="$K_ROOT/k1"
+make_gc_fixture "$K1_ROOT"
+K1_REPO="$K1_ROOT/repo"
+K1_WORKTREES="$K1_ROOT/worktrees"
+K1_BASE="$K1_ROOT/base"
 
 make_task_lane "$K1_REPO" "$K1_WORKTREES" "_lane-1" "task/4827" "ahead"
 
@@ -986,14 +998,11 @@ assert "K1: summary shows reset=1 (disk-pressure delete still counts as reset)" 
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
 
 # ── K2: control — same fixture WITHOUT --disk-pressure resets via alpha ────────
-K2_REPO="$K_ROOT/k2-repo"
-K2_WORKTREES="$K_ROOT/k2-worktrees"
-K2_BASE="$K_ROOT/k2-base"
-mkdir -p "$K2_WORKTREES" "$K2_BASE"
-make_repo "$K2_REPO"
-mkdir -p "$K2_BASE/target.gen.1"
-touch "$K2_BASE/target.gen.1.lock"
-ln -sfn "$K2_BASE/target.gen.1" "$K2_BASE/target"
+K2_ROOT="$K_ROOT/k2"
+make_gc_fixture "$K2_ROOT"
+K2_REPO="$K2_ROOT/repo"
+K2_WORKTREES="$K2_ROOT/worktrees"
+K2_BASE="$K2_ROOT/base"
 
 make_task_lane "$K2_REPO" "$K2_WORKTREES" "_lane-1" "task/4827" "ahead"
 
@@ -1021,14 +1030,11 @@ assert "K2: summary shows reset=1" \
 # reclaimable Pass-1 lane. This locks that pool-wide scope: an ordinary
 # landed/clean lane (no task/NNNN branch) also gets its target/ deleted
 # outright under --disk-pressure rather than alpha-reseeded.
-K3_REPO="$K_ROOT/k3-repo"
-K3_WORKTREES="$K_ROOT/k3-worktrees"
-K3_BASE="$K_ROOT/k3-base"
-mkdir -p "$K3_WORKTREES" "$K3_BASE"
-make_repo "$K3_REPO"
-mkdir -p "$K3_BASE/target.gen.1"
-touch "$K3_BASE/target.gen.1.lock"
-ln -sfn "$K3_BASE/target.gen.1" "$K3_BASE/target"
+K3_ROOT="$K_ROOT/k3"
+make_gc_fixture "$K3_ROOT"
+K3_REPO="$K3_ROOT/repo"
+K3_WORKTREES="$K3_ROOT/worktrees"
+K3_BASE="$K3_ROOT/base"
 
 # Landed, clean, non-task-branch lane (mirrors Block B's fixture).
 git -C "$K3_REPO" worktree add -q "$K3_WORKTREES/_lane-1"
@@ -1063,14 +1069,11 @@ assert "K3: summary shows reset=1" \
 # deterministically: unlike a chmod-0-parent-dir permission trick, this is
 # root-safe (permission bits are bypassed when the test process runs as
 # root, which a filesystem-based trick cannot guarantee against).
-K4_REPO="$K_ROOT/k4-repo"
-K4_WORKTREES="$K_ROOT/k4-worktrees"
-K4_BASE="$K_ROOT/k4-base"
-mkdir -p "$K4_WORKTREES" "$K4_BASE"
-make_repo "$K4_REPO"
-mkdir -p "$K4_BASE/target.gen.1"
-touch "$K4_BASE/target.gen.1.lock"
-ln -sfn "$K4_BASE/target.gen.1" "$K4_BASE/target"
+K4_ROOT="$K_ROOT/k4"
+make_gc_fixture "$K4_ROOT"
+K4_REPO="$K4_ROOT/repo"
+K4_WORKTREES="$K4_ROOT/worktrees"
+K4_BASE="$K4_ROOT/base"
 
 make_task_lane "$K4_REPO" "$K4_WORKTREES" "_lane-1" "task/4827" "ahead"
 
@@ -1121,14 +1124,11 @@ assert "K4: stderr captures the rm failure detail (not swallowed)" \
 # make the mistake visible. This is also the emergency path (ENOSPC response),
 # i.e. exactly when an operator is least able to notice a corrupted build
 # (task 5572 review).
-K5_REPO="$K_ROOT/k5-repo"
-K5_WORKTREES="$K_ROOT/k5-worktrees"
-K5_BASE="$K_ROOT/k5-base"
-mkdir -p "$K5_WORKTREES" "$K5_BASE"
-make_repo "$K5_REPO"
-mkdir -p "$K5_BASE/target.gen.1"
-touch "$K5_BASE/target.gen.1.lock"
-ln -sfn "$K5_BASE/target.gen.1" "$K5_BASE/target"
+K5_ROOT="$K_ROOT/k5"
+make_gc_fixture "$K5_ROOT"
+K5_REPO="$K5_ROOT/repo"
+K5_WORKTREES="$K5_ROOT/worktrees"
+K5_BASE="$K5_ROOT/base"
 
 # _lane-1 live (cwd holder), _lane-2 free — same discrimination shape as P-basic,
 # but under --disk-pressure and with a FREE flock on both.
@@ -1142,7 +1142,7 @@ K5_READY="$K_ROOT/k5-holder.ready"
 ( cd "$K5_WORKTREES/_lane-1/target" && touch "$K5_READY" && exec sleep 300 ) &
 K5_HELPER_PID=$!
 _BGPIDS+=("$K5_HELPER_PID")
-_wait_for_reader_lock "$K5_READY" 30
+holder_wait_for_marker "$K5_READY" 150
 
 K5_SEED_LOG="$K_ROOT/k5-seed-calls.log"
 K5_SEED_STUB="$K_ROOT/k5-seed-stub.sh"
@@ -1192,16 +1192,10 @@ echo "--- Block M: ephemeral verify/sweep worktrees protected by default ---"
 M_ROOT="$(mktemp -d /tmp/test-gc-m-XXXXXX)"
 _TMPDIRS+=("$M_ROOT")
 
+make_gc_fixture "$M_ROOT"
 M_REPO="$M_ROOT/repo"
 M_WORKTREES="$M_ROOT/worktrees"
 M_BASE="$M_ROOT/base"
-mkdir -p "$M_WORKTREES" "$M_BASE"
-
-make_repo "$M_REPO"
-
-mkdir -p "$M_BASE/target.gen.1"
-touch "$M_BASE/target.gen.1.lock"
-ln -sfn "$M_BASE/target.gen.1" "$M_BASE/target"
 
 # Fixture 1: _mainsweep-abcd1234 — DF's background main-tip integrity-sweep
 # worktree (clean, landed — as it is immediately after DF mints it at main_sha).
@@ -1222,13 +1216,7 @@ git -C "$M_REPO" worktree add -q "$M_WORKTREES/task-9999"
 
 M_SEED_LOG="$M_ROOT/seed_calls.log"
 M_SEED_STUB="$M_ROOT/seed_stub.sh"
-cat > "$M_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$M_SEED_STUB"
 chmod +x "$M_SEED_STUB"
 export SEED_LOG="$M_SEED_LOG"
 
@@ -1276,16 +1264,10 @@ echo "--- Block N: full managed-worktree protect set + explicit override intact 
 N_ROOT="$(mktemp -d /tmp/test-gc-n-XXXXXX)"
 _TMPDIRS+=("$N_ROOT")
 
+make_gc_fixture "$N_ROOT"
 N_REPO="$N_ROOT/repo"
 N_WORKTREES="$N_ROOT/worktrees"
 N_BASE="$N_ROOT/base"
-mkdir -p "$N_WORKTREES" "$N_BASE"
-
-make_repo "$N_REPO"
-
-mkdir -p "$N_BASE/target.gen.1"
-touch "$N_BASE/target.gen.1.lock"
-ln -sfn "$N_BASE/target.gen.1" "$N_BASE/target"
 
 # Four remaining orchestrator-managed non-pool worktree kinds, each clean/landed.
 for _n_name in _solo-1234 _substrate-gate-1234 _offline-deep _iact-demo; do
@@ -1298,13 +1280,7 @@ git -C "$N_REPO" worktree add -q "$N_WORKTREES/task-8888"
 
 N_SEED_LOG="$N_ROOT/seed_calls.log"
 N_SEED_STUB="$N_ROOT/seed_stub.sh"
-cat > "$N_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$N_SEED_STUB"
 chmod +x "$N_SEED_STUB"
 export SEED_LOG="$N_SEED_LOG"
 
@@ -1338,27 +1314,17 @@ assert "N-default: summary shows removed=1 (control orphan)" \
 NOV_ROOT="$(mktemp -d /tmp/test-gc-nov-XXXXXX)"
 _TMPDIRS+=("$NOV_ROOT")
 
+make_gc_fixture "$NOV_ROOT"
 NOV_REPO="$NOV_ROOT/repo"
 NOV_WORKTREES="$NOV_ROOT/worktrees"
 NOV_BASE="$NOV_ROOT/base"
-mkdir -p "$NOV_WORKTREES" "$NOV_BASE"
-
-make_repo "$NOV_REPO"
-
-mkdir -p "$NOV_BASE/target.gen.1"
-touch "$NOV_BASE/target.gen.1.lock"
-ln -sfn "$NOV_BASE/target.gen.1" "$NOV_BASE/target"
 
 git -C "$NOV_REPO" worktree add -q "$NOV_WORKTREES/_mainsweep-abcd1234"
 touch "$NOV_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
 
 NOV_SEED_LOG="$NOV_ROOT/seed_calls.log"
 NOV_SEED_STUB="$NOV_ROOT/seed_stub.sh"
-cat > "$NOV_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-exit 0
-STUB_EOF
+_seed_stub_body > "$NOV_SEED_STUB"
 chmod +x "$NOV_SEED_STUB"
 export SEED_LOG="$NOV_SEED_LOG"
 
@@ -1392,8 +1358,8 @@ assert "N-override: summary shows removed=1" \
 #   _lane-9      — reclaimable, passed via --extra-protect-glob → preserved
 #   _mainsweep-x — default-protected (_mainsweep-*) → preserved (default set on)
 # Sub-case O-env drives the SAME protection through the env var instead of the
-# flag. RED today: --extra-protect-glob is an unknown flag (exit 2) and the env
-# var is ignored (so _lane-9 is reset instead of preserved).
+# flag. A gc that rejects the flag (exit 2) or ignores the env var resets
+# _lane-9 instead of preserving it, and this block reds.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block O: --extra-protect-glob adds to the default protect set ---"
@@ -1402,16 +1368,10 @@ echo "--- Block O: --extra-protect-glob adds to the default protect set ---"
 O_ROOT="$(mktemp -d /tmp/test-gc-o-XXXXXX)"
 _TMPDIRS+=("$O_ROOT")
 
+make_gc_fixture "$O_ROOT"
 O_REPO="$O_ROOT/repo"
 O_WORKTREES="$O_ROOT/worktrees"
 O_BASE="$O_ROOT/base"
-mkdir -p "$O_WORKTREES" "$O_BASE"
-
-make_repo "$O_REPO"
-
-mkdir -p "$O_BASE/target.gen.1"
-touch "$O_BASE/target.gen.1.lock"
-ln -sfn "$O_BASE/target.gen.1" "$O_BASE/target"
 
 # Three clean+landed (HEAD==main) lanes, each with a divergent target marker.
 for _o_name in _lane-1 _lane-9 _mainsweep-x; do
@@ -1422,13 +1382,7 @@ done
 
 O_SEED_LOG="$O_ROOT/seed_calls.log"
 O_SEED_STUB="$O_ROOT/seed_stub.sh"
-cat > "$O_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$O_SEED_STUB"
 chmod +x "$O_SEED_STUB"
 export SEED_LOG="$O_SEED_LOG"
 
@@ -1468,16 +1422,10 @@ assert "O9: summary preserved count includes BOTH protected entries (preserved=2
 OE_ROOT="$(mktemp -d /tmp/test-gc-oe-XXXXXX)"
 _TMPDIRS+=("$OE_ROOT")
 
+make_gc_fixture "$OE_ROOT"
 OE_REPO="$OE_ROOT/repo"
 OE_WORKTREES="$OE_ROOT/worktrees"
 OE_BASE="$OE_ROOT/base"
-mkdir -p "$OE_WORKTREES" "$OE_BASE"
-
-make_repo "$OE_REPO"
-
-mkdir -p "$OE_BASE/target.gen.1"
-touch "$OE_BASE/target.gen.1.lock"
-ln -sfn "$OE_BASE/target.gen.1" "$OE_BASE/target"
 
 for _oe_name in _lane-1 _lane-9 _mainsweep-x; do
     git -C "$OE_REPO" worktree add -q "$OE_WORKTREES/$_oe_name"
@@ -1487,13 +1435,7 @@ done
 
 OE_SEED_LOG="$OE_ROOT/seed_calls.log"
 OE_SEED_STUB="$OE_ROOT/seed_stub.sh"
-cat > "$OE_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$OE_SEED_STUB"
 chmod +x "$OE_SEED_STUB"
 export SEED_LOG="$OE_SEED_LOG"
 
@@ -1543,16 +1485,10 @@ echo "--- Block P: per-lane live-consumer check inside the primitive (task 5572)
 P_ROOT="$(mktemp -d /tmp/test-gc-p-XXXXXX)"
 _TMPDIRS+=("$P_ROOT")
 
+make_gc_fixture "$P_ROOT"
 P_REPO="$P_ROOT/repo"
 P_WORKTREES="$P_ROOT/worktrees"
 P_BASE="$P_ROOT/base"
-mkdir -p "$P_WORKTREES" "$P_BASE"
-
-make_repo "$P_REPO"
-
-mkdir -p "$P_BASE/target.gen.1"
-touch "$P_BASE/target.gen.1.lock"
-ln -sfn "$P_BASE/target.gen.1" "$P_BASE/target"
 
 # Two clean+landed (HEAD==main) reclaimable pool lanes, each with a divergent
 # marker and a FREE flock (no holder started anywhere in this block).
@@ -1563,14 +1499,14 @@ for _p_name in _lane-1 _lane-2; do
 done
 
 # Live helper whose CWD is _lane-1/target — a DESCENDANT of the lane dir. It
-# touches READY only AFTER cd'ing in, so _wait_for_reader_lock proves the cwd is
+# touches READY only AFTER cd'ing in, so holder_wait_for_marker proves the cwd is
 # established before reclaim runs (causal ordering, technique R — no wall-clock
 # sleep). exec sleep so the tracked PID is the one holding the cwd.
 P_READY="$P_ROOT/helper.ready"
 ( cd "$P_WORKTREES/_lane-1/target" && touch "$P_READY" && exec sleep 300 ) &
 P_HELPER_PID=$!
 _BGPIDS+=("$P_HELPER_PID")
-_wait_for_reader_lock "$P_READY" 30
+holder_wait_for_marker "$P_READY" 150
 
 P_SEED_LOG="$P_ROOT/seed_calls.log"
 P_SEED_STUB="$P_ROOT/seed_stub.sh"
@@ -1639,16 +1575,10 @@ assert "P11: _lane-1 reset once its live cwd reference is gone (preserve is temp
 PF_ROOT="$(mktemp -d /tmp/test-gc-pfd-XXXXXX)"
 _TMPDIRS+=("$PF_ROOT")
 
+make_gc_fixture "$PF_ROOT"
 PF_REPO="$PF_ROOT/repo"
 PF_WORKTREES="$PF_ROOT/worktrees"
 PF_BASE="$PF_ROOT/base"
-mkdir -p "$PF_WORKTREES" "$PF_BASE"
-
-make_repo "$PF_REPO"
-
-mkdir -p "$PF_BASE/target.gen.1"
-touch "$PF_BASE/target.gen.1.lock"
-ln -sfn "$PF_BASE/target.gen.1" "$PF_BASE/target"
 
 for _pf_name in _lane-1 _lane-2; do
     git -C "$PF_REPO" worktree add -q "$PF_WORKTREES/$_pf_name"
@@ -1661,7 +1591,7 @@ PF_READY="$PF_ROOT/fd-holder.ready"
     && touch "$PF_READY" && exec sleep 300 ) &
 PF_HELPER_PID=$!
 _BGPIDS+=("$PF_HELPER_PID")
-_wait_for_reader_lock "$PF_READY" 30
+holder_wait_for_marker "$PF_READY" 150
 
 PF_SEED_LOG="$PF_ROOT/seed_calls.log"
 PF_SEED_STUB="$PF_ROOT/seed_stub.sh"
@@ -1717,16 +1647,10 @@ _BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 PT_ROOT="$(mktemp -d /tmp/test-gc-pt-XXXXXX)"
 _TMPDIRS+=("$PT_ROOT")
 
+make_gc_fixture "$PT_ROOT"
 PT_REPO="$PT_ROOT/repo"
 PT_WORKTREES="$PT_ROOT/worktrees"
 PT_BASE="$PT_ROOT/base"
-mkdir -p "$PT_WORKTREES" "$PT_BASE"
-
-make_repo "$PT_REPO"
-
-mkdir -p "$PT_BASE/target.gen.1"
-touch "$PT_BASE/target.gen.1.lock"
-ln -sfn "$PT_BASE/target.gen.1" "$PT_BASE/target"
 
 for _pt_name in _lane-1 _lane-2; do
     git -C "$PT_REPO" worktree add -q "$PT_WORKTREES/$_pt_name"
@@ -1739,34 +1663,7 @@ PT_SEED_STUB="$PT_ROOT/seed_stub.sh"
 PT_READY2="$PT_ROOT/lane2-holder.ready"
 PT_PIDFILE="$PT_ROOT/lane2-holder.pid"
 
-# The trigger stub: behaves like _seed_stub_body for every lane, and
-# ADDITIONALLY, when invoked for _lane-1, makes _lane-2 live before returning.
-#   - stdio MUST go to /dev/null: gc.sh runs the seed under
-#     `( ... ) 2>&1 | while IFS= read -r line; ...`, and an inherited pipe write
-#     end would keep that `while read` open for the holder's whole 300s life,
-#     hanging the pass.
-#   - the PID is written to a file because the holder reparents to init when the
-#     stub exits, so the TEST cannot learn it any other way.
-#   - the poll for READY2 is causal ordering (technique R), not a wall-clock
-#     sleep: the stub returns only once the cwd provably exists.
-cat > "$PT_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-if [ "${LANE_DIR##*/}" = "_lane-1" ]; then
-    ( cd "$TOCTOU_LANE2/target" && touch "$TOCTOU_READY2" && exec sleep 300 ) \
-        </dev/null >/dev/null 2>&1 &
-    echo "$!" > "$TOCTOU_PIDFILE"
-    _tick=0
-    while [ "$_tick" -lt 600 ]; do
-        [ -f "$TOCTOU_READY2" ] && break
-        sleep 0.05
-        _tick=$(( _tick + 1 ))
-    done
-fi
-exit 0
-STUB_EOF
+_toctou_trigger_seed_stub_body > "$PT_SEED_STUB"
 chmod +x "$PT_SEED_STUB"
 
 export SEED_LOG="$PT_SEED_LOG"
@@ -1825,16 +1722,10 @@ echo "--- Block Q: Pass-2 orphan removal honours a live process reference (task 
 Q_ROOT="$(mktemp -d /tmp/test-gc-q-XXXXXX)"
 _TMPDIRS+=("$Q_ROOT")
 
+make_gc_fixture "$Q_ROOT"
 Q_REPO="$Q_ROOT/repo"
 Q_WORKTREES="$Q_ROOT/worktrees"
 Q_BASE="$Q_ROOT/base"
-mkdir -p "$Q_WORKTREES" "$Q_BASE"
-
-make_repo "$Q_REPO"
-
-mkdir -p "$Q_BASE/target.gen.1"
-touch "$Q_BASE/target.gen.1.lock"
-ln -sfn "$Q_BASE/target.gen.1" "$Q_BASE/target"
 
 # Two ORPHAN worktrees: names matching neither --lane-glob nor --protect-glob,
 # both clean and landed (HEAD == main) so _is_reclaimable returns 0 and Pass 2
@@ -1853,7 +1744,7 @@ Q_READY="$Q_ROOT/helper.ready"
 ( cd "$Q_WORKTREES/task-live/target" && touch "$Q_READY" && exec sleep 300 ) &
 Q_HELPER_PID=$!
 _BGPIDS+=("$Q_HELPER_PID")
-_wait_for_reader_lock "$Q_READY" 30
+holder_wait_for_marker "$Q_READY" 150
 
 Q_SEED_LOG="$Q_ROOT/seed_calls.log"
 Q_SEED_STUB="$Q_ROOT/seed_stub.sh"
@@ -1923,16 +1814,11 @@ echo "--- Block R: mmap substring-boundary regression against gc.sh (esc-5378, m
 R_ROOT="$(mktemp -d /tmp/test-gc-r-XXXXXX)"
 _TMPDIRS+=("$R_ROOT")
 
+make_gc_fixture "$R_ROOT"
 R_REPO="$R_ROOT/repo"
 R_WORKTREES="$R_ROOT/worktrees"
 R_BASE="$R_ROOT/base"
-mkdir -p "$R_WORKTREES" "$R_BASE" "$R_ROOT/stage"
-
-make_repo "$R_REPO"
-
-mkdir -p "$R_BASE/target.gen.1"
-touch "$R_BASE/target.gen.1.lock"
-ln -sfn "$R_BASE/target.gen.1" "$R_BASE/target"
+mkdir -p "$R_ROOT/stage"
 
 # _lane-1 and _lane-10: both clean+landed pool lanes with divergent markers and
 # FREE flocks. _lane-1's basename is a NAME-PREFIX of _lane-10's.
@@ -2009,31 +1895,17 @@ S_ROOT="$(mktemp -d /tmp/test-gc-s-XXXXXX)"
 _TMPDIRS+=("$S_ROOT")
 
 # ── S1: a POST-CLONE α abort ⇒ the clone is discarded and counted reset ────────
-S1_REPO="$S_ROOT/s1-repo"
-S1_WORKTREES="$S_ROOT/s1-worktrees"
-S1_BASE="$S_ROOT/s1-base"
-mkdir -p "$S1_WORKTREES" "$S1_BASE"
-make_repo "$S1_REPO"
-mkdir -p "$S1_BASE/target.gen.1"
-touch "$S1_BASE/target.gen.1.lock"
-ln -sfn "$S1_BASE/target.gen.1" "$S1_BASE/target"
+S1_ROOT="$S_ROOT/s1"
+make_gc_fixture "$S1_ROOT"
+S1_REPO="$S1_ROOT/repo"
+S1_WORKTREES="$S1_ROOT/worktrees"
+S1_BASE="$S1_ROOT/base"
 
 make_task_lane "$S1_REPO" "$S1_WORKTREES" "_lane-1" "task/5635" "ahead"
 
-# Post-clone abort stub: same argv-logging and "$2"-is-the-lane conventions as
-# _seed_stub_body, but it RECREATES <lane>/target with a HAZARD marker before
-# exiting non-zero — modelling the clone an aborting seed leaves behind, without
-# needing a reflink-capable filesystem. (No chmod here; S3 adds that.)
 S1_SEED_LOG="$S_ROOT/s1-seed-calls.log"
 S1_SEED_STUB="$S_ROOT/s1-seed-stub.sh"
-cat > "$S1_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-mkdir -p "$LANE_DIR/target"
-touch "$LANE_DIR/target/HAZARD"
-exit 1
-STUB_EOF
+_post_clone_abort_seed_stub_body > "$S1_SEED_STUB"
 chmod +x "$S1_SEED_STUB"
 export SEED_LOG="$S1_SEED_LOG"
 
@@ -2069,14 +1941,11 @@ assert "S1: summary carries the appended reset_cold=1 sub-count" \
 # rather than to an EMPTY STDOUT: _seed_stub_body exits 0 and prints NOTHING to
 # stdout, so an empty-stdout rule would destroy this lane's target/ too (the same
 # premise K2 already relies on).
-S2_REPO="$S_ROOT/s2-repo"
-S2_WORKTREES="$S_ROOT/s2-worktrees"
-S2_BASE="$S_ROOT/s2-base"
-mkdir -p "$S2_WORKTREES" "$S2_BASE"
-make_repo "$S2_REPO"
-mkdir -p "$S2_BASE/target.gen.1"
-touch "$S2_BASE/target.gen.1.lock"
-ln -sfn "$S2_BASE/target.gen.1" "$S2_BASE/target"
+S2_ROOT="$S_ROOT/s2"
+make_gc_fixture "$S2_ROOT"
+S2_REPO="$S2_ROOT/repo"
+S2_WORKTREES="$S2_ROOT/worktrees"
+S2_BASE="$S2_ROOT/base"
 
 make_task_lane "$S2_REPO" "$S2_WORKTREES" "_lane-1" "task/5635" "ahead"
 
@@ -2104,14 +1973,11 @@ assert "S2: summary shows reset_cold=0 (the lane was reset WARM, not discarded c
 # "rm failed, lane left untouched" accounting on the other reset branch.
 # Technique + root-skip rationale: _discard_fail_seed_stub_body above.
 if [ "$(id -u)" -ne 0 ]; then
-    S3_REPO="$S_ROOT/s3-repo"
-    S3_WORKTREES="$S_ROOT/s3-worktrees"
-    S3_BASE="$S_ROOT/s3-base"
-    mkdir -p "$S3_WORKTREES" "$S3_BASE"
-    make_repo "$S3_REPO"
-    mkdir -p "$S3_BASE/target.gen.1"
-    touch "$S3_BASE/target.gen.1.lock"
-    ln -sfn "$S3_BASE/target.gen.1" "$S3_BASE/target"
+    S3_ROOT="$S_ROOT/s3"
+    make_gc_fixture "$S3_ROOT"
+    S3_REPO="$S3_ROOT/repo"
+    S3_WORKTREES="$S3_ROOT/worktrees"
+    S3_BASE="$S3_ROOT/base"
 
     # TWO reclaimable lanes in ONE fixture: _lane-1 aborts and its discard fails,
     # _lane-2 seeds cleanly. A per-candidate failure must not abort the pass, so
@@ -2173,26 +2039,17 @@ fi
 # refusing seed either way, which is exactly what reset_cold names — and such a
 # refusal is if anything MORE likely to be the pool-wide degradation inv.12
 # predicts, so excluding it would hide the very signal the sub-count exists for.
-S4_REPO="$S_ROOT/s4-repo"
-S4_WORKTREES="$S_ROOT/s4-worktrees"
-S4_BASE="$S_ROOT/s4-base"
-mkdir -p "$S4_WORKTREES" "$S4_BASE"
-make_repo "$S4_REPO"
-mkdir -p "$S4_BASE/target.gen.1"
-touch "$S4_BASE/target.gen.1.lock"
-ln -sfn "$S4_BASE/target.gen.1" "$S4_BASE/target"
+S4_ROOT="$S_ROOT/s4"
+make_gc_fixture "$S4_ROOT"
+S4_REPO="$S4_ROOT/repo"
+S4_WORKTREES="$S4_ROOT/worktrees"
+S4_BASE="$S4_ROOT/base"
 
 make_task_lane "$S4_REPO" "$S4_WORKTREES" "_lane-1" "task/5635" "ahead"
 
 S4_SEED_LOG="$S_ROOT/s4-seed-calls.log"
 S4_SEED_STUB="$S_ROOT/s4-seed-stub.sh"
-cat > "$S4_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target"
-exit 1
-STUB_EOF
+_empty_refusal_seed_stub_body > "$S4_SEED_STUB"
 chmod +x "$S4_SEED_STUB"
 export SEED_LOG="$S4_SEED_LOG"
 
@@ -2215,6 +2072,240 @@ assert "S4: summary counts the lane reset, not preserved (reset=1 preserved=0)" 
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0"' _ "$OUT"
 assert "S4: reset_cold=1 — a refusing seed left the lane COLD, clone or no clone" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=1"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block T — the base generation is pinned PER LANE, not once per pass (task 7366)
+#
+# A reclaim pass runs 25-40 minutes, and refresh-warm-base.sh can rotate the base
+# symlink and reap the retired gen at any point inside it: Step 5 swaps the
+# symlink, Step 6 then reaps every retired gen whose reader-refcount lock it can
+# take, and unlinks that gen's .lock. gc holds the reader lock only around ONE
+# lane's reseed, so a gen resolved once at pass start can be gone by the time a
+# later lane is reached. Every later lane is then handed a path that no longer
+# exists; the seed refuses (base absent) before touching the lane, and gc
+# discards that lane's target/ and counts it reset_cold — cold-but-safe, but a
+# degradation that lasts for the rest of the pass.
+#
+# Four cases, because resolving per lane is necessary but not sufficient:
+#   T1  rotation BETWEEN lanes — closed by resolving per lane.
+#   T2  a reap between a reader's resolve and its `flock -s` — NOT closed by
+#       resolving per lane: Step 6 unlinks the .lock it reaped, so the reader can
+#       still win a lock that protects nothing. Only re-checking the gen AFTER the
+#       lock is held, and re-resolving, closes it.
+#   T3  a base that dangles (no gen at all) — the pin must give up in bounded
+#       time instead of looping, leave the lane cold-but-safe, and litter nothing.
+#   T4  a gen whose lock cannot be opened — the seed must not run unpinned.
+#
+# Fixtures use _gen_probe_seed_stub_body, whose refusal (exit 76) is what makes
+# that consequence observable, and whose optional rotation models Steps 5-6.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block T: base generation pinned per lane, not once per pass (task 7366) ---"
+
+T_ROOT="$(mktemp -d /tmp/test-gc-t-XXXXXX)"
+_TMPDIRS+=("$T_ROOT")
+
+# ── T1: the base rotates BETWEEN two lanes (the filed hypothesis) ──────────────
+# A PLACEMENT test, in the manner of P-toctou: it stays RED against any gc that
+# resolves the gen once up front, and goes GREEN only when the gen is resolved
+# per lane. _lane-1's seed stub performs the rotation as its last act, and bash's
+# `*/` glob expansion is LC_COLLATE-sorted, so _lane-1 is always visited before
+# _lane-2. No --disk-pressure: the alpha branch is the one that resolves a gen.
+T1_ROOT="$T_ROOT/t1"
+make_gc_fixture "$T1_ROOT"
+T1_REPO="$T1_ROOT/repo"
+T1_WORKTREES="$T1_ROOT/worktrees"
+T1_BASE="$T1_ROOT/base"
+
+for _t1_name in _lane-1 _lane-2; do
+    git -C "$T1_REPO" worktree add -q "$T1_WORKTREES/$_t1_name"
+    mkdir -p "$T1_WORKTREES/$_t1_name/target"
+    touch "$T1_WORKTREES/$_t1_name/target/DIVERGENT_MARKER"
+done
+
+T1_SEED_LOG="$T_ROOT/t1-seed-calls.log"
+T1_SEED_STUB="$T_ROOT/t1-seed-stub.sh"
+_gen_probe_seed_stub_body > "$T1_SEED_STUB"
+chmod +x "$T1_SEED_STUB"
+export SEED_LOG="$T1_SEED_LOG"
+export ROTATE_AFTER_LANE=_lane-1
+export ROTATE_BASE="$T1_BASE"
+
+run_helper reclaim \
+    --worktrees-dir "$T1_WORKTREES" \
+    --base-target "$T1_BASE/target" \
+    --seed-script "$T1_SEED_STUB"
+
+unset ROTATE_AFTER_LANE ROTATE_BASE
+
+# The log lines are matched by regex SUFFIX, not exact path: gc hands the seed the
+# readlink -f canonicalised gen path, which need not spell the mktemp dir the way
+# this file does (Block B's B3 relies on the same substring technique).
+assert "T1a: exit 0" test "$RC" -eq 0
+assert "T1b: fixture — _lane-1 was seeded from target.gen.1 while it was still live" \
+    bash -c 'grep -qE -- "$2" "$1"' _ "$T1_SEED_LOG" '^_lane-1 .*/target\.gen\.1 present$'
+assert "T1c: _lane-2 was seeded from target.gen.2 — the gen live when it was REACHED, not the one resolved at pass start" \
+    bash -c 'grep -qE -- "$2" "$1"' _ "$T1_SEED_LOG" '^_lane-2 .*/target\.gen\.2 present$'
+assert "T1d: summary counts both lanes reset, none removed or preserved (reset=2 removed=0 preserved=0)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=2 removed=0 preserved=0"' _ "$OUT"
+assert "T1e: reset_cold=0 — the rotation degraded no lane to cold" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=0"' _ "$OUT"
+
+# ── T2: the gen is reaped BETWEEN gc's resolve and its reader lock ─────────────
+# The narrower window. refresh-warm-base.sh Step 6 reaps a retired gen under
+# `flock -n -x` and then UNLINKS its .lock, so a reader that resolved gen.1
+# before the reap can still WIN `flock -s` — on the unlinked inode, or on a
+# freshly created file — and hold a lock that protects nothing. Re-resolving
+# before the lock does not help, because the reap lands after it; only a re-check
+# once the lock is held, followed by a re-resolve, notices.
+#
+# The reaper below reproduces Steps 5-6 inside that window by causal ordering,
+# not by timing:
+#   1. it takes gen.1's lock -x and announces READY, BEFORE gc starts;
+#   2. gc resolves gen.1 and blocks on `flock -s` behind it;
+#   3. the reaper OBSERVES that blocked waiter in /proc/locks, then swaps the
+#      symlink (Step 5), reaps gen.1 and releases and unlinks its lock (Step 6);
+#   4. gc's flock now succeeds — on a lock whose gen is already gone.
+# The `7>>` is a subshell-level redirect, deliberately not an `exec 7>`: a
+# depth-0 exec open would make this file an offender candidate for
+# test_flock_detached_fork_guard.sh.
+T2_ROOT="$T_ROOT/t2"
+make_gc_fixture "$T2_ROOT"
+T2_REPO="$T2_ROOT/repo"
+T2_WORKTREES="$T2_ROOT/worktrees"
+T2_BASE="$T2_ROOT/base"
+T2_READY="$T_ROOT/t2-reaper.ready"
+T2_REAPED="$T_ROOT/t2-reaper.reaped"
+
+git -C "$T2_REPO" worktree add -q "$T2_WORKTREES/_lane-1"
+mkdir -p "$T2_WORKTREES/_lane-1/target"
+touch "$T2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+T2_SEED_LOG="$T_ROOT/t2-seed-calls.log"
+T2_SEED_STUB="$T_ROOT/t2-seed-stub.sh"
+_gen_probe_seed_stub_body > "$T2_SEED_STUB"
+chmod +x "$T2_SEED_STUB"
+export SEED_LOG="$T2_SEED_LOG"
+
+(
+    flock -x 7
+    touch "$T2_READY"
+    if holder_wait_until_waiter_queued "$T2_BASE/target.gen.1.lock"; then
+        mkdir "$T2_BASE/target.gen.2"
+        ln -sfn "$T2_BASE/target.gen.2" "$T2_BASE/target"
+        rm -rf "$T2_BASE/target.gen.1"
+        touch "$T2_REAPED"
+    fi
+    flock -u 7
+    rm -f "$T2_BASE/target.gen.1.lock"
+) 7>>"$T2_BASE/target.gen.1.lock" </dev/null >/dev/null 2>&1 &
+T2_REAPER_PID=$!
+_BGPIDS+=("$T2_REAPER_PID")
+
+assert "T2-setup: the reaper holds gen.1's lock exclusively before gc starts" \
+    holder_wait_for_marker "$T2_READY"
+
+run_helper reclaim \
+    --worktrees-dir "$T2_WORKTREES" \
+    --base-target "$T2_BASE/target" \
+    --seed-script "$T2_SEED_STUB"
+
+wait "$T2_REAPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+# T2a fails CLOSED rather than hanging: if gc took no reader lock at all, the
+# reaper's backstop expires without reaping and this marker never appears.
+assert "T2a: fixture — the reaper saw gc QUEUED on gen.1's reader lock, then reaped gen.1" \
+    test -f "$T2_REAPED"
+assert "T2b: exit 0" test "$RC" -eq 0
+assert "T2c: _lane-1 was seeded from target.gen.2 — a gen reaped between resolve and lock was re-resolved" \
+    bash -c 'grep -qE -- "$2" "$1"' _ "$T2_SEED_LOG" '^_lane-1 .*/target\.gen\.2 present$'
+assert "T2d: summary counts the lane reset, none removed or preserved (reset=1 removed=0 preserved=0)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0"' _ "$OUT"
+assert "T2e: reset_cold=0 — the lane was left warm, not discarded cold" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset_cold=0"' _ "$OUT"
+
+# ── T3: a DANGLING base — there is no gen to pin, ever ─────────────────────────
+# No rotation: the base symlink simply points at a gen that does not exist. The
+# pin must give up after a bounded number of tries instead of looping, must not
+# hand the seed a gen it could not pin, and must not litter a lock file for a gen
+# that refresh's Step-6 GC — which iterates gen DIRECTORIES — could never reap.
+# Up-front validation still passes: readlink -f tolerates a missing last
+# component. The lane ends cold-but-safe, the same accounting as S4.
+T3_REPO="$T_ROOT/t3-repo"
+T3_WORKTREES="$T_ROOT/t3-worktrees"
+T3_BASE="$T_ROOT/t3-base"
+mkdir -p "$T3_WORKTREES" "$T3_BASE"
+make_repo "$T3_REPO"
+ln -sfn "$T3_BASE/target.gen.1" "$T3_BASE/target"
+
+git -C "$T3_REPO" worktree add -q "$T3_WORKTREES/_lane-1"
+mkdir -p "$T3_WORKTREES/_lane-1/target"
+touch "$T3_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+T3_SEED_LOG="$T_ROOT/t3-seed-calls.log"
+T3_SEED_STUB="$T_ROOT/t3-seed-stub.sh"
+_gen_probe_seed_stub_body > "$T3_SEED_STUB"
+chmod +x "$T3_SEED_STUB"
+export SEED_LOG="$T3_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$T3_WORKTREES" \
+    --base-target "$T3_BASE/target" \
+    --seed-script "$T3_SEED_STUB"
+
+assert "T3a: exit 0 — the pass terminates, and up-front validation still accepts the dangling base" \
+    test "$RC" -eq 0
+assert "T3b: the seed was NOT invoked — gc never hands it a gen it could not pin" \
+    bash -c '[ ! -s "$1" ]' _ "$T3_SEED_LOG"
+assert "T3c: a stderr line says gc cannot pin a base generation, and names target.gen.1" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot pin a base generation" | grep -qF "target.gen.1"' _ "$ERR_OUT"
+assert "T3d: the lane is reset cold (reset=1 removed=0 preserved=0, reset_cold=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0 .*reset_cold=1"' _ "$OUT"
+assert "T3e: the lane's target/ was discarded (cold-but-safe, as in S4)" \
+    bash -c '[ ! -e "$1" ]' _ "$T3_WORKTREES/_lane-1/target"
+assert "T3f: no reader lock file was created for a gen that does not exist" \
+    bash -c '[ ! -e "$1" ]' _ "$T3_BASE/target.gen.1.lock"
+
+# ── T4: the gen's lock cannot be OPENED — the seed must not run unpinned ───────
+# A failed `exec 9>>lock` neither exits the shell nor touches FD 9. If the caller
+# leaked its own open FD 9 into gc, a bare `flock -s 9` after it would succeed on
+# THAT file, and the seed would run with no reader lock on the gen at all — so the
+# open has to be part of the pin's condition. The open is made to fail by making
+# the lock path a directory, which needs no DAC (works as root too); FD 9 is leaked
+# by a per-command redirect, not an `exec 9>`, which would make this file an
+# offender candidate for test_flock_detached_fork_guard.sh.
+T4_REPO="$T_ROOT/t4-repo"
+T4_WORKTREES="$T_ROOT/t4-worktrees"
+T4_BASE="$T_ROOT/t4-base"
+T4_LEAKED_FD9="$T_ROOT/t4-leaked-fd9"
+mkdir -p "$T4_WORKTREES" "$T4_BASE/target.gen.1" "$T4_BASE/target.gen.1.lock"
+make_repo "$T4_REPO"
+ln -sfn "$T4_BASE/target.gen.1" "$T4_BASE/target"
+
+git -C "$T4_REPO" worktree add -q "$T4_WORKTREES/_lane-1"
+mkdir -p "$T4_WORKTREES/_lane-1/target"
+touch "$T4_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+T4_SEED_LOG="$T_ROOT/t4-seed-calls.log"
+T4_SEED_STUB="$T_ROOT/t4-seed-stub.sh"
+_gen_probe_seed_stub_body > "$T4_SEED_STUB"
+chmod +x "$T4_SEED_STUB"
+export SEED_LOG="$T4_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$T4_WORKTREES" \
+    --base-target "$T4_BASE/target" \
+    --seed-script "$T4_SEED_STUB" 9>"$T4_LEAKED_FD9"
+
+assert "T4a: exit 0 — a lock that cannot be opened is a per-lane failure, not a pass abort" \
+    test "$RC" -eq 0
+assert "T4b: the seed was NOT invoked — an inherited FD 9 never stands in for the gen's lock" \
+    bash -c '[ ! -s "$1" ]' _ "$T4_SEED_LOG"
+assert "T4c: a stderr line says gc cannot pin a base generation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "cannot pin a base generation"' _ "$ERR_OUT"
+assert "T4d: the lane is reset cold (reset=1 removed=0 preserved=0, reset_cold=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0 .*reset_cold=1"' _ "$OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

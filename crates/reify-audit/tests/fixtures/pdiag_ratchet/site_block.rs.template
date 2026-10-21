@@ -1,0 +1,9 @@
+
+// One code-less diagnostic construction site. `tests/cli.rs` appends this
+// block N times, substituting `__N__` with the copy's index so the emitted
+// items stay uniquely named. Exactly ONE swept anchor per copy, so N copies
+// is N code-less sites — that identity is what lets the test assert an exact
+// baseline match and then an exact off-by-one overrun.
+pub fn site___N__(out: &mut Vec<Diag>) {
+    out.push(Diagnostic::error(format!("hermetic ratchet site {}", __N__)));
+}

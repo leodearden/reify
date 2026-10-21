@@ -249,6 +249,13 @@ opus/max/$25/180t; merge verify 2 hosts, laptop quarantined), main HEAD 72b9c5b0
 orchestrator config change or model-lineage default switch lands mid-experiment, record the
 date and split descriptives at it; do not discard data.
 
+Era events recorded under this rule:
+- **2026-09-01**: fleet-wide `timeouts.architect` 2400 → 7200 (reify task 7182, merge
+  9be8de5f, esc-5469-10, Leo-approved; hot-reloaded same day). Raises the architect
+  transcript-silence bound in both arms; total runtime stays capped by
+  `invocation_timeout=7200`. Zero E3-arm architect timeout kills existed at change time
+  (runs.db checked). Split descriptives at this date.
+
 ## 8. Predictions (pre-registered, direction + rough magnitude)
 
 1. **Cost per delivered kLOC: coarse 25–50% LOWER** than standard (mechanism: ~28 fewer
@@ -314,6 +321,247 @@ date and split descriptives at it; do not discard data.
    commit_planning(#6898–#6913 → pending) + set_task_status(reused singletons → pending) +
    full readback verification. **Dispatch opens here.**
 8. Any deviation after step 7 gets a dated addendum below; the body above is frozen.
+
+### Addendum 2026-09-01 — scope refinement on GOM-E3C1 #6898 (A5-R)
+
+**What changed.** A refinement note (`A5-R`) was appended to #6898's `details`, fixing the
+*carrier type* for the structured measured-value channel that A5 already required and that Leo
+had already ruled to on 2026-08-28. It imports `solver-legibility-telemetry` §8.1 item 2's
+structural constraint (sibling field on `ConstraintCheckEntry`, never a payload on
+`Satisfaction`) into #6898's own text, and requires a dimension-bearing carrier because the
+kernel-measured values are heterogeneous (deviation/min-wall are Lengths; overhang/draft are
+Angles, so an undifferentiated `Option<f64>` is the INV-AD-4 erasure). Two scope cuts were named
+(`achieved_repr_tol` subsumption; deriving the diagnostic string from the record).
+
+**Mirrored to** retired standard leaf #6741 (a §11 rollback target, so its text must not go
+stale), the coarse spec doc, and the PRD's capability-manifest twins. A matching bidirectional
+coordination note was recorded on #6722 (P4 ε, not an E3 task).
+
+**Endpoint impact — declare, do not hide.** This is a scope *refinement*, not new scope:
+C-STATUS already promised measured values `ConstraintCheckEntry` cannot carry, so the work was
+latent in the task as filed and would have surfaced at dispatch as a block or an escalation.
+Stating it pre-dispatch moves that cost from the endpoint-bearing implement phase into
+authoring, which is *excluded* from endpoints (§9) — so the likely direction is a small
+FAVOURABLE bias to #6898's measured blocks/turns, not an unfavourable one. No control-arm PRD
+received an equivalent pre-dispatch refinement. **Analysis should annotate #6898 rather than
+censor it**; if the blinded judge panel (§7.5) sees this task, its brief should note the
+refinement exists.
+
+**Protocol gap this exposes.** §11 covers abort/rollback but the protocol has no *amendment*
+procedure for a live coarse task. This addendum is the ad-hoc instance; if amendments recur,
+E3 should adopt an explicit rule (amend-both-arms, or freeze-and-defer).
+
+### Addendum 2026-10-10 — date backstop fired before any coalesced landing; extension under a landing-tied stop rule (Leo ruling on esc-7029-3, option D)
+
+**What happened.** The 2026-10-09 arm of the Resolution rule (header) fired first, as
+esc-7029-3 (blocking). The one-shot `e3-resolution-backstop` user timer raised it. State at
+firing, re-verified 2026-10-10 via get_statuses:
+- Coarse arm: 2/25 done, both of them reused singletons (#6706, #6768). **No coalesced task
+  (#6898–#6913) has landed.**
+- Standard arm: 3/59 done (#6672, #6798, #6801).
+- Every close leaf gating milestone #7029 is pending.
+
+The critical-path ETA to all-arms-terminal is Jan 2027–2028. It is bound by factory
+throughput, not by anything E3 controls. Two gaps were also exposed. The protocol was silent
+on a date-first resolution: it has no partial-data rule and no minimum n. And the
+x_e3-filtered analysis script that §12 promised was never written. Leo ruled option D on
+2026-10-10: **extend**, under (a)–(e) below. This addendum supersedes the header's Resolution
+line. The frozen body is not edited.
+
+**(a) Stop rule.** E3 resolves at the FIRST of:
+- **(i) All arms terminal.** Unchanged: every arm PRD's close leaf is done or cancelled.
+  Milestone #7029's dependency gate covers this.
+- **(ii) Landing floor, k = 2.** Each of the 7 arm PRDs has ≥ 2 *qualifying landings*. A
+  qualifying landing is a task that is `done` by a merge to main and is not excluded under
+  (b). What counts, so the count is like-for-like:
+  - Coarse PRDs count **coalesced tasks only** (#6898–#6913), never reused singletons.
+  - Standard PRDs count every leaf except the integration-gate and PRD-close leaves. Those
+    are the kinds the coarse arm kept as singletons.
+
+  At 2026-10-10 the coarse arm has 0 of the 8 qualifying landings it needs, and the standard
+  arm has 1 of its 6 (#6801). #6672 and #6798 do not qualify, per (b).
+- **(iii) Human re-review, 2027-01-09.** Leo re-decides: extend (the stop rule stands, with a
+  new re-review date), abort (§11), or stand down. Choosing to resolve at (iii) makes
+  2027-01-09 the trigger instant, and the feasibility rule below then applies.
+
+*Why k = 2, and the minimum achievable p.* The §7.3 confirmatory test is a one-sided
+Mann-Whitney U on **per-PRD** $/kLOC. Its n is therefore the number of PRDs that contribute a
+value. Because (ii) requires *all seven* PRDs, that n is fixed by (ii) and does not depend on
+k.
+- At n = 4 coarse vs 3 standard there are C(7,3) = 35 equiprobable rankings under H0. The
+  **minimum achievable one-sided p is 1/35 ≈ 0.029**.
+- U counts the 12 coarse–standard pairs that are ordered against prediction 1.
+- At α = 0.1 the rejection region is U ≤ 1 (exact p = 2/35 ≈ 0.057), so at most one pair may
+  be inverted. U = 2 gives 4/35 ≈ 0.114 and does not reject.
+
+Minimum achievable p for smaller splits, for reference:
+
+| Split (coarse v standard) | Minimum p | Can reach α = 0.1? |
+|---|---|---|
+| 3v3 | 0.05 | yes |
+| 4v2 | 0.067 | yes |
+| 3v2, 2v3 | 0.10 | only on perfect separation (p = α exactly) |
+| 2v2 | 0.167 | no, at any effect size |
+| 4v1 | 0.20 | no, at any effect size |
+
+The last two rows are why "all seven" is a hard part of (ii). A floor that only a subset of
+PRDs meets could leave the test unable to reject at all. k is capped at 2 by
+gui-on-demand-measurement, which has only two coalesced tasks (#6898, #6899). Any k > 2 is
+unsatisfiable for that PRD and folds (ii) back into (i). k is 2 rather than 1 so that no
+PRD's point estimate rests on a single task's ratio.
+
+*Feasibility rule (when the PRD level is short).* No confirmatory test is valid below the PRD
+level. The randomization unit is the PRD (§2), and a task-level test would treat correlated
+tasks as independent. Suppose E3 resolves at (iii) with only some PRDs at the floor. Then the
+test set is those PRDs, and the confirmatory test runs only if their split's minimum p is
+≤ 0.1, which allows 4v3, 4v2, 3v3, 3v2 or 2v3. Otherwise every endpoint is descriptive.
+Task-level figures are always reported as descriptive, clustered by PRD.
+
+*One look; detection.* The confirmatory test runs once, on a data snapshot frozen at the
+trigger instant. Later landings never re-run it. A post-(i) descriptive update is allowed
+and is labelled as such.
+- For (ii), the trigger instant is the merge timestamp of the landing that completed the
+  floor. The analysis script's stop-rule probe ((d)) reports it, so detection latency cannot
+  move the snapshot.
+- #7029 remains the gate for (i).
+- For (iii), the reminder needs the one-shot `e3-resolution-backstop` timer re-armed for
+  2027-01-09. That is an operator action outside this commit. #7029's details carry the date
+  meanwhile.
+
+**(b) Partial-data handling (pre-registered).**
+1. **Right-censoring.** An arm task that has not landed at the snapshot is right-censored.
+   - Endpoints 1–3 (§6) are computed over landed tasks only, with numerator and denominator
+     drawn from the same landed set.
+   - Per PRD and per arm, report the landed count, the censored count, and the landed share
+     of constituent-leaf scope (each coalesced task weighted by its `x_e3_constituents`
+     count).
+   - Attempts and escalations of unlanded tasks are reported separately and never folded
+     into a per-kLOC endpoint.
+   - Declared, not corrected: landing order is not random. Dependency roots land first, and
+     troubled tasks land later. A landed-only estimate therefore flatters both arms, though
+     not necessarily equally. The post-(i) descriptive update is the check.
+   - Endpoint 5 (defect escape) needs a PRD close plus 30 days, so it is reported as not yet
+     available for any PRD that has not closed.
+   - The §7.5 panel runs over the landed diffs at the snapshot.
+2. **Freeze-window rule.** An attempt dispatched before the freeze is excluded: any
+   `task_started` before 2026-08-28T07:07Z, the close of step 2 above. A landed diff cannot be
+   apportioned between attempts, so a task with any such attempt is excluded from every
+   primary endpoint in both arms and reported descriptively, like the §7.1 carve-outs.
+   Checked against runs.db on 2026-10-10, the E3-arm tasks this catches are exactly:
+   - **#6668, #6672** (standard, geometry-algebra-solver-unification);
+   - **#6798** (standard, driver-contract-implementation);
+   - **#6706, #6768** (coarse, reused singletons).
+
+   #6758 and #6759 were already carved out. The script re-derives this set and fails loudly
+   if it differs.
+3. **Restart-drain censoring** stays as §7.4 defines it. Freeze-window exclusions,
+   right-censored tasks and drain-censored attempts are three separate counts, reported per
+   arm.
+4. **Amended tasks** in the (c) ledger are annotated, not censored (the A5-R precedent). One
+   descriptive sensitivity run drops them.
+
+**(c) Amendment ledger.** These amendments to E3-arm tasks were made after dispatch opened
+but got no §10 line at the time. The date is the task-record write. The arm is the amended
+task's arm.
+
+| Date | Task (arm) | Amendment | Endpoint note |
+|---|---|---|---|
+| 08-26/27 | #6668, #6672 (std), #6706, #6768 (coarse), #6798 (std) | Dispatched before the freeze. runs.db `task_started` falls between 08-26 19:33Z and 08-27 10:39Z; #6798 started again at 08-28 06:57Z, inside the freeze window. | Excluded, (b)2 |
+| 08-28 | #6768 κ (coarse, reused) | Rescoped (Leo, seam-integrity F1) to consume PDIAG #5405 rather than build a second ratchet. A hard dependency on #5405 was added. | Already excluded, (b)2 |
+| 08-28 → 10-05 | #6899 GOM-E3C2 (coarse) | Dependency #6666 → #6963. The 2026-08-28 backlog sweep retired #6666 into #6963; the date of the swap itself is not recorded. On 10-05 (esc-6963-15), ε took over #6963's undelivered GUI build-before-check half (from #6811). The acceptance #6963 dropped is ε's own signal. | Scope add, coarse: annotate |
+| 09-11 | #6781 DC-ε (std, DCI) | esc-6781-1 option A corrected a false premise. The deliverable is now the kernel plus the post-geometry fold in `reify test`'s check path, and engine_constraints.rs was added to the task's files. | Scope add, standard: annotate |
+| 09-16 | #6768 → #6911 SCS-E3C5 (coarse) | esc-6768-2 option A moved κ's mnemonic-migration hook from #6768 to #6911 item 2a. No new edge. | Scope moves into an endpoint-bearing coarse task: annotate #6911 |
+| 09-21 | #6683 ο (std, GASU) | Dependency re-pointed from cancelled #6583 to #5436 (+ #5483). Two planner guardrails were added. | Dependency only: annotate |
+| 09-28 | #6901 SSC-E3C3, #6903 SSC-E3C5 (coarse); #6678 κ (std, GASU) | esc-5472-2 option 1 routed #5472's dropped B9 scope three ways: #6903 ι composes `Partial{InnerSolveUnproven}` for a converged mixed solve; #6901 δ maps it to a diagnostic; #6678 owns exact t ≈ 3.0 on discrete_mixed.ri. No edges. | Scope add, both arms: annotate all three |
+| 10-08 | #6902 SSC-E3C4 (coarse; mirrored from retired #6718), #6681 ν (std, GASU), #6690 P1-β (std, SDP) | Coordination notes from the catalog-membership PRD on its file and routing seams (#8355/#8356/#8358). #6690's note also asks for one warm-path test. | Coordination, plus a small test add on #6690: annotate |
+
+Abbreviations: GOM gui-on-demand-measurement, SSC solution-set-completeness, SCS
+spec-conformance-suite, GASU geometry-algebra-solver-unification, SDP solver-driver-parity,
+DCI driver-contract-implementation. Scope was added in both arms, in unequal amounts, which
+is why (b)4's sensitivity run exists.
+
+**Forward rule: record-and-annotate (the amendment procedure A5-R asked for).** From
+2026-10-10, any amendment to an E3-arm task gets a dated line in this ledger. E3-arm tasks
+are coarse tasks, reused singletons, control-PRD leaves, and retired leaves that carry
+`x_e3_replacement`. An amendment is any change to a task's scope, signal, dependencies or
+files, or an added coordination note. Whoever makes the task-record change writes the line
+and lands it as a docs-only commit. Needed fixes are not frozen out of either arm; the record
+is what keeps them analysable.
+
+**(d) Analysis script.** Commissioned as task #8455: the pre-registered §7 analysis, written
+under `e3-granularity/analysis/`. It must have:
+- the x_e3 arm filter;
+- cost from runs.db `invocations`, never `task_results` (#6798 shows $9.59 in
+  `task_results` against $107.58 over its invocations);
+- task reads via the fused-memory MCP, never `.taskmaster/tasks/tasks.db`;
+- §7.4 and (b) censoring;
+- the (a)(ii) stop-rule probe;
+- the exact permutation U test.
+
+The legacy `reify_task_size_analysis.py` stays as the parent investigation's record. It is
+not the E3 script: it reads tasks.db, takes cost from `task_results`, censors nothing, and
+writes to a deleted scratch dir.
+
+**(e) Seeding owner for the spec-conformance divergence baseline (esc-6907-3).** #6907 lands
+`crates/reify-spec-conformance/divergence-baseline.txt` unseeded: zero rows and no
+`SEEDING_MARKER`. Lane (d) reds on an unmarked row added after the seeding commit, so until
+a marker exists it reports UNARMED. Its seed set is the rows of the first committed version
+of the file that carries the marker.
+
+Decision 2 / D9 intend the initial survey divergences to be that seed: δ's transitional
+library-vs-binary parity rows and η's §9.2 findings. δ #6762 and η #6765 are retired standard
+leaves and are not edited or flipped. Their coarse replacements own the seeding:
+- **#6908 (SCS-E3C2, replaces δ)** writes δ's transitional parity rows, each citing a live
+  owner. It does **not** add the marker. Rows written while lane (d) is unarmed become seed
+  rows when the marker lands.
+- **#6909 (SCS-E3C3, replaces η; depends on #6908)** writes η's §9.2 rows **and** adds the
+  `SEEDING_MARKER` line in the same commit, which arms lane (d). That version of the file is
+  the seed set, so every δ and η survey row must be in it. Before arming, #6909 checks that
+  every pre-marker row is a δ/η survey row with a live owner. Any other row is escalated
+  rather than seeded silently.
+
+The marker sits on #6909 because it is the later of the two by dependency, so it completes
+the initial sweep, which is the seeding point #6907's planned file header names. Had #6908
+placed the marker, η's survey rows would become post-seed additions, each needing an L2
+ruling. That is the outcome esc-6907-3 exists to prevent.
+
+Endpoint impact: the rows were already in both constituents' text ("file a fix task AND
+write its ε-format baseline row"). The only new obligation is one marker line and where it
+goes. Annotate #6908 and #6909; do not censor them.
+
+**(f) Standard-arm gate leaves named (2026-10-12; Leo ruling on esc-8455-1).** (a)(ii)
+excludes "the integration-gate and PRD-close leaves" from the standard-arm count without
+naming them, and every candidate has `task_kind` `normal`, so the set has to be a protocol
+constant. It is ratified as #8455 pinned it, each gate read from the arm PRD's own text:
+- **solver-driver-parity:** gate leaves δ #6693 ("Phase 2 — the flip (integration gate)") and
+  φ #6700 ("Phase 5 — the differential harness (second integration gate)"); close leaf #6704.
+- **geometry-algebra-solver-unification:** gate leaf ι #6677 ("Integration gate."); close
+  leaf #6687.
+- **driver-contract-implementation:** gate leaf χ #6805 ("it is the integration gate for this
+  PRD"); close leaf #6808.
+
+One reading is ratified with the set: solver-driver-parity's Phase 2 heading also covers
+ε #6692, but only δ #6693 is the flip, so #6692 counts as an ordinary standard leaf.
+
+The constant is `gate_leaves` and `close_leaf` in `e3-granularity/analysis/e3_protocol.py`,
+landed by #8455. This entry changes no figure reported at 2026-10-10 (the standard arm still
+has 1 qualifying landing, #6801). It fixes which later landings count toward (a)(ii).
+
+Recorded, not ruled: the (b)4 sensitivity run, as the script implements it, drops every task
+that carries an amendment record. That is the (c) ledger's rows plus #6898 (A5-R) and
+#6908/#6909 ((e)). It is descriptive and does not enter the stop rule.
+
+### Addendum 2026-10-14 — review-all S12 amends coalesced #6898 and #6904 (Leo ruling S12 R1)
+
+**What changed.** The review-all-reify-20261010 S12 session (docs/prds/v0_6/check-surface-subject-and-measurement-context.md, commits c43fed49c5 and 891e35ae6e) was authorised by Leo (S12 R1, 2026-10-14) to edit E3 tasks. S12 now owns the measurement seam: `MeasurementContext`, `Engine::measure` / `capture_measurement` / `unmeasured_context`, and `CheckEnginePlan`. The coalesced tasks consume that seam instead of building their own:
+- #6898 (GOM-E3C1) gains upstream edges on S12 ε1 #9017, ζ1 #9022 and ε3 #9021. Two of its delivered checks were corrected, both in the task metadata and in the gui-on-demand-measurement sidecar.
+- #6904 gains an upstream edge on S12 ζ2 #9023.
+- The retired standard leaves #6740 and #6741 (§11 rollback targets) had their delivered checks aligned, so they do not go stale.
+
+**Endpoint impact — declare, do not hide.**
+- *Schedule:* #6898 and #6904 now wait on four S12 leaves that did not exist at pre-registration. Their dispatch-to-landing clock therefore includes an upstream wait the standard arm never had. Analysts should measure their implement-phase endpoints from dispatch, not from release.
+- *Scope:* part of the work they would have done (the measurement context and the check plan) now lands in S12 leaves. Their per-task size is smaller than at randomization, which biases the coarse arm toward the fine arm's granularity.
+- Treat #6898 and #6904 as amended units in §7's analysis, and report results with and without them.
 
 ## 11. Abort / rollback procedure
 

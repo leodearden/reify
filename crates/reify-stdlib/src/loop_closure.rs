@@ -54,7 +54,7 @@
 use reify_ir::Value;
 
 use crate::eval_builtin;
-use crate::loop_closure_value::JointValue;
+use crate::loop_closure_value::{JointKind, JointValue};
 
 /// Fold a chain of joint Maps into a single composed Transform.
 ///
@@ -190,31 +190,23 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
 ///
 /// KCC-γ (PRD §5.2) widened this from `Option<f64>` to `Option<JointValue>`
 /// so multi-DOF kinds (planar, spherical, cylindrical) participate in the
-/// chain machinery and the loop-closure Newton solver.  The explicit
-/// per-arm dispatch is retained so a future kind addition cannot silently
-/// drift; the JOINT_KINDS-iteration partition test in this module's
-/// `tests` block loud-fails any unhandled kind.
+/// chain machinery and the loop-closure Newton solver.  The kind is read
+/// through [`joint_kind`] and dispatched on the typed [`JointKind`], so an
+/// added kind is a compile error here rather than a silent `None`.
 pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
     let map = match joint {
         Value::Map(m) => m,
         _ => return None,
     };
-    let kind = match map.get(&Value::String("kind".to_string())) {
-        Some(Value::String(s)) => s.as_str(),
-        _ => return None,
-    };
-    match kind {
-        "prismatic" | "revolute" => {
+    match joint_kind(joint)? {
+        JointKind::Prismatic | JointKind::Revolute => {
             let mid = range_midpoint(map, "range")?;
             Some(JointValue::Scalar(mid))
         }
-        "coupling" => {
-            let parent = map.get(&Value::String("parent".to_string()))?;
-            joint_range_midpoint(parent)
-        }
+        JointKind::Coupling => joint_range_midpoint(coupling_parent(joint)?),
         // 0-DOF — empty free-variable space; no midpoint to seed.
-        "fixed" => None,
-        "planar" => {
+        JointKind::Fixed => None,
+        JointKind::Planar => {
             let mid_x = range_midpoint(map, "range_x")?;
             let mid_y = range_midpoint(map, "range_y")?;
             let mid_theta = range_midpoint(map, "range_theta")?;
@@ -222,13 +214,12 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
         }
         // Axis-isotropic: identity quaternion is the canonical seed regardless
         // of `range_angle` (which bounds the rotation magnitude downstream).
-        "spherical" => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
-        "cylindrical" => {
+        JointKind::Spherical => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
+        JointKind::Cylindrical => {
             let mid_d = range_midpoint(map, "translation_range")?;
             let mid_theta = range_midpoint(map, "rotation_range")?;
             Some(JointValue::Cyl([mid_d, mid_theta]))
         }
-        _ => None,
     }
 }
 
@@ -291,7 +282,9 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
 /// the central-difference column.  This is symmetric-error O(ε²) and works
 /// for every joint kind `value_for_joint` handles (all seven JOINT_KINDS post
-/// KCC-γ widening).
+/// KCC-γ widening).  Each column is the derivative w.r.t. free joint `i`'s
+/// motion variable, so every coupling of `chain[i]` in the chain moves with it
+/// (`propagate_to_couplings`).
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
@@ -330,6 +323,8 @@ pub fn chain_jacobian_fd(
             let mut minus = values.to_vec();
             perturb_storage_component(&mut plus[i], c, eps);
             perturb_storage_component(&mut minus[i], c, -eps);
+            propagate_to_couplings(chain, &mut plus, i);
+            propagate_to_couplings(chain, &mut minus, i);
             let t_plus = chain_transform(chain, &plus)?;
             let t_minus = chain_transform(chain, &minus)?;
             let t_minus_inv = eval_builtin("transform_inverse", &[t_minus]);
@@ -509,16 +504,21 @@ pub type LoopClosureSolverInputs = (
 ///   * `chain_b`         — the joints in `path_b` with the world sentinel
 ///     stripped.
 ///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
-///     a direct binding entry use the bound value; otherwise the range midpoint.
-///   * `free_b`          — positions in `chain_b` whose joints are free
-///     (no direct binding entry); the solver iterates these.
+///     a direct binding entry use the bound value; otherwise they resolve
+///     through the same `resolve_joint_value` ladder as `chain_a`
+///     (coupling → its parent's value, `fixed` → `0.0` sentinel, else range
+///     midpoint).
+///   * `free_b`          — positions in `chain_b` with no direct binding
+///     whose joint is a driving joint (`joints::is_driving_joint`): `fixed`
+///     and `coupling` contribute no free variable.  The solver iterates
+///     these.
 ///
 /// Returns `None` on:
 ///   * non-Map record,
 ///   * missing/non-List `path_a` or `path_b`,
 ///   * either path empty or missing the leading world sentinel,
-///   * any chain joint that has no resolvable SI value (no binding,
-///     no midpoint — e.g. multi-DOF kinds, malformed Maps).
+///   * any chain joint that has no resolvable SI value (no binding, not
+///     0-DOF, no midpoint — e.g. malformed Maps, unbounded ranges).
 ///
 /// The world sentinel at chain head is identified by `kind = "world"`
 /// (matching `mechanism::is_world`) and dropped before composition — the
@@ -558,42 +558,112 @@ pub fn extract_loop_closure_chains(
     }
 
     // chain_b is the closing side: a joint with a *direct* binding entry
-    // is a fixed initial value; any joint without a direct binding becomes
-    // a free index, seeded from its range midpoint.  Coupling and fixed
-    // arms intentionally fall through the direct-lookup branch — multi-loop
-    // coupling is out of v0.2 scope (see plan design-decisions §4).
+    // is a fixed initial value; any joint without a direct binding is
+    // resolved the same way chain_a's are, and becomes a free index unless
+    // it is a 0-DOF link.
     //
-    // **Asymmetry note (v0.2 limitation).**  `chain_a` resolves via
-    // `resolve_joint_value`, which carries a fixed-joint sentinel arm
-    // (returns `Some(JointValue::Scalar(0.0))`).  `chain_b`'s unbound-joint
-    // fallback uses `joint_range_midpoint` directly, which returns `None`
-    // for fixed joints — so a fixed joint appearing in `path_b` without a
-    // direct binding would collapse the whole record to None and the
-    // snapshot to Undef.  In practice the mechanism builder does not place
-    // fixed joints on closing paths (the closing edge always references a
-    // motion joint to drive the solver), so this asymmetry is a latent
-    // shape constraint rather than a live bug.  A future v0.3 refactor
-    // can route this fallback through `resolve_joint_value` (and skip the
-    // index from `free_b` when the result is the fixed sentinel) once a
-    // real fixture demands fixed joints in path_b.
+    // **Symmetry note (task 7186).**  Both sides now resolve through the
+    // SAME helper, `resolve_joint_value` — which layers direct binding,
+    // coupling-tracks-parent recursion, the `fixed` 0-DOF sentinel, and the
+    // range-midpoint fallback.  The two sides still differ in exactly one
+    // respect, and it is the intended one: chain_b additionally records
+    // which of its entries the solver may iterate.  A 0-DOF link in EITHER
+    // path contributes its transform (`origin ∘ identity`) to the residual
+    // without contributing a free variable, which is what lets
+    // `mechanism::append_body` carry a closing call's `pose` into the
+    // closure as a synthetic `{ kind: "fixed", origin: <pose> }` rigid link.
+    //
+    // That link occurs on chain_b ONLY.  `pose` on a closing call is the
+    // transform of the rigid 0-DOF TIE `parent --pose--> at`, so the residual
+    // is `T_tree(at) == T(parent) ∘ pose` — one pose, on the closing side.
+    // `path_a` is joint-only (pinned by
+    // `first_recorded_body_pose_stays_out_of_path_a` in mechanism.rs).  The
+    // `EITHER` above is a property of this resolver, not a shape
+    // `append_body` produces: it means a hand-built chain_a carrying such a
+    // link would still resolve.
+    //
+    // Free-variable membership is `is_driving_kind`, so `fixed` and
+    // `coupling` never get a free variable.  A coupling's slot carries its
+    // parent's value; when that parent is free, the solver keeps chain_b's
+    // coupled slots in step with it (`propagate_to_couplings`).  chain_a is
+    // held fixed for the solve, so a chain_a coupling of a free chain_b joint
+    // keeps its parent's seed: making both chains' unbound joints unknowns is
+    // #8837 (R8).
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
         if let Some(v_jv) = direct_binding_value(joint, bindings) {
             vals_b_initial.push(v_jv);
         } else {
-            // KCC-γ step-10: `joint_range_midpoint` now returns
-            // `Option<JointValue>` — multi-DOF kinds (planar / spherical /
+            // KCC-γ step-10: multi-DOF kinds (planar / spherical /
             // cylindrical) produce per-DOF surfaces that flow directly into
             // the widened `Vec<JointValue>` solver-input shape.  The
             // f64-shim that collapsed multi-DOF midpoints to None is gone.
-            let mid_jv = joint_range_midpoint(joint)?;
-            vals_b_initial.push(mid_jv);
-            free_b.push(i);
+            //
+            // `resolve_joint_value` re-checks the direct binding first; that
+            // lookup is known to have missed here, so control always reaches
+            // its coupling / fixed / midpoint arms.  A non-fixed joint with
+            // no binding and no resolvable range still short-circuits the
+            // whole call to None, exactly as the old `joint_range_midpoint?`
+            // did.
+            let jv = resolve_joint_value(joint, bindings)?;
+            vals_b_initial.push(jv);
+            // Free-variable membership is decided by the joint's declared
+            // KIND, not by the resolved value: a genuinely free prismatic
+            // whose range midpoint happens to be 0.0 must stay free, so
+            // matching on `JointValue::Scalar(0.0)` would be wrong.
+            if joint_kind(joint).is_some_and(is_driving_kind) {
+                free_b.push(i);
+            }
         }
     }
 
     Some((chain_a, vals_a, chain_b, vals_b_initial, free_b))
+}
+
+/// Read a joint Map's declared `kind` as the typed [`JointKind`].
+///
+/// SPOT for loop-closure kind DISCRIMINATION — [`joint_range_midpoint`],
+/// [`resolve_joint_value`], free-variable membership and the solver's input
+/// validation all dispatch through it, so the fixed/coupling split lives in one
+/// place rather than in scattered `== "fixed"` literals, and an added kind is a
+/// compile error in `joint_range_midpoint`'s typed match.
+///
+/// It is NOT the SPOT for the per-kind VALUE encodings ([`value_for_joint`],
+/// [`jointvalue_from_bound_value`]): those match the kind string jointly with a
+/// [`JointValue`] payload, so a kind rename touches them too.
+///
+/// Returns `None` for a non-Map, a missing or non-String `kind` field, or a
+/// string [`JointKind::from_str`] does not recognise. All three collapse to the
+/// same "no typed kind" answer because every caller here handles an
+/// unrecognised joint exactly as it handles a recognised one it has no arm for.
+pub(crate) fn joint_kind(joint: &Value) -> Option<JointKind> {
+    match joint {
+        Value::Map(m) => match m.get(&Value::String("kind".to_string())) {
+            Some(Value::String(s)) => JointKind::from_str(s),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a joint of `kind` has a motion variable of its own, and so may be a
+/// loop-closure free variable: a `coupling` takes its parent's motion and a
+/// `fixed` link has none.
+///
+/// The typed twin of `joints::is_driving_joint`, which gates `bind` / `dim` /
+/// `sweep`. It is not called from here because `joints` sits in a module cycle
+/// this module stays out of (`scripts/assert-module-scc.py`);
+/// `is_driving_kind_agrees_with_is_driving_joint` pins the two together.
+pub(crate) fn is_driving_kind(kind: JointKind) -> bool {
+    match kind {
+        JointKind::Prismatic
+        | JointKind::Revolute
+        | JointKind::Cylindrical
+        | JointKind::Planar
+        | JointKind::Spherical => true,
+        JointKind::Coupling | JointKind::Fixed => false,
+    }
 }
 
 /// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
@@ -753,21 +823,42 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
     if let Some(v) = direct_binding_value(joint, bindings) {
         return Some(v);
     }
-    if let Value::Map(map) = joint {
-        let kind = match map.get(&Value::String("kind".to_string())) {
-            Some(Value::String(s)) => s.as_str(),
-            _ => return None,
-        };
-        if kind == "coupling"
-            && let Some(parent) = map.get(&Value::String("parent".to_string()))
-        {
-            return resolve_joint_value(parent, bindings);
-        }
-        if kind == "fixed" {
-            return Some(JointValue::Scalar(0.0));
-        }
+    if let Some(parent) = coupling_parent(joint) {
+        return resolve_joint_value(parent, bindings);
+    }
+    if joint_kind(joint) == Some(JointKind::Fixed) {
+        return Some(JointValue::Scalar(0.0));
     }
     joint_range_midpoint(joint)
+}
+
+/// The `parent` joint of a coupling; `None` for every other kind.
+fn coupling_parent(joint: &Value) -> Option<&Value> {
+    match (joint_kind(joint)?, joint) {
+        (JointKind::Coupling, Value::Map(m)) => m.get(&Value::String("parent".to_string())),
+        _ => None,
+    }
+}
+
+/// A coupling has no motion variable of its own: its slot carries its parent's
+/// (as in [`resolve_joint_value`] and snapshot's `value_for`), so when slot
+/// `driver` moves, every slot of `chain` coupled to `chain[driver]` moves with
+/// it (#7497).  Slots of any other chain are untouched.
+pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue], driver: usize) {
+    let (Some(parent), Some(driven)) = (chain.get(driver), values.get(driver).cloned()) else {
+        return;
+    };
+    for (joint, slot) in chain.iter().zip(values.iter_mut()) {
+        if coupling_parent(joint) == Some(parent) {
+            *slot = driven.clone();
+        }
+    }
+}
+
+/// Whether `joint`'s slot moves with `target`'s motion variable: it is `target`
+/// itself, or a coupling of it, whose slot carries its parent's value.
+fn moves_with(joint: &Value, target: &Value) -> bool {
+    joint == target || coupling_parent(joint) == Some(target)
 }
 
 /// Compute the loop-closure residual Jacobian with respect to caller-supplied
@@ -782,10 +873,31 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
 /// is applied **everywhere that joint appears in either chain** (located by
 /// structural `Value::Eq`) so that a joint shared between chain_a and chain_b
 /// (a world-rooted prefix joint) is perturbed consistently in both chains,
-/// yielding the correct total derivative.
+/// yielding the correct total derivative.  Every slot coupled to the target
+/// is perturbed with it, in either chain, because a coupling's slot carries
+/// its parent's value: as in [`chain_jacobian_fd`], a column is the derivative
+/// w.r.t. the target's motion variable.
 ///
-/// The closing joint — not being a tree `at` joint — is never passed as a
-/// target and therefore never perturbed; its direction is removed by
+/// A target is expected to be a driving joint.  A coupling target is perturbed
+/// as given, as though it were independent.  `closed_chain_inverse_dynamics`
+/// never passes one: a coupling body has no motion subspace, so that solve is
+/// undef before it gets here, and #8847 makes that a coded refusal.
+///
+/// The closing joint is **not** excluded from `target_joints`. In the
+/// parent-conflict shape it IS a spanning-tree `at` joint — its
+/// first-recorded edge is precisely what made the second edge a conflict —
+/// so `closed_chain_inverse_dynamics` passes it like any other tree joint.
+/// The in-tree witness is
+/// `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`, which lists
+/// `j_coupler_tip` in its `target_joints` under the comment
+/// "// also the closing joint".
+///
+/// Task 7186 changed **where** the closing joint is perturbed, not whether.
+/// It now occurs exactly once, at the tail of `chain_a`, so its column is the
+/// derivative through `chain_a` alone.  Before 7186 it was appended to
+/// `chain_b` as well, and the perturb-every-occurrence rule above
+/// differentiated both copies together.  Its absorbed directions are still
+/// removed downstream by
 /// [`reduce_constraint_rank`](crate::dynamics::closed_chain::reduce_constraint_rank).
 ///
 /// # Parameters
@@ -796,9 +908,9 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
 /// - `target_joints`: the ordered list of tree `at` joints to differentiate
 ///   w.r.t.  Each single-DOF joint contributes one `[f64; 6]` column;
 ///   multi-DOF joints contribute `JointValue::as_f64_slice().len()` columns.
-///   A joint **absent from both chains** contributes a zero column (it has no
-///   perturbation site — the resulting constraint Jacobian column is genuinely
-///   zero for that coordinate).
+///   A joint that **neither chain carries**, itself or through a coupling,
+///   contributes a zero column (it has no perturbation site — the resulting
+///   constraint Jacobian column is genuinely zero for that coordinate).
 /// - `eps`: central-difference step size.  Must be positive and finite.
 ///
 /// # Returns
@@ -829,18 +941,18 @@ pub fn loop_residual_jacobian_by_joint(
 
     for target in target_joints {
         // Determine the storage width for this target by scanning either chain
-        // for a matching joint (same structural value).  If absent from both,
-        // the width defaults to 1 (scalar single-DOF fallback); the resulting
+        // for a slot that moves with it.  If neither chain carries it, the
+        // width defaults to 1 (scalar single-DOF fallback); the resulting
         // zero perturbation produces a zero column regardless.
         let width: usize = chain_a
             .iter()
             .zip(vals_a.iter())
-            .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+            .find_map(|(j, v)| moves_with(j, target).then(|| v.as_f64_slice().len()))
             .or_else(|| {
                 chain_b
                     .iter()
                     .zip(vals_b.iter())
-                    .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+                    .find_map(|(j, v)| moves_with(j, target).then(|| v.as_f64_slice().len()))
             })
             .unwrap_or(1);
 
@@ -850,16 +962,16 @@ pub fn loop_residual_jacobian_by_joint(
             let mut vb_plus = vals_b.to_vec();
             let mut vb_minus = vals_b.to_vec();
 
-            // Perturb every occurrence of `target` in chain_a.
+            // Perturb every slot of chain_a that moves with `target`.
             for (i, j) in chain_a.iter().enumerate() {
-                if j == target {
+                if moves_with(j, target) {
                     perturb_storage_component(&mut va_plus[i], c, eps);
                     perturb_storage_component(&mut va_minus[i], c, -eps);
                 }
             }
-            // Perturb every occurrence of `target` in chain_b.
+            // Perturb every slot of chain_b that moves with `target`.
             for (i, j) in chain_b.iter().enumerate() {
-                if j == target {
+                if moves_with(j, target) {
                     perturb_storage_component(&mut vb_plus[i], c, eps);
                     perturb_storage_component(&mut vb_minus[i], c, -eps);
                 }
@@ -2023,6 +2135,34 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a synthetic 0-DOF rigid link — the shape
+    /// `mechanism::append_body` appends to a closure path to carry a body's
+    /// `pose` into the residual (task 7186 defect B).
+    ///
+    /// Delegates to the production constructor so these tests consume the
+    /// SAME shape the builder emits; the literal Map is pinned once, by
+    /// `mechanism::tests::pose_link_is_a_fixed_kind_map_carrying_the_pose_as_origin`.
+    fn fixed_link(pose: Value) -> Value {
+        crate::mechanism::pose_link(&pose)
+    }
+
+    /// A pure-translation `Value::Transform` of `len_m` along +X.
+    fn translate_x_transform(len_m: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(len_m),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        }
+    }
+
     /// `extract_loop_closure_chains` returns the expected five-vector tuple
     /// for a record with `path_a = [world, jA]` (driven by a bound length
     /// of 0.5m) and `path_b = [world, jB]` (free — no binding entry).
@@ -2094,6 +2234,101 @@ mod tests {
             ),
         }
         assert_eq!(free_b, vec![0], "free_b should mark jB (index 0) as free");
+    }
+
+    /// **Task 7186, precondition for defect B.** An UNBOUND `fixed` joint in
+    /// `path_b` must resolve to the 0-DOF sentinel instead of collapsing the
+    /// whole record to `None`, and must NOT become a solver free variable.
+    ///
+    /// Defect B encodes a closing body's `pose` as a synthetic 0-DOF rigid
+    /// link — `Value::Map { kind: "fixed", origin: <pose> }` — appended to
+    /// `path_b`. Nothing binds that synthetic link, so before this fix the
+    /// closing-side fallback (`joint_range_midpoint`, which returns `None`
+    /// for `fixed`) short-circuited `extract_loop_closure_chains` to `None`
+    /// and the whole snapshot to `Undef`. The pre-existing "Asymmetry note
+    /// (v0.2 limitation)" comment named this exact refactor and deferred it
+    /// "once a real fixture demands fixed joints in path_b" — the synthetic
+    /// pose link IS that fixture.
+    #[test]
+    fn extract_loop_closure_chains_admits_unbound_fixed_joint_in_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bindings = vec![bind_a];
+
+        // A synthetic 0-DOF rigid link carrying a non-identity pose.
+        let link = fixed_link(translate_x_transform(0.2));
+
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_b.clone(), link.clone()],
+            j_a.clone(),
+        );
+
+        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings).expect(
+                "an unbound 0-DOF `fixed` link in path_b must resolve, not collapse \
+                 the record to None",
+            );
+
+        assert_eq!(chain_b, vec![j_b.clone(), link.clone()]);
+        assert_eq!(vals_b_initial.len(), 2);
+        match &vals_b_initial[1] {
+            JointValue::Scalar(s) => assert!(
+                s.abs() < 1e-12,
+                "the fixed link must take the 0-DOF sentinel Scalar(0.0), got Scalar({s})"
+            ),
+            other => panic!("expected JointValue::Scalar(0.0) for the fixed link, got {other:?}"),
+        }
+        assert!(
+            !free_b.contains(&1),
+            "a 0-DOF link contributes no free variable — free_b must not contain \
+             index 1, got {free_b:?}"
+        );
+        assert!(
+            free_b.contains(&0),
+            "the unbound prismatic jB is still free — free_b must contain index 0, \
+             got {free_b:?}"
+        );
+    }
+
+    /// The loop-closure solve and `bind` / `dim` / `sweep` agree on which
+    /// joint kinds drive, kind by kind.
+    #[test]
+    fn is_driving_kind_agrees_with_is_driving_joint() {
+        for &tag in crate::joints::JOINT_KINDS {
+            let kind = super::JointKind::from_str(tag)
+                .unwrap_or_else(|| panic!("JOINT_KINDS tag {tag:?} has no JointKind"));
+            let mut fields = std::collections::BTreeMap::new();
+            fields.insert(
+                Value::String("kind".to_string()),
+                Value::String(tag.to_string()),
+            );
+            let joint = Value::Map(fields);
+            assert_eq!(
+                super::is_driving_kind(kind),
+                crate::joints::is_driving_joint(&joint),
+                "kind {tag:?}"
+            );
+        }
+    }
+
+    /// A synthetic 0-DOF link evaluates to exactly its `origin` pose under
+    /// the unmodified chain machinery — the whole basis of the defect-B
+    /// encoding. `transform_at` computes the per-kind motion first and then
+    /// applies `origin ∘ motion` uniformly outside every arm
+    /// (joints.rs, PRD §7.2); the `fixed` arm's motion is the identity, so
+    /// `origin ∘ I = origin`.
+    #[test]
+    fn chain_transform_over_a_fixed_link_yields_its_origin_pose() {
+        let pose = translate_x_transform(0.2);
+        let link = fixed_link(pose.clone());
+        let t = super::chain_transform(&[link], &[JointValue::Scalar(0.0)])
+            .expect("chain_transform must resolve a single 0-DOF link");
+        assert_eq!(
+            t, pose,
+            "a fixed link with origin = pose must compose to exactly that pose"
+        );
     }
 
     /// KCC-γ step-9: `extract_loop_closure_chains` must populate

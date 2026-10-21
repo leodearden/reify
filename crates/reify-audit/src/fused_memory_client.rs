@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::mcp_handshake::check_initialize_response;
 use crate::{DoneProvenance, TaskMetadata};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -71,14 +72,11 @@ impl std::error::Error for LoadError {}
 
 /// Sync MCP streamable-HTTP client. One instance == one MCP session.
 ///
-/// Note: [`TaskMetadata::done_at`] populated by this loader is an
-/// approximation derived from the wire `updatedAt` field, because
-/// fused-memory does not currently expose a dedicated done-flip timestamp.
-/// The JSON-file loader (`--tasks-file`) reads an explicit `done_at` field
-/// stored at done-flip time, so for the same task the two loaders can
-/// disagree by minutes-to-days depending on post-done edits. Time-window
-/// audits (`--since`) may therefore include/exclude the same task
-/// differently across loader paths.
+/// [`TaskMetadata::done_at`] is the done-flip stamp when fused-memory supplies
+/// `metadata.done_at`, otherwise it is approximated from `updatedAt` (last-edit
+/// time), derived like the wire→snapshot jq filter feeding `--tasks-file`. See
+/// `docs/architecture-audit/f-infra-design.md` §11.2 (residual divergences:
+/// §11.2.1).
 pub struct FusedMemoryClient {
     url: String,
     session_id: String,
@@ -107,8 +105,10 @@ impl FusedMemoryClient {
         // `post()` checks every JSON-RPC response for the `error` field, so
         // a server that 200-OKs `initialize` with a `{"error":{...}}` body
         // surfaces here instead of being silently accepted and masked as a
-        // confusing `get_task` failure later.
-        let _ = self.post(&json!({
+        // confusing `get_task` failure later. A reply that is not an
+        // `InitializeResult` at all (a 202, an empty body, a bare `{}`) is
+        // refused by `check_initialize_response` for the same reason.
+        let response = self.post(&json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
             "method": "initialize",
@@ -121,6 +121,8 @@ impl FusedMemoryClient {
                 "capabilities": {},
             },
         }))?;
+        check_initialize_response(&response)
+            .map_err(|rejection| LoadError::Protocol(rejection.to_string()))?;
         let _ = self.post(&json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
@@ -160,7 +162,7 @@ impl FusedMemoryClient {
         // Use into_reader() instead of into_string() to avoid ureq's
         // 10 MiB into_string cap — the live task corpus now exceeds
         // that limit. Reading to a String (not serde_json::from_reader)
-        // keeps the SSE/JSON dual-path intact: the SSE branch must scan
+        // is what `mcp_wire::decode_body` takes: its SSE branch must scan
         // the body text for the `data:` line, which from_reader cannot
         // do. For a one-shot CLI, buffering the corpus in memory is fine.
         let mut body = String::new();
@@ -169,28 +171,8 @@ impl FusedMemoryClient {
             .read_to_string(&mut body)
             .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
 
-        let value = if ctype.contains("text/event-stream") {
-            let mut parsed: Option<Value> = None;
-            for line in body.lines() {
-                if let Some(rest) = line.strip_prefix("data:") {
-                    parsed = Some(serde_json::from_str(rest.trim()).map_err(|e| {
-                        LoadError::Protocol(format!(
-                            "SSE data parse: {e}; body={body}"
-                        ))
-                    })?);
-                    break;
-                }
-            }
-            parsed.ok_or_else(|| {
-                LoadError::Protocol(format!("no SSE data line in response: {body}"))
-            })?
-        } else if body.is_empty() {
-            return Ok(Value::Null);
-        } else {
-            serde_json::from_str(&body).map_err(|e| {
-                LoadError::Protocol(format!("body parse: {e}; body={body}"))
-            })?
-        };
+        let value = crate::mcp_wire::decode_body(&ctype, &body)
+            .map_err(|e| LoadError::Protocol(e.to_string()))?;
 
         // Centralised JSON-RPC error-envelope check. Every response that
         // goes through `post()` (initialize, notifications/initialized,
@@ -351,20 +333,8 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         .map(String::from);
     let audit_foundation = metadata.get("audit_foundation").and_then(|p| p.as_bool());
 
-    // `done_at` approximation: fused-memory does not currently expose a
-    // dedicated done-flip timestamp on the `get_task`/`get_tasks` payload,
-    // so we fall back to `updatedAt` (last-edit time) for done tasks. This
-    // means any post-done metadata edit (re-label, status round-trip, etc.)
-    // will shift the recorded `done_at` and can subtly affect the P5
-    // detector's time window. The JSON-file loader (`--tasks-file`) gets a
-    // `done_at` field stored explicitly at done-flip time, so the two loader
-    // paths can disagree for the same task. If fused-memory grows a real
-    // `doneAt` field, prefer it here and fall back to `updatedAt` only when
-    // it's absent.
     let done_at = if status == "done" {
-        v.get("updatedAt")
-            .and_then(|s| s.as_str())
-            .and_then(parse_iso8601_to_epoch)
+        done_flip_epoch(v, &metadata)
     } else {
         None
     };
@@ -379,6 +349,19 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         consumer_ref,
         audit_foundation,
         done_at,
+    })
+}
+
+/// `done_at` of a `done` task, mirroring the precedence in
+/// `scripts/reify-audit-snapshot-filter.jq`: an explicit epoch-seconds
+/// `metadata.done_at` wins, else the `updatedAt` proxy. Why, and the residual
+/// non-integer-stamp divergence from the jq path:
+/// `docs/architecture-audit/f-infra-design.md` §11.2.1.
+fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
+    metadata.get("done_at").and_then(Value::as_i64).or_else(|| {
+        task.get("updatedAt")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_to_epoch)
     })
 }
 
@@ -592,6 +575,71 @@ mod tests {
         assert!(tm.done_at.is_none());
         assert!(tm.files.is_empty());
         assert!(tm.done_provenance.is_none());
+    }
+
+    /// A `done` wire task carrying only the two inputs `done_at` is derived from.
+    fn done_task_wire(updated_at: Value, metadata: Value) -> Value {
+        json!({
+            "id": "7233",
+            "title": "t",
+            "status": "done",
+            "updatedAt": updated_at,
+            "metadata": metadata,
+        })
+    }
+
+    #[test]
+    fn wire_adapter_metadata_done_at_wins_over_updated_at() {
+        let v = done_task_wire(
+            json!("2026-05-16T07:39:04Z"),
+            json!({"done_at": 1700000000}),
+        );
+        let tm = task_metadata_from_wire(&v).expect("done decode");
+        assert_eq!(tm.done_at, Some(1700000000));
+    }
+
+    #[test]
+    fn wire_adapter_metadata_done_at_wins_over_garbage_updated_at() {
+        let v = done_task_wire(json!("garbage"), json!({"done_at": 1700000000}));
+        let tm = task_metadata_from_wire(&v).expect("done decode");
+        assert_eq!(tm.done_at, Some(1700000000));
+    }
+
+    #[test]
+    fn wire_adapter_null_or_false_metadata_done_at_falls_back_to_updated_at() {
+        for stamp in [json!(null), json!(false)] {
+            let v = done_task_wire(
+                json!("2026-05-16T07:39:04Z"),
+                json!({"done_at": stamp.clone()}),
+            );
+            let tm = task_metadata_from_wire(&v).expect("done decode");
+            assert_eq!(tm.done_at, Some(1778917144), "metadata.done_at = {stamp}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_non_integer_metadata_done_at_falls_back_to_updated_at() {
+        for stamp in [json!("2026-01-01T00:00:00Z"), json!(1700000000.5)] {
+            let v = done_task_wire(
+                json!("2026-05-16T07:39:04Z"),
+                json!({"done_at": stamp.clone()}),
+            );
+            let tm = task_metadata_from_wire(&v).expect("done decode");
+            assert_eq!(tm.done_at, Some(1778917144), "metadata.done_at = {stamp}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_pending_task_ignores_metadata_done_at() {
+        let v = json!({
+            "id": "7233",
+            "title": "t",
+            "status": "pending",
+            "updatedAt": "2026-05-16T07:39:04Z",
+            "metadata": {"done_at": 1700000000}
+        });
+        let tm = task_metadata_from_wire(&v).expect("pending decode");
+        assert!(tm.done_at.is_none());
     }
 
     #[test]

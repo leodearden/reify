@@ -65,6 +65,54 @@
 //! for GAP A; the `volume_mesh_to_solver_mesh_*orphan*` family for GAP B)
 //! remain the load-bearing regression guards for the two mechanisms these
 //! capstones compose.
+//!
+//! # Full-build census, and why the one two-build test stays (task #7431)
+//!
+//! Task #7431 profiled this file looking for redundant OCCT+gmsh builds to
+//! eliminate. MEASURED per `#[test]` on the `cfg(has_gmsh)` arm, counting every
+//! `.build(..)` reachable through `build_realized`,
+//! `build_multi_case_and_count_realizations` and `realized_cylinder_fields`:
+//!
+//! | test | full OCCT+gmsh builds |
+//! |---|---|
+//! | `body_solve_runs_on_realized_volume_mesh` | 1 |
+//! | `multi_case_body_solve_shares_one_realization_across_cases` | 1 |
+//! | `multi_case_body_solve_survives_a_preceding_template` | 1 |
+//! | `non_prismatic_body_solve_runs_on_realized_volume_mesh` | 1 |
+//! | `non_prismatic_two_case_build_realizes_body_exactly_once` | **2** |
+//! | `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` | 1 |
+//! | `scalar_dims_solve_still_yields_synthetic_854_grid` | 0 — kernel-less `eval` |
+//! | `body_adaptive_solve_runs_the_gmsh_realized_localized_lane` | 1 |
+//! | `body_adaptive_solve_reports_the_refined_mesh_not_the_seed` | 1 |
+//! | `realized_cylinder_mesh_covers_its_own_aabb` | 1, but `#[ignore]` — costs the gate nothing |
+//!
+//! EXACTLY ONE test does two full builds, not the three the profiling task was
+//! scoped from. That agrees independently with `.config/nextest.toml`'s own note
+//! on this file ("This test does perform TWO full builds (a two-case case plus a
+//! one-case control) versus the siblings' one").
+//!
+//! And in that one test the second build IS THE ASSERTION. It is not a warm-up,
+//! a fixture or a repeat: the ONE-case control's `realization_entries` delta is
+//! what the two-case delta is compared AGAINST, and that comparison is the
+//! entire shape-robust half of PRD B9. `NON_PRISMATIC_ONE_CASE_BODY_SOURCE`'s
+//! doc states why the cheaper single-build form is not equivalent: *"Asserting
+//! 'the two-case build realizes exactly once' alone is weak: a module that
+//! realized once for reasons unrelated to case-sharing would satisfy it."*
+//! Deleting the second build would therefore delete a PRD assertion, not a cost.
+//! It is RETAINED deliberately — "where it is, leave the test alone and say so".
+//!
+//! ## The one redundancy that IS here, and is deliberately not taken
+//!
+//! `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` is built by BOTH
+//! `non_prismatic_two_case_build_realizes_body_exactly_once` and
+//! `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` — the
+//! same full OCCT+gmsh build, run in two tests. Merging them would undo the
+//! deliberate #4152 split (see that test's doc: the split exists so the
+//! `realization_entries` counter has GREEN coverage on a real OCCT+gmsh path,
+//! not only on `MockGeometryKernel`), AND would serialise two builds into one
+//! longer straggler. That is a CPU-second win paid for in makespan — the wrong
+//! trade for the metric #7431 optimises, since this file already sits in the
+//! slow tail. Filed as a follow-up rather than done here.
 
 // Gmsh linker anchor — see the module doc above.
 #[cfg(has_gmsh)]
@@ -119,7 +167,7 @@ const REALIZED_CYLINDER_GRID_NODES: usize = REALIZED_CYLINDER_GRID_AXES[0]
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Extract a named field from an ElasticResult `Value` (StructureInstance or the
@@ -133,11 +181,16 @@ fn extract_field(result: &reify_ir::Value, field: &str) -> Option<reify_ir::Valu
 }
 
 /// Extract the `SampledField` behind a named `Value::Field { Sampled }` in a
-/// result. Panics with a descriptive message if the field is absent or not a
-/// Sampled field (the body/scalar solve always emits Sampled displacement).
+/// result, unwrapping the `Option` that carries `error_indicator`. Panics with
+/// a descriptive message if the field is absent or not a Sampled field (the
+/// body/scalar solve always emits Sampled displacement).
 fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledField {
     let field_val =
         extract_field(result, field).unwrap_or_else(|| panic!("field '{field}' not found in result"));
+    let field_val = match field_val {
+        reify_ir::Value::Option(Some(inner)) => *inner,
+        other => other,
+    };
     match &field_val {
         reify_ir::Value::Field { source, lambda, .. } => {
             assert!(
@@ -276,6 +329,13 @@ fn build_realized(
         errors.is_empty(),
         "expected no Error diagnostics from the {label} build — a tessellation or \
          mesher failure on this fixture's geometry would surface here. got: {errors:?}"
+    );
+    assert!(
+        build_result
+            .geometry_output
+            .as_ref()
+            .is_some_and(|bytes| !bytes.is_empty()),
+        "the {label} build must export the body's STEP geometry"
     );
 
     (engine, build_result)
@@ -2147,4 +2207,401 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
          so a mismatch here is a bug in `classify_grid_misses`' bucketing, not in the \
          geometry or the mesh."
     );
+}
+
+/// `cfg(has_gmsh)`: **task 4909 capstone** — the body-arg adaptive solve takes
+/// the gmsh-realized LOCALIZED lane and genuinely CONSUMES the Dörfler marks.
+///
+/// This is the end-to-end form of "the refine step consumes the marking". Task
+/// 4902 threaded the a-posteriori loop into `solve_elastic_static` with a
+/// MESH-FREE UNIFORM refine step (honestly labelled non-adaptive) because
+/// production reify-eval is gmsh-build-free and the synthetic box had no closed
+/// surface `Mesh` to remesh from. 4870 made a realized tet `VolumeMesh` reach
+/// the trampoline; 4909 reconstructs the boundary from that mesh's free faces
+/// and drives `refine_marked_elements` through it.
+///
+/// Asserts:
+///   (1) no `Severity::Error` diagnostics — a clean realize + adaptive solve;
+///   (2) the LOCALIZED-lane Info diagnostic is present and the 4902 uniform-grid
+///       one is NOT — i.e. the lane selector chose the realized lane;
+///   (3) `convergence_status` is `NotConverged { reason: MaxIterations }` and
+///       the full refinement budget was consumed — exactly one mark-driven
+///       refine. `max_refinement_iterations: 1` makes the iteration cap bind at
+///       the second solve; why that fixes the reason: the "Termination
+///       precedence" section of `reify_solver_elastic::adaptive::run_adaptive_refinement`;
+///   (4) `global_relative_energy_error` is finite, > 0 and <= 1.0;
+///   (5) the localized diagnostic's reported POST-refine element count is
+///       strictly greater than its PRE-refine count.
+///
+/// (5) is the load-bearing assertion: a strictly grown element count after a
+/// mark-driven remesh is a concentration the uniform fallback structurally
+/// CANNOT report, because it never remeshes. Parsing it out of the diagnostic
+/// (rather than asserting a magnitude) keeps this a strict inequality on counts
+/// with no numeric tolerance band — the same shape as the always-on landed test
+/// in `reify-solver-elastic`'s `aposteriori_validation.rs`, and deliberately not
+/// the shape of its `#[ignore]`d cross-gmsh-version-unstable sibling.
+///
+/// Since task 7414 that "no numeric tolerance band" property is true of the
+/// WHOLE test and not of (5) alone — which is the point of that change, because
+/// this test runs in the shared, oversubscribed merge-verify environment. No
+/// assertion here now turns on a tuned threshold: the enum variants, the refine
+/// count and the element-count inequality are exact; the unreachable accuracy
+/// target and the non-binding dof ceiling carry measured margins of three orders
+/// of magnitude or more; and (4) is a finiteness-and-range sanity check rather
+/// than a tolerance.
+#[cfg(has_gmsh)]
+#[test]
+fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
+    use reify_core::{Severity, ValueCellId};
+    use reify_ir::{ExportFormat, Value};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping body_adaptive_solve_runs_the_gmsh_realized_localized_lane: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/fea_body_cantilever_adaptive.ri"
+    ));
+
+    let mut engine = make_occt_engine();
+    // Trampoline + VolumeMesh demand ONLY; NO boundary demand — see the module
+    // doc's #4876-SIGSEGV rationale.
+    register_elastic_static_body_trampoline(&mut engine);
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    // ── (1) no Error diagnostics ──────────────────────────────────────────────
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the adaptive body-arg build, got: {errors:?}"
+    );
+
+    // ── (2) the LOCALIZED lane ran, the uniform one did not ───────────────────
+    let localized = build_result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("gmsh-realized"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the LOCALIZED gmsh-realized lane's Info diagnostic — its \
+                 absence means the lane selector fell back to task 4902's uniform \
+                 lane. diagnostics: {:?}",
+                build_result.diagnostics
+            )
+        });
+    assert_eq!(
+        localized.severity,
+        Severity::Info,
+        "the localized-lane diagnostic must be Info"
+    );
+    assert!(
+        localized.message.contains("mark-driven"),
+        "the localized diagnostic must state the refinement was mark-driven, got: {}",
+        localized.message
+    );
+    assert!(
+        !build_result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("adaptive refinement finished")
+                && d.message.contains("grid")),
+        "the realized lane must NOT also emit task 4902's uniform-grid diagnostic, \
+         got: {:?}",
+        build_result.diagnostics
+    );
+
+    let result_cell = ValueCellId::new("FeaBodyCantileverAdaptive", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| {
+            panic!("cell FeaBodyCantileverAdaptive.result not found in build values")
+        });
+    assert!(
+        matches!(result_val, Value::StructureInstance(_) | Value::Map(_)),
+        "adaptive body-arg result must be a populated ElasticResult, got: {result_val:?} \
+         — a pre-hydration Failed/Undef here means the redispatch did not deliver the \
+         realized mesh to the trampoline"
+    );
+
+    // ── (3) NotConverged, dof ceiling did not bind, refine budget consumed ────
+    let status = extract_field(result_val, "convergence_status")
+        .expect("ElasticResult must carry a convergence_status field");
+    match &status {
+        Value::Enum {
+            variant, payload, ..
+        } => {
+            assert_eq!(
+                variant, "NotConverged",
+                "an unreachable target_accuracy must leave the loop NotConverged, got: {status:?}"
+            );
+            let reason = payload
+                .iter()
+                .find(|(k, _)| k == "reason")
+                .map(|(_, v)| v.clone())
+                .expect("NotConverged must carry a `reason` payload field");
+            match &reason {
+                Value::Enum { variant, .. } => assert_eq!(
+                    variant, "MaxIterations",
+                    "the binding iteration cap must report the stop (see \
+                     `run_adaptive_refinement`'s \"Termination precedence\"), got {reason:?}"
+                ),
+                other => panic!("the NotConverged reason must be a Value::Enum, got {other:?}"),
+            }
+        }
+        other => panic!("convergence_status must be a Value::Enum, got {other:?}"),
+    }
+
+    // The loop consumed its FULL refinement budget (`max_refinement_iterations:
+    // 1`). This — not which gate reported the stop — is the durable claim: it
+    // holds identically under BOTH terminal reasons and carries no numeric
+    // margin whatsoever. At iter 0 `prev_global` is `None`, so the stall gate is
+    // structurally unreachable; `0 >= 1` is false; and the SEED mesh's 360 dofs
+    // are far under the 2_000_000 cap. Exactly one `refine` therefore always
+    // runs.
+    let report = LocalizedReport::parse(&localized.message);
+    assert_eq!(
+        report.refines, 1,
+        "the loop must consume its full `max_refinement_iterations: 1` budget, i.e. \
+         exactly one mark-driven refine. A count of 0 would mean the budget \
+         terminated before any remesh ran and the adaptive lane did no adaptive \
+         work at all; a count above 1 would mean the fixture's budget is no longer \
+         what this test assumes. (diagnostic: {})",
+        localized.message
+    );
+
+    // ── (4) a real global relative energy error ───────────────────────────────
+    let gree = extract_field(result_val, "global_relative_energy_error")
+        .expect("ElasticResult must carry a global_relative_energy_error field");
+    let gree = match &gree {
+        Value::Option(Some(inner)) => match inner.as_ref() {
+            Value::Real(r) => *r,
+            other => panic!("global_relative_energy_error must wrap a Real, got {other:?}"),
+        },
+        other => panic!(
+            "an adaptive solve must populate global_relative_energy_error (the \
+             non-adaptive default is Option(None)), got {other:?}"
+        ),
+    };
+    assert!(
+        gree.is_finite() && gree > 0.0 && gree <= 1.0,
+        "global_relative_energy_error must be finite and in (0, 1], got {gree}"
+    );
+
+    // ── (5) the refine GREW the mesh — the signature of a real remesh ─────────
+    assert!(
+        report.elements_after > report.elements_before,
+        "the mark-driven remesh must strictly grow the element count — this is the \
+         end-to-end form of 'the refine step genuinely CONSUMES the marking', and a \
+         concentration the uniform fallback structurally cannot report because it \
+         never remeshes. got: {} -> {} (diagnostic: {})",
+        report.elements_before,
+        report.elements_after,
+        localized.message
+    );
+}
+
+/// `cfg(has_gmsh)`: once the gmsh-realized lane has remeshed, the result
+/// reports the REFINED mesh's answer on the SEED grid (task 8246).
+///
+/// One body, two solves: `refined` (up to two remeshes) and `seed` (none).
+/// Both consume one realization, so they share the seed mesh and therefore the
+/// result grid. That is why this is one two-cell fixture and not two builds:
+/// the plain gmsh seed producer is not bit-stable across separate
+/// realizations (task 7414).
+#[cfg(has_gmsh)]
+#[test]
+fn body_adaptive_solve_reports_the_refined_mesh_not_the_seed() {
+    use reify_core::ValueCellId;
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping body_adaptive_solve_reports_the_refined_mesh_not_the_seed: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    const STRUCTURE: &str = "FeaBodyCantileverAdaptiveRefinedVsSeed";
+    let (_engine, build_result) = build_realized(
+        include_str!("fixtures/fea_body_cantilever_adaptive_refined_vs_seed.ri"),
+        "adaptive refined-vs-seed body",
+        register_elastic_static_body_trampoline,
+    );
+    let cell = |name: &str| {
+        let value: &Value = build_result
+            .values
+            .get(&ValueCellId::new(STRUCTURE, name))
+            .unwrap_or_else(|| panic!("cell {STRUCTURE}.{name} not found in build values"));
+        assert!(
+            matches!(value, Value::StructureInstance(_) | Value::Map(_)),
+            "{name} must be a populated ElasticResult, got: {value:?} — a pre-hydration \
+             Failed/Undef here means the redispatch did not deliver the realized mesh"
+        );
+        value
+    };
+    let (refined, seed) = (cell("refined"), cell("seed"));
+
+    // Each cell emits a localized Info; only a run that remeshed carries the
+    // refinement-count marker.
+    let localized = build_result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains(LocalizedReport::REFINES_MARKER))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the `refined` cell's localized Info reporting its remeshes. \
+                 diagnostics: {:?}",
+                build_result.diagnostics
+            )
+        });
+    assert!(
+        LocalizedReport::parse(&localized.message).refines >= 1,
+        "an unreachable target must buy at least one remesh (diagnostic: {})",
+        localized.message
+    );
+
+    assert_ne!(
+        extract_field(refined, "max_von_mises"),
+        extract_field(seed, "max_von_mises"),
+        "a remeshed adaptive solve must report the refined mesh's max_von_mises, not the seed's"
+    );
+    for name in ["displacement", "stress", "error_indicator"] {
+        assert!(
+            sampled_field(refined, name).grid_metadata_eq(&sampled_field(seed, name)),
+            "{name}: both cells must sample the one seed grid. If not, check first that \
+             both consumed ONE realization (task 7414)"
+        );
+    }
+    let data_bits =
+        |sf: &reify_ir::SampledField| -> Vec<u64> { sf.data.iter().map(|v| v.to_bits()).collect() };
+    assert_ne!(
+        data_bits(&sampled_field(refined, "displacement")),
+        data_bits(&sampled_field(seed, "displacement")),
+        "a remeshed adaptive solve must report the refined mesh's displacement, not the seed's"
+    );
+
+    let (error_indicator, stress) = (
+        sampled_field(refined, "error_indicator"),
+        sampled_field(refined, "stress"),
+    );
+    assert_eq!(
+        error_indicator.data.len() * 9,
+        stress.data.len(),
+        "error_indicator (stride 1) must sample stress's (stride 9) grid"
+    );
+    for (i, (stress_at, &indicator)) in stress
+        .data
+        .chunks_exact(9)
+        .zip(&error_indicator.data)
+        .enumerate()
+    {
+        assert_eq!(
+            indicator.is_nan(),
+            stress_at.iter().any(|v| !v.is_finite()),
+            "error_indicator[{i}] must be NaN exactly where stress is (out of solid)"
+        );
+        assert!(
+            indicator.is_nan() || indicator >= 0.0,
+            "error_indicator[{i}] = {indicator} must be a non-negative norm"
+        );
+    }
+}
+
+/// The three counts the localized lane's Info diagnostic reports about the
+/// remesh it ran, parsed out of that prose in ONE place.
+///
+/// Prose is the only carrier: the compute target holds `problem.refine_count`
+/// and the pre/post element counts structurally, but surfaces neither on the
+/// result value, so a caller that wants them has to read the diagnostic. One
+/// struct with one parse keeps that regrettable shape to a single site instead
+/// of one scanner per field. Publishing these as structured result fields would
+/// retire this parser entirely — ticket `tkt_0RTH9SY7VBKY7Y72XT6QJQNKAG`.
+///
+/// What actually guards each marker — the two are NOT equally protected:
+///   - `elements N -> M` is pinned by the in-crate unit test
+///     `adaptive_branch_selects_the_gmsh_realized_lane_when_a_realized_mesh_is_present`
+///     (`elastic_static.rs`), which is always COMPILED and gated only on the
+///     runtime `GMSH_AVAILABLE`. It is also emitted identically by the
+///     `refine_count == 0` wording, and the emission site says so explicitly.
+///   - ` refinement iteration(s)` is pinned by NOTHING except this test, which
+///     needs `cfg(has_gmsh)` at compile time AND `OCCT_AVAILABLE` at runtime.
+///     In a build missing either, a reword of that clause goes unnoticed here.
+///     Adding a `contains` assertion beside the in-crate `elements` one would
+///     close that gap; it is out of task 7414's file scope and filed as ticket
+///     `tkt_0RTH9SY7VBKY7Y72XT6QJQNKAG`.
+///
+/// The refinement marker is deliberately the `(s)` form: the emission site's
+/// `refine_count == 0` arm is worded `0 refinement iterations` and so does NOT
+/// contain it. A budget that terminated before any remesh therefore panics
+/// here rather than parsing to a quiet `0` — the structurally different "no
+/// remesh ran" case is reported as such instead of as a count mismatch.
+#[cfg(has_gmsh)]
+struct LocalizedReport {
+    refines: usize,
+    elements_before: usize,
+    elements_after: usize,
+}
+
+#[cfg(has_gmsh)]
+impl LocalizedReport {
+    const REFINES_MARKER: &'static str = " refinement iteration(s)";
+
+    fn parse(message: &str) -> Self {
+        let count = |digits: &str, what: &str| -> usize {
+            digits.parse().unwrap_or_else(|e| {
+                panic!("localized diagnostic's {what} `{digits}` must parse: {e} — got: {message}")
+            })
+        };
+
+        // The iteration count sits immediately BEFORE its marker, so scan back
+        // off the preceding text and restore reading order.
+        let (before_marker, _) = message.split_once(Self::REFINES_MARKER).unwrap_or_else(|| {
+            panic!(
+                "localized diagnostic must report `N{}`: {message}",
+                Self::REFINES_MARKER
+            )
+        });
+        let reversed: String = before_marker
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let refines: String = reversed.chars().rev().collect();
+
+        // Scanned from the whole message, NOT from the text after the
+        // refinement marker: the emission site guarantees this `elements N -> M`
+        // tail under both its wordings, and that independence is the property
+        // its comment relies on.
+        let (elements_before, after_tail) = message
+            .split_once("elements ")
+            .and_then(|(_, counts)| counts.split_once(" -> "))
+            .unwrap_or_else(|| {
+                panic!("localized diagnostic must report `elements N -> M`: {message}")
+            });
+        let elements_after: String = after_tail
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+
+        Self {
+            refines: count(&refines, "refinement-iteration count"),
+            elements_before: count(elements_before.trim(), "pre-refine element count"),
+            elements_after: count(&elements_after, "post-refine element count"),
+        }
+    }
 }

@@ -10,7 +10,7 @@ use crate::mcp_context::{TauriToolContext, mcp_tool_call_impl};
 fn make_loaded_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -23,11 +23,39 @@ fn make_tauri_context() -> TauriToolContext {
     TauriToolContext::builder(engine).build()
 }
 
+/// [`make_tauri_context`] with a canonical `.ri` ON DISK: writes
+/// `bracket_source()` to `<tmp>/bracket.ri` and `load_file`s it, so the
+/// source-canonical write path has a file to write back to (INV-GUI-3, task
+/// 5099 η).
+///
+/// The shared in-memory [`make_tauri_context`] is deliberately left alone — the
+/// ~15 read-tool tests around it need no file, and only the parameter-write
+/// tests do. Return shape and the bind-don't-discard rule for the `TempDir` are
+/// `engine_tests.rs`'s `writeback_session`'s.
+fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, TauriToolContext) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
+
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (
+        dir,
+        path,
+        TauriToolContext::builder(Arc::new(Mutex::new(session))).build(),
+    )
+}
+
 /// Helper for step-9: create a TauriToolContext loaded with arbitrary source.
 /// Mirrors make_loaded_session() but accepts parameterized source and module name.
 fn make_tauri_context_with_source(source: &str, module_name: &str) -> TauriToolContext {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(source, module_name)
         .expect("load_from_source should succeed");
@@ -100,7 +128,7 @@ fn get_constraints_returns_satisfied() {
     // All bracket constraints should be satisfied at default values
     for c in &constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied",
             c.node_id
         );
@@ -181,17 +209,32 @@ fn update_source_with_invalid_source_returns_error() {
 
 #[test]
 fn set_parameter_succeeds() {
-    let ctx = make_tauri_context();
+    // δ deferred this context to η on the grounds that its fixture had no
+    // on-disk `.ri` to write back to. With one, it is a durable INV-GUI-3
+    // mutation like every other: the Tauri-invoke MCP surface, the reify-debug
+    // tool and the property panel are one mechanism, so the AI cannot make an
+    // edit the user's file does not carry.
+    let (_dir, path, ctx) = make_tauri_context_on_disk();
+
     let result = ctx
         .set_parameter("Bracket.width", "100mm")
         .expect("set_parameter should succeed");
     assert!(result.success);
     assert_eq!(result.new_value, "100");
     assert_eq!(result.unit, "mm");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        bracket_source().replace("80mm", "100mm"),
+        "the write must reach the canonical .ri, spliced at the default span"
+    );
 }
 
 #[test]
 fn set_parameter_invalid_cell_returns_error() {
+    // Deliberately still the in-memory fixture: an unknown cell must be refused
+    // by the shared cell lookup BEFORE anything reaches for a file, so this
+    // rejection does not depend on there being one.
     let ctx = make_tauri_context();
     let result = ctx.set_parameter("Nonexistent.param", "100mm");
     assert!(result.is_err(), "should return error for invalid cell_id");
@@ -697,8 +740,8 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 /// ("Bracket") and a full cell ID ("Bracket.width"), returning identical
 /// `(line, column, end_line, end_column)` tuples for both inputs.
 ///
-/// This mirrors the CLI-side test `mcp_server_get_source_location_accepts_template_name_and_cell_id`
-/// (step-5) and proves that both transports use the same unified semantics.
+/// Its CLI-side mirror was retired with `reify mcp-server` (#6665), so this is
+/// the only transport pin of the unified semantics.
 ///
 /// The test passes after step-4 (GUI engine refactor) because
 /// `EngineSession::get_source_location("Bracket")` now returns `Some` — before

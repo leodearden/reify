@@ -18,12 +18,28 @@ module dcr_solver_load_dropped_dimensioned
 // solve_elastic_static while the SAME source text contributes 1000 N to
 // solve_buckling (buckling.rs:726/:730 accepts both shapes).
 //
-// γ1's signal: after the reader is widened, this file's `max_von_mises` equals
-// the bare control's 5139325.408614099 Pa. This asserts the force is APPLIED —
-// not merely that a diagnostic appeared (PRD §8 B1 negative-assertion mandate)
-// — and needs NO change to ElasticResult/BucklingResult, both of which are
-// deliberately frozen and store no applied load
-// (crates/reify-compiler/stdlib/solver_buckling_fns.ri:66-79).
+// γ1's signal, as planned at decompose: after the reader is widened, this
+// file's `max_von_mises` equals the bare control's 5139325.408614099 Pa. That
+// asserts the force is APPLIED, not merely that a diagnostic appeared (PRD §8
+// B1 negative-assertion mandate), and needs NO change to
+// ElasticResult/BucklingResult, both of which are deliberately frozen and store
+// no applied load (crates/reify-compiler/stdlib/solver_buckling_fns.ri:66-79).
+// Since δ (#5306) that holds only ONCE THIS FILE COMPILES AGAIN: after γ1 alone
+// it still fails at compile time (see POST-δ below).
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, one Error:
+//   * ArgTypeMismatch, PointLoad.force on `tip_load`: Scalar[m·kg·s^-2] at a
+//     field still declared `Real`.
+//   Eval prints NO ElasticResult at all, neither 0 nor 5139325.408614099 Pa.
+//   CHOKEPOINT: compile-time struct-ctor field conformance. This exit 1 is NOT
+//   γ1's signal. Machine pin: the gate-resident
+//   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
+//   harness_ctor_conformance_survey/disposition.rs).
+//   The call site is ALREADY units-correct: the field's `Real` declaration is
+//   what fails. How γ1 (#6922) reads its signal instead:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure DcrSolverLoadDroppedDimensioned {
     param length : Length = 1000mm

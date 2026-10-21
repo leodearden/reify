@@ -1,0 +1,20 @@
+// orient_exp_dimensionless.ri — CLI fixture for the #6080 wrong-dimension diagnostic.
+//
+// `orient_exp` takes a rotation vector, which is axis * angle and therefore
+// carries ANGLE. A bare `1.5708` is DIMENSIONLESS — a SPECIFIC dimension (the
+// zero exponent vector), not a wildcard — so it is rejected. This spelling used
+// to be accepted before #6080, which makes it the migration case that most
+// needs a loud, self-explaining error rather than a silent `undef`.
+//
+// `reify eval` must print an `E_RotationVectorDimension` error naming the
+// offending dimension on stderr and exit non-zero.
+//
+// Lives in tests/fixtures/ (NOT examples/) to keep examples_smoke.rs green,
+// since this file intentionally triggers a runtime Error diagnostic — the same
+// rationale recorded in stackup_empty_chain.ri's header.
+
+module orient_exp_dimensionless
+
+structure def OrientExpDimensionless {
+    let q = orient_exp(vec3(0.0, 0.0, 1.5708))
+}

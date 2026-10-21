@@ -1,639 +1,34 @@
 #!/usr/bin/env python3
 """
-test_prd_decompose_verify.py — stdlib unittest for scripts/prd-decompose-verify.py.
-
-Loads the hyphenated prd-decompose-verify.py via importlib (the same pattern as
-test_prd_capability_check.py) since the filename is not importable by name.
-Exercises all pure functions and the CLI main() in hermetic golden tests —
-real subprocess probes are skip-guarded on a built reify binary.
-
-Test classes are added incrementally per TDD step:
-  TestScaffold              — prereq-1 (importability)
-  TestPremiseToProbe        — step-01 RED / step-02 GREEN
-  TestBindPremises          — step-03 RED / step-04 GREEN
-  TestSynthesizeBatch       — step-05 RED / step-06 GREEN
-  TestMainCLI               — step-07 RED / step-08 GREEN
-  TestMjsSyntaxValidity     — step-09 RED / step-10 GREEN
-  TestBoundaryE2e           — step-11 RED / step-12 GREEN
+test_prd_decompose_verify.py — main() CLI, boundary e2e and user-observable-signal tests
+for scripts/prd-decompose-verify.py.  Sibling partitions _bind, _synthesize and _mjs run
+with this one in a single unittest invocation from tests/infra/test_prd_decompose_verify.sh.
 """
 
-import importlib.util
 import io
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
 import unittest.mock
-from typing import Any
 
-# ---------------------------------------------------------------------------
-# Module loaders
-# ---------------------------------------------------------------------------
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pdv_test_support import REPO_ROOT, load_pcc, load_pdv, reify_missing_fixture_stderr
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-_HARNESS_PATH = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.py")
-_ALPHA_PATH = os.path.join(_SCRIPTS_DIR, "prd-capability-check.py")
-
-# Load prd-decompose-verify.py as `pdv` (the module under test)
-_pdv_spec = importlib.util.spec_from_file_location("prd_decompose_verify", _HARNESS_PATH)
-pdv = importlib.util.module_from_spec(_pdv_spec)
-sys.modules["prd_decompose_verify"] = pdv
-_pdv_spec.loader.exec_module(pdv)
-
-# Load prd-capability-check.py as `pcc` (so tests can use α's types + constants)
-# pdv already loaded pcc into sys.modules; grab the registered instance.
-_pcc_spec = importlib.util.spec_from_file_location("prd_capability_check", _ALPHA_PATH)
-pcc = importlib.util.module_from_spec(_pcc_spec)
-if "prd_capability_check" not in sys.modules:
-    sys.modules["prd_capability_check"] = pcc
-    _pcc_spec.loader.exec_module(pcc)
-else:
-    pcc = sys.modules["prd_capability_check"]
+pdv = load_pdv()
+pcc = load_pcc()
 
 # ---------------------------------------------------------------------------
 # Repo-root helpers for skip-guards
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
-_REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
-_REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
+_REIFY_RELEASE = os.path.join(REPO_ROOT, "target", "release", "reify")
+_REIFY_DEBUG = os.path.join(REPO_ROOT, "target", "debug", "reify")
 _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 
-_FIXTURES_DIR = os.path.join(_REPO_ROOT, "tests", "prd-gate", "fixtures")
-_LEAF_FALSE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
-_LEAF_TRUE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
-_PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
-
-
-# ---------------------------------------------------------------------------
-# prereq-1 / TestScaffold: basic importability
-# ---------------------------------------------------------------------------
-
-class TestScaffold(unittest.TestCase):
-    """Sanity-check that prd-decompose-verify.py is importable and main() exists."""
-
-    def test_module_importable(self):
-        self.assertIsNotNone(pdv)
-
-    def test_main_present(self):
-        self.assertTrue(
-            hasattr(pdv, "main"),
-            "prd-decompose-verify.py must export a main() function",
-        )
-
-    def test_main_is_callable(self):
-        self.assertTrue(callable(pdv.main))
-
-    def test_alpha_loaded(self):
-        """pdv must load α (pcc) in-process so downstream code can reuse it."""
-        self.assertIsNotNone(pdv.pcc)
-        self.assertTrue(
-            hasattr(pdv.pcc, "load_probe_set"),
-            "pdv.pcc must expose α's load_probe_set",
-        )
-
-
-# ---------------------------------------------------------------------------
-# step-01 (RED): premise_to_probe() binding + negative-assertion polarity
-# ---------------------------------------------------------------------------
-
-class TestPremiseToProbe(unittest.TestCase):
-    """Tests for Premise dataclass and premise_to_probe() binding rules.
-
-    These tests FAIL until step-02 adds Premise + premise_to_probe.
-    """
-
-    # ── helpers ──────────────────────────────────────────────────────────────
-
-    def _premise(self, assertion_kind: str, fixture: str = "tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                 match=None, text: str = "test premise", capability: str = "cap") -> Any:
-        return pdv.Premise(
-            text=text,
-            assertion_kind=assertion_kind,
-            fixture=fixture,
-            match=match if match is not None else {},
-            capability=capability,
-        )
-
-    def _probe(self, premise) -> dict:
-        return pdv.premise_to_probe(premise)
-
-    # ── (1) rejection → check / observation=present (W1 polarity guard) ──────
-
-    def test_rejection_binds_check_probe_kind(self):
-        """rejection premise → probe_kind=='check'."""
-        p = self._premise("rejection", match={"exit_code": 1, "stderr_contains": "type mismatch"})
-        probe = self._probe(p)
-        self.assertEqual(probe["probe_kind"], "check")
-
-    def test_rejection_binds_observation_present(self):
-        """rejection premise → observation=='present' (NOT 'absent') — W1 polarity guard."""
-        p = self._premise("rejection", match={"exit_code": 1, "stderr_contains": "type mismatch"})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["observation"], "present",
-                         "rejection assertion must bind observation='present' so that "
-                         "reify NOT rejecting causes ABSENT → FAIL (not ABSENT → PASS)")
-
-    def test_rejection_observation_is_NOT_absent(self):
-        """rejection premise must NOT bind observation='absent' — that would be the W1 slip."""
-        p = self._premise("rejection", match={"exit_code": 1})
-        probe = self._probe(p)
-        self.assertNotEqual(probe["expected"]["observation"], "absent",
-                            "W1 slip: rejection premise bound 'absent' (would make silent-accept PASS)")
-
-    def test_rejection_match_names_diagnostic(self):
-        """rejection premise match is passed through to the probe (names the rejection diagnostic)."""
-        p = self._premise("rejection", match={"exit_code": 1, "stderr_contains": "arg type mismatch"})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["match"]["exit_code"], 1)
-        self.assertEqual(probe["expected"]["match"]["stderr_contains"], "arg type mismatch")
-
-    def test_rejection_match_exit_code_only(self):
-        """rejection premise with match={exit_code:1} produces probe with that match."""
-        p = self._premise("rejection", match={"exit_code": 1})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["match"]["exit_code"], 1)
-
-    # ── (2) parses → grammar / present ───────────────────────────────────────
-
-    def test_parses_binds_grammar_probe_kind(self):
-        """parses premise → probe_kind=='grammar'."""
-        p = self._premise("parses", fixture="tests/prd-gate/fixtures/ir_clean_eval.ri", match={})
-        probe = self._probe(p)
-        self.assertEqual(probe["probe_kind"], "grammar")
-
-    def test_parses_binds_observation_present(self):
-        """parses premise → observation=='present'."""
-        p = self._premise("parses", fixture="tests/prd-gate/fixtures/ir_clean_eval.ri", match={})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["observation"], "present")
-
-    # ── (3) resolves → check / present ───────────────────────────────────────
-
-    def test_resolves_binds_check_probe_kind(self):
-        """resolves premise → probe_kind=='check'."""
-        p = self._premise("resolves", match={"exit_code": 0})
-        probe = self._probe(p)
-        self.assertEqual(probe["probe_kind"], "check")
-
-    def test_resolves_binds_observation_present(self):
-        """resolves premise → observation=='present'."""
-        p = self._premise("resolves", match={"exit_code": 0})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["observation"], "present")
-
-    # ── (4) produces/IR → ir / present with asserted stderr signature ─────────
-
-    def test_produces_binds_ir_probe_kind(self):
-        """produces premise → probe_kind=='ir'."""
-        p = self._premise("produces", match={"stderr_contains": "CrossSubGeometryRef"})
-        probe = self._probe(p)
-        self.assertEqual(probe["probe_kind"], "ir")
-
-    def test_produces_binds_observation_present(self):
-        """produces premise → observation=='present'."""
-        p = self._premise("produces", match={"stderr_contains": "CrossSubGeometryRef"})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["observation"], "present")
-
-    def test_produces_match_contains_stderr_signature(self):
-        """produces premise match (stderr_contains) is passed through to probe."""
-        p = self._premise("produces", match={"stderr_contains": "CrossSubGeometryRef"})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["match"]["stderr_contains"], "CrossSubGeometryRef")
-
-    # ── (5) ir (clean-eval) → ir / absent ────────────────────────────────────
-
-    def test_ir_assertion_binds_ir_probe_kind(self):
-        """ir assertion_kind → probe_kind=='ir'."""
-        p = self._premise("ir", fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
-                          match={"stderr_contains": "EvalError"})
-        probe = self._probe(p)
-        self.assertEqual(probe["probe_kind"], "ir")
-
-    def test_ir_assertion_binds_observation_absent(self):
-        """ir assertion_kind (clean-eval) → observation=='absent'."""
-        p = self._premise("ir", fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
-                          match={"stderr_contains": "EvalError"})
-        probe = self._probe(p)
-        self.assertEqual(probe["expected"]["observation"], "absent")
-
-    # ── (6) fixture path is preserved ────────────────────────────────────────
-
-    def test_fixture_path_is_preserved_rejection(self):
-        """rejection probe carries the premise's fixture path."""
-        fixture = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
-        p = self._premise("rejection", fixture=fixture, match={"exit_code": 1})
-        probe = self._probe(p)
-        self.assertEqual(probe["fixture"], fixture)
-
-    def test_fixture_path_is_preserved_parses(self):
-        """parses probe carries the premise's fixture path."""
-        fixture = "tests/prd-gate/fixtures/ir_clean_eval.ri"
-        p = self._premise("parses", fixture=fixture, match={})
-        probe = self._probe(p)
-        self.assertEqual(probe["fixture"], fixture)
-
-    def test_fixture_path_is_preserved_produces(self):
-        """produces probe carries the premise's fixture path."""
-        fixture = "tests/prd-gate/fixtures/ir_clean_eval.ri"
-        p = self._premise("produces", fixture=fixture, match={"stderr_contains": "EvalError"})
-        probe = self._probe(p)
-        self.assertEqual(probe["fixture"], fixture)
-
-    # ── (7) capability field ──────────────────────────────────────────────────
-
-    def test_capability_is_included_in_probe(self):
-        """probe dict includes 'capability' field (from premise.capability)."""
-        p = self._premise("rejection", capability="arg-vs-param rejection (4575)",
-                          match={"exit_code": 1})
-        probe = self._probe(p)
-        self.assertIn("capability", probe)
-        self.assertEqual(probe["capability"], "arg-vs-param rejection (4575)")
-
-    def test_capability_falls_back_to_text(self):
-        """When premise.capability is None, probe['capability'] falls back to premise.text."""
-        p = pdv.Premise(
-            text="some premise text",
-            assertion_kind="parses",
-            fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
-            match={},
-            capability=None,
-        )
-        probe = self._probe(p)
-        self.assertIn("capability", probe)
-        self.assertEqual(probe["capability"], "some premise text")
-
-    # ── (8) probe is α load_probe_set-compatible ──────────────────────────────
-
-    def test_rejection_probe_round_trips_through_alpha(self):
-        """premise_to_probe output is accepted by α's load_probe_set."""
-        p = self._premise("rejection", match={"exit_code": 1})
-        probe = self._probe(p)
-        probe_set = json.dumps({"probes": [probe]})
-        # Must not raise
-        probes = pcc.load_probe_set(probe_set)
-        self.assertEqual(len(probes), 1)
-        self.assertEqual(probes[0].probe_kind, "check")
-
-
-# ---------------------------------------------------------------------------
-# step-03 (RED): bind_premises() list→probe-set + negative-assertion enforcement
-# ---------------------------------------------------------------------------
-
-class TestBindPremises(unittest.TestCase):
-    """Tests for bind_premises() list→probe-set conversion.
-
-    These tests FAIL until step-04 implements bind_premises.
-    """
-
-    def _make_premises(self):
-        return [
-            pdv.Premise(text="revolute rejects non-axis", assertion_kind="rejection",
-                        fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                        match={"exit_code": 1}, capability="arg-vs-param rejection"),
-            pdv.Premise(text="ir_clean_eval parses", assertion_kind="parses",
-                        fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
-                        match={}, capability="clean eval grammar"),
-            pdv.Premise(text="ir_clean_eval no eval error", assertion_kind="ir",
-                        fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
-                        match={"stderr_contains": "EvalError"}, capability="eval-error proxy"),
-        ]
-
-    # ── (1) one probe per premise ─────────────────────────────────────────────
-
-    def test_bind_produces_probe_per_premise(self):
-        """bind_premises produces one probe per premise."""
-        premises = self._make_premises()
-        result = pdv.bind_premises(premises)
-        self.assertIn("probes", result)
-        self.assertEqual(len(result["probes"]), len(premises))
-
-    def test_bind_returns_dict_with_probes_key(self):
-        """bind_premises returns a dict with a 'probes' key (α probe-set format)."""
-        premises = self._make_premises()
-        result = pdv.bind_premises(premises)
-        self.assertIsInstance(result, dict)
-        self.assertIn("probes", result)
-        self.assertIsInstance(result["probes"], list)
-
-    # ── (2) round-trip: bind → load_probe_set ────────────────────────────────
-
-    def test_bind_output_accepted_by_alpha_load_probe_set(self):
-        """bind_premises output JSON is accepted by α's load_probe_set."""
-        premises = self._make_premises()
-        result = pdv.bind_premises(premises)
-        probe_set_json = json.dumps(result)
-        # Must not raise
-        probes = pcc.load_probe_set(probe_set_json)
-        self.assertEqual(len(probes), 3)
-
-    def test_bind_probe_kinds_match_assertion_kinds(self):
-        """bind_premises maps assertion_kind correctly for all premises in a mixed list."""
-        premises = self._make_premises()
-        result = pdv.bind_premises(premises)
-        kinds = {p["probe_kind"] for p in result["probes"]}
-        # rejection → check, parses → grammar, ir → ir
-        self.assertIn("check", kinds)
-        self.assertIn("grammar", kinds)
-        self.assertIn("ir", kinds)
-
-    # ── (3) every rejection premise yields a probe (none dropped) ─────────────
-
-    def test_all_rejection_premises_yield_probes(self):
-        """Every rejection premise yields exactly one probe — none are silently dropped."""
-        premises = [
-            pdv.Premise(text="R1", assertion_kind="rejection",
-                        fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                        match={"exit_code": 1}, capability="R1"),
-            pdv.Premise(text="R2", assertion_kind="rejection",
-                        fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                        match={"exit_code": 1, "stderr_contains": "diag"}, capability="R2"),
-        ]
-        result = pdv.bind_premises(premises)
-        rejection_probes = [p for p in result["probes"] if p["probe_kind"] == "check"
-                            and p["expected"]["observation"] == "present"]
-        self.assertEqual(len(rejection_probes), 2,
-                         "Both rejection premises must yield probes (none dropped)")
-
-    # ── (4) rejection premise missing fixture → error ─────────────────────────
-
-    def test_rejection_missing_fixture_raises(self):
-        """A rejection premise with no fixture raises a clear error (gap, not a pass)."""
-        p = pdv.Premise(text="missing fixture rejection", assertion_kind="rejection",
-                        fixture="", match={"exit_code": 1}, capability="missing")
-        with self.assertRaises(Exception) as ctx:
-            pdv.bind_premises([p])
-        self.assertIn(
-            "fixture",
-            str(ctx.exception).lower(),
-            "Error message must mention 'fixture' for a rejection premise with no fixture path",
-        )
-
-    def test_rejection_empty_match_raises(self):
-        """A rejection premise with empty match raises — empty match is satisfied
-        unconditionally (α's match_predicate returns True for {}), so reify can silently
-        accept and the probe still PASSes.  This is the exact 4575 silent-accept class
-        bind_premises exists to catch."""
-        p = pdv.Premise(text="empty match rejection", assertion_kind="rejection",
-                        fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                        match={}, capability="empty-match")
-        with self.assertRaises(Exception) as ctx:
-            pdv.bind_premises([p])
-        self.assertIn(
-            "match",
-            str(ctx.exception).lower(),
-            "Error message must mention 'match' for a rejection premise with empty match dict",
-        )
-
-    # ── (5) empty list → empty probe-set ────────────────────────────────────
-
-    def test_empty_premises_gives_empty_probe_set(self):
-        """bind_premises([]) → {'probes': []}."""
-        result = pdv.bind_premises([])
-        self.assertEqual(result, {"probes": []})
-
-    # ── (6) observations are correct for each assertion kind ──────────────────
-
-    def test_rejection_probe_has_observation_present(self):
-        """bind_premises sets observation='present' for rejection premises."""
-        p = pdv.Premise(text="R", assertion_kind="rejection",
-                        fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                        match={"exit_code": 1}, capability="R")
-        result = pdv.bind_premises([p])
-        probe = result["probes"][0]
-        self.assertEqual(probe["expected"]["observation"], "present")
-
-    def test_ir_probe_has_observation_absent(self):
-        """bind_premises sets observation='absent' for ir premises."""
-        p = pdv.Premise(text="I", assertion_kind="ir",
-                        fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
-                        match={"stderr_contains": "EvalError"}, capability="I")
-        result = pdv.bind_premises([p])
-        probe = result["probes"][0]
-        self.assertEqual(probe["expected"]["observation"], "absent")
-
-
-# ---------------------------------------------------------------------------
-# step-05 (RED): synthesize_batch() blocking semantics + captured-output mandate
-# ---------------------------------------------------------------------------
-
-class TestSynthesizeBatch(unittest.TestCase):
-    """Tests for BatchVerdict + synthesize_batch() blocking semantics.
-
-    Uses synthetic α --json result records.
-    These tests FAIL until step-06 implements BatchVerdict + synthesize_batch.
-    """
-
-    def _result(self, capability: str, verdict: str,
-                exit_code: int = 0, stdout: str = "", stderr: str = "") -> dict:
-        """Build a synthetic α --json result record."""
-        return {
-            "capability": capability,
-            "probe_kind": "check",
-            "verdict": verdict,
-            "command": ["reify", "check", "/fixture.ri"],
-            "exit_code": exit_code,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-    # ── (1) all-PASS prover + empty adversary → does not block ───────────────
-
-    def test_all_pass_prover_empty_adversary_does_not_block(self):
-        """All PASS prover results + empty adversary → blocks==False."""
-        role_results = {
-            "prover": [
-                self._result("cap-A", "PASS"),
-                self._result("cap-B", "PASS"),
-            ],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertFalse(bv.blocks)
-
-    def test_all_pass_prover_and_adversary_does_not_block(self):
-        """All PASS in both prover and adversary → blocks==False."""
-        role_results = {
-            "prover": [self._result("cap-A", "PASS")],
-            "adversary": [self._result("cap-B", "PASS")],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertFalse(bv.blocks)
-
-    # ── (2) prover FAIL → blocks + capability listed ─────────────────────────
-
-    def test_prover_fail_blocks(self):
-        """Any prover FAIL → blocks==True."""
-        role_results = {
-            "prover": [
-                self._result("cap-A", "PASS"),
-                self._result("cap-B", "FAIL", exit_code=0, stdout="All constraints satisfied."),
-            ],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertTrue(bv.blocks)
-
-    def test_prover_fail_lists_failing_capability(self):
-        """prover FAIL → failing capability name is in bv.blocking."""
-        role_results = {
-            "prover": [
-                self._result("cap-FAILING", "FAIL",
-                             exit_code=0, stdout="All constraints satisfied."),
-            ],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertIn("cap-FAILING", bv.blocking)
-
-    # ── (3) UNPROVABLE → blocks ───────────────────────────────────────────────
-
-    def test_prover_unprovable_blocks(self):
-        """Any UNPROVABLE → blocks==True."""
-        role_results = {
-            "prover": [self._result("cap-U", "UNPROVABLE", exit_code=1, stderr="unrelated err")],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertTrue(bv.blocks)
-
-    def test_prover_unprovable_listed(self):
-        """UNPROVABLE capability is listed in bv.blocking."""
-        role_results = {
-            "prover": [self._result("cap-U", "UNPROVABLE", exit_code=1)],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertIn("cap-U", bv.blocking)
-
-    # ── (4) HARNESS_ERROR → blocks ───────────────────────────────────────────
-
-    def test_prover_harness_error_blocks(self):
-        """Any HARNESS_ERROR → blocks==True."""
-        role_results = {
-            "prover": [self._result("cap-HE", "HARNESS_ERROR")],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertTrue(bv.blocks)
-
-    def test_prover_harness_error_listed(self):
-        """HARNESS_ERROR capability is listed in bv.blocking."""
-        role_results = {
-            "prover": [self._result("cap-HE", "HARNESS_ERROR")],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertIn("cap-HE", bv.blocking)
-
-    # ── (5) adversary-only FAIL (falsification / unlisted premise) → blocks ───
-
-    def test_adversary_only_fail_blocks(self):
-        """Adversary-only FAIL (unlisted premise / falsification) → blocks==True."""
-        role_results = {
-            "prover": [self._result("cap-A", "PASS")],
-            "adversary": [self._result("cap-ADVERSARY-FAIL", "FAIL",
-                                       exit_code=0, stdout="")],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertTrue(bv.blocks)
-
-    def test_adversary_fail_listed_in_blocking(self):
-        """Adversary FAIL capability appears in bv.blocking."""
-        role_results = {
-            "prover": [],
-            "adversary": [self._result("adv-FAIL-cap", "FAIL", exit_code=0)],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertIn("adv-FAIL-cap", bv.blocking)
-
-    # ── (6) adversary PASS never clears a prover FAIL ─────────────────────────
-
-    def test_adversary_pass_cannot_clear_prover_fail(self):
-        """Adversary PASS never clears a prover FAIL (net-positive recall)."""
-        role_results = {
-            "prover": [self._result("cap-B", "FAIL",
-                                    exit_code=0, stdout="All constraints satisfied.")],
-            "adversary": [self._result("cap-B", "PASS", exit_code=1)],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertTrue(bv.blocks,
-                        "Adversary PASS must not clear a prover FAIL — it can only add signals")
-
-    # ── (7) report contains captured evidence for blocking probes ─────────────
-
-    def test_report_contains_command_for_failing_probe(self):
-        """bv.report includes the exact command for each blocking probe."""
-        role_results = {
-            "prover": [
-                self._result("cap-FAIL", "FAIL",
-                             exit_code=0, stdout="All constraints satisfied.", stderr=""),
-            ],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        # The command is ["reify", "check", "/fixture.ri"] — at least "reify" must appear
-        self.assertIn("reify", bv.report)
-
-    def test_report_contains_exit_code_for_failing_probe(self):
-        """bv.report includes the labelled exit_code line for each blocking probe."""
-        role_results = {
-            "prover": [self._result("cap-FAIL", "FAIL", exit_code=0, stdout="x")],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        # The labelled "exit_code: 0" line must appear so the assertion can't pass
-        # simply because the digit '0' appears elsewhere (e.g. in timestamps or names).
-        self.assertIn("exit_code: 0", bv.report)
-
-    def test_report_contains_stdout_for_failing_probe(self):
-        """bv.report includes the captured stdout for each blocking probe."""
-        role_results = {
-            "prover": [
-                self._result("cap-FAIL", "FAIL",
-                             exit_code=0, stdout="All constraints satisfied.", stderr="")
-            ],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertIn("All constraints satisfied.", bv.report)
-
-    def test_report_contains_stderr_for_failing_probe(self):
-        """bv.report includes the captured stderr for each blocking probe."""
-        role_results = {
-            "prover": [
-                self._result("cap-FAIL", "FAIL",
-                             exit_code=1, stdout="", stderr="error: type mismatch")
-            ],
-            "adversary": [],
-        }
-        bv = pdv.synthesize_batch(role_results)
-        self.assertIn("error: type mismatch", bv.report)
-
-    # ── (8) BatchVerdict has required fields ──────────────────────────────────
-
-    def test_batch_verdict_has_blocks_field(self):
-        """BatchVerdict has a .blocks bool field."""
-        bv = pdv.synthesize_batch({"prover": [], "adversary": []})
-        self.assertIsInstance(bv.blocks, bool)
-
-    def test_batch_verdict_has_blocking_list(self):
-        """BatchVerdict has a .blocking list field."""
-        bv = pdv.synthesize_batch({"prover": [], "adversary": []})
-        self.assertIsInstance(bv.blocking, list)
-
-    def test_batch_verdict_has_report_string(self):
-        """BatchVerdict has a .report string field."""
-        bv = pdv.synthesize_batch({"prover": [], "adversary": []})
-        self.assertIsInstance(bv.report, str)
-
-    def test_blocking_is_empty_when_all_pass(self):
-        """bv.blocking is empty when nothing blocks."""
-        bv = pdv.synthesize_batch({"prover": [self._result("cap", "PASS")], "adversary": []})
-        self.assertEqual(bv.blocking, [])
+_LEAF_FALSE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
+_LEAF_TRUE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
 
 
 # ---------------------------------------------------------------------------
@@ -819,60 +214,112 @@ class TestMainCLI(unittest.TestCase):
         obj = json.loads(out)
         self.assertTrue(obj["blocks"])
 
+    # ── task #7257 step-07 (RED): the evidence gate on the CLI surface ───────
 
-# ---------------------------------------------------------------------------
-# step-09 (RED): Workflow .mjs syntax-validity contract
-# ---------------------------------------------------------------------------
+    def _evidence_free_record(self, capability: str, verdict: str = "FAIL") -> dict:
+        """A blocking verdict carrying no executed-probe evidence."""
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": [],
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+        }
 
-_NODE_ON_PATH = bool(__import__("shutil").which("node"))
-
-
-class TestMjsSyntaxValidity(unittest.TestCase):
-    """Tests that prd-decompose-verify.mjs exists and is valid ESM.
-
-    Scoped to syntax validity only — NOT prose/role-name grepping and NOT
-    executing the module (execution would hit undefined Workflow globals).
-    These tests FAIL until step-10 authors the .mjs file.
-    """
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs syntax check")
-    def test_mjs_file_exists(self):
-        """scripts/prd-decompose-verify.mjs must exist."""
-        self.assertTrue(
-            os.path.isfile(_PDV_MJS),
-            f"scripts/prd-decompose-verify.mjs not found at {_PDV_MJS}",
+    def _fixture_absent_record(self, capability: str) -> dict:
+        """An executed FAIL whose probe could not find its target file."""
+        return self._result_record(
+            capability, "FAIL", exit_code=1,
+            stderr=reify_missing_fixture_stderr("/fixture.ri"),
         )
 
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs syntax check")
-    def test_mjs_node_check_passes(self):
-        """Wrapped-form node --check: export-stripped body wrapped in async function is valid syntax.
-
-        After step-17, the .mjs has a top-level `return` which raw `node --check`
-        rejects with SyntaxError: Illegal return statement (top-level return is not
-        valid ESM). Validate harness-faithful syntax instead: strip `export const
-        meta` → `const meta`, wrap the body in `async function __wf() { ... }`, and
-        node --check that wrapped form. This mirrors the Workflow harness which wraps
-        the script body in an async function before evaluating it.
-        """
-        with open(_PDV_MJS) as fh:
-            src = fh.read()
-        stripped = src.replace("export const meta", "const meta")
-        wrapped = f"async function __wf() {{\n{stripped}\n}}"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".mjs", delete=False) as f:
-            f.write(wrapped)
-            tmp_path = f.name
+    def test_synthesize_only_evidence_free_fails_exits_0(self):
+        """A file of nothing but unexecuted promises does not block the batch."""
+        tmp = self._make_results_file(
+            prover=[self._evidence_free_record("vacuous-1"),
+                    self._evidence_free_record("vacuous-2", "UNPROVABLE")],
+        )
         try:
-            result = subprocess.run(
-                ["node", "--check", tmp_path],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(
-                result.returncode, 0,
-                f"node --check returned {result.returncode}; stderr: {result.stderr!r}",
-            )
+            rc, out, _ = self._run_main(["synthesize", tmp])
         finally:
-            os.unlink(tmp_path)
+            os.unlink(tmp)
+        self.assertEqual(rc, 0, f"evidence-free records must not block; stdout={out!r}")
+        obj = json.loads(out)
+        self.assertFalse(obj["blocks"])
+        self.assertEqual(sorted(obj["malformed"]), ["vacuous-1", "vacuous-2"])
+
+    def test_synthesize_one_executed_fail_among_vacuous_exits_1_with_one_blocker(self):
+        """The real finding still blocks, and it is the ONLY thing listed."""
+        tmp = self._make_results_file(
+            prover=[self._evidence_free_record("vacuous-1"),
+                    self._result_record("REAL fail", "FAIL", exit_code=1,
+                                        stderr="type mismatch: expected axis"),
+                    self._evidence_free_record("vacuous-2")],
+            adversary=[self._evidence_free_record("vacuous-3")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1)
+        obj = json.loads(out)
+        self.assertEqual(obj["blocking"], ["REAL fail"])
+        self.assertEqual(len(obj["blocking"]), 1)
+
+    def test_synthesize_json_carries_all_seven_keys_with_right_types(self):
+        """The emitted JSON is the full BatchVerdict, not just the old three keys."""
+        tmp = self._make_results_file(
+            prover=[self._result_record("cap", "PASS")],
+        )
+        try:
+            _, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        obj = json.loads(out)
+        for key in ("blocks", "blocking", "report", "malformed",
+                    "fixture_absent", "executed", "total"):
+            self.assertIn(key, obj, f"synthesize JSON is missing {key!r}")
+        self.assertIsInstance(obj["blocks"], bool)
+        self.assertIsInstance(obj["blocking"], list)
+        self.assertIsInstance(obj["report"], str)
+        self.assertIsInstance(obj["malformed"], list)
+        self.assertIsInstance(obj["fixture_absent"], list)
+        self.assertIsInstance(obj["executed"], int)
+        self.assertIsInstance(obj["total"], int)
+
+    def test_synthesize_only_fixture_absent_exits_0_and_names_it(self):
+        """A missing fixture is a deliverable signal, not a batch-blocking failure."""
+        tmp = self._make_results_file(
+            prover=[self._fixture_absent_record("fixture-absent cap")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0, f"fixture-absent must not block; stdout={out!r}")
+        obj = json.loads(out)
+        self.assertFalse(obj["blocks"])
+        self.assertEqual(obj["fixture_absent"], ["fixture-absent cap"])
+
+    def test_synthesize_all_pass_reports_a_clean_basis(self):
+        """Happy-path regression guard: executed == total, nothing set aside."""
+        tmp = self._make_results_file(
+            prover=[self._result_record("cap-A", "PASS"),
+                    self._result_record("cap-B", "PASS")],
+            adversary=[self._result_record("cap-C", "PASS")],
+        )
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 0)
+        obj = json.loads(out)
+        self.assertEqual(obj["total"], 3)
+        self.assertEqual(obj["executed"], 3)
+        self.assertEqual(obj["malformed"], [])
+        self.assertEqual(obj["fixture_absent"], [])
 
 
 # ---------------------------------------------------------------------------
@@ -967,573 +414,146 @@ class TestBoundaryE2e(unittest.TestCase):
                          f"leaf-true-premise.json must PASS; blocking: {bv.blocking}; "
                          f"report: {bv.report}")
 
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
+    def test_real_alpha_missing_fixture_is_fixture_absent(self):
+        """Real α + reify on a never-written fixture is fixture-absent, not blocking.
+
+        Pins the fixture anchor against what α actually records, so #7257's
+        false block cannot quietly return.
+        """
+        with tempfile.TemporaryDirectory(prefix="pdv_e2e_absent_") as tmpdir:
+            fixture = os.path.join(tmpdir, "never_written.ri")
+            results = self._run_probes_with_alpha({"probes": [
+                {"capability": "ir absent", "probe_kind": "ir", "fixture": fixture,
+                 "expected": {"observation": "present",
+                              "match": {"stderr_contains": "E_NEVER"}}},
+                {"capability": "check absent", "probe_kind": "check",
+                 "fixture": fixture,
+                 "expected": {"observation": "present", "match": {"exit_code": 0}}},
+            ]})
+        bv = pdv.synthesize_batch({"prover": results, "adversary": []})
+        self.assertEqual(sorted(bv.fixture_absent), ["check absent", "ir absent"],
+                         bv.report)
+        self.assertFalse(bv.blocks, bv.report)
+
 
 # ---------------------------------------------------------------------------
-# step-14 (RED): Workflow .mjs injected-globals runtime contract
+# task #7257 step-15 (RED): the user-observable signal, end to end
 # ---------------------------------------------------------------------------
 
-class TestMjsInjectedGlobalsContract(unittest.TestCase):
-    """Execute prd-decompose-verify.mjs under a faithful mock of Workflow's injected
-    globals and ONLY those: agent, parallel, pipeline, log, phase, args, budget, workflow.
+class TestUserObservableSignal(unittest.TestCase):
+    """One synthesize call must make all four ARM 1 sub-signals legible at once.
 
-    The Workflow tool injects exactly this set; tmp_file and shell are NOT injected.
-    Against the CURRENT .mjs this FAILS: stage 2 calls writeTempJson/runHarness which
-    reference non-injected tmp_file/shell globals, throwing ReferenceError at import-eval.
-    Passes after step-15 rewrites the .mjs to use ONLY injected globals.
+    This is the report a human actually reads.  The observed pi report scored
+    five capabilities as blocking when exactly one had been probed, rendered a
+    string command character-by-character, and stated nowhere how many of its
+    records carried evidence.  A reader could not tell a falsification from an
+    unexecuted promise, and had no count to check the verdict against.
+
+    GREEN in task #7257 step-16 (the counts header).
     """
 
-    _SENTINEL = "WORKFLOW_CONTRACT_OK"
+    _STRING_CMD = "target/release/reify eval f.ri"
+    _EXPLODED = "t a r g e t"
 
-    def _harness_source(self) -> str:
-        """Build the Node.js ESM harness script source."""
-        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
-        return f"""\
-// Faithful mock of the Workflow tool's injected globals.
-// ONLY globals the Workflow tool injects are set — tmp_file and shell are NOT.
+    def _mixed_batch(self):
+        """One executed FAIL + three evidence-free + one fixture-absent + one string-command."""
+        return {
+            "prover": [
+                # (1) the ONE genuine, evidence-backed falsification
+                {"capability": "REAL executed fail", "probe_kind": "check",
+                 "verdict": "FAIL",
+                 "command": ["reify", "check", "tests/prd-gate/fixtures/x.ri"],
+                 "exit_code": 0, "stdout": "All constraints satisfied.", "stderr": ""},
+                # (2) three unexecuted promises
+                {"capability": "vacuous-1", "probe_kind": "check", "verdict": "FAIL",
+                 "command": [], "exit_code": None, "stdout": "", "stderr": ""},
+                {"capability": "vacuous-2", "probe_kind": "ir", "verdict": "UNPROVABLE",
+                 "command": [], "stdout": "", "stderr": ""},
+                {"capability": "vacuous-3", "probe_kind": "check", "verdict": "FAIL",
+                 "exit_code": None, "stdout": "", "stderr": ""},
+                # (3) a probe that ran but could not find its fixture
+                {"capability": "fixture-absent cap", "probe_kind": "ir", "verdict": "FAIL",
+                 "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
+                 "exit_code": 1, "stdout": "",
+                 "stderr": reify_missing_fixture_stderr(
+                     "tests/prd-gate/fixtures/not-yet.ri")},
+            ],
+            "adversary": [
+                # (4) an evidence-backed falsification whose command is a STRING
+                {"capability": "string-command cap", "probe_kind": "ir", "verdict": "FAIL",
+                 "command": self._STRING_CMD, "exit_code": 1, "stdout": "",
+                 "stderr": "assertion did not hold"},
+            ],
+        }
 
-const SENTINEL = "{self._SENTINEL}";
-const MJS_PATH = "{mjs_abs}";
+    def test_only_evidence_backed_records_block(self):
+        """blocks is true, and `blocking` is EXACTLY the evidence-backed set.
 
-// ── mock: agent(prompt, opts) — returns canned shapes based on opts.phase ──────
-globalThis.agent = async (prompt, opts = {{}}) => {{
-    const phase = (opts.phase || "").toLowerCase();
-    if (phase === "enumerate") {{
-        return {{
-            premises: [{{
-                text: "revolute rejects non-axis arg",
-                assertion_kind: "rejection",
-                fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
-                match: {{ exit_code: 1 }},
-                capability: "arg-vs-param rejection (mock)",
-            }}],
-        }};
-    }}
-    if (phase === "prove") {{
-        return {{
-            prover: [{{
-                capability: "arg-vs-param rejection (mock)",
-                probe_kind: "check",
-                verdict: "PASS",
-                command: ["reify", "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri"],
-                exit_code: 1,
-                stdout: "",
-                stderr: "type mismatch",
-            }}],
-            adversary: [],
-        }};
-    }}
-    if (phase === "adversary") {{
-        return {{ prover: [], adversary: [] }};
-    }}
-    if (phase === "synthesize") {{
-        return {{ blocks: false, blocking: [], report: "" }};
-    }}
-    // fallback
-    return {{}};
-}};
-
-// ── mock: pipeline(items, ...stages) — threads each item through stages in order ─
-globalThis.pipeline = async (items, ...stages) => {{
-    const results = [];
-    for (const item of items) {{
-        let val = item;
-        for (const stage of stages) {{
-            val = await stage(val, item, results.length);
-        }}
-        results.push(val);
-    }}
-    return results;
-}};
-
-// ── mock: parallel(thunks) — Promise.all of called thunks ────────────────────
-globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
-
-// ── mock: log — no-op ─────────────────────────────────────────────────────────
-globalThis.log = (..._a) => {{}};
-
-// ── mock: phase — no-op ───────────────────────────────────────────────────────
-globalThis.phase = (..._a) => {{}};
-
-// ── mock: args — a single leaf to drive every phase (Enumerate→Prove‖Adversary→Synthesize)
-globalThis.args = [{{ signal: "revolute rejects a non-axis arg (mock leaf)", text: "mock leaf" }}];
-
-// ── mock: budget ──────────────────────────────────────────────────────────────
-globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
-
-// ── mock: workflow ────────────────────────────────────────────────────────────
-globalThis.workflow = async () => {{}};
-
-// ── execute the .mjs via AsyncFunction (harness-faithful) ──────────────────────
-import {{ readFileSync }} from "node:fs";
-try {{
-    let src = readFileSync(MJS_PATH, "utf8");
-    src = src.replace("export const meta", "const meta");
-    const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
-    await new AsyncFunction(src)();
-    console.log(SENTINEL);
-}} catch (e) {{
-    console.error("IMPORT_FAILED:", e.message);
-    process.exit(1);
-}}
-"""
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
-    def test_mjs_runs_under_injected_globals_only(self):
-        """prd-decompose-verify.mjs runs to completion under ONLY Workflow-injected globals.
-
-        Fails against the current .mjs (writeTempJson/runHarness reference non-injected
-        tmp_file/shell globals → ReferenceError). Passes after step-15 rewrite.
+        The string-command record blocks too, and correctly so — a string
+        command normalizes to one token, so the record does carry executed-probe
+        evidence.  What it must NOT do is render exploded (asserted below).
+        The three vacuous records and the fixture-absent one are what disappear
+        from `blocking`, which is the signal: 6 records in, 2 real findings out,
+        not 6 undifferentiated blockers.
         """
-        harness_src = self._harness_source()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".mjs", delete=False) as f:
-            f.write(harness_src)
-            harness_path = f.name
-        try:
-            result = subprocess.run(
-                ["node", "--input-type=module"],
-                input=harness_src,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            self.assertEqual(
-                result.returncode, 0,
-                f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
-            )
-            self.assertIn(
-                self._SENTINEL, result.stdout,
-                f"sentinel not found in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
-            )
-        finally:
-            os.unlink(harness_path)
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertTrue(bv.blocks)
+        self.assertEqual(sorted(bv.blocking), ["REAL executed fail", "string-command cap"])
 
-    _RESULT_MARK = "WF_RESULT_JSON:"
+    def test_the_three_unexecuted_promises_are_listed_as_malformed(self):
+        """Each vacuous record is still named — just under the right heading."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertEqual(sorted(bv.malformed), ["vacuous-1", "vacuous-2", "vacuous-3"])
 
-    def _result_capturing_source(self) -> str:
-        """Build a Node ESM harness that captures the .mjs body's RETURN VALUE.
+    def test_the_fixture_absent_record_is_listed_separately(self):
+        """A missing deliverable is its own category, not a falsification."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
 
-        The Workflow harness wraps the script body in an async function and takes
-        the result from its top-level `return`. After step-17, the .mjs has a
-        native top-level `return`, so stripping `export const meta` → `const meta`
-        and wrapping in AsyncFunction is sufficient — no return injection needed.
+    def test_the_string_command_renders_verbatim(self):
+        """Captured evidence stays re-runnable."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        self.assertIn(self._STRING_CMD, bv.report)
+        self.assertNotIn(self._EXPLODED, bv.report)
+
+    def test_report_opens_with_a_machine_readable_counts_header(self):
+        """The report states its own basis on line 1, before any evidence block.
+
+        Without this a reader has to count report sections by hand to learn how
+        much of the batch was actually probed — which is exactly the arithmetic
+        nobody did on the pi report.
         """
-        globals_setup = self._harness_source().split("// ── execute the .mjs")[0]
-        return globals_setup + f"""\
-// ── capture the .mjs body's return value ─────────────────────────────────────
-import {{ readFileSync }} from "node:fs";
-const RESULT_MARK = "{self._RESULT_MARK}";
-let src = readFileSync(MJS_PATH, "utf8");
-// Strip the ESM `export` so the body is legal inside a function.
-src = src.replace("export const meta", "const meta");
-// The .mjs now has a native top-level `return` (step-17) — no injection needed.
-const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
-const body = new AsyncFunction(src);
-const result = await body();
-console.log(RESULT_MARK + JSON.stringify(result));
-"""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        header = bv.report.splitlines()[0]
+        self.assertIn("records:", header, f"report header missing; got {header!r}")
+        for token in ("6 total", "3 with executed-probe evidence", "2 blocking",
+                      "3 malformed", "1 fixture-absent"):
+            self.assertIn(token, header,
+                          f"counts header must state {token!r}; got {header!r}")
 
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
-    def test_mjs_surfaces_aggregate_verdict_shape(self):
-        """The .mjs body's return value is the aggregate verdict with the right shape.
+    def test_counts_header_is_emitted_even_when_nothing_blocks(self):
+        """An all-clear report still states the basis of its all-clear."""
+        bv = pdv.synthesize_batch({
+            "prover": [{"capability": "cap", "probe_kind": "check", "verdict": "PASS",
+                        "command": ["reify", "check", "f.ri"], "exit_code": 0,
+                        "stdout": "", "stderr": ""}],
+            "adversary": [],
+        })
+        header = bv.report.splitlines()[0]
+        self.assertIn("records:", header, f"report header missing; got {header!r}")
+        self.assertIn("1 total", header)
+        self.assertIn("0 blocking", header)
 
-        Complements test_mjs_returns_verdict_under_documented_contract: that test
-        asserts the return value is NOT undefined; this test additionally asserts
-        the shape (blocks/leaf_verdicts/summary), the mock-leaf count, and the
-        non-blocking outcome. Uses _result_capturing_source() which strips `export`
-        and wraps in AsyncFunction — after step-17, no return injection is needed.
-        """
-        harness_src = self._result_capturing_source()
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
-        )
-        marker_lines = [ln for ln in result.stdout.splitlines()
-                        if ln.startswith(self._RESULT_MARK)]
-        self.assertTrue(
-            marker_lines,
-            f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
-        )
-        payload = marker_lines[-1][len(self._RESULT_MARK):]
-        self.assertNotEqual(
-            payload, "undefined",
-            "workflow body completion value is undefined — result was dropped "
-            "(dead-const regression: IIFE bound to an unreturned variable)",
-        )
-        verdict = json.loads(payload)
-        self.assertIsInstance(verdict, dict,
-                              f"aggregate verdict must be an object; got {verdict!r}")
-        # Aggregate-verdict shape (the contract β/D4 consumes).
-        for key in ("blocks", "leaf_verdicts", "summary"):
-            self.assertIn(key, verdict,
-                          f"aggregate verdict missing '{key}'; got keys {sorted(verdict)}")
-        self.assertIsInstance(verdict["blocks"], bool)
-        self.assertIsInstance(verdict["leaf_verdicts"], list)
-        self.assertIsInstance(verdict["summary"], str)
-        # The mock drives one leaf through to a non-blocking synthesize verdict.
-        self.assertFalse(verdict["blocks"],
-                         f"mock leaf must not block; got verdict {verdict!r}")
-        self.assertEqual(len(verdict["leaf_verdicts"]), 1,
-                         f"one mock leaf → one leaf verdict; got {verdict['leaf_verdicts']!r}")
-
-    # ── step-16 RED / step-17 GREEN ───────────────────────────────────────────
-
-    def _honest_contract_source(self) -> str:
-        """Build a Node ESM harness that wraps the .mjs body via AsyncFunction
-        with NO source rewriting beyond stripping the ESM `export` keyword.
-
-        The Workflow harness documentation states the script body is wrapped in
-        an async function and the result taken from its top-level `return` (every
-        Workflow doc example ends `return {...}`). A bare IIFE expression at the
-        end of the body evaluates the inner IIFE but the OUTER AsyncFunction still
-        has no return statement — it resolves to undefined. This test catches that.
-        """
-        globals_setup = self._harness_source().split("// ── execute the .mjs")[0]
-        honest_section = (
-            "// ── honest contract: strip export only, NO return injection ────────────────\n"
-            "import { readFileSync } from \"node:fs\";\n"
-            "const WF_VERDICT_MARK = \"WF_VERDICT_JSON:\";\n"
-            "let src = readFileSync(MJS_PATH, \"utf8\");\n"
-            "// ONLY strip the ESM `export` keyword — do NOT inject any `return` statement.\n"
-            "src = src.replace(\"export const meta\", \"const meta\");\n"
-            "const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;\n"
-            "const result = await new AsyncFunction(src)();\n"
-            "// null sentinel: undefined (missing top-level return) renders as null.\n"
-            "console.log(WF_VERDICT_MARK + JSON.stringify(result ?? null));\n"
-        )
-        return globals_setup + honest_section
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
-    def test_mjs_returns_verdict_under_documented_contract(self):
-        """Workflow contract: .mjs body, wrapped as AsyncFunction with NO source
-        rewriting beyond stripping `export`, must RETURN the aggregate verdict.
-
-        The Workflow tool documentation states the harness wraps the script body in
-        an async function and takes the result from its top-level `return` — every
-        Workflow doc example ends `return {...}`. This test models that exactly: it
-        does NOT inject any `return` statement. If the .mjs body has no top-level
-        `return` (bare IIFE expression), AsyncFunction returns undefined and the
-        {blocks, leaf_verdicts, summary} verdict is silently dropped.
-
-        Against the CURRENT bare-IIFE .mjs, AsyncFunction over the export-stripped
-        body returns undefined (the `await (async function runWorkflow(){...})()`
-        is a bare expression statement in the outer function — no return), so this
-        test FAILS (RED). Passes after step-17 rewrites the .mjs with a top-level
-        `return`.
-        """
-        harness_src = self._honest_contract_source()
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
-        )
-        MARK = "WF_VERDICT_JSON:"
-        marker_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(MARK)]
-        self.assertTrue(
-            marker_lines,
-            f"no verdict marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
-        )
-        payload = marker_lines[-1][len(MARK):]
-        self.assertNotEqual(
-            payload, "null",
-            "workflow body returned null/undefined under documented Workflow contract: "
-            "bare IIFE expression doesn't return from the outer AsyncFunction, "
-            "silently dropping the {blocks, leaf_verdicts, summary} verdict",
-        )
-        verdict = json.loads(payload)
-        self.assertIsInstance(verdict, dict,
-                              f"aggregate verdict must be an object; got {verdict!r}")
-        for key in ("blocks", "leaf_verdicts", "summary"):
-            self.assertIn(key, verdict,
-                          f"aggregate verdict missing key '{key}'; keys: {sorted(verdict)}")
-        self.assertIsInstance(verdict["blocks"], bool)
-        self.assertIsInstance(verdict["leaf_verdicts"], list)
-        self.assertIsInstance(verdict["summary"], str)
-        self.assertFalse(verdict["blocks"],
-                         f"mock leaf must not block; verdict: {verdict!r}")
-        self.assertEqual(
-            len(verdict["leaf_verdicts"]), 1,
-            f"one mock leaf → one leaf verdict; got {verdict['leaf_verdicts']!r}",
-        )
-
-    # ── task #4960 RED: mega-leaf fan-out regression (end-to-end) ────────────
-    #
-    # Reuses _harness_source()'s injected-globals mock verbatim but parameterizes
-    # globalThis.args and captures globalThis.log, then runs the FULL .mjs body
-    # (export-stripped -> AsyncFunction, same as _result_capturing_source) to
-    # assert the user-observable fan-out signal: leaf_verdicts.length.
-
-    _LOG_MARK = "WF_LOG_JSON:"
-
-    def _fanout_source(self, args_js_expr: str) -> str:
-        """Build a Node ESM harness like _result_capturing_source() but with a
-        PARAMETERIZED globalThis.args and a CAPTURING globalThis.log, so a test
-        can drive args→leaves normalization end-to-end and observe both the
-        returned verdict and any degradation warnings.
-        """
-        base = self._harness_source()
-
-        fixed_args_line = (
-            'globalThis.args = [{ signal: "revolute rejects a non-axis arg (mock leaf)", '
-            'text: "mock leaf" }];'
-        )
-        self.assertIn(fixed_args_line, base,
-                      "fixture drift: _harness_source() args mock line changed shape")
-        base = base.replace(fixed_args_line, f"globalThis.args = {args_js_expr};")
-
-        noop_log_line = "globalThis.log = (..._a) => {};"
-        self.assertIn(noop_log_line, base,
-                      "fixture drift: _harness_source() log mock line changed shape")
-        base = base.replace(
-            noop_log_line,
-            "globalThis.__LOG_LINES = [];\n"
-            "globalThis.log = (..._a) => { globalThis.__LOG_LINES.push(_a.map(String).join(\" \")); };",
-        )
-
-        globals_setup = base.split("// ── execute the .mjs")[0]
-        return globals_setup + f"""\
-// ── capture the .mjs body's return value + log lines ──────────────────────────
-import {{ readFileSync }} from "node:fs";
-const RESULT_MARK = "{self._RESULT_MARK}";
-const LOG_MARK = "{self._LOG_MARK}";
-let src = readFileSync(MJS_PATH, "utf8");
-src = src.replace("export const meta", "const meta");
-const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
-const body = new AsyncFunction(src);
-const result = await body();
-console.log(RESULT_MARK + JSON.stringify(result));
-console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
-"""
-
-    def _run_fanout(self, args_js_expr: str):
-        """Run the .mjs body under _fanout_source() and return (verdict, log_lines)."""
-        harness_src = self._fanout_source(args_js_expr)
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
-        )
-        result_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._RESULT_MARK)]
-        log_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._LOG_MARK)]
-        self.assertTrue(result_lines, f"no result marker in stdout; stdout: {result.stdout!r}")
-        self.assertTrue(log_lines, f"no log marker in stdout; stdout: {result.stdout!r}")
-        verdict = json.loads(result_lines[-1][len(self._RESULT_MARK):])
-        logs = json.loads(log_lines[-1][len(self._LOG_MARK):])
-        return verdict, logs
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
-    def test_stringified_leaf_array_fans_out_per_leaf(self):
-        """task #4960: Workflow args arriving JSON-stringified must still fan out
-        one leaf per element, not collapse into a single mega-leaf.
-
-        Against the CURRENT .mjs, line 111's inline
-        `Array.isArray(args) ? args : (args ? [args] : [])` sees a truthy STRING
-        (JSON.stringify of the leaf array), Array.isArray fails, and the whole
-        batch becomes ONE mega-leaf: leaf_verdicts.length is 1, not 3. RED until
-        normalizeLeaves() is wired in.
-        """
-        args_expr = 'JSON.stringify(["mock-leaf-0", "mock-leaf-1", "mock-leaf-2"])'
-        verdict, _logs = self._run_fanout(args_expr)
-        self.assertIsInstance(verdict["leaf_verdicts"], list)
-        self.assertEqual(
-            len(verdict["leaf_verdicts"]), 3,
-            f"stringified 3-leaf array must fan out to 3 leaf verdicts; got {verdict['leaf_verdicts']!r}",
-        )
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
-    def test_non_json_string_args_falls_back_with_warning(self):
-        """A non-JSON string in args has no recoverable leaf structure: it must
-        fall back to a single mega-leaf AND log a loud degradation warning so the
-        fan-out loss stays visible (task #4960 — the fix must not fail silently).
-
-        Against the CURRENT .mjs, the single-leaf fallback already happens (a
-        random string was never an array), but NO warning is logged anywhere —
-        this test's warning assertion is RED until normalizeLeaves() calls warn().
-        """
-        args_expr = json.dumps("not valid json {[")
-        verdict, logs = self._run_fanout(args_expr)
-        self.assertEqual(
-            len(verdict["leaf_verdicts"]), 1,
-            f"non-JSON string must fall back to exactly one leaf; got {verdict['leaf_verdicts']!r}",
-        )
-        combined_log = " ".join(logs).lower()
-        self.assertTrue(
-            "mega-leaf" in combined_log or "mega leaf" in combined_log
-            or "fan-out" in combined_log or "fan out" in combined_log,
-            f"expected a mega-leaf/fan-out degradation warning in captured log; got {logs!r}",
-        )
-
-
-# ---------------------------------------------------------------------------
-# task #4960 (RED): normalizeLeaves() pure-helper contract — mega-leaf trap
-# ---------------------------------------------------------------------------
-
-class TestMjsNormalizeLeaves(unittest.TestCase):
-    """Pure-unit tests for the normalizeLeaves(rawArgs, warn) helper, source-
-    sliced directly out of prd-decompose-verify.mjs (everything BEFORE the
-    `const _wfResult = await` IIFE anchor) and evaluated via `new Function` —
-    no injected-globals mock, no IIFE execution.
-
-    Guards the mega-leaf trap (task #4960): when Workflow args arrive
-    JSON-stringified, `Array.isArray(args)` is false and the whole stringified
-    batch collapses into ONE leaf. normalizeLeaves must detect a JSON-
-    stringified array and restore per-leaf fan-out, while leaving every
-    non-string input byte-for-byte unchanged (real array / single object /
-    undefined / null).
-
-    FAILS until normalizeLeaves is added to the .mjs: the head-slice eval
-    throws ReferenceError('normalizeLeaves is not defined'), the Node harness
-    exits non-zero, and the test fails on the returncode assertion.
-    """
-
-    _MARK = "NORMALIZE_LEAVES_RESULT:"
-
-    def _harness_source(self) -> str:
-        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
-        return f"""\
-import {{ readFileSync }} from "node:fs";
-
-const MARK = "{self._MARK}";
-const MJS_PATH = "{mjs_abs}";
-
-let src = readFileSync(MJS_PATH, "utf8");
-const ANCHOR = "const _wfResult = await";
-const anchorIdx = src.indexOf(ANCHOR);
-if (anchorIdx === -1) {{
-    console.error("ANCHOR_NOT_FOUND: " + ANCHOR);
-    process.exit(1);
-}}
-let head = src.slice(0, anchorIdx);
-head = head.replace("export const meta", "const meta");
-
-let normalizeLeaves;
-try {{
-    normalizeLeaves = new Function(head + "\\nreturn normalizeLeaves;")();
-}} catch (e) {{
-    console.error("HELPER_EXTRACT_FAILED: " + e.message);
-    process.exit(1);
-}}
-if (typeof normalizeLeaves !== "function") {{
-    console.error("HELPER_NOT_A_FUNCTION: " + typeof normalizeLeaves);
-    process.exit(1);
-}}
-
-function run(rawArgs) {{
-    const warnCalls = [];
-    const warn = (...a) => {{ warnCalls.push(a.map(String).join(" ")); }};
-    const result = normalizeLeaves(rawArgs, warn);
-    return {{
-        length: Array.isArray(result) ? result.length : null,
-        isArray: Array.isArray(result),
-        warnCalls,
-    }};
-}}
-
-const L = [{{ signal: "leaf-1" }}, {{ signal: "leaf-2" }}, {{ signal: "leaf-3" }}];
-
-const cases = {{
-    stringified_array: run(JSON.stringify(L)),
-    real_array_passthrough: run(L),
-    non_json_string: run("not json {{["),
-    json_non_array_object: run(JSON.stringify({{ a: 1 }})),
-    undefined_input: run(undefined),
-    empty_string: run(""),
-    single_object_leaf: run({{ signal: "solo" }}),
-}};
-
-console.log(MARK + JSON.stringify(cases));
-"""
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
-    def test_normalize_leaves_pure_helper_contract(self):
-        harness_src = self._harness_source()
-        result = subprocess.run(
-            ["node", "--input-type=module"],
-            input=harness_src,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
-        )
-        marker_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(self._MARK)]
-        self.assertTrue(
-            marker_lines,
-            f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
-        )
-        cases = json.loads(marker_lines[-1][len(self._MARK):])
-
-        # (a) stringified array -> real per-leaf fan-out, no degradation warning.
-        self.assertEqual(
-            cases["stringified_array"]["length"], 3,
-            f"JSON-stringified 3-leaf array must fan out to 3 leaves; got {cases['stringified_array']!r}",
-        )
-        self.assertEqual(
-            cases["stringified_array"]["warnCalls"], [],
-            "a well-formed stringified leaf array must not log a degradation warning",
-        )
-
-        # (b) real array passthrough — unchanged behavior, no warning.
-        self.assertEqual(
-            cases["real_array_passthrough"]["length"], 3,
-            f"real array must pass through unchanged; got {cases['real_array_passthrough']!r}",
-        )
-        self.assertEqual(cases["real_array_passthrough"]["warnCalls"], [])
-
-        # (c) non-JSON string -> single mega-leaf fallback + loud warning.
-        self.assertEqual(
-            cases["non_json_string"]["length"], 1,
-            f"non-JSON string must fall back to one mega-leaf; got {cases['non_json_string']!r}",
-        )
-        self.assertTrue(
-            cases["non_json_string"]["warnCalls"],
-            "non-JSON string fallback must log a degradation warning",
-        )
-        warn_text = " ".join(cases["non_json_string"]["warnCalls"]).lower()
-        self.assertTrue(
-            "mega-leaf" in warn_text or "mega leaf" in warn_text
-            or "fan-out" in warn_text or "fan out" in warn_text,
-            f"warning must name the mega-leaf/fan-out degradation; got {cases['non_json_string']['warnCalls']!r}",
-        )
-
-        # edge: JSON string parsing to a non-array object -> single mega-leaf + warning.
-        self.assertEqual(
-            cases["json_non_array_object"]["length"], 1,
-            f"non-array JSON must fall back to one mega-leaf; got {cases['json_non_array_object']!r}",
-        )
-        self.assertTrue(
-            cases["json_non_array_object"]["warnCalls"],
-            "non-array JSON parse result must log a degradation warning",
-        )
-
-        # edge: undefined / empty string -> zero leaves (unchanged pre-fix behavior).
-        self.assertEqual(cases["undefined_input"]["length"], 0)
-        self.assertEqual(cases["undefined_input"]["warnCalls"], [])
-        self.assertEqual(cases["empty_string"]["length"], 0)
-
-        # edge: single object leaf (non-string, non-array) -> one leaf, unchanged.
-        self.assertEqual(cases["single_object_leaf"]["length"], 1)
-        self.assertEqual(cases["single_object_leaf"]["warnCalls"], [])
+    def test_counts_header_agrees_with_the_structured_fields(self):
+        """The header is derived from the same counters, never hand-maintained."""
+        bv = pdv.synthesize_batch(self._mixed_batch())
+        header = bv.report.splitlines()[0]
+        self.assertIn(f"{bv.total} total", header)
+        self.assertIn(f"{bv.executed} with executed-probe evidence", header)
+        self.assertIn(f"{len(bv.blocking)} blocking", header)
+        self.assertIn(f"{len(bv.malformed)} malformed", header)
+        self.assertIn(f"{len(bv.fixture_absent)} fixture-absent", header)
 
 
 if __name__ == "__main__":

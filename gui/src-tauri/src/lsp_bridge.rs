@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use reify_lsp::blocking_work::BlockingWorkPlacement;
 use reify_lsp::bridge::InProcessLsp;
-use reify_lsp::server::NotificationSink;
+use reify_lsp::server::{NoOpSink, NotificationSink};
 
 /// Tauri-side wrapper around the in-process LSP server.
 ///
@@ -27,6 +28,18 @@ use reify_lsp::server::NotificationSink;
 /// has no `workspace_root` and these handlers fall back to single-file behavior
 /// (cross-module symbols remain refused). No per-method dispatch arm is required
 /// for cross-file: the substrate rides entirely on the forwarded `rootUri`.
+///
+/// # Where blocking work runs
+///
+/// Every `lsp_request` is dispatched on a large-stack lane
+/// ([`lsp_request_on_worker`]), so the thread polling `handle_request` IS the
+/// stack the parser and compiler need. The bridge therefore builds its server
+/// with [`BlockingWorkPlacement::CallingThread`], giving `definition`,
+/// `prepareRename`, `rename` and `references` the lane's stack too, instead of
+/// a ~2 MiB blocking-pool thread. The one cost: in the degraded no-lane arm
+/// (`dispatch_async(None, ..)` awaits in place), those four now run inline on a
+/// Tauri tokio worker and occupy it for the request — as `didOpen` /
+/// `didChange`'s compile always has there.
 pub struct LspBridge {
     lsp: InProcessLsp,
 }
@@ -34,15 +47,13 @@ pub struct LspBridge {
 impl LspBridge {
     /// Create a new LSP bridge with a fresh in-process LSP server.
     pub fn new() -> Self {
-        Self {
-            lsp: InProcessLsp::new(),
-        }
+        Self::with_sink(Arc::new(NoOpSink))
     }
 
     /// Create a new LSP bridge with a custom notification sink.
     pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
         Self {
-            lsp: InProcessLsp::with_sink(sink),
+            lsp: InProcessLsp::with_sink_and_placement(sink, BlockingWorkPlacement::CallingThread),
         }
     }
 
@@ -78,99 +89,98 @@ pub async fn lsp_request_impl(
     serde_json::to_string(&result).map_err(|e| format!("serialize error: {e}"))
 }
 
-/// [`lsp_request_impl`], dispatched on the persistent LARGE-STACK LSP lane
-/// instead of on the awaiting tokio worker (task 5772).
+/// [`lsp_request_impl`], dispatched on a persistent LARGE-STACK lane chosen by
+/// [`lane_for_method`] instead of on the awaiting tokio worker.
 ///
-/// `lsp_request` fires on effectively every keystroke and cursor move, and the
-/// work it reaches is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (which
-/// has neither a `stacker` guard nor a depth cap) and `reify-compiler`'s
-/// recursive compile. A tokio worker gives that the default ~2 MiB stack; the
-/// lane gives it [`crate::large_stack::COMPILE_STACK_SIZE`] (256 MiB), amortised
-/// over one thread for the process lifetime rather than a fresh 256 MiB mapping
-/// per keystroke.
+/// `lsp_request` fires on effectively every keystroke, and the work it reaches
+/// is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (no `stacker` guard,
+/// no depth cap) and `reify-compiler`'s recursive compile. A tokio worker gives
+/// that ~2 MiB of stack; a lane gives it
+/// [`crate::large_stack::COMPILE_STACK_SIZE`], on threads that live for the
+/// process. That covers every `handle_request` arm, the four blocking-work arms
+/// included (see [`LspBridge`]'s "Where blocking work runs").
 ///
-/// # What this hands the lane, and what the lane does with it
+/// The lane is handed a FUTURE; choosing its driver is
+/// [`crate::large_stack::dispatch_async`]'s job.
 ///
-/// A FUTURE, not a closure. The lane thread has no ambient runtime, so the
-/// future does need a driver — [`tokio::runtime::Handle::block_on`], because
-/// four of `InProcessLsp::handle_request`'s arms call
-/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
-/// — but choosing that driver is [`crate::large_stack::dispatch_async`]'s job,
-/// not this function's. Pre-baking the `block_on` here would break the lane's
-/// degraded arms, which run in the submitting async frame where `block_on`
-/// panics "Cannot start a runtime from within a runtime"; see
-/// [`crate::large_stack::dispatch_async`]'s degradation policy.
+/// # An abandoned request still runs
 ///
-/// # What this does NOT cover
+/// Dropping this future does not cancel the work: it runs to completion on its
+/// lane and its answer is discarded (see [`crate::large_stack::dispatch_async`]'s
+/// "Abandonment"). An abandoned query occupies one of
+/// [`crate::large_stack::LSP_POOL_SIZE`] consumers for its duration, not the only
+/// LSP consumer in the process.
 ///
-/// Those same four arms hop to `spawn_blocking`, so their compiler work executes
-/// on tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
-/// under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on
-/// a 256 MiB thread gives the big stack only to that thread's OWN frames, so
-/// those four are unaffected by this routing. The arms it does cover are the
-/// other ten — `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
-/// `completion`, `hover`, `documentSymbol`, `documentHighlight`, `shutdown` —
-/// which are precisely the keystroke/cursor-frequency ones. Closing the four
-/// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
-/// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
-/// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
-/// here.
-///
-/// # What this COSTS: the request is no longer DROP-CANCELLABLE
-///
-/// Stated alongside the coverage limit above because it is a behaviour change
-/// this routing INTRODUCES, not merely one it fails to fix.
-///
-/// Before task 5772 the body ran inside the Tauri command's own future, so a
-/// frontend `invoke` that was abandoned — window closed, pane navigated away,
-/// a keystroke's request superseded by the next one — dropped that future and
-/// the LSP work stopped at its next `.await` point. Now the future is MOVED
-/// into a lane job and driven by [`tokio::runtime::Handle::block_on`] on a
-/// thread that has no cancellation point at all. Dropping the awaiting side
-/// only drops the `oneshot` receiver; `reply_tx.send` then fails silently
-/// (`let _ = ...`) while the work runs to completion regardless.
-///
-/// That compounds with the single-consumer serialization documented on
-/// [`crate::large_stack::Lane`]: an abandoned request still occupies the lane
-/// for its full duration, so it delays the LIVE requests queued behind it.
-/// Bounding it means threading a cancellation token into the job and checking
-/// it at the lane before driving the future, so an abandoned request is dropped
-/// from the queue instead of executed — same lane, same shape, but a different
-/// job contract than this task specified. Tracked with the serialization it
-/// compounds, on task #6517.
-///
-/// Not a correctness bug in either direction: the work is idempotent
-/// request-handling against the bridge's own state, and every arm still
-/// RESOLVES. It is a wasted-work and latency cost, and the honest statement of
-/// it is this paragraph rather than silence.
-///
-/// # Why this composition lives here, not inline in `main.rs`
-///
-/// `main.rs` is the `--features gui` bin and has no test module, so a wrapper
-/// written there would be untestable. Keeping it in the lib is what lets
-/// `lsp_bridge_tests.rs` prove result parity against a direct
-/// [`lsp_request_impl`] call.
+/// It lives in the lib rather than in `main.rs`, the `--features gui` bin with
+/// no test module, so `lsp_bridge_tests.rs` can prove result parity against a
+/// direct [`lsp_request_impl`] call.
 pub async fn lsp_request_on_worker(
     bridge: Arc<LspBridge>,
     method: String,
     params: String,
 ) -> Result<String, String> {
-    crate::large_stack::run_on_lsp_worker(lsp_request_future(bridge, method, params)).await
+    lsp_request_on_lane(lane_for_method(&method), bridge, method, params).await
 }
 
-/// The ONE future both LSP entry points submit: `lsp_request_impl`, owned and
-/// `'static` so a lane can take it.
+/// Which large-stack lane an LSP method travels: the size-1 ORDERED lane
+/// [`crate::large_stack::LSP_LANE`], or the QUERY POOL
+/// [`crate::large_stack::LSP_POOL`].
 ///
-/// Factored out so [`lsp_request_on_worker`] (production) and
-/// `lsp_request_on_lane` (the lane-parameterised test seam) submit the SAME
-/// body rather than two independently-written `async move` blocks. Two spellings
-/// of the composition is precisely the divergence hazard the seam exists to
-/// avoid: the tested one could keep resolving while the production one acquired
-/// a defect. With one body, the only thing the seam varies is which lane the
-/// work travels — which is the variable the tests actually mean to control.
-/// Every argument is OWNED, so the returned future is `Send + 'static` — the
-/// bound a lane requires — without spelling either out (clippy rejects the
-/// explicit `-> impl Future` form here as `manual_async_fn`).
+/// This `matches!` arm is the AUTHORITATIVE classification; every other
+/// description of the split carries only counts and points here. The test
+/// copies, `lsp_lane_routing_tests`' `ORDERED_METHODS` / `QUERY_METHODS`, are
+/// driven through the real dispatcher by its (j), so an arm renamed or removed
+/// in `reify-lsp` reds there. An arm ADDED in `reify-lsp` is not caught: it takes
+/// the ordered-lane default until someone classifies it here.
+///
+/// The key is LSP PROTOCOL semantics — does this method mutate server-side
+/// document or session state? — not `reify-lsp`'s choice of which arms carry
+/// blocking work. Those four arms compute on the thread that drives them, so
+/// routing them off the lanes would hand their deep work back to a ~2 MiB
+/// thread; the pool bounds their occupancy instead.
+///
+/// The arm lists the CONCURRENCY-SAFE set and defaults everything else,
+/// including every unrecognised method, to the ordered lane. The opposite
+/// spelling would hand concurrency to any method added later, state-mutating
+/// ones included. `lsp_lane_routing_tests`' (h) pins the default with
+/// unrecognised methods.
+///
+/// The ordering given up is query-versus-notification: a query may read text
+/// older than a concurrently-processing `didChange` — staleness, never
+/// corruption. What the shipped frontend does with a stale answer is on
+/// [`crate::large_stack::Lane`].
+pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stack::JobSender> {
+    let concurrency_safe = matches!(
+        method,
+        // Read-only queries: each takes `state.read().await`, clones what it
+        // needs and drops the guard; none touches `eval_state` or mutates the
+        // document set.
+        "textDocument/completion"
+            | "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/documentSymbol"
+            | "textDocument/documentHighlight"
+            | "textDocument/prepareRename"
+            // Its edit is version-stamped, and a stale one is refused client-side.
+            | "textDocument/rename"
+            | "textDocument/references"
+    );
+
+    if concurrency_safe {
+        crate::large_stack::LSP_POOL.sender()
+    } else {
+        // The state-mutating and lifecycle methods, and anything
+        // `InProcessLsp::handle_request` does not recognise.
+        crate::large_stack::LSP_LANE.sender()
+    }
+}
+
+/// The ONE future both LSP entry points submit: [`lsp_request_impl`] with owned
+/// arguments, so it is `Send + 'static` as a lane requires.
+///
+/// [`lsp_request_on_worker`] and [`lsp_request_on_lane`] share this body, so a
+/// test of the seam cannot pass while the production composition diverges.
+/// (clippy rejects the explicit `-> impl Future` spelling as `manual_async_fn`.)
 async fn lsp_request_future(
     bridge: Arc<LspBridge>,
     method: String,
@@ -179,35 +189,13 @@ async fn lsp_request_future(
     lsp_request_impl(&bridge, &method, params).await
 }
 
-/// [`lsp_request_on_worker`] with its "is there a lane?" question turned into a
-/// PARAMETER — the one body both the lane path and the degraded path run.
+/// [`lsp_request_on_worker`] with the lane as a PARAMETER, so a test can reach
+/// the degraded `None` arm through the real composition rather than through a
+/// copy of it.
 ///
-/// The lane a request travels is a parameter for the same reason
-/// [`crate::large_stack::dispatch_async`]'s is: it makes the DEGRADED arm
-/// reachable from a test. Provoking a real `pthread_create` failure from a unit
-/// test is not possible, so passing `None` here tests the seam instead of the
-/// OS — and it tests it through the REAL composition. A test that rebuilt the
-/// `dispatch_async(None, async { lsp_request_impl(..) })` composition itself
-/// would only prove that its own copy resolves; the production body could
-/// diverge and stay green. That is exactly how the earlier generic guard went
-/// vacuous: its closure contained no `block_on`, so it could not see that the
-/// real one panicked.
-///
-/// # Relationship to [`lsp_request_on_worker`]
-///
-/// `lsp_request_on_lane(LSP_LANE.sender(), ..)` IS `lsp_request_on_worker`, by
-/// construction rather than by resemblance: both submit
-/// [`lsp_request_future`]'s single body, and
-/// [`crate::large_stack::run_on_lsp_worker`] — which production goes through —
-/// is defined as `dispatch_async(LSP_LANE.sender(), fut)`. So a lane-path test
-/// written against this seam exercises the production path, and the only
-/// difference either side can develop is the lane argument itself.
-///
-/// `#[cfg(test)] pub(crate)` — production reaches the lane through
-/// [`lsp_request_on_worker`], so this seam exists only to vary the lane
-/// argument from a test. Gating it to test builds keeps that honest and adds no
-/// public API surface; `main.rs` is unaffected.
-#[cfg(test)]
+/// This is the ONE production body: [`lsp_request_on_worker`] is
+/// `lsp_request_on_lane(lane_for_method(&method), ..)`, so a test written
+/// against this seam exercises the production path and can vary only the lane.
 pub(crate) async fn lsp_request_on_lane(
     sender: Option<&crate::large_stack::JobSender>,
     bridge: Arc<LspBridge>,
@@ -352,5 +340,123 @@ mod tests {
             uris.iter().any(|u| u.ends_with("main.ri")),
             "references must span main.ri, got {uris:?}"
         );
+    }
+
+    /// Task 7118: the versioned wire shape, asserted on the JSON that actually
+    /// crosses the bridge rather than on Rust types.
+    ///
+    /// A client declaring `workspace.workspaceEdit.documentChanges` gets a bare
+    /// `documentChanges` ARRAY (`DocumentChanges` is `#[serde(untagged)]`) whose
+    /// entries carry `textDocument.version` — a number for the open buffer, JSON
+    /// `null` for the closed on-disk file — and NO `changes` key, so the client
+    /// cannot silently read an unversioned copy of the same edit.
+    #[tokio::test]
+    async fn lsp_request_impl_versioned_rename_stamps_open_and_closed_versions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(dir.path().join("parts.ri"), parts_source).expect("write parts.ri");
+
+        let root_uri = tower_lsp::lsp_types::Url::from_file_path(dir.path())
+            .expect("root uri")
+            .to_string();
+        let main_uri = tower_lsp::lsp_types::Url::from_file_path(dir.path().join("main.ri"))
+            .expect("main uri")
+            .to_string();
+
+        let bridge = LspBridge::new();
+
+        lsp_request_impl(
+            &bridge,
+            "initialize",
+            json!({
+                "rootUri": root_uri,
+                "capabilities": { "workspace": { "workspaceEdit": { "documentChanges": true } } }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("initialize");
+        lsp_request_impl(&bridge, "initialized", "{}".to_string())
+            .await
+            .expect("initialized");
+
+        // main.ri is OPEN at version 1; parts.ri stays CLOSED on disk.
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        lsp_request_impl(
+            &bridge,
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": main_uri.clone(),
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": main_source
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("didOpen");
+
+        let rename_resp = lsp_request_impl(
+            &bridge,
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": main_uri.clone() },
+                "position": { "line": 2, "character": 15 },
+                "newName": "Bore"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("rename");
+
+        let edit: serde_json::Value =
+            serde_json::from_str(&rename_resp).expect("rename response is JSON");
+        assert!(
+            edit.get("changes").is_none_or(|c| c.is_null()),
+            "a documentChanges-capable client must not also receive changes, got {edit}"
+        );
+        let doc_changes = edit
+            .get("documentChanges")
+            .and_then(|d| d.as_array())
+            .expect("documentChanges is a bare JSON array (untagged enum)");
+
+        let version_of = |suffix: &str| -> &serde_json::Value {
+            doc_changes
+                .iter()
+                .find(|entry| {
+                    entry
+                        .pointer("/textDocument/uri")
+                        .and_then(|u| u.as_str())
+                        .is_some_and(|u| u.ends_with(suffix))
+                })
+                .unwrap_or_else(|| panic!("documentChanges must include {suffix}, got {edit}"))
+                .pointer("/textDocument/version")
+                .expect("each entry carries textDocument.version")
+        };
+        assert_eq!(
+            version_of("main.ri").as_i64(),
+            Some(1),
+            "the OPEN main.ri carries its numeric server-side version"
+        );
+        assert!(
+            version_of("parts.ri").is_null(),
+            "the CLOSED parts.ri is null-versioned — content on disk is master"
+        );
+
+        for entry in doc_changes {
+            for e in entry
+                .get("edits")
+                .and_then(|e| e.as_array())
+                .expect("each entry carries an edits array")
+            {
+                assert_eq!(
+                    e.get("newText").and_then(|t| t.as_str()),
+                    Some("Bore"),
+                    "every TextEdit writes the new name Bore"
+                );
+            }
+        }
     }
 }

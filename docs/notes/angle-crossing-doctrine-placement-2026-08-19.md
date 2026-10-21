@@ -278,13 +278,33 @@ to own registry-name-vs-chunk coverage", PRD
 `docs/prds/v0_6/doc-chunk-truth-enforcement.md` task δ). #5480 pre-dates
 this ticket: `crates/reify-audit/src/lib.rs`'s `PDocCover` doc comment
 already named it as the baseline's owner ("the census is non-empty until
-#5480 seeds the baseline") before #6290 filed anything, so **#5480, not
-the now-superseded ticket id, is the task to follow for this gap's live
-status.** It is deliberately not inline in this task: it lands in
+#5480 seeds the baseline") before #6290 filed anything — which is why
+that doc comment still names #5480 rather than a fresher id. **#5480 was
+itself coalesced into #6931** by the 2026-08-28 backlog sweep
+(`x_coalesced_from: [5480, 6233, 6891]`) and is now `status: deferred`,
+so **#6931 — not #5480, and not the now-superseded ticket id — is the
+task to follow for this gap's live status today.** It is deliberately
+not inline in this task: it lands in
 `reify-audit`, not `reify-mcp`, and is likely to touch verify-pipeline
 files, which per `CLAUDE.md` forces the full `--scope all --profile both`
 gate — a high-risk gate change has no place on a branch whose entire
 verdict is "change nothing."
+
+### Update, 2026-09-29 (#6931)
+
+The gap above is now split in two:
+
+- **Hard constraint 3 (`FIELD_OP_NAMES` chunk coverage) is CLOSED.**
+  #6931 committed the ledger `crates/reify-audit/pdoccover-baseline.txt`
+  and a merge gate, `tests/infra/test_reify_audit_pdoccover.sh`, that runs
+  PDOCCOVER against it: a field operator losing its last chunk mention is a
+  new `undocumented-name:` the ledger does not absorb, so the gate goes RED.
+  `COVERAGE_OWNED_REGISTRIES` in `crates/reify-audit/tests/pdoccover.rs`
+  anchors `FIELD_OP_NAMES` as coverage-owned, so the census cannot silently
+  stop seeing the registry either.
+- **Hard constraint 4 (`Hz`/`rad/s` vocabulary) is still OPEN.** Those are
+  unit names in prose, not registry names, so they are outside PDOCCOVER's
+  census by construction; only the hand-run grep in §1 holds them.
 
 ## 5. Re-verification
 
@@ -395,3 +415,7 @@ current text:
   opposite direction. A later revision re-anchored every diff instrument
   in §5 to `git diff --name-only "$(git merge-base HEAD main)" HEAD`,
   which is invariant under both rebase and sibling drift.
+- **2026-09-29 — §4 update for #6931.** Added "Update, 2026-09-29" to §4:
+  the PDOCCOVER gate and the `COVERAGE_OWNED_REGISTRIES` anchor now hold
+  hard constraint 3; hard constraint 4 remains open. The earlier §4 text is
+  kept as the record of why the gap existed.

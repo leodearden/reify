@@ -1,0 +1,5 @@
+// PREMISE fixture for constrained-2d-sketch.md §5 D12: `aux let` parses today
+// (construction geometry rides existing aux marking; probed 2026-07-25).
+structure def T {
+    aux let cl = line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)
+}

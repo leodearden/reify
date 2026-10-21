@@ -1,0 +1,19 @@
+module relate_operand_projection_compile
+
+// Compile-phase relate operand error: `concentric` needs Axis operands and
+// `a.bad` is a Real, so check_relation_arg_types rejects it before evaluation.
+
+structure Part {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+    let bad = 3.0
+}
+
+structure Asm {
+    sub a : Part at auto
+    sub b : Part
+
+    relate {
+        concentric(a.bad, b.shank_axis)
+    }
+}

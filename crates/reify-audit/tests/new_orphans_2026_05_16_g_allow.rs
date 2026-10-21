@@ -1,8 +1,9 @@
-//! Pin: the 14 remaining `pub fn` surfaced as new-since-baseline orphans by the
-//! 2026-05-16 G-tool audit must each carry a `// G-allow:` marker citing
-//! the tracked owner task.  The 14 functions span 5 crates:
-//! reify-compiler, reify-eval, reify-kernel-occt, reify-solver-elastic,
-//! reify-ir.
+//! Pin: each `pub fn` surfaced as a new-since-baseline orphan by the
+//! 2026-05-16 G-tool audit must carry a `// G-allow:` marker citing the
+//! tracked owner task.  Which functions and crates those are is the `PINS`
+//! table below and nothing else: rows leave one at a time as their owners
+//! wire consumers, so a count or crate list repeated up here would only
+//! drift against it.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test new_orphans_2026_05_16_g_allow`
@@ -27,6 +28,12 @@
 //! entirely when all rows are removed.  The failure message includes the fn
 //! name — search for it in this file when
 //! `assert_eq!(matching_allowed.len(), 1)` fires unexpectedly.
+//!
+//! Exception on record, so a reader tracing that contract does not read one
+//! removal as a violation: `capability_kind` left with no consumer-wiring
+//! commit because its consumer had been wired all along, hidden from the
+//! audit by a spurious `cfg(test)` mask.  Reasoning: `git log --grep
+//! capability_kind`.
 //!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent
 //! from PATH/disk the test prints a note to stderr and returns without
@@ -68,10 +75,6 @@ const PINS: &[(&str, &str)] = &[
     (
         "crates/reify-solver-elastic/src/assembly/global.rs",
         "detect_orphan_dofs",
-    ),
-    (
-        "crates/reify-ir/src/geometry.rs",
-        "capability_kind",
     ),
     (
         "crates/reify-ir/src/value.rs",

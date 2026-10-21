@@ -176,6 +176,12 @@ pub enum RiLiteralError {
     /// The value is a kind that has no `.ri` literal form at all.
     UnsupportedValueKind {
         /// Stable discriminant name (e.g. `"List"`), safe to show a user.
+        ///
+        /// Always [`Value::kind_name`], which owns the one variant-name table
+        /// this crate and `reify-constraints` share (task #6466). `&'static
+        /// str` rather than a formatted payload is load-bearing: this string
+        /// reaches a user-facing MCP error, and a `{value:?}` dump of a
+        /// `SampledField` or `Matrix` could be enormous.
         kind: &'static str,
     },
 }
@@ -444,7 +450,7 @@ pub fn value_to_ri_literal_in_scope(
             })
         }
         other => Err(RiLiteralError::UnsupportedValueKind {
-            kind: value_kind_name(other),
+            kind: other.kind_name(),
         }),
     }
 }
@@ -471,77 +477,6 @@ fn int_is_exactly_f64_representable(i: i64) -> bool {
 fn first_unrepresentable_char(s: &str) -> Option<char> {
     s.chars()
         .find(|c| matches!(c, '"' | '\\' | '{' | '}') || c.is_control())
-}
-
-/// Stable discriminant name for a value kind with no `.ri` literal form.
-///
-/// Deliberately a fixed `&'static str` per variant rather than `{value:?}`:
-/// a `SampledField` or `Matrix` payload could be enormous, and this string
-/// ends up in a user-facing MCP error.
-///
-/// **EXHAUSTIVE BY CONSTRUCTION — do not add a `_` arm.** A catch-all here is
-/// not a tidiness question: it collapses to a single useless name exactly the
-/// values an agent is most likely to try to edit (a `Direction`, a `Frame`, a
-/// `Range`), and it lets a newly added [`Value`] variant degrade silently
-/// instead of failing to compile. Listing every variant makes the compiler the
-/// guard.
-///
-/// The `Bool`/`Int`/`Real`/`String`/`Scalar` arms are unreachable from the one
-/// caller — [`value_to_ri_literal_with_unit`] handles those variants before it
-/// reaches its catch-all — but they are required for exhaustiveness, and they
-/// keep this a total `Value → kind name` function rather than a
-/// caller-specific residue.
-///
-/// This duplicates `reify_constraints::value_kind_label`'s variant list
-/// (`crates/reify-constraints/src/lib.rs`). The non-duplicating form is a
-/// `Value::kind_name()` inherent method both delegate to (the shape
-/// `Value::format_hover()` already uses), which lives in
-/// `crates/reify-ir/src/value.rs` — outside task #5095's locked scope, so it is
-/// deferred to **task #6466**, which holds all three files.
-///
-/// What the deferral actually costs, stated precisely: both matches are
-/// exhaustive with no `_` arm, so a NEW `Value` variant breaks both to compile
-/// and cannot drift silently. What CAN drift is a *name* — `value_kind_label`
-/// enriches two arms (`Scalar<{dimension}>`, `Enum<{type_name}>`) where this one
-/// says plain `Scalar`/`Enum`, and a rename on either side is invisible to the
-/// compiler. That is tolerable here because the two strings feed different
-/// surfaces (constraint diagnostics vs. this serializer's MCP rejection text)
-/// and nothing compares them; it is not tolerable indefinitely, hence #6466.
-fn value_kind_name(value: &Value) -> &'static str {
-    match value {
-        Value::Bool(_) => "Bool",
-        Value::Int(_) => "Int",
-        Value::Real(_) => "Real",
-        Value::String(_) => "String",
-        Value::Scalar { .. } => "Scalar",
-        Value::Enum { .. } => "Enum",
-        Value::List(_) => "List",
-        Value::Set(_) => "Set",
-        Value::Map(_) => "Map",
-        Value::Option(_) => "Option",
-        Value::Field { .. } => "Field",
-        Value::Lambda { .. } => "Lambda",
-        Value::Tensor(_) => "Tensor",
-        Value::Point(_) => "Point",
-        Value::Vector(_) => "Vector",
-        Value::Complex { .. } => "Complex",
-        Value::Orientation { .. } => "Orientation",
-        Value::Frame { .. } => "Frame",
-        Value::Transform { .. } => "Transform",
-        Value::Plane { .. } => "Plane",
-        Value::Axis { .. } => "Axis",
-        Value::Direction { .. } => "Direction",
-        Value::BoundingBox { .. } => "BoundingBox",
-        Value::Range { .. } => "Range",
-        Value::Matrix(_) => "Matrix",
-        Value::SampledField(_) => "SampledField",
-        Value::StructureInstance(_) => "StructureInstance",
-        Value::GeometryHandle { .. } => "GeometryHandle",
-        Value::AffineMap { .. } => "AffineMap",
-        Value::Selector(_) => "Selector",
-        Value::Feature(_) => "Feature",
-        Value::Undef => "Undef",
-    }
 }
 
 /// The magnitude that would be written in front of `unit`, but ONLY when it
@@ -978,7 +913,7 @@ mod tests {
                 err(&v).to_string(),
                 expected,
                 "rejection text drifted for a {} value",
-                value_kind_name(&v)
+                v.kind_name()
             );
         }
     }

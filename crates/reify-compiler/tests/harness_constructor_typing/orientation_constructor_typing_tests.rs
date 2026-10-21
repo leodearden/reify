@@ -3,7 +3,9 @@
 //! `Type::Orientation(3)` / `Type::Frame(3)` / `Type::Transform(3)` rather than
 //! falling through `expr.rs`'s `NoUserFunctions` ladder to the first-arg
 //! fallback, and the three zero-arg members must NOT trip the "cannot infer
-//! return type of zero-arg function" warning.
+//! return type of zero-arg function" warning. The "DECOMPOSERS" section at
+//! the end pins the sibling family (tasks #6082, #6306), whose call sites must
+//! type as the coordinates they evaluate to rather than as their argument.
 //!
 //! Structurally mirrors `tests/affine_constructor_typing_tests.rs`, the sibling
 //! family's template. The family's membership rationale (why an explicit list
@@ -24,8 +26,10 @@
 //! RED until the `is_orientation_typed_fn` arm is wired into the ladder.
 
 use reify_compiler::CompiledModule;
-use reify_core::Type;
-use reify_test_support::{compile_source, compile_source_with_stdlib, get_let_expr_in};
+use reify_core::{Severity, Type};
+use reify_test_support::{
+    compile_source, compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only,
+};
 
 /// `result_type` of value cell `cell_name` in template `template_name` of an
 /// ALREADY-COMPILED module.
@@ -61,11 +65,22 @@ fn infer_warnings(module: &CompiledModule) -> Vec<&str> {
 /// `orient_axis_angle` the axis argument still types as
 /// `Vector{3, dimensionless}`, which is exactly the wrong first-arg type the old
 /// fallback adopted.
+///
+/// `EulerConvention` is declared LOCALLY for the same stdlib-free reason. Task
+/// #6082 gave `orient_euler`'s convention slot an `ExpectedArg::Enum`, so the
+/// raw `"xyz"` string this fixture used to pass is now an `ArgTypeMismatch`
+/// error; the stdlib declaration that would otherwise supply the type lives in
+/// `stdlib/geometry_traits.ri`, which `compile_source` does not load. Only the
+/// one variant these assertions exercise is declared — the slot checks the enum
+/// TYPE NAME, so restating all twelve here would be a second copy of the
+/// stdlib's list that nothing keeps in step.
 const ORIENT_HOST: &str = r#"
+    enum EulerConvention { XYZ }
+
     structure OrientHost {
         let identity    = orient_identity()
         let quaternion  = orient_quaternion(1.0, 0.0, 0.0, 0.0)
-        let euler       = orient_euler("xyz", 0.0, 0.0, 0.0)
+        let euler       = orient_euler(EulerConvention.XYZ, 0.0, 0.0, 0.0)
         let basis       = orient_basis(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
         let look_at     = orient_look_at(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0))
         let axis_angle  = orient_axis_angle(vec3(0.0, 0.0, 1.0), 90.0)
@@ -395,4 +410,122 @@ fn axis_aligned_axis_constructors_type_as_axis() {
              first-arg fallback chain, got {ty:?}"
         );
     }
+}
+
+// ── The DECOMPOSERS (tasks #6082, #6306) ─────────────────────────────────────
+//
+// The same two eval dispatchers as the producers above, but returning a rigid
+// motion's COORDINATES (`Value::Vector` / `List` / `Map`) rather than the
+// motion. Claimed by `ORIENTATION_DECOMPOSER_FN_NAMES`, whose doc is the one
+// home of membership and every result-type ruling.
+
+/// Stdlib-free like `ORIENT_HOST`, and for the same reason declares
+/// `EulerConvention` locally. `orient_to_euler` is subject-first (#6082).
+const DECOMPOSER_HOST: &str = r#"
+    enum EulerConvention { XYZ }
+
+    structure DecomposerHost {
+        let q     = orient_identity()
+        let log   = orient_log(q)
+        let euler = orient_to_euler(q, EulerConvention.XYZ)
+        let aa    = orient_to_axis_angle(q)
+        let twist = transform_log(transform3_identity())
+    }
+"#;
+
+/// All four decomposer call sites resolve to their declared result types.
+#[test]
+fn decomposer_call_sites_type_as_their_result_types() {
+    let module = compile_source(DECOMPOSER_HOST);
+    assert_eq!(
+        cell_type(&module, "DecomposerHost", "log"),
+        Type::vec3(Type::angle()),
+        "orient_log(q) must type as the Vector3<Angle> rotation vector"
+    );
+    assert_eq!(
+        cell_type(&module, "DecomposerHost", "euler"),
+        Type::List(Box::new(Type::angle())),
+        "orient_to_euler(q, convention) must type as List<Angle>"
+    );
+    assert_eq!(
+        cell_type(&module, "DecomposerHost", "aa"),
+        Type::StructureRef("AxisAngle".to_string()),
+        "orient_to_axis_angle(q) must type as StructureRef(\"AxisAngle\")"
+    );
+    assert_eq!(
+        cell_type(&module, "DecomposerHost", "twist"),
+        Type::StructureRef("Twist".to_string()),
+        "transform_log(t) must type as StructureRef(\"Twist\")"
+    );
+}
+
+/// The user-observable signal: `orient_log`'s result is accepted by a
+/// `Vector3<Angle>` parameter, with zero Errors and zero Warnings, whether the
+/// rotation axis is spelled with Int or Real literals.
+#[test]
+fn orient_log_result_is_accepted_by_a_vector3_angle_parameter() {
+    let source = r#"
+        fn rotation_vector_arity(v: Vector3<Angle>) -> Int { 3 }
+
+        structure def RotationVectorHost {
+            let q_int  = orient_axis_angle(vec3(0, 0, 1), 90deg)
+            let q_real = orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg)
+            let n_int  = rotation_vector_arity(orient_log(q_int))
+            let n_real = rotation_vector_arity(orient_log(q_real))
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "passing orient_log's result to fn(v: Vector3<Angle>) must compile \
+         without Errors, got {}: {errors:?}",
+        errors.len()
+    );
+    let warnings = warnings_only(&module);
+    assert!(
+        warnings.is_empty(),
+        "passing orient_log's result to fn(v: Vector3<Angle>) must compile \
+         without Warnings, got {}: {warnings:?}",
+        warnings.len()
+    );
+    for cell in ["n_int", "n_real"] {
+        assert_eq!(
+            cell_type(&module, "RotationVectorHost", cell),
+            Type::Int,
+            "cell '{cell}' must resolve the Vector3<Angle> overload"
+        );
+    }
+}
+
+/// LOCK, green before and after: a member access on `orient_to_axis_angle`'s
+/// result must never become a hard "has no member" error.
+///
+/// That is what an EMPTY `structure def AxisAngle { }` marker would produce,
+/// via `member_path::resolve_hop`'s registered-but-missing-field branch. It
+/// does not forbid the generic "member access not yet supported" error, which
+/// predates this task. `compile_source_with_stdlib` makes a template registry
+/// present, so the check is not vacuous.
+#[test]
+fn orient_to_axis_angle_member_access_never_reports_an_unknown_member() {
+    let source = r#"
+        structure AxisAngleMemberHost {
+            let q   = orient_identity()
+            let ang = orient_to_axis_angle(q).angle
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+    let unknown_member: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("has no member"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        unknown_member.is_empty(),
+        "`orient_to_axis_angle(q).angle` must never report an unknown member — \
+         declare AxisAngle WITH its {{angle, axis}} fields or not at all. \
+         Got: {unknown_member:#?}"
+    );
 }

@@ -3,8 +3,7 @@
 //! Task 2017: teach `Engine::eval()` to consult `self.param_overrides` for
 //! Param cells (with the same validation `edit_param` performs) so the CLI
 //! can drop its shadow `user_overrides` Vec and `reapply_user_overrides()`
-//! helper. These tests drive the engine-side refactor; the value-level CLI
-//! tests in `crates/reify-cli/src/mcp_context.rs` lock the outward behavior.
+//! helper. These tests drive the engine-side refactor.
 
 use reify_compiler::CompiledModule;
 use reify_core::{DimensionVector, Severity, ValueCellId};
@@ -18,7 +17,7 @@ use reify_test_support::parse_and_compile;
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.
 fn fresh_engine() -> Engine {
-    Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[])
 }
 
 /// Convenience: parse + compile a single-structure source string via the
@@ -1636,7 +1635,11 @@ fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
     // Module B: param p is Money (Param kind — non-auto default preserves Param kind
     // so the override survives prune_param_overrides_against).
     // The MASS override mismatches the MONEY cell_type → ScalarDimensionMismatch warning.
-    let module_b = compile_source("structure S { param p: Money = 0 }");
+    // `USD` is declared inline because it is a stdlib `pub unit` (stdlib/units.ri),
+    // not a lexer-builtin like the `kg` above, and `compile_source` carries no
+    // prelude. The declaration is what a user module would write; the "USD" the
+    // assertions below look for is reify-core's MONEY display unit either way.
+    let module_b = compile_source("unit USD : Money\nstructure S { param p: Money = 0USD }");
     let result_b = engine.eval(&module_b);
 
     // Exactly one Warning mentioning S.p must be emitted.

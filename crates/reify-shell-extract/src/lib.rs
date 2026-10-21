@@ -117,8 +117,10 @@
 //! // gradient (every axis collapses to a single sample), so the lone voxel
 //! // is rejected by the GRADIENT_EPSILON degenerate-gradient filter — NOT
 //! // by the narrow-band threshold (|φ|=1.0 is well inside the default
-//! // 3-voxel band at unit spacing). This still smoke-tests the public
-//! // surface end-to-end without invoking the algorithm body.
+//! // 3-voxel band at unit spacing). The ridge-axis fallback declines it
+//! // too: φ = +1.0 is exterior, and no axis has an interior neighbour
+//! // pair. This still smoke-tests the public surface end-to-end without
+//! // invoking the algorithm body.
 //! let sdf = SampledField {
 //!     name: "smoke".to_string(),
 //!     kind: SampledGridKind::Regular3D,
@@ -145,6 +147,7 @@ pub mod partition;
 pub mod pruning;
 pub mod result;
 pub mod segmentation;
+pub(crate) mod walk_direction;
 
 pub use grid_validation::GridValidationError;
 pub use medial::{

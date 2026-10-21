@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Shared wiring for the FEA-in-the-loop design-optimisation tests in this
-//! harness — the ones that drive a real `solve_elastic_static` inside a real
-//! `DimensionalSolver` cost loop.
+//! Shared wiring for the FEA-in-the-loop tests in this harness — the ones that
+//! drive `@optimized` compute dispatch inside a real `DimensionalSolver` cost
+//! loop, whether through a real `solve_elastic_static` or the edit-path guards'
+//! synthetic stand-in for it.
 //!
 //! Carries no `#[test]` of its own: it exists so the engine construction those
 //! tests need lives in ONE place rather than being copy-pasted per module. The
@@ -10,14 +11,6 @@
 //! INV-FEA-1 single-bundler rule, which `scripts/check-compute-trampoline-registration.sh`
 //! does NOT guard here (its SCOPE_PATHSPECS exclude `tests/`). A second hand-rolled
 //! copy is therefore a copy nothing keeps in step.
-//!
-//! # Known remaining duplicate
-//!
-//! `fea_in_the_loop_producer` (task #4880) still constructs its engine and declares
-//! its own interior thresholds inline, identically. Task #2930 could not migrate it
-//! — that module is outside the task's file scope — so the extraction is deliberately
-//! half-done and this note is the pointer for whoever finishes it. Filed as a
-//! follow-up; migrating it is a two-line change against this module.
 
 use reify_constraints::DimensionalSolver;
 use reify_eval::Engine;
@@ -57,7 +50,7 @@ pub const INTERIOR_UPPER_THRESHOLD_SI: f64 = 1.0;
 /// `SolverRegistry::production()` — see `fea_in_the_loop_producer`'s module doc
 /// for why that is the narrower and more faithful seam for these tests.
 pub fn fea_loop_engine() -> Engine {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
         reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); the FEA \

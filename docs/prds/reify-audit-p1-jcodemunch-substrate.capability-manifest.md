@@ -1,6 +1,6 @@
 # Capability manifest — reify-audit-p1-jcodemunch-substrate
 
-Mechanizes G3 + G6 per leaf for `docs/prds/reify-audit-p1-jcodemunch-substrate.md`. Every binding below is **PASS** (no FAIL → batch may queue). Reify evidence forms per `.claude/skills/prd/project.md` → *Capability Manifest*.
+**AS-AUTHORED GATE ARTIFACT (2026-05-30) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (L-SERVE #4102, L-TRAIT #4095 … L-SMOKE #4101) — see the parent PRD's SHIPPED header (`docs/prds/reify-audit-p1-jcodemunch-substrate.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-05-30 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 + G6 per leaf for `docs/prds/reify-audit-p1-jcodemunch-substrate.md`. Every binding below is **PASS** (no FAIL → batch may queue). Reify evidence forms per `.claude/skills/prd/project.md` → *Capability Manifest*.
 
 **No grammar-fixture bindings:** this slice introduces **no novel `.ri` syntax** — it is pure Rust + an external MCP server. The G3 grammar gate does not fire. The relevant substrate is the jcodemunch v1.108.27 API, verified live this session (see below).
 
@@ -23,7 +23,7 @@ Verified against on-disk v1.108.27 source `~/.cache/uv/git-v0/checkouts/222e86de
 
 | Leaf | Capability asserted by its signal | Evidence form | Binding |
 |---|---|---|---|
-| **L-SERVE** | A live streamable-HTTP serve answers reify queries | wired-on-main: committed `jcodemunch-serve.service` + `scripts/smoke-jcodemunch-serve.sh` exits 0 against the live endpoint (not a mock) | **PASS** |
+| **L-SERVE** | A live streamable-HTTP serve answers reify queries | wired-on-main: committed `jcodemunch-serve.service` + `scripts/smoke-jcodemunch-serve.sh` exits 0 against the live endpoint (not a mock) | **PASS (evidence artifact since retired)** — the verdict stood when recorded. The `jcodemunch-serve.service` unit it cites was deleted by task **#6920** (commit `fcca8207f9`); `scripts/smoke-jcodemunch-serve.sh` still exists, repurposed for the transient `with-jcodemunch-serve.sh` flow. See `docs/prds/jcodemunch-substrate-restoration.md`. |
 | **L-TRAIT** | `get_changed_symbols` is **commit-range**, not `(branch, since_epoch)` | anti-inversion: the redesigned trait + `tests/p1.rs` assert the `(since_sha, until_sha)` signature; a grep confirms **no** surviving reference to the old `since_epoch` arg. Premise-fix per G6 §4. | **PASS** |
 | **L-TRAIT** | P1 maps done→range via `done_provenance.commit` | field-population: `DoneProvenance.commit` exists (`lib.rs:174`) and is read on the production path; reuses task 4074's P2 mapping mechanism | **PASS** |
 | **L-CLIENT** | `RealJCodemunchOps` decodes the **real** wire shapes | field-population + anti-synthetic: decode test runs against fixtures **captured from the live serve** (L-SERVE), not hand-written synthetic JSON | **PASS** |

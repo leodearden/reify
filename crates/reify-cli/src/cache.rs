@@ -581,9 +581,9 @@ fn cmd_cache_export(args: &[String]) -> ExitCode {
 /// 2976 (cache stats/clear/gc CLI) will fold those in when it lands.  Both
 /// `export` and `import` use this helper so the precedence is identical.
 ///
-/// `pub(crate)` so that [`crate::configured_eval_engine`] and
-/// [`crate::mcp_context`] can wire the persistent FEA cache dir onto engines
-/// at construction time (task #3428 step-10).
+/// `pub(crate)` so that [`crate::configured_eval_engine`] can wire the
+/// persistent FEA cache dir onto engines at construction time (task #3428
+/// step-10).
 pub(crate) fn resolve_cache_root() -> Result<PathBuf, CacheError> {
     resolve_cache_root_with_cli(None).map(|(dir, _)| dir)
 }
@@ -592,7 +592,7 @@ pub(crate) fn resolve_cache_root() -> Result<PathBuf, CacheError> {
 /// CLI startup.
 ///
 /// Called once from [`main`](crate) before the command dispatcher so every
-/// engine-using subcommand (`check`, `build`, `test`, `lsp`, `mcp-server`)
+/// engine-using subcommand (`check`, `build`, `test`, `lsp`)
 /// inherits the cleanup for free without per-command wiring.
 ///
 /// The sweep is best-effort: resolver errors (e.g. `REIFY_CACHE_MAX_BYTES`

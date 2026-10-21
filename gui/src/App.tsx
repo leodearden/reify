@@ -28,6 +28,8 @@ import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
+import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
+import { createSubscriptionSet, type SubscriptionRow } from './app/subscriptionSet';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -49,6 +51,7 @@ import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
   setParameter as bridgeSetParameter,
+  previewParameter as bridgePreviewParameter,
   exportGeometry as bridgeExportGeometry,
   pickSavePath,
   pickOpenPath,
@@ -506,7 +509,7 @@ const App: Component = () => {
   // back to its static unit badge.
   const [unitLadders, setUnitLadders] = createSignal<UnitLadderMap>({});
 
-  // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
+  // Fuzzy-rebind toast bookkeeping (see promptFuzzyRebinds below).
   //
   // `rebindShownPairs` tracks stale→candidate pairs currently represented by
   // a visible toast. Without this, every re-evaluation that still shows the
@@ -679,16 +682,82 @@ const App: Component = () => {
       .catch((err) => console.error('[entity-tree] refresh failed:', err));
   }
 
-  // Reactive counter incremented each time viewStateStore.setTree is called.
-  // This lets the effectiveVisibility memo re-evaluate AFTER nodeByPath is rebuilt,
-  // avoiding a race where the memo re-runs before the createEffect below has executed.
-  const [treeGeneration, setTreeGeneration] = createSignal(0);
+  // Fuzzy-rebind notification: after each tree update, check for stale paths
+  // that have a single unambiguous suffix-match candidate and surface a
+  // non-blocking toast with [Yes][No][Ignore] actions.
+  // Per PRD §8.5: never auto-applies — user must confirm explicitly.
+  //
+  // Session-scoped set of ignored stale→candidate pairs.
+  // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
+  const ignoredPairs = new Set<string>();
+
+  function promptFuzzyRebinds(tree: EntityTreeNode[]): void {
+    for (const stalePath of viewStateStore.getStalePaths()) {
+      const candidate = findFuzzyCandidate(stalePath, null, tree);
+      if (!candidate) continue;
+
+      const pairKey = `${stalePath}→${candidate.path}`;
+      if (ignoredPairs.has(pairKey)) continue;
+      // Reviewer fix: skip when an outstanding toast already represents
+      // this pair.  Without this guard, any subsequent tree update that
+      // leaves the stale path stale (e.g. an unrelated edit) enqueues a
+      // duplicate toast, producing a growing stack for users who do not
+      // respond immediately.
+      if (rebindShownPairs.has(pairKey)) continue;
+
+      // Snapshot the stale path's explicit visibility before the closure captures it.
+      const staleVisibility = viewStateStore.state.explicit[stalePath];
+
+      const candidatePath = candidate.path;
+      rebindShownPairs.add(pairKey);
+      const toastId = showToast(
+        `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
+        'info',
+        [
+          {
+            label: 'Yes',
+            onClick: () => {
+              // Transfer the stale path's visibility to the new path.
+              if (staleVisibility) {
+                viewStateStore.setVisibility(candidatePath, staleVisibility);
+              }
+              // Remove the stale explicit entry.
+              viewStateStore.resetToInherit(stalePath);
+              // rebindShownPairs is cleared in handleDismissToast (via the
+              // toast-id → pairKey map) when the button's onDismiss fires.
+            },
+          },
+          {
+            label: 'No',
+            onClick: () => {
+              // Dismiss and suppress this specific pair for the session —
+              // the stale entry stays so the user can still rebind manually
+              // or undo. This matches [Ignore] scoping: the same stale→candidate
+              // pair will not re-fire on the next tree update.
+              ignoredPairs.add(pairKey);
+            },
+          },
+          {
+            label: 'Ignore',
+            onClick: () => {
+              // Suppress this pair for the rest of the session.
+              ignoredPairs.add(pairKey);
+            },
+          },
+        ],
+      );
+      // Remember which pair this toast represents so handleDismissToast
+      // can clean up rebindShownPairs when the toast goes away for ANY
+      // reason (button, close-X, or auto-dismiss timeout).
+      rebindToastPairs.set(toastId, pairKey);
+    }
+  }
 
   // Keep viewStateStore in sync with the latest entity tree.
   // regenerateAutoViews handles both the nodeByPath rebuild (equivalent to
-  // setTree) AND auto-view generation in one reactive notification.
-  // Increment treeGeneration AFTER regenerateAutoViews so that effectiveVisibility
-  // always evaluates getAllEffective() with an up-to-date nodeByPath.
+  // setTree) AND auto-view generation in one reactive notification. The rebind
+  // prompts follow untracked, so they fire once per tree update and never on an
+  // explicit change alone (see handleDismissToast).
   createEffect(() => {
     // DisplayOutput subjects route the auto:default view (#5195), ADDITIVELY:
     // named subjects are forced visible; every other realization keeps its own
@@ -699,107 +768,17 @@ const App: Component = () => {
     // effect so adding or removing a DisplayOutput re-runs this and re-routes
     // the view. Same subject strings computePaneGroups keys panes on (see :199).
     const displaySubjects = new Set(engineStore.state.displayPanes.map((d) => d.subject));
-    viewStateStore.regenerateAutoViews(entityTree(), [], displaySubjects);
-    setTreeGeneration((v) => v + 1);
+    const tree = entityTree();
+    viewStateStore.regenerateAutoViews(tree, [], displaySubjects);
+    untrack(() => promptFuzzyRebinds(tree));
   });
-
-  // Fuzzy-rebind notification: after each tree update, check for stale paths
-  // that have a single unambiguous suffix-match candidate and surface a
-  // non-blocking toast with [Yes][No][Ignore] actions.
-  // Per PRD §8.5: never auto-applies — user must confirm explicitly.
-  {
-    // Session-scoped set of ignored stale→candidate pairs.
-    // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
-    const ignoredPairs = new Set<string>();
-
-    createEffect(() => {
-      void treeGeneration(); // re-run after each tree update
-      const tree = untrack(() => entityTree());
-      const stalePaths = untrack(() => viewStateStore.getStalePaths());
-
-      for (const stalePath of stalePaths) {
-        const candidate = findFuzzyCandidate(stalePath, null, tree);
-        if (!candidate) continue;
-
-        const pairKey = `${stalePath}→${candidate.path}`;
-        if (ignoredPairs.has(pairKey)) continue;
-        // Reviewer fix: skip when an outstanding toast already represents
-        // this pair.  Without this guard, any subsequent tree update that
-        // leaves the stale path stale (e.g. an unrelated edit) enqueues a
-        // duplicate toast, producing a growing stack for users who do not
-        // respond immediately.
-        if (rebindShownPairs.has(pairKey)) continue;
-
-        // Snapshot the stale path's explicit visibility before the closure captures it.
-        const staleVisibility = untrack(() => viewStateStore.state.explicit[stalePath]);
-
-        const candidatePath = candidate.path;
-        rebindShownPairs.add(pairKey);
-        const toastId = showToast(
-          `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
-          'info',
-          [
-            {
-              label: 'Yes',
-              onClick: () => {
-                // Transfer the stale path's visibility to the new path.
-                if (staleVisibility) {
-                  viewStateStore.setVisibility(candidatePath, staleVisibility);
-                }
-                // Remove the stale explicit entry.
-                viewStateStore.resetToInherit(stalePath);
-                // rebindShownPairs is cleared in handleDismissToast (via the
-                // toast-id → pairKey map) when the button's onDismiss fires.
-              },
-            },
-            {
-              label: 'No',
-              onClick: () => {
-                // Dismiss and suppress this specific pair for the session —
-                // the stale entry stays so the user can still rebind manually
-                // or undo. This matches [Ignore] scoping: the same stale→candidate
-                // pair will not re-fire on the next tree update.
-                ignoredPairs.add(pairKey);
-              },
-            },
-            {
-              label: 'Ignore',
-              onClick: () => {
-                // Suppress this pair for the rest of the session.
-                ignoredPairs.add(pairKey);
-              },
-            },
-          ],
-        );
-        // Remember which pair this toast represents so handleDismissToast
-        // can clean up rebindShownPairs when the toast goes away for ANY
-        // reason (button, close-X, or auto-dismiss timeout).
-        rebindToastPairs.set(toastId, pairKey);
-      }
-    });
-  }
 
   // True when at least one design mesh is loaded. Memoized so DualViewport's
   // designViewportActive prop does not allocate a new array on every reactive pulse.
   const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
 
-  // AutoResolvePanel mount predicate — DATA-gated, not `autoResolve.active`-gated,
-  // so a completed loop stays readable instead of vanishing when it lands.
-  //
-  // Deliberately a SINGLE accessor with TWO consumers: the side-panel
-  // `grid-template-rows` builder (which sizes this panel's track) and the
-  // `<Show>` that mounts it. Those two must agree exactly — a track/child
-  // mismatch shifts every subsequent child up a track and collapses chat into a
-  // 4px strip — so they share the expression rather than each restating it.
-  const hasAutoResolvePanel = createMemo(() => engineStore.state.autoResolve.iterations.length > 0);
-
-  // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
-  // changes.  treeGeneration is incremented by the effect above after setTree runs, which
-  // guarantees that getAllEffective() sees the up-to-date nodeByPath on every call.
-  const effectiveVisibility = createMemo(() => {
-    void treeGeneration(); // track treeGeneration so the memo re-runs after setTree
-    return viewStateStore.getAllEffective();
-  });
+  // Re-evaluates on explicit changes and on the view store's tree version.
+  const effectiveVisibility = createMemo(() => viewStateStore.getAllEffective());
 
   // N-pane join: display_panes directives + realized meshes → per-pane groups.
   // Recomputed reactively; display_panes follows the full-snapshot lifecycle
@@ -955,14 +934,7 @@ const App: Component = () => {
   // behind phase==='idle' (PRD §12 Q3): enforcement must update the instant a
   // body is hidden so the next interactive edit_param prunes its cells. `ghost`
   // and `show` stay demanded; only `hidden` prunes (PRD §12 Q4).
-  //
-  // `treeGeneration` is passed to satisfy the tree-readiness contract documented
-  // on `createSelectiveDemandSync`'s `treeGeneration` @param (task #6052): without
-  // a readiness source the effect's first tracked run hits `getAllEffective`'s
-  // empty-tree short-circuit, subscribes to nothing, and the first post-mount
-  // toggle is silently lost. Same readiness dependency the sibling 4532
-  // `syncObservedDemand` effect above gets via the `effectiveVisibility` memo.
-  createSelectiveDemandSync(engineStore, viewStateStore, treeGeneration);
+  createSelectiveDemandSync(engineStore, viewStateStore);
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the
@@ -1247,8 +1219,7 @@ const App: Component = () => {
     const fileData = await bridgeOpenFile(path);
     editorStore.openFile(fileData);
     // Load into engine for evaluation (meshes, values, constraints)
-    const guiState = await bridgeOpenFileEngine(path);
-    engineStore.initFromState(guiState);
+    engineStore.applyPublishedState(await bridgeOpenFileEngine(path));
 
     // Load persisted view state (sidecar > localStorage > null).
     // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
@@ -1284,8 +1255,8 @@ const App: Component = () => {
 
   // Guard for File→New and File→Open: returns true when it is safe to proceed.
   // We check ALL dirty files rather than just the active tab because loadPathIntoStores
-  // replaces the full engine state (initFromState), view state, and current path — any
-  // open buffer with unsaved edits is effectively unreachable after the switch.
+  // replaces the full engine state (applyPublishedState), view state, and current path —
+  // any open buffer with unsaved edits is effectively unreachable after the switch.
   async function confirmDiscardIfDirty(): Promise<boolean> {
     if (editorStore.state.dirtyFiles.length === 0) return true;
     return await bridgeAsk('You have unsaved changes. Discard them?');
@@ -1419,49 +1390,154 @@ const App: Component = () => {
   }
 
   let alive = true;
-  let unsub: (() => void) | undefined;
-  let fileChangedUnsub: (() => void) | undefined;
-  let fileRemovedUnsub: (() => void) | undefined;
-  let serializationErrorUnsub: (() => void) | undefined;
-  let focusEntityUnsub: (() => void) | undefined;
-  let navigateToSourceUnsub: (() => void) | undefined;
-  let claudeEventUnsub: (() => void) | undefined;
-  let sidecarCrashedUnsub: (() => void) | undefined;
-  let debugBridgeUnsub: (() => void) | undefined;
-  let kernelStatusUnsub: (() => void) | undefined;
-  let bucklingFrameUnsub: (() => void) | undefined;
+  const subscriptions = createSubscriptionSet();
+
+  // Wrapped in try/catch (not .catch) so that if the bridge import is mocked
+  // without getKernelStatus, the synchronous `undefined()` TypeError is
+  // captured rather than escaping the async context.
+  async function fetchKernelStatus(): Promise<void> {
+    try {
+      const status = await getKernelStatus();
+      if (!alive) return;
+      engineStore.setKernelStatus(status);
+    } catch (err) {
+      console.warn('[kernel-status] fetch failed:', err);
+    }
+  }
+
+  const subscriptionRows: readonly SubscriptionRow[] = [
+    {
+      subscribe: () => engineStore.subscribeToEvents(),
+      onFailure: () => showToast('Event subscription failed — some updates may not appear', 'error'),
+    },
+    {
+      subscribe: () =>
+        onFileChanged((data: FileData) => {
+          // Only act when the file is currently open.
+          // isSameFile handles file:// URI vs bare-path mismatches that the bridge
+          // layer emits inconsistently (LSP uses URIs, Tauri commands use bare paths).
+          // We pass match.path (the tab's key) to store mutations so the store
+          // key stays stable — never accidentally renamed to the URI form.
+          const match = editorStore.state.openFiles.find((f) => isSameFile(f.path, data.path));
+          if (!match) return;
+
+          if (editorStore.state.dirtyFiles.includes(match.path)) {
+            // Dirty path: user has unsaved edits — surface the conflict so they
+            // can choose between Reload or Overwrite.
+            setChangedFiles((prev) => new Set([...prev, match.path]));
+            editorStore.markExternallyChanged(match.path);
+          } else {
+            // Non-dirty path: no local edits to protect — silently update the
+            // buffer so the view stays in sync with disk without any prompt.
+            editorStore.updateFileContent(match.path, data.content);
+            editorStore.markClean(match.path);
+            // Also clear this path from changedFiles in case a stale entry survived
+            // (e.g. a previous markExternallyChanged that was then resolved outside
+            // the normal conflict flow). Keeps the banner from outliving the conflict.
+            removeFromChangedFiles(match.path);
+          }
+        }),
+      onFailure: () =>
+        showToast('File change monitoring unavailable — external edits may not be detected', 'error'),
+    },
+    {
+      subscribe: () =>
+        onFileRemoved((data) => {
+          // Only act when the file is currently open — ignore deletions for files
+          // we don't have a tab for (avoids spurious missingFiles entries).
+          const isOpen = editorStore.state.openFiles.some((f) => isSameFile(f.path, data.path));
+          if (!isOpen) return;
+          editorStore.markMissing(data.path);
+        }),
+      onFailure: () =>
+        showToast('File removal monitoring unavailable — deleted files may not be indicated', 'error'),
+    },
+    {
+      subscribe: () => onSerializationError((data) => serializationErrorCoalescer.add(data)),
+      onFailure: () => showToast('Serialization error monitoring unavailable', 'error'),
+    },
+    // Focus-entity events (from focus_entity Tauri command and MCP tool).
+    //
+    // OWNERSHIP: This handler is the sole terminal dispatcher for focus navigation
+    // regardless of origin:
+    //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
+    //     this listener fires. No other handler runs.
+    //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
+    //     (Tauri command) → backend emits the event → this listener fires.
+    //     navigateToEntity's only side effect is triggering the backend command;
+    //     flyToEntity and selectEntity run exclusively here.
+    {
+      subscribe: () =>
+        onFocusEntity((entity) => {
+          flyToEntityFn?.(entity);
+          selectionStore.selectEntity(entity);
+        }),
+      onFailure: (err) => console.warn('Failed to subscribe to focus-entity events:', err),
+    },
+    // Kernel status: fetch the current value, then subscribe to kernel-status
+    // events, so late-binding kernel-availability changes — e.g. future dynamic
+    // dylib loading — propagate to the banner. The fetch sits in this row, not
+    // ahead of the table, so it delays none of the subscriptions above it. A
+    // failed fetch only warns; the subscription still runs.
+    {
+      subscribe: async () => {
+        await fetchKernelStatus();
+        return onKernelStatus((s) => engineStore.setKernelStatus(s));
+      },
+      onFailure: (err) => console.warn('Failed to subscribe to kernel-status events:', err),
+    },
+    // Navigate-to-source events (from MCP navigate_to_source tool).
+    {
+      subscribe: () =>
+        onNavigateToSource(({ file, line, column, end_line, end_column }) => {
+          setScrollToLocation({ file_path: file, line, column, end_line, end_column });
+        }),
+      onFailure: (err) => console.warn('Failed to subscribe to navigate-to-source events:', err),
+    },
+    {
+      subscribe: () => subscribeToClaudeEvents(claudeStore.handleOutboundMessage),
+      onFailure: (err) => {
+        console.error('[claude] subscribeToClaudeEvents failed:', err);
+        showToast('Claude assistant unavailable — chat features may not work', 'error');
+      },
+    },
+    {
+      subscribe: () => subscribeToSidecarCrashed((reason) => claudeStore.handleSidecarCrashed(reason)),
+      onFailure: (err) => console.error('[claude] subscribeToSidecarCrashed failed:', err),
+    },
+    {
+      subscribe: () => subscribeModeShapeFrames(bucklingStore),
+      onFailure: (err) => console.error('[buckling] subscribeModeShapeFrames failed:', err),
+    },
+    // Debug bridge when REIFY_DEBUG=1 (dynamic import for tree-shaking).
+    {
+      subscribe: async () => {
+        if (!(await isDebugEnabled())) return () => {};
+        setDebugEnabled(true);
+        const { initDebugBridge } = await import('./debug');
+        return initDebugBridge({
+          engine: engineStore,
+          editor: editorStore,
+          selection: selectionStore,
+          claude: claudeStore,
+          viewState: viewStateStore,
+          layout: layoutStore,
+        });
+      },
+      onFailure: (err) => console.error('[debug-bridge] init failed:', err),
+    },
+  ];
 
   async function initApp() {
-    // Clean up existing subscriptions before proceeding (defensive against
-    // concurrent or re-entrant initApp calls, e.g. rapid retry)
-    unsub?.();
-    unsub = undefined;
-    fileChangedUnsub?.();
-    fileChangedUnsub = undefined;
-    fileRemovedUnsub?.();
-    fileRemovedUnsub = undefined;
-    serializationErrorUnsub?.();
-    serializationErrorUnsub = undefined;
-    focusEntityUnsub?.();
-    focusEntityUnsub = undefined;
-    navigateToSourceUnsub?.();
-    navigateToSourceUnsub = undefined;
-    claudeEventUnsub?.();
-    claudeEventUnsub = undefined;
-    sidecarCrashedUnsub?.();
-    sidecarCrashedUnsub = undefined;
-    kernelStatusUnsub?.();
-    kernelStatusUnsub = undefined;
-    bucklingFrameUnsub?.();
-    bucklingFrameUnsub = undefined;
+    subscriptions.disposeAll();
 
     setInitPhase('loading');
 
     try {
-      const initialState = await getInitialState();
+      const initial = await getInitialState();
       if (!alive) return;
-      engineStore.initFromState(initialState);
-      for (const file of initialState.files) {
+      engineStore.applyPublishedState(initial);
+      for (const file of initial.state.files) {
         editorStore.openFile(file);
       }
     } catch (err) {
@@ -1516,210 +1592,8 @@ const App: Component = () => {
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
-    try {
-      const u = await engineStore.subscribeToEvents();
-      if (!alive) {
-        u();
-        return;
-      }
-      unsub = u;
-    } catch (err) {
-      showToast('Event subscription failed — some updates may not appear', 'error');
-    }
-
-    // Subscribe to file-changed events
-    try {
-      const unlistenFileChanged = await onFileChanged((data: FileData) => {
-        // Only act when the file is currently open.
-        // isSameFile handles file:// URI vs bare-path mismatches that the bridge
-        // layer emits inconsistently (LSP uses URIs, Tauri commands use bare paths).
-        // We pass match.path (the tab's key) to store mutations so the store
-        // key stays stable — never accidentally renamed to the URI form.
-        const match = editorStore.state.openFiles.find((f) => isSameFile(f.path, data.path));
-        if (!match) return;
-
-        if (editorStore.state.dirtyFiles.includes(match.path)) {
-          // Dirty path: user has unsaved edits — surface the conflict so they
-          // can choose between Reload or Overwrite.
-          setChangedFiles((prev) => new Set([...prev, match.path]));
-          editorStore.markExternallyChanged(match.path);
-        } else {
-          // Non-dirty path: no local edits to protect — silently update the
-          // buffer so the view stays in sync with disk without any prompt.
-          editorStore.updateFileContent(match.path, data.content);
-          editorStore.markClean(match.path);
-          // Also clear this path from changedFiles in case a stale entry survived
-          // (e.g. a previous markExternallyChanged that was then resolved outside
-          // the normal conflict flow). Keeps the banner from outliving the conflict.
-          removeFromChangedFiles(match.path);
-        }
-      });
-      if (!alive) {
-        unlistenFileChanged();
-        return;
-      }
-      fileChangedUnsub = unlistenFileChanged;
-    } catch (_err) {
-      showToast('File change monitoring unavailable — external edits may not be detected', 'error');
-    }
-
-    // Subscribe to file-removed events
-    try {
-      const unlistenFileRemoved = await onFileRemoved((data) => {
-        // Only act when the file is currently open — ignore deletions for files
-        // we don't have a tab for (avoids spurious missingFiles entries).
-        const isOpen = editorStore.state.openFiles.some((f) => isSameFile(f.path, data.path));
-        if (!isOpen) return;
-        editorStore.markMissing(data.path);
-      });
-      if (!alive) {
-        unlistenFileRemoved();
-        return;
-      }
-      fileRemovedUnsub = unlistenFileRemoved;
-    } catch (_err) {
-      showToast('File removal monitoring unavailable — deleted files may not be indicated', 'error');
-    }
-
-    // Subscribe to serialization error events
-    try {
-      const unlistenSerializationError = await onSerializationError((data) => {
-        serializationErrorCoalescer.add(data);
-      });
-      if (!alive) {
-        unlistenSerializationError();
-        return;
-      }
-      serializationErrorUnsub = unlistenSerializationError;
-    } catch (_err) {
-      showToast('Serialization error monitoring unavailable', 'error');
-    }
-
-    // Subscribe to focus-entity events (from focus_entity Tauri command and MCP tool).
-    //
-    // OWNERSHIP: This handler is the sole terminal dispatcher for focus navigation
-    // regardless of origin:
-    //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
-    //     this listener fires. No other handler runs.
-    //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
-    //     (Tauri command) → backend emits the event → this listener fires.
-    //     navigateToEntity's only side effect is triggering the backend command;
-    //     flyToEntity and selectEntity run exclusively here.
-    try {
-      const unlisten = await onFocusEntity((entity) => {
-        flyToEntityFn?.(entity);
-        selectionStore.selectEntity(entity);
-      });
-      if (!alive) {
-        unlisten();
-        return;
-      }
-      focusEntityUnsub = unlisten;
-    } catch (_err) {
-      console.warn('Failed to subscribe to focus-entity events:', _err);
-    }
-
-    // Fetch initial kernel status. Wrapped in try/catch (not .catch) so that if
-    // the bridge import is mocked without getKernelStatus, the synchronous
-    // `undefined()` TypeError is captured rather than escaping the async context.
-    try {
-      const status = await getKernelStatus();
-      if (!alive) return;
-      engineStore.setKernelStatus(status);
-    } catch (err) {
-      console.warn('[kernel-status] fetch failed:', err);
-    }
-
-    // Subscribe to kernel-status events (so late-binding kernel-availability
-    // changes — e.g. future dynamic dylib loading — propagate to the banner).
-    try {
-      const unlisten = await onKernelStatus((s) => engineStore.setKernelStatus(s));
-      if (!alive) {
-        unlisten();
-        return;
-      }
-      kernelStatusUnsub = unlisten;
-    } catch (_err) {
-      console.warn('Failed to subscribe to kernel-status events:', _err);
-    }
-
-    // Subscribe to navigate-to-source events (from MCP navigate_to_source tool)
-    try {
-      const unlisten = await onNavigateToSource(({ file, line, column, end_line, end_column }) => {
-        setScrollToLocation({ file_path: file, line, column, end_line, end_column });
-      });
-      if (!alive) {
-        unlisten();
-        return;
-      }
-      navigateToSourceUnsub = unlisten;
-    } catch (_err) {
-      console.warn('Failed to subscribe to navigate-to-source events:', _err);
-    }
-
-    // Subscribe to Claude sidecar events
-    try {
-      const unlistenClaude = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);
-      if (!alive) {
-        unlistenClaude();
-        return;
-      }
-      claudeEventUnsub = unlistenClaude;
-    } catch (err) {
-      console.error('[claude] subscribeToClaudeEvents failed:', err);
-      showToast('Claude assistant unavailable — chat features may not work', 'error');
-    }
-
-    // Subscribe to sidecar-crashed events (unexpected process exit)
-    try {
-      const unlistenSidecarCrashed = await subscribeToSidecarCrashed((reason) =>
-        claudeStore.handleSidecarCrashed(reason),
-      );
-      if (!alive) {
-        unlistenSidecarCrashed();
-        return;
-      }
-      sidecarCrashedUnsub = unlistenSidecarCrashed;
-    } catch (err) {
-      console.error('[claude] subscribeToSidecarCrashed failed:', err);
-    }
-
-    // Subscribe to mode-shape-frame IPC events for the buckling animator
-    try {
-      const unlistenBuckling = await subscribeModeShapeFrames(bucklingStore);
-      if (!alive) {
-        unlistenBuckling();
-        return;
-      }
-      bucklingFrameUnsub = unlistenBuckling;
-    } catch (err) {
-      console.error('[buckling] subscribeModeShapeFrames failed:', err);
-    }
-
-    // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
-    try {
-      if (await isDebugEnabled()) {
-        setDebugEnabled(true);
-        const { initDebugBridge } = await import('./debug');
-        const unsub = await initDebugBridge({
-          engine: engineStore,
-          editor: editorStore,
-          selection: selectionStore,
-          claude: claudeStore,
-          viewState: viewStateStore,
-          layout: layoutStore,
-        });
-        if (!alive) {
-          unsub();
-          return;
-        }
-        debugBridgeUnsub = unsub;
-      }
-    } catch (err) {
-      console.error('[debug-bridge] init failed:', err);
-    }
-
-    if (!alive) return;
+    const completed = await subscriptions.subscribeAll(subscriptionRows);
+    if (!completed || !alive) return;
     setInitPhase('ready');
   }
 
@@ -1774,26 +1648,45 @@ const App: Component = () => {
 
   onCleanup(() => {
     alive = false;
-    unsub?.();
-    fileChangedUnsub?.();
-    fileRemovedUnsub?.();
-    serializationErrorUnsub?.();
-    focusEntityUnsub?.();
-    navigateToSourceUnsub?.();
+    subscriptions.disposeAll();
     serializationErrorCoalescer.cleanup();
-    claudeEventUnsub?.();
-    sidecarCrashedUnsub?.();
-    debugBridgeUnsub?.();
-    kernelStatusUnsub?.();
-    bucklingFrameUnsub?.();
     sidePanelObserver?.disconnect();
     editorPanelObserver?.disconnect();
     delete window.__REIFY_DEBUG__;
   });
 
-  function handleSetParameter(cellId: string, value: string) {
-    bridgeSetParameter(cellId, value).catch((err) =>
-      showToast(`Parameter update failed: ${errorMessage(err)}`, 'error'),
+  /**
+   * The durable write: rewrites the parameter's default in the source file.
+   * Returns so a caller can sequence on it — `MechanismPanel` holds the
+   * gesture's commit until the preview it follows has landed.
+   */
+  function handleSetParameter(cellId: string, value: string): Promise<void> {
+    return bridgeSetParameter(cellId, value).then(
+      () => undefined,
+      (err) => {
+        // A refusal discards the gesture's previews engine-side and re-emits
+        // the source values, so the optimistic overrides a scrub recorded are
+        // now the only thing still claiming the refused number. `refresh()`
+        // cannot retire them — it clears an override only when the committed
+        // value CATCHES UP to it, which is exactly what a refusal guarantees
+        // will not happen — so the slider would stay parked on a value neither
+        // the engine nor the file carries. Clearing all of them is right
+        // because a refusal invalidates the whole gesture, not one joint.
+        mechanismStore.clearOptimistic();
+        showToast(`Parameter update failed: ${errorMessage(err)}`, 'error');
+      },
+    );
+  }
+
+  /**
+   * The transient write behind a drag. A refusal is logged, never toasted: this
+   * fires at frame cadence, and the commit that ends the gesture reports the
+   * same refusal exactly once.
+   */
+  function handlePreviewParameter(cellId: string, value: string): Promise<void> {
+    return bridgePreviewParameter(cellId, value).then(
+      () => undefined,
+      (err) => console.error('Parameter preview failed:', errorMessage(err)),
     );
   }
 
@@ -2072,6 +1965,132 @@ const App: Component = () => {
     clampToContainer();
   }
 
+  // The side panel, top to bottom: each entry is one grid child with its own track.
+  const sidePanelEntries: readonly SidePanelEntry[] = [
+    {
+      id: 'design-tree',
+      mounted: alwaysMounted,
+      track: () => `${layoutStore.state.designTreeHeight}px`,
+      render: () => (
+        <DesignTree
+          tree={entityTree()}
+          viewStateStore={viewStateStore}
+          selectedEntity={selectionStore.state.selectedEntity}
+          selectedEntities={selectionStore.state.selectedEntities}
+          anchorEntity={selectionStore.state.anchorEntity}
+          onSelect={handleDesignTreeSelect}
+          onRangeSelect={selectionStore.rangeSelect}
+          onSelectAll={selectionStore.selectAll}
+          onOpenManage={() => setViewManageOpen(true)}
+          onSaveViews={handleSaveViews}
+          onHover={(path) => selectionStore.hoverEntity(path)}
+          hoveredEntity={selectionStore.state.hoveredEntity}
+        />
+      ),
+    },
+    {
+      id: 'splitter-design-tree',
+      mounted: alwaysMounted,
+      track: () => `${SPLITTER_THICKNESS}px`,
+      render: () => <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />,
+    },
+    {
+      id: 'property-editor',
+      mounted: alwaysMounted,
+      track: () => `${layoutStore.state.propertyHeight}px`,
+      render: () => (
+        <PropertyEditor
+          values={engineStore.state.values}
+          selectedEntity={selectionStore.state.selectedEntity}
+          onSetParameter={handleSetParameter}
+          onGroupDoubleClick={handleGroupDoubleClick}
+          highlightedParams={selectionStore.state.highlightedParams}
+          unitLadders={unitLadders()}
+        />
+      ),
+    },
+    {
+      id: 'splitter-side',
+      mounted: alwaysMounted,
+      track: () => `${SPLITTER_THICKNESS}px`,
+      render: () => <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />,
+    },
+    {
+      id: 'constraint-panel',
+      mounted: alwaysMounted,
+      track: (isLast) => (isLast ? '1fr' : `${layoutStore.state.constraintHeight}px`),
+      render: () => (
+        <ConstraintPanel
+          constraints={engineStore.state.constraints}
+          values={engineStore.state.values}
+          onConstraintSelect={handleConstraintSelect}
+          onAskClaude={handleAskClaude}
+        />
+      ),
+    },
+    {
+      id: 'auto-resolve',
+      // Data-gated, not active-gated, so a finished loop stays readable.
+      mounted: () => engineStore.state.autoResolve.iterations.length > 0,
+      track: () => 'auto',
+      render: () => <AutoResolvePanel state={engineStore.state.autoResolve} />,
+    },
+    {
+      id: 'buckling',
+      mounted: () => bucklingStore.state.base !== null || bucklingStore.modes().length > 0,
+      track: () => 'auto',
+      render: () => <BucklingPanel store={bucklingStore} />,
+    },
+    {
+      id: 'fea-diagnostics',
+      mounted: () => engineStore.state.feaDiagnostics.length > 0,
+      track: () => 'auto',
+      // v1 focus fits the whole scene: FeaDiagnosticInfo carries no entity-path join key.
+      render: () => (
+        <FeaDiagnosticsPanel
+          diagnostics={engineStore.state.feaDiagnostics}
+          onFocusDiagnostic={(_d) => fitToViewFn?.()}
+        />
+      ),
+    },
+    {
+      id: 'mechanism',
+      mounted: () => mechanismStore.state.descriptors.length > 0,
+      track: () => 'auto',
+      render: () => (
+        <MechanismPanel
+          descriptors={mechanismStore.state.descriptors}
+          onSetParameter={handleSetParameter}
+          onPreviewParameter={handlePreviewParameter}
+          onScrubLocal={(cellId, jointIndex, valueSi) =>
+            mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
+          }
+          getEffectiveValueSi={mechanismStore.getEffectiveValueSi}
+        />
+      ),
+    },
+    {
+      id: 'splitter-constraint',
+      mounted: chatOpen,
+      track: () => `${SPLITTER_THICKNESS}px`,
+      render: () => <Splitter orientation="horizontal" onResize={handleConstraintResize} data-testid="splitter-constraint" />,
+    },
+    {
+      id: 'chat',
+      mounted: chatOpen,
+      track: () => `minmax(${CHAT_MIN_HEIGHT}px, 1fr)`,
+      render: () => (
+        <ChatPanel
+          store={claudeStore}
+          selectedEntity={selectionStore.state.selectedEntity ?? undefined}
+          engineConstraints={Object.values(engineStore.state.constraints)}
+          activeFile={editorStore.state.activeFile ?? undefined}
+        />
+      ),
+    },
+  ];
+  const mountedSidePanelEntries = createMemo(() => mountedEntries(sidePanelEntries));
+
   return (
     <>
       <Show when={showHelp()}>
@@ -2189,111 +2208,9 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': (() => {
-                const hasMech = mechanismStore.state.descriptors.length > 0;
-                const hasAR = hasAutoResolvePanel();
-                const hasChat = chatOpen();
-                const base = `${layoutStore.state.designTreeHeight}px 4px ${layoutStore.state.propertyHeight}px 4px`;
-                // Middle tracks: one `auto` per optional panel present (autoResolve then
-                // mechanism). No splitter between cons and the first optional panel — adding
-                // one would shift subsequent children up a track and collapse chat into 4px.
-                const midTracks = [
-                  ...(hasAR ? ['auto'] : []),
-                  ...(hasMech ? ['auto'] : []),
-                ];
-                const midStr = midTracks.length > 0
-                  ? `${layoutStore.state.constraintHeight}px ${midTracks.join(' ')}`
-                  : null;
-                if (hasChat) {
-                  return `${base} ${midStr ?? `${layoutStore.state.constraintHeight}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
-                }
-                return midStr
-                  ? `${base} ${midStr}`
-                  : `${base} 1fr`;
-              })() }}
+              style={{ 'grid-template-rows': sidePanelTracks(mountedSidePanelEntries()) }}
             >
-              <DesignTree
-                tree={entityTree()}
-                viewStateStore={viewStateStore}
-                selectedEntity={selectionStore.state.selectedEntity}
-                selectedEntities={selectionStore.state.selectedEntities}
-                anchorEntity={selectionStore.state.anchorEntity}
-                onSelect={handleDesignTreeSelect}
-                onRangeSelect={selectionStore.rangeSelect}
-                onSelectAll={selectionStore.selectAll}
-                onOpenManage={() => setViewManageOpen(true)}
-                onSaveViews={handleSaveViews}
-                onHover={(path) => selectionStore.hoverEntity(path)}
-                hoveredEntity={selectionStore.state.hoveredEntity}
-              />
-              <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />
-              <PropertyEditor
-                values={engineStore.state.values}
-                selectedEntity={selectionStore.state.selectedEntity}
-                onSetParameter={handleSetParameter}
-                onGroupDoubleClick={handleGroupDoubleClick}
-                highlightedParams={selectionStore.state.highlightedParams}
-                unitLadders={unitLadders()}
-              />
-              <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
-              <ConstraintPanel
-                constraints={engineStore.state.constraints}
-                values={engineStore.state.values}
-                onConstraintSelect={handleConstraintSelect}
-                onAskClaude={handleAskClaude}
-              />
-              {/* AutoResolvePanel: promotes once a param=auto loop reports its
-                  FIRST iteration, and stays readable after the loop completes —
-                  a finished loop's result is exactly what the user wants to
-                  read. Cleared by the next loop's first iteration or by a
-                  full-state reload. Shares `hasAutoResolvePanel` with the
-                  grid-track builder above, which sizes this panel's track. */}
-              <Show when={hasAutoResolvePanel()}>
-                <AutoResolvePanel state={engineStore.state.autoResolve} />
-              </Show>
-              {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
-                  progress ticks; hidden (debounce) for sub-second solves. */}
-              <Show when={engineStore.state.solverProgress.visible}>
-                <SolverProgressOverlay
-                  progress={engineStore.state.solverProgress.latest}
-                  trace={engineStore.state.solverProgress.trace}
-                  coarseReached={engineStore.state.solverProgress.coarseReached}
-                  onCancel={engineStore.cancelSolve}
-                />
-              </Show>
-              {/* BucklingPanel: shown when the buckling solver has emitted mode-shape data */}
-              <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
-                <BucklingPanel store={bucklingStore} />
-              </Show>
-              {/* FeaDiagnosticsPanel: shown when fea_diagnostics is non-empty (failure-mode overlay, #2966).
-                  v1 focus: fits the whole scene to view because FeaDiagnosticInfo variants carry no
-                  entity-path join key.  Per-diagnostic camera focus requires a new backend join key
-                  or per-variant mesh-bounds query on the engine side (future work). */}
-              <Show when={engineStore.state.feaDiagnostics.length > 0}>
-                <FeaDiagnosticsPanel
-                  diagnostics={engineStore.state.feaDiagnostics}
-                  onFocusDiagnostic={(_d) => fitToViewFn?.()}
-                />
-              </Show>
-              <Show when={mechanismStore.state.descriptors.length > 0}>
-                <MechanismPanel
-                  descriptors={mechanismStore.state.descriptors}
-                  onSetParameter={handleSetParameter}
-                  onScrubLocal={(cellId, jointIndex, valueSi) =>
-                    mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
-                  }
-                  getEffectiveValueSi={mechanismStore.getEffectiveValueSi}
-                />
-              </Show>
-              <Show when={chatOpen()}>
-                <Splitter orientation="horizontal" onResize={handleConstraintResize} data-testid="splitter-constraint" />
-                <ChatPanel
-                  store={claudeStore}
-                  selectedEntity={selectionStore.state.selectedEntity ?? undefined}
-                  engineConstraints={Object.values(engineStore.state.constraints)}
-                  activeFile={editorStore.state.activeFile ?? undefined}
-                />
-              </Show>
+              <For each={mountedSidePanelEntries()}>{(entry) => entry.render()}</For>
             </div>
           </div>
           <StatusBar
@@ -2338,6 +2255,16 @@ const App: Component = () => {
             store={viewStateStore}
             onClose={() => setViewManageOpen(false)}
           />
+          {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
+              progress ticks; hidden (debounce) for sub-second solves. */}
+          <Show when={engineStore.state.solverProgress.visible}>
+            <SolverProgressOverlay
+              progress={engineStore.state.solverProgress.latest}
+              trace={engineStore.state.solverProgress.trace}
+              coarseReached={engineStore.state.solverProgress.coarseReached}
+              onCancel={engineStore.cancelSolve}
+            />
+          </Show>
           {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — floating overlay, task 4279 */}
           <Show when={debugEnabled()}>
             <div class={styles.warmPoolDebugOverlay} data-testid="warm-pool-debug-overlay">

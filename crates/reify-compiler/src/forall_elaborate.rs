@@ -26,12 +26,19 @@
 //!     for each key in `keyed_members` declaration order.
 //!
 //! Anything else (non-iterable, undef count, multi-hop indirection) emits
-//! zero decls. Re-elaboration on count change for deferred-count collection
-//! subs (task 2629; PRD criterion 7 second-half) is performed by
-//! `Engine::edit_param`'s collection count phase
-//! (`crates/reify-eval/src/engine_edit.rs` ~1392-1528), driven by the
-//! `forall_templates: Vec<CompiledForallTemplate>` captured here on
-//! `TopologyTemplate.forall_templates`.
+//! zero decls at compile time. A collection sub whose count is not yet known
+//! is `Deferred`: its per-element body is captured as a
+//! `CompiledForallTemplate` on `TopologyTemplate.forall_templates`, and
+//! `Engine::edit_param`'s collection-count phase (reify-eval
+//! `engine_edit.rs`) re-elaborates it whenever the count becomes known.
+//!
+//! Captured for runtime re-elaboration: `Constraint` bodies without a
+//! where-clause, and `Connect` bodies whose endpoints parse as a `PortPath`.
+//! A captured `Connect` drops its connector type and params at runtime, and
+//! says so in an info diagnostic. Not captured, each with one info
+//! diagnostic: where-clause constraint bodies, constraint-instantiation
+//! bodies, chain bodies, and connect endpoints outside the `PortPath`
+//! grammar.
 //!
 //! ## PRD criteria 6 and 7 contract
 //!
@@ -46,18 +53,36 @@
 //! **Criterion 7 first-half — undef count, compile time:** a collection sub
 //! whose count cell is missing or non-literal returns
 //! `ResolveForallOutcome::Deferred` from `resolve_forall_elements`. The
-//! callers emit zero decls and no diagnostics, and (task 2629) capture a
+//! callers emit zero decls and no error, and capture a
 //! `CompiledForallTemplate` describing the per-element body so the runtime
-//! can re-elaborate when the count later becomes known.
+//! can re-elaborate when the count later becomes known — or, for a body
+//! that is not captured, emit its one info diagnostic.
 //!
-//! **Criterion 7 second-half — runtime re-elaboration:** wired in
-//! `engine_edit.rs` per the link above. Only the `Constraint` body shape
-//! is supported there. `Connect` (tracked by task 2690), `Instantiation`,
-//! and `Chain` body shapes retain compile-time silent-skip semantics and
-//! emit an info diagnostic noting the follow-up task.
+//! **Criterion 7 second-half — runtime re-elaboration:** performed by
+//! `Engine::edit_param` for the captured body shapes listed above. The
+//! uncaptured shapes keep compile-time silent-skip semantics.
+//!
+//! **Duplicate diagnostics:** every diagnostic raised inside
+//! `elaborate_forall_connect`'s per-element loop goes through
+//! `ForallDiagnosticSink`, which reports each distinct diagnostic once per
+//! declaration and only ever filters — so the zero-diagnostic guarantees above
+//! are unaffected. The window covers that loop and nothing else:
+//! `elaborate_forall_constraint` below is NOT routed through a sink, so an
+//! element-independent body diagnostic (e.g. `unresolved name: <ident>` from
+//! `compile_expr`) is still reported once per element there. Extending the sink
+//! to it is filed as a follow-up.
 
 use super::*;
 use std::collections::HashMap;
+
+/// The info diagnostic for a deferred-count `forall` body that is not
+/// captured for runtime re-elaboration.
+fn not_re_elaborated_info(construct: &str, emits: &str) -> Diagnostic {
+    Diagnostic::info(format!(
+        "{construct} over a deferred-count collection is not re-elaborated at runtime: \
+         no per-element {emits} are emitted when the count becomes known"
+    ))
+}
 
 /// Outcome of resolving the collection expression of a statement-form `forall`.
 ///
@@ -311,6 +336,92 @@ fn resolve_count_cell_literal(
     }
 }
 
+/// Per-`forall`-declaration duplicate-diagnostic sink (task 7195).
+///
+/// Invariant: **one `forall` declaration reports each distinct diagnostic at
+/// most once**, where two diagnostics are the same when every field compares
+/// equal — see [`fields_equal`]. First occurrence wins, so the retained order is
+/// emission order minus the repeats.
+///
+/// Nothing an author or a downstream consumer can distinguish is lost: the
+/// collapsed copies come from running one check once per collection element, and
+/// each element keeps its own `connect_compat_*` constraint, so the per-element
+/// failure set stays recoverable from the compiled template.
+///
+/// Construct one immediately before a declaration's per-element loop and *after*
+/// collection resolution, so diagnostics raised by `resolve_forall_elements` and
+/// by the `ResolveForallOutcome::Deferred` arm — each already emitted exactly
+/// once — stay outside the window.
+struct ForallDiagnosticSink<'a> {
+    /// The caller's diagnostics vector; retained entries are appended here.
+    out: &'a mut Vec<Diagnostic>,
+    /// Index in `out` at which this declaration's window opens. Only entries at
+    /// or after it participate in the duplicate comparison, so a repeat raised
+    /// by an unrelated earlier declaration is never suppressed.
+    window_start: usize,
+    /// Reusable buffer lent to the closure in [`Self::collecting`].
+    scratch: Vec<Diagnostic>,
+}
+
+impl<'a> ForallDiagnosticSink<'a> {
+    fn new(out: &'a mut Vec<Diagnostic>) -> Self {
+        let window_start = out.len();
+        Self {
+            out,
+            window_start,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Run `emit` against a scratch diagnostics vector, then merge whatever it
+    /// pushed into `out`, dropping every entry equal to one already retained for
+    /// this declaration.
+    ///
+    /// The closure form makes the merge un-skippable: the buffer cannot be
+    /// obtained without the merge running on return, so a call site added later
+    /// inside the loop cannot half-use the protocol and silently lose
+    /// diagnostics. The window holds one entry per DISTINCT rendering — one for
+    /// an element-independent message (direction mismatch, invalid port
+    /// reference), N for a name-bearing one (`undefined port 'vents[i].inlet'`)
+    /// — so the linear scan is O(elements × distinct), worst case quadratic in
+    /// the collection size on a compile that is already failing.
+    fn collecting<R>(&mut self, emit: impl FnOnce(&mut Vec<Diagnostic>) -> R) -> R {
+        self.scratch.clear();
+        let result = emit(&mut self.scratch);
+        for diag in self.scratch.drain(..) {
+            let already_reported = self.out[self.window_start..]
+                .iter()
+                .any(|kept| fields_equal(kept, &diag));
+            if !already_reported {
+                self.out.push(diag);
+            }
+        }
+        result
+    }
+}
+
+/// Whether two diagnostics are equal in every field, and are therefore
+/// indistinguishable to an author and to any downstream consumer.
+///
+/// `Diagnostic` is `#[non_exhaustive]`, so a downstream crate cannot destructure
+/// it exhaustively and the compiler will not flag this function when a field is
+/// added in `reify-core`: a new field must be added to the comparison by hand.
+/// Fields are compared directly rather than through a formatted key —
+/// `Severity`, `DiagnosticCode` and `SourceSpan` already derive `PartialEq`, and
+/// `DiagnosticLabel`, which derives only `Debug, Clone`, is compared pairwise on
+/// its two fields.
+fn fields_equal(a: &Diagnostic, b: &Diagnostic) -> bool {
+    a.severity == b.severity
+        && a.message == b.message
+        && a.code == b.code
+        && a.candidates == b.candidates
+        && a.labels.len() == b.labels.len()
+        && a.labels
+            .iter()
+            .zip(b.labels.iter())
+            .all(|(x, y)| x.span == y.span && x.message == y.message)
+}
+
 /// Drive per-element constraint emission for a `forall ... : constraint ...`
 /// or `forall ... : constraint Inst(...)` declaration.
 ///
@@ -372,14 +483,13 @@ pub(crate) fn elaborate_forall_constraint(
                     // has no guarded-group plumbing for per-element where
                     // clauses, so capturing here would silently drop the
                     // guard at re-emission time. Treat where-clause-bearing
-                    // bodies as "future scope" alongside Instantiation/Chain:
-                    // emit an info diagnostic and skip capture.
+                    // bodies like Instantiation/Chain: not re-elaborated at
+                    // runtime — emit an info diagnostic and skip capture.
                     if body_constraint.where_clause.is_some() {
                         diagnostics.push(
-                            Diagnostic::info(
-                                "forall constraint with where-clause over deferred-count \
-                                 collections will not re-elaborate at runtime \
-                                 (task 2629 future scope)",
+                            not_re_elaborated_info(
+                                "forall constraint with a where-clause",
+                                "constraints",
                             )
                             .with_label(DiagnosticLabel::new(
                                 decl.span,
@@ -426,11 +536,8 @@ pub(crate) fn elaborate_forall_constraint(
                 }
                 ForallConstraintBody::Instantiation(_) => {
                     diagnostics.push(
-                        Diagnostic::info(
-                            "forall constraint-instantiation over deferred-count collections \
-                         will not re-elaborate at runtime (task 2629 future scope)",
-                        )
-                        .with_label(DiagnosticLabel::new(decl.span, "deferred-count forall")),
+                        not_re_elaborated_info("forall constraint-instantiation", "constraints")
+                            .with_label(DiagnosticLabel::new(decl.span, "deferred-count forall")),
                     );
                 }
             }
@@ -609,16 +716,74 @@ pub(crate) fn elaborate_forall_connect(
                 count_cell,
                 sub_name,
             } => {
-                // task 2690: capture a runtime CompiledForallTemplate for the
-                // `Connect` body shape so `Engine::edit_param`'s collection-count
-                // phase can re-emit per-element connections when the count cell
-                // becomes known. Mirrors the Constraint-arm capture wiring at
-                // ~line 327 of this file. The `Chain` body shape retains
-                // compile-time silent-skip + info-diagnostic (task 2629 follow-up).
+                // Capture a runtime `CompiledForallTemplate` for the `Connect`
+                // body shape so `Engine::edit_param`'s collection-count phase
+                // can re-emit per-element connections once the count is known.
+                // A `Chain` body is not captured.
                 match &decl.body {
                     ForallConnectBody::Connect(cd) => {
-                        // Build the placeholder element AST (`<sub_name>[0]`) and
-                        // substitute every expression-bearing position.
+                        // Parse each endpoint as written, before any
+                        // substitution, so the bound variable stays distinct
+                        // from a source-written `<sub>[0]`. The deferred path
+                        // never reaches `compile_connection`, so an endpoint
+                        // outside the grammar gets this info diagnostic
+                        // rather than a resolved-path error.
+                        let left = PortPath::parse(&cd.left.expr, Some(&decl.variable));
+                        let right = PortPath::parse(&cd.right.expr, Some(&decl.variable));
+                        let (left, right) = match (left, right) {
+                            (Some(l), Some(r)) => (l, r),
+                            (left, right) => {
+                                let mut diag = not_re_elaborated_info(
+                                    "forall connect with an unsupported port shape",
+                                    "connections",
+                                )
+                                .with_label(DiagnosticLabel::new(decl.span, "forall connect"));
+                                if left.is_none() {
+                                    diag = diag.with_label(DiagnosticLabel::new(
+                                        cd.left.expr.span,
+                                        "left port shape not supported",
+                                    ));
+                                }
+                                if right.is_none() {
+                                    diag = diag.with_label(DiagnosticLabel::new(
+                                        cd.right.expr.span,
+                                        "right port shape not supported",
+                                    ));
+                                }
+                                diagnostics.push(diag);
+                                return;
+                            }
+                        };
+
+                        // The runtime re-emission in `engine_edit.rs` does not
+                        // replicate `compile_connection`'s connector-spec
+                        // handling: no `connector_sub`, no connector-param
+                        // validation, no `frame_constraint`. For the rich form
+                        // the captured `connector_type` and `params` are
+                        // dropped at runtime, so say so rather than diverge
+                        // silently from the resolved (non-deferred) path.
+                        if cd.connector_type.is_some() || !cd.params.is_empty() {
+                            diagnostics.push(
+                                Diagnostic::info(
+                                    "forall connect with `via T(args)` over a deferred-count \
+                                     collection: connector type and params are not \
+                                     propagated by runtime re-elaboration; only the \
+                                     port-to-port connection is materialised",
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    decl.span,
+                                    "connector spec dropped at runtime",
+                                )),
+                            );
+                        }
+
+                        // Compile each param with `v` bound to the `<sub>[0]`
+                        // placeholder, once at capture time — the Constraint
+                        // arm's `compile_expr(&substituted_body, ...)` policy.
+                        // The placeholder serves these params only; the
+                        // endpoints above were parsed unsubstituted. The
+                        // runtime re-emission drops the params (see the
+                        // diagnostic above).
                         let coll_span = decl.collection.span;
                         let placeholder = reify_ast::Expr {
                             kind: reify_ast::ExprKind::IndexAccess {
@@ -638,96 +803,6 @@ pub(crate) fn elaborate_forall_connect(
                         };
                         let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
                         bindings.insert(decl.variable.clone(), placeholder);
-
-                        let left_substituted = substitute_expr(&cd.left.expr, &bindings);
-                        let right_substituted = substitute_expr(&cd.right.expr, &bindings);
-
-                        // Resolve each substituted side to a flat port-name
-                        // string. `resolve_port_name` understands:
-                        //   * bare `Ident` ("air_channel")
-                        //   * `Ident.member` ("v.inlet" → "vents[0].inlet")
-                        //   * `Ident[N].member` ("vents[0].inlet")
-                        //   * `Ident[N]` ("vents[0]")
-                        //   * `AdHocSelector` patterns
-                        // Anything outside this set (e.g. a doubly-nested
-                        // MemberAccess like `vents[0].inner.a` produced by
-                        // substituting `v.inner.a`) returns None.
-                        //
-                        // On the deferred path `compile_connection` is NEVER
-                        // invoked, so no resolved-path error can fire here.
-                        // Silently skipping would leave the user with no
-                        // connections and no diagnostic — task 2717 adds an
-                        // info diagnostic that labels the offending side(s)
-                        // so users can locate the unsupported expression.
-                        let left_resolved = resolve_port_name(&left_substituted);
-                        let right_resolved = resolve_port_name(&right_substituted);
-                        let (left_port_template, right_port_template) =
-                            match (left_resolved, right_resolved) {
-                                (Some(l), Some(r)) => (l, r),
-                                (left, right) => {
-                                    let mut diag = Diagnostic::info(
-                                        "forall connect with unsupported port shape over \
-                                     deferred-count collections will not re-elaborate \
-                                     at runtime (task 2717; not yet supported by \
-                                     deferred-count re-elaboration)",
-                                    )
-                                    .with_label(DiagnosticLabel::new(decl.span, "forall connect"));
-                                    if left.is_none() {
-                                        diag = diag.with_label(DiagnosticLabel::new(
-                                            cd.left.expr.span,
-                                            "left port shape not supported",
-                                        ));
-                                    }
-                                    if right.is_none() {
-                                        diag = diag.with_label(DiagnosticLabel::new(
-                                            cd.right.expr.span,
-                                            "right port shape not supported",
-                                        ));
-                                    }
-                                    diagnostics.push(diag);
-                                    return;
-                                }
-                            };
-
-                        // task-2690 amendment: surface the connector-spec drop.
-                        //
-                        // The runtime re-emission path in `engine_edit.rs` does
-                        // NOT replicate `compile_connection`'s connector-spec
-                        // handling: it does not auto-create a `connector_sub`
-                        // sub-component, does not validate connector params, and
-                        // does not generate a `frame_constraint`. For the simple
-                        // form (no `via T(args)`, no params) this is invisible.
-                        // For the rich form, the captured `connector_type` and
-                        // `params` are dropped at runtime — emit an info
-                        // diagnostic so users discover the limitation rather
-                        // than getting a silent semantic divergence vs. the
-                        // resolved (non-deferred) path. Mirrors the Chain-arm
-                        // info diagnostic shape just below.
-                        if cd.connector_type.is_some() || !cd.params.is_empty() {
-                            diagnostics.push(
-                                Diagnostic::info(
-                                    "forall connect with `via T(args)` over deferred-count \
-                             collections: connector type and params are not \
-                             propagated by runtime re-elaboration; only the \
-                             port-to-port connection is materialised (task 2690 \
-                             future scope)",
-                                )
-                                .with_label(DiagnosticLabel::new(
-                                    decl.span,
-                                    "connector spec dropped at runtime",
-                                )),
-                            );
-                        }
-
-                        // Compile each substituted param expression once at
-                        // capture time. Mirrors the Constraint arm's
-                        // `compile_expr(&substituted_body, ...)` policy. The
-                        // result is captured on `CompiledForallBody::Connect`
-                        // for completeness even though `engine_edit.rs`'s
-                        // current re-emission drops it (see diagnostic above);
-                        // capturing here means the data is ready for a future
-                        // task to wire connector-spec-aware runtime emission
-                        // without re-doing the substitution work.
                         let params_substituted: Vec<(String, CompiledExpr)> = cd
                             .params
                             .iter()
@@ -751,9 +826,9 @@ pub(crate) fn elaborate_forall_connect(
                             count_cell,
                             span: decl.span,
                             body: CompiledForallBody::Connect {
-                                left_port_template,
+                                left,
                                 operator: cd.operator,
-                                right_port_template,
+                                right,
                                 connector_type: cd.connector_type.clone(),
                                 params: params_substituted,
                                 port_mappings: cd.port_mappings.clone(),
@@ -761,10 +836,11 @@ pub(crate) fn elaborate_forall_connect(
                         });
                     }
                     ForallConnectBody::Chain(_) => {
-                        diagnostics.push(Diagnostic::info(
-                        "forall chain over deferred-count collections will not re-elaborate \
-                         at runtime (task 2629 future scope)",
-                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall chain")));
+                        diagnostics.push(
+                            not_re_elaborated_info("forall chain", "connections").with_label(
+                                DiagnosticLabel::new(decl.span, "deferred-count forall chain"),
+                            ),
+                        );
                     }
                 }
                 return;
@@ -783,6 +859,12 @@ pub(crate) fn elaborate_forall_connect(
         functions,
         trait_registry,
     };
+
+    // Open the per-declaration duplicate-diagnostic window (task 7195). It opens
+    // HERE — after collection resolution and the `Deferred` early return — so the
+    // non-iterable-collection error and the deferred-path info diagnostics, each
+    // already emitted exactly once, stay outside it.
+    let mut sink = ForallDiagnosticSink::new(diagnostics);
 
     // PRD criterion 6 — empty-collection path: when `elements` is empty (either
     // a `ListLiteral([])` or a count-cell-zero collection sub), this loop
@@ -814,24 +896,26 @@ pub(crate) fn elaborate_forall_connect(
                     value_cells,
                     pending_connect_auto_params,
                 };
-                compile_connection(
-                    &ctx,
-                    &ConnectInput {
-                        left_expr: &left_substituted,
-                        operator: cd.operator,
-                        right_expr: &right_substituted,
-                        connector_type: cd.connector_type.as_deref(),
-                        params: &params_substituted,
-                        port_mappings: &cd.port_mappings,
-                        // Anchor the emitted connection at the source forall
-                        // declaration so per-element diagnostics cite the
-                        // forall site and the element index travels in the
-                        // synthetic compatibility constraint label.
-                        span: decl.span,
-                    },
-                    diagnostics,
-                    &mut acc,
-                );
+                sink.collecting(|element_diagnostics| {
+                    compile_connection(
+                        &ctx,
+                        &ConnectInput {
+                            left_expr: &left_substituted,
+                            operator: cd.operator,
+                            right_expr: &right_substituted,
+                            connector_type: cd.connector_type.as_deref(),
+                            params: &params_substituted,
+                            port_mappings: &cd.port_mappings,
+                            // Anchor the emitted connection at the source forall
+                            // declaration so per-element diagnostics cite the
+                            // forall site and the element index travels in the
+                            // synthetic compatibility constraint label.
+                            span: decl.span,
+                        },
+                        element_diagnostics,
+                        &mut acc,
+                    );
+                });
                 let _ = i; // element index currently encoded only via the
                 // synthetic `connect_compat_<l>_<r>` label produced
                 // by `compile_connection` (the substituted port
@@ -840,32 +924,42 @@ pub(crate) fn elaborate_forall_connect(
                 // needed for diagnostic provenance.
             }
             // Per-element chain desugaring: substitute every chain element,
-            // then emit pairwise Forward connections via `windows(2)`. Mirror
-            // the plain `MemberDecl::Chain` arm at entity.rs:1304-1342, but
-            // anchor every emitted connection's span at `decl.span` so
-            // per-element diagnostics cite the forall site.
+            // then hand the result to `chain_hops` (connect.rs), which owns
+            // the spec §6.2 element resolution this arm shares with the
+            // entity-member site. Every emitted connection is anchored at
+            // `decl.span` rather than at the chain body's own span, so
+            // `compile_connection`'s diagnostics cite the forall the designer
+            // wrote. `chain_hops`' own §6.2 diagnostics are labelled at the
+            // element instead — for the substituted bound variable, that is
+            // the span its binding carries: the collection expression's when
+            // the forall iterates a sub collection, a list item's own when it
+            // iterates a literal list.
             ForallConnectBody::Chain(cd) => {
-                // Edge case: fewer than two elements is a malformed chain.
-                // Emit the standard chain diagnostic once per element-iteration
-                // (matching the plain-Chain arm's behaviour) anchored at the
-                // forall span. The plain arm uses `chain_decl.span`; here the
-                // forall span subsumes the chain body's span and is the
-                // user-visible site.
+                // Edge case: fewer than two elements is a malformed chain. The
+                // guard is CHECKED per element; the diagnostic it raises is
+                // element-independent, so the sink reports it once per
+                // declaration. Anchored at the forall span — the plain-Chain arm
+                // uses `chain_decl.span`, but here the forall span subsumes the
+                // chain body's span and is the user-visible site. Unreachable
+                // from `.ri` source today: `ts_parser.rs::lower_chain` rejects a
+                // `<2`-element chain with a parse error and is the only
+                // constructor of `ForallConnectBody::Chain`.
                 //
                 // INTENTIONAL PLACEMENT — this guard is INSIDE the outer
                 // per-element loop. For `forall v in []: chain ...` (PRD
                 // criterion 6), the outer loop iterates zero times so this
-                // guard is never reached and no diagnostic is emitted. For a
-                // non-empty forall with a malformed chain body (e.g. only one
-                // chain element), the guard fires once per outer-loop element.
-                // Do NOT hoist this guard outside the loop for "efficiency" —
-                // doing so would fire the diagnostic for the empty-list case
-                // (breaking criterion 6) and for the undef-count deferred case.
+                // guard is never reached and no diagnostic is emitted; the sink
+                // only ever filters, never adds, so that stays true. Do NOT
+                // hoist this guard outside the loop for "efficiency" — doing so
+                // would fire the diagnostic for the empty-list case (breaking
+                // criterion 6) and for the undef-count deferred case.
                 if cd.elements.len() < 2 {
-                    diagnostics.push(
-                        Diagnostic::error("chain statement requires at least two elements")
-                            .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        element_diagnostics.push(
+                            Diagnostic::error("chain statement requires at least two elements")
+                                .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
+                        );
+                    });
                     // Skip emission for this element; without at least two
                     // elements there is no pairwise window to desugar.
                     let _ = i;
@@ -878,7 +972,10 @@ pub(crate) fn elaborate_forall_connect(
                     .map(|e| substitute_expr(e, &bindings))
                     .collect();
 
-                for pair in substituted_elements.windows(2) {
+                let hops = sink.collecting(|element_diagnostics| {
+                    chain_hops(&ctx, &substituted_elements, element_diagnostics)
+                });
+                for (source, dest) in hops {
                     let mut acc = ConnectAccumulator {
                         constraints,
                         constraint_index,
@@ -888,22 +985,67 @@ pub(crate) fn elaborate_forall_connect(
                         value_cells,
                         pending_connect_auto_params,
                     };
-                    compile_connection(
-                        &ctx,
-                        &ConnectInput {
-                            left_expr: &pair[0],
-                            operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
-                            connector_type: None,
-                            params: &[],
-                            port_mappings: &[],
-                            span: decl.span,
-                        },
-                        diagnostics,
-                        &mut acc,
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        compile_connection(
+                            &ctx,
+                            &ConnectInput {
+                                left_expr: &source,
+                                operator: reify_ast::ConnectOp::Forward,
+                                right_expr: &dest,
+                                connector_type: None,
+                                params: &[],
+                                port_mappings: &[],
+                                span: decl.span,
+                            },
+                            element_diagnostics,
+                            &mut acc,
+                        );
+                    });
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod forall_diagnostic_sink_tests {
+    use super::*;
+
+    fn direction_error(span: SourceSpan) -> Diagnostic {
+        Diagnostic::error("incompatible port directions for connect: In -> In")
+            .with_label(DiagnosticLabel::new(span, "incompatible directions"))
+    }
+
+    /// A declaration collapses its own repeats, and only its own: a diagnostic
+    /// identical to one an EARLIER declaration already reported is still
+    /// reported, because each sink's window opens at the declaration it serves.
+    ///
+    /// Pinned here rather than by an `.ri` fixture because no fixture can reach
+    /// it: every diagnostic raised inside the per-element loop is labelled at a
+    /// span belonging to its own declaration (`decl.span`, or a substituted body
+    /// expression's span), so two declarations cannot emit field-equal
+    /// diagnostics today. Widening the window to all of `out` would therefore
+    /// pass every fixture in the suite while being wrong for the first
+    /// declaration-independent diagnostic added to the loop.
+    #[test]
+    fn window_spans_one_declaration_not_the_whole_compilation() {
+        let span = SourceSpan::new(0, 10);
+        let mut out = Vec::new();
+
+        for _ in 0..2 {
+            let mut sink = ForallDiagnosticSink::new(&mut out);
+            for _ in 0..3 {
+                sink.collecting(|element_diagnostics| {
+                    element_diagnostics.push(direction_error(span))
+                });
+            }
+        }
+
+        assert_eq!(
+            out.len(),
+            2,
+            "expected one survivor per declaration (3 identical copies each), got {:?}",
+            out
+        );
     }
 }

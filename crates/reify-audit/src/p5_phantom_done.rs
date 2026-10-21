@@ -9,7 +9,10 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
-use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
+use crate::{
+    AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, JCodemunchCallFailed, Pattern,
+    Severity, TaskMetadata,
+};
 use std::collections::HashMap;
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
@@ -175,6 +178,13 @@ enum CheckMode {
     PreDone,
 }
 
+impl CheckMode {
+    /// Whether [`check_task`] runs its passes on `meta` at all under this mode.
+    fn audits(self, meta: &TaskMetadata) -> bool {
+        self == CheckMode::PreDone || meta.status == "done"
+    }
+}
+
 /// Production SQL used by [`has_task_completed_event`] to corroborate a
 /// merged task's `task_completed` event in runs.db. Hoisted to a `pub const`
 /// so the integration test `p5::tests::runs_db_schema_pin` can pin the test
@@ -260,19 +270,20 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
 /// D-1 hot path stays constant-time rather than paying the O(n) iteration cost
 /// of this loop. Borrows the context (no clone of `task_metadata`).
 fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
-    let mut findings = Vec::new();
+    swept_tasks(ctx, target_task_id)
+        .flat_map(|meta| check_task(ctx, meta, CheckMode::Sweep))
+        .collect()
+}
 
-    for meta in ctx.task_metadata.values() {
-        if let Some(target) = target_task_id
-            && meta.task_id != target
-        {
-            continue;
-        }
-
-        findings.extend(check_task(ctx, meta, CheckMode::Sweep));
-    }
-
-    findings
+/// The tasks [`check_with_target`] hands to [`check_task`]: every task in
+/// `ctx.task_metadata`, or only `target_task_id` when the caller names one.
+fn swept_tasks<'a>(
+    ctx: &'a AuditContext,
+    target_task_id: Option<&'a str>,
+) -> impl Iterator<Item = &'a TaskMetadata> {
+    ctx.task_metadata
+        .values()
+        .filter(move |meta| target_task_id.is_none_or(|target| meta.task_id == target))
 }
 
 /// Per-task pass set shared by [`check_pre_done`] (D-1 hot path, O(1) lookup)
@@ -289,29 +300,24 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
     // ("in-progress"/"review"). Requiring `status == "done"` here made the gate
     // structurally unable to fire on the one transition it exists to guard —
     // every pre-done invocation returned `[]` unconditionally.
-    if mode == CheckMode::Sweep && meta.status != "done" {
+    if !mode.audits(meta) {
         return vec![];
     }
     // ONE `git check-ignore` fork per declared file for the whole task. Both
-    // `check_gitignored` (which needs the full set as its finding payload) and
-    // the pre-done landing leg (which subtracts it from the declared set) ask
-    // the same question about the same paths; computing it here makes the
+    // `check_gitignored` (which needs the ignored set as its finding payload)
+    // and the pre-done landing leg (which subtracts it from the declared set)
+    // ask the same question about the same paths; computing it here makes the
     // second consumer free. That matters on the pre-done path specifically —
     // it runs inside fused-memory's per-project write lock under a 30 s hard
     // timeout, so a duplicated per-file fork is paid by every task mutation
     // for the project.
-    let gitignored: Vec<String> = meta
-        .files
-        .iter()
-        .filter(|p| ctx.git.is_gitignored(p))
-        .cloned()
-        .collect();
+    let probe = probe_gitignored(ctx, meta);
 
     let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta, mode, &gitignored) {
+    if let Some(f) = check_one(ctx, meta, mode, &probe) {
         findings.push(f);
     }
-    if let Some(f) = check_gitignored(meta, &gitignored) {
+    if let Some(f) = check_gitignored(meta, &probe.ignored) {
         findings.push(f);
     }
     findings.extend(check_tests_assert_empty(ctx, meta));
@@ -438,6 +444,52 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         }
     }
     findings
+}
+
+/// What one task's `git check-ignore` pass learned, per declared entry.
+///
+/// The two sets travel together because dropping the failures is exactly the
+/// defect this type closes: an entry whose probe errored is NOT known-ignored,
+/// so it stays in the declared set a pre-done refusal is built from, and only
+/// `unprobed` records which members of that set rest on an unanswered
+/// question.
+///
+/// `unprobed` is the entry list rather than a rendered reason so the consumer
+/// can test whether an unanswered entry is load-bearing for the refusal it is
+/// actually building — see [`check_pre_done_landing`].
+struct GitignoreProbe {
+    /// Entries git answered "ignored" for. Never contains an entry whose probe
+    /// failed — unprobeable is not known-ignored, and must not earn a
+    /// `P5MetadataFilesGitignored` Medium.
+    ignored: Vec<String>,
+    /// Entries git did not answer for at all, in `meta.files` order. Empty
+    /// when the pass was complete.
+    unprobed: Vec<String>,
+}
+
+/// Ask `git check-ignore` about each declared entry, through the fallible seam.
+///
+/// `path_tracked_on`'s error arm sets the precedent this mirrors
+/// ([`check_pre_done_landing`]): keep the entry in the set the refusal rests
+/// on, and record the failure so any SURVIVING refusal that rests on it is
+/// downgraded to a visible but non-blocking advisory.
+///
+/// Unlike the ls-tree leg, which stops at the first failure because
+/// `RealGitOps` prints a breadcrumb per failing call, EVERY failure is
+/// collected here: `gitignore_unavailable` latches on the first non-0/1 exit
+/// and silences every later one, so stderr names at most one entry for the
+/// whole task and cannot be the consumer's per-entry record.
+fn probe_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> GitignoreProbe {
+    let mut ignored = Vec::new();
+    let mut unprobed = Vec::new();
+    for p in &meta.files {
+        match ctx.git.try_is_gitignored(p) {
+            Ok(true) => ignored.push(p.clone()),
+            Ok(false) => {}
+            Err(_) => unprobed.push(p.clone()),
+        }
+    }
+    GitignoreProbe { ignored, unprobed }
 }
 
 /// Independent pre-pass: any metadata.files entry that's gitignored gets
@@ -691,11 +743,12 @@ fn changed_paths_for_claim(
 /// Every git leg in this crate fail-safes to `false` / empty on error. In the
 /// sweep that converges on "no finding"; HERE it converges on a High that
 /// BLOCKS a state transition, so an infrastructure hiccup would be
-/// indistinguishable from a genuine phantom-done. Four guards invert that:
+/// indistinguishable from a genuine phantom-done. Five guards invert that:
 /// [`main_base_resolves`] probes the repo once before any refusal; a sibling
 /// scan truncated at [`PRE_DONE_SIBLING_SCAN_CAP`] is treated as incomplete;
-/// and the two legs the refusal actually RESTS on are consulted through their
-/// fallible variants ([`crate::GitOps::try_path_tracked_on`] and
+/// and the three legs the refusal actually RESTS on are consulted through
+/// their fallible variants ([`crate::GitOps::try_is_gitignored`], which builds
+/// `declared`; [`crate::GitOps::try_path_tracked_on`]; and
 /// [`try_task_referencing_commits`]) so a per-call git failure is recorded as
 /// an unanswered question rather than silently read as evidence. Every one of
 /// them still EMITS the finding, but as an advisory `Low` that cannot block
@@ -713,25 +766,36 @@ fn changed_paths_for_claim(
 /// fail-safe to empty/false, so a git failure there can leave an entry in
 /// `still_absent` that a healthy read would have cleared. That is the same
 /// failure direction and is deliberately left open here: those seams are on
-/// the rescue leg rather than on the two legs the refusal rests on, and
+/// the RESCUE leg, which can only clear a refusal, never create one, and
 /// widening them means four more fallible trait methods threaded through the
 /// sweep's two call sites as well.
 ///
-/// `gitignored` is the task's precomputed gitignored subset (see
-/// [`check_task`]), so this leg costs no `git check-ignore` forks of its own.
+/// The gitignore filter is NOT in that residual, and reading it as a mere
+/// pre-pass was the bug: subtracting the ignored subset is what CONSTRUCTS
+/// `declared`, so a failed probe silently supplied the first half of a
+/// blocking refusal. It is consulted through [`probe_gitignored`] for that
+/// reason.
+///
+/// `probe` is the task's `git check-ignore` pass, run once by [`check_task`],
+/// so this leg costs no forks of its own.
 fn check_pre_done_landing(
     ctx: &AuditContext,
     meta: &TaskMetadata,
-    gitignored: &[String],
+    probe: &GitignoreProbe,
 ) -> Option<Finding> {
     // Nothing corroboratable → nothing to refuse. Covers both the research /
     // ops / escalation task that legitimately lands no files, and the task
     // whose declared entries are all gitignored (equally uncorroboratable).
-    // Pure in-memory `retain` against the shared set — no fork here.
+    // Pure in-memory filter against the shared set — no fork here.
+    //
+    // An entry whose probe FAILED deliberately stays in `declared`: dropping it
+    // would mute the gate for that entry and let a genuine phantom-done through
+    // as a clean flip. `probe.unprobed` arms the advisory channel below
+    // instead, and only if such an entry survives to the refusal.
     let declared: Vec<String> = meta
         .files
         .iter()
-        .filter(|p| !gitignored.iter().any(|g| g == *p))
+        .filter(|p| !probe.ignored.iter().any(|g| g == *p))
         .cloned()
         .collect();
     if declared.is_empty() {
@@ -864,8 +928,27 @@ fn check_pre_done_landing(
         return None;
     }
 
-    // A recorded git failure outranks truncation as the reported reason: it is
-    // the more actionable of the two, and both downgrade identically.
+    // A failed `check-ignore` downgrades only when an unanswered entry is
+    // LOAD-BEARING for this refusal. `probe.unprobed` is task-wide, but the
+    // refusal rests on `still_absent`: an entry git answered for keeps its full
+    // blocking strength even when a DIFFERENT entry's probe errored, so one
+    // transient spawn EAGAIN cannot disarm the gate for a genuine phantom-done
+    // elsewhere in the same `metadata.files`.
+    //
+    // One entry is named, not all, and it must be a concrete one: the
+    // `gitignore_unavailable` latch caps stderr at a single `check-ignore`
+    // breadcrumb for the whole task, so unlike the per-failure ls-tree leg this
+    // reason is the operator's only per-entry locator.
+    let unanswered = probe
+        .unprobed
+        .iter()
+        .find(|p| still_absent.contains(p))
+        .map(|p| format!("git degraded: check-ignore errored for declared entry {p}"));
+    // `check-ignore` ran before either leg above, so its reason leads when more
+    // than one seam failed — first failure wins, as within `degraded` itself.
+    // A recorded git failure in turn outranks truncation: it is the more
+    // actionable reason, and all of them downgrade identically.
+    let degraded = unanswered.or(degraded);
     let advisory = degraded.as_deref().or(truncated.then_some(
         "incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP before exhausting candidates",
     ));
@@ -1036,13 +1119,13 @@ fn pre_done_refusal_severity() -> Severity {
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
 ///
-/// `gitignored` is the task's gitignored subset, computed once by
-/// [`check_task`]; only the [`CheckMode::PreDone`] arm consumes it.
+/// `probe` is the task's `git check-ignore` pass, run once by [`check_task`];
+/// only the [`CheckMode::PreDone`] arm consumes it.
 fn check_one(
     ctx: &AuditContext,
     meta: &TaskMetadata,
     mode: CheckMode,
-    gitignored: &[String],
+    probe: &GitignoreProbe,
 ) -> Option<Finding> {
     // One ancestry answer per SHA for the whole invocation: the merged-arm
     // rescue and the primary git-diff leg below both test `prov.commit`.
@@ -1060,7 +1143,7 @@ fn check_one(
             // (no env injection, no stdin), so the subprocess receives no task
             // state beyond the id. Landing must therefore be corroborated from
             // `task_id` + `metadata.files` alone.
-            CheckMode::PreDone => check_pre_done_landing(ctx, meta, gitignored),
+            CheckMode::PreDone => check_pre_done_landing(ctx, meta, probe),
         };
     };
     let kind = prov.kind.as_deref().unwrap_or("");
@@ -1520,11 +1603,16 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///    grace-windowed domain; H2 scopes to the documented cross-crate relocation
 ///    pattern to avoid duplicating noisy P1 findings.
 /// 2. **No commit**: skipped when `done_provenance.commit` is absent.
-/// 3. **Per-symbol suppression guards** (reuses P1's opt-out set):
+/// 3. **Per-symbol locatability guard**: the declaration could not be located
+///    ([`crate::ChangedSymbol::decl_located`]), so whether its author opted out
+///    is UNKNOWN rather than "no" — SKIPPED, not stranded. Shaped identically
+///    to `p1_producer_orphan`'s so the two detectors cannot drift.
+/// 4. **Per-symbol suppression guards** (reuses P1's opt-out set):
 ///    - Symbol file starts with `crates/reify-stdlib/` (scope-exclude).
 ///    - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
-///    - Non-blank `// G-allow:` marker (mirrors `p1_producer_orphan::is_g_allow_suppressed`).
-/// 4. **No non-test workspace caller**: `find_references` returns only test-path
+///    - Non-blank `// G-allow:` marker (the last two via
+///      [`crate::DeclSuppression::opts_out`]).
+/// 5. **No non-test workspace caller**: `find_references` returns only test-path
 ///    refs (or none) for the symbol.
 ///
 /// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
@@ -1532,43 +1620,48 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///
 /// ## 4141 live-corpus validation note
 ///
-/// Task 4141 confirmed that H2 **cannot be live-validated** against the current
-/// corpus. `needs_jcodemunch()` in `bin/reify-audit.rs:433–443` returns `false`
-/// for `--pattern P5` (and for `--pre-done`) → the binary always wires
-/// `NoopJCodemunchOps` for P5 runs. A default sweep attempts
-/// `RealJCodemunchOps` but fail-softs to `NoopJCodemunchOps` because
-/// `jcodemunch-serve` is not yet deployed in reify
-/// (`bin/reify-audit.rs:547–567`). With `NoopJCodemunchOps`,
-/// `get_changed_symbols` returns `vec![]` → this function iterates nothing →
-/// zero H2 findings regardless of real cross-crate stranding. A zero-finding
-/// H2 sweep is therefore **vacuous** and cannot justify a `Medium → High`
-/// promotion. H2 remains at `Severity::Medium` (non-blocking for the D-1
-/// hook) pending the real jcodemunch JCodemunchOps implementation. Future
-/// promotion task must meet the criteria in
-/// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
-/// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
-/// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
+/// Task 4141 found H2 could not be live-validated: every P5 run bound
+/// `NoopJCodemunchOps`, whose `get_changed_symbols` answers nothing, so a
+/// zero-finding H2 sweep was **vacuous**. A `--pattern P5` run (and a default
+/// sweep) now handshakes for H2 (the bin's `needs_jcodemunch`), and a run
+/// whose seam is unavailable, and which sweeps a task H2 would examine,
+/// records H2 as one run-level [`Pattern::P5LivePathUnexamined`]
+/// ([`live_path_run_unexamined`]) rather than reading as clean. `--pre-done` and `--no-jcodemunch` still bind the
+/// stub. H2 stays `Severity::Medium` (non-blocking for the D-1 hook) until a
+/// promotion meets `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6: a
+/// non-vacuous live sweep with a measured FP rate ≤ 5%.
 ///
-/// When `get_changed_symbols` returns an empty slice a stderr vacuous
-/// breadcrumb is emitted via [`h2_vacuous_breadcrumb`] (task 4144).
+/// A FAILED `get_changed_symbols` query yields one Low
+/// [`Pattern::P5LivePathUnexamined`] ([`live_path_unexamined`]), as P1 does.
+/// An answered query that left nothing to examine — an empty slice, or every
+/// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
+/// via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
-    // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
-    if crate_root_count(&meta.files) < 2 {
-        return vec![];
-    }
-
-    let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
+    let Some((since_sha, until_sha)) = h2_range(meta) else {
         return vec![];
     };
-    let since_sha = format!("{commit}^1");
-    let until_sha = commit;
 
-    let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+    let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+        Ok(symbols) => symbols,
+        Err(failure) => {
+            return vec![live_path_unexamined(
+                &meta.task_id,
+                &since_sha,
+                until_sha,
+                &failure,
+            )];
+        }
+    };
     if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
         eprintln!("{msg}");
     }
     let mut findings = Vec::new();
     for symbol in symbols {
+        // Same three-state reading as p1_producer_orphan: an unlocatable
+        // declaration means UNKNOWN, not "no opt-out". Skip rather than strand.
+        if !symbol.decl_located() {
+            continue;
+        }
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
         // (#[allow(dead_code)], #[cfg(test)]), and non-blank G-allow marker.
         // Delegated to crate::is_symbol_suppressed so that P1 and P5 H2 share
@@ -1599,12 +1692,82 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     findings
 }
 
-/// Returns a `reify-audit:` prefixed stderr breadcrumb message when the H2
-/// `get_changed_symbols` call returned an empty slice, so operators can
-/// distinguish a vacuous sweep from a legitimately clean corpus.
+/// The `get_changed_symbols` range `(since, until)` H2 queries for `meta`, or
+/// `None` when H2 does not examine it: a task whose `metadata.files` span
+/// fewer than two `crates/<name>/` roots (P1's single-crate domain), or one
+/// with no provenance commit.
+fn h2_range(meta: &TaskMetadata) -> Option<(String, &str)> {
+    if crate_root_count(&meta.files) < 2 {
+        return None;
+    }
+    let commit = meta.done_provenance.as_ref()?.commit.as_deref()?;
+    Some((format!("{commit}^1"), commit))
+}
+
+/// The finding for a cross-crate done task H2 could not examine because its
+/// `get_changed_symbols` query failed. Low, so it never moves the exit code,
+/// and worded so that the task's lack of `P5LivePathStranded` findings
+/// cannot be read as a clean result. `evidence` is empty: the failed query
+/// returned no symbol or file to cite.
+fn live_path_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    failure: &JCodemunchCallFailed,
+) -> Finding {
+    Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "live-path-unexamined: H2 could not examine done task {task_id}: \
+             the {since_sha}..{until_sha} query failed ({failure}); zero \
+             live-path-stranded findings for this task are not a clean result \
+             — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// The finding for a sweep in which H2 had no usable jcodemunch session at
+/// all, so it examined no task: `reason` says why. Low, run-level (empty
+/// `task_id`), and worded so that the run's lack of `P5LivePathStranded`
+/// findings cannot be read as a clean result.
 ///
-/// Returns `None` when `symbols` is non-empty (normal sweep; no annotation
-/// needed). Mirrors the `Option<String>`-diagnostic pattern from
+/// `None` when no task [`check`] sweeps is one H2 would have queried
+/// jcodemunch for (done, with an `h2_range`): its zero H2 findings are then
+/// clean whatever the seam, so a spot-check of a single-crate task records
+/// nothing.
+pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Finding> {
+    let reaches_h2 = swept_tasks(ctx, ctx.target_task_id.as_deref())
+        .any(|meta| CheckMode::Sweep.audits(meta) && h2_range(meta).is_some());
+    reaches_h2.then(|| Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "live-path-unexamined: H2 ran without jcodemunch this run ({reason}); \
+             zero live-path-stranded findings are not a clean result — re-run \
+             once jcodemunch answers"
+        ),
+        evidence: vec![],
+    })
+}
+
+/// Returns a `reify-audit:` prefixed stderr breadcrumb message when H2's
+/// per-symbol pass examined NOTHING, so operators can distinguish a vacuous
+/// sweep from a legitimately clean corpus. Two ways in, each with its own
+/// clause because each has its own remedy:
+///
+/// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
+///   range really does introduce no symbol.
+/// - Symbols arrived but not one declaration was locatable
+///   ([`crate::wholly_unlocatable_count`]), so the guard below skipped every
+///   row. This one is the quiet failure: the jcodemunch grammar drift that
+///   produces it used to announce itself as a false-positive storm.
+///
+/// Returns `None` when at least one symbol was examined (normal sweep; no
+/// annotation needed). Mirrors the `Option<String>`-diagnostic pattern from
 /// `jcodemunch_client.rs::read_source_lines_for_enrichment`.
 fn h2_vacuous_breadcrumb(
     symbols: &[ChangedSymbol],
@@ -1612,15 +1775,23 @@ fn h2_vacuous_breadcrumb(
     since_sha: &str,
     until_sha: &str,
 ) -> Option<String> {
-    if symbols.is_empty() {
-        Some(format!(
-            "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
-             get_changed_symbols returned empty for {since_sha}..{until_sha} \
-             — H2 produced no findings (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
-        ))
+    let cause = if symbols.is_empty() {
+        format!(
+            "get_changed_symbols returned empty for {since_sha}..{until_sha} \
+             (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
+        )
     } else {
-        None
-    }
+        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        format!(
+            "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
+             unlocatable declaration and were skipped unexamined (jcodemunch \
+             substrate degraded, not a clean corpus)"
+        )
+    };
+    Some(format!(
+        "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
+         {cause} — H2 produced no findings"
+    ))
 }
 
 /// Count the number of distinct `crates/<name>/` roots referenced by `files`.
@@ -1647,15 +1818,17 @@ fn crate_root_count(files: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use crate::{DeclSuppression, DoneProvenance, MockGitOps, MockJCodemunchOps};
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    /// Asserts `h2_vacuous_breadcrumb` returns `Some` (with task-id and the word
-    /// "vacuous") for an empty symbols slice and `None` for a non-empty slice.
+    /// Asserts `h2_vacuous_breadcrumb` returns `Some` (with task-id and the
+    /// word "vacuous") for an empty symbols slice, and `None` once a symbol
+    /// was actually examined. The third state — a non-empty slice in which
+    /// nothing was examinable — is its own test below.
     #[test]
-    fn h2_vacuous_breadcrumb_fires_only_when_empty() {
+    fn h2_vacuous_breadcrumb_fires_when_empty_and_is_silent_once_a_symbol_is_examined() {
         // Empty slice → Some(msg) containing the task id and "vacuous".
         let result = h2_vacuous_breadcrumb(&[], "4144", "abc123^1", "abc123");
         let msg = result.expect("expected Some for empty symbols slice");
@@ -1673,14 +1846,67 @@ mod tests {
             name: "my_fn".to_string(),
             file: "crates/foo/src/lib.rs".to_string(),
             line: 42,
-            has_allow_dead_code: false,
-            has_cfg_test: false,
-            g_allow_marker: None,
+            // Located and clean: the non-empty case only needs a symbol that
+            // exists, and a located one keeps the fixture off the unlocatable
+            // path entirely.
+            suppression: Some(DeclSuppression::default()),
         };
         let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
         assert!(
             result.is_none(),
-            "expected None for non-empty symbols slice; got: {result:?}"
+            "expected None once a declaration was examined; got: {result:?}"
+        );
+    }
+
+    /// The third state, and the quiet one: symbols DID arrive, but not one
+    /// declaration was locatable, so H2's first guard skipped every row. An
+    /// `is_empty()`-only vacuity check cannot see this, and the jcodemunch
+    /// grammar drift that produces it (a release that stops emitting `line`,
+    /// as 1.108.54 did for `find_references`) stopped being loud the moment
+    /// unlocatable symbols began being skipped instead of stranded.
+    #[test]
+    fn h2_vacuous_breadcrumb_fires_when_no_declaration_was_locatable() {
+        let unlocatable = |name: &str| ChangedSymbol {
+            name: name.to_string(),
+            file: "crates/foo/src/lib.rs".to_string(),
+            // The wire's "no line reported" sentinel — one of the three ways
+            // a declaration goes unlocatable; `suppression: None` is what all
+            // three leave behind, and what the guard reads.
+            line: 0,
+            suppression: None,
+        };
+        let symbols = vec![unlocatable("alpha"), unlocatable("beta")];
+
+        let msg = h2_vacuous_breadcrumb(&symbols, "4144", "abc123^1", "abc123")
+            .expect("an all-unlocatable sweep must produce a breadcrumb");
+        assert!(
+            msg.contains("4144") && msg.contains("vacuous"),
+            "breadcrumb must carry the task id and name the sweep vacuous; got: {msg}"
+        );
+        assert!(
+            msg.contains('2'),
+            "breadcrumb must name how many symbols went unexamined; got: {msg}"
+        );
+        assert_eq!(
+            msg.lines().count(),
+            1,
+            "breadcrumb must stay one line; got: {msg:?}"
+        );
+
+        // One examinable symbol is enough to make the sweep real.
+        let mixed = vec![
+            unlocatable("alpha"),
+            ChangedSymbol {
+                name: "beta".to_string(),
+                file: "crates/foo/src/lib.rs".to_string(),
+                line: 42,
+                suppression: Some(DeclSuppression::default()),
+            },
+        ];
+        assert_eq!(
+            h2_vacuous_breadcrumb(&mixed, "4144", "abc123^1", "abc123"),
+            None,
+            "a sweep that examined even one declaration is not vacuous"
         );
     }
 

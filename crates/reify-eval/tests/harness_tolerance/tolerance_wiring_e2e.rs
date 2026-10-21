@@ -1,13 +1,14 @@
-//! End-to-end engine-level integration tests for task 2874 — exercises the
-//! production-wired tolerance subsystem: dispatcher emission of import-promise
-//! and zero-promise diagnostics on `build()`, `RealizationCache` population
+//! End-to-end engine-level integration tests for the production-wired
+//! tolerance subsystem: dispatcher emission of import-promise and
+//! zero-promise diagnostics on `build()`, `RealizationCache` population
 //! and short-circuit keyed on demanded tolerance, and
 //! `per_stage_tolerance_for_plan` consumption from the realization loop.
+//! Originally filed under task 2874; the file has since accreted pins from
+//! several follow-up tasks — each test's doc names its own.
 //!
 //! Imports use the established test fixture surface
 //! (`reify_test_support::{make_engine, step_input_template, step_output_template,
 //! my_design_template, manufacturing_purpose}` + `CompiledModuleBuilder`).
-//! Per-step tests are added by the subsequent TDD steps.
 
 #[allow(unused_imports)]
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
@@ -30,25 +31,22 @@ use reify_test_support::{
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
 
-/// Step-1 (failing initially; passes once step-2's
-/// `emit_imported_tolerance_promise_diagnostics_for_module` helper is wired
-/// into the production `build()` path).
+/// Pins the landed contract: `build()` routes every (input template,
+/// subject, output template) triple through
+/// `Engine::check_imported_tolerance_promise` and forwards any `Some(diag)`
+/// into `BuildResult.diagnostics`.
 ///
 /// The fixture is the canonical "promise loose, demand tight" pairing: a
 /// `STEPInput` template carries a 50µm imported-geometry tolerance promise,
 /// the `STEPOutput` template's body constraint is `RepresentationWithin(…, 1µm)`,
-/// and a manufacturing purpose at 1µm is activated against `MyDesign`. Per the
-/// `Engine::check_imported_tolerance_promise` truth table (engine_tolerance.rs:
-/// 36-67), `min(1µm, 1µm) = 1µm` is strictly tighter than the 50µm promise, so
-/// the runtime must surface a single `Severity::Warning` carrying
-/// `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message names
-/// the input template (`"STEPInput"`) so authors can locate the import site.
-///
-/// Today (pre step-2) the production `build()` path never invokes
-/// `Engine::check_imported_tolerance_promise`, so this assertion FAILS — no
-/// matching diagnostic is present in `BuildResult.diagnostics`. After step-2
-/// adds the dispatcher helper and wires it from `build` /
-/// `build_snapshot` / `tessellate_realizations`, the assertion passes.
+/// and a manufacturing purpose at 1µm is activated against `MyDesign`. Per
+/// the truth table in `Engine::check_imported_tolerance_promise`
+/// (`src/engine_tolerance.rs`), `min(1µm, 1µm) = 1µm` is strictly tighter
+/// than the 50µm promise, so the runtime must surface a single
+/// `Severity::Warning` carrying
+/// `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message
+/// names the input template (`"STEPInput"`) so authors can locate the
+/// import site.
 #[test]
 fn build_emits_imported_tolerance_promise_insufficient_warning_when_demand_strictly_tighter_than_promise()
  {
@@ -93,28 +91,29 @@ fn build_emits_imported_tolerance_promise_insufficient_warning_when_demand_stric
     );
 }
 
-/// Step-3 (locks the second branch of `Engine::check_imported_tolerance_promise`'s
-/// dispatch — the zero-promise lint introduced by task 2833 — into the production
-/// emission path).
+/// Pins the second branch of `Engine::check_imported_tolerance_promise`'s
+/// dispatch — the zero-promise lint introduced by task 2833 — in the
+/// production emission path.
 ///
-/// Setup mirrors step-1 but with `step_input_template(0.0)`: the `STEPInput`
-/// template's `param tolerance : Length = 0m` is a placeholder-default
-/// footgun where authors leave the promise at zero and silently disable the
-/// strict-`<` insufficient-promise warning. With `promise == 0.0` and a
-/// positive demanded (1µm via STEPOutput body + manufacturing purpose), the
+/// Setup mirrors
+/// `build_emits_imported_tolerance_promise_insufficient_warning_when_demand_strictly_tighter_than_promise`
+/// above but with `step_input_template(0.0)`: the `STEPInput` template's
+/// `param tolerance : Length = 0m` is a placeholder-default footgun where
+/// authors leave the promise at zero and silently disable the strict-`<`
+/// insufficient-promise warning. With `promise == 0.0` and a positive
+/// demanded (1µm via STEPOutput body + manufacturing purpose), the
 /// `Engine::check_imported_tolerance_promise` dispatcher takes its
 /// zero-promise branch and emits a `Severity::Warning` carrying
 /// `DiagnosticCode::InputTolerancePromiseIsZero` (NOT
 /// `ImportedTolerancePromiseInsufficient` — the two codes are mutually
-/// exclusive per the dispatch order pinned at engine_tolerance.rs:31-67).
+/// exclusive per the dispatch order in
+/// `Engine::check_imported_tolerance_promise`, `src/engine_tolerance.rs`).
 ///
-/// The test asserts the emitted code is `InputTolerancePromiseIsZero`. Pre-
-/// step-2 wiring this assertion failed because nothing in `build()` invoked
-/// the dispatcher. After step-2's helper threads any `Some(diag)` from the
-/// dispatcher through to `BuildResult.diagnostics` (code-agnostic
-/// forwarding), this assertion passes — guarding against a future refactor
-/// that filters `code == ImportedTolerancePromiseInsufficient` only and
-/// drops the zero-promise branch.
+/// The test asserts the emitted code is `InputTolerancePromiseIsZero`. The
+/// dispatcher forwards any `Some(diag)` through to `BuildResult.diagnostics`
+/// code-agnostically, which this test guards: a future refactor that
+/// filters `code == ImportedTolerancePromiseInsufficient` only would
+/// silently drop the zero-promise branch.
 #[test]
 fn build_emits_input_tolerance_promise_is_zero_warning_when_promise_zero_and_demand_positive() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -200,9 +199,11 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
         .build()
 }
 
-/// Step-5 (failing initially; passes once step-6 plumbs `demanded_tol` through
-/// `Engine::execute_realization_ops` and writes the resulting handle into
-/// `Engine::realization_cache` keyed on `(entity_id, ReprKind::BRep, demanded_tol)`).
+/// Pins the landed contract: `Engine::execute_realization_ops`
+/// (`src/engine_build.rs`) receives the threaded `demanded_tol` and, on
+/// post-realization success for a NAMED realization, inserts the terminal
+/// handle into `Engine::realization_cache` keyed on
+/// `(entity_id, ReprKind::BRep, demanded_tol)`.
 ///
 /// Build a module that pairs an `STEPOutput` template (1µm
 /// `RepresentationWithin` body bound) with a `MyDesign` template carrying a
@@ -216,12 +217,6 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
 /// "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`); a cache
 /// populated at exactly the requested tolerance must therefore return
 /// `Some(&handle)` for an exact-tolerance lookup.
-///
-/// Today (pre step-6) `execute_realization_ops` does not consult the cache and
-/// does not insert into it after a successful realization, so the lookup
-/// returns `None` and this test FAILS. Once step-6 wires the demanded
-/// tolerance through the helper and inserts the terminal handle on
-/// post-realization success, the assertion passes.
 #[test]
 fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -234,7 +229,7 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -254,16 +249,20 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
     );
 }
 
-/// Step-7 (failing initially; passes once step-8 adds the cache-hit
-/// short-circuit at the top of `Engine::execute_realization_ops`).
+/// Pins the landed cache-hit short-circuit at the top of
+/// `Engine::execute_realization_ops`: on a cache hit it pushes the cached
+/// handle, writes `named_steps`, and returns early without dispatching the
+/// realization's ops to the kernel.
 ///
-/// Setup mirrors step-5 — `STEPOutput(1µm)` + `MyDesign` realization (one
-/// `Box` primitive op) + manufacturing purpose at 1µm. The cache key
+/// Setup mirrors `build_populates_realization_cache_keyed_on_demanded_tolerance`
+/// above — `STEPOutput(1µm)` + `MyDesign` realization (one `Box` primitive
+/// op) + manufacturing purpose at 1µm. The cache key
 /// `("MyDesign", ReprKind::BRep, 1e-6)` is populated on the first `build()`
-/// (verified by step-5's test), so a second `build()` with the same module
-/// and the same demand should see the cache lookup succeed at the top of
-/// `execute_realization_ops` and return the cached terminal handle without
-/// dispatching the realization's ops to the kernel.
+/// (see `build_populates_realization_cache_keyed_on_demanded_tolerance`),
+/// so a second `build()` with the same module and the same demand should
+/// see the cache lookup succeed at the top of `execute_realization_ops` and
+/// return the cached terminal handle without dispatching the realization's
+/// ops to the kernel.
 ///
 /// The test pins this contract by:
 /// 1. Constructing a `MockGeometryKernel` and grabbing its
@@ -273,25 +272,19 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
 ///    two `build()` calls.
 /// 2. Running the first `build()` and asserting the recorded-ops vector
 ///    grew by ≥1 entry (kernel was invoked: cache miss, op dispatched,
-///    cache populated by step-6's post-realization insert).
+///    cache populated by the post-realization insert in
+///    `execute_realization_ops`).
 /// 3. Re-activating the purpose because `build()` calls `check()` which
-///    calls `eval()` which clears `active_purpose_bindings` (engine_eval.rs
-///    around lines 1149-1150). Without re-activation the second build's
+///    calls `eval()` which clears `active_purpose_bindings` (`Engine::eval`
+///    in `src/engine_eval.rs`). Without re-activation the second build's
 ///    pre-`check()` precompute would observe an empty tolerance scope, the
 ///    threaded `demanded_tol` would be `None`, and the cache lookup at the
 ///    top of `execute_realization_ops` would not even fire — defeating the
-///    test's premise. (This mirrors the pattern step-13 documents for the
-///    cache-miss-on-tighter-demand case.)
+///    test's premise. (This mirrors the pattern
+///    `cache_lookup_misses_when_purpose_changes_demanded_tolerance`
+///    documents for the cache-miss-on-tighter-demand case.)
 /// 4. Running the second `build()` and asserting the recorded-ops vector
 ///    DID NOT grow — the realization was served entirely from cache.
-///
-/// Today (pre step-8) the cache short-circuit does not exist, so even
-/// though `realization_cache.lookup(…)` returns `Some(_)` at the top of
-/// `execute_realization_ops`, nothing consults that lookup before the op
-/// loop runs. The kernel re-executes the realization's ops on every
-/// build, so the second-build assertion FAILS. Once step-8 wires the
-/// realization-level short-circuit (push cached handle, write
-/// `named_steps`, return early), the assertion passes.
 #[test]
 fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -305,7 +298,7 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -321,12 +314,13 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     );
 
     // Re-activate purpose: build() above called check() which called eval()
-    // which cleared `active_purpose_bindings` (engine_eval.rs:1149-1150). The
-    // pre-`check()` precompute on the second build would otherwise observe
-    // an empty scope and yield `demanded_tol = None`, suppressing the cache
-    // lookup. Re-activation puts the same `(manufacturing → MyDesign)`
-    // binding back so the second build observes `demanded_tol = Some(1e-6)`,
-    // matching the cache key populated by the first build.
+    // which cleared `active_purpose_bindings` (`Engine::eval`,
+    // `src/engine_eval.rs`). The pre-`check()` precompute on the second
+    // build would otherwise observe an empty scope and yield
+    // `demanded_tol = None`, suppressing the cache lookup. Re-activation
+    // puts the same `(manufacturing → MyDesign)` binding back so the second
+    // build observes `demanded_tol = Some(1e-6)`, matching the cache key
+    // populated by the first build.
     engine.activate_purpose("manufacturing", "MyDesign");
 
     let _build2 = engine.build(&module, ExportFormat::Step);
@@ -346,10 +340,6 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     );
 }
 
-/// Step-11 (failing initially; passes once step-12 wires
-/// `Engine::compute_realization_tolerance_budget(...)` into the
-/// `kernel.tessellate(...)` call site inside `tessellate_from_values`).
-///
 /// Pins that `Engine::tessellate_realizations(&module)` forwards the
 /// per-output demanded tolerance — routed through
 /// `compute_realization_tolerance_budget` against
@@ -357,14 +347,15 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
 /// instead of the module-level `effective_tessellation_tolerance` default
 /// (`0.0001` SI metres = 0.1 mm).
 ///
-/// Setup mirrors step-5/step-7: an STEPOutput template carries a 1 µm
-/// `RepresentationWithin` body bound, a `MyDesign` template carries a single
-/// named realization producing one `Box` primitive op, and
-/// `manufacturing_purpose("manufacturing", 1e-6)` is activated against
-/// `"MyDesign"`. The engine is constructed with a `MockGeometryKernel`
-/// extended (step-11) with a `tessellate_tolerances: Arc<Mutex<Vec<f64>>>`
-/// recorder; the test grabs the recorder via `tessellate_tolerances_ref()`
-/// before transferring kernel ownership into the engine.
+/// Setup mirrors `build_populates_realization_cache_keyed_on_demanded_tolerance`
+/// / `second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit`:
+/// an STEPOutput template carries a 1 µm `RepresentationWithin` body bound,
+/// a `MyDesign` template carries a single named realization producing one
+/// `Box` primitive op, and `manufacturing_purpose("manufacturing", 1e-6)` is
+/// activated against `"MyDesign"`. `MockGeometryKernel` carries a
+/// `tessellate_tolerances: Arc<Mutex<Vec<f64>>>` recorder, exposed via
+/// `tessellate_tolerances_ref()`; the test grabs the recorder before
+/// transferring kernel ownership into the engine.
 ///
 /// The test calls `engine.tessellate_realizations(&module)` once, then asserts
 /// the recorder contains exactly one entry equal to `1e-6` — the demanded
@@ -374,12 +365,6 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
 /// triple and the occt-only single-kernel registry, dispatch returns a
 /// 0-conversion plan and `per_stage_tolerance_for_plan` passes the demand
 /// through unchanged — so `budget == 1e-6` exactly.
-///
-/// Today (pre step-12) the tessellate path forwards
-/// `Self::effective_tessellation_tolerance(module)` to `kernel.tessellate`,
-/// so the recorder captures `0.0001` and the assertion FAILS. Once step-12
-/// replaces that argument with the per-realization budget computed via
-/// `compute_realization_tolerance_budget`, the assertion passes.
 #[test]
 fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -393,7 +378,7 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let tess_tols_handle = kernel.tessellate_tolerances_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -421,28 +406,29 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
     );
 }
 
-/// Step-13 (locks the partial-order semantics on the realization-cache
-/// integration: a tighter demand cannot be served by a looser cached entry).
+/// Pins the partial-order semantics on the realization-cache integration: a
+/// tighter demand cannot be served by a looser cached entry.
 ///
-/// The `RealizationCache::lookup` rule (`cached_tol ≤ requested_tol`)
-/// implements the "tighter satisfies looser" contract pinned at
-/// `realization_cache.rs:101-116`: a cache populated at 1e-6 satisfies a
-/// later request at any `tol ≥ 1e-6` (looser-or-equal), but a request at
-/// `tol < 1e-6` (tighter) MUST miss because the cached representation is
-/// at 1e-6 precision — insufficient for the tighter consumer. This test
-/// pins that the cache integration honours that rule end-to-end through
-/// `Engine::execute_realization_ops`'s cache-hit short-circuit (step-8).
+/// The `cached_tol ≤ requested_tol` rule enforced by `RealizationCache::lookup`
+/// (`src/realization_cache.rs`) implements the "tighter satisfies looser"
+/// contract: a cache populated at 1e-6 satisfies a later request at any
+/// `tol ≥ 1e-6` (looser-or-equal), but a request at `tol < 1e-6` (tighter)
+/// MUST miss because the cached representation is at 1e-6 precision —
+/// insufficient for the tighter consumer. This test pins that the cache
+/// integration honours that rule end-to-end through the cache-hit
+/// short-circuit in `Engine::execute_realization_ops`.
 ///
-/// Setup mirrors step-7 except a SECOND `manufacturing_tighter` purpose at
-/// 1e-9 m is compiled into the same module. After the first `build()` (with
-/// `manufacturing` at 1e-6 active) the cache is populated at
-/// `("MyDesign", BRep, 1e-6)`. We then deactivate `manufacturing`, activate
-/// `manufacturing_tighter` (which substitutes a fresh 1e-9 m
-/// `RepresentationWithin` constraint at the same subject), and run `build()`
-/// again. The second build's pre-`check()` precompute computes
-/// `demanded_tol = Some(1e-9)` (the tightest contributor across the active
-/// scope), threads that into `execute_realization_ops`, and the cache lookup
-/// at `("MyDesign", BRep, 1e-9)` MISSES the cached `1e-6` entry — kernel
+/// Setup mirrors `second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit`
+/// except a SECOND `manufacturing_tighter` purpose at 1e-9 m is compiled
+/// into the same module. After the first `build()` (with `manufacturing` at
+/// 1e-6 active) the cache is populated at `("MyDesign", BRep, 1e-6)`. We
+/// then deactivate `manufacturing`, activate `manufacturing_tighter` (which
+/// substitutes a fresh 1e-9 m `RepresentationWithin` constraint at the same
+/// subject), and run `build()` again. The second build's pre-`check()`
+/// precompute computes `demanded_tol = Some(1e-9)` (the tightest
+/// contributor across the active scope), threads that into
+/// `execute_realization_ops`, and the cache lookup at
+/// `("MyDesign", BRep, 1e-9)` MISSES the cached `1e-6` entry — kernel
 /// re-executes the realization ops, growing `kernel.operations()`.
 ///
 /// The post-second-build `kernel.operations()` count must therefore strictly
@@ -451,14 +437,12 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
 /// counts are equal — the cache is incorrectly serving a tighter request
 /// from a looser cached entry, breaking the partial-order contract.
 ///
-/// Step-14 (verification-only impl) confirms that no new wiring is needed:
-/// the bucket lookup primitive already enforces `cached_tol ≤ requested_tol`,
-/// and the engine wiring threads the requested tolerance to the bucket's
-/// lookup unchanged. If this test FAILS today, the bug is in the
-/// step-6 / step-8 wiring's cache-key value plumbing (stale `demanded_tol`
-/// captured across builds) — investigate at the precompute site
-/// (`tessellate_realizations` / `build`) and at the cache-lookup site at the
-/// top of `execute_realization_ops`.
+/// The partial-order rule is enforced by the bucket lookup primitive
+/// itself; the engine threads the requested tolerance to it unchanged. A
+/// failure here therefore means the cache-key value plumbing has broken
+/// (stale `demanded_tol` captured across builds) — investigate at the
+/// precompute site (`tessellate_realizations` / `build`) and at the
+/// cache-lookup site at the top of `execute_realization_ops`.
 #[test]
 fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -473,7 +457,7 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -520,20 +504,21 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
          Got ops_after_first={}, ops_after_second={} — equal counts indicate \
          the cache served a tighter request from a looser cached entry, \
          violating the partial-order contract pinned by \
-         `RealizationCache::lookup` (realization_cache.rs:101-116) and \
+         `RealizationCache::lookup` (`src/realization_cache.rs`) and \
          `ToleranceBucket::lookup`.",
         ops_after_first,
         ops_after_second,
     );
 }
 
-/// Step-9 (failing initially; passes once step-10 adds the
-/// `Engine::compute_realization_tolerance_budget(&self, registry, demanded_tol)`
-/// helper that synthesises a `DispatchPlan` via
-/// `dispatch(registry, Operation::BooleanUnion, ReprKind::BRep, &{ReprKind::BRep})`
-/// and forwards through `per_stage_tolerance_for_plan(&plan, demanded_tol)`).
-///
-/// Pins the per-stage tolerance-budget pipeline at the engine surface:
+/// Pins the per-stage tolerance-budget pipeline at the engine surface.
+/// `Engine::compute_realization_tolerance_budget` synthesises a
+/// `DispatchPlan` via
+/// `dispatch(registry, Operation::BooleanUnion, ReprKind::BRep, available)`
+/// and forwards through `per_stage_tolerance_for_plan(&plan, demanded_tol)`,
+/// taking the borrowed-value registry map and a caller-supplied
+/// `available: &HashSet<ReprKind>` (production callers hoist both once per
+/// build in `Engine::compute_tessellation_budgets`).
 ///
 /// - **Part (i): single-kernel registry → 0-conversion plan, helper passes
 ///   `demanded_tol` through unchanged.** The fixture registers a single
@@ -546,9 +531,9 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
 ///   helper returns `demanded_tol` bit-exactly.
 ///
 /// - **Part (ii): two-stage chain primitive → `per_stage_tolerance(_, 2)`.**
-///   The 2-stage chain in `tests/tolerance_dispatch_budget.rs` (alpha:
-///   BRep→Sdf, beta: Sdf→Mesh, manifold: BooleanUnion on Mesh) yields a
-///   2-conversion plan only when dispatched for `demanded = ReprKind::Mesh`.
+///   The 2-stage chain in `tests/harness_tolerance/tolerance_dispatch_budget.rs`
+///   (alpha: BRep→Sdf, beta: Sdf→Mesh, manifold: BooleanUnion on Mesh) yields
+///   a 2-conversion plan only when dispatched for `demanded = ReprKind::Mesh`.
 ///   The engine helper hard-codes `demanded = ReprKind::BRep` (per the design
 ///   decision: `RealizationDecl` carries no Operation/ReprKind metadata, and
 ///   the v0.2 occt-only baseline is BRep-on-BRep), so a 2-stage chain ending
@@ -559,19 +544,20 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
 ///   construct a `DispatchPlan` literal with two conversions and assert that
 ///   `per_stage_tolerance_for_plan(&plan, demanded_tol)` equals
 ///   `per_stage_tolerance(demanded_tol, 2)`. The literal-construction route
-///   mirrors the dispatcher's own multi-stage unit tests (dispatcher.rs:1349)
-///   and the lib re-export integration smoke
-///   (`tolerance_dispatch_budget.rs:46`); replicating the assertion at the
-///   engine-test layer locks the integration of the budget primitive into
-///   the same test file as the helper, so a future refactor cannot drop the
-///   wiring without breaking this pin.
+///   mirrors the dispatcher's own multi-stage unit test
+///   `per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split`
+///   (`src/dispatcher.rs`) and the lib re-export integration smoke
+///   `lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end`
+///   (`tests/harness_tolerance/tolerance_dispatch_budget.rs`); replicating
+///   the assertion at the engine-test layer locks the integration of the
+///   budget primitive into the same test file as the helper, so a future
+///   refactor cannot drop the wiring without breaking this pin.
 ///
-/// Today (pre step-10) the helper does not exist, so the call to
-/// `engine.compute_realization_tolerance_budget(&single, demand)` is a
-/// compile error and this test FAILS. Once step-10 lands the helper as a
-/// cfg-gated `pub` accessor (mirroring `realization_cache()` /
-/// `feature_tag_table()` precedent), the call resolves and both parts of the
-/// assertion pass.
+/// The call below is the compile-time pin on the helper's public
+/// visibility: `compute_realization_tolerance_budget` is an un-gated `pub
+/// fn` on `Engine` (`src/engine_build.rs`), called directly as
+/// `engine.compute_realization_tolerance_budget(&single_borrow, &available,
+/// demand)`.
 #[test]
 fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_chain() {
     let engine = make_engine();
@@ -583,19 +569,14 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     };
     let mut single: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
     single.insert("occt".to_string(), occt);
-    // Amendment 2: `compute_realization_tolerance_budget` now takes the
-    // borrowed-value variant of the registry that `dispatch` requires —
-    // production callers build it once per build inside
-    // `compute_tessellation_budgets`. Direct test-seam callers build it at
-    // the call site.
+    // `compute_realization_tolerance_budget` takes the borrowed-value
+    // variant of the registry that `dispatch` requires, plus a
+    // caller-supplied `available: &HashSet<ReprKind>` (task 3227).
+    // Production callers (inside `compute_tessellation_budgets`) hoist both
+    // once per build; this direct test-seam call builds them at the call
+    // site instead, mirroring the borrowed-registry pattern.
     let single_borrow: BTreeMap<String, &CapabilityDescriptor> =
         single.iter().map(|(k, v)| (k.clone(), v)).collect();
-    // Amendment 3 (task 3227): `compute_realization_tolerance_budget` now
-    // takes the `available: &HashSet<ReprKind>` as a caller-supplied arg.
-    // Production callers hoist one HashSet per build in
-    // `compute_tessellation_budgets`. Direct test-seam callers build it at
-    // the call site, mirroring the borrowed-registry pattern.
-    //
     // Use `Engine::budget_available_set()` — the public helper that wraps
     // `BUDGET_QUERY_TRIPLE_V02.2` — so a future change to the underlying
     // slice is caught here automatically without requiring cross-crate access
@@ -620,7 +601,7 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
 
     // 2-conversion plan literal; matches the chain-shape pinned by
     // dispatcher.rs::per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split
-    // and tests/tolerance_dispatch_budget.rs::lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end.
+    // and tests/harness_tolerance/tolerance_dispatch_budget.rs::lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end.
     let plan_two = DispatchPlan {
         kernel: "manifold".to_string(),
         conversions: vec![
@@ -644,8 +625,8 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     );
 }
 
-/// Step-15 (final integration smoke; pins all four wiring axes
-/// simultaneously against `Engine::tessellate_realizations`).
+/// Final integration smoke: pins all four wiring axes simultaneously
+/// against `Engine::tessellate_realizations`.
 ///
 /// Single test that builds the canonical fixture (`step_input_template(50µm)`,
 /// `step_output_template(1µm)`, `MyDesign` realization with one Box primitive
@@ -656,45 +637,51 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
 /// 1. **Imported-tolerance-promise diagnostic emission**: `TessellateResult.diagnostics`
 ///    contains exactly one `Severity::Warning` carrying
 ///    `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message
-///    names `"STEPInput"`. Pinned independently by step-1 against `build()`;
-///    this step pins the same emission contract on the `tessellate_realizations()`
-///    surface so a future refactor that splits the diagnostic emission helper
-///    between `build` and `tessellate_realizations` cannot disconnect one
-///    without the other.
+///    names `"STEPInput"`. Pinned independently by
+///    `build_emits_imported_tolerance_promise_insufficient_warning_when_demand_strictly_tighter_than_promise`
+///    against `build()`; this test pins the same emission contract on the
+///    `tessellate_realizations()` surface so a future refactor that splits
+///    the diagnostic emission helper between `build` and
+///    `tessellate_realizations` cannot disconnect one without the other.
 /// 2. **Demanded-tolerance routing through per-stage budget to kernel.tessellate**:
 ///    the recording mock kernel's `tessellate_tolerances` records exactly one
 ///    entry equal to `1e-6` (the demanded tolerance, routed through
 ///    `compute_realization_tolerance_budget` against the default registry's
 ///    empty-conversion plan, which passes the demand through unchanged).
-///    Pinned independently by step-11; this step locks it as part of the
-///    integration-axis bundle.
+///    Pinned independently by
+///    `tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget`;
+///    this test locks it as part of the integration-axis bundle.
 /// 3. **RealizationCache populated at the demanded tolerance**:
 ///    `engine.realization_cache().lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))`
 ///    returns `Some(_)` after `tessellate_realizations()` completes. Pinned
-///    independently by step-5 against `build()`; this step pins the same
-///    cache-population contract on the `tessellate_realizations()` surface.
+///    independently by `build_populates_realization_cache_keyed_on_demanded_tolerance`
+///    against `build()`; this test pins the same cache-population contract
+///    on the `tessellate_realizations()` surface.
 /// 4. **Per-realization budget consumption (implicitly pinned by axis 2)**:
 ///    the budget pipeline runs through `compute_realization_tolerance_budget`
 ///    with the inventory-collected registry — under the v0.2 occt-only
 ///    inventory the dispatch returns a 0-conversion plan and the demand
 ///    passes through bit-exactly; multi-kernel adapters will produce a
-///    real chain when they land. Step-9 pins the multi-stage primitive
-///    in isolation; this step's axis 2 pin asserts the integration carries
-///    the demand value through to the kernel correctly.
+///    real chain when they land.
+///    `per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_chain`
+///    pins the multi-stage primitive in isolation; this test's axis 2 pin
+///    asserts the integration carries the demand value through to the
+///    kernel correctly.
 ///
 /// **Why a single test for all four axes**: each axis is already
-/// independently pinned by a step-N regression test, but the integration
-/// shape — running them simultaneously through ONE invocation of
-/// `tessellate_realizations` — guards against a future refactor that
+/// independently pinned by its own regression test above, but the
+/// integration shape — running them simultaneously through ONE invocation
+/// of `tessellate_realizations` — guards against a future refactor that
 /// re-orders the build pipeline and disconnects one of the axes. A
 /// regression here flags an ordering bug in the wiring even when each
 /// individual unit test still passes.
 ///
 /// **Reuses the recording-extension on `MockGeometryKernel`**:
-/// `tessellate_tolerances_ref()` (added in step-11) gives shared access to
-/// the recorded `tessellate(handle, tol)` calls so the kernel can be
-/// transferred into the engine via `Box::new` and we can still observe
-/// the recorded tolerances after `tessellate_realizations()` returns.
+/// `MockGeometryKernel` exposes the recorded `tessellate(handle, tol)`
+/// calls via `tessellate_tolerances_ref()`, giving shared access so the
+/// kernel can be transferred into the engine via `Box::new` and we can
+/// still observe the recorded tolerances after `tessellate_realizations()`
+/// returns.
 #[test]
 fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -709,7 +696,7 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let tess_tols_handle = kernel.tessellate_tolerances_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -773,74 +760,35 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
             .is_some(),
         "axis 3: tessellate_realizations() must populate the RealizationCache \
          at (\"MyDesign\", ReprKind::BRep, 1e-6) after a successful realization \
-         (mirrors the build() population contract pinned by step-5). Cache \
+         (mirrors the build() population contract pinned by \
+         build_populates_realization_cache_keyed_on_demanded_tolerance). Cache \
          len={}, dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
 }
 
-/// Step-17 (failing initially; passes once step-18 wires the auto-invalidation
-/// hook into `Engine::edit_param`).
+/// Builds a `MyDesign` module (`STEPOutput(1e-6)` + shared
+/// `my_design_template_with_box_realization()` + `manufacturing_purpose`),
+/// constructs an `Engine` with mock checker/kernel, and drives the canonical
+/// `eval → activate_purpose → build` flow to populate the
+/// `RealizationCache`. Asserts the cache-populated premise before returning
+/// so a caller's post-op assertion is never vacuous.
 ///
-/// Pins the production-correctness fix for the reviewer's blocking issue
-/// (engine_build.rs:511-516 + engine_admin.rs:218-230 + the field docstring on
-/// `Engine::realization_cache` at lib.rs:490-535): the cache MUST be reset on
-/// `edit_param` so a subsequent `build_snapshot()` cannot silently return a
-/// stale `GeometryHandleId` pointing at the OLD geometry. The current field
-/// docstring promises "Production callers must therefore either (a) avoid
-/// `build_snapshot` after `edit_param`, or (b) clear `realization_cache`
-/// themselves between the edit and the snapshot rebuild" — but the public
-/// surface offers no clear-cache primitive (the only mutator is internal),
-/// so clause (b) is unreachable and clause (a) defeats `build_snapshot`'s
-/// incremental-rebuild contract. The fix is to auto-flush the cache at the
-/// `edit_param` hook point — mirroring the `feature_tag_table` /
-/// `topology_attribute_table` reset-at-hook-point pattern.
-///
-/// Setup mirrors step-5 / step-7 / step-15: `step_output_template(1µm)` plus
-/// `MyDesign` template with one Box realization plus
-/// `manufacturing_purpose("manufacturing", 1e-6)`. `MyDesign.thickness : Real`
-/// is the param cell we mutate — it does not need to drive the Box's args for
-/// this test, since the assertion is on cache-state immediately after
-/// `edit_param` returns (NOT on whether a subsequent build produces fresh
-/// geometry). Any `edit_param` invocation against any param cell in the
-/// graph must clear the cache, because the engine cannot know which cells
-/// participate in the realization's input cone without a cross-reference
-/// the current architecture does not maintain.
-///
-/// Sequence:
-///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
-///       "MyDesign")` → `engine.build(&module, ExportFormat::Step)` →
-///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_some()` (cache populated by step-6 wiring; pins
-///       the test premise).
-///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "thickness"),
-///       Value::Real(<new>)).unwrap()`.
-///   (c) Without calling `build_snapshot` yet, assert
-///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit.
-///
-/// Today (pre step-18) `edit_param` does NOT touch `realization_cache`, so
-/// the cache entry persists across the edit and the next `build_snapshot()`
-/// would silently return the stale handle. Step-18 adds
-/// `self.realization_cache = RealizationCache::new();` near the top of
-/// `edit_param` (placed after the function-entry guards but before any state
-/// mutation that could fail), which makes this assertion pass.
-#[test]
-fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot() {
-    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_edit_param_clears_realization_cache".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization())
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
+/// `module_name` becomes the built module's single `ModulePath` segment —
+/// purely a debug label, since every assertion keys on the fixed entity id
+/// `"MyDesign"`, not the module path.
+fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Engine {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![module_name.to_string()]))
+        .template(step_output_template(1e-6))
+        .template(my_design_template_with_box_realization())
+        .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    // (a) Cold-start eval, activate purpose, build → cache populated by step-6.
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
     let _build = engine.build(&module, ExportFormat::Step);
@@ -850,225 +798,248 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
             .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
             .is_some(),
         "test premise: expected RealizationCache to contain an entry at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
-         wiring). Without this premise the post-edit assertion is vacuous. \
-         Cache len={}, dump: {:?}",
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per the \
+         build-time realization-cache population contract). Without this \
+         premise the caller's post-op assertion is vacuous. Cache len={}, \
+         dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
 
-    // (b) Edit any param cell — `MyDesign.thickness` is the param the
-    // template carries. We don't need the param to drive the Box's args for
-    // this test; the assertion below is on cache state immediately after
-    // `edit_param` returns. Auto-invalidation must fire regardless of
-    // whether the edited cell participates in the realization's input cone,
-    // because the engine cannot prove non-participation without per-cell
-    // dependency analysis we do not currently maintain.
-    let thickness_id = ValueCellId::new("MyDesign", "thickness");
-    let _result = engine
-        .edit_param(thickness_id, Value::Real(0.005))
-        .expect("edit_param must succeed against the MyDesign.thickness Real param");
-
-    // (c) Assert the cache was cleared by edit_param. This pins the
-    // auto-invalidation contract step-18 establishes — without it, the
-    // entry persists and a subsequent build_snapshot() would silently
-    // return a stale GeometryHandleId from the (entity, repr, tol) bucket.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_none(),
-        "expected edit_param to auto-invalidate the RealizationCache so a \
-         subsequent build_snapshot() cannot return a stale GeometryHandleId. \
-         Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) \
-         after edit_param — the entry survived the edit, breaking the \
-         auto-invalidation contract step-18 establishes. Cache len={}, dump: \
-         {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
-    );
+    engine
 }
 
-/// Build a `MyDesign`-shaped template carrying a single named realization
-/// producing one `Box` primitive with caller-specified dimensions (in mm).
+/// One body of the γ (#4730) two-body fixture: a template named `name`
+/// whose single named realization is a `Box` whose width READS the Length
+/// param `<name>.w` (default `width_mm`), with a literal `depth_mm`. A
+/// second param, `<name>.label`, is read by nothing — editing it moves no
+/// realization's input cone.
 ///
-/// Mirrors `my_design_template_with_box_realization()` but parametrises the
-/// box dimensions so step-19 can build two structurally-identical modules
-/// that differ only in geometry literals (the "different parameter defaults,
-/// structurally identical realization graph" shape the plan asks for to
-/// pin edit_source's auto-invalidation behaviour against a non-trivial
-/// content-diff).
-fn my_design_template_with_box_realization_dims(
+/// The realization entity equals the template name because `build()`'s
+/// schedule filter matches `rid.entity == template.name`.
+fn body_template_reading_width(
+    name: &str,
     width_mm: f64,
-    height_mm: f64,
     depth_mm: f64,
 ) -> reify_compiler::TopologyTemplate {
     let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(width_mm)),
-            ("height".into(), mm_lit(height_mm)),
+            (
+                "width".into(),
+                CompiledExpr::value_ref(ValueCellId::new(name, "w"), Type::length()),
+            ),
+            ("height".into(), mm_lit(20.0)),
             ("depth".into(), mm_lit(depth_mm)),
         ],
     };
-    TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
-        .realization_named("MyDesign", 0, "body", vec![box_op])
+    TopologyTemplateBuilder::new(name)
+        .param(name, "w", Type::length(), Some(mm_lit(width_mm)))
+        .param(name, "label", Type::dimensionless_scalar(), None)
+        .realization_named(name, 0, "body", vec![box_op])
         .build()
 }
 
-/// Step-19 (failing initially; passes against the wiring landed by step-18,
-/// which adds the analogous `self.realization_cache = RealizationCache::new()`
-/// reset to `Engine::edit_source` at the same near-entry placement as
-/// `Engine::edit_param`).
-///
-/// Pins the parallel auto-invalidation contract for the source-edit hot
-/// path, mirroring step-17's contract for the parameter-edit hot path. The
-/// plan calls for both resets (in `edit_param` and `edit_source`) to land
-/// in step-18, but a separate test pin guards against a future refactor
-/// that resets in one of the two functions and silently regresses the
-/// other.
-///
-/// Setup mirrors step-17 but exercises `engine.edit_source(&new_module)`
-/// instead of `engine.edit_param(...)`. The "second module" is built with
-/// the same template shape as the first but with different box-primitive
-/// dimensions — a "different parameter defaults, structurally identical
-/// realization graph" content diff that is realistic for a source-edit
-/// hot path (the user changes geometry literals, not just one param value).
-///
-/// Sequence:
-///   (a) `engine.eval(&module1)` → `engine.activate_purpose("manufacturing",
-///       "MyDesign")` → `engine.build(&module1, ExportFormat::Step)` →
-///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_some()` (cache populated; pins the test premise).
-///   (b) Build a second `CompiledModule` with the same templates and
-///       purposes, but a `MyDesign` realization carrying different Box
-///       dimensions. Call `engine.edit_source(&module2).unwrap()`.
-///   (c) Without calling `build_snapshot` yet, assert
-///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit_source.
-///
-/// Today (pre step-18) `edit_source` does NOT touch `realization_cache`, so
-/// the cache entry persists across the source edit and a subsequent
-/// `build()` / `build_snapshot()` would silently return a stale
-/// `GeometryHandleId` pointing at the OLD geometry. After step-18's wiring,
-/// `edit_source` resets the cache near function entry — symmetric with
-/// `edit_param` — and this assertion passes.
-#[test]
-fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build() {
-    let module1 = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_edit_source_clears_realization_cache_v1".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization_dims(
-        10.0, 20.0, 5.0,
-    ))
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
+/// The two-body module: `PartA` (w = 10mm, depth `part_a_depth_mm`) and
+/// `PartB` (w = 20mm, depth 5mm), plus one manufacturing purpose PER
+/// entity. `activate_purpose` is keyed by purpose name, so one shared purpose
+/// would silently bind only the first entity and leave the other uncached.
+fn two_body_module(module_name: &str, part_a_depth_mm: f64) -> reify_compiler::CompiledModule {
+    CompiledModuleBuilder::new(ModulePath::new(vec![module_name.to_string()]))
+        .template(step_output_template(1e-6))
+        .template(body_template_reading_width("PartA", 10.0, part_a_depth_mm))
+        .template(body_template_reading_width("PartB", 20.0, 5.0))
+        .compiled_purpose(manufacturing_purpose("mfg_a", 1e-6))
+        .compiled_purpose(manufacturing_purpose("mfg_b", 1e-6))
+        .build()
+}
 
-    let checker = MockConstraintChecker::new();
+/// An engine over [`two_body_module`] after `eval → activate both purposes →
+/// build`, with the mock kernel's op recorder captured before boxing.
+struct TwoCachedBodies {
+    engine: reify_eval::Engine,
+    module: reify_compiler::CompiledModule,
+    ops: std::sync::Arc<std::sync::Mutex<Vec<reify_test_support::mocks::GeometryOpRecord>>>,
+}
+
+impl TwoCachedBodies {
+    fn served(&self, entity: &str) -> Option<reify_ir::KernelHandle> {
+        self.engine
+            .test_terminal_handle(entity, ReprKind::BRep, 1e-6)
+    }
+
+    fn op_count(&self) -> usize {
+        self.ops.lock().unwrap().len()
+    }
+
+    /// The kernel op that produced `handle`.
+    fn producing_op(&self, handle: reify_ir::KernelHandle) -> reify_ir::GeometryOp {
+        self.ops
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.result_handle == handle.id)
+            .unwrap_or_else(|| panic!("no recorded op produced {handle:?}"))
+            .op
+            .clone()
+    }
+}
+
+/// Builds [`TwoCachedBodies`] and PREMISE-LOCKS that both bodies are cache
+/// resident at `(entity, BRep, 1e-6, NO_OPTIONS)` — without that, every
+/// survival assertion a caller makes is vacuous.
+fn engine_with_two_cached_bodies(module_name: &str) -> TwoCachedBodies {
+    let module = two_body_module(module_name, 5.0);
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-
-    // (a) Cold-start eval, activate purpose, build → cache populated by step-6.
-    let _eval = engine.eval(&module1);
-    engine.activate_purpose("manufacturing", "MyDesign");
-    let _build = engine.build(&module1, ExportFormat::Step);
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_some(),
-        "test premise: expected RealizationCache to contain an entry at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
-         wiring). Without this premise the post-edit assertion is vacuous. \
-         Cache len={}, dump: {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
+    let ops = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
     );
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("mfg_a", "PartA");
+    engine.activate_purpose("mfg_b", "PartB");
+    let _build = engine.build(&module, ExportFormat::Step);
 
-    // (b) Build a structurally-similar second module with different Box
-    // dimensions. The geometry literals differ from module1, so the
-    // realization output would change — but the test does NOT depend on
-    // the content diff: edit_source's auto-invalidation is unconditional
-    // (mirrors edit_param). The diff just makes the test scenario realistic.
-    let module2 = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_edit_source_clears_realization_cache_v2".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization_dims(
-        15.0, 25.0, 7.5,
-    ))
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
-    let _diff = engine
-        .edit_source(&module2)
-        .expect("edit_source must succeed against a structurally-valid second module");
+    let fixture = TwoCachedBodies {
+        engine,
+        module,
+        ops,
+    };
+    for entity in ["PartA", "PartB"] {
+        assert!(
+            fixture.served(entity).is_some(),
+            "test premise: {entity} must be cache-resident at (BRep, 1e-6) after the \
+             cold build; cache dump: {:?}",
+            fixture.engine.realization_cache(),
+        );
+    }
+    fixture
+}
 
-    // (c) Assert the cache was cleared by edit_source. This pins the
-    // auto-invalidation contract step-18 establishes for edit_source —
-    // symmetric with the edit_param contract pinned by step-17. Without
-    // it, the entry persists and a subsequent build()/build_snapshot()
-    // would silently return a stale GeometryHandleId from the
-    // (entity, repr, tol) bucket pointing at the OLD geometry.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_none(),
-        "expected edit_source to auto-invalidate the RealizationCache so a \
-         subsequent build()/build_snapshot() cannot return a stale \
-         GeometryHandleId. Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) \
-         returned Some(_) after edit_source — the entry survived the edit, \
-         breaking the auto-invalidation contract step-18 establishes (the \
-         reset must fire in BOTH edit_param and edit_source; this test \
-         guards against a future refactor that resets in only one of the \
-         two functions). Cache len={}, dump: {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
+/// γ (#4730, PRD `selective-realization-eviction` D5) supersedes the task
+/// #2874 expression "`edit_param` flushes the whole realization cache" while
+/// keeping its invariant — no stale handle is ever served after an edit. An
+/// edit of `PartA.w` evicts `PartA`'s family and nothing else: `PartB`'s
+/// input cone did not move, so its cached handle stays valid and stays
+/// servable.
+#[test]
+fn edit_param_evicts_only_the_edited_bodys_family_and_the_unaffected_body_still_hits() {
+    let mut fixture = engine_with_two_cached_bodies("test_edit_param_keyed_eviction");
+    let part_b_before = fixture.served("PartB");
+
+    fixture
+        .engine
+        .edit_param(ValueCellId::new("PartA", "w"), mm(30.0))
+        .expect("edit_param must succeed against the PartA.w Length param");
+
+    assert_eq!(
+        fixture.served("PartA"),
+        None,
+        "the edited body's family must be evicted, or the next build serves its \
+         stale handle; cache dump: {:?}",
+        fixture.engine.realization_cache(),
+    );
+    assert_eq!(
+        fixture.served("PartB"),
+        part_b_before,
+        "the unaffected body's entry must survive the edit unchanged"
     );
 }
 
-/// Step-21 (failing initially; passes once step-22 adds the public
-/// `Engine::clear_realization_cache(&mut self)` mutator on the un-gated
-/// public surface).
-///
-/// Pins the public escape hatch the docstring critique demands: production
-/// callers MUST be able to flush the realization cache without enabling
-/// test instrumentation. Today the only `realization_cache(&self)` accessor
-/// is `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
-/// READ-ONLY — there is no mutator on the public surface, so a production
-/// caller that needs to invalidate cached `GeometryHandleId`s outside the
-/// auto-invalidation hook points (`edit_param` / `edit_source`) physically
-/// cannot satisfy that contract without constructing a fresh `Engine`
-/// (which would discard every other piece of engine state: snapshots,
-/// param overrides, registered solvers/kernels, `feature_tag_table`,
-/// `topology_attribute_table`, etc.).
-///
-/// Step-22 adds `pub fn clear_realization_cache(&mut self)` with no cfg
-/// gate (mirrors `Engine::clear_param_overrides` precedent in
-/// `engine_admin.rs`), giving production callers a non-destructive flush
-/// primitive. The READ-side accessor `realization_cache(&self)` keeps its
-/// cfg gate (the cache stores kernel-internal `GeometryHandleId` values
-/// that should not leak into the production surface), but the WRITE-side
-/// mutator must be public so the docstring's promised mitigation is
-/// actually reachable.
-///
-/// Setup mirrors step-7 / step-15: STEPOutput(1e-6) + MyDesign with one
-/// Box-primitive realization + manufacturing(1e-6). Sequence:
-///   (a) `eval` → `activate_purpose` → `build` → assert cache populated.
-///   (b) Call `engine.clear_realization_cache()` directly (no cfg-gated
-///       accessor; this is a production-surface mutator).
-///   (c) Assert the cache is empty at `(MyDesign, BRep, 1e-6)`.
-///
-/// The test fails today because `clear_realization_cache` does not exist
-/// on `Engine`. Once step-22 lands the method, the assertion passes
-/// without any wiring change in `engine_build.rs`.
+/// γ (#4730, PRD D5) supersedes task #2874's "a REJECTED `edit_param` still
+/// flushes". A rejected edit moves nothing, so evicting nothing is correct:
+/// both entries are unchanged and the next `build_snapshot` is served
+/// entirely from the cache — not stale, because no input moved.
 #[test]
-fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
+fn rejected_edit_param_evicts_nothing_and_the_next_build_serves_only_cache_hits() {
+    let mut fixture = engine_with_two_cached_bodies("test_rejected_edit_param_evicts_nothing");
+    let before = (fixture.served("PartA"), fixture.served("PartB"));
+
+    let result = fixture
+        .engine
+        .edit_param(ValueCellId::new("PartA", "no_such_param"), Value::Real(1.0));
+    assert!(
+        matches!(result, Err(reify_eval::EngineError::CellNotFound { .. })),
+        "expected CellNotFound for an absent cell, got {result:?}"
+    );
+    assert_eq!(
+        (fixture.served("PartA"), fixture.served("PartB")),
+        before,
+        "a rejected edit must leave every cached entry unchanged"
+    );
+
+    let ops_before = fixture.op_count();
+    let module = fixture.module.clone();
+    fixture.engine.build_snapshot(&module, ExportFormat::Step);
+    assert_eq!(
+        fixture.op_count(),
+        ops_before,
+        "nothing moved, so the build after a rejected edit must dispatch no kernel op"
+    );
+}
+
+/// γ (#4730, PRD D5/D7) supersedes task #2874's "`edit_source` flushes the
+/// whole realization cache". The v2 module changes ONLY `PartA`'s box (its
+/// depth literal); `PartB`'s template is byte-identical. The recompiled body
+/// is evicted, the identical one survives with the same handle, and the
+/// next build re-executes exactly `PartA`'s one op — producing the v2 depth.
+#[test]
+fn edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one() {
+    let mut fixture = engine_with_two_cached_bodies("test_edit_source_keyed_eviction");
+    let part_b_before = fixture.served("PartB");
+
+    let module_v2 = two_body_module("test_edit_source_keyed_eviction_v2", 7.5);
+    fixture
+        .engine
+        .edit_source(&module_v2)
+        .expect("edit_source must succeed against the structurally-valid v2 module");
+
+    assert_eq!(
+        fixture.served("PartA"),
+        None,
+        "the recompiled body's family must be evicted"
+    );
+    assert_eq!(
+        fixture.served("PartB"),
+        part_b_before,
+        "the byte-identical body must survive the recompile with the same handle"
+    );
+
+    let ops_before = fixture.op_count();
+    fixture
+        .engine
+        .build_snapshot(&module_v2, ExportFormat::Step);
+    let new_ops: Vec<_> = fixture.ops.lock().unwrap()[ops_before..]
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_eq!(
+        new_ops.len(),
+        1,
+        "exactly PartA's one op must re-execute; new ops: {new_ops:?}"
+    );
+    assert!(
+        matches!(&new_ops[0], reify_ir::GeometryOp::Box { depth, .. } if *depth == mm(7.5)),
+        "the re-executed box must carry the v2 depth; got {:?}",
+        new_ops[0]
+    );
+}
+
+/// `edit_source`'s only rejection path is `NotInitialized`
+/// (`self.eval_state.is_none()`, checked first in the function body). This
+/// pins that the guard fires — and returns cleanly rather than panicking —
+/// before anything else in the body, including the
+/// `self.eval_state.as_ref().unwrap()` further down that would panic were
+/// the guard ever removed or reordered past it. A never-eval'd engine's
+/// cache is empty either way, so the cache assertion only confirms the
+/// rejected call left no unexpected state behind.
+#[test]
+fn edit_source_rejects_with_not_initialized_before_any_eval() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_clear_realization_cache_public_api".to_string(),
+        "test_edit_source_not_initialized_guard".to_string(),
     ]))
     .template(step_output_template(1e-6))
     .template(my_design_template_with_box_realization())
@@ -1077,39 +1048,79 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    // (a) Cold-start eval, activate purpose, build → cache populated by step-6.
-    let _eval = engine.eval(&module);
-    engine.activate_purpose("manufacturing", "MyDesign");
-    let _build = engine.build(&module, ExportFormat::Step);
+    let result = engine.edit_source(&module);
     assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_some(),
-        "test premise: expected RealizationCache to contain an entry at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
-         wiring). Without this premise the post-clear assertion is vacuous. \
-         Cache len={}, dump: {:?}",
+        matches!(result, Err(reify_eval::EngineError::NotInitialized)),
+        "expected edit_source on a never-eval'd Engine to be rejected with \
+         EngineError::NotInitialized rather than panicking or succeeding, \
+         got {:?}",
+        result,
+    );
+    assert!(
+        engine.realization_cache().is_empty(),
+        "expected realization_cache to remain empty after a rejected \
+         edit_source call on a never-eval'd Engine; len={}, dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
+}
 
-    // (b) Call the public escape hatch added in step-22. This is the
-    // critical line — it compiles iff `Engine::clear_realization_cache` is
-    // a public method on the un-gated production surface. A `pub(crate)`
-    // or cfg-gated method would still pass type-checking inside this test
-    // crate (since `cfg(test)` is on for integration tests too), so the
-    // step-22 docstring should reinforce that the gate-LESS shape is
-    // intentional and that test-only callers should NOT be the only
-    // consumers.
+/// Landed contract: `Engine::clear_realization_cache(&mut self)` is a
+/// public, un-gated mutator on `Engine` (engine_admin.rs), giving production
+/// callers a non-destructive realization-cache flush primitive. The
+/// read-side `realization_cache(&self)` accessor stays
+/// `#[cfg(any(test, feature = "test-instrumentation"))]`-gated.
+///
+/// Pins the public escape hatch the docstring critique demands: production
+/// callers MUST be able to flush the realization cache without enabling
+/// test instrumentation. The READ-side `realization_cache(&self)` accessor
+/// is cfg-gated and READ-ONLY (the cache stores kernel-internal
+/// `GeometryHandleId` values that should not leak into the production
+/// surface), so a production caller that needs to invalidate cached
+/// `GeometryHandleId`s outside the auto-invalidation hook points
+/// (`edit_param` / `edit_source`) needs a WRITE-side primitive that does not
+/// require constructing a fresh `Engine` (which would discard every other
+/// piece of engine state: snapshots, param overrides, registered
+/// solvers/kernels, `feature_tag_table`, `topology_attribute_table`, etc.).
+///
+/// `pub fn clear_realization_cache(&mut self)` carries no cfg gate (mirrors
+/// the `Engine::clear_param_overrides` precedent in `engine_admin.rs`), so
+/// it is that WRITE-side primitive: the READ-side accessor
+/// `realization_cache(&self)` keeps its cfg gate, but the WRITE-side
+/// mutator is public so the docstring's promised mitigation is actually
+/// reachable.
+///
+/// Setup uses the shared `engine_with_populated_realization_cache` helper
+/// (STEPOutput(1e-6) + MyDesign with one Box-primitive realization +
+/// manufacturing(1e-6)). Sequence:
+///   (a) `engine_with_populated_realization_cache(...)` — eval →
+///       activate_purpose → build → assert cache populated.
+///   (b) Call `engine.clear_realization_cache()` directly (no cfg-gated
+///       accessor; this is a production-surface mutator).
+///   (c) Assert the cache is empty at `(MyDesign, BRep, 1e-6)`.
+#[test]
+fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
+    // (a) Cold-start eval, activate purpose, build → cache populated by the
+    // build-time wiring; the helper asserts the cache-populated premise
+    // before returning so the post-clear assertion below is never vacuous.
+    let mut engine =
+        engine_with_populated_realization_cache("test_clear_realization_cache_public_api");
+
+    // (b) Call the public escape hatch `Engine::clear_realization_cache`.
+    // This is the critical line — it compiles iff
+    // `Engine::clear_realization_cache` is a public method on the un-gated
+    // production surface. A `pub(crate)` or cfg-gated method would still
+    // pass type-checking inside this test crate (since `cfg(test)` is on
+    // for integration tests too), so the docstring above reinforces that
+    // the gate-LESS shape is intentional and that test-only callers should
+    // NOT be the only consumers.
     engine.clear_realization_cache();
 
-    // (c) Assert the cache was cleared by the public mutator. Mirrors the
-    // post-edit assertions in step-17 / step-19 — the cache is keyed on
-    // `(entity_id, repr_kind, demanded_tol)` and a cleared cache returns
-    // `None` for every lookup, including exact-key ones.
+    // (c) Assert the cache was cleared by the public mutator — the cache is
+    // keyed on `(entity_id, repr_kind, demanded_tol)` and a cleared cache
+    // returns `None` for every lookup, including exact-key ones.
     assert!(
         engine
             .realization_cache()
@@ -1119,14 +1130,14 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
          every (entity_id, repr_kind, demanded_tol) lookup returns None. \
          Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) \
          after clear_realization_cache() — the entry survived the clear, \
-         breaking the public-mutator contract step-22 establishes. Cache \
-         len={}, dump: {:?}",
+         breaking the Engine::clear_realization_cache public-mutator \
+         contract. Cache len={}, dump: {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
 }
 
-/// Task 3103, step-3 — pins that the active tolerance scope survives
+/// Task 3103: pins that the active tolerance scope survives
 /// `build()`'s internal eval cycle so callers need no re-activation.
 ///
 /// The canonical user flow is `engine.eval → activate_purpose → engine.build`.
@@ -1155,7 +1166,7 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Canonical user flow: eval → activate_purpose (no re-activation after this)
     engine.eval(&module);
@@ -1183,7 +1194,7 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
     );
 }
 
-/// Task 3176, step-1 (RED) — pins that an anonymous realization (one whose
+/// Task 3176: pins that an anonymous realization (one whose
 /// `RealizationDecl.name == None`, constructed via
 /// `TopologyTemplateBuilder::realization(...)` rather than
 /// `realization_named(...)`) does NOT populate the `RealizationCache` even
@@ -1191,26 +1202,24 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
 ///
 /// **Why anonymous realizations exist in this test only**: the production
 /// compiler always emits `Some(name)` for every `RealizationDecl` it produces
-/// (see `crates/reify-compiler/src/types.rs:848-857`). `None` only arises
+/// (see `RealizationDecl::name` in `crates/reify-compiler/src/types.rs`). `None` only arises
 /// from the `TopologyTemplateBuilder::realization(...)` test-support helper,
 /// which is what this test uses to exercise the anonymous-realization code
 /// path.
 ///
-/// **The asymmetry this test exposes**: before the step-2 fix, the
-/// post-success cache-insert at `engine_build.rs` fires whenever
-/// `demanded_tol.is_some()`, regardless of `realization_name`. But the
-/// cache-hit short-circuit at the top of `execute_realization_ops` requires
-/// BOTH `demanded_tol.is_some()` AND `realization_name.is_some()`. The
-/// result: an anonymous realization populates the cache on the first build
-/// but can never be served from it. On subsequent builds the lookup
-/// short-circuit skips (no name), the kernel re-runs, and the post-success
-/// insert hits `ToleranceBucket::insert`'s partial-order rejection (the
-/// prior entry already satisfies). The cached slot is wasted and the op
-/// chain re-runs every build.
-///
-/// After the step-2 fix tightens the insert gate to match the lookup gate
-/// (`if let (Some(tol), Some(_name)) = (demanded_tol, realization_name)`),
-/// this test passes: the anonymous realization never populates the cache.
+/// **The regression this test guards against**: the post-success
+/// cache-insert gate in `execute_realization_ops` matches the cache-hit
+/// short-circuit's lookup gate exactly — both gates are
+/// `is_terminal_realization && let (Some(tol), Some(_name)) =
+/// (demanded_tol, realization_name)`,
+/// so an anonymous realization never populates the cache. Were the two
+/// gates to drift apart again, an anonymous realization would populate the
+/// cache on the first build but could never be served from it: the lookup
+/// gate requires a name, so subsequent builds would skip the
+/// short-circuit, the kernel would re-run, and the post-success insert
+/// would hit `ToleranceBucket::insert`'s partial-order rejection (the
+/// prior entry already satisfies) — wasting the cached slot and re-running
+/// the op chain every build.
 ///
 /// Sequence:
 ///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
@@ -1223,8 +1232,7 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
 ///       wastage across repeated builds).
 ///
 /// Complements `build_populates_realization_cache_keyed_on_demanded_tolerance`
-/// (which pins that NAMED realizations DO populate the cache) and the existing
-/// `edit_param_clears_realization_cache_...` pin (cache-clear mechanism).
+/// (which pins that NAMED realizations DO populate the cache).
 #[test]
 fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name() {
     // Build a module with an ANONYMOUS realization — `realization(...)` not
@@ -1255,7 +1263,7 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (a) Canonical user flow: eval → activate_purpose → build.
     engine.eval(&module);
@@ -1274,8 +1282,9 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     );
 
     // (c) Core assertion: the anonymous realization must NOT populate the cache.
-    // Before the step-2 fix the insert fires (demanded_tol.is_some() is
-    // sufficient); after the fix it is skipped (realization_name.is_none()).
+    // The insert gate requires is_terminal_realization and
+    // realization_name.is_some() in addition to demanded_tol.is_some(), so
+    // it is skipped here (realization_name.is_none()).
     assert_eq!(
         engine.realization_cache().len(),
         0,
@@ -1302,109 +1311,64 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     );
 }
 
-/// Task 3176, step-4 (GREEN-on-arrival) — end-to-end behavioral pin for the
-/// `edit_param → build_snapshot` freshness contract.
+/// Task #3176's end-to-end `edit → build_snapshot` freshness contract,
+/// re-expressed for γ (#4730, PRD `selective-realization-eviction` D5).
 ///
-/// **What this pins**: the existing test
-/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-/// asserts the cache-clear *mechanism* fires (the cache is empty immediately
-/// after `edit_param` returns). This test asserts the user-visible *behavior*:
-/// that a subsequent `build_snapshot` actually invokes the kernel afresh
-/// (cold-misses on the cleared cache), so the resulting `GeometryHandleId` is
-/// NOT a stale cached one. The two tests are complementary — they guard against
-/// orthogonal regressions.
+/// #3176 edited a param that fed NO body and asserted the kernel re-ran —
+/// a pin of the wholesale flush, under which keyed eviction would correctly
+/// HIT. The invariant it guarded is that the handle a `build_snapshot`
+/// serves after an edit is never stale. Here the edit feeds `PartA` only:
+/// the kernel re-runs exactly `PartA`'s one op, the handle `PartA` now serves
+/// was produced by a Box carrying the NEW width, and `PartB`'s handle is
+/// untouched. A follow-up display-only edit dispatches nothing at all.
 ///
-/// **No re-activation between calls**: `edit_param` does NOT call `eval()` —
-/// it does its own incremental re-evaluation via `reify_expr::eval_expr`.
-/// `build_snapshot` also does NOT call `eval()` (it builds from the existing
-/// snapshot). Additionally, task 3103 (commits cb5c58ff6a → c8e6fe56da) changed
-/// `Engine::eval()` to preserve `active_purpose_bindings` via `mem::take` +
-/// re-inject (engine_eval.rs:1162-1176), so bindings survive even when an
-/// internal eval round-trip fires. The lifecycle contract is "eval →
-/// activate_purpose → build requires no re-activation" (pinned by
-/// `eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval`
-/// at tolerance_wiring_e2e.rs). No re-activation is needed at any point in this
-/// test.
-///
-/// Sequence:
-///   (a) eval → activate_purpose → build → capture `ops_after_first`.
-///   (b) Sanity check cache IS populated (proves cache-hit WOULD have fired
-///       without the edit_param invalidation — makes the final assertion
-///       non-vacuous).
-///   (c) `edit_param(thickness, 0.005)` — clears the cache.
-///   (d) `build_snapshot(...)` — must cold-miss → kernel re-executes.
-///   (e) Assert `ops_after_build_snapshot > ops_after_first` (kernel grew,
-///       proving cold-miss and fresh execution rather than stale cache-hit).
+/// No re-activation between calls: neither `edit_param` nor
+/// `build_snapshot` calls `eval()`, and task 3103 made `eval()` preserve
+/// `active_purpose_bindings` anyway.
 #[test]
-fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_is_not_stale() {
-    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_edit_param_then_build_snapshot_kernel_reruns".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization())
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
+fn edit_param_followed_by_build_snapshot_re_executes_only_the_edited_body_so_no_handle_is_stale() {
+    let mut fixture = engine_with_two_cached_bodies("test_edit_param_then_build_snapshot");
+    let module = fixture.module.clone();
+    let part_b_before = fixture.served("PartB");
 
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    // Grab the recorder BEFORE moving the kernel into the engine — the Arc
-    // keeps it alive across the ownership boundary (established pattern at
-    // tolerance_wiring_e2e.rs line ~307/475).
-    let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let ops_before = fixture.op_count();
+    fixture
+        .engine
+        .edit_param(ValueCellId::new("PartA", "w"), mm(30.0))
+        .expect("edit_param must succeed against the PartA.w Length param");
+    fixture.engine.build_snapshot(&module, ExportFormat::Step);
 
-    // (a) Cold-start: eval → activate_purpose → build → cache populated.
-    engine.eval(&module);
-    engine.activate_purpose("manufacturing", "MyDesign");
-    engine.build(&module, ExportFormat::Step);
-    let ops_after_first = ops_handle.lock().unwrap().len();
+    assert_eq!(
+        fixture.op_count() - ops_before,
+        1,
+        "exactly PartA's one op must re-execute"
+    );
+    let part_a = fixture
+        .served("PartA")
+        .expect("PartA must be re-cached by the rebuild");
     assert!(
-        ops_after_first >= 1,
-        "test premise: expected first build() to invoke the kernel at least once \
-         (cache miss → realization ops dispatched); got ops_after_first={}",
-        ops_after_first,
+        matches!(
+            fixture.producing_op(part_a),
+            reify_ir::GeometryOp::Box { width, .. } if width == mm(30.0)
+        ),
+        "PartA's served handle must come from a Box with the NEW width, not a stale one"
+    );
+    assert_eq!(
+        fixture.served("PartB"),
+        part_b_before,
+        "PartB's handle must be untouched by an edit that did not feed it"
     );
 
-    // (b) Sanity: cache IS populated after first build — proves a cache-hit
-    // WOULD have fired on the next build WITHOUT the edit_param invalidation.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_some(),
-        "sanity: expected RealizationCache to contain an entry at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() — without this the \
-         final assertion is vacuous. Cache len={}, dump: {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
-    );
-
-    // (c) Edit a param — clears the realization cache (task 2874, step-18).
-    // No re-activation needed: edit_param does not call eval(), and
-    // build_snapshot does not call eval() either.
-    let thickness_id = ValueCellId::new("MyDesign", "thickness");
-    engine
-        .edit_param(thickness_id, Value::Real(0.005))
-        .expect("edit_param must succeed against the MyDesign.thickness Real param");
-
-    // (d) build_snapshot must cold-miss on the cleared cache and re-execute
-    // the kernel.
-    engine.build_snapshot(&module, ExportFormat::Step);
-    let ops_after_build_snapshot = ops_handle.lock().unwrap().len();
-
-    // (e) Core assertion: kernel grew — proves build_snapshot cold-missed on
-    // the cache (the edit_param invalidation fired correctly) and called the
-    // kernel again, producing a fresh GeometryHandleId rather than returning
-    // the stale cached one.
-    assert!(
-        ops_after_build_snapshot > ops_after_first,
-        "expected build_snapshot() after edit_param() to cold-miss the \
-         RealizationCache and re-invoke the kernel (ops must grow beyond the \
-         first-build count). ops_after_first={}, ops_after_build_snapshot={} \
-         — kernel op count did not increase, indicating build_snapshot served \
-         a stale cache-hit or never reached execute_realization_ops.",
-        ops_after_first,
-        ops_after_build_snapshot,
+    let ops_before_label = fixture.op_count();
+    fixture
+        .engine
+        .edit_param(ValueCellId::new("PartB", "label"), Value::Real(0.5))
+        .expect("edit_param must succeed against the display-only PartB.label param");
+    fixture.engine.build_snapshot(&module, ExportFormat::Step);
+    assert_eq!(
+        fixture.op_count(),
+        ops_before_label,
+        "a display-only edit moves no realization, so the rebuild dispatches nothing"
     );
 }
 
@@ -1482,7 +1446,7 @@ fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_bu
         .with_extracted_faces(seeded_solid, vec![seeded_face])
         .with_extracted_edges(seeded_solid, vec![seeded_edge]);
     let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -1656,7 +1620,7 @@ fn realization_entries_counts_terminal_cache_entry_once_and_not_on_cache_hit() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     assert_eq!(
         engine.cache_stats().realization_entries,
@@ -1714,7 +1678,7 @@ fn realization_entries_survives_clear_realization_cache() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");

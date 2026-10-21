@@ -1,0 +1,7 @@
+// Unbound qualified ref in `sub` position; see harness_cli/cli_check_qualified_ref_positions.rs.
+
+module qualified_ref_undeclared_sub
+
+structure def P {
+    sub s = obj.width()
+}

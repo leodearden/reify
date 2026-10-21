@@ -18,8 +18,23 @@ module dcr_shaper_frequency_dimension_silent
 // (input_shape.rs:90-102) multiplies by 2*pi, so the shaper is silently
 // designed for 314 rad/s instead of 50 rad/s — a 6.28x error.
 //
-// Needs no kernel and runs in well under a second, so ζ's signal is
-// gate-resident by construction.
+// At decompose it needed no kernel and ran in well under a second, so ζ's
+// signal was meant to be gate-resident by construction. Since δ (#5306) the
+// consuming path no longer runs at all: see POST-δ below.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, one Error:
+//   * ArgTypeMismatch, ZVShaper.target_frequency on `shaper_rads`: rad·s^-1
+//     at s^-1.
+//   CHOKEPOINT: compile-time struct-ctor field conformance. The file stops at
+//   compile, so input_shape / build_train_for_shaper / read_scalar_si never run
+//   and NEITHER profile is shaped, the 50Hz half included. This exit 1 is NOT
+//   ζ's signal. Machine pin: the gate-resident
+//   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
+//   harness_ctor_conformance_survey/disposition.rs).
+//   How ζ (#6941) reads its signal instead:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrShaperFrequencyDimensionSilent {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)

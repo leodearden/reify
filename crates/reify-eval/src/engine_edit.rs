@@ -22,6 +22,117 @@
 //! `(Undef, Auto)`, destroying solver work and causing `eval(guard=T)` to
 //! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
 //! configuration.
+//!
+//! # Warm-Resolution back-prop sync set
+//!
+//! Four entry points resolve Auto params through the constraint solver and
+//! back-propagate the result: [`Engine::eval`], [`Engine::eval_cached`],
+//! [`Engine::edit_param`], and [`Engine::edit_source`]. Between them there
+//! are six write-back arms, because, per template index, [`Engine::eval`] and
+//! [`Engine::eval_cached`] each take a mutually exclusive merged-cluster
+//! branch through `dispatch_merged_cluster_solve` /
+//! `dispatch_merged_cluster_solve_cached` (task #5118).
+//!
+//! Each arm writes some subset of eight legs. Four are uniform across
+//! all six arms; four are not. Legs 1-4 describe the MAIN resolution
+//! write-back of each arm; wave-2 and post-wave2 phases are covered
+//! per-arm in leg 5.
+//!
+//! 1. `values` — uniform
+//! 2. snapshot map as `Determined` — uniform
+//! 3. cache entry — uniform
+//! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
+//! 5. journal — mechanism differs per arm:
+//!    - [`Engine::eval`] per-template arm — hand-rolled `Started`/`Completed`
+//!      pairs around the solver write-back. Two exceptions: the
+//!      pinned-connector-auto write-back
+//!      (`write_solved_pinned_connector_autos`, task #4710), which fires
+//!      first and is un-journaled by design — its own doc says "Does NOT
+//!      touch the journal" — and, separately, a later post-solve phase,
+//!      `materialize_dependent_cells`, which writes `values` and marks the
+//!      snapshot `Determined` for cross-scope Let-coupled cells with no
+//!      cache entry and no journal call. Its sibling post-solve phase,
+//!      `evaluate_let_bindings`, DOES journal via `commit_cell_result`, so
+//!      it needs no exception entry.
+//!    - [`Engine::eval`]'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve`) — hand-rolled `Started`/
+//!      `Completed` pairs, same shape as the per-template arm. No
+//!      pinned-connector write-back here (the merged builder already
+//!      excludes strict connector-instance autos), so no pinned-connector
+//!      exception — but it shares the per-template arm's
+//!      `materialize_dependent_cells` exception above.
+//!    - [`Engine::eval_cached`] per-template arm — TWO un-journaled
+//!      write-backs: the pinned-connector-auto write-back (same
+//!      exception as the `eval` per-template arm) and, separately, its
+//!      own solver-resolved-value write-back, a bare cache record with
+//!      no journal event. Its wave-2 downstream let-cone re-eval, by
+//!      contrast, DOES journal, via `commit_cell_result`.
+//!    - [`Engine::eval_cached`]'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve_cached`) — `commit_cell_result`
+//!      for both the main write-back and its wave-2. No pinned-connector
+//!      write-back (same exclusion as `eval`'s merged-cluster branch).
+//!    - [`Engine::edit_param`] — `commit_cell_result` for the main
+//!      write-back and the wave-2 downstream reseed's active-member leg
+//!      (both `CacheLeg::Record`); that same wave-2 reseed's
+//!      inactive-guarded-member leg instead calls
+//!      [`deactivate_if_not_auto`] (no cache, no journal). A third phase,
+//!      the post-wave2 driver-ordered guard-member reseed, follows: its
+//!      active-member leg also routes through `commit_cell_result`, but
+//!      with `CacheLeg::Skip("post-wave2 guard-member reseed")` —
+//!      journals, does not cache. No un-journaled *resolution*
+//!      write-back — its inactive-guarded-member leg, like the wave-2
+//!      reseed's, also calls [`deactivate_if_not_auto`], writing
+//!      `values`/snapshot only (no cache, no journal), by design; see
+//!      the canonical Auto-cell lifecycle rule above.
+//!    - [`Engine::edit_source`] — `commit_cell_result` for both the main
+//!      write-back (task δ #5056; kept in sync with edit_param's arm by
+//!      task #6373) and the wave-2 ("Second propagation wave") downstream
+//!      reseed (task #6423) — both `CacheLeg::Record`. A third phase, the
+//!      post-wave2 driver-ordered guard-member reseed's active-member leg,
+//!      has NEITHER: a bare `values`/snapshot insert with no cache write
+//!      and no journal call at all. (Outside this roster: the earlier
+//!      step-(12) "Per-cell eval loop" — the ordinary per-cell eval walk
+//!      that runs before any of the above and is not itself a resolution
+//!      write-back — was separately migrated onto `commit_cell_result_at`
+//!      by task #6998.)
+//! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
+//!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
+//! 7. `objective_provenance` — `eval`'s two arms only
+//! 8. `resolved_ids` / `all_resolved_ids` — uniform: every arm populates
+//!    a local resolved-ids set seeded from the solver's resolved
+//!    values. In [`Engine::eval`]'s and [`Engine::eval_cached`]'s
+//!    per-template arms it is a superset of that — strict when
+//!    `pinned_connector_autos` is non-empty, equal otherwise:
+//!    `write_solved_pinned_connector_autos` (in `engine_eval.rs`) also
+//!    inserts each pinned connector-instance auto (their merged-cluster
+//!    branches take no pinned-connector write-back, per leg 5 above, so
+//!    this superset is per-template-arm only). For `eval_cached` this
+//!    is load-bearing: its wave-2 dirty-cone seed reads directly from
+//!    this same `resolved_ids` set, so a pinned auto omitted from it
+//!    would also skip re-eval of its downstream cone.
+//!    `eval`'s two arms feed the set into `SnapshotProvenance::Resolution {
+//!    resolved }`; the other four arms (`eval_cached`'s two arms,
+//!    [`Engine::edit_param`], [`Engine::edit_source`]) use it instead to
+//!    seed the wave-2 downstream dirty cone. Omitting a newly resolved
+//!    cell here silently skips its downstream re-eval.
+//!
+//! Legs 6-7 are a deliberate, documented divergence, not drift:
+//! `dispatch_merged_cluster_solve_cached`'s own doc records that its arm
+//! still emits no `resolved_params` and no `objective_provenance` —
+//! consult that doc's `resolved_params`/`objective_provenance` clause
+//! for the rationale before "fixing" `eval_cached` to write them. That
+//! same clause's "migrated per-template sibling" remark — it sits in the
+//! same sentence, joined by "but" — is about a different topic (task
+//! #5118's `commit_cell_result` migration, not legs 6-7) and is not
+//! authoritative for leg 5 above — treat leg 5 as this file's canonical
+//! account of journal behavior per arm.
+//!
+//! Check all eight legs when modifying warm Resolution back-prop.
+//!
+//! A further arm, `resolve_concurrent_edit` — the fourth member of this
+//! roster's original four-site form, before [`Engine::edit_source`] and the
+//! merged-cluster branches were added — was removed with `concurrent.rs` in
+//! ffb85f0627 (task ο, #5065).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -40,13 +151,17 @@ use reify_ir::{
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
-use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_commit::{
+    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+};
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo, RealizationNodeData};
-use crate::journal::{EvalEvent, EventKind, EventPayload};
+use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::realization_staleness::{
+    compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
+};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -72,54 +187,6 @@ pub(crate) fn deactivate_if_not_auto(
         values.insert(id.clone(), Value::Undef);
         snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
     }
-}
-
-/// Rewrite the FIRST occurrence of `<sub_name>[0]` → `<sub_name>[i]` in a
-/// flat port-name template.
-///
-/// Used by the forall-Connect runtime re-emission path (task 2690) to
-/// substitute the captured placeholder element index into each per-element
-/// `CompiledConnection`'s `left_port` / `right_port`.
-///
-/// # Single-replacement contract (task 2690 amendment)
-///
-/// The captured templates come from `connect.rs::resolve_port_name`, which
-/// returns a flat string with at most one bracketed index per side and bails
-/// on nested `IndexAccess`. We use `replacen(.., 1)` rather than `replace(..)`
-/// to bound the rewrite to exactly one occurrence, so that unrelated incidental
-/// repetitions of `<sub_name>[0]` elsewhere in the same template string are
-/// not silently rewritten.
-///
-/// # Substring-rewrite divergence
-///
-/// `resolve_port_name` flattens user-written `Ident[NumberLiteral].member`
-/// shapes into a plain dotted-bracket string before the template is captured.
-/// This means that a port expression such as `vents[0].foo` on the LEFT side
-/// of a forall-Connect body
-///
-/// ```text
-/// forall v in vents: connect vents[0].foo -> v.bar
-/// ```
-///
-/// produces the captured template `"vents[0].foo"`, where the `[0]` is a
-/// *user-written* literal — not the placeholder substituted at runtime.
-/// For `i > 0`, `replacen(.., 1)` rewrites that literal to `vents[i].foo`,
-/// diverging from the resolved (non-deferred) Connect path, where
-/// `compile_connection` runs independently per element and the LEFT-side
-/// literal stays `vents[0].foo` for every `i`. This is a known, vanishingly
-/// rare edge case; it is documented here rather than guarded against at
-/// runtime.
-///
-/// The compile-time placeholder element shape is `<sub>[0]` for the deferred
-/// capture path, mirroring the Constraint-arm's
-/// `<parent>.<sub>[0]` cell-id rewrite (see `engine_edit.rs` Constraint arm
-/// and `types.rs::CompiledForallBody::Connect` docstring). The substring is
-/// anchored on `sub_name` (not just `[0]`) to reduce the risk of accidentally
-/// rewriting a literal `[0]` elsewhere in the port name.
-pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -> String {
-    let placeholder = format!("{}[0]", sub_name);
-    let target = format!("{}[{}]", sub_name, i);
-    template.replacen(&placeholder, &target, 1)
 }
 
 /// Re-elaborate the active and inactive branches of a single guarded group
@@ -440,90 +507,35 @@ pub(crate) fn diff_realizations(
     })
 }
 
-/// Classify every realization in `new_graph` as CHANGED or UNCHANGED by
-/// recomputing its INPUT-cone hash against the post-edit context and
-/// comparing it to the prior node's stored `input_cone_hash`
-/// (selective-realization-eviction PRD task β, #4729).
-///
-/// # One helper, two compare sites (PRD §11.3)
-///
-/// This is the single comparison helper shared by both edit entry points,
-/// parameterised only by *where the prior hash lives*:
-///
-/// - `edit_param` does not rebuild the graph, so the persisting graph is
-///   both `prior_realizations` and `new_graph`.
-/// - `edit_source` does rebuild it, so `prior_realizations` is the OLD
-///   graph's realization map and `new_graph` is the new one.
-///
-/// # Why NOT `RealizationNodeData::content_hash` (design §5.2)
-///
-/// [`diff_realizations`] directly above keys on `content_hash`, which
-/// `EvaluationGraph::from_templates` builds (graph.rs:371-396) as
-/// `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))` — a `Debug`
-/// render of the compiled op IR. A `Primitive{Box, args:[("width",
-/// ValueRef(width))]}` renders identically no matter what `width`
-/// *evaluates to*, so that hash provably never moves on a value-driven
-/// change. Keying eviction on it would compile, run, and silently evict
-/// nothing — the 4317-class trap design §5.2 warns about. This helper
-/// therefore uses the GHR-β INPUT-cone fold instead: the same canonical
-/// `compute_realization_upstream_values_hash_from_ops` (PRD D1 — never a
-/// second fold) that α's stored hash, the value-cell early cutoff, and the
-/// tag-28 in-memory geometry cache key all agree on.
-///
-/// The two are complementary, not alternatives: an ops-level source change
-/// is a real change that the input-cone fold could in principle miss, so
-/// `edit_source` UNIONs this result with `diff_realizations`' changed∪added
-/// sets rather than replacing them.
-///
-/// # Read-only with respect to `input_cone_hash`
-///
-/// This helper never writes the stored hash. That field means "the input
-/// cone **as of the last EXECUTION**" — owned by α's write inside
-/// `execute_realization_ops` and re-stamped by the build-time gate
-/// `refresh_and_gate_demanded_realizations`. Re-stamping it here, at EDIT
-/// time, would make that gate observe `stored == current` for a realization
-/// whose geometry is stale, mark it exempt from re-dispatch, and serve
-/// stale geometry — a textbook 4317-class stale.
-///
-/// # Conservative direction
-///
-/// A missing prior hash — `None` (never executed, demand-pruned, or
-/// un-hydrated) or no prior entry at all (newly added by a recompile) —
-/// classifies as CHANGED (PRD §11.2). Over-eviction is merely wasted work;
-/// under-eviction serves stale geometry, so every uncertain case rounds
-/// towards CHANGED.
-pub(crate) fn compute_changed_realizations(
-    prior_realizations: &PersistentMap<RealizationNodeId, RealizationNodeData>,
-    new_graph: &EvaluationGraph,
-    ctx: &reify_expr::EvalContext<'_>,
-) -> HashSet<RealizationNodeId> {
-    new_graph
-        .realizations
-        .iter()
-        .filter(|(rid, node)| {
-            let current = crate::engine_build::compute_realization_upstream_values_hash_from_ops(
-                &node.operations,
-                ctx,
-            );
-            let prior = prior_realizations
-                .get(*rid)
-                .and_then(|prior_node| prior_node.input_cone_hash);
-            // This single `!=` expresses all three §11.2 cases at once:
-            // a `None` prior — never executed, demand-pruned, or newly
-            // added — can never equal `Some(current)`, so it is CHANGED.
-            prior != Some(current)
-        })
-        .map(|(rid, _)| rid.clone())
-        .collect()
+/// `edit_param`'s debug-only realization invariant (γ, #4730): the edit may
+/// move a realization's content but never its identity, because the eviction
+/// set it computes has no removed term. Compares id SETS, so a same-count
+/// swap is caught.
+#[cfg(debug_assertions)]
+fn assert_realization_ids_unchanged<'a>(
+    prior: impl IntoIterator<Item = &'a RealizationNodeId>,
+    current: impl IntoIterator<Item = &'a RealizationNodeId>,
+) {
+    let prior: HashSet<_> = prior.into_iter().collect();
+    let current: HashSet<_> = current.into_iter().collect();
+    let added: Vec<_> = current.difference(&prior).collect();
+    let removed: Vec<_> = prior.difference(&current).collect();
+    assert!(
+        added.is_empty() && removed.is_empty(),
+        "edit_param must not add or remove a realization: its eviction set has no \
+         removed term; added {added:?}, removed {removed:?}"
+    );
 }
 
-/// Seed the realization-driven dirty cone from `changed_realizations` and drop
-/// the cache entry of every node it reaches — the FIRST production caller of
+/// Seed the realization-driven dirty cone from `seeds` — the changed
+/// realizations plus the `Sub` consumers the reverse index cannot link
+/// ([`realization_cone_seeds`]) — and drop the cache entry of every node it
+/// reaches — the FIRST production caller of
 /// [`crate::dirty::compute_dirty_cone_with_realizations`]
 /// (selective-realization-eviction PRD task β, #4729).
 ///
 /// Shared by both edit seams so the ordering hazard below is handled in one
-/// place. A no-op when `changed_realizations` is empty, so a no-realization
+/// place. A no-op when `seeds` is empty, so a no-realization
 /// edit pays nothing for THIS half. (That is the PRD §6 zero-cost row for the
 /// propagation half only — the classification half,
 /// [`compute_changed_realizations`], still folds every realization's ops
@@ -612,16 +624,19 @@ pub(crate) fn compute_changed_realizations(
 /// Takes the cache, pool, graph and fields as separate parameters rather than
 /// `&mut self` so callers can pass disjoint `Engine` field borrows (the graph
 /// may live inside `self.eval_state`).
+///
+/// Returns the cone it invalidated (empty when there are no seeds), so the
+/// caller derives the eviction set from the same walk instead of a second one.
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
     warm_pool: &mut WarmStatePool,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
-    changed_realizations: &HashSet<RealizationNodeId>,
-) {
-    if changed_realizations.is_empty() {
-        return;
+    seeds: &HashSet<RealizationNodeId>,
+) -> HashSet<NodeId> {
+    if seeds.is_empty() {
+        return HashSet::new();
     }
     let rebuilt;
     let index = match prebuilt_index {
@@ -638,12 +653,8 @@ fn invalidate_realization_dirty_cone(
     // computed and applied upstream in both edit entries, so re-passing it
     // would be a harmless superset but pure redundant BFS on the P0 edit
     // latency path. The realization-driven cone is purely additive.
-    let dirty = crate::dirty::compute_dirty_cone_with_realizations(
-        &HashSet::new(),
-        changed_realizations,
-        index,
-        graph,
-    );
+    let dirty =
+        crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), seeds, index, graph);
     for node in &dirty {
         // Capture the cost FIRST (`cost_per_byte_of` is read-only and stays
         // valid before the take), then take the warm state and donate both to
@@ -656,6 +667,7 @@ fn invalidate_realization_dirty_cone(
         }
         cache.invalidate(node);
     }
+    dirty
 }
 
 /// Drop-guard for the `pending_warm_seeds` staging map used in `Engine::edit_source`
@@ -682,7 +694,7 @@ fn invalidate_realization_dirty_cone(
 ///
 /// The guard holds `&'a mut WarmStatePool` but no other `Engine` field.  Rust's
 /// disjoint-field borrow rules therefore allow the caller to hold simultaneous
-/// `&mut self.cache`, `&mut self.solver`, etc. while the guard is live.  Step (9)'s
+/// `&mut self.cache`, `&mut self.solve_stage`, etc. while the guard is live.  Step (9)'s
 /// `donate_warm_state_and_invalidate` calls use [`pool_mut`](Self::pool_mut) to obtain a
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
@@ -716,21 +728,6 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         self.map.insert(nid, (state, last_accessed, cost_per_byte));
     }
 
-    /// Insert a checked-out entry into the staging map, defaulting `cost_per_byte` to `0.0`.
-    ///
-    /// Back-compat wrapper around [`insert_with_cost`](Self::insert_with_cost).  Existing
-    /// call sites that obtained the stamp from `checkout_with_lru_stamp` (which discards
-    /// cost) continue to compile unchanged.
-    #[cfg(test)]
-    fn insert(
-        &mut self,
-        nid: NodeId,
-        state: reify_ir::OpaqueState,
-        last_accessed: std::time::Instant,
-    ) {
-        self.insert_with_cost(nid, state, last_accessed, 0.0);
-    }
-
     /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
     /// the guard is live (e.g. step (9)'s `donate_warm_state_and_invalidate`).
     fn pool_mut(&mut self) -> &mut WarmStatePool {
@@ -739,16 +736,16 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
     /// Drain the staging map: route each entry to `cache.donate_warm_state`
     /// when the cache holds a matching entry, else re-donate to `self.pool`
-    /// **preserving the original `last_accessed` stamp**.
+    /// **preserving the original `last_accessed` stamp and `cost_per_byte`**.
     ///
     /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
     ///   cache's warm-state slot for the upcoming evaluation round).  The
     ///   `last_accessed` stamp is discarded on this path because the entry
     ///   leaves the pool; its LRU position no longer matters.
-    /// - **cache miss** → `pool.donate_preserving_lru(nid, state, stamp)`
+    /// - **cache miss** → `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)`
     ///   (re-donates the entry so it remains recoverable on a subsequent
     ///   topology event, preserving the original LRU ordering instead of
-    ///   refreshing the stamp to `Instant::now()`).
+    ///   refreshing the stamp to `Instant::now()`, and the original cost).
     ///
     /// After this method returns, `self.map` is empty, so the natural `Drop`
     /// is a no-op (no double-donation).  On any early-return / panic between
@@ -771,15 +768,15 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
 impl Drop for PendingWarmSeedsGuard<'_> {
     /// Re-donate all remaining staged entries back to the pool, preserving
-    /// each entry's original `last_accessed` stamp via
-    /// [`WarmStatePool::donate_preserving_lru`].
+    /// each entry's original `last_accessed` stamp and `cost_per_byte` via
+    /// [`WarmStatePool::donate_preserving_lru_with_cost`].
     ///
     /// This is the panic safety net: if `drain_into_cache_or_repool` was already
     /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
     /// every surviving entry is re-donated so the pool can recover it on the next
     /// `edit_source` call.
     ///
-    /// Using `donate_preserving_lru` (rather than `donate`) ensures that an entry
+    /// Using `donate_preserving_lru_with_cost` (rather than `donate`) ensures that an entry
     /// which panics out between steps (4c) and (14b) does not unfairly reset its
     /// LRU clock — the entry returns to the pool with the same age it had when it
     /// was originally checked out.
@@ -797,17 +794,17 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// # Double-panic note
     ///
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
-    /// **before** calling `pool.donate_preserving_lru`.  Both are on the
+    /// **before** calling `pool.donate_preserving_lru_with_cost`.  Both are on the
     /// double-panic hot path: if `Drop` fires during stack-unwinding from
-    /// another panic, either the `warn!` dispatch or `donate_preserving_lru`
+    /// another panic, either the `warn!` dispatch or `donate_preserving_lru_with_cost`
     /// could theoretically panic, triggering an unconditional
     /// `std::process::abort`.
     ///
     /// `tracing::warn!` is unlikely to panic in well-behaved subscribers, but
     /// does dispatch (and may allocate) when a subscriber is attached — a
     /// buggy subscriber could in principle panic on the unwind path.
-    /// `donate_preserving_lru` only panics in debug builds when the events
-    /// buffer is at its cap (65 536 entries).  Both risks are documented here
+    /// `donate_preserving_lru_with_cost` only panics in debug builds when the events
+    /// buffer is at its cap (65 536 entries by default).  Both risks are documented here
     /// for completeness.
     ///
     /// # Test-context note
@@ -1065,40 +1062,9 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
-        // Auto-invalidate the realization cache: edit_param changes input
-        // parameter values, so any cached `GeometryHandleId` entries point at
-        // OLD geometry and would silently be served by a subsequent
-        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `topology_attribute_table` reset-at-hook-point pattern
-        // (engine_build.rs:531/406): the engine cannot prove which
-        // cached entries survive a given edit without per-cell input-cone
-        // analysis we do not currently maintain, so we conservatively flush
-        // the entire cache on every edit. The next `build()` /
-        // `build_snapshot()` cold-misses on every realization and re-populates
-        // the cache from kernel execution. Pinned by
-        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
-        //
-        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_source` (engine_edit.rs around
-        // line 1920). Removing either reset, or reordering either function
-        // body so the reset moves AFTER any state mutation that could fail
-        // (which would let a stale cache leak when the edit returns Err),
-        // silently regresses the auto-invalidation hook. Both resets MUST
-        // co-exist near function entry; the symmetry is independently pinned
-        // by the test pair listed above plus
-        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // (step-19).
-        //
-        // **Single-source the reset (task 2874 step-22)**: both auto-
-        // invalidation hooks (this one and the parallel `edit_source` reset)
-        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
-        // so the reset semantics are defined in exactly one place. The
-        // public mutator is the same primitive a production caller would
-        // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
-        // in `tests/tolerance_wiring_e2e.rs`.
-        self.clear_realization_cache();
+        // The realization cache is NOT flushed here: γ (#4730) evicts only the
+        // families this edit made stale, at the compare site near the end of
+        // this function.
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
         // is enforced rather than documented — a subsequent edit_param
@@ -1154,11 +1120,7 @@ impl Engine {
         //
         // **Ordering (amend, review round 1 — `correctness`): this MUST sit
         // BELOW the `NotInitialized` / `CellNotFound` / `validate_param_override`
-        // guards**, which is the exact OPPOSITE requirement to the
-        // `clear_realization_cache()` contract-lock above (that one must sit
-        // before any fallible mutation so a stale handle cannot leak on an
-        // `Err` return). The two look co-locatable and are not, so they are
-        // deliberately kept apart.
+        // guards.**
         //
         // The reason is the field's semantics: the set is measured against the
         // input cone AS OF THE LAST EXECUTION, so it is cumulative across
@@ -1175,6 +1137,11 @@ impl Engine {
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
+        // γ (#4730): `edit_param` neither adds nor removes a realization, so
+        // its eviction set has no removed term. Asserted, by id set, at the
+        // compare site.
+        #[cfg(debug_assertions)]
+        let prior_realizations = state.snapshot.graph.realizations.clone();
         let mut new_snapshot = state.snapshot.clone();
 
         // Compute dirty cone and eval set while state borrow is active
@@ -1188,7 +1155,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // θ2 (task 4531) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent — making "warm output
+        // SAME unified driver order as cold/build — making "warm output
         // == cold output" structural on the edit surface — and `eval_set` IS that
         // order. `dirty::compute_eval_set` sorts through `dirty::topological_sort`,
         // which delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
@@ -1707,13 +1674,13 @@ impl Engine {
         // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
         // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
         // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
-        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        // so it aliases neither the warm-pool borrow nor the `self.solve_stage` borrow below.
         let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
 
-        if let Some(ref solver) = self.solver {
+        if let Some(solver) = self.solve_stage.as_ref().map(|stage| stage.solver()) {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -1722,8 +1689,11 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_param site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_param` arm of the
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the eight legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
@@ -1808,8 +1778,8 @@ impl Engine {
                             // solver-resolved auto has no static expr
                             // dependency trace.
                             //
-                            // Paired with edit_source's SolveResult::Solved
-                            // resolution back-prop arm below (~:3692) — this
+                            // Paired with edit_source's `SolveResult::Solved`
+                            // resolution back-prop arm (task #6373) — this
                             // pair silently diverged once already (edit_source
                             // went unmigrated from #5056 until #6373); change
                             // them together.
@@ -1860,7 +1830,7 @@ impl Engine {
             // read them may NOT be in the original edit dirty cone. RE-DIRTY the
             // resolved autos' downstream cone and reseed the SAME unified driver
             // (`run_unified_pass_seeded`) for one additional value pass — the
-            // ordering core cold/build/concurrent use — replacing BOTH the legacy
+            // ordering core cold/build use — replacing BOTH the legacy
             // hand-rolled "second propagation wave" (`compute_eval_set`-ordered)
             // AND its cross-phase `reapply_guard_deactivations_post_wave2` cleanup.
             //
@@ -1937,6 +1907,7 @@ impl Engine {
                     } else if let Some(node) = graph.value_cells.get(vcid)
                         && let Some(ref expr) = node.default_expr
                     {
+                        let start = Instant::now();
                         let val = reify_expr::eval_expr(
                             expr,
                             &cell_eval_ctx(
@@ -1952,7 +1923,23 @@ impl Engine {
                         // Commit via the cell-commit primitive (task δ #5056):
                         // atomically writes values/snapshot/cache/journal
                         // (INV-EVAL-1).
-                        commit_cell_result(
+                        //
+                        // Paired with edit_source's `Second propagation wave`
+                        // commit (task #6423) — this pair had been silently
+                        // diverged (edit_source's wave2 wrote no journal leg
+                        // at all until #6423 migrated it); change them
+                        // together.
+                        //
+                        // `commit_cell_result_at(start, ..)`, not the plain
+                        // `commit_cell_result`: `start` is captured above,
+                        // before `reify_expr::eval_expr`, so the emitted
+                        // Started/Completed pair brackets the full
+                        // resolution rather than just the commit itself —
+                        // see `commit_cell_result_at`'s doc (#5238
+                        // amendment). The paired edit_source wave2 site below
+                        // does the same; change them together.
+                        commit_cell_result_at(
+                            start,
                             CommitLegs {
                                 values: &mut values,
                                 snapshot_values: &mut new_snapshot.values,
@@ -2457,7 +2444,6 @@ impl Engine {
                 // `<parent>.<sub>[i]` for `i ∈ 0..new_count`.
                 //
                 // Hook point named in `forall_elaborate.rs`'s contract block.
-                // ConnectBody re-emission is reserved for follow-up task 2690.
                 //
                 // `forall_templates` and the ledger were hoisted + realigned
                 // above the outer collection_subs loop; the loop body only
@@ -2515,9 +2501,9 @@ impl Engine {
                     // `forall_emitted[t_idx]` for symmetric drain-on-decrease.
                     match &t.body {
                         CompiledForallBody::Connect {
-                            left_port_template,
+                            left,
                             operator,
-                            right_port_template,
+                            right,
                             connector_type: _,
                             params: _,
                             port_mappings,
@@ -2535,46 +2521,23 @@ impl Engine {
                             //     from the Constraint arm's `forall:`
                             //     prefix, so existing label-filtering tests
                             //     don't mix arms.
-                            //   * Port-name `<sub>[0]` → `<sub>[i]` rewrite
-                            //     is a substring substitution: the captured
-                            //     templates are flat strings (per
-                            //     `connect.rs::resolve_port_name`), so
-                            //     there's no AST to walk. The substring is
-                            //     anchored on `coll_sub_name` to reduce the
-                            //     risk of accidentally rewriting a literal
-                            //     `[0]` elsewhere in the port name. The
-                            //     resolved (non-deferred) Connect path
-                            //     compiles each element directly through
-                            //     `compile_connection`; this runtime path
-                            //     trades that fidelity for not re-running
-                            //     `compile_connection` on every count edit
-                            //     — the same trade the Constraint arm makes
-                            //     for `compile_expr`.
+                            //   * Each endpoint is a typed `PortPath`;
+                            //     `at_element` renders the bound element as
+                            //     `<sub>[i]` and leaves a literal index as
+                            //     written. This path does not re-run
+                            //     `compile_connection` on every count edit —
+                            //     the same trade the Constraint arm makes for
+                            //     `compile_expr`.
                             //   * Synthetic compatibility constraint emits
                             //     `Bool::True` literal — direction-check
                             //     and `connector_sub`/`frame_constraint`
                             //     auto-creation are out of scope for this
                             //     task (per the task's "Out of scope" list).
-                            // Port-name `<sub>[0]` → `<sub>[i]` rewrite is
-                            // factored into `rewrite_port_placeholder` (top
-                            // of file); see its docstring for the
-                            // substring-rewrite edge-case discussion.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
                                 t.variable, t.parent_entity, t.collection_sub_name, t_idx,
                             );
                             for i in 0..new_count {
-                                let rewritten_left = rewrite_port_placeholder(
-                                    left_port_template,
-                                    &t.collection_sub_name,
-                                    i,
-                                );
-                                let rewritten_right = rewrite_port_placeholder(
-                                    right_port_template,
-                                    &t.collection_sub_name,
-                                    i,
-                                );
-
                                 let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
                                 let id_hash = ContentHash::of_str(&format!("{}", cnid));
                                 let label = format!("forall_connect@{}[{}]", t.variable, i);
@@ -2589,9 +2552,9 @@ impl Engine {
                                 };
                                 new_snapshot.graph.constraints.insert(cnid.clone(), node);
                                 new_snapshot.graph.connections.push(CompiledConnection {
-                                    left_port: rewritten_left,
+                                    left_port: left.at_element(&t.collection_sub_name, i),
                                     operator: *operator,
-                                    right_port: rewritten_right,
+                                    right_port: right.at_element(&t.collection_sub_name, i),
                                     connector_sub: None,
                                     compatibility_constraint: cnid.clone(),
                                     port_mappings: port_mappings.clone(),
@@ -2920,17 +2883,31 @@ impl Engine {
             // cascade, now live on the param path), its geometry-query
             // constraints and its downstream `Sub` realizations — non-fresh,
             // so the next eval re-dispatches them while unaffected consumers
-            // keep their cached result. `cache`, `warm_pool` and
-            // `compiled_fields` are disjoint `Engine` fields from
-            // `eval_state`, so these borrows coexist.
-            invalidate_realization_dirty_cone(
+            // keep their cached result. The walk also starts at every `Sub`
+            // consumer the index cannot link (`realization_cone_seeds`).
+            // `cache`, `warm_pool` and `compiled_fields` are disjoint `Engine`
+            // fields from `eval_state`, so these borrows coexist.
+            //
+            // γ (#4730, PRD D4): the collection re-elaboration above rewrites
+            // value cells only, so no realization was removed and the removed
+            // term is empty.
+            #[cfg(debug_assertions)]
+            assert_realization_ids_unchanged(prior_realizations.keys(), graph.realizations.keys());
+            let seeds = realization_cone_seeds(&self.last_changed_realizations, false, graph);
+            let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 graph,
                 &self.compiled_fields,
                 reusable_index,
-                &self.last_changed_realizations,
+                &seeds,
             );
+            // Evict the family of every realization the edit made stale and
+            // keep every other cached body.
+            let stale = stale_realization_entities(&seeds, [], &cone);
+            for entity in stale {
+                self.realization_cache.evict_family(&entity);
+            }
         }
 
         // Task 4532: passive would-prune measurement, deferred to here so that
@@ -3074,38 +3051,9 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
-        // Auto-invalidate the realization cache: edit_source rebuilds the
-        // snapshot from a (potentially) different `CompiledModule`, so any
-        // cached `GeometryHandleId` entries are stale (the underlying
-        // geometry ops, parameter defaults, or template structure may have
-        // changed) and would silently be served by a subsequent `build()` /
-        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `topology_attribute_table` reset-at-hook-point pattern
-        // (engine_build.rs:531/406) and the parallel reset in
-        // `edit_param`. Pinned by
-        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
-        //
-        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_param` (engine_edit.rs around
-        // line 846). Removing either reset, or reordering either function
-        // body so the reset moves AFTER any state mutation that could fail
-        // (which would let a stale cache leak when the edit returns Err),
-        // silently regresses the auto-invalidation hook. Both resets MUST
-        // co-exist near function entry; the symmetry is independently pinned
-        // by the test pair listed above plus
-        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // (step-17).
-        //
-        // **Single-source the reset (task 2874 step-22)**: both auto-
-        // invalidation hooks (this one and the parallel `edit_param` reset)
-        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
-        // so the reset semantics are defined in exactly one place. The
-        // public mutator is the same primitive a production caller would
-        // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
-        // in `tests/tolerance_wiring_e2e.rs`.
-        self.clear_realization_cache();
+        // The realization cache is NOT flushed here: γ (#4730) evicts only the
+        // families this recompile made stale, at the compare site just before
+        // step (15)'s install.
         // selective-realization-eviction β (#4729): the changed-realization
         // set describes exactly ONE edit, so clear it at entry — symmetric
         // with the reset at `edit_param`'s entry. The real set is computed at
@@ -3395,7 +3343,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
         // θ2 (task 4713) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent, and `eval_set` IS that
+        // SAME unified driver order as cold/build, and `eval_set` IS that
         // order — `compute_eval_set` sorts through `dirty::topological_sort`, which
         // delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
         // scheduling core, INV-EVAL-5). Note the sort above already used
@@ -3592,7 +3540,7 @@ impl Engine {
         //      donate cost+state to the pool, then invalidate the cache
         //      entry. The reinsert half of the round-trip lands inside
         //      `run_compute_dispatch` (engine_compute.rs) via its
-        //      cache-miss → `warm_pool.checkout_with_lru_stamp` fallback.
+        //      cache-miss → `warm_pool.checkout` fallback.
         //      Collect ids into a Vec to drop the iter borrow on
         //      `eval_state.snapshot.graph.compute_nodes` before mutating
         //      `self.cache` inside the loop body.
@@ -3697,13 +3645,6 @@ impl Engine {
                 && let Some(ref expr) = node.default_expr
             {
                 let start = Instant::now();
-                self.journal.record(EvalEvent {
-                    timestamp: start,
-                    node_id: node_id.clone(),
-                    kind: EventKind::Started,
-                    version: VersionId(version_id),
-                    payload: None,
-                });
 
                 let val = reify_expr::eval_expr(
                     expr,
@@ -3711,27 +3652,42 @@ impl Engine {
                         .with_determinacy(&new_snapshot.values)
                         .with_runtime_diagnostics(&runtime_sink),
                 );
-                values.insert(vcid.clone(), val.clone());
-                new_snapshot
-                    .values
-                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
+                // Commit via the cell-commit primitive (task #6998): atomically
+                // writes values/snapshot/cache/journal (INV-EVAL-1), recording
+                // the edit-reeval provenance slug on the journal's Started
+                // event (previously `payload: None`). This is the third and
+                // last edit_source write-back site to migrate, after the
+                // `SolveResult::Solved` resolution arm (#6373) and the wave2
+                // dependent-re-eval loop (#6423) above.
+                //
+                // `_at(start, ..)`, not the plain form: brackets the full
+                // resolution, not just the commit — see `commit_cell_result_at`'s
+                // doc and edit_param's main eval walk (which deliberately keeps
+                // the plain form; change both together if that asymmetry ever
+                // changes). `UnconditionalDetermined` mirrors the pre-migration
+                // write rather than "fixing" it — see the wave2 site's note
+                // above.
                 let trace = extract_dependency_trace(expr);
-                let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                let outcome = self.cache.record_evaluation(
-                    node_id.clone(),
-                    cached_result,
-                    VersionId(version_id),
+                let commit_outcome = commit_cell_result_at(
+                    start,
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut new_snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    vcid.clone(),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::EditReeval,
                     trace,
+                    VersionId(version_id),
+                    CacheLeg::Record,
                 );
-
-                self.journal.record(EvalEvent {
-                    timestamp: Instant::now(),
-                    node_id: node_id.clone(),
-                    kind: EventKind::Completed { outcome },
-                    version: VersionId(version_id),
-                    payload: Some(EventPayload::Duration(start.elapsed())),
-                });
+                let outcome = commit_outcome
+                    .cache_outcome()
+                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // Early-cutoff propagation — identical policy to edit_param:
                 // - Changed: dependents inherit has_changed_parent and are
@@ -4044,13 +4000,13 @@ impl Engine {
         // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
         // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
         // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
-        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        // so it aliases neither the warm-pool borrow nor the `self.solve_stage` borrow below.
         let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
 
-        if let Some(ref solver) = self.solver {
+        if let Some(solver) = self.solve_stage.as_ref().map(|stage| stage.solver()) {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -4059,8 +4015,11 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_source site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_source` arm of the
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the eight legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
@@ -4193,6 +4152,9 @@ impl Engine {
             // For edit_source we MUST use the NEW reverse_index / trace_map
             // / demand (rather than self.eval_state's stale pre-edit
             // structures) because dependency edges may have shifted.
+            // The write-back below is now primitive-routed (task #6423);
+            // see the commit_cell_result call's own comment for the
+            // edit_param sync pointer.
             if !all_resolved_ids.is_empty() {
                 let wave2_dirty = crate::dirty::compute_dirty_cone(
                     &all_resolved_ids,
@@ -4207,24 +4169,61 @@ impl Engine {
                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                         && let Some(ref expr) = node.default_expr
                     {
+                        let start = Instant::now();
+                        // Determinacy view now matches edit_param's wave2
+                        // twin (#7114). Containment stays out of reach here,
+                        // as at every edit_source eval site: cell_eval_ctx's
+                        // `containment: self` is E0502 while
+                        // `pending_warm_seeds` (step 4c) holds `&mut
+                        // self.warm_pool` until the (14b) drain below.
                         let val = reify_expr::eval_expr(
                             expr,
                             &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                .with_determinacy(&new_snapshot.values)
                                 .with_runtime_diagnostics(&runtime_sink),
                         );
-                        values.insert(vcid.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                        // Update cache for re-evaluated node
-                        let trace = extract_dependency_trace(expr);
-                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            cached_result,
+                        // Commit via the cell-commit primitive (task #6423):
+                        // atomically writes values/snapshot/cache/journal
+                        // (INV-EVAL-1). Paired with edit_param's own
+                        // `Resolution reseed` wave2 commit (task δ #5056) —
+                        // both sites now route through commit_cell_result_at
+                        // with the identical UnconditionalDetermined/
+                        // EditReeval/Record selection; change them together.
+                        //
+                        // `commit_cell_result_at(start, ..)`, not the plain
+                        // `commit_cell_result`: `start` is captured above,
+                        // before `reify_expr::eval_expr`, so the emitted
+                        // Started/Completed pair brackets the full
+                        // resolution rather than just the commit itself —
+                        // see `commit_cell_result_at`'s doc (#5238
+                        // amendment) and the paired edit_param wave2 site
+                        // above, which has the same shape.
+                        //
+                        // `UnconditionalDetermined` mirrors the pre-migration
+                        // hand-rolled write, which stamped `Determined`
+                        // unconditionally regardless of `val`. Whether `val`
+                        // can actually be `Value::Undef` here (which would
+                        // make this diverge from `DeterminacyRule::
+                        // DeriveFromValue`) is not exercised by this file's
+                        // test coverage — see
+                        // `edit_source_recorded_sites_route_through_commit_primitive`'s
+                        // doc comment below.
+                        commit_cell_result_at(
+                            start,
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            extract_dependency_trace(expr),
                             VersionId(version_id),
-                            trace,
+                            CacheLeg::Record,
                         );
                     }
                 }
@@ -4496,10 +4495,10 @@ impl Engine {
         //       variants gain edit-time cache entries the donate-back
         //       path simply stops triggering.
         //
-        //       The cache-miss re-donation now calls `donate_preserving_lru`
+        //       The cache-miss re-donation now calls `donate_preserving_lru_with_cost`
         //       (via `PendingWarmSeedsGuard::drain_into_cache_or_repool`),
-        //       preserving the entry's original `last_accessed` stamp from
-        //       step (4c).  This prevents a round-tripping entry from
+        //       preserving the entry's original `last_accessed` stamp and
+        //       `cost_per_byte` from step (4c).  This prevents a round-tripping entry from
         //       appearing "recently accessed" relative to entries that were
         //       never checked out, which would unfairly shield it from LRU
         //       eviction (reviewer suggestion S1, task 2516).
@@ -4687,14 +4686,26 @@ impl Engine {
             // to the work already done; `edit_param` is the P0 latency path
             // and gets the reuse. Pinned by
             // `edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization`.
-            invalidate_realization_dirty_cone(
+            let seeds = realization_cone_seeds(
+                &self.last_changed_realizations,
+                !removed_realizations.is_empty(),
+                &new_snapshot.graph,
+            );
+            let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,
-                &self.last_changed_realizations,
+                &seeds,
             );
+            // γ (#4730, PRD D4/D7): evict the family of every realization the
+            // recompile made stale, including every realization it dropped,
+            // and keep every byte-identical body's cached geometry.
+            let stale = stale_realization_entities(&seeds, &removed_realizations, &cone);
+            for entity in stale {
+                self.realization_cache.evict_family(&entity);
+            }
         }
 
         // (15) Install the new snapshot, dep structures, and demand; record
@@ -5631,10 +5642,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 node_id.clone(),
                 OpaqueState::new(0xDEADBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
             // Guard goes out of scope here, triggering Drop — no drain called
         }
@@ -5678,15 +5690,17 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xAAu8, 100),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBBu8, 50),
                 std::time::Instant::now(),
+                0.0,
             );
             // Neither node has a cache entry → drain MUST re-donate both to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5736,20 +5750,23 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xDEADu32, 8),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 rea_nid.clone(),
                 OpaqueState::new(0xFEEDu32, 24),
                 std::time::Instant::now(),
+                0.0,
             );
             // No drain — Drop fires with all three entries
         }
@@ -5830,10 +5847,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 nid.clone(),
                 OpaqueState::new(PAYLOAD, SIZE),
                 std::time::Instant::now(),
+                0.0,
             );
             // Cache HIT → state goes to cache, NOT to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5868,25 +5886,25 @@ mod tests {
 
     /// `drain_into_cache_or_repool` cache-MISS arm: when the cache holds NO
     /// entry for a node, the staged warm-state is re-donated to the pool via
-    /// `pool.donate_preserving_lru(nid, state, stamp)` — preserving the
-    /// originally-staged `last_accessed` Instant rather than refreshing it
-    /// to `Instant::now()`.
+    /// `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)` — preserving
+    /// the originally-staged `last_accessed` Instant rather than refreshing it
+    /// to `Instant::now()`, and the originally-staged `cost_per_byte`.
     ///
     /// Pins `drain_into_cache_or_repool`'s cache-MISS arm:
     /// ```text
-    /// else { self.pool.donate_preserving_lru(nid, state, stamp); }
+    /// else { self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost); }
     /// ```
     ///
     /// After drain the pool holds exactly one entry — the re-donated state with
-    /// the original payload bytes AND the original LRU stamp — the cache has no
-    /// warm-state for the node, and the subsequent guard Drop is inert (map was
-    /// emptied by drain, so no double re-donation occurs).
+    /// the original payload bytes, the original LRU stamp AND the original cost —
+    /// the cache has no warm-state for the node, and the subsequent guard Drop is
+    /// inert (map was emptied by drain, so no double re-donation occurs).
     ///
     /// Sibling of `pending_warm_seeds_guard_drain_cache_hit_makes_drop_inert`
     /// (the cache-HIT counterpart); both together pin the binary `if cache.get(&nid).is_some()`
     /// dispatch in `drain_into_cache_or_repool`.
     #[test]
-    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp() {
+    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp_and_cost() {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
@@ -5894,6 +5912,7 @@ mod tests {
 
         const PAYLOAD: u32 = 0xDEAD_BEEF;
         const SIZE: usize = 8;
+        const COST: f64 = 0.25;
 
         let mut pool = WarmStatePool::new(1024);
         let mut cache = CacheStore::new();
@@ -5906,14 +5925,15 @@ mod tests {
             "cache must be empty before drain so the MISS branch is taken"
         );
 
-        // Capture the exact stamp passed to `insert` so we can assert exact equality
-        // on the re-donated entry's `last_accessed` later.
+        // Capture the exact stamp passed to `insert_with_cost` so we can assert exact
+        // equality on the re-donated entry's `last_accessed` later.
         let stamp = std::time::Instant::now();
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp);
-            // Cache MISS → state goes back to pool via `donate_preserving_lru(nid, state, stamp)`.
+            pending.insert_with_cost(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp, COST);
+            // Cache MISS → state goes back to pool via
+            // `donate_preserving_lru_with_cost(nid, state, stamp, cost)`.
             pending.drain_into_cache_or_repool(&mut cache);
             // Guard drops here with empty map → Drop is a no-op (no double re-donation).
         }
@@ -5941,9 +5961,10 @@ mod tests {
              (cache had no entry, so the MISS branch fired and routed to pool)"
         );
 
-        // (d) Pool entry must carry the original payload AND the original LRU stamp.
-        let (state, recovered_stamp) = pool
-            .checkout_with_lru_stamp(&nid)
+        // (d) Pool entry must carry the original payload, the original LRU stamp
+        //     AND the original cost.
+        let (state, recovered_stamp, recovered_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&nid)
             .expect("cache-miss: pool must hold the re-donated entry");
         assert_eq!(
             state.downcast::<u32>(),
@@ -5953,7 +5974,12 @@ mod tests {
         assert_eq!(
             recovered_stamp, stamp,
             "cache-miss: re-donated entry's LRU stamp must EQUAL the originally-staged \
-             stamp (donate_preserving_lru must NOT refresh to Instant::now())"
+             stamp (donate_preserving_lru_with_cost must NOT refresh to Instant::now())"
+        );
+        assert_eq!(
+            recovered_cost, COST,
+            "cache-miss: re-donated entry's cost_per_byte must EQUAL the originally-staged \
+             cost (the drain must not reset it to 0.0)"
         );
     }
 
@@ -5979,25 +6005,30 @@ mod tests {
         let mut pool = WarmStatePool::new(1024);
         let node_id = NodeId::Value(ValueCellId::new("T", "panic_node"));
 
-        // Prime the pool with a known payload so we can verify recovery.
-        pool.donate(node_id.clone(), OpaqueState::new(0xCAFEu32, 4));
+        // Prime the pool with a known payload and cost so we can verify recovery.
+        pool.donate_with_cost(node_id.clone(), OpaqueState::new(0xCAFEu32, 4), 0.5);
 
         // Simulate step (4c): checkout → guard live → panic → Drop re-donates.
         // AssertUnwindSafe wraps the closure unconditionally, so &mut pool can
         // be captured directly without a raw-pointer indirection.
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             let mut guard = PendingWarmSeedsGuard::new(&mut pool);
-            let (state, stamp) = guard
+            let (state, stamp, cost) = guard
                 .pool_mut()
-                .checkout_with_lru_stamp(&node_id)
+                .checkout_with_lru_stamp_and_cost(&node_id)
                 .expect("state should be in pool before panic");
-            guard.insert(node_id.clone(), state, stamp);
+            guard.insert_with_cost(node_id.clone(), state, stamp, cost);
             // Simulate a panic inside edit_source between steps (4c) and (14b).
             panic!("simulated mid-edit panic");
         }));
         assert!(result.is_err(), "catch_unwind must catch the panic");
 
         // After the unwind, the guard's Drop must have re-donated the entry.
+        assert_eq!(
+            pool.cost_per_byte_of(&node_id),
+            Some(0.5),
+            "Drop re-donation must preserve cost_per_byte"
+        );
         let recovered = pool
             .checkout(&node_id)
             .expect("pool must contain the entry re-donated by guard Drop");
@@ -6044,7 +6075,12 @@ mod tests {
                 let mut pool = WarmStatePool::new(1024);
                 let nid = NodeId::Value(ValueCellId::new("T", "safety_net"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xABu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xABu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Drop fires here with a non-empty map → safety net → must WARN.
             });
 
@@ -6069,7 +6105,12 @@ mod tests {
                 let mut cache = CacheStore::new();
                 let nid = NodeId::Value(ValueCellId::new("T", "inert_drop"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xCDu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xCDu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Success path: drain empties the map.
                 pending.drain_into_cache_or_repool(&mut cache);
                 // Drop fires here with an empty map → no WARN.
@@ -6109,17 +6150,18 @@ mod tests {
         use reify_ir::OpaqueState;
         use reify_test_support::warn_capturing_subscriber;
 
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let (subscriber, capture) = warn_capturing_subscriber();
 
         tracing::subscriber::with_default(subscriber, || {
             let mut pool = WarmStatePool::new(1024);
             let nid = NodeId::Value(ValueCellId::new("T", "count_field_test"));
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
+            pending.insert_with_cost(
+                nid,
+                OpaqueState::new(0xAAu8, 8),
+                std::time::Instant::now(),
+                0.0,
+            );
             // Drop fires with a non-empty map → safety-net WARN must fire.
         });
 
@@ -6168,18 +6210,18 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// `drain_into_cache_or_repool` must re-donate cache-miss entries with
-    /// their *original* `last_accessed` stamp (via `donate_preserving_lru`),
+    /// their *original* `last_accessed` stamp (via `donate_preserving_lru_with_cost`),
     /// not a fresh `Instant::now()`.
     ///
-    /// Setup (budget = 300):
+    /// Setup (budget = 300; every entry carries cost 0.0 so the LRU tiebreak decides):
     /// 1. Donate X (100 bytes) at time T_X.
     /// 2. Sleep 2 ms so T_X is strictly older than any later timestamp.
-    /// 3. `checkout_with_lru_stamp(&X)` → `(x_state, x_stamp)`.
-    /// 4. Build a guard; `pending.insert(X, x_state, x_stamp)`.
+    /// 3. `checkout_with_lru_stamp_and_cost(&X)` → `(x_state, x_stamp, x_cost)`.
+    /// 4. Build a guard; `pending.insert_with_cost(X, x_state, x_stamp, x_cost)`.
     /// 5. Donate Y (100 bytes) directly to pool; Y's stamp is newer than T_X.
     ///    used_pool = 100 (only Y, since X was checked out).
     /// 6. `drain_into_cache_or_repool(&mut empty_cache)`: X has no cache entry,
-    ///    so it must be re-pooled via `donate_preserving_lru` preserving T_X.
+    ///    so it must be re-pooled via `donate_preserving_lru_with_cost` preserving T_X.
     ///    used_pool = 200 (X + Y).
     /// 7. Donate Z (200 bytes): 200+200=400 > 300 → evict exactly one entry.
     ///    X's stamp (T_X) < Y's stamp → X is the LRU victim.
@@ -6207,17 +6249,17 @@ mod tests {
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
         std::thread::sleep(Duration::from_millis(15));
 
-        // Step 3: capture X's state and its original stamp.
-        let (x_state, x_stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        // Step 3: capture X's state, its original stamp and its cost.
+        let (x_state, x_stamp, x_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in pool");
         // pool is now empty (X checked out).
 
-        // Step 4: build guard and stage X with its original stamp.
+        // Step 4: build guard and stage X with its original stamp and cost.
         let mut cache = CacheStore::new();
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(node_x.clone(), x_state, x_stamp);
+            pending.insert_with_cost(node_x.clone(), x_state, x_stamp, x_cost);
 
             // Step 5: donate Y directly (Y's stamp is fresh / newer than x_stamp).
             pending
@@ -6225,7 +6267,8 @@ mod tests {
                 .donate(node_y.clone(), OpaqueState::new(0xBBu8, 100));
             // pool holds Y (100 bytes); X is still in the guard's staging map.
 
-            // Step 6: drain — X has no cache entry → cache-miss → donate_preserving_lru.
+            // Step 6: drain — X has no cache entry → cache-miss →
+            // donate_preserving_lru_with_cost.
             pending.drain_into_cache_or_repool(&mut cache);
             // pool holds X (stamp = T_X) + Y (stamp > T_X), used = 200.
         }
@@ -6237,7 +6280,7 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "X must be evicted: its preserved stamp T_X is older than Y's; \
-             if drain used pool.donate() instead of donate_preserving_lru(), \
+             if drain used pool.donate() instead of donate_preserving_lru_with_cost(), \
              X would look fresh and Y would be evicted instead"
         );
         assert!(
@@ -6250,12 +6293,13 @@ mod tests {
         );
     }
 
-    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru`
+    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru_with_cost`
     /// (preserving the original stamp), not the plain `donate` that refreshes
     /// the LRU clock.
     ///
-    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` but the
-    /// guard is dropped during a panic unwind instead of calling `drain_…`.
+    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` (X staged via
+    /// `insert_with_cost`, every entry at cost 0.0) but the guard is dropped during
+    /// a panic unwind instead of calling `drain_…`.
     #[test]
     fn pending_warm_seeds_guard_drop_preserves_lru_stamp_on_panic() {
         use super::PendingWarmSeedsGuard;
@@ -6274,8 +6318,8 @@ mod tests {
         // 15 ms ensures strictly-ordered Instants on coarse-grained platforms.
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
         std::thread::sleep(Duration::from_millis(15));
-        let (x_state, x_stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        let (x_state, x_stamp, x_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in pool");
 
         // Run the panic scenario: guard stages X then panics before drain.
@@ -6288,7 +6332,7 @@ mod tests {
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
                 let pool_ref = unsafe { &mut *pool_ptr };
                 let mut guard = PendingWarmSeedsGuard::new(pool_ref);
-                guard.insert(nid_x.clone(), x_state, x_stamp);
+                guard.insert_with_cost(nid_x.clone(), x_state, x_stamp, x_cost);
                 // Donate Y directly so it has a newer stamp than x_stamp.
                 guard
                     .pool_mut()
@@ -6307,7 +6351,7 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "X must be evicted after Drop: its preserved stamp is older than Y's; \
-             if Drop used pool.donate() instead of donate_preserving_lru(), \
+             if Drop used pool.donate() instead of donate_preserving_lru_with_cost(), \
              X would look fresh and Y would be the LRU victim"
         );
         assert!(
@@ -6561,7 +6605,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
         engine.eval(&compiled);
@@ -6655,7 +6699,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
         engine.eval(&compiled);
@@ -6813,7 +6857,7 @@ mod tests {
         // Capture the shared call-counter handle BEFORE moving spy into the engine.
         let captured = spy.captured_problems();
 
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(spy));
 
         // Cold eval: solver call 1 → x = mm(5.0)
@@ -6891,7 +6935,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let p_id = ValueCellId::new("S", "p");
@@ -6976,16 +7020,32 @@ mod tests {
         }
     }
 
-    /// Task #6373: pins that `edit_source`'s `SolveResult::Solved` resolution
-    /// back-prop arm (the per-cell write-back inside the per-entity-group
-    /// solver loop) is wired through the `commit_cell_result` primitive
+    /// Task #6373 (resolution back-prop arm) and task #6423 (its SECOND
+    /// PROPAGATION WAVE dependent-re-eval sibling, gated on
+    /// `if !all_resolved_ids.is_empty()`): pins that both of `edit_source`'s
+    /// write-back sites that wrote the cache leg with NO journal leg at all
+    /// — the Solved back-prop arm and the wave2 dependent re-eval — are wired
+    /// through the `commit_cell_result`/`commit_cell_result_at` primitive
     /// (`cell_commit.rs`) rather than the hand-rolled
-    /// values-insert/snapshot-insert/record_evaluation copy that writes no
-    /// journal leg at all. This is the `edit_source` half of the
-    /// edit_param/edit_source resolution-arm sync pair (INV-EVAL-1): its
-    /// mirror is `edit_param_dependent_reeval_routes_through_commit_primitive`
-    /// above, and the edit_param side of this exact migration has its own
-    /// suite at `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    /// values-insert/snapshot-insert/record_evaluation copy. `edit_source`'s
+    /// MAIN per-cell eval loop (this file's step-(12) "Per-cell eval loop")
+    /// is ALSO migrated onto the primitive (task #6998), so all three of
+    /// `edit_source`'s write-back sites now route through it — see
+    /// `edit_source_main_eval_walk_routes_through_commit_primitive` below for
+    /// that site's own pin. This is the `edit_source` half
+    /// of the edit_param/edit_source resolution-arm AND wave2 sync pairs
+    /// (INV-EVAL-1): the mirrors are
+    /// `edit_param_dependent_reeval_routes_through_commit_primitive` above
+    /// and `edit_param_recorded_sites_route_through_commit_primitive` below,
+    /// and the edit_param side of the resolution-arm migration has its own
+    /// suite at
+    /// `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    /// The single `edit_source` call below drives BOTH sites in one flow —
+    /// `x` is resolved by the per-entity-group solver loop (resolution arm)
+    /// and `y` is re-evaluated by the wave2 loop that follows it — so one
+    /// fixture covers both without needing two separate models, mirroring
+    /// `edit_param_recorded_sites_route_through_commit_primitive`'s T4/T5
+    /// precedent.
     ///
     /// FIXTURE: two `.ri` sources differing only in the constraint's target —
     /// SRC_A seeds the solver at x = 20mm via cold `eval()`, SRC_B retargets
@@ -6994,8 +7054,9 @@ mod tests {
     /// above already pins as reaching `SolveResult::Solved` post-#4700 —
     /// forcing a real Nelder-Mead search, not the initially-feasible
     /// early-exit — so `MOVED_AUTO_TOL = 1e-6` is used for every value
-    /// assertion here, exactly as that test uses it (see its doc comment for
-    /// why `1e-9` would be wrong for a search-path fixture).
+    /// assertion here, INCLUDING `y`'s (which carries x's full solver error,
+    /// since `y = x + 5mm`) — see that test's doc comment for why `1e-9`
+    /// would be wrong for a search-path fixture.
     ///
     /// RED on base: `x` is declared `auto`, so its `value_cells` node carries
     /// no `default_expr`; both edit_source's main eval walk and its wave2
@@ -7003,17 +7064,23 @@ mod tests {
     /// neither touches `x` — the Solved arm's hand-rolled write-back is the
     /// only site that resolves `x`, and it calls no `self.journal.record(..)`
     /// today. Assertion (1) below (the `resolved_params` guard) already
-    /// passes on base; assertion (2) (the journal pair) is the RED signal.
+    /// passes on base; assertion (2) (the journal pair for `x`) is the RED
+    /// signal for the resolution arm. For the wave2 site: `y` moves from
+    /// 0.025 to 0.015 (observed error 1.77e-15 against the expected value,
+    /// i.e. far inside `MOVED_AUTO_TOL`) but on base appends zero journal
+    /// events for `y` — assertion (4)'s journal-delta check is the RED
+    /// signal for wave2, and its trailing `dependency_trace` check pins that
+    /// the wave2 commit records the expr-derived trace
+    /// (`extract_dependency_trace(expr)`) rather than the resolution arm's
+    /// `DependencyTrace::default()` (structurally empty there, since a
+    /// solver-resolved auto has no static expr to trace).
     #[test]
-    fn edit_source_resolution_back_prop_routes_through_commit_primitive() {
+    fn edit_source_recorded_sites_route_through_commit_primitive() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
         use reify_core::ValueCellId;
-        use reify_ir::DeterminacyState;
         use reify_test_support::compile_source;
 
-        use crate::cache::{CachedResult, NodeId};
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::cache::NodeId;
 
         const MOVED_AUTO_TOL: f64 = 1e-6;
 
@@ -7029,7 +7096,7 @@ mod tests {
 }"#;
 
         let compiled_a = compile_source(SRC_A);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 20mm = 0.02 m.
         engine.eval(&compiled_a);
@@ -7037,6 +7104,10 @@ mod tests {
         let x_id = ValueCellId::new("WarmAutoSrcCommit", "x");
         let x_node = NodeId::Value(x_id.clone());
         let events_before = engine.journal().events_for_node(&x_node).len();
+
+        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        let y_node = NodeId::Value(y_id.clone());
+        let y_events_before = engine.journal().events_for_node(&y_node).len();
 
         let compiled_b = compile_source(SRC_B);
         let result = engine
@@ -7056,11 +7127,12 @@ mod tests {
             "edit_source moved-auto: x must be resolved to 0.01 m (10mm), not the seeded 20mm",
         );
 
-        // (2) RED SIGNAL — journal: the primitive's own Started/Completed
-        // pair, with the EditReeval provenance slug recorded on Started.
-        // Checks the LAST two events (rather than assuming an exact total)
-        // since cold eval() may itself record journal events for x before
-        // edit_source runs.
+        // (2) RED SIGNAL — journal delta: the primitive's own Started/
+        // Completed pair, appended above the pre-edit baseline. This is the
+        // actual RED signal for the resolution arm —
+        // `assert_recorded_via_commit_primitive_with_tol` below only checks
+        // an absolute `>= 2` floor, which cold eval() may already satisfy
+        // for x on its own.
         let events_after = engine.journal().events_for_node(&x_node);
         assert!(
             events_after.len() >= events_before + 2,
@@ -7068,32 +7140,12 @@ mod tests {
              had {events_before} events before, {} after",
             events_after.len()
         );
-        let started = events_after[events_after.len() - 2];
-        let completed = events_after[events_after.len() - 1];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug,
-                TraceSource::EditReeval.as_str(),
-                "Started payload must carry the edit-reeval provenance slug"
-            ),
-            other => panic!(
-                "expected Started payload Custom(\"{}\"), got {other:?}",
-                TraceSource::EditReeval.as_str()
-            ),
-        }
-        assert!(
-            matches!(completed.kind, EventKind::Completed { .. }),
-            "expected the last event to be Completed, got {:?}",
-            completed.kind
-        );
 
-        // (3) Three-leg agreement: result.values, snapshot, and cache all
-        // carry (0.01 m, Determined) for x.
+        // (3) result.values[x] — the returned EvalResult, which the shared
+        // helper below does not check (it reads the engine's snapshot/cache,
+        // not the edit's return value) — plus the journal shape/provenance
+        // and snapshot/cache three-leg agreement, via the same helper the
+        // wave2 (y) assertions below use.
         let x_result_val = result
             .values
             .get(&x_id)
@@ -7104,49 +7156,19 @@ mod tests {
             MOVED_AUTO_TOL,
             "result.values[x] must be 0.01 m (10mm) after back-prop",
         );
-
-        let snapshot = engine
-            .snapshot()
-            .expect("snapshot must exist after edit_source");
-        let (snap_x, snap_det) = snapshot
-            .values
-            .get(&x_id)
-            .expect("x must be in snapshot.values after edit_source");
-        assert_eq!(
-            *snap_det,
-            DeterminacyState::Determined,
-            "snapshot.values[x] must be Determined"
-        );
-        assert_scalar_si_approx_eq(
-            snap_x,
+        assert_recorded_via_commit_primitive_with_tol(
+            &engine,
+            &x_id,
             0.01,
             MOVED_AUTO_TOL,
-            "snapshot.values[x] must be 0.01 m (10mm) after back-prop",
+            "edit_source resolution back-prop (x)",
         );
 
-        let cache_entry = engine
-            .cache_store()
-            .get(&x_node)
-            .expect("x must have a cache entry after edit_source");
-        match &cache_entry.result {
-            CachedResult::Value(v, d) => {
-                assert_eq!(
-                    *d,
-                    DeterminacyState::Determined,
-                    "cache[x] determinacy must be Determined"
-                );
-                assert_scalar_si_approx_eq(
-                    v,
-                    0.01,
-                    MOVED_AUTO_TOL,
-                    "cache[x] must be 0.01 m (10mm)",
-                );
-            }
-            other => panic!("expected CachedResult::Value, got {other:?}"),
-        }
-
-        // (4) Downstream reseed unaffected: y = x + 5mm = 15mm.
-        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        // (4) Downstream reseed: y = x + 5mm = 15mm — positive control that
+        // the wave2 loop actually ran (`x` is `auto` and carries no
+        // `default_expr`, so the wave2 loop, guarded on
+        // `node.default_expr.is_some()`, structurally cannot touch `x`;
+        // only `y` can exercise it).
         let y_val = result
             .values
             .get(&y_id)
@@ -7157,19 +7179,219 @@ mod tests {
             MOVED_AUTO_TOL,
             "edit_source reseed: y must be 0.015 m (15mm = x + 5mm)",
         );
+
+        // RED SIGNAL (task #6423, wave2): on base this appends zero journal
+        // events for `y` despite its value moving from 0.025 to 0.015.
+        let y_events_after = engine.journal().events_for_node(&y_node);
+        assert!(
+            y_events_after.len() >= y_events_before + 2,
+            "edit_source wave2 must append at least a Started+Completed pair for y, \
+             had {y_events_before} events before, {} after",
+            y_events_after.len()
+        );
+        assert_recorded_via_commit_primitive_with_tol(
+            &engine,
+            &y_id,
+            0.015,
+            MOVED_AUTO_TOL,
+            "edit_source wave2 dependent re-eval (y)",
+        );
+
+        // Pin that the wave2 commit records the expr-derived dependency
+        // trace (`extract_dependency_trace(expr)`) rather than the
+        // resolution arm's `DependencyTrace::default()` — a copy-paste that
+        // swapped one for the other would silently drop y's
+        // reverse-dependency edge on x (breaking downstream invalidation on
+        // a later edit) while every assertion above still passes.
+        let y_cache_entry = engine
+            .cache_store()
+            .get(&y_node)
+            .expect("y must have a cache entry after edit_source wave2 reseed");
+        assert!(
+            y_cache_entry.dependency_trace.reads.contains(&x_id),
+            "y's cache entry dependency_trace.reads must contain x after the wave2 commit, got {:?}",
+            y_cache_entry.dependency_trace.reads
+        );
+    }
+
+    /// Task #6998: pins that `edit_source`'s MAIN per-cell eval loop (this
+    /// file's step-(12) "Per-cell eval loop") routes its write-back through
+    /// the `commit_cell_result`/`commit_cell_result_at` primitive, exactly
+    /// like its two siblings already migrated —  the `SolveResult::Solved`
+    /// resolution arm (#6373) and the wave2 dependent-re-eval loop (#6423),
+    /// both pinned by `edit_source_recorded_sites_route_through_commit_primitive`
+    /// above. This is the THIRD and last INV-EVAL-1 write-back site in
+    /// `edit_source`.
+    ///
+    /// FIXTURE is deliberately SOLVER-FREE (no `auto` param, no constraint,
+    /// no `.with_solver(..)`, no guards or collections): with no autos,
+    /// `all_resolved_ids` stays empty, the wave2 block is gated out, Phases
+    /// 1/3/4 have nothing to re-elaborate, and the step-(12) main eval walk
+    /// is the ONLY site that can commit `q`. A solver fixture (the shape the
+    /// sibling test above uses) would let one of the already-migrated sites
+    /// supply q's trailing journal pair and pass this test vacuously for a
+    /// reason unrelated to the site under test — see plan.json design
+    /// decision D5. Two sources differing only in `p`'s default, so
+    /// `edit_source` re-evaluates the dependents `q` and `r`.
+    ///
+    /// RED on base, measured verbatim from assertion (3)'s helper call:
+    /// `expected Started payload Custom("edit-reeval"), got None`. Assertions
+    /// (1), (2), (4), (5) all already pass on base — they are the
+    /// behaviour-preservation net that must stay green through the migration.
+    ///
+    /// NOT COVERED: `p`/`q`/`r` are plain `Length` arithmetic, so this
+    /// fixture never produces `Value::Undef` — `DeterminacyRule::
+    /// UnconditionalDetermined` and `DeriveFromValue` are observationally
+    /// identical here, and swapping the argument at the call site would
+    /// leave this test green. Same carried-forward gap the wave2 site's own
+    /// comment already records; not this test's to close.
+    #[test]
+    fn edit_source_main_eval_walk_routes_through_commit_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+
+        const SRC_A: &str = r#"structure MainWalkSrcCommit {
+    param p : Length = 1mm
+    let q = p + 1mm
+    let r = q + 1mm
+}"#;
+        const SRC_B: &str = r#"structure MainWalkSrcCommit {
+    param p : Length = 2mm
+    let q = p + 1mm
+    let r = q + 1mm
+}"#;
+
+        let compiled_a = compile_source(SRC_A);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
+        // Cold eval — solver-free, so no auto resolution is involved.
+        engine.eval(&compiled_a);
+
+        let p_id = ValueCellId::new("MainWalkSrcCommit", "p");
+        let q_id = ValueCellId::new("MainWalkSrcCommit", "q");
+        let q_node = NodeId::Value(q_id.clone());
+        let r_id = ValueCellId::new("MainWalkSrcCommit", "r");
+        let q_events_before = engine.journal().events_for_node(&q_node).len();
+
+        let compiled_b = compile_source(SRC_B);
+        let result = engine
+            .edit_source(&compiled_b)
+            .expect("edit_source must succeed");
+
+        // (1) GUARD — the main eval walk actually re-evaluated the
+        // dependents, so the site under test executed at all.
+        assert_scalar_si_approx_eq(
+            result
+                .values
+                .get(&q_id)
+                .expect("q must be in result.values after edit_source"),
+            0.003,
+            1e-9,
+            "edit_source main eval walk: q must be 3mm (p=2mm + 1mm)",
+        );
+        assert_scalar_si_approx_eq(
+            result
+                .values
+                .get(&r_id)
+                .expect("r must be in result.values after edit_source"),
+            0.004,
+            1e-9,
+            "edit_source main eval walk: r must be 4mm (q=3mm + 1mm)",
+        );
+
+        // (2) GUARD/behaviour-preservation — EXACTLY one Started+Completed
+        // pair is appended for q, not two: an impl that adds the
+        // `commit_cell_result_at` call without DELETING the hand-rolled
+        // pair would emit two pairs, and only the exact-count form (`==`,
+        // not `>=`) catches that.
+        let q_events_after = engine.journal().events_for_node(&q_node);
+        assert_eq!(
+            q_events_after.len(),
+            q_events_before + 2,
+            "edit_source main eval walk must append exactly one Started+Completed \
+             pair for q, had {q_events_before} events before, {} after",
+            q_events_after.len()
+        );
+
+        // (3) RED SIGNAL — measured on base:
+        // `expected Started payload Custom("edit-reeval"), got None`. The
+        // helper's snapshot/cache three-leg checks already pass on base
+        // (snapshot[q] = (0.003, Determined), cache[q] = Value(0.003,
+        // Determined)) — they are the behaviour-preservation half of this
+        // pin.
+        assert_recorded_via_commit_primitive(
+            &engine,
+            &q_id,
+            0.003,
+            "edit_source main eval walk (q)",
+        );
+
+        // (4) GUARD/characterization — pins that the commit forwards
+        // `extract_dependency_trace(expr)` and not a
+        // `DependencyTrace::default()`, which would silently drop q's
+        // reverse-dependency edge on p while every other assertion here
+        // still passed.
+        let q_cache_entry = engine
+            .cache_store()
+            .get(&q_node)
+            .expect("q must have a cache entry after edit_source main eval walk");
+        assert!(
+            q_cache_entry.dependency_trace.reads.contains(&p_id),
+            "q's cache entry dependency_trace.reads must contain p, got {:?}",
+            q_cache_entry.dependency_trace.reads
+        );
+
+        // (5) GUARD/characterization — pins that the migrated call still
+        // feeds the real `EvalOutcome` into the early-cutoff propagation
+        // below it: `has_changed_parent` is seeded only from dependents of
+        // the changed set (= {q}), so a commit whose outcome degraded to
+        // `Unchanged` would put r in `skipped`, drop it from
+        // `last_eval_set`, and leave it at the stale 0.003 (already ruled
+        // out by assertion (1), but this pins the mechanism, not just the
+        // symptom).
+        assert!(
+            engine
+                .last_eval_set()
+                .contains(&NodeId::Value(r_id.clone())),
+            "last_eval_set must contain r, meaning the Changed branch of the \
+             early-cutoff propagation ran; got {:?}",
+            engine.last_eval_set()
+        );
     }
 
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
     /// commit: a `Started`/`Completed` journal pair with the edit-reeval
     /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
-    /// both the snapshot and the cache. Shared by the recorded-site fixtures
-    /// below (task δ #5056 step-3) so each site's test is a thin setup +
-    /// one-line assertion, mirroring `assert_scalar_si_approx_eq` above.
+    /// both the snapshot and the cache, within the default `1e-9` tolerance.
+    /// Shared by the recorded-site fixtures below (task δ #5056 step-3) so
+    /// each site's test is a thin setup + one-line assertion, mirroring
+    /// `assert_scalar_si_approx_eq` above. Early-exit fixtures (the solver
+    /// lands exactly on the target with no search) satisfy `1e-9`; a
+    /// search-path fixture (a real Nelder-Mead solve, whose error is bounded
+    /// by the solver's own convergence tolerance rather than by floating
+    /// point) needs `assert_recorded_via_commit_primitive_with_tol` instead
+    /// — see `edit_param_back_props_moved_auto`'s doc comment for why.
     fn assert_recorded_via_commit_primitive(
         engine: &crate::Engine,
         id: &reify_core::ValueCellId,
         expected_si: f64,
+        label: &str,
+    ) {
+        assert_recorded_via_commit_primitive_with_tol(engine, id, expected_si, 1e-9, label);
+    }
+
+    /// Same as `assert_recorded_via_commit_primitive`, but with an explicit
+    /// tolerance for the snapshot/cache value comparisons (the journal shape
+    /// and determinacy checks are always exact) — for search-path fixtures
+    /// where `1e-9` is the wrong bound; see that function's doc comment.
+    fn assert_recorded_via_commit_primitive_with_tol(
+        engine: &crate::Engine,
+        id: &reify_core::ValueCellId,
+        expected_si: f64,
+        tol: f64,
         label: &str,
     ) {
         use crate::cache::{CachedResult, NodeId};
@@ -7219,7 +7441,7 @@ mod tests {
             DeterminacyState::Determined,
             "{label}: snapshot determinacy"
         );
-        assert_scalar_si_approx_eq(snap_v, expected_si, 1e-9, &format!("{label}: snapshot value"));
+        assert_scalar_si_approx_eq(snap_v, expected_si, tol, &format!("{label}: snapshot value"));
 
         let cache_entry = engine
             .cache_store()
@@ -7232,7 +7454,7 @@ mod tests {
                     DeterminacyState::Determined,
                     "{label}: cache determinacy"
                 );
-                assert_scalar_si_approx_eq(v, expected_si, 1e-9, &format!("{label}: cache value"));
+                assert_scalar_si_approx_eq(v, expected_si, tol, &format!("{label}: cache value"));
             }
             other => panic!("{label}: expected CachedResult::Value, got {other:?}"),
         }
@@ -7272,7 +7494,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         engine.eval(&compiled);
 
@@ -7340,7 +7562,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7441,7 +7663,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let cond_id = ValueCellId::new("GuardU1", "cond");
@@ -7538,7 +7760,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7642,7 +7864,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7682,290 +7904,6 @@ structure GrowColl {
         }
     }
 
-    // ------------------------------------------------------------------
-    // selective-realization-eviction task β (#4729): the shared
-    // recompute-then-compare helper `compute_changed_realizations`.
-    //
-    // These are pure graph-level unit tests — no Engine, no kernel, no
-    // `.ri` source. The fixture style is copied from `dirty.rs:658-735`
-    // (literal `RealizationNodeData` / `ValueCellNode` construction over a
-    // hand-built `EvaluationGraph`), which is what makes the core §11.2
-    // contract testable without OCCT.
-    //
-    // Every expected hash is DERIVED by calling the canonical fold
-    // (`engine_build::compute_realization_upstream_values_hash_from_ops`,
-    // widened to `pub(crate)` by this task's prerequisite) rather than
-    // hard-coded — PRD D1 forbids a second fold, so the test must key on
-    // the same identity the production compare does. These are exact
-    // 32-byte equalities over a deterministic XXH3 fold; there is no
-    // tolerance anywhere.
-    // ------------------------------------------------------------------
-
-    /// Build a one-realization `EvaluationGraph` whose single
-    /// `Primitive{Box}` op reads `E.<cell>` through a `ValueRef` arg, so the
-    /// input-cone fold is non-trivial and moves with the `EvalContext`.
-    ///
-    /// `input_cone_hash` is whatever the caller supplies, standing in for
-    /// α's production write inside `execute_realization_ops`.
-    fn realization_graph_reading_cell(
-        rid: &reify_core::RealizationNodeId,
-        cell: &ValueCellId,
-        input_cone_hash: Option<[u8; 32]>,
-    ) -> EvaluationGraph {
-        use crate::graph::RealizationNodeData;
-        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_ir::ReprKind;
-
-        let mut graph = EvaluationGraph::default();
-        graph.realizations.insert(
-            rid.clone(),
-            RealizationNodeData {
-                id: rid.clone(),
-                operations: vec![CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                }],
-                content_hash: ContentHash::of_str(&rid.to_string()),
-                produced_repr: ReprKind::BRep,
-                produced_kernel: None,
-                geometry_cell: None,
-                input_cone_hash,
-            },
-        );
-        graph
-    }
-
-    /// Long-lived empty meta-map for the β helper tests.
-    ///
-    /// `eval_ctx_with_meta` borrows the map for the whole lifetime of the
-    /// returned `EvalContext`, so it cannot be a `&HashMap::new()`
-    /// temporary. Same shape as `deps.rs:73`'s `EMPTY_SET`.
-    static NO_META: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> =
-        std::sync::LazyLock::new(HashMap::new);
-
-    /// A `ValueMap` binding `cell` to the real number `v`.
-    fn values_binding(cell: &ValueCellId, v: f64) -> ValueMap {
-        let mut values = ValueMap::default();
-        values.insert(cell.clone(), Value::Real(v));
-        values
-    }
-
-    /// §11.2 case (a): the stored `input_cone_hash` equals the hash
-    /// recomputed over the SAME context → the realization is UNCHANGED and
-    /// must be absent from the returned set.
-    ///
-    /// This is the case that makes β selective at all: if it were ever to
-    /// regress into "always changed", γ's keyed eviction degenerates back
-    /// into the wholesale flush it is meant to replace.
-    #[test]
-    fn compute_changed_realizations_omits_realization_whose_input_cone_is_unmoved() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        // Derive the "as of last execution" hash from the canonical fold
-        // over the very same ctx, exactly as α's production write does.
-        let probe = realization_graph_reading_cell(&rid, &cell, None);
-        let stored = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &ctx,
-        );
-
-        let graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
-        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
-
-        assert!(
-            changed.is_empty(),
-            "an unmoved input cone must not be reported changed, got: {changed:?}"
-        );
-    }
-
-    /// §11.2 case (b): the context moved, so the recomputed fold differs
-    /// from the stored hash → the realization IS in the set.
-    #[test]
-    fn compute_changed_realizations_reports_realization_whose_input_cone_moved() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-
-        // "Last execution" was at wa = 10.
-        let old_values = values_binding(&cell, 10.0);
-        let old_ctx = crate::eval_ctx_with_meta(&old_values, &[], &NO_META);
-        let probe = realization_graph_reading_cell(&rid, &cell, None);
-        let stored = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &old_ctx,
-        );
-
-        // The edit moved wa to 20.
-        let new_values = values_binding(&cell, 20.0);
-        let new_ctx = crate::eval_ctx_with_meta(&new_values, &[], &NO_META);
-
-        // Premise lock: the fold genuinely moves with the context. Without
-        // this the test could pass for the wrong reason (e.g. a fold that
-        // ignores its args would make EVERY realization look changed).
-        let recomputed = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &new_ctx,
-        );
-        assert_ne!(
-            stored, recomputed,
-            "premise: the input-cone fold must move when a ValueRef arg's value moves"
-        );
-
-        let graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
-        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &new_ctx);
-
-        assert_eq!(
-            changed,
-            HashSet::from([rid.clone()]),
-            "a moved input cone must be reported changed"
-        );
-    }
-
-    /// §11.2 case (c), sub-case 1: the prior entry EXISTS but its
-    /// `input_cone_hash` is `None` — never executed, demand-pruned, or
-    /// un-hydrated. Conservatively CHANGED.
-    #[test]
-    fn compute_changed_realizations_reports_realization_with_no_stored_hash() {
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        let graph = realization_graph_reading_cell(&rid, &cell, None);
-        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
-
-        assert_eq!(
-            changed,
-            HashSet::from([rid.clone()]),
-            "a realization that has never executed (input_cone_hash == None) must be \
-             conservatively reported changed (PRD §11.2)"
-        );
-    }
-
-    /// §11.2 case (c), sub-case 2: the realization is present in
-    /// `new_graph` but has NO prior entry at all — newly added by an
-    /// `edit_source` recompile. Conservatively CHANGED.
-    #[test]
-    fn compute_changed_realizations_reports_realization_absent_from_prior_map() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        // The new graph's node even carries a matching stored hash — the
-        // point is that the PRIOR map is what is consulted, and it is empty.
-        let probe = realization_graph_reading_cell(&rid, &cell, None);
-        let stored = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &ctx,
-        );
-        let new_graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
-
-        let empty_prior: PersistentMap<
-            reify_core::RealizationNodeId,
-            crate::graph::RealizationNodeData,
-        > = PersistentMap::default();
-        let changed = super::compute_changed_realizations(&empty_prior, &new_graph, &ctx);
-
-        assert_eq!(
-            changed,
-            HashSet::from([rid.clone()]),
-            "a realization with no entry in the PRIOR map (newly added by a recompile) \
-             must be conservatively reported changed — the prior map, not the new \
-             node's own field, is the comparison source"
-        );
-    }
-
-    /// CHARACTERIZATION LOCK, not a behavioural assertion: the canonical
-    /// input-cone fold is BLIND to a boolean-kind flip.
-    ///
-    /// `compute_realization_upstream_values_hash_from_ops` folds only
-    /// `(arg_name, evaluated value)` pairs, and its match arm for a boolean is
-    /// `CompiledGeometryOp::Boolean { .. } => &[]` in `engine_build.rs` — so
-    /// the arg loop never runs and the op contributes NOTHING to the hash. No
-    /// arm mixes in the op discriminant, the op kind, the op count, or the
-    /// operand `GeomRef`s either. Two op vectors that differ only in a
-    /// `BooleanOp::Union` vs `BooleanOp::Difference` therefore fold to the
-    /// byte-identical 32-byte hash.
-    ///
-    /// This PASSES from the start. It is pinned as a first-class executable
-    /// fact because it is the load-bearing premise for the `edit_source`
-    /// carry-forward restriction: the input-cone fold cannot detect an
-    /// ops-only change, so the carry-forward must NOT rely on "the recomputed
-    /// fold will differ anyway" and must instead key on
-    /// `RealizationNodeData::content_hash`, which sees the op IR.
-    ///
-    /// If this test ever FAILS, the fold has gained op-identity coverage and
-    /// the `!changed_realizations.contains(rid)` skip in `edit_source` may be
-    /// relaxed. Do NOT "fix" it by weakening the assertion — the failure is
-    /// the signal.
-    ///
-    /// Exact byte equality over a deterministic XXH3 fold; no tolerance.
-    #[test]
-    fn input_cone_fold_is_blind_to_a_boolean_kind_flip() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        // Two boxes, then a boolean over them — the shape `compile_boolean`
-        // emits (`left_ops ++ right_ops ++ [Boolean{op,left,right}]`,
-        // geometry_boolean.rs:165-171).
-        let ops_with = |op: BooleanOp| -> Vec<CompiledGeometryOp> {
-            vec![
-                CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                },
-                CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                },
-                CompiledGeometryOp::Boolean {
-                    op,
-                    // Identical operands on both sides: the ONLY difference
-                    // between the two vectors is the `op` field itself.
-                    left: GeomRef::Step(0),
-                    right: GeomRef::Step(1),
-                },
-            ]
-        };
-
-        let union_hash =
-            compute_realization_upstream_values_hash_from_ops(&ops_with(BooleanOp::Union), &ctx);
-        let difference_hash = compute_realization_upstream_values_hash_from_ops(
-            &ops_with(BooleanOp::Difference),
-            &ctx,
-        );
-
-        assert_eq!(
-            union_hash, difference_hash,
-            "the input-cone fold must be blind to a union→difference flip — it folds \
-             only (arg_name, value) pairs and matches `Boolean {{ .. }} => &[]`. If this \
-             now DIFFERS the fold gained op-identity coverage; relax the edit_source \
-             carry-forward skip rather than weakening this lock."
-        );
-    }
-
     /// A REJECTED `edit_param` must leave `last_changed_realizations` intact
     /// (amend, review round 1 — `reviewer_comprehensive` / `correctness`).
     ///
@@ -7991,7 +7929,7 @@ structure GrowColl {
         let sentinel = reify_core::RealizationNodeId::new("Stale", 0);
 
         // ── Rejection 1: NotInitialized (no eval() has run) ─────────────
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.last_changed_realizations.insert(sentinel.clone());
         let err = engine
             .edit_param(ValueCellId::new("Nope", "x"), Value::Int(1))
@@ -8012,7 +7950,7 @@ structure GrowColl {
     param w : Length = 5mm
 }"#;
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
         engine.last_changed_realizations.insert(sentinel.clone());
         let err = engine
@@ -8039,5 +7977,32 @@ structure GrowColl {
             "control: an ACCEPTED edit must recompute the set from scratch — if the \
              sentinel survives here the reset was dropped entirely rather than moved"
         );
+    }
+
+    /// `assert_realization_ids_unchanged` exists only in debug builds, so its
+    /// pins do too.
+    #[cfg(debug_assertions)]
+    mod realization_id_check {
+        use reify_core::RealizationNodeId;
+
+        use super::super::assert_realization_ids_unchanged;
+
+        fn ids(entities: &[&str]) -> Vec<RealizationNodeId> {
+            entities
+                .iter()
+                .map(|e| RealizationNodeId::new(*e, 0))
+                .collect()
+        }
+
+        #[test]
+        #[should_panic(expected = "edit_param must not add or remove a realization")]
+        fn edit_param_realization_check_rejects_a_same_count_swap() {
+            assert_realization_ids_unchanged(&ids(&["A", "B"]), &ids(&["A", "C"]));
+        }
+
+        #[test]
+        fn edit_param_realization_check_accepts_the_same_ids_in_another_order() {
+            assert_realization_ids_unchanged(&ids(&["A", "B"]), &ids(&["B", "A"]));
+        }
     }
 }

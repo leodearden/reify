@@ -203,6 +203,14 @@ fn walk_members(
     }
     for member in members {
         match member {
+            // A sketch body holds ordinary `let` and bare-relation members, so
+            // recurse: dot-chain lints must apply inside `sketch { … }` too
+            // (constrained-2d-sketch α, task 5506). Skipping it would make the
+            // block a lint blind spot — the same silent-no-op failure mode the
+            // loud compile-side rejection exists to prevent.
+            MemberDecl::Sketch(s) => {
+                walk_members(&s.members, diagnostics, depth + 1);
+            }
             // Relate-block relations are ordinary expressions — walk them so
             // dot-chain lints apply inside `relate { … }` too (task δ 4384).
             MemberDecl::Relate(r) => {

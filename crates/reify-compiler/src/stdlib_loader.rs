@@ -233,17 +233,6 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.slice",
             include_str!("../stdlib/fdm_slice.ri").to_owned(),
         ),
-        // `std.flexures` — single module containing the FlexureCompliance
-        // structure_def and the flexure_compliance() accessor (the former
-        // RotationalStiffness=Real alias was removed in task 4547 — the built-in
-        // ROTATIONAL_STIFFNESS dimension shadowed it). The same-module skeleton
-        // pre-pass (task 3895) makes
-        // the structure_def visible to the accessor fn body in the same
-        // module, so no split is needed.
-        (
-            "std.flexures",
-            include_str!("../stdlib/flexures.ri").to_owned(),
-        ),
         // `std.tensegrity` depends on `std.units` (Length, Area, Force),
         // `std.si_units` (0N literal), and `std.materials.fea`
         // (ElasticMaterial trait) — all earlier in the prelude sequence.
@@ -273,6 +262,27 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         (
             "std.kinematic",
             include_str!("../stdlib/kinematic.ri").to_owned(),
+        ),
+        // `std.flexures` — single module containing the FlexureCompliance
+        // structure_def, the `FlexureJoint` marker, and the
+        // flexure_compliance() accessor (the former RotationalStiffness=Real
+        // alias was removed in task 4547 — the built-in ROTATIONAL_STIFFNESS
+        // dimension shadowed it). The same-module skeleton pre-pass (task 3895)
+        // makes the structure_def visible to the accessor fn body in the same
+        // module, so no split is needed.
+        //
+        // MUST follow `std.kinematic` (task #5476, placeholder-ratchet α) —
+        // `structure def FlexureJoint : DrivingJoint` references the
+        // `DrivingJoint` trait declared in kinematic.ri, resolved via the
+        // growing sequential prelude. Declares no `import`, so the topo-sort
+        // stays the identity permutation and registration order IS visibility
+        // order. Moved down from its former slot before `std.tensegrity`: the
+        // only modules stepped over are `std.tensegrity` and `std.process`,
+        // neither of which references `FlexureCompliance` / `flexure_compliance`
+        // / `FlexureJoint`, so nothing earlier in the sequence loses visibility.
+        (
+            "std.flexures",
+            include_str!("../stdlib/flexures.ri").to_owned(),
         ),
         // `std.joints` defines the standard kinematic joint set (revolute /
         // prismatic / cylindrical / planar / spherical / ball) as `joint … with`
@@ -574,8 +584,8 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
     let mut collisions: Vec<NameCollision> = Vec::new();
 
     // One map for every kind. The key is (kind, dedup_key) so each kind gets its
-    // OWN namespace — `structure def Planar` (kinematic.ri:163) and
-    // `trait Planar {}` (geometry_traits.ri:56) coexist on main today, and a
+    // OWN namespace — `structure def Planar` (kinematic.ri) and
+    // `trait Planar {}` (geometry_traits.ri) coexist on main today, and a
     // kind-agnostic key would force an out-of-scope rename. `dedup_key` is the
     // declared name for every kind except functions (see below).
     let mut seen: HashMap<(&'static str, String), String> = HashMap::new();
@@ -618,9 +628,9 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
         // CRITICAL: read this vector, never the syntax. `type_aliases` holds
         // MODULE-LEVEL aliases only. Associated types declared inside a
         // trait/structure body (`type MotionValue` in `trait HasMotion`,
-        // kinematic.ri:110,133,151,198) are members of their template and are
-        // correctly absent here. A syntactic scan sees four `MotionValue`s and
-        // panics the real stdlib build immediately.
+        // kinematic.ri) are members of their template and are correctly
+        // absent here. A syntactic scan sees four `MotionValue`s and panics
+        // the real stdlib build immediately.
         for a in module.type_aliases.iter().filter(|a| a.is_pub) {
             record("type alias", a.name.clone(), &a.name, &m);
         }

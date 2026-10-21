@@ -51,13 +51,12 @@ const REL: f64 = 1e-6;
 // ---------------------------------------------------------------------------
 //
 // Shared with `tests/fill_metrics_tests.rs` and
-// `tests/classify_feature_angle.rs` through `tests/common/mod.rs`, so the three
-// views of #6200 (arithmetic / symptom / mechanism) cannot drift apart on what
-// "a box" is.
+// `tests/classify_feature_angle.rs` through `reify_test_support::mesh_fixtures`,
+// so the three views of #6200 (arithmetic / symptom / mechanism) cannot drift
+// apart on what "a box" is.
 
-mod common;
-use common::{
-    prismatic_box_mesh, tessellated_cylinder_mesh, tessellated_cylinder_volume,
+use reify_test_support::mesh_fixtures::{
+    self, prismatic_box_mesh, tessellated_cylinder_mesh, tessellated_cylinder_volume,
     unwelded_prismatic_box_mesh,
 };
 
@@ -65,15 +64,15 @@ use common::{
 // Shared assertion body
 // ---------------------------------------------------------------------------
 
-/// [`common::assert_rel`] bound to this file's derived [`REL`] tolerance.
+/// [`mesh_fixtures::assert_rel`] bound to this file's derived [`REL`] tolerance.
 ///
 /// A thin binding, not a second implementation: the comparison itself lives in
 /// exactly one place. A call site needing a different band (the curved fixture
-/// below) calls `common::assert_rel` directly with its own stated tolerance,
-/// rather than loosening `REL` for everyone.
+/// below) calls `mesh_fixtures::assert_rel` directly with its own stated
+/// tolerance, rather than loosening `REL` for everyone.
 #[track_caller]
 fn assert_rel(actual: f64, expected: f64, what: &str) {
-    common::assert_rel(actual, expected, REL, what);
+    mesh_fixtures::assert_rel(actual, expected, REL, what);
 }
 
 /// Every completeness assertion #6200 turns on, for one already-meshed body.
@@ -307,7 +306,7 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
             "{label} @ {size}: {} of {} tets are inverted (negative signed volume)",
             report.inverted_tets, report.n_tets
         );
-        common::assert_rel(
+        mesh_fixtures::assert_rel(
             report.signed_volume_sum.abs(),
             report.abs_volume_sum,
             REL,
@@ -334,7 +333,7 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
     // 1. The geometry-agnostic completeness check — the one assertion in this
     //    file valid for a curved or non-convex body.
     let fine_ratio = fine.surface_match_ratio(surface_volume);
-    common::assert_rel(
+    mesh_fixtures::assert_rel(
         fine.abs_volume_sum,
         surface_volume,
         CURVED_REL,
@@ -362,7 +361,7 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
 
     // 3. The AABB ratio tracks the fixture's own closed-form area ratio, so the
     //    prismatic-only reading is not merely "some number below 1".
-    common::assert_rel(
+    mesh_fixtures::assert_rel(
         fine.aabb_fill_fraction(),
         closed_form / (2.0 * CYL_R * 2.0 * CYL_R * CYL_H),
         CURVED_REL,

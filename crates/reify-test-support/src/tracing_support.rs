@@ -103,8 +103,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 /// [`CapturingSubscriberBuilder::build`] — now call this themselves, so tests
 /// that obtain their subscriber from one of those (directly or via
 /// [`warn_counting_guard`] / [`warn_capturing_subscriber`]) need no explicit
-/// call. An explicit call is only needed for a test that asserts event counts
-/// **without** using them, e.g. one that hand-rolls its own `Subscriber`.
+/// call. A hand-rolled subscriber outside this crate is rejected by the
+/// workspace ratchet in [`crate::tracing_hygiene`], so an explicit call is only
+/// needed inside reify-test-support itself, where a test hand-rolls its own
+/// `Subscriber`.
 ///
 /// `Once`-gated, so it stays safe and cheap to call from anywhere; the
 /// pre-existing explicit call sites across the workspace remain correct
@@ -2073,10 +2075,7 @@ mod tests {
     /// events; asserts count==1 and messages contains only "captured".
     #[test]
     fn capturing_subscriber_captures_target_level_rejects_others() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) =
             CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
@@ -2103,10 +2102,7 @@ mod tests {
     /// asserts count==1 and messages contains only the matching event.
     #[test]
     fn capturing_subscriber_filters_by_target_prefix() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("reify_constraints")
@@ -2144,10 +2140,7 @@ mod tests {
     /// the shared `MessageVisitor` would fail here.
     #[test]
     fn capturing_subscriber_captures_structured_fields() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) =
             CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
@@ -2205,10 +2198,7 @@ mod tests {
     /// the level gate in `enabled()` applies regardless of the target.
     #[test]
     fn capturing_subscriber_level_dominates_over_target_prefix() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("foo")
@@ -2247,10 +2237,7 @@ mod tests {
     /// into `enabled()`, `dispatch_count` stays 0 (GREEN).
     #[test]
     fn capturing_subscriber_target_prefix_rejected_at_enabled() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (inner, _capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("reify_constraints")

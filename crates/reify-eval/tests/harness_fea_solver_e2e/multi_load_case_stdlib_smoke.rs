@@ -48,7 +48,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 /// their fields would always observe Undef regardless of struct validity.
 /// Struct-presence coverage (template existence, param shapes, defaults) is
 /// delegated to the compiler-level test in
-/// `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`, which
+/// `crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs`, which
 /// inspects the compiled module directly via `load_stdlib_module()`.
 ///
 /// Bindings:
@@ -87,7 +87,7 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 /// constructor path. As a result it would still pass even if the loader
 /// silently swallowed a compile error from `fea_multi_case.ri`. This test
 /// closes that gap by inspecting the registered module directly — matching the
-/// approach in `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`.
+/// approach in `crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs`.
 #[test]
 fn multi_load_case_stdlib_module_registers_without_errors() {
     let stdlib = reify_compiler::stdlib_loader::load_stdlib();

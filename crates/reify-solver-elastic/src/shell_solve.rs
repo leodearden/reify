@@ -29,7 +29,8 @@
 use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{ShellFrame, build_shell_frame, shell_element_stiffness_mitc3_plus};
+use crate::elements::shell_frame::{ShellFrame, build_shell_frame};
+use crate::shell_assembly::shell_element_stiffness_mitc3_plus;
 use crate::shell_boundary::{SupportBodyKind, SupportKind, build_support_bcs};
 use crate::shell_result::{ShellElementStress, shell_element_stress};
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
@@ -38,7 +39,7 @@ use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 /// solve. Neutral solver-elastic types only — reify-eval wraps these into the
 /// DSL `ShellChannels` / `ShellStress` value (no dependency cycle).
 ///
-/// No `derive`s: `ShellFrame` (shell_assembly.rs) implements none of
+/// No `derive`s: `ShellFrame` (elements/shell_frame.rs) implements none of
 /// `Debug`/`Clone`/`PartialEq`, and the consumers (the inline test + the
 /// reify-eval `solve_shell_static` glue) only read the fields by move/borrow.
 pub struct FlatPlateShellSolve {

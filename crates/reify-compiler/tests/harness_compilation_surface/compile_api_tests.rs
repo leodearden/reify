@@ -206,7 +206,7 @@ fn compile_isosurface_produces_realization_for_operand_and_result() {
 fn compile_mirror_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
+    let mirrored = mirror(w, 0mm, 0mm, 0mm, 1, 0, 0)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_mirror"));
     assert!(
@@ -742,7 +742,7 @@ fn compile_offset_solid_produces_realization() {
 fn compile_draft_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let drafted = draft(w, 0.1, w)
+    let drafted = draft(w, 0.1deg, w)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_draft"));
     assert!(
@@ -776,7 +776,7 @@ fn compile_draft_produces_realization() {
 fn compile_circular_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = circular_pattern(w, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
+    let pattern = circular_pattern(w, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circpat"));
     assert!(

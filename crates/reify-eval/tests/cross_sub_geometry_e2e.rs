@@ -51,7 +51,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (c) No Error-severity diagnostics from build either.
@@ -177,7 +177,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.
@@ -296,7 +296,7 @@ pub structure C {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (c) No Error diagnostics from build.
@@ -359,8 +359,8 @@ pub structure C {
 }
 
 /// Stage has `body = box(...)`; Assy has `sub stage_left = Stage()` and
-/// `mirrored = mirror(self.stage_left.body, 0, 0, 0, 1, 0, 0)` — origin at
-/// the world origin, normal along +X.
+/// `mirrored = mirror(self.stage_left.body, 0mm, 0mm, 0mm, 1, 0, 0)` — origin
+/// at the world origin, normal along +X.
 ///
 /// Asserts (a) recorded ops contain a Mirror op whose target == Stage's box
 /// handle, (b) build succeeds with `geometry_output.is_some()`, (c) no
@@ -401,7 +401,7 @@ pub structure Assy {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (c) No Error diagnostics from build.
@@ -501,7 +501,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No Error diagnostics from build.
@@ -665,7 +665,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = result
         .diagnostics
@@ -818,7 +818,7 @@ fn cross_sub_forward_declared_sub_trips_assert_dag_complete_in_debug() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     // Panics via DagViolation::BackwardEdge — see doc comment above.
     let _ = engine.build(&compiled, ExportFormat::Step);
 }
@@ -858,7 +858,7 @@ fn cross_sub_forward_declared_sub_yields_unresolvable_geom_ref_error() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Runtime: the parent's `named_steps` is missing the compound-key
@@ -926,7 +926,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.
@@ -1090,7 +1090,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.
@@ -1253,7 +1253,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.
@@ -1412,7 +1412,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.
@@ -1549,7 +1549,7 @@ pub structure Outer {
     // GeometryError::OperationFailed("simulated kernel failure").
     let kernel = FailingMockGeometryKernel;
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     // (a) Must not panic.
     let result = engine.build(&compiled, ExportFormat::Step);
 
@@ -1643,7 +1643,7 @@ pub structure Outer {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     // (a) Must not panic.
     let result = engine.build(&compiled, ExportFormat::Step);
 
@@ -1748,7 +1748,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No Error-severity diagnostics from build either.
@@ -1877,7 +1877,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.
@@ -2010,7 +2010,7 @@ pub structure Outer {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) No build-time Error diagnostics.

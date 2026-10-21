@@ -27,7 +27,12 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
+import { makeLayoutStore } from './debugBridgeTestHelpers';
 import type { ViewStateStore } from '../stores/viewStateStore';
+// The REAL editor store, for the `apply_gui_state` `file`-member cases: the
+// dirty/clean split they pin lives in editorStore.openFile, so a mock would
+// pin nothing.
+import { createEditorStore } from '../stores/editorStore';
 
 type DebugRequestHandler = (event: {
   payload: { id: number; command: string; params: Record<string, unknown> };
@@ -80,20 +85,7 @@ function makeStores(): DebugStores {
       },
     },
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout: makeLayoutStore(),
   };
 }
 
@@ -178,18 +170,27 @@ describe('debug contract — error envelope + wiring (step-3)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// step-5: Coordinate-convention boundary test (characterization)
+// task 5097 δ: apply_gui_state — AI write-tool editor sync
 //
-// Pins: (a) get_window_state.devicePixelRatio is numeric; (b) get_layout_metrics
-// returns getBoundingClientRect verbatim (CSS-logical-px from window origin);
-// (c) the center derived from bounds is a valid clientX/clientY that fires the
-// element's handler — the get_layout_metrics→click(center) convention I1 wraps.
-//
-// NOTE: jsdom has no layout engine, so document.elementFromPoint() always returns
-// null — the live hit-test is deferred to I1's real-GUI e2e (needs H0).
+// `apply_gui_state` gained a second class of caller: the five `reify_*` AI
+// write tools on the reify-debug MCP server. `reify_update_source` routes
+// through the IN-MEMORY `EngineSession::update_source` and writes no disk, so
+// no FS-watcher re-fire will reconcile the editor buffer — the push carries
+// the new text in an OPTIONAL `file` member instead. The existing
+// `handle_set_fea_case` caller sends no `file` and must stay byte-identical.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('debug contract — coordinate convention (step-5)', () => {
+describe('apply_gui_state — AI write-tool editor sync (task 5097)', () => {
   let capturedHandler: DebugRequestHandler | undefined;
+
+  /** Minimal well-formed RawGuiState — `apply_gui_state` requires the key. */
+  const RAW_GUI_STATE = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -204,6 +205,246 @@ describe('debug contract — coordinate convention (step-5)', () => {
     delete window.__REIFY_DEBUG__;
     document.body.innerHTML = '';
   });
+
+  it('(a) with a file member, reopens the editor buffer and still does not reset the view', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 900, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'NEW' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // The AI wrote the engine's in-memory buffer; nothing else will bring the
+    // editor along, so the push must.
+    expect(stores.editor.openFile).toHaveBeenCalledTimes(1);
+    expect(stores.editor.openFile).toHaveBeenCalledWith({
+      path: '/tmp/part.ri',
+      content: 'NEW',
+    });
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    // The camera-stability property handle_set_fea_case depends on covers the
+    // AI path too: a parameter tweak must not throw the user's view away.
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(b) without a file member, behaves exactly as before (set_fea_case regression guard)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 901, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      case: 'overload',
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    expect(result.case).toBe('overload');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(c) a malformed file member is refused and mutates neither store', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 902, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri' },
+    })) as any;
+
+    expect(result.error).toBe('file requires path and content');
+    expect(result.ok).toBeUndefined();
+    // Refusing HALFWAY — applying the GuiState but not the buffer — is the
+    // desync this handler exists to prevent, so neither store may move.
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // (d)/(e) task 5097 δ amendment (review finding): what the `file` member
+  // actually DOES to the editor store.
+  //
+  // (a) above pins only that `openFile` was CALLED, with a mock. But the member
+  // is delivered through `editorStore.openFile`, whose contract is "reopen from
+  // DISK" — while `reify_update_source` writes no disk at all. So the two arms
+  // of `openFile`'s dirty/clean split (editorStore.ts, task-5359) land
+  // differently here than they do for a watcher re-fire, and which way they land
+  // is a real product decision that was neither stated nor covered. These drive
+  // the REAL store so the decision is pinned in observable state, not prose; the
+  // rationale for each arm is on the `apply_gui_state` handler in bridge.ts.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** The real editor store standing in for the mocked `editor` slot. */
+  function storesWithRealEditor(): DebugStores & { editor: ReturnType<typeof createEditorStore> } {
+    const editor = createEditorStore();
+    return { ...makeStores(), editor } as DebugStores & {
+      editor: ReturnType<typeof createEditorStore>;
+    };
+  }
+
+  it('(d) a CLEAN tab takes the pushed buffer — and stays clean', async () => {
+    const stores = storesWithRealEditor();
+    stores.editor.openFile({ path: '/tmp/part.ri', content: 'OLD' });
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 903, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'NEW' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // The desync the member exists to close: the engine took NEW, so the buffer
+    // must too.
+    expect(stores.editor.state.openFiles).toHaveLength(1);
+    expect(stores.editor.state.openFiles[0].content).toBe('NEW');
+    // …and the tab is left CLEAN. This is the accepted consequence, stated so it
+    // cannot change silently: the buffer now differs from disk with no unsaved
+    // indicator, and a later CLEAN reopen of the same path (an FS-watcher
+    // re-fire from reify_set_parameter, File→Open) will overwrite the AI's edit.
+    // reify_save_file is the commit step; reify_set_parameter is the durable
+    // write path.
+    expect(stores.editor.state.dirtyFiles).toStrictEqual([]);
+    expect(stores.editor.state.externallyChanged).toStrictEqual([]);
+  });
+
+  it('(e) a DIRTY tab keeps the user’s text and surfaces the conflict', async () => {
+    const stores = storesWithRealEditor();
+    stores.editor.openFile({ path: '/tmp/part.ri', content: 'OLD' });
+    stores.editor.markDirty('/tmp/part.ri');
+    stores.editor.updateFileContent('/tmp/part.ri', 'USER EDIT');
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 904, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'AI EDIT' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // openFile does NOT clobber unsaved edits, so the engine holds the AI's text
+    // while the editor keeps the user's. That divergence is real; the point is
+    // that it is SURFACED rather than silently resolved in either direction.
+    expect(stores.editor.state.openFiles[0].content).toBe('USER EDIT');
+    expect(stores.editor.state.dirtyFiles).toStrictEqual(['/tmp/part.ri']);
+    expect(stores.editor.state.externallyChanged).toStrictEqual(['/tmp/part.ri']);
+    // The engine half of the push still lands — refusing it would leave the
+    // design un-rendered for a conflict the user has not resolved yet.
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+  });
+
+  it('(f) a no-op push over a dirty tab raises no spurious conflict', async () => {
+    // The refinement editorStore.openFile makes over App.onFileChanged: a dirty
+    // reopen flags a conflict only when the incoming text actually DIVERGES.
+    // Pinned from this caller because a write tool re-pushing the buffer the
+    // user already has is the ordinary case, not an edge one.
+    const stores = storesWithRealEditor();
+    stores.editor.openFile({ path: '/tmp/part.ri', content: 'OLD' });
+    stores.editor.markDirty('/tmp/part.ri');
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 905, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'OLD' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    expect(stores.editor.state.openFiles[0].content).toBe('OLD');
+    expect(stores.editor.state.externallyChanged).toStrictEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5: Coordinate-convention boundary test (characterization)
+//
+// Pins: (a) get_window_state.devicePixelRatio is numeric; (b) get_layout_metrics
+// returns getBoundingClientRect verbatim (CSS-logical-px from window origin);
+// (c) the center derived from bounds is a valid clientX/clientY that fires the
+// element's handler — the get_layout_metrics→click(center) convention I1 wraps;
+// (d) `hitTestable` predicts whether that round-trip holds: an element
+// clipped by an overflow ancestor or occluded by another painted element reports
+// false, and click_at at its centre lands elsewhere (#7770).
+//
+// NOTE: jsdom has no layout engine, so (d) models WebKit's hit test with a
+// fake compositor (`mountHitFixture`); the live checks are the
+// get_layout_metrics_hit_testable_* VALUE_SCENARIOS (npm run test:e2e).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug contract — coordinate convention (step-5)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  type Box = { x: number; y: number; width: number; height: number };
+
+  function domRect({ x, y, width, height }: Box): DOMRect {
+    return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height } as DOMRect;
+  }
+
+  function boxContains(b: Box, px: number, py: number): boolean {
+    return px >= b.x && px < b.x + b.width && py >= b.y && py < b.y + b.height;
+  }
+
+  /**
+   * A clip pane holding a shown row and a row laid out below the pane's bottom
+   * edge, a sibling panel painting where that clipped row claims to be, and a
+   * button covered by an unrelated overlay. Each element's getBoundingClientRect
+   * reports its UNCLIPPED layout rect, as WebKit does. Returns those rects by
+   * testId.
+   */
+  function mountHitFixture(): Record<string, Box> {
+    document.body.innerHTML = `
+      <div data-testid="clip-pane" style="overflow:hidden">
+        <div data-testid="shown-row"><span data-testid="shown-row-label">row</span></div>
+        <div data-testid="clipped-row">row</div>
+      </div>
+      <div data-testid="other-panel"></div>
+      <button data-testid="covered-button">go</button>
+      <div data-testid="overlay"></div>`;
+    const byId = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement;
+    const LAYOUT: Record<string, Box> = {
+      'clip-pane': { x: 0, y: 0, width: 300, height: 80 },
+      'shown-row': { x: 0, y: 10, width: 300, height: 23 },
+      'shown-row-label': { x: 0, y: 10, width: 300, height: 23 },
+      'clipped-row': { x: 0, y: 120, width: 300, height: 23 },
+      'other-panel': { x: 0, y: 100, width: 300, height: 100 },
+      'covered-button': { x: 400, y: 0, width: 100, height: 40 },
+      overlay: { x: 380, y: 0, width: 200, height: 200 },
+    };
+    for (const [id, box] of Object.entries(LAYOUT)) {
+      vi.spyOn(byId(id), 'getBoundingClientRect').mockReturnValue(domRect(box));
+    }
+    // Fake compositor standing in for WebKit's hit test: topmost first. clipped-row
+    // is absent because its painted rect (layout ∩ clip-pane) is empty.
+    const PAINT_ORDER = ['overlay', 'shown-row-label', 'other-panel', 'clip-pane', 'covered-button'];
+    vi.spyOn(document, 'elementFromPoint').mockImplementation((x: number, y: number) => {
+      const id = PAINT_ORDER.find((candidate) => boxContains(LAYOUT[candidate], x, y));
+      return id === undefined ? null : byId(id);
+    });
+    return LAYOUT;
+  }
+
+  async function layoutMetricsOf(id: number, testId: string): Promise<any> {
+    return dispatchCmd(capturedHandler!, id, 'get_layout_metrics', {
+      selector: `[data-testid="${testId}"]`,
+    });
+  }
+
+  function centreOf(bounds: Box): { x: number; y: number } {
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  }
 
   it('(a) get_window_state reports devicePixelRatio as a number', async () => {
     Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1.5 });
@@ -246,7 +487,7 @@ describe('debug contract — coordinate convention (step-5)', () => {
     // Pins the get_layout_metrics→click(center) convention I1 will wrap.
     // The center is in the same CSS-logical-px frame as getBoundingClientRect,
     // so a synthetic MouseEvent at (centerX, centerY) fires the element's handler.
-    // NOTE: elementFromPoint hit-test (OS layout) is deferred to I1's real-GUI e2e.
+    // Whether elementFromPoint at that centre reaches the element is (d).
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'click-target');
     document.body.appendChild(el);
@@ -276,6 +517,41 @@ describe('debug contract — coordinate convention (step-5)', () => {
     expect(receivedX).toBeLessThanOrEqual(BOUNDS.x + BOUNDS.width);
     expect(receivedY).toBeGreaterThanOrEqual(BOUNDS.y);
     expect(receivedY).toBeLessThanOrEqual(BOUNDS.y + BOUNDS.height);
+  });
+
+  it('(d) hitTestable predicts the round-trip: click_at at the bounds centre fires the handler iff hitTestable', async () => {
+    const layout = mountHitFixture();
+    await initDebugBridge(makeStores());
+
+    // landsOn: the element click_at at the target's bounds centre resolves to.
+    const CASES: Record<string, { hitTestable: boolean; landsOn: string }> = {
+      'shown-row': { hitTestable: true, landsOn: 'shown-row-label' },
+      'clipped-row': { hitTestable: false, landsOn: 'other-panel' },
+      'other-panel': { hitTestable: true, landsOn: 'other-panel' },
+      'covered-button': { hitTestable: false, landsOn: 'overlay' },
+    };
+    let id = 110;
+    for (const [testId, expected] of Object.entries(CASES)) {
+      const el = document.querySelector(`[data-testid="${testId}"]`) as HTMLElement;
+      let received: { x: number; y: number } | undefined;
+      const onClick = (e: MouseEvent) => {
+        received = { x: e.clientX, y: e.clientY };
+      };
+      el.addEventListener('click', onClick);
+
+      const metrics = await layoutMetricsOf(id++, testId);
+      const centre = centreOf(metrics.bounds);
+      const click = (await dispatchCmd(capturedHandler!, id++, 'click_at', centre)) as any;
+      el.removeEventListener('click', onClick);
+
+      expect(metrics.bounds, `${testId}: bounds are the unclipped layout rect`).toEqual(layout[testId]);
+      expect(metrics.visible, `${testId}: visible ignores clipping and occlusion`).toBe(true);
+      expect(metrics.hitTestable, `${testId}: hitTestable`).toBe(expected.hitTestable);
+      expect(click.target?.testId, `${testId}: click_at at the centre lands on`).toBe(expected.landsOn);
+      expect(received, `${testId}: handler fires at the centre iff hitTestable`).toEqual(
+        metrics.hitTestable ? centre : undefined,
+      );
+    }
   });
 });
 
@@ -399,5 +675,148 @@ describe('debug contract — pick↔raycast agreement (step-7, real three)', () 
     expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
     ctx.dispose();
     geometry.dispose();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera-framing coherence for sub-150 mm parts (task 6965)
+//
+// Pins the model-derived orbit floor (docs/debug-mcp-contract.md §6 point 3) against
+// the dogfood signature it replaced: a fixed floor that OrbitControls.update() clamps
+// to unconditionally (_clampDistance), so a small part is silently relocated out and
+// a follow-up zoom_camera saturates, reporting distanceDelta: 0 as success.
+//
+// Real three AND a real OrbitControls, because _clampDistance is the library
+// behaviour under test; a hand-rolled stub would pass in both the broken and the
+// fixed state.  Every assertion reads LIVE state (controls.getDistance(),
+// camera.position) rather than a command's echoed response.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug contract — small-part camera framing (real three + real OrbitControls)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let controls: import('three/addons/controls/OrbitControls.js').OrbitControls;
+
+  // A 75 mm-long probe, matching the litter-tray round-3 dogfood part (#6965).  Metres.
+  const PROBE = { x: 0.075, y: 0.02, z: 0.01 };
+  // fitCameraToBox frames the sphere circumscribing the box: radius = ½·diagonal.
+  const RADIUS = 0.5 * Math.hypot(PROBE.x, PROBE.y, PROBE.z);
+  // The expected framing distance comes from fitCameraToBox's own formula
+  // (`fittedDistanceFor`) at the app's real FOV, never a hand-derived multiple.
+  const ASPECT = 800 / 600;
+  const ZOOM_SCALE = 0.3;
+
+  let FIT_DISTANCE: number;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    await initDebugBridge(makeStores());
+    expect(capturedHandler).toBeDefined();
+
+    const { Scene, PerspectiveCamera, Mesh, BoxGeometry, Box3 } = await import('three');
+    const { fitCameraToBox } = await import('../viewport/fitCamera');
+    const { CAMERA_FOV_DEG } = await import('../viewport/scene');
+    const { createControls } = await import('../viewport/controls');
+    const { fittedDistanceFor } = await import('../viewport/orbitDistance');
+
+    FIT_DISTANCE = fittedDistanceFor(RADIUS, CAMERA_FOV_DEG, ASPECT);
+
+    const scene = new Scene();
+    // Same fov/aspect/near/far as createScene, so the framing arithmetic under test is
+    // the shipped arithmetic.  up stays the three default (0,1,0) rather than
+    // createScene's Z-up: the camera here looks straight down -Z, which would be the
+    // orbit pole under Z-up and make the spherical maths degenerate for an unrelated reason.
+    const camera = new PerspectiveCamera(CAMERA_FOV_DEG, ASPECT, 0.1, 10000);
+    camera.position.set(0, 0, 1);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+
+    const mesh = new Mesh(new BoxGeometry(PROBE.x, PROBE.y, PROBE.z));
+    mesh.name = 'entity/probe';
+    mesh.updateMatrixWorld();
+    scene.add(mesh);
+
+    const domElement = document.createElement('canvas');
+    Object.defineProperty(domElement, 'clientHeight', { value: 600 });
+    Object.defineProperty(domElement, 'clientWidth', { value: 800 });
+    vi.spyOn(domElement, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, width: 800, height: 600,
+      x: 0, y: 0, right: 800, bottom: 600, toJSON: () => ({}),
+    } as DOMRect);
+
+    // createControls, not `new OrbitControls`, so the startup minDistance under test is
+    // the one the app actually seeds.
+    controls = createControls(camera, domElement).controls;
+    controls.enableDamping = false;
+    controls.update();
+
+    const box = new Box3().expandByObject(mesh);
+
+    window.__REIFY_DEBUG__!.viewport = {
+      scene,
+      camera,
+      renderer: { domElement, render: vi.fn() } as any,
+      getMeshes: () => new Map([['entity/probe', mesh]]),
+      getGhostMeshes: () => new Map(),
+      // Mirrors selection.ts's fitToView (fitCameraToBox over the mesh bounds), plus the
+      // controls.update() that Viewport.tsx's RAF loop runs on the very next frame — which
+      // is where _clampDistance actually bites.
+      fitToView: () => {
+        fitCameraToBox(camera, box, { controls });
+        controls.update();
+      },
+      flyToEntity: vi.fn(),
+      controls: controls as any,
+    };
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('fit_to_view frames a 75 mm part at its computed distance, not a fixed floor', async () => {
+    const result = (await dispatchCmd(capturedHandler!, 6001, 'fit_to_view', {})) as any;
+    expect(result.ok).toBe(true);
+
+    // LIVE state, not the echoed response: a fixed floor would show up here as a
+    // _clampDistance relocation that no response reports.
+    expect(controls.getDistance()).toBeCloseTo(FIT_DISTANCE, 5);
+    expect(controls.getDistance()).toBeLessThan(0.5);
+  });
+
+  it('zoom_camera actually dollies in from a fitted small part', async () => {
+    await dispatchCmd(capturedHandler!, 6002, 'fit_to_view', {});
+    const fitted = controls.getDistance();
+
+    const result = (await dispatchCmd(capturedHandler!, 6003, 'zoom_camera', {
+      scale: ZOOM_SCALE,
+    })) as any;
+
+    // _dollyIn multiplies the scale into the orbit radius (OrbitControls.js:1034), so
+    // scale 0.3 means "30% of the current distance".
+    expect(result.ok).toBe(true);
+    expect(result.distanceDelta).toBeGreaterThan(0);
+    expect(controls.getDistance()).toBeCloseTo(fitted * ZOOM_SCALE, 5);
+  });
+
+  it('pick_entity_at still resolves the part from the close-in pose', async () => {
+    await dispatchCmd(capturedHandler!, 6004, 'fit_to_view', {});
+    await dispatchCmd(capturedHandler!, 6005, 'zoom_camera', { scale: ZOOM_SCALE });
+
+    const result = (await dispatchCmd(capturedHandler!, 6006, 'pick_entity_at', {
+      x: 400,
+      y: 300,
+    })) as any;
+
+    // The screenshot → set_camera → pick → identify loop has to work at the close-in
+    // pose, not just at the fitted one.
+    expect(result.hit).toBe(true);
+    expect(result.entityPath).toBe('entity/probe');
+    // Canvas centre looks straight down -Z at the box centre, so the hit is the +Z face.
+    expect(result.point.z).toBeCloseTo(PROBE.z / 2, 5);
   });
 });

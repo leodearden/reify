@@ -7,8 +7,9 @@
 //! expressions, strips its `type_params`, and rewrites the originating
 //! `SubComponentDecl.structure_name` to the monomorph name.
 
-use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::compile_source_with_stdlib;
+use reify_config::Manifest;
+use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
+use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 
 /// Keystone test: a single `auto:` use-site produces a monomorph template.
 ///
@@ -812,5 +813,787 @@ fn non_constructible_two_use_sites_emits_one_diagnostic() {
         1,
         "expected exactly one 'Bearing$RequiredSeal' monomorph template, got: {:?}",
         monomorphs
+    );
+}
+
+// ─── task 6854: tighten partial-coverage guard beyond !sigma.is_empty() ──────
+
+/// Depth-bound BFS-fallback partial resolution: `max_depth=1` forces a 2-param
+/// `auto:` use-site into the v0.1 BFS fallback, which halts on U's
+/// `NoCandidate` (no `Gasket` implementor exists) after already selecting T.
+/// `resolve_auto_type_params_with_backtracking`'s joint-recheck only runs when
+/// `outcome.substitution.len() == params.len()` (auto_type_param.rs:1586), so
+/// this PARTIAL substitution (`{T: SealA}`, U unresolved) sails through
+/// unchanged — today's `!sigma.is_empty()` guard in `auto_type_param_phase.rs`
+/// still synthesizes a "Widget$SealA" monomorph with `type_params` cleared
+/// while its `slot_u` cell keeps `Type::TypeParam("U")`.
+///
+/// RED today (#6854): the broken monomorph is synthesized and passes the old
+/// guard. GREEN once the guard requires full `target.type_params` coverage.
+#[test]
+fn depth_bound_partial_resolution_synthesizes_no_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+
+    let cfg = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 1\n")
+        .expect("valid manifest")
+        .auto_type_params()
+        .clone();
+
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let compiled = reify_compiler::compile_with_stdlib_with_config(&parsed, &cfg);
+
+    // (1) No partial monomorph is synthesized.
+    assert!(
+        !compiled.templates.iter().any(|t| t.name == "Widget$SealA"),
+        "partial resolution (T selected, U: NoCandidate) must NOT synthesize \
+         'Widget$SealA'; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (2) WidgetAssembly's sub 'w' must still reference the generic template.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template on partial \
+         resolution, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (3) General invariant: no '$'-named, type-params-empty template retains
+    // a top-level TypeParam value cell.
+    let leaks: Vec<String> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name.contains('$') && t.type_params.is_empty())
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+                .map(move |c| {
+                    format!(
+                        "template '{}' cell '{}': {:?}",
+                        t.name, c.id.member, c.cell_type
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "invariant violation: a '$'-named template with empty type_params \
+         retains a TypeParam value cell: {:?}",
+        leaks
+    );
+
+    // (4) The resolver's own diagnostic still fires — the fix must not
+    // suppress it.
+    let no_candidate_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate))
+        .collect();
+    assert!(
+        !no_candidate_errors.is_empty(),
+        "expected AutoTypeParamNoCandidate to still fire on U's zero-candidate \
+         pool; got diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// Cross-product-cap BFS-fallback partial resolution: `max_cross_product_size=1`
+/// with T (1 candidate) x U (2 candidates, `GasketA`/`GasketB`) = cross-product
+/// size 2 > 1 forces the same BFS fallback. BFS selects T (`SealA`, sole
+/// candidate) then hits U's ≥2-feasible-candidates `Ambiguous` outcome (strict
+/// `auto:`, not `auto(free):`) and halts — again a PARTIAL substitution
+/// (`{T: SealA}` only) that today's `!sigma.is_empty()` guard still turns into
+/// a "Widget$SealA" monomorph with a leaked `Type::TypeParam("U")` slot_u cell.
+///
+/// RED today (#6854); GREEN once the guard requires full `target.type_params`
+/// coverage.
+#[test]
+fn cross_product_cap_partial_resolution_synthesizes_no_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def GasketB : Gasket { param g : Real = 1.5 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+
+    let cfg = Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 1\n")
+        .expect("valid manifest")
+        .auto_type_params()
+        .clone();
+
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let compiled = reify_compiler::compile_with_stdlib_with_config(&parsed, &cfg);
+
+    // (1) No partial monomorph is synthesized.
+    assert!(
+        !compiled.templates.iter().any(|t| t.name == "Widget$SealA"),
+        "partial resolution (T selected, U: Ambiguous) must NOT synthesize \
+         'Widget$SealA'; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (2) WidgetAssembly's sub 'w' must still reference the generic template.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template on partial \
+         resolution, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (3) General invariant: no '$'-named, type-params-empty template retains
+    // a top-level TypeParam value cell.
+    let leaks: Vec<String> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name.contains('$') && t.type_params.is_empty())
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+                .map(move |c| {
+                    format!(
+                        "template '{}' cell '{}': {:?}",
+                        t.name, c.id.member, c.cell_type
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "invariant violation: a '$'-named template with empty type_params \
+         retains a TypeParam value cell: {:?}",
+        leaks
+    );
+
+    // (4) The resolver's own diagnostic still fires — the fix must not
+    // suppress it.
+    let ambiguous_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous))
+        .collect();
+    assert!(
+        !ambiguous_errors.is_empty(),
+        "expected AutoTypeParamAmbiguous to still fire on U's 2-feasible-candidate \
+         pool; got diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// Mixed explicit + auto type-args (shape C, #6854): `Widget<SealA, auto: Gasket>()`
+/// gives T a fully-explicit type-arg at the call site — `entity.rs` resolves it
+/// directly to `Type::StructureRef("SealA")` in the sub's `type_args` WITHOUT ever
+/// recording an `AutoClause` for T (only `Auto` type-args become clauses). So
+/// `params.len() == 1` (U only) and `sigma.len() == 1` — step-2's
+/// `sigma.len() == params.len()` check PASSES even though T, a declared type
+/// parameter of `Widget`, was never substituted into the monomorph clone's own
+/// `slot_t` cell.
+///
+/// Review round 2 (#6854) established that SKIPPING synthesis here — step-4's
+/// behaviour — is unsafe rather than a safe degradation: the generic `Widget`
+/// template is only harmless while nothing points at it, and
+/// `assert_value_cell_types_representable` walks the hydrated graph, not
+/// `compiled.templates`, so leaving `sub w` on the generic drags its
+/// `Type::TypeParam` cells straight into a hydration-time panic (see the
+/// eval-level sibling test below). An explicitly-supplied type-arg is not
+/// unbound — it is already resolved, just not by this resolver — so the
+/// correct fix SEEDS `sigma`/`candidates_by_position` from the sub's
+/// already-resolved explicit type-arg, reaching full `target.type_params`
+/// coverage and synthesizing a correct `Widget$SealA$GasketA` monomorph.
+///
+/// RED against HEAD (step-4's skip-on-partial guard, no seeding yet):
+/// `Widget$SealA$GasketA` does not exist and `sub w` still references the
+/// generic `Widget`. GREEN once step-6 lands the seeding.
+#[test]
+fn mixed_explicit_and_auto_type_args_synthesize_full_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) The seeded monomorph IS synthesized, with BOTH slots substituted —
+    // slot_t from the seeded explicit arg, slot_u from the resolver.
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget$SealA$GasketA")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected seeded monomorph 'Widget$SealA$GasketA' in compiled.templates, \
+                 got: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph 'Widget$SealA$GasketA' must have no type_params, got: {:?}",
+        monomorph.type_params
+    );
+    let slot_t = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_t")
+        .expect("expected 'slot_t' value cell in 'Widget$SealA$GasketA'");
+    assert_eq!(
+        slot_t.cell_type,
+        Type::StructureRef("SealA".to_string()),
+        "'slot_t' cell_type must be StructureRef(\"SealA\") — seeded from the \
+         explicit type-arg, got: {:?}",
+        slot_t.cell_type
+    );
+    let slot_u = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_u")
+        .expect("expected 'slot_u' value cell in 'Widget$SealA$GasketA'");
+    assert_eq!(
+        slot_u.cell_type,
+        Type::StructureRef("GasketA".to_string()),
+        "'slot_u' cell_type must be StructureRef(\"GasketA\"), got: {:?}",
+        slot_u.cell_type
+    );
+
+    // (2) General invariant: no '$'-named, type-params-empty template retains
+    // a top-level TypeParam value cell.
+    let leaks: Vec<String> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name.contains('$') && t.type_params.is_empty())
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+                .map(move |c| {
+                    format!(
+                        "template '{}' cell '{}': {:?}",
+                        t.name, c.id.member, c.cell_type
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "invariant violation: a '$'-named template with empty type_params \
+         retains a TypeParam value cell: {:?}",
+        leaks
+    );
+
+    // (3) WidgetAssembly's sub 'w' now references the seeded monomorph, and
+    // its type_args are unchanged by seeding (the explicit T slot was never
+    // rewritten — it already held its final StructureRef).
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget$SealA$GasketA",
+        "sub 'w' must reference the seeded monomorph once full coverage is \
+         reached, got: {:?}",
+        sub_w.structure_name
+    );
+    assert_eq!(
+        sub_w.type_args,
+        vec![
+            Type::StructureRef("SealA".to_string()),
+            Type::StructureRef("GasketA".to_string()),
+        ],
+        "sub 'w' type_args must remain [StructureRef(SealA), StructureRef(GasketA)] \
+         — unchanged by seeding, got: {:?}",
+        sub_w.type_args
+    );
+
+    // (4) Zero Error diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        0,
+        "expected zero error diagnostics for this seeded mixed shape, got: {:?}",
+        errors
+    );
+}
+
+/// Companion to the test above, and the EXACT shape review round 2 used to
+/// demonstrate the step-4 regression: T is PHANTOM w.r.t. top-level value
+/// cells — `Widget` declares no `slot_t` at all, only `slot_u : U`. Measured
+/// on this worktree: this source compiled AND evaluated cleanly (0
+/// diagnostics) under the ORIGINAL pre-#6854 `!sigma.is_empty()` guard, and
+/// PANICS under step-4's skip-on-partial guard at
+/// `crates/reify-eval/src/engine_eval.rs:210`
+/// (`unrepresentable cell_type: value cell 'Widget.slot_u' has cell_type
+/// TypeParam("U")`) — because skipping synthesis leaves `sub w` pointing at
+/// the generic `Widget` template, which is exactly what drags its
+/// `Type::TypeParam` cell into the hydrated graph. See the eval-level sibling
+/// test below for the assertion that actually catches this.
+///
+/// RED against HEAD for the same reason as the non-phantom sibling: no
+/// `Widget$SealA$GasketA` monomorph is synthesized. GREEN once step-6 lands.
+#[test]
+fn mixed_explicit_and_auto_type_args_phantom_param_synthesize_full_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget$SealA$GasketA")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected seeded monomorph 'Widget$SealA$GasketA' in compiled.templates \
+                 (phantom T), got: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph 'Widget$SealA$GasketA' must have no type_params, got: {:?}",
+        monomorph.type_params
+    );
+    let slot_u = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_u")
+        .expect("expected 'slot_u' value cell in 'Widget$SealA$GasketA'");
+    assert_eq!(
+        slot_u.cell_type,
+        Type::StructureRef("GasketA".to_string()),
+        "'slot_u' cell_type must be StructureRef(\"GasketA\"), got: {:?}",
+        slot_u.cell_type
+    );
+
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert_eq!(
+        sub_w.structure_name, "Widget$SealA$GasketA",
+        "sub 'w' must reference the seeded monomorph even though T is phantom \
+         w.r.t. top-level value cells, got: {:?}",
+        sub_w.structure_name
+    );
+}
+
+/// The assertion steps 1-4 were missing, and the one that would have caught
+/// the regression before review round 2: `compile_source_with_stdlib` alone
+/// cannot see the shape-C defect, because the leaked `Type::TypeParam` sits on
+/// the GENERIC `Widget` template — always present in `compiled.templates` and
+/// harmless until a sub points at it — while
+/// `assert_value_cell_types_representable` runs over the HYDRATED GRAPH, not
+/// over `compiled.templates`. Only `check_source_with_stdlib` (compile +
+/// evaluate) can distinguish "sound compile, sound eval" from "sound compile,
+/// panics at hydration".
+///
+/// RED against HEAD: both the non-phantom and phantom sources panic inside
+/// `check_source_with_stdlib` at `engine_eval.rs:210`
+/// (`unrepresentable cell_type ... TypeParam(...) post-compilation`), because
+/// step-4's guard skips synthesis and leaves `sub w` on the generic `Widget`
+/// template. GREEN once step-6 seeds `sigma` so a correct monomorph is
+/// synthesized and `sub w` points at it instead.
+#[test]
+fn mixed_explicit_and_auto_type_args_evaluate_without_typeparam_leak() {
+    let non_phantom_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+    let phantom_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<SealA, auto: Gasket>() }
+    "#;
+
+    for (label, source) in [
+        ("non-phantom", non_phantom_source),
+        ("phantom", phantom_source),
+    ] {
+        let result = check_source_with_stdlib(source);
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            0,
+            "[{label}] expected zero error diagnostics evaluating the mixed \
+             explicit+auto shape, got: {:?}",
+            errors
+        );
+    }
+}
+
+/// Residual un-seedable skip path (#6854): the seeding loop requires a
+/// concrete `Type::StructureRef` at the explicit position, but a use-site
+/// nested inside another generic can supply an ENCLOSING generic's own
+/// `Type::TypeParam` instead. In
+/// `structure def Outer<X: Seal> { sub w = Widget<X, auto: Gasket>() }`, `X`
+/// is `Outer`'s own declared type parameter, not a concrete structure — so
+/// `sub.type_args[0]` is `Type::TypeParam("X")`, which the seeding loop's
+/// `if let Some(Type::StructureRef(name)) = ...` pattern does not match.
+/// `T` is therefore never added to `sigma`, coverage stays partial, and
+/// synthesis is (still, correctly) skipped — but that skip is currently
+/// SILENT: zero diagnostics, and `check_source_with_stdlib` panics at
+/// hydration once something instantiates `Outer` concretely.
+///
+/// This is a PRE-EXISTING gap on main, not a #6854 regression: nothing
+/// monomorphizes `Outer` itself (`Top`'s use-site `Outer<SealA>()` carries no
+/// `auto:` clause, so it never enters this phase at all), so the original
+/// `!sigma.is_empty()` guard panics on this source too. Closing it properly
+/// means general monomorphization of explicitly-instantiated generics, which
+/// is out of scope here — this test's contract is narrower: make the
+/// compiler LOUD rather than silent about the gap.
+///
+/// RED after step-6: this source compiles with zero Error diagnostics today.
+/// GREEN once step-8 adds the residual-skip diagnostic.
+#[test]
+fn unseedable_explicit_type_arg_emits_diagnostic_rather_than_silent_leak() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def Outer<X: Seal> { sub w = Widget<X, auto: Gasket>() }
+        structure def Top { sub o = Outer<SealA>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) Exactly one Error diagnostic, naming the unbound type parameter
+    // ('T'), the target ('Widget'), and the owner sub-component ('w') —
+    // enough for a user to locate the use-site. Substring checks are
+    // quote-delimited so they cannot false-positive on stray letters
+    // elsewhere in the prose (e.g. the word "would").
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error diagnostic for the un-seedable explicit \
+         type-arg, got: {:?}",
+        compiled.diagnostics
+    );
+    let message = &errors[0].message;
+    assert!(
+        message.contains("\"T\""),
+        "diagnostic message must name the unbound type parameter 'T', got: {message:?}"
+    );
+    assert!(
+        message.contains("'Widget'"),
+        "diagnostic message must name the target 'Widget', got: {message:?}"
+    );
+    assert!(
+        message.contains("'w'"),
+        "diagnostic message must name the owner sub-component 'w', got: {message:?}"
+    );
+
+    // (2) No monomorph template is synthesized — partial coverage still
+    // skips synthesis; this step changes only whether the skip is reported.
+    assert!(
+        !compiled
+            .templates
+            .iter()
+            .any(|t| t.name.starts_with("Widget$")),
+        "un-seedable partial coverage must NOT synthesize a 'Widget$...' \
+         monomorph; got templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // (3) Outer's sub 'w' still references the generic 'Widget' template.
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("expected 'Outer' template");
+    let sub_w = outer
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'Outer'");
+    assert_eq!(
+        sub_w.structure_name, "Widget",
+        "sub 'w' must still reference the generic 'Widget' template, got: {:?}",
+        sub_w.structure_name
+    );
+}
+
+/// Companion assertion pinning the diagnostic-gate design (reviewer detail
+/// (b)): the residual-skip diagnostic must NOT double-report on shapes A/B
+/// (step-1), which already carry the resolver's own
+/// `AutoTypeParamNoCandidate` / `AutoTypeParamAmbiguous` error. The gate is
+/// `params.iter().all(|p| sigma.contains_key(&p.name))` — "the resolver
+/// bound everything it was asked to bind" — which shapes A/B fail (their
+/// sole `auto:`-clause param was never bound), so they must never reach the
+/// new diagnostic. A `diagnostics.len()`-based gate (snapshot before the
+/// resolver call, scan the tail for new errors) would be fragile to the
+/// severity the resolver assigns each halt reason; this assertion is what
+/// would catch that fragility slipping through.
+#[test]
+fn shape_a_and_shape_b_partial_resolution_emit_no_additional_diagnostic() {
+    let depth_bound_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+    let depth_cfg = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 1\n")
+        .expect("valid manifest")
+        .auto_type_params()
+        .clone();
+    let depth_parsed =
+        reify_compiler::parse_with_stdlib(depth_bound_source, ModulePath::single("test"));
+    let depth_compiled = reify_compiler::compile_with_stdlib_with_config(&depth_parsed, &depth_cfg);
+    let depth_errors: Vec<_> = depth_compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !depth_errors.is_empty()
+            && depth_errors
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+        "shape A (depth-bound) must emit only its own AutoTypeParamNoCandidate \
+         error(s) and no additional residual-skip diagnostic, got: {:?}",
+        depth_errors
+    );
+
+    let cross_product_source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def GasketB : Gasket { param g : Real = 1.5 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<auto: Seal, auto: Gasket>() }
+    "#;
+    let cross_product_cfg =
+        Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 1\n")
+            .expect("valid manifest")
+            .auto_type_params()
+            .clone();
+    let cross_product_parsed =
+        reify_compiler::parse_with_stdlib(cross_product_source, ModulePath::single("test"));
+    let cross_product_compiled =
+        reify_compiler::compile_with_stdlib_with_config(&cross_product_parsed, &cross_product_cfg);
+    let cross_product_errors: Vec<_> = cross_product_compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !cross_product_errors.is_empty()
+            && cross_product_errors
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous)),
+        "shape B (cross-product cap) must emit only its own AutoTypeParamAmbiguous \
+         error(s) and no additional residual-skip diagnostic, got: {:?}",
+        cross_product_errors
+    );
+}
+
+/// Shape D (#6854 review round 3): a type parameter with a DECLARED DEFAULT
+/// whose type-arg the use-site legitimately OMITS.
+///
+/// `reify_ir::TypeParam::default` is a supported language feature, and
+/// `check_type_param_bounds` (entity.rs) honours it via its `effective_arg`
+/// fallback: when `type_args.get(i)` is `None` it uses `tp.default` rather
+/// than reporting a missing type-argument. The α-phase seeding loop must
+/// mirror that fallback, or a use-site that omits a defaulted trailing
+/// type-arg lands in residual-partial coverage: synthesis is refused AND the
+/// un-seedable diagnostic fires, rejecting a previously-valid program over a
+/// type-argument the user never had to supply in the first place.
+///
+/// The default is already-resolved information, exactly like an explicit
+/// type-arg, so seeding it is the correct remedy — not a workaround.
+#[test]
+fn omitted_defaulted_type_arg_seeds_from_default_and_synthesizes_monomorph() {
+    let source = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def SealA : Seal { param d : Real = 2.0 }
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def Widget<U: Gasket, T: Seal = SealA> { param slot_u : U  param slot_t : T }
+        structure def WidgetAssembly { sub w = Widget<auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) No errors at all — this program was valid before #6854 and must stay valid.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        0,
+        "a use-site that omits a DEFAULTED type-arg must compile cleanly, got: {:?}",
+        errors
+    );
+
+    // (2) The monomorph is synthesized with BOTH slots substituted — slot_u
+    // from the resolver, slot_t seeded from the type parameter's default.
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget$GasketA$SealA")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected monomorph 'Widget$GasketA$SealA' in compiled.templates, got: {:?}",
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph must have no type_params, got: {:?}",
+        monomorph.type_params
+    );
+    let slot_u = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_u")
+        .expect("expected 'slot_u' value cell");
+    assert_eq!(
+        slot_u.cell_type,
+        Type::StructureRef("GasketA".to_string()),
+        "'slot_u' must be StructureRef(\"GasketA\"), got: {:?}",
+        slot_u.cell_type
+    );
+    let slot_t = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "slot_t")
+        .expect("expected 'slot_t' value cell");
+    assert_eq!(
+        slot_t.cell_type,
+        Type::StructureRef("SealA".to_string()),
+        "'slot_t' must be StructureRef(\"SealA\") — seeded from the type \
+         parameter's DEFAULT, got: {:?}",
+        slot_t.cell_type
+    );
+
+    // (3) The use-site points at the monomorph, not the generic.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w'");
+    assert_eq!(
+        sub_w.structure_name, "Widget$GasketA$SealA",
+        "sub 'w' must reference the synthesized monomorph, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (4) Eval-level: the program hydrates cleanly (no Type::TypeParam reaches
+    // `assert_value_cell_types_representable`).
+    let result = check_source_with_stdlib(source);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected clean evaluation, got: {:?}",
+        eval_errors
     );
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { flushMacrotasks, withSuppressedRejections } from './test-utils';
+import { deferred, flushMacrotasks, withSuppressedRejections } from './test-utils';
 import type { Location, LspClient } from '../editor/lspClient';
+import type { VersionSkewGuard } from '../editor/versionSkew';
 
 // Mock Tauri + CodeMirror modules so importing references.ts (which only needs
 // the EditorView / Location / LspClient *types*) never drags real DOM or Tauri
@@ -181,5 +182,258 @@ describe('findUsesCommand', () => {
       );
       expect(emittedNonEmpty).toBe(false);
     });
+  });
+});
+
+/**
+ * A document whose LSP version moves the way Editor's does, behind a
+ * VersionSkewGuard: a keystroke either already went out as a didChange (the
+ * version bumps at once) or is still inside the didChange debounce (it bumps
+ * only when syncServer flushes it).
+ */
+function makeVersionedDocument(start: number | undefined = 1) {
+  let version = start;
+  let unsent = false;
+  const guard: VersionSkewGuard = {
+    currentVersion: vi.fn((_uri: string) => version),
+    syncServer: vi.fn((_view: EditorView): Promise<void> | null => {
+      if (!unsent) return null;
+      unsent = false;
+      version = (version ?? 0) + 1;
+      return Promise.resolve();
+    }),
+  };
+  return {
+    guard,
+    /** A keystroke still inside the didChange debounce. */
+    typeUnsent: () => {
+      unsent = true;
+    },
+    /** A keystroke whose debounced didChange already went out. */
+    typeSent: () => {
+      version = (version ?? 0) + 1;
+    },
+  };
+}
+
+describe('findUsesCommand version-skew guard', () => {
+  const URI = 'file:///test.ri';
+  // STALE and FRESH sit on distinct lines so a stale result can never
+  // masquerade as the fresh one.
+  const STALE: Location[] = [
+    { uri: URI, range: { start: { line: 2, character: 4 }, end: { line: 2, character: 9 } } },
+    { uri: URI, range: { start: { line: 5, character: 8 }, end: { line: 5, character: 13 } } },
+  ];
+  const FRESH: Location[] = [
+    { uri: URI, range: { start: { line: 3, character: 4 }, end: { line: 3, character: 9 } } },
+    { uri: URI, range: { start: { line: 6, character: 8 }, end: { line: 6, character: 13 } } },
+  ];
+
+  // head=15 on line 3 starting at offset 10 → LSP position (2, 5).
+  const cursorView = () =>
+    makeMockView({ head: 15, lineAt: (_pos: number) => ({ number: 3, from: 10 }) });
+
+  const shownLines = (onResults: ReturnType<typeof vi.fn>): number[][] =>
+    onResults.mock.calls.map((call) => (call[0] as { line: number }[]).map((r) => r.line));
+
+  it('passes an answer through unchanged when the document did not move', async () => {
+    const doc = makeVersionedDocument();
+    const references = vi.fn().mockResolvedValue(STALE);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(1);
+    expect(references).toHaveBeenCalledWith(URI, 2, 5, true);
+    expect(shownLines(onResults)).toEqual([[2, 5]]);
+  });
+
+  it('shows nothing when every answer is computed against text the user has since changed', async () => {
+    const doc = makeVersionedDocument();
+    const references = vi.fn().mockImplementation(() => {
+      doc.typeSent();
+      return Promise.resolve(STALE);
+    });
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    // Re-asked once, never a third time: a typing user can invalidate every answer.
+    expect(references).toHaveBeenCalledTimes(2);
+    expect(onResults).not.toHaveBeenCalled();
+  });
+
+  it('re-asks after a stale answer and shows only the fresh one', async () => {
+    const doc = makeVersionedDocument();
+    const references = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        doc.typeSent();
+        return Promise.resolve(STALE);
+      })
+      .mockResolvedValueOnce(FRESH);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(2);
+    expect(references).toHaveBeenNthCalledWith(1, URI, 2, 5, true);
+    expect(references).toHaveBeenNthCalledWith(2, URI, 2, 5, true);
+    expect(shownLines(onResults)).toEqual([[3, 6]]);
+    expect(shownLines(onResults).flat()).not.toContain(2);
+    expect(shownLines(onResults).flat()).not.toContain(5);
+  });
+
+  it('re-asks where the cursor has moved to, since the edit that made the answer stale can shift the symbol', async () => {
+    const doc = makeVersionedDocument();
+    const view = cursorView();
+    const references = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        // A line inserted above the cursor: CodeMirror carries the cursor, and
+        // the symbol under it, down to line 4 (LSP line 3).
+        doc.typeSent();
+        Object.assign(view, {
+          state: makeMockView({ head: 25, lineAt: (_pos: number) => ({ number: 4, from: 20 }) }).state,
+        });
+        return Promise.resolve(STALE);
+      })
+      .mockResolvedValueOnce(FRESH);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(view);
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenNthCalledWith(1, URI, 2, 5, true);
+    expect(references).toHaveBeenNthCalledWith(2, URI, 3, 5, true);
+    expect(shownLines(onResults)).toEqual([[3, 6]]);
+  });
+
+  it('treats an edit typed while the request was in flight, but not yet sent, as invalidating the answer', async () => {
+    const doc = makeVersionedDocument();
+    const references = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        doc.typeUnsent();
+        return Promise.resolve(STALE);
+      })
+      .mockResolvedValueOnce(FRESH);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(2);
+    expect(shownLines(onResults)).toEqual([[3, 6]]);
+  });
+
+  it('hands the server an edit pending at keypress before asking, and does not re-ask afterwards', async () => {
+    const doc = makeVersionedDocument();
+    doc.typeUnsent();
+    const sent = deferred<void>();
+    const syncServer = vi.mocked(doc.guard.syncServer);
+    const syncAsEditorDoes = syncServer.getMockImplementation()!;
+    syncServer.mockImplementationOnce((view: EditorView) => {
+      void syncAsEditorDoes(view);
+      return sent.promise;
+    });
+    const references = vi.fn().mockResolvedValue(FRESH);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+    expect(references).not.toHaveBeenCalled();
+
+    sent.resolve();
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(1);
+    expect(shownLines(onResults)).toEqual([[3, 6]]);
+  });
+
+  it('passes the answer through for an untracked document, whose staleness is unknowable', async () => {
+    const doc = makeVersionedDocument(undefined);
+    const references = vi.fn().mockResolvedValue(STALE);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(1);
+    expect(onResults).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows nothing, and throws nothing, when the re-ask after a stale answer fails', async () => {
+    const doc = makeVersionedDocument();
+    const failure = new Error('server went away');
+    const references = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        doc.typeSent();
+        return Promise.resolve(STALE);
+      })
+      .mockRejectedValueOnce(failure);
+    const onResults = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    try {
+      expect(command(cursorView())).toBe(true);
+      await flushMacrotasks();
+
+      expect(references).toHaveBeenCalledTimes(2);
+      expect(onResults).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('drops, without re-asking, an answer that arrives after a switch to another file (no guard)', async () => {
+    let currentUri = URI;
+    const references = vi.fn().mockImplementation(() => {
+      currentUri = 'file:///other.ri';
+      return Promise.resolve(STALE);
+    });
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => currentUri, { references }, onResults);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(1);
+    expect(onResults).not.toHaveBeenCalled();
+  });
+
+  it('drops, without re-asking, an answer that arrives after a switch to another file whose version the guard has forgotten', async () => {
+    let currentUri = URI;
+    const doc = makeVersionedDocument();
+    // Editor forgets the old URI's counter on a switch, so its version reads
+    // undefined afterwards — unknowable, which the guard alone cannot reject.
+    vi.mocked(doc.guard.currentVersion).mockImplementation(() =>
+      currentUri === URI ? 1 : undefined,
+    );
+    const references = vi.fn().mockImplementation(() => {
+      currentUri = 'file:///other.ri';
+      return Promise.resolve(STALE);
+    });
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => currentUri, { references }, onResults, doc.guard);
+
+    command(cursorView());
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenCalledTimes(1);
+    expect(onResults).not.toHaveBeenCalled();
   });
 });

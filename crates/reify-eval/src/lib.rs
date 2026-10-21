@@ -70,16 +70,21 @@ pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
 pub mod solver_progress;
 pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
+mod solver_posture;
+pub use solver_posture::SolverPosture;
 pub mod appearance;
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
-pub use engine_constraints::GdtCallout;
+pub use engine_constraints::{
+    ConstraintUpgrade, GdtCallout, replace_superseded_constraint_diagnostics,
+};
 // Task β (#5039): required-args cell_eval_ctx free-function constructor
 // (INV-EVAL-2; PRD eval-cell-commit-substrate.md §2.5, §8).
 mod cell_eval_ctx;
 mod engine_demand;
 mod engine_edit;
+mod realization_staleness;
 mod engine_eval;
 mod engine_helpers;
 mod resolve_order;
@@ -96,13 +101,28 @@ pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
-pub(crate) mod arg_acceptance;
+// Task 5791 (PRD docs/prds/v0_6/dimension-checked-readers.md §3 Leg A):
+// `arg_acceptance` was RELOCATED to `crates/reify-ir/src/arg_acceptance.rs`
+// so `reify-stdlib` — which cannot depend on `reify-eval` — shares the same
+// dimension-acceptance rule. This crate-private re-export keeps every
+// pre-existing `crate::arg_acceptance::…` spelling in this crate compiling
+// unchanged, at exactly the former visibility (a `pub use` would widen
+// reify-eval's public API for no reason).
+pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
+pub(crate) mod kernel_owner;
+pub(crate) mod volume_mesh_sources;
 #[cfg(test)]
 mod registry_drift_tests;
+// Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
+// builtin-signature registry. In-crate for the same reason as the sibling above
+// — it asserts against the private `value_type_kind_matches`, unreachable from
+// an integration test. See that module's header for PRD open question 5.
+#[cfg(test)]
+mod registry_parity_tests;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.
@@ -122,6 +142,8 @@ pub mod trajectory_ops;
 pub use source_location::resolve_entity_at_source_position;
 pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
+#[cfg(test)]
+mod engine_hash_tests;
 pub mod field_import_provenance;
 pub mod modal_ops;
 pub mod morph_producer;
@@ -322,7 +344,14 @@ fn value_type_kind_matches(
         Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
-        Value::Enum { .. } => matches!(ty, Type::Enum(_)),
+        Value::Enum { type_name, .. } => match ty {
+            Type::Enum(_) => true,
+            // Annotated generic enum (`param r : Result<Length, String>`): type
+            // args are compile-time only (PRD generic-enum-type-arg-retention
+            // C-5), so the runtime match is name-only, as for StructureInstance.
+            Type::Applied { name, .. } => name == type_name,
+            _ => false,
+        },
         Value::List(_) => matches!(ty, Type::List(_)),
         Value::Set(_) => matches!(ty, Type::Set(_)),
         Value::Map(_) => matches!(ty, Type::Map(_, _)),
@@ -334,7 +363,12 @@ fn value_type_kind_matches(
         Value::Point(_) => matches!(ty, Type::Point { .. }),
         Value::Vector(_) => matches!(ty, Type::Vector { .. }),
         Value::Complex { .. } => matches!(ty, Type::Complex(_)),
-        Value::Orientation { .. } => matches!(ty, Type::Orientation(_)),
+        // Only N=3 is inhabited — see `reify_core::Type::Orientation`'s
+        // variant doc; mirrors `joint_self_check::dof_kind_of`. The sibling
+        // Frame/Transform/AffineMap arms stay permissive under the same
+        // #6336 deferral — that asymmetry is intentional, not an oversight.
+        // #6336 owns widening this arm.
+        Value::Orientation { .. } => matches!(ty, Type::Orientation(3)),
         Value::Frame { .. } => matches!(ty, Type::Frame(_)),
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
@@ -453,7 +487,9 @@ pub struct Engine {
     /// `None` matches the v0.2 `geometry_kernel: None` semantics (no kernel
     /// configured: `geometry_output` is `None` and tessellation skips).
     default_kernel_name: Option<String>,
-    solver: Option<Box<dyn ConstraintSolver>>,
+    /// The constructor's [`SolverPosture`]: `Some` iff it was `Solve(..)`, so
+    /// the engine holds a solver iff it holds a resolution profile.
+    solve_stage: Option<solver_posture::SolveStage>,
     cache: CacheStore,
     /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
     prelude: &'static [CompiledModule],
@@ -596,13 +632,14 @@ pub struct Engine {
     /// (third assertion) and
     /// `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
     ///
-    /// Produced by `engine_edit::compute_changed_realizations` (which
+    /// Produced by `realization_staleness::compute_changed_realizations` (which
     /// recomputes the GHR-β input-cone fold against the post-edit context
     /// and compares it to α's stored `RealizationNodeData.input_cone_hash`),
     /// and consumed by the SUBSEQUENT build — which is why
     /// `reset_per_build_state` classifies it MUST-SURVIVE rather than
-    /// resetting it. Task γ (#4730) reads it to replace the two wholesale
-    /// `clear_realization_cache()` flushes with keyed eviction.
+    /// resetting it. γ (#4730) also reads it at both compare sites as the
+    /// seed of the edit's keyed eviction
+    /// (`realization_staleness::stale_realization_entities`).
     ///
     /// Always present and module-private with no cfg gate — the same shape
     /// as `last_dispatch_count` — so the `engine_edit.rs` write sites need
@@ -852,10 +889,10 @@ pub struct Engine {
     compute_registry: engine_compute::ComputeDispatchRegistry,
     /// Registry of named constraint solvers selectable via the `#solver(<name>)`
     /// module pragma (Task 2300). Populated at runtime startup via
-    /// `register_solver`; the default fallback solver remains `self.solver`
-    /// (set via `with_solver`). At solve time, `Engine::resolve_solver_for_module`
+    /// `register_solver`; the default fallback solver remains `solve_stage`'s
+    /// (replaceable via `with_solver`). At solve time, `Engine::resolve_solver_for_module`
     /// looks up `module.solver_pragma.name` here; on miss it falls back to
-    /// `self.solver` and emits a "named solver not registered" warning.
+    /// that default and emits a "named solver not registered" warning.
     solvers: HashMap<String, Box<dyn ConstraintSolver>>,
     /// Memory-budgeted pool that holds warm-start state donated by removed
     /// nodes between topology edits. Populated by `edit_source` when value
@@ -915,46 +952,40 @@ pub struct Engine {
     /// / `build_snapshot()` / `tessellate_realizations()` calls within a single
     /// `Engine` *as long as the inputs are value-stable*.
     ///
-    /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
-    /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
-    /// near function entry, mirroring the `topology_attribute_table`
-    /// reset-at-hook-point pattern (`TopologyAttributeTable::default()`
-    /// reset in `Engine::reset_per_build_state`, engine_build.rs). That
-    /// mutator flushes the existing cache in place via
-    /// [`RealizationCache::clear`] (task 4152) rather than
-    /// reseating it to a fresh `RealizationCache::new()` (see that method's
-    /// doc for why an in-place clear rather than a reseat). After an edit,
-    /// the next `build()` / `build_snapshot()` cold-misses on every
-    /// realization and re-populates the cache from kernel execution. The
-    /// reset is conservative — the engine cannot prove which cached entries
-    /// survive a given edit without per-cell input-cone analysis we do not
-    /// currently maintain — so the entire cache is flushed on every edit
-    /// regardless of whether the edited cell participates in any
-    /// realization's input cone.
+    /// **Edit-time keyed eviction (task 2874's invariant, γ #4730's
+    /// expression of it)**: `edit_param` and `edit_source` evict, at their
+    /// post-value-cone compare sites, the whole family
+    /// ([`RealizationCache::evict_family`]) of every entity
+    /// `realization_staleness::stale_realization_entities` names: the
+    /// realizations whose input cone moved, their transitive dirty cone, the
+    /// realizations a recompile dropped, and the cross-entity `Sub`
+    /// consumers. Every other body keeps its cached geometry, so the next
+    /// `build()` / `build_snapshot()` re-executes only what the edit
+    /// affected (selective-realization-eviction PRD D4/D5).
     ///
     /// **Public escape hatch (task 2874, step-22)**: production callers can
-    /// also flush the cache explicitly via
+    /// flush the whole cache explicitly via
     /// [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
-    /// (engine_admin.rs) for scenarios where the auto-invalidation hook
-    /// points (`edit_param`, `edit_source`) do not fire — for example,
-    /// kernel swaps via test seams or upstream module reloads that bypass
-    /// `edit_source`. Both auto-invalidation hooks delegate to that public
-    /// mutator so the reset semantics are single-sourced.
+    /// (engine_admin.rs) for scenarios outside those two edits — for
+    /// example, kernel swaps via test seams or upstream module reloads that
+    /// bypass `edit_source`. It flushes in place via
+    /// [`RealizationCache::clear`] (task 4152) rather than reseating the
+    /// cache (see that method's doc for why).
     ///
-    /// Pinned end-to-end by:
-    /// - `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_param`).
-    /// - `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_source`).
+    /// Pinned end-to-end in `tests/harness_tolerance/tolerance_wiring_e2e.rs` by:
+    /// - `edit_param_evicts_only_the_edited_bodys_family_and_the_unaffected_body_still_hits`
+    ///   (covers `edit_param`).
+    /// - `edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one`
+    ///   (covers `edit_source`).
     /// - `clear_realization_cache_public_api_resets_cache_for_production_callers`
-    ///   in `tests/tolerance_wiring_e2e.rs` (covers the public mutator).
+    ///   (covers the public mutator).
     ///
     /// **Scope of the partial-order rule (amendment correction)**: the
     /// `cached_tol ≤ requested_tol` ordering ONLY mitigates *tolerance-driven*
     /// staleness — a tighter demand misses a looser cached entry. It does
     /// NOT cover parameter / source / purpose-binding edits that change the
     /// underlying geometry while keeping `(entity_id, BRep, demanded_tol)`
-    /// constant. The auto-invalidation hooks above close that gap for
+    /// constant. The edit-time keyed eviction above closes that gap for
     /// `edit_param` / `edit_source`. Purpose-binding edits via
     /// `activate_purpose` / `deactivate_purpose` are covered by the
     /// partial-order rule itself when they tighten the demanded tolerance
@@ -997,6 +1028,9 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// The body each VolumeMesh was meshed from, for Phase-B egress; see
+    /// [`crate::volume_mesh_sources`].
+    volume_mesh_sources: crate::volume_mesh_sources::VolumeMeshSources,
     /// Running totals of the per-call eval-cache counters, folded in at the end
     /// of every [`Engine::eval_cached`] call (task 4152).
     ///
@@ -1159,6 +1193,33 @@ pub struct Engine {
     /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
     /// bounds.
     achieved_repr_tol: BTreeMap<String, f64>,
+    /// Per-build static-relate consumption ledger — one row per ZERO-AUTO relate
+    /// scope processed by this build, in `solve_scopes` order (DIC α, task 5415).
+    ///
+    /// `build_with_geometry_output` drops `relate_solutions` after its consumption
+    /// loop, so without this field the `StaticRelateFacts` that
+    /// [`crate::relate_solve::verify_static_scope`] computes would exist only
+    /// inside that function and be unreachable from a completed
+    /// [`Engine::build`] — the surface ζ (#5420)'s `finish_check` ledger reads.
+    /// This task PRODUCES the rows; rendering them into the check summary is
+    /// #5420's leaf.
+    ///
+    /// A SATISFIED zero-auto scope raises no diagnostic, so its row here is the
+    /// ONLY evidence that its relate block was consumed. Dropping it would make
+    /// `verified: 2` and "there was no relate block" indistinguishable downstream —
+    /// the same conflation, one layer up, that the static-verification arm exists
+    /// to remove (`docs/legibility/design-invariants.md` INV-SF-3;
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    ///
+    /// AUTO-FUL scopes never appear: their `RelateSolution::static_facts` is `None`,
+    /// and a solved scope is a different ledger row from a statically-verified one.
+    ///
+    /// Reset on EVERY surface by `reset_per_build_state` (#5069, INV-BUILD-1) and
+    /// repopulated by `build_with_geometry_output`'s relate consumption loop, which
+    /// runs after that reset. Only that one build surface writes it: the other
+    /// surfaces do not run a relate-solve, so for them the field is clearing-only
+    /// and an empty ledger is the honest answer rather than a stale one.
+    relate_static_facts: Vec<(String, crate::relate_solve::StaticRelateFacts)>,
     // ── task #3428 step-6: persistent-cache plumbing ─────────────────────────
     /// On-disk persistent cache root. `None` (the default) disables the
     /// feature entirely — every existing test that does not call
@@ -1279,11 +1340,65 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
+///
+/// # Verdict invariant
+///
+/// A definite verdict never carries a reason: a MUST NOT of
+/// [`reify_ir::ConstraintChecker::check`], asserted wherever a checker result
+/// becomes an entry. The converse, that every Indeterminate carries one, is
+/// only a SHOULD for a checker, so it is asserted on the engine's own verdicts
+/// alone: [`Self::new`] and [`Self::set_verdict`] assert both directions.
 #[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer that
+    /// decided it. Reports render it verbatim and never substitute a guess.
+    pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+}
+
+impl ConstraintCheckEntry {
+    /// An entry for a verdict the engine itself decided.
+    pub fn new(
+        id: reify_core::ConstraintNodeId,
+        label: Option<String>,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) -> Self {
+        debug_assert_reason_matches_verdict(&id, satisfaction, indeterminate_reason.as_ref());
+        Self {
+            id,
+            label,
+            satisfaction,
+            indeterminate_reason,
+        }
+    }
+
+    /// The only sanctioned way to overwrite a verdict after construction: the
+    /// reason moves with the satisfaction, so a re-check can never leave a
+    /// stale reason on a definite verdict or a reasonless Indeterminate.
+    pub fn set_verdict(
+        &mut self,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) {
+        debug_assert_reason_matches_verdict(&self.id, satisfaction, indeterminate_reason.as_ref());
+        self.satisfaction = satisfaction;
+        self.indeterminate_reason = indeterminate_reason;
+    }
+}
+
+fn debug_assert_reason_matches_verdict(
+    id: &reify_core::ConstraintNodeId,
+    satisfaction: Satisfaction,
+    indeterminate_reason: Option<&reify_ir::IndeterminateReason>,
+) {
+    debug_assert_eq!(
+        indeterminate_reason.is_some(),
+        satisfaction == Satisfaction::Indeterminate,
+        "constraint {id}: a reason accompanies exactly an Indeterminate verdict",
+    );
 }
 
 /// Result of a full build (eval + geometry).
@@ -1505,12 +1620,17 @@ fn guard_state_fingerprint(
 ///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
 ///   to the `Value::String` declared for `<entity>.<key>` in the source module's
 ///   `meta {}` blocks (or `Value::Undef` if no such entry exists).
+///
+/// Every engine eval ctx therefore resolves kernel-free selector ctors at ANY
+/// expression depth (#7875), not only as a whole cell default.
 pub(crate) fn eval_ctx_with_meta<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     meta_map: &'a HashMap<String, HashMap<String, String>>,
 ) -> reify_expr::EvalContext<'a> {
-    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+    reify_expr::EvalContext::new(values, functions)
+        .with_meta(meta_map)
+        .with_symbolic_selector_ctor(crate::geometry_ops::try_eval_symbolic_topology_selector)
 }
 
 /// Build the per-template meta-map consumed by `eval_ctx_with_meta`.
@@ -2022,6 +2142,65 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Orientation arity narrowing (task 6546) ───
+
+    /// Locks `Value::Orientation` to `Type::Orientation(3)` only — see
+    /// `reify_core::Type::Orientation`'s variant doc for why N=3 is the only
+    /// inhabited arity.
+    ///
+    /// (a) the sole inhabited arity; (b)/(c) rejected arities (mirrors the
+    /// witnesses `joint_self_check::dof_kind_of` already pins to `None`);
+    /// (d) the `Value::Undef` wildcard sits upstream of this match and is
+    /// unaffected; (e) the sibling `Value::Frame` arm is unaffected.
+    #[test]
+    fn value_type_kind_matches_orientation_value_rejects_non_three_arity() {
+        use reify_core::Type;
+        use reify_ir::Value;
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+
+        // (a) The only inhabited arity; also guards against an
+        // over-narrowing that would reject everything.
+        assert!(
+            value_type_kind_matches(&q, &Type::Orientation(3), None),
+            "Value::Orientation must satisfy Type::Orientation(3), the only inhabited arity (a)"
+        );
+
+        // (b) No value can carry N=2, so Type::Orientation(2) is rejected.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(2), None),
+            "Value::Orientation must be rejected by Type::Orientation(2) — no value can carry N=2 (b)"
+        );
+
+        // (c) Mirrors the arities joint_self_check::dof_kind_of already
+        // pins to None, so the value layer and the classifier agree.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(0), None),
+            "Value::Orientation must be rejected by Type::Orientation(0) (c)"
+        );
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(4), None),
+            "Value::Orientation must be rejected by Type::Orientation(4) (c)"
+        );
+
+        // (d) Value::Undef is the universal wildcard and sits upstream of
+        // this match — unaffected by the narrowing.
+        assert!(
+            value_type_kind_matches(&Value::Undef, &Type::Orientation(2), None),
+            "Value::Undef against Type::Orientation(2) must stay true (universal wildcard) (d)"
+        );
+
+        // (e) The narrowing must not leak into the sibling Value::Frame arm.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Frame(3), None),
+            "Value::Orientation must be rejected by Type::Frame(3) (different outer variant) (e)"
+        );
+    }
+
     // ── value_type_kind_matches: StructureInstance arm (task 3540 / SIR-α) ────
     // step-5: these tests call the *future* 3-arg signature
     // `value_type_kind_matches(value, ty, registry)`. They fail to compile
@@ -2172,6 +2351,61 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Enum arm vs Applied (task 8017 / θ) ────────────
+    // An annotated generic-enum param (`param r : Result<Length, String>`) keeps
+    // `Type::Applied`, while its runtime `Value::Enum` carries only the bare
+    // `type_name`: type args are compile-time only, so the match is name-only.
+
+    /// A real `Result::Ok` construction: bare enum name, non-empty named payload.
+    fn result_ok_enum_value() -> reify_ir::Value {
+        reify_ir::Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            payload: vec![("value".to_string(), reify_ir::Value::length(0.005))],
+        }
+    }
+
+    /// θ: Applied type with the SAME name as the enum value → true (phantom
+    /// args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_enum_value_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let t = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::length(), Type::String],
+        };
+        assert!(
+            value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must match Applied with the same name (phantom args ignored)"
+        );
+    }
+
+    /// θ: Applied type with a DIFFERENT name — a generic-STRUCTURE head such as
+    /// `Holder<Length>`, which `Type::Applied` also carries — → false.
+    #[test]
+    fn value_type_kind_matches_enum_value_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let t = Type::Applied {
+            name: "Holder".to_string(),
+            args: vec![Type::length()],
+        };
+        assert!(
+            !value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must NOT match Applied with a different name"
+        );
+    }
+
+    /// θ regression guard: the bare `Type::Enum` arm keeps its kind-level match.
+    #[test]
+    fn value_type_kind_matches_enum_value_into_bare_enum_type_returns_true() {
+        use reify_core::Type;
+        let t = Type::Enum("Result".to_string());
+        assert!(
+            value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must match a bare Type::Enum"
+        );
+    }
+
     // ── value_type_kind_matches: GeometryHandle arm (task 3604 / GHR-β) ────────
 
     /// GeometryHandle against Type::Geometry → true.
@@ -2217,14 +2451,18 @@ mod tests {
     // ── Engine structure_registry prelude population (task 3540 / step-11) ───
 
     /// `Engine::new()` must populate `structure_registry` from the prelude
-    /// modules. `Steel_AISI_1045` is a `structure def : ElasticMaterial` in
-    /// `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
-    /// it must be interned with its declared trait bound, default version 1,
+    /// modules. `Steel_AISI_1045` is a `structure def : DampedMaterial + Visual`
+    /// in `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
+    /// it must be interned with its DECLARED trait bounds, default version 1,
     /// and a declaration-order `field_layout`. Unknown names resolve to `None`.
+    ///
+    /// `declared_trait_bounds` is declared-only: `ElasticMaterial` is absent
+    /// from the vec after task α (#6877) even though the preset still satisfies
+    /// it transitively via `DampedMaterial : ElasticMaterial + Damped`.
     #[test]
     fn engine_new_populates_structure_registry_from_prelude() {
         use reify_test_support::mocks::MockConstraintChecker;
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let reg = engine.structure_registry();
 
         let id = reg
@@ -2239,8 +2477,8 @@ mod tests {
         );
         assert_eq!(
             meta.declared_trait_bounds,
-            vec!["ElasticMaterial".to_string(), "Visual".to_string()],
-            "structure def Steel_AISI_1045 : ElasticMaterial + Visual (Visual added by task γ #4762)"
+            vec!["DampedMaterial".to_string(), "Visual".to_string()],
+            "structure def Steel_AISI_1045 : DampedMaterial + Visual (Damped mixin added by task α #6877)"
         );
 
         // field_layout preserves materials_fea.ri declaration order.
@@ -2303,7 +2541,7 @@ structure S {
         let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
         let checker = MockConstraintChecker::new();
-        let mut engine = Engine::new(Box::new(checker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval
         engine.eval(&compiled);
@@ -2444,7 +2682,7 @@ structure S {
             .build();
 
         let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+            Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
         // Initial eval — solver fires once; captured holds the eval-path problem.
         engine.eval(&module);
@@ -2567,7 +2805,7 @@ structure S {
         // test independent of ambient REIFY_WARM_STATE_BUDGET_BYTES too.
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         // budget_bytes() returns Option<usize>; the call alone proves wiring.
         let _ = engine.warm_pool().budget_bytes();
         assert_eq!(
@@ -2609,7 +2847,7 @@ structure S {
         // Snapshot the env var before engine construction so both sides share a
         // single read — avoids TOCTOU with concurrent env-mutating tests.
         let snapshot = std::env::var(BUDGET_ENV_VAR).ok();
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let expected = WarmStatePool::from_env_value(snapshot.as_deref());
 
         assert_eq!(
@@ -2638,7 +2876,7 @@ structure S {
         use reify_ir::OpaqueState;
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Pre-populate the pool with two donations using a tiny budget so
         // the second donate triggers an eviction (budget = 1 byte).

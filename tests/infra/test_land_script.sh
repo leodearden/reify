@@ -4,9 +4,13 @@
 #   - refuse a missing / nonexistent / 'main' branch argument,
 #   - refuse running off main,
 #   - refuse a dirty working tree (and NOT leave a sentinel behind),
-#   - on the happy path, mark the main-gate sentinel BEFORE the merge gate runs
-#     and merge via a real --no-ff (so pre-merge-commit runs), with the
-#     reference-transaction hook then consuming the sentinel.
+#   - merge via a real --no-ff, so pre-merge-commit runs the gate and its
+#     post-gate mark is what sanctions the move (reference-transaction consumes
+#     that token bound to the old main tip),
+#   - never mark or remove the main-gate sentinel itself: no token of its own
+#     survives an already-merged re-land or a SIGTERM mid-gate, and a token
+#     another marker (dark-factory's scripts/main-gate-mark.sh mark) mints during
+#     a failed gate survives the failure (B7).
 #
 # Runs entirely in throwaway temp repos; the real repository's main is untouched.
 
@@ -22,11 +26,16 @@ trap cleanup EXIT
 
 echo "=== scripts/land.sh sanctioned manual-landing path (Fix 3) ==="
 
-# make_repo VAR — a throwaway repo on main carrying scripts/land.sh, the hooks,
-# and a STUB pre-merge-commit that records whether the sentinel exists when it
-# runs (proving land.sh marked it BEFORE the gate), then marks + allows so the
-# test stays fast and self-contained (no real verify.sh / cargo). main has a base
-# commit; task/foo adds one. scripts/ and hooks/ are committed so the tree is CLEAN.
+# make_repo VAR — a throwaway repo on main carrying scripts/land.sh,
+# scripts/main-gate-mark.sh, the hooks, and a STUB pre-merge-commit that records
+# whether a sentinel exists when the gate STARTS, then acts per the gate mode in
+# <git-common-dir>/gate-mode (no real verify.sh / cargo):
+#   absent                  pass: main_gate_mark, exit 0
+#   fail                    exit 1 without marking
+#   foreign-mark-then-fail  another marker mints a token mid-gate, then exit 1
+#   sigterm-land            SIGTERM the land.sh pid in <git-common-dir>/land-pid
+# main has a base commit; task/foo adds one. scripts/ and hooks/ are committed so
+# the tree is CLEAN.
 make_repo() {
     local _var="$1" dir
     dir="$(mktemp -d)"; _TMPDIRS+=("$dir")
@@ -35,13 +44,25 @@ make_repo() {
     git -C "$dir" config user.name Test
     mkdir -p "$dir/scripts" "$dir/hooks"
     cp "$REPO_ROOT/scripts/land.sh" "$dir/scripts/"; chmod +x "$dir/scripts/land.sh"
+    cp "$REPO_ROOT/scripts/main-gate-mark.sh" "$dir/scripts/"
     cp "$REPO_ROOT/hooks/main-gate-lib.sh" "$dir/hooks/"
     cp "$REPO_ROOT/hooks/reference-transaction" "$dir/hooks/"; chmod +x "$dir/hooks/reference-transaction"
     cat > "$dir/hooks/pre-merge-commit" <<'PMC'
 #!/usr/bin/env bash
 ROOT="$(git rev-parse --show-toplevel)"
+CG="$(git rev-parse --git-common-dir)"
 . "$ROOT/hooks/main-gate-lib.sh"
-[ -e "$(main_gate_sentinel)" ] && echo yes > "$(git rev-parse --git-common-dir)/gate-saw-sentinel"
+[ -e "$(main_gate_sentinel)" ] && echo yes > "$CG/gate-saw-sentinel"
+# Record the gate-scoping env this child actually INHERITED from land.sh, so the
+# test can assert propagation through `git merge` rather than grepping land.sh.
+printf 'DF_VERIFY_ROLE=%s\nREIFY_GATE_EXCLUDE_HEAVY=%s\n' \
+    "${DF_VERIFY_ROLE:-<unset>}" "${REIFY_GATE_EXCLUDE_HEAVY:-<unset>}" \
+    > "$CG/gate-env"
+case "$(cat "$CG/gate-mode" 2>/dev/null)" in
+    fail) exit 1 ;;
+    foreign-mark-then-fail) "$ROOT/scripts/main-gate-mark.sh" mark; exit 1 ;;
+    sigterm-land) kill -TERM "$(cat "$CG/land-pid")"; exit 1 ;;
+esac
 main_gate_mark   # stand in for "verify passed"
 exit 0
 PMC
@@ -58,10 +79,36 @@ PMC
 }
 
 # land <repo> [args...] — run land.sh; sets LAND_RC and LAND_OUT.
+#
+# -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY: force-clear both gate-scoping
+# vars before running the script under test, so every value the merge-gate child
+# records in gate-env provably ORIGINATES IN land.sh. The orchestrator injects
+# REIFY_GATE_EXCLUDE_HEAVY=1 into every verify subprocess
+# (dark-factory-orchestrator.yaml) and the merge tier stamps
+# DF_VERIFY_ROLE=merge, so without this scrub the child inherits both no matter
+# what land.sh does, and the propagation assertions below pass on the very
+# failure they exist to catch. Same hazard and same remedy as
+# scripts/test_psi_gate.sh:69-74 (#4943).
+#
+# `env -u` applies BEFORE any explicit NAME=VALUE the caller adds, so the
+# non-vacuity control further down can still force values back in deliberately.
 land() {
     local dir="$1"; shift
     local rc=0 out
-    out="$( ( cd "$dir" && bash scripts/land.sh "$@" ) 2>&1 )" || rc=$?
+    out="$( ( cd "$dir" && env -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY \
+                bash scripts/land.sh "$@" ) 2>&1 )" || rc=$?
+    LAND_RC=$rc; LAND_OUT="$out"
+}
+
+# land_recording_pid <repo> [args...] — land(), but the land.sh process first
+# records its pid in .git/land-pid so the sigterm-land gate mode can signal the
+# real land.sh (exec keeps the subshell's pid). Sets LAND_RC and LAND_OUT.
+land_recording_pid() {
+    local dir="$1"; shift
+    local rc=0 out
+    out="$( ( cd "$dir" && echo "$BASHPID" > .git/land-pid \
+                && exec env -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY \
+                    bash scripts/land.sh "$@" ) 2>&1 )" || rc=$?
     LAND_RC=$rc; LAND_OUT="$out"
 }
 
@@ -117,14 +164,14 @@ assert "dirty tree -> refusal offers a commit-or-clean remedy" \
 # be reconsidered, not slip past a cleverer pattern.
 assert "dirty tree -> refusal does NOT advise stashing" \
     bash -c "! printf '%s\n' \"\$1\" | grep -qi stash" _ "$LAND_OUT"
-assert "dirty-tree refusal leaves no sentinel (mark happens only after guards)" \
+assert "dirty-tree refusal leaves no sentinel" \
     bash -c "! test -e '$R/.git/reify-main-gate-ok'"
 rm -f "$R/untracked.txt"
 
-# -- happy path: clean main, real --no-ff merge, sentinel marked BEFORE gate --
+# -- happy path: clean main, real --no-ff merge, sanctioned by the gate's mark --
 echo ""
-echo "--- happy path: verified --no-ff merge marks the sentinel before the gate ---"
-rm -f "$R/.git/gate-saw-sentinel" "$R/.git/reify-main-gate-ok" "$R/.git/reify-main-gate.log"
+echo "--- happy path: verified --no-ff merge, sanctioned by pre-merge-commit's mark ---"
+rm -f "$R/.git/gate-saw-sentinel" "$R/.git/gate-env" "$R/.git/reify-main-gate-ok" "$R/.git/reify-main-gate.log"
 before="$(git -C "$R" rev-parse main)"
 land "$R" task/foo
 after="$(git -C "$R" rev-parse main)"
@@ -132,14 +179,177 @@ assert "happy path exits 0" test "$LAND_RC" -eq 0
 assert "happy path advances main" bash -c "[ '$before' != '$after' ]"
 assert "happy path creates a merge commit (2 parents)" \
     bash -c "[ \"\$(git -C '$R' rev-list --parents -n1 HEAD | wc -w)\" -eq 3 ]"
-assert "land.sh marked the sentinel BEFORE the merge gate ran (gate observed it)" \
-    bash -c "test -f '$R/.git/gate-saw-sentinel'"
+assert "land.sh does not mark: the gate saw no sentinel at its start (pre-merge-commit's post-gate mark is the only sanction)" \
+    bash -c "! test -e '$R/.git/gate-saw-sentinel'"
+# Item 4 (esc-6485-3 option B, Leo 2026-08-31): the sanctioned manual-land path
+# excludes the heavy-filter members from its merge gate, exactly as
+# dark-factory-orchestrator.yaml already does for every orchestrator-spawned role.
+# Asserted BEHAVIOURALLY, not by grepping land.sh's text: the property that matters
+# is that the `export` actually reaches the pre-merge-commit child spawned by
+# `git merge`. A static grep cannot observe that, and would still pass if the
+# export were later moved below the merge or shadowed.
+assert "happy path: merge gate child inherited REIFY_GATE_EXCLUDE_HEAVY=1 (heavy members excluded on the sanctioned manual-land path — esc-6485-3 option B, Leo 2026-08-31)" \
+    bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=1' '$R/.git/gate-env'"
+# Green-on-arrival companion: pins the pre-existing role export so a later edit
+# cannot drop it while adding the new one.
+assert "happy path: merge gate child still inherited DF_VERIFY_ROLE=merge (existing carve-out unchanged)" \
+    bash -c "grep -qx 'DF_VERIFY_ROLE=merge' '$R/.git/gate-env'"
 assert "reference-transaction consumed the sentinel (sanctioned, not lingering)" \
     bash -c "! test -e '$R/.git/reify-main-gate-ok'"
-assert "main-gate log records the sanctioned move" \
-    bash -c "grep -q 'sanctioned main move' '$R/.git/reify-main-gate.log'"
+assert "main-gate log records the move sanctioned by a token bound to the old tip" \
+    bash -c "grep -qF 'sanctioned main move $before -> $after' '$R/.git/reify-main-gate.log'"
+assert "main-gate log records no legacy unbound sanction" \
+    bash -c "! grep -qF 'legacy unbound sentinel' '$R/.git/reify-main-gate.log'"
 assert "happy path prints the landed SHA on stdout" \
     bash -c "printf '%s\n' \"\$1\" | grep -qE '[0-9a-f]{40}'" _ "$LAND_OUT"
+
+# -- already-merged re-land: main does not move, so no token may linger ---------
+# A token left bound to the unmoved tip would sanction the next raw move of it.
+echo ""
+echo "--- already-merged re-land leaves no sentinel ---"
+before_re="$(git -C "$R" rev-parse main)"
+land "$R" task/foo
+assert "already-merged re-land: main unchanged" \
+    test "$(git -C "$R" rev-parse main)" = "$before_re"
+assert "already-merged re-land: no sentinel remains" \
+    bash -c "! test -e '$R/.git/reify-main-gate-ok'"
+
+# -- B7: a token another marker mints during land's gate survives its failure ---
+# dark-factory's advance_main marks with scripts/main-gate-mark.sh while a manual
+# land's gate runs; the failed land must not delete that token.
+echo ""
+echo "--- B7: a foreign token minted mid-gate survives a failed land ---"
+RF=""; make_repo RF
+echo foreign-mark-then-fail > "$RF/.git/gate-mode"
+tip_f="$(git -C "$RF" rev-parse main)"
+land "$RF" task/foo
+assert "B7 foreign token: the failed land exits non-zero" test "$LAND_RC" -ne 0
+assert "B7 foreign token: main unchanged" \
+    test "$(git -C "$RF" rev-parse main)" = "$tip_f"
+assert "B7 foreign token: the sentinel survives the failed land" \
+    test -e "$RF/.git/reify-main-gate-ok"
+assert "B7 foreign token: it is still bound to the main tip" \
+    test "$(cat "$RF/.git/reify-main-gate-ok" 2>/dev/null)" = "$tip_f"
+
+# -- B7: land.sh interrupted mid-gate leaves no token of its own ---------------
+echo ""
+echo "--- B7: SIGTERM to land.sh mid-gate leaves no sentinel ---"
+RK=""; make_repo RK
+echo sigterm-land > "$RK/.git/gate-mode"
+tip_k="$(git -C "$RK" rev-parse main)"
+land_recording_pid "$RK" task/foo
+assert "B7 interrupted: land.sh was killed (exit 143)" test "$LAND_RC" -eq 143
+assert "B7 interrupted: main unchanged" \
+    test "$(git -C "$RK" rev-parse main)" = "$tip_k"
+assert "B7 interrupted: no sentinel remains" \
+    bash -c "! test -e '$RK/.git/reify-main-gate-ok'"
+
+# -- a failed merge reports failure: gate failure ------------------------------
+echo ""
+echo "--- failed gate: land.sh exits non-zero and aborts the merge ---"
+RG=""; make_repo RG
+echo fail > "$RG/.git/gate-mode"
+tip_g="$(git -C "$RG" rev-parse main)"
+land "$RG" task/foo
+assert "failed gate: exits non-zero" test "$LAND_RC" -ne 0
+assert "failed gate: reports the merge's own exit status" \
+    bash -c "printf '%s\n' \"\$1\" | grep -qF 'merge failed (exit 1)'" _ "$LAND_OUT"
+assert "failed gate: main unchanged" \
+    test "$(git -C "$RG" rev-parse main)" = "$tip_g"
+assert "failed gate: the merge was aborted (no MERGE_HEAD left)" \
+    bash -c "! test -e '$RG/.git/MERGE_HEAD'"
+assert "failed gate: no sentinel" \
+    bash -c "! test -e '$RG/.git/reify-main-gate-ok'"
+
+# -- a failed merge reports failure: conflict ----------------------------------
+echo ""
+echo "--- conflict: land.sh exits non-zero and aborts the merge ---"
+RX=""; make_repo RX
+printf 'other\n' > "$RX/feature.txt"
+git -C "$RX" add feature.txt
+git -C "$RX" commit -q -m "conflicting main work" 2>/dev/null
+tip_x="$(git -C "$RX" rev-parse main)"
+land "$RX" task/foo
+assert "conflict: exits non-zero" test "$LAND_RC" -ne 0
+assert "conflict: main unchanged" \
+    test "$(git -C "$RX" rev-parse main)" = "$tip_x"
+assert "conflict: the merge was aborted (no MERGE_HEAD left)" \
+    bash -c "! test -e '$RX/.git/MERGE_HEAD'"
+
+# -- non-vacuity control: the recorded gate-env can only come from land.sh -----
+# WHY THIS EXISTS. The two propagation assertions above were MEASURED vacuous:
+# land() runs the script under test with the ambient environment un-scrubbed, and
+# the orchestrator injects REIFY_GATE_EXCLUDE_HEAVY=1 into every verify
+# subprocess while the merge tier stamps DF_VERIFY_ROLE=merge — precisely the two
+# values they look for. Deleting `export REIFY_GATE_EXCLUDE_HEAVY=1` from
+# scripts/land.sh outright and running this file under
+# `DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1` left both of them PASSING.
+# The repo's established answer to that hazard is the `env -u` scrub at the
+# invocation site (scripts/test_psi_gate.sh:69-74 clears DF_VERIFY_ROLE for the
+# same reason, #4943), and land() now carries one.
+#
+# This control is what pins that scrub: it lands a copy of land.sh with the
+# export STRIPPED and asserts the gate child records <unset> anyway. Without it a
+# later edit could drop the scrub and return both assertions above to vacuity
+# with nothing going red.
+echo ""
+echo "--- non-vacuity control: a land.sh with the export stripped must record <unset> ---"
+RC=""; make_repo RC
+# Derive the stripped variant from the real script rather than writing one out,
+# and assert the strip removed EXACTLY ONE line — a future rename of the variable
+# would otherwise match nothing and silently turn this control into a no-op that
+# passes for the wrong reason.
+_LAND_LINES="$(wc -l < "$REPO_ROOT/scripts/land.sh")"
+grep -vFx 'export REIFY_GATE_EXCLUDE_HEAVY="${REIFY_GATE_EXCLUDE_HEAVY:-1}"' \
+    "$REPO_ROOT/scripts/land.sh" > "$RC/scripts/land.sh"
+_STRIPPED_LINES="$(wc -l < "$RC/scripts/land.sh")"
+chmod +x "$RC/scripts/land.sh"
+git -C "$RC" add scripts/land.sh
+# --allow-empty so that a DRIFTED anchor (strip removed nothing, leaving the copy
+# identical) is reported by the assertion below instead of aborting this whole
+# file at git commit's exit 1 under set -e, with no summary and no attribution.
+git -C "$RC" commit -q --allow-empty -m "control: land.sh without the heavy-exclusion export"
+assert "control: stripping the export removed exactly one line from scripts/land.sh (the anchor still matches the real script)" \
+    test "$(( _LAND_LINES - _STRIPPED_LINES ))" -eq 1
+rm -f "$RC/.git/gate-env"
+# Force BOTH guard vars into the ambient environment, so this control is
+# deterministically red without the scrub regardless of what the host env happens
+# to hold. Set by an explicit `export` inside a SUBSHELL, never as a
+# `VAR=val land ...` prefix: bash prefix assignments on a FUNCTION call can
+# persist in the calling shell after the function returns (they are reliably
+# transient only under `set -o posix`), which would silently contaminate every
+# later assertion in this file. LAND_RC/LAND_OUT are lost to the subshell, which
+# costs nothing here — the control reads its verdict from the recorded gate-env.
+( export DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1; land "$RC" task/foo )
+assert "control: the stripped variant still reached the merge gate (gate-env recorded)" \
+    bash -c "test -f '$RC/.git/gate-env'"
+assert "control: with the export stripped, the gate child records REIFY_GATE_EXCLUDE_HEAVY=<unset> even under an ambient =1 — which is what makes the happy-path propagation assertion load-bearing rather than inherited" \
+    bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=<unset>' '$RC/.git/gate-env'"
+
+# -- operator override: an EXPLICIT value must survive land.sh's default --------
+# land.sh sets the knob with `:-`, not a bare 1. The happy-path assertion above
+# pins the DEFAULT (nothing set => heavy members excluded); this pins that the
+# default is a default. An operator who deliberately wants full local heavy
+# coverage — the behaviour every local land had before task 6485 — asks for it
+# with REIFY_GATE_EXCLUDE_HEAVY=0 and gets it, accepting that a hang on that path
+# then attributes nothing (docs/prds/offline-deep-test-lane.md DA5).
+#
+# Invoked directly rather than through land(), because land()'s whole job is to
+# CLEAR this variable. The `env -u NAME … NAME=VALUE` form is the same one land()
+# documents: the unset applies first, so the value the child sees is this
+# explicit 0 and provably not an ambient one.
+echo ""
+echo "--- operator override: an explicit REIFY_GATE_EXCLUDE_HEAVY=0 is honoured ---"
+RO=""; make_repo RO
+rm -f "$RO/.git/gate-env"
+( cd "$RO" && env -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY \
+        REIFY_GATE_EXCLUDE_HEAVY=0 bash scripts/land.sh task/foo ) >/dev/null 2>&1
+assert "override: the run reached the merge gate (gate-env recorded)" \
+    bash -c "test -f '$RO/.git/gate-env'"
+assert "override: an explicit REIFY_GATE_EXCLUDE_HEAVY=0 reaches the gate child unclobbered — land.sh's 1 is a default, not an override, so full local heavy coverage stays expressible" \
+    bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=0' '$RO/.git/gate-env'"
+assert "override: DF_VERIFY_ROLE=merge is still forced — unlike the heavy knob it is NOT negotiable on this path (held test-run slot / PSI exemption, PRD §5 D5)" \
+    bash -c "grep -qx 'DF_VERIFY_ROLE=merge' '$RO/.git/gate-env'"
 
 # -- darkened core.hooksPath -> re-assert (task 4380) --------------------------
 # Scenario: before the merge, core.hooksPath has been overwritten to the inert

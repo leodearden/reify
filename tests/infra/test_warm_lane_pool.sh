@@ -44,6 +44,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh (task 6247) — home of the causal holder-handshake
+# barriers (holder_wait_for_marker) that stand in for a fixed pause after
+# backgrounding a reader.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || {
+    echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"
+    exit 1
+}
+# shellcheck source=tests/infra/slot_holder_handshake_lib.sh
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 echo "=== warm-lane pool end-to-end integration gate (task #4662) ==="
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -623,7 +633,7 @@ _b7_init_git_lane() {
     if [ -d "$lane/.git" ]; then
         return 0
     fi
-    git -C "$lane" init -q
+    git -C "$lane" init -q -b main
     # Add all sources EXCLUDING target/ (too large + not source)
     git -C "$lane" add -- . ':!target'
     git -C "$lane" \
@@ -678,7 +688,7 @@ _b11_concurrent_clone_during_flip() {
 
     # Step 2: git-init the lane with the source tree committed (target/ excluded)
     # so the provenance guard (git status --porcelain --untracked-files=no) passes.
-    git -C "$_b11_lane" init -q
+    git -C "$_b11_lane" init -q -b main
     git -C "$_b11_lane" add -- . ':!target'
     git -C "$_b11_lane" \
         -c user.email="warm-lane-test@localhost" \
@@ -708,7 +718,7 @@ _b11_concurrent_clone_during_flip() {
     # completes well before the flip's Step-6 GC sweep runs (~490ms measured
     # for the whole flip, refresh-warm-base.sh) — so the reader was always
     # gone by the time GC ran, GC correctly saw no active reader, and reaped
-    # gen.1 out from under this test (task #5866). _wait_for_marker on the
+    # gen.1 out from under this test (task #5866). holder_wait_for_marker on the
     # ready marker only proves the lock was ACQUIRED, never that it is still
     # HELD later — the walk's duration is exactly what determines whether
     # the reader is still gone or still holding by the time GC fires.
@@ -725,7 +735,7 @@ _b11_concurrent_clone_during_flip() {
         "$_b11_gen1" "$_b11_clone_dir/target" "" always
     local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
-    _wait_for_marker "$_b11_ready" 30
+    holder_wait_for_marker "$_b11_ready" 150
 
     # Step 6: record df --output=avail before the flip (MiB)
     # Measured on ws_root (the block's actual workspace dir) rather than the
@@ -751,7 +761,7 @@ _b11_concurrent_clone_during_flip() {
     # reader down (kill+wait), releasing flock -s so the post-drain refresh
     # can reap gen.1. Generous anti-hang deadline (technique T); measured
     # slack is large (copy ~120ms vs. the flip alone ~490ms).
-    _wait_for_marker "$_b11_clone_done" 300
+    holder_wait_for_marker "$_b11_clone_done" 1500
     kill "$_b11_reader_pid" 2>/dev/null || true
     wait "$_b11_reader_pid" 2>/dev/null || true
 
@@ -1324,7 +1334,7 @@ TOML_EOF
     printf 'pub fn hello() -> u64 { 42 }\n' > "$lane_dir/src/lib.rs"
     # target/ stays untracked; the committed tree is Cargo.toml + src/
     printf 'artifact-placeholder\n' > "$lane_dir/target/debug/placeholder"
-    git -C "$lane_dir" init -q
+    git -C "$lane_dir" init -q -b main
     git -C "$lane_dir" add -- . ':!target'
     git -C "$lane_dir" \
         -c user.email="warm-lane-test@localhost" \
@@ -1373,48 +1383,6 @@ _refresh_capture() {
     fi
 }
 
-# _wait_for_marker <marker-file> <deadline-seconds>
-# Generic causal-ordering (technique R) poll: waits for <marker-file> to
-# appear, polling in 0.05s ticks, returning 0 as soon as it exists, or
-# non-zero once the generous deadline elapses (technique T anti-hang guard).
-# The deadline is deliberately generous — it is an anti-hang guard only,
-# never a timing discriminator.
-#
-# Extracted from _wait_for_reader_lock (task #4847), which delegates to this
-# for its flock-acquisition-specific marker; also used directly for a
-# copy-completion handshake (_spawn_pinning_reader, task #5866).
-_wait_for_marker() {
-    local marker="$1"
-    local deadline_s="$2"
-    # Poll every 0.05s; max_ticks = deadline_s × 20
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
-}
-
-# _wait_for_reader_lock <ready-marker> <deadline-seconds>
-# Causal ordering (technique R) for reader-readiness: polls for the READY
-# marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
-# once the generous deadline elapses (technique T anti-hang guard).
-#
-# The READY marker is touched by the reader AFTER acquiring flock -s on the
-# lock file, so returning 0 causally guarantees the reader holds flock -s at
-# the caller's next statement.
-#
-# The deadline is deliberately generous (5-60s for normal scheduling) — it
-# is an anti-hang guard only, never a timing discriminator.
-#
-# Used by Block RH (unit test) and the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
-# Task: #4847
-_wait_for_reader_lock() {
-    _wait_for_marker "$1" "$2"
-}
-
 # _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s] [reflink_mode]
 # Backgrounds a reader that: takes flock -s on <lock_file>, signals
 # <ready_marker>, runs `cp -a --reflink=<reflink_mode> <src> <dst>`, signals
@@ -1451,17 +1419,17 @@ _wait_for_reader_lock() {
 # copy-completion via a separate marker (rather than releasing the lock
 # there) is what lets a caller wait for "clone finished" and "lock
 # released" as two independent, causally-ordered events instead of
-# conflating them — the conflation is exactly today's B11 bug (task #5866).
+# conflating them — the conflation was the pre-#5866 B11 bug.
 #
 # The caller is responsible for teardown: `kill "$_PINNING_READER_PID"
 # 2>/dev/null || true; wait "$_PINNING_READER_PID" 2>/dev/null || true` —
-# the same pattern as Block RH / SGSWAP3 / SGSWAP4 / Block GC.
+# the same pattern as SGSWAP3 / SGSWAP4 / Block GC.
 #
 # Sets in the caller's scope: _PINNING_READER_PID — the background PID.
 # (A `pid=$(...)` capture is impossible here: command substitution would
 # run the reader in a subshell that exits immediately, dropping the flock.)
 #
-# fd 205: 9, 200 and 201 are already in use elsewhere in this file.
+# fd 205: 200 and 201 are already in use elsewhere in this file.
 # Task: #5866
 _spawn_pinning_reader() {
     local lock_file="$1"
@@ -1571,9 +1539,7 @@ scripts/seed-warm-lane.sh|scripts/refresh-warm-base.sh|scripts/warm-lane-preflig
 # test_seed_warm_lane.sh:  STUB_DIR with cp/find/touch/git stubs recording
 # argv to CALLS_FILE, run_helper capturing OUT/ERR_OUT/RC separately.
 #
-# Stubs + run_helper + reset_calls are defined in impl-failclosed (impl step).
-# Referencing them here without prior definition → immediate error under
-# set -euo pipefail → RED until the impl step defines them.
+# Stubs + run_helper + reset_calls are defined in the fixture prelude above.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block FC: fail-closed wiring (B5/B2/preflight) ---"
@@ -1637,9 +1603,7 @@ assert "FC3: preflight stderr names mount/provision remediation (actionable)" \
 # ─────────────────────────────────────────────────────────────────────────────
 # Block SG — Substrate detector + skip path (ALWAYS-RUN)
 #
-# Unit-tests detect_substrate() and _skip() which are defined in the
-# impl-substrate-gate step. Until then, placeholder values make every
-# assertion RED.
+# Unit-tests detect_substrate() and _skip() (defined above).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block SG: substrate detection + skip path ---"
@@ -1697,17 +1661,13 @@ assert "SG4: gate detects absent cargo (command -v cargo in empty PATH)" \
 # only a private, dedicated mount is acceptable for B11's df-flatness
 # assertion.
 #
-# RED until step-2-impl: detect_private_substrate is undefined → command
-# lookup fails (127) → the `if` condition sees non-zero → PRIV1 prints "FAIL"
-# instead of the mount path → the assertion fails.
-#
 # No new numeric bound is introduced here (G6) — these assertions cover
 # detector return-code/output behavior and the rung-2 bypass only.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PRIV: private-substrate detector (B11 df immune to shared /tmp) ---"
 
-# ── PRIV1 (RED ANCHOR): rung-1 mount succeeds → returns 0, sets _B11_GATE_DIR
+# ── PRIV1: rung-1 mount succeeds → returns 0, sets _B11_GATE_DIR
 _PRIV1_FAKE_MOUNT="$(mktemp -d /tmp/test-warm-pool-PRIV1-XXXXXX)"
 _TMPDIRS+=("$_PRIV1_FAKE_MOUNT")
 _PRIV1_DIR="$(
@@ -1761,8 +1721,8 @@ assert "PRIV2b: detect_private_substrate returns exactly 1 under the identical e
 # confirms the existing declaration so a future refinement that silently
 # moves the file into the concurrent pool is caught here.
 #
-# Green-on-add: this should pass immediately on the base branch. If it is
-# RED, the H1 manifest drifted and the task premise must be re-checked.
+# A RED here means the H1 manifest drifted; re-check the declaration before
+# editing this block.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block HX: host-exclusive classification confirm ---"
@@ -1775,71 +1735,20 @@ assert "HX: test_warm_lane_pool.sh stays declared host-exclusive in the H1 manif
     bash -c 'printf "%s\n" "$1" | grep -qx "test_warm_lane_pool.sh"' _ "$_HX_HOSTEXCL"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Block RH — Reader-lock handshake unit tests (ALWAYS-RUN)
-#
-# Unit-tests _wait_for_reader_lock <ready-marker> <deadline-seconds>:
-#   (RH-POS) positive case: background a flock -s reader that signals READY
-#     after acquiring the lock, call the helper, then assert a foreground
-#     flock -n -x probe FAILS — proving the reader genuinely holds the shared
-#     lock once the helper returns (mirrors the real GC mechanism at
-#     scripts/refresh-warm-base.sh:381).
-#   (RH-NEG) anti-hang case: call with a never-created marker and a 1s
-#     deadline; assert non-zero return (times out, does not hang forever).
-#
-# RED until step-2-impl-handshake-helper: _wait_for_reader_lock is undefined
-# → command not found under set -euo pipefail → script aborts (non-zero exit).
-# Task: #4847
-# ─────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Block RH: reader-lock handshake unit tests ---"
-
-_RH_PARENT="$(mktemp -d /tmp/test-warm-pool-RH-XXXXXX)"
-_TMPDIRS+=("$_RH_PARENT")
-_RH_LOCK="$_RH_PARENT/rh-test.lock"
-_RH_READY="$_RH_PARENT/rh-ready"
-_RH_NONEXISTENT="$_RH_PARENT/rh-never-created"
-touch "$_RH_LOCK" 2>/dev/null || true
-
-# ── RH-POS: positive — helper returns only after reader holds flock -s ────────
-# Background a reader: acquires flock -s, then signals READY by touching the
-# marker file, then holds the lock for 60s to let the assertion window run.
-( flock -s 9; touch "$_RH_READY"; sleep 60 ) 9>"$_RH_LOCK" &
-_RH_READER_PID=$!
-# Call the helper (undefined until step-2-impl-handshake-helper → command not
-# found under set -euo pipefail → script aborts → RED)
-_wait_for_reader_lock "$_RH_READY" 30
-# Probe: foreground flock -n -x on the same lock file must FAIL (reader holds -s)
-# Mirrors the real GC: flock -n -x "$lock" sh -c 'rm -rf ...' (refresh-warm-base.sh:381)
-_RH_PROBE_RC=0
-flock -n -x "$_RH_LOCK" true 2>/dev/null || _RH_PROBE_RC=$?
-# Release the reader before the assertion (kill + reap)
-kill "$_RH_READER_PID" 2>/dev/null || true
-wait "$_RH_READER_PID" 2>/dev/null || true
-assert "RH-POS: flock -n -x probe FAILS after handshake (reader provably holds flock -s)" \
-    test "$_RH_PROBE_RC" -ne 0
-
-# ── RH-NEG: anti-hang — helper returns non-zero when marker never appears ────
-_RH_NEG_RC=0
-_wait_for_reader_lock "$_RH_NONEXISTENT" 1 || _RH_NEG_RC=$?
-assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears (anti-hang)" \
-    test "$_RH_NEG_RC" -ne 0
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Block BH — pinning-reader hold contract (ALWAYS-RUN)
 #
-# Unit-tests the _spawn_pinning_reader helper (from step-4 onward) that
+# Unit-tests the _spawn_pinning_reader helper that
 # models a consumer holding a shared flock -s across an operation rather
 # than releasing it the instant the operation completes — the seam B11's
 # fixture was missing (task #5866).
 #
-# The generic marker-poll seam this helper is built on (_wait_for_marker,
-# extracted from _wait_for_reader_lock, task #4847) is already unit-tested
-# by Block RH's RH-POS/RH-NEG immediately above, via the delegating
-# _wait_for_reader_lock — Block BH deliberately does NOT retest that same
-# poll contract a second time under the new name (that would be the same
-# code path covered twice under two names). The handshake waits below are
-# plumbing to set up BH1-BH3, guarded so a stuck handshake FAILs by name
-# instead of aborting the suite under set -euo pipefail.
+# The marker barrier this helper's handshakes rely on is
+# holder_wait_for_marker from tests/infra/slot_holder_handshake_lib.sh,
+# unit-tested in tests/infra/test_slot_holder_handshake_lib.sh section (b) —
+# Block BH deliberately does NOT retest that poll contract here. The
+# handshake waits below are plumbing to set up BH1-BH3, guarded so a stuck
+# handshake FAILs by name instead of aborting the suite under
+# set -euo pipefail.
 #
 # _spawn_pinning_reader <lock> <ready> <clone-done> <src> <dst> contract
 # (task #5866 — the actual regression this block exists to guard):
@@ -1847,7 +1756,7 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
 #   (BH2, REGRESSION ANCHOR) a foreground flock -n -x probe on the lock
 #     FAILS even though the clone-done marker is already present — proving
 #     the reader still holds flock -s after its copy finished. This is
-#     exactly what today's B11 reader (whose subshell ends at the cp) does
+#     what the pre-#5866 B11 reader (whose subshell ended at the cp) did
 #     NOT do, and exactly what the flip's Step-6 GC
 #     (scripts/refresh-warm-base.sh:428) tests with the identical
 #     flock -n -x idiom.
@@ -1855,8 +1764,6 @@ assert "RH-NEG: _wait_for_reader_lock returns non-zero when marker never appears
 #     SUCCEEDS — proving teardown genuinely releases the lock, so a
 #     post-drain GC still has a free lock to reap against.
 #
-# RED until step-4: _spawn_pinning_reader is undefined → command not found
-# under set -euo pipefail → non-zero exit.
 # Task: #5866
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -1877,23 +1784,20 @@ _BH_LOCK="$_BH_PARENT/pin.lock"
 _BH_READY="$_BH_PARENT/pin-ready"
 _BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
 
-# Call the helper (undefined until step-4 → command not found under
-# set -euo pipefail → script aborts → RED).
 _spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
 _BH_READER_PID="$_PINNING_READER_PID"
 
-# Guarded handshake waits: capture the rc via `|| var=$?` (as BH-NEG-style
-# calls elsewhere in this file already do) rather than calling
-# _wait_for_marker bare — a bare non-zero return here would trip
-# set -euo pipefail and abort the whole suite mid-block, surfacing as an
-# unattributable abort instead of a named FAIL line in run_all.sh's
-# per-test summary.
+# Guarded handshake waits: capture the rc via `|| var=$?` (the same idiom as
+# BH2's probe below) rather than calling holder_wait_for_marker bare — a bare
+# non-zero return here would trip set -euo pipefail and abort the whole suite
+# mid-block, surfacing as an unattributable abort instead of a named FAIL line
+# in run_all.sh's per-test summary.
 _BH_HS_READY_RC=0
-_wait_for_marker "$_BH_READY" 30 || _BH_HS_READY_RC=$?
+holder_wait_for_marker "$_BH_READY" 150 || _BH_HS_READY_RC=$?
 assert "BH-HANDSHAKE: _spawn_pinning_reader signals ready within deadline" \
     test "$_BH_HS_READY_RC" -eq 0
 _BH_HS_CLONE_RC=0
-_wait_for_marker "$_BH_CLONE_DONE" 30 || _BH_HS_CLONE_RC=$?
+holder_wait_for_marker "$_BH_CLONE_DONE" 150 || _BH_HS_CLONE_RC=$?
 assert "BH-HANDSHAKE: _spawn_pinning_reader signals clone-done within deadline" \
     test "$_BH_HS_CLONE_RC" -eq 0
 
@@ -1904,7 +1808,8 @@ assert "BH1: _spawn_pinning_reader's clone is byte-identical to src" \
     diff -r "$_BH_SRC" "$_BH_DST"
 
 # ── BH2 (REGRESSION ANCHOR): reader still holds flock -s AFTER its copy
-# completed. Mirrors RH-POS's probe idiom (flock -n -x on the same lock).
+# completed. Mirrors the GC's own `flock -n -x` probe idiom (see this block's
+# header) on the same lock.
 _BH2_PROBE_RC=0
 flock -n -x "$_BH_LOCK" true 2>/dev/null || _BH2_PROBE_RC=$?
 assert "BH2: flock -n -x probe FAILS after clone-done (reader still holds flock -s post-copy)" \
@@ -1948,15 +1853,11 @@ assert "BH3: flock -n -x probe SUCCEEDS after kill+wait teardown (lock released)
 # test identifiers, so byte-identity is a theorem, not a tolerance.
 #
 # Arm 1 without timing-column stripping: the `[   0.0NNs]` column survives →
-# strings differ → assertion (a) fails → RED. (Historically, before
-# _passset_normalize_nextest existed at all, this block instead aborted the
-# whole script under set -euo pipefail with "command not found".)
+# strings differ → assertion (a) fails → RED.
 #
 # Arm 2 without progress-counter stripping: the `(N/M)` counter survives, its
 # binding to a test varies by completion order, and the trailing `sort` keys
-# off it → strings differ → assertion (a) fails → RED (#5878). The function
-# already exists at this point, so this arm's RED is an assertion failure,
-# not a script abort.
+# off it → strings differ → assertion (a) fails → RED (#5878).
 #
 # Also asserts cargo-test fallback lines (already timing-free) are sort-stable
 # across different emission orderings (regression guard).
@@ -1977,7 +1878,6 @@ PSNORM_EOF
 )"
 
 # Normalize through the timing-strip helper.
-# _passset_normalize_nextest is undefined until impl-passset-timing-strip → RED.
 _PSNORM_COLD_NORM="$(printf '%s\n' "$_PSNORM_COLD_INPUT" | _passset_normalize_nextest)"
 _PSNORM_WARM_NORM="$(printf '%s\n' "$_PSNORM_WARM_INPUT" | _passset_normalize_nextest)"
 
@@ -2144,13 +2044,10 @@ assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_
 # non-101→runner-error row (both added in the amendment pass) keep those two
 # same guarantees from leaking into their respective ambiguous edges.
 #
-# RED (arm A): _passset_classify_rc does not exist yet. Every table-row
-# assertion below captures via `"$(_passset_classify_rc … 2>/dev/null ||
-# true)"` — under this file's `set -euo pipefail`, calling an undefined
-# function inside a bare command substitution would abort the WHOLE script
-# (the historical failure mode Block PS-NORM's header already documents);
-# `2>/dev/null || true` instead yields an empty string, so RED here is one
-# clean per-row assertion FAIL, and the suite still runs to its summary line.
+# Every table-row assertion below captures via `"$(_passset_classify_rc …
+# 2>/dev/null || true)"`, so a missing or failing classifier is one clean
+# per-row assertion FAIL instead of a set -euo pipefail abort of the whole
+# script.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PS-RC: run_passset() rc classification (#5885) ---"
@@ -2250,16 +2147,14 @@ assert "PS-RC B: second invocation's stderr tracks its OWN rc (rc=137, not hardc
 # the same call (the _refresh_capture idiom, :1112-1128).
 #
 # C2/C3 are "must NOT fire" controls: honest-test-failure and all-pass are
-# NOT the defect this task fixes, so their assertions already hold under
-# today's unmodified run_passset and stay green start-to-finish — they exist
-# to catch a regression in step-6's rewiring, not to be RED now.
+# not build failures, so run_passset must not report them as one.
 #
-# RED: today's run_passset swallows the rc, so C1 and C4 (both build-failure
-# scenarios) return 0 and _passset_report_failure is never called — their
-# rc==3 and marker-present assertions FAIL. C4's byte-equality assertion is
-# green FROM THE START, which is the point: it proves the double-build-
-# failure symmetric case ALREADY produces byte-identical pass-sets today —
-# only the new out-of-band rc (also asserted here, and RED) can see it.
+# C1 and C4 are build-failure scenarios: a run_passset that swallows cargo's
+# rc returns 0 and never calls _passset_report_failure, so their rc==3 and
+# marker-present assertions FAIL. C4's byte-equality assertion holds even
+# then, which is the point: the double-build-failure symmetric case produces
+# byte-identical pass-sets, so only the out-of-band rc (also asserted here)
+# can see it.
 echo ""
 echo "--- Block PS-RC arm C: run_passset() nextest-branch wiring ---"
 
@@ -2407,12 +2302,11 @@ assert "PS-RC C4: warm-side rc is 3 (the out-of-band signal that IS able to see 
 # not — checked) would silently take the NEXTEST branch instead, and every
 # assertion below would test nothing.
 #
-# RED on D1/D2 (not D3): today's cargo-test branch still passes the
-# nextest-only `-- --test-output immediate-fail` flag (D1) and still
-# swallows the rc (D2's rc/marker checks). D3 (an honest test failure) is a
-# "must NOT fire" control — our canned stub does not simulate the real
-# libtest flag-rejection, so it already holds unmodified and exists to catch
-# a step-8 regression, not to be RED now.
+# D1 reds if the cargo-test branch passes the nextest-only
+# `-- --test-output immediate-fail` flag. D2's rc/marker checks red if it
+# swallows the rc. D3 (an honest test failure) is a "must NOT fire" control:
+# the canned stub does not simulate the real libtest flag-rejection, so D3
+# guards against over-firing.
 echo ""
 echo "--- Block PS-RC arm D: run_passset() cargo-test fallback-branch wiring ---"
 
@@ -2515,11 +2409,9 @@ assert "PS-RC D3: stdout's first line is exactly passed=1 failed=1 ignored=0" \
 #   (b) missing --landed-commit on clean lane → REFUSED (provenance required)
 #   (c) wrong --landed-commit sha on clean lane → REFUSED (head mismatch)
 #   (+) positive: clean lane + correct sha → exits 0 (form-agnostic; NOT
-#       asserting dir-vs-symlink — that is step-3's job)
+#       asserting dir-vs-symlink — that is the SGSWAP* block's job)
 # B11 NEGATIVE CONTROL (always-run, FS-agnostic): plain mv -T over a populated
 #   dir fails with ENOTEMPTY — documents why symlink-gen is required.
-#
-# RED until step-2 (provenance guard); B11-NC is GREEN immediately.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PG: provenance-guard refusal + rename negative control ---"
@@ -2579,7 +2471,7 @@ assert "B12c: base NOT created after head mismatch refusal (no swap)" \
     bash -c '[ ! -e "$1" ]' _ "$_PG_BASE_C"
 
 # ── Positive control: clean lane + correct --landed-commit → exits 0 ──────────
-# Form-agnostic: asserts RC=0 only; NOT dir-vs-symlink (step-3's job).
+# Form-agnostic: asserts RC=0 only; NOT dir-vs-symlink (SGSWAP*'s job).
 _refresh_capture "$_PG_CLEAN_LANE_POS/target" "$_PG_BASE_POS" \
     --landed-commit "$_PG_POS_HEAD"
 assert "PG-pos: clean lane + correct --landed-commit exits 0 (positive control)" \
@@ -2588,7 +2480,7 @@ assert "PG-pos: clean lane + correct --landed-commit exits 0 (positive control)"
 # ── B11 NEGATIVE CONTROL: mv -T over populated dir fails (ENOTEMPTY) ──────────
 # Always-run, FS-agnostic (coreutils). Documents why symlink-gen is required:
 # plain rename(2) / mv -T CANNOT replace a non-empty directory
-# (host-confirmed ENOTEMPTY errno 39; test is immediately GREEN).
+# (host-confirmed ENOTEMPTY errno 39).
 _B11_NC_SRC="$(mktemp -d /tmp/test-warm-pool-B11NC-src-XXXXXX)"
 _B11_NC_DST="$(mktemp -d /tmp/test-warm-pool-B11NC-dst-XXXXXX)"
 _TMPDIRS+=("$_B11_NC_SRC" "$_B11_NC_DST")
@@ -2615,8 +2507,8 @@ assert "B11-NC: mv -T error names directory not empty (ENOTEMPTY message)" \
 #     the symlink (readlink changes), and the prior gen dir still exists on disk
 #     immediately after the flip (retained, not yet GC'd).
 #
-# RED until step-4 (symlink-gen swap impl): current script does the .new/.old
-# mv dance — <base> stays a REAL dir (never a symlink) → symlink assertions fail.
+# A refresh that regresses to an in-place mv swap leaves <base> a REAL dir
+# (never a symlink), so the symlink assertions fail.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PG: symlink-gen swap mechanics ---"
@@ -2664,7 +2556,7 @@ touch "$_SGSWAP3_LOCK" 2>/dev/null || true
 ( flock -s 201; touch "$_SGSWAP3_READY"; sleep 120 ) 201>"$_SGSWAP3_LOCK" &
 _SGSWAP3_READER_PID=$!
 # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847)
-_wait_for_reader_lock "$_SGSWAP3_READY" 30
+holder_wait_for_marker "$_SGSWAP3_READY" 150
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_BOOT" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
 # Capture live gen + identify the retained retired gen before releasing the reader.
@@ -2708,7 +2600,7 @@ touch "$_SGSWAP4_LOCK" 2>/dev/null || true
 ( flock -s 200; touch "$_SGSWAP4_READY"; sleep 120 ) 200>"$_SGSWAP4_LOCK" &
 _SGSWAP4_READER_PID=$!
 # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847)
-_wait_for_reader_lock "$_SGSWAP4_READY" 30
+holder_wait_for_marker "$_SGSWAP4_READY" 150
 # Second refresh: creates gen.2, re-points symlink; gen.1 GC deferred (reader holds lock)
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_SECOND" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
@@ -2735,12 +2627,10 @@ assert "SGSWAP4: prior gen dir still exists after flip (GC deferred while reader
 #         retired gen IS reaped (GC'd) — the dir entry removed.
 #
 # FS-agnostic (flock + rm only); runs always-run in default CI.
-# RED until step-6 (reader-refcount GC impl): the current refresh retains all
-# retired gens but never GC's them → GC2 "is reaped" assertion fails.
-# GC1 "not removed while reader holds lock" also fails (no flock guard at all —
-# the retired gen would survive anyway, but for the WRONG reason; after step-4
-# the script never deletes retired gens, so GC1 appears to pass by coincidence.
-# However, step-6 is what makes GC2 fire correctly; until then GC2 is RED).
+# GC2 is the discriminating assertion: a refresh that retains retired gens but
+# never reaps them fails it. GC1 alone cannot discriminate, because a
+# never-reap refresh passes it for the wrong reason, which is why GC1 and GC2
+# run as a pair.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PG: reader-refcount GC ---"
@@ -2769,7 +2659,7 @@ touch "$_GC_LOCK_FILE" 2>/dev/null || true
 ( flock -s 200; touch "$_GC_READY"; sleep 120 ) 200>"$_GC_LOCK_FILE" &
 _GC_READER_PID=$!
 # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.2 — #4847)
-_wait_for_reader_lock "$_GC_READY" 30
+holder_wait_for_marker "$_GC_READY" 150
 
 # Second refresh: creates gen.2, symlink → gen.2; gen.1 GC deferred (reader holds lock)
 _refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
@@ -2852,9 +2742,8 @@ fi
 #   direction can invert under scheduling jitter; warm-skip proven structurally
 #   by _B3_DEP_FRESH=true / _B3_LEAF_FRESH=false / B4 count-equality — #4847).
 #
-# Helpers gen_synth_workspace/build_count_fresh/build_walltime are defined in
-# impl-warmskip-pathindep. Until then, placeholder values make assertions RED on
-# a real XFS host (assertions are never reached on non-XFS via the skip path).
+# Helpers gen_synth_workspace/build_count_fresh/build_walltime are defined
+# above; on a non-XFS host the skip path fires before any assertion.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block B3+B4: warm-skip + path-independence ---"
@@ -2998,9 +2887,8 @@ assert "B4: fresh-unit count in warm lane == in-place control (path-independence
 # from the cold control.  Since the CoW lane has byte-identical source the
 # tests are trivially identical (spike §6 confirmation at synthetic scale).
 #
-# run_passset(manifest) is defined in impl-passset. Until then, calling it
-# errors under set -euo pipefail → RED on a substrate (SKIP on non-substrate
-# because the substrate gate fires first).
+# run_passset(manifest) is defined above; on a non-substrate host the
+# substrate gate SKIPs this block first.
 #
 # rc asserts (#5885): run_passset() no longer swallows cargo's exit status
 # (Block PS-RC pins the classifier/diagnostic/wiring, always-run). The two
@@ -3063,8 +2951,6 @@ fi
 # The lane must be git-initialized (committed at the 2020-01-01 mtime state) so
 # that git checkout only rewrites modified files and leaves warm_dep sources at
 # their staged mtime.
-#
-# _b7_init_git_lane is defined in impl-reset-in-place — RED until then.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block B7: reset-in-place stability (${REIFY_WARM_LANE_GATE_RESET_CYCLES:-3} cycles) ---"
@@ -3072,7 +2958,6 @@ echo "--- Block B7: reset-in-place stability (${REIFY_WARM_LANE_GATE_RESET_CYCLE
 _B7_K="${REIFY_WARM_LANE_GATE_RESET_CYCLES:-3}"
 
 # git-init the lane so that git checkout only rewrites MODIFIED files.
-# Until _b7_init_git_lane is defined (impl step): command-not-found → RED on substrate.
 _b7_init_git_lane "$_WS_LANE"
 
 _B7_DU_BASE="$(du -sb "$_WS_LANE/target" 2>/dev/null | awk '{print $1}' || echo 0)"
@@ -3132,8 +3017,7 @@ done
 #   substrate exits 0, prints the same mount path, and does NOT reformat/remount.
 #   Skipped (with a logged note) when substrate was supplied externally.
 #
-# Both assertions reference _b6_clone_and_refresh (undefined until impl-lifecycle)
-# → RED on substrate; SKIP on non-substrate.
+# Both SKIP on a non-substrate host.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block B6+B1: lifecycle (in-flight independence + provision idempotency) ---"
@@ -3143,7 +3027,6 @@ echo "--- Block B6+B1: lifecycle (in-flight independence + provision idempotency
 _B6_SIBLING_LANE="$_GATE_WS_ROOT/synth-sibling"
 
 # Snapshot sibling/target BEFORE the refresh so we can compare after.
-# _b6_clone_and_refresh is defined in impl-lifecycle → RED until then.
 _b6_clone_and_refresh "$_WS_BASE" "$_WS_LANE" "$_B6_SIBLING_LANE"
 
 assert "B6: sibling seed certified the lane warm-safe (rc=0, non-empty stdout)" \
@@ -3192,7 +3075,7 @@ fi
 # Block B11 — Torn-base coherence: concurrent reflink clone during flip
 #             (SUBSTRATE-GATED; placed after detect_substrate gate)
 #
-# Uses helper `_b11_concurrent_clone_during_flip` (defined in step-8) to:
+# Uses helper `_b11_concurrent_clone_during_flip` to:
 #   1. Build a warm at-head base (gen.1, symlink-gen) from a synth workspace.
 #   2. Resolve <base> symlink → its concrete gen.1 dir (cp -a on a symlink copies
 #      the link itself; the consumer must resolve to the concrete gen first).
@@ -3221,7 +3104,6 @@ fi
 #   (d) df --output=avail is flat across the flip (CoW extent sharing; no full-size
 #       duplication — direction recorded to stderr, no frozen threshold per PRD §9/G6).
 #
-# RED because `_b11_concurrent_clone_during_flip` is undefined until step-8.
 # On non-substrate CI the substrate gate fires first → _skip → graceful exit 0.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -3244,8 +3126,6 @@ fi
 _B11_WS_ROOT="$(mktemp -d "$_B11_GATE_DIR/warm-lane-b11-XXXXXX")"
 _TMPDIRS+=("$_B11_WS_ROOT")
 
-# Call the helper (undefined until step-8 → exits 127 under set -euo pipefail
-# on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b11_concurrent_clone_during_flip "$_B11_WS_ROOT"
 
 # ── (a) Clone coherence ────────────────────────────────────────────────────────
@@ -3296,7 +3176,7 @@ fi
 # Block B13 — Re-seed-at-acquire rescue: warm vs near-cold control
 #             (SUBSTRATE-GATED; placed after detect_substrate gate)
 #
-# Uses helper `_b13_reseed_vs_resetinplace` (defined in step-10) to:
+# Uses helper `_b13_reseed_vs_resetinplace` to:
 #   1. Build a warm at-head base (symlink-gen, via gen_synth_workspace + refresh).
 #   2. Create a lane deliberately STALED: its target/ is pinned far behind head
 #      while head has advanced (non-trivial delta applied to source).
@@ -3319,7 +3199,6 @@ fi
 #        reset-in-place).
 #   (b) Recorded delta logged to stderr (direction-only signal, not a gate).
 #
-# RED because `_b13_reseed_vs_resetinplace` is undefined until step-10.
 # On non-substrate CI the substrate gate fires first → _skip → graceful exit 0.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -3328,8 +3207,6 @@ echo "--- Block B13: re-seed-at-acquire rescue (warm vs near-cold control) ---"
 _B13_WS_ROOT="$(mktemp -d "$_GATE_DIR/warm-lane-b13-XXXXXX")"
 _TMPDIRS+=("$_B13_WS_ROOT")
 
-# Call the helper (undefined until step-10 → exits 127 under set -euo pipefail
-# on a substrate host → RED; SKIPs gracefully off-substrate via the gate above).
 _b13_reseed_vs_resetinplace "$_B13_WS_ROOT"
 
 # ── (contract) Base provenance sidecar was recorded successfully ─────────────

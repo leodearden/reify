@@ -61,7 +61,7 @@ fn children_enumeration_plain_aux_collection() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // (a) n == Int(3): 2 non-collection subs (incl aux) + 1 collection slot
@@ -158,7 +158,7 @@ fn members_enumeration_plain_aux_collection() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // (a) m == Int(6): 1 plain + 1 aux + 4 flattened bolts
@@ -249,7 +249,7 @@ fn members_undef_count_collection_no_panic() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // children: a + vents = 2 slots (undef count doesn't affect children)
@@ -308,7 +308,7 @@ fn example_structural_query_children_members_ri_evals_clean() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

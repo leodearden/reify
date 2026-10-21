@@ -1,7 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { highlightTree, classHighlighter } from '@lezer/highlight';
 import { foldNodeProp, indentNodeProp } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
@@ -12,6 +9,16 @@ import {
   KEYWORD_LED_BODIES,
 } from '../editor/reifyLanguage';
 import { KEYWORDS } from '../editor/highlight';
+import {
+  countErrorNodes,
+  countNodesNamed,
+  keywordSpans,
+  nodeNames,
+  nodeNamesSpanning,
+  punctuationSpans,
+  sourceOfNodeNamed,
+} from './lezerProbeHelpers';
+import { readFixture } from './repoFixtures';
 
 /**
  * Corpus test for the GUI Lezer grammar (`gui/src/editor/reify.grammar`).
@@ -21,101 +28,9 @@ import { KEYWORDS } from '../editor/highlight';
  * the Lezer port, the editor silently degrades (error nodes, lost
  * highlighting) with nothing in CI to notice. This file parses REAL committed
  * `.ri` fixtures — not reduced-subset snippets — and asserts they produce zero
- * error nodes.
+ * error nodes. The corpus-wide drift ledger lives in
+ * `reifyGrammarCorpusLedger.test.ts`.
  */
-
-/** Repo root, three levels up from `gui/src/__tests__/`. */
-const REPO_ROOT = join(__dirname, '../../..');
-
-function readFixture(relPath: string): string {
-  return readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-}
-
-/** Parse `src` and count the error nodes the Lezer parser inserted. */
-function countErrorNodes(src: string): number {
-  const tree = parser.parse(src);
-  const cursor = tree.cursor();
-  let errors = 0;
-  do {
-    if (cursor.type.isError) errors++;
-  } while (cursor.next());
-  return errors;
-}
-
-/** Parse `src` and collect the set of node type names in the resulting tree. */
-function nodeNames(src: string): Set<string> {
-  const tree = parser.parse(src);
-  const cursor = tree.cursor();
-  const names = new Set<string>();
-  do {
-    names.add(cursor.type.name);
-  } while (cursor.next());
-  return names;
-}
-
-/**
- * Parse `src` and count the nodes named `name`.
- *
- * `nodeNames` collapses to a set, so a production that emits the SAME node
- * type nested inside itself reads as one hit and the redundancy is invisible.
- * That is not hypothetical: naming a rule and the token it wraps identically
- * made every wildcard arm come out as `WildcardPattern > WildcardPattern`
- * while `toContain('WildcardPattern')` stayed green (#5957). Use this wherever
- * the tree SHAPE, not just the presence of a name, is the contract.
- */
-function countNodesNamed(src: string, name: string): number {
-  const tree = parser.parse(src);
-  const cursor = tree.cursor();
-  let count = 0;
-  do {
-    if (cursor.type.name === name) count++;
-  } while (cursor.next());
-  return count;
-}
-
-/**
- * Node type names of every node whose span is EXACTLY the first occurrence of
- * `text` in `src`, outermost first — the discriminator for "what did this token
- * reduce TO?".
- *
- * `countNodesNamed(src, 'X') === 0` answers only what a token is NOT, and stays
- * green for every misparse that drops the token from the tree, absorbs it into
- * its parent with no child of its own, or brings it back under a third name.
- * Naming what actually spans the token separates those from the intended tree.
- * MEASURED: `A | _` gives `['Identifier']`; bare `_ => …` gives
- * `['MatchPattern', 'WildcardPattern']`. Throws rather than returning `[]` when
- * `text` is absent, so a typo'd needle fails loudly instead of vacuously.
- */
-function nodeNamesSpanning(src: string, text: string): string[] {
-  const from = src.indexOf(text);
-  if (from < 0) throw new Error(`no ${JSON.stringify(text)} in: ${src}`);
-  const to = from + text.length;
-  const cursor = parser.parse(src).cursor();
-  const names: string[] = [];
-  do {
-    if (cursor.from === from && cursor.to === to) names.push(cursor.type.name);
-  } while (cursor.next());
-  return names;
-}
-
-/**
- * Source text SPANNED by the first node named `name` — the discriminator for
- * "was this token absorbed into that node, or left beside it?".
- *
- * A count cannot answer that. An optional leading keyword parsed as a stray
- * SIBLING leaves the count of the node it should have joined at exactly 1, so
- * `countNodesNamed(..., 'ParamDeclaration') === 1` passes on both the right
- * tree and the wrong one; only the node's `from` offset separates them. Throws
- * rather than returning `''` when the node is absent, so a typo'd name fails
- * loudly instead of vacuously.
- */
-function sourceOfNodeNamed(src: string, name: string): string {
-  const cursor = parser.parse(src).cursor();
-  do {
-    if (cursor.type.name === name) return src.slice(cursor.from, cursor.to);
-  } while (cursor.next());
-  throw new Error(`no ${name} node in parse of: ${src}`);
-}
 
 /**
  * Node types that group two operands under an infix operator.
@@ -187,27 +102,7 @@ function leftOperandOf(src: string): string {
 }
 
 /**
- * ANTI-VACUITY GUARD. Every other assertion in this file is of the form
- * `countErrorNodes(...) === 0` or "this path is in the clean set". If the
- * helper ever silently degraded to always returning 0 — a @lezer/lr change to
- * `cursor.type.isError`, or `tree.cursor()` gaining a default that skips
- * anonymous/error nodes — the whole suite would stay green while covering
- * nothing, and the drift ledger would happily report 329/329 clean. This pins
- * that the helper can still report a non-zero count.
- */
-describe('reify.grammar — countErrorNodes helper', () => {
-  it('reports error nodes on input that cannot parse', () => {
-    // Measured: 3 error nodes.
-    expect(countErrorNodes('@@@ !!! ???')).toBeGreaterThan(0);
-  });
-
-  it('reports zero on input that parses', () => {
-    expect(countErrorNodes('structure def Foo { }')).toBe(0);
-  });
-});
-
-/**
- * Companion anti-vacuity guard for `leftOperandOf`. Pinned against the
+ * Anti-vacuity guard for `leftOperandOf`. Pinned against the
  * SYMBOLIC operator bands, which predate this file and are not touched by the
  * keyword-band work below — so if the helper ever stopped discriminating
  * groupings, these fail independently of whatever the keyword band does.
@@ -353,17 +248,44 @@ describe('reify.grammar snippets — module and import', () => {
     expect(countErrorNodes('import "foo.ri"')).toBe(0);
   });
 
-  // NOTE — the destructured import form (`import a.b {C, D}` vs
-  // `import a.b.{C, D}`) is deliberately NOT asserted here. The tree-sitter
-  // RULE at grammar.js:258-282 sequences the path and the items with no
-  // separator, but grammar.js's own doc comment on that rule (:263) and the
-  // lowering at crates/reify-syntax/src/ts_parser.rs:538 both spell it with a
-  // dot. Nothing settles the disagreement: `import_items` has no tree-sitter
-  // corpus test, no committed `.ri` uses the form, and no Rust code matches on
-  // the node name. Asserting either spelling here would cement an unverified
-  // shape as an intentional GUI contract, so the production stays (faithful to
-  // the rule) and the test does not pin it. See the ImportDeclaration comment
-  // in reify.grammar; #5931 resolves the canonical form.
+  /**
+   * The destructured import is DOTTED, `import a.b.{C, D}`, per
+   * docs/reify-language-spec.md §15's `import_path` (#5931) — a normative
+   * claim, so pinned by assertion per docs/legibility/design-invariants.md.
+   * See the ImportDeclaration comment in reify.grammar.
+   */
+  it('parses the canonical destructured import `import std.mech.{Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech.{Bolt, Nut}')).toBe(0);
+  });
+
+  it('parses a single-item destructured import `import a.{Foo}`', () => {
+    expect(countErrorNodes('import a.{Foo}')).toBe(0);
+  });
+
+  it('rejects the spaced destructured form `import std.mech {Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech {Bolt, Nut}')).toBeGreaterThan(0);
+  });
+
+  /**
+   * This port's one deliberate divergence from tree-sitter, explained at the
+   * ImportDeclaration comment in reify.grammar. The accepting half is pinned by
+   * `interior_whitespace_before_the_brace_list_is_accepted` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs.
+   */
+  it('rejects interior whitespace in the opener `import a . { B }`', () => {
+    expect(countErrorNodes('import a . { B }')).toBeGreaterThan(0);
+  });
+
+  /**
+   * Deliberate latitude beyond §15's EBNF, kept for the reasons recorded at
+   * `empty_and_trailing_comma_item_lists_are_deliberate_latitude` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs, which pins the
+   * authoritative side identically.
+   */
+  it('accepts the empty and trailing-comma item lists §15 does not describe', () => {
+    expect(countErrorNodes('import a.{}')).toBe(0);
+    expect(countErrorNodes('import a.{Foo,}')).toBe(0);
+  });
 
   /**
    * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
@@ -1070,7 +992,7 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
     expect(countErrorNodes('trait Measurable { param mass : Mass }')).toBe(0);
   });
 
-  // Corpus-attested: examples/m9_trait_conformance.ri:15 — a trait body carries
+  // Corpus-attested: examples/m9_trait_conformance.ri:14 — a trait body carries
   // the same member forms a structure body does.
   it('parses a trait body with param, let and constraint members', () => {
     expect(
@@ -1083,7 +1005,7 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
     expect(countErrorNodes('trait Seal : Costed { }')).toBe(0);
   });
 
-  // Corpus-attested: examples/m9_trait_conformance.ri:54
+  // Corpus-attested: examples/m9_trait_conformance.ri:53
   // (`trait Physical : Measurable + Weighable {`).
   it('parses a multi-bound refinement `: Measurable + Weighable`', () => {
     expect(countErrorNodes('trait Physical : Measurable + Weighable { }')).toBe(0);
@@ -1422,7 +1344,8 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
  */
 describe('reify.grammar snippets — auto forms', () => {
   // Corpus-attested 9x: examples/continuous_cost_min.ri:62,
-  // examples/best_practices/discrete_choice.ri:65, and seven more.
+  // examples/best_practices/discrete_choice.ri (DiscreteChoice.side), and seven
+  // more.
   it('parses `param thickness : Length = auto(free)`', () => {
     expect(countErrorNodes('structure def F { param thickness : Length = auto(free) }')).toBe(0);
   });
@@ -1544,7 +1467,8 @@ describe('reify.grammar snippets — port, connect, chain, forall', () => {
     expect(countErrorNodes('structure def F { port p : Fluid }')).toBe(0);
   });
 
-  // Corpus-attested: examples/integration_corner_cases.ri:45.
+  // The bodyless DIRECTIONAL form (same optional-direction rule as above); no
+  // longer corpus-attested since #7809.
   it('parses the bodyless directional `port output : out FullTrait`', () => {
     expect(countErrorNodes('structure def F { port output : out FullTrait }')).toBe(0);
   });
@@ -2675,7 +2599,8 @@ describe('reify.grammar snippets — relate blocks', () => {
  * examples/m9_integration.ri turn clean on this family alone. The other four
  * each keep a second, out-of-scope blocker (`some(u)`, `meta.material`,
  * `meta.project`, a member-level `@annotation`), so their error counts drop but
- * they stay off EXPECTED_CLEAN — see the MEASUREMENT block above it.
+ * they stay off EXPECTED_CLEAN — see the MEASUREMENT blocks in
+ * reifyGrammarCorpusLedger.test.ts.
  *
  * THE SHAPE THAT MAKES THIS FAMILY HARD is a body whose repeat mixes items
  * carrying an OPTIONAL TAIL (`ParamDeclaration`, `LetDeclaration`, `Pragma`)
@@ -2722,7 +2647,7 @@ describe('reify.grammar snippets — constraint def', () => {
   });
 
   /**
-   * Corpus-attested verbatim: examples/integration_corner_cases.ri:57-59. The
+   * Corpus-attested verbatim: examples/integration_corner_cases.ri:56-58. The
    * predicate repeat is zero-or-more, so a body of params alone is legal —
    * the case that would break if the body were written `params* predicates+`.
    */
@@ -3296,7 +3221,7 @@ describe('reify.grammar snippets — `chain` stays a legal ordinary identifier',
  * apart; that is the reason it exists.
  */
 describe('reify.grammar snippets — a ReservedWord in call position', () => {
-  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:99.
+  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:98.
   it('parses `some(u)`', () => {
     expect(countErrorNodes('structure def S { let s = some(u) }')).toBe(0);
   });
@@ -3310,7 +3235,7 @@ describe('reify.grammar snippets — a ReservedWord in call position', () => {
     expect(nodeNames(src)).toContain('LambdaExpression');
   });
 
-  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31
+  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri
   // (`Steel_AISI_1045(yield_stress: some(310mm))`) — a reserved-word call nested
   // inside a NamedArgument VALUE, a third distinct position.
   it('parses a reserved-word call as a named-argument value', () => {
@@ -3952,7 +3877,12 @@ describe('reify.grammar snippets — joint definitions', () => {
  * ledger movement would ever reveal it if they did not.
  */
 describe('reify.grammar snippets — `·` as unit multiplication', () => {
-  // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
+  // Corpus-attested VERBATIM: the `torque_like` binding of
+  // tests/prd-gate/fixtures/unit_middot_mul.ri. Cited by BINDING NAME, not by
+  // line: task #5784 refreshed that fixture's header and shifted every line
+  // number, and verify.sh's _RUST_COUPLED_RI_FIXTURES comment records why the
+  // repo avoids file:line citations — nothing validates them and they rot on
+  // the first edit.
   it('parses a middot-composed unit', () => {
     const src = 'structure def S { let torque_like = 5N·m }';
     expect(countErrorNodes(src)).toBe(0);
@@ -3960,7 +3890,7 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
   });
 
   /**
-   * :26. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
+   * The `with_div` binding. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
    * so the wrong tree — one quantity divided by an identifier — would also
    * reach 0 errors and an error count alone would sail past it.
    */
@@ -3970,7 +3900,10 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
   });
 
-  // :27 — `·` composed with `^` and a negative exponent, in one literal.
+  // The `composed` binding — `·` composed with `^` and a negative exponent, in
+  // one literal. Cited by BINDING NAME for the same reason as its two siblings
+  // above: the fixture's line numbers moved under #5784 and nothing validates a
+  // file:line cite.
   it('composes middots with unit exponents', () => {
     const src = 'structure def S { let composed = 5m^2·kg·s^-2 }';
     expect(countErrorNodes(src)).toBe(0);
@@ -4007,6 +3940,183 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     ]) {
       expect(countErrorNodes(src)).toBe(0);
       expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
+    }
+  });
+});
+
+/**
+ * `sub_declaration`'s DERIVED arm — `sub b = mirror of a across <plane> { … }`
+ * and `sub b = image of a under <transform> { … }`.
+ *
+ * Leaf A-alpha of docs/prds/v0_6/assembly-derivation-toolbox.md (task #6615).
+ * The tree-sitter half landed first; this block mirrors it into the GUI's Lezer
+ * grammar. The Rust-side CST contract lives in
+ * tree-sitter-reify/tests/derived_sub_grammar_tests.rs.
+ *
+ * MEASURED RED before the reify.grammar change (every count below is against
+ * the pre-change parser):
+ *   the fixture                       → 4 errors
+ *   the mirror snippet                → 3 errors
+ *   the image snippet                 → 3 errors
+ *   the `at`-after-body snippet       → 3 errors
+ *   the contextual-keyword battery    → 0 errors (passes on arrival; it is the
+ *                                       reading the change could quietly break)
+ */
+describe('reify.grammar snippets — derived sub arm', () => {
+  const MIRROR_SRC =
+    'structure S { sub b = mirror of a across plane_yz { z = 55mm  keep drum  exclude web.hub } }';
+  const IMAGE_SRC = 'structure S { sub b = image of a under c2_z { span_bu = default } }';
+
+  /**
+   * THE HEADLINE SIGNAL. The committed PRD fixture parses clean in the GUI
+   * parser too, so the editor stops rendering the file as broken. Its path is
+   * also added to reifyGrammarCorpus.expected-clean.json, which is what makes
+   * the drift ledger (reifyGrammarCorpusLedger.test.ts) hold it clean from
+   * here on.
+   */
+  it('parses the adt_mirror_of_arm.ri fixture clean', () => {
+    expect(countErrorNodes(readFixture('tests/prd-gate/fixtures/adt_mirror_of_arm.ri'))).toBe(0);
+  });
+
+  /**
+   * Asserted on COUNTS, not on set membership — the #5957 lesson recorded in
+   * `countNodesNamed`'s doc comment: a self-nested production reads as a single
+   * hit under `toContain`, so a grammar that nested two derivations or folded
+   * two bodies into one would satisfy a membership check and pin nothing.
+   */
+  it('produces exactly one SubDerivation and one DerivedBody', () => {
+    expect(countErrorNodes(MIRROR_SRC)).toBe(0);
+    expect(countNodesNamed(MIRROR_SRC, 'SubDerivation')).toBe(1);
+    expect(countNodesNamed(MIRROR_SRC, 'DerivedBody')).toBe(1);
+  });
+
+  it('names the disposition and override nodes', () => {
+    const names = nodeNames(MIRROR_SRC);
+    expect(names).toContain('SubDerivation');
+    expect(names).toContain('DerivedBody');
+    expect(names).toContain('DerivedParamAssignment');
+    expect(names).toContain('KeepDisposition');
+    expect(names).toContain('ExcludeDisposition');
+    expect(names).toContain('DispositionPath');
+    // One `keep` and one `exclude`, not one node covering both.
+    expect(countNodesNamed(MIRROR_SRC, 'KeepDisposition')).toBe(1);
+    expect(countNodesNamed(MIRROR_SRC, 'ExcludeDisposition')).toBe(1);
+  });
+
+  /**
+   * MEASURED DIVERGENCE FROM grammar.js, pinned so it stays a decision.
+   *
+   * Upstream gives `<param> = default` its own `default_reset` node, so
+   * lowering can tell a RESET from an override without re-reading source text.
+   * lezer cannot reproduce that node, and this asserts the shape it produces
+   * instead: `default` reduces to a plain `Identifier`.
+   *
+   * WHY, measured not assumed: `DefaultReset { ekw<"default"> }` in this slot
+   * generates with zero conflicts and then never matches, and a
+   * `!derivedDefault` precedence marker changes nothing — the choice is made in
+   * the TOKENIZER. `@extend` yields its keyword token only where the parser
+   * state does not otherwise admit `Identifier`, and this slot admits one
+   * (`bindingValue` → `expression` → `Identifier`). Upstream separates them
+   * with tree-sitter lexer rule #2, which lezer does not share — the same
+   * divergence the `List` collection arm records. `kw<"default">`
+   * (`@specialize`) would force it and is the wrong instrument: it is
+   * context-FREE, and `default` occurs 333 times in the committed corpus.
+   *
+   * Nothing is lost: the reset/override discrimination is consumed only by the
+   * Rust lowering, which reads the tree-sitter CST (pinned by
+   * `image_arm_lowers_with_param_resets_separated_from_overrides` in
+   * reify-syntax), never by GUI code.
+   */
+  it('parses the image arm, with `default` reading as an Identifier', () => {
+    expect(countErrorNodes(IMAGE_SRC)).toBe(0);
+    const names = nodeNames(IMAGE_SRC);
+    expect(names).toContain('SubDerivation');
+    expect(names).toContain('DerivedParamAssignment');
+    expect(countNodesNamed(IMAGE_SRC, 'SubDerivation')).toBe(1);
+    // The divergence itself. `not.toContain` alone would pass vacuously if the
+    // whole arm stopped parsing, so the positive reading is asserted too.
+    expect(names).not.toContain('DefaultReset');
+    expect(nodeNamesSpanning(IMAGE_SRC, 'default')).toContain('Identifier');
+  });
+
+  /**
+   * `at` is deliberately ACCEPTED after a derived body. Placement of a derived
+   * sub is derived, so an explicit `at` is an error — but a COMPILE-scope one,
+   * `E_DERIVED_SUB_EXPLICIT_AT` (T8), owned by A-beta (#6616) per the
+   * D3-adversary ownership ruling. A parse error here would pre-empt T8 with a
+   * worse message, so the GUI grammar must keep parsing it.
+   */
+  it('accepts an `at` pose after a derived body', () => {
+    const src = 'structure S { sub b = mirror of a across P { } at origin }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('PoseClause');
+  });
+
+  it('accepts an empty derived body and the `priv aux` modifiers', () => {
+    for (const src of [
+      'structure S { sub b = mirror of a across P { } }',
+      'structure S { priv aux sub b = mirror of a across P { } }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(countNodesNamed(src, 'DerivedBody')).toBe(1);
+    }
+  });
+
+  /**
+   * CONTEXTUAL-KEYWORD NON-REGRESSION — the assertion that actually constrains
+   * the implementation.
+   *
+   * Every new word must be introduced with `ekw<>` (`@extend`), never `kw<>`
+   * (`@specialize`). `@specialize` replaces the token unconditionally and is
+   * context-FREE, so it would stop these words lexing as `Identifier`
+   * everywhere else — the exact failure the `at` note at reify.grammar:1524-1541
+   * records, where promoting `at` with `kw<"at">` un-pinned two committed files
+   * that pass `at` as a named-argument label.
+   *
+   * MEASURED occurrences of each word as ordinary source text across the 673
+   * committed `.ri` files: mirror 65, image 15, across 64, under 143, keep 21,
+   * symmetry 5, exclude 0 (`of` 937). A `@specialize` promotion would un-pin
+   * all of them.
+   *
+   * `nodeNamesSpanning` is the discriminator: it asks what the token ACTUALLY
+   * reduced to, so a word that silently became a keyword node fails here even
+   * though the error count stays 0.
+   */
+  it('keeps every new word lexing as an ordinary Identifier', () => {
+    const cases: Array<[string, string]> = [
+      ['mirror', 'structure S { let mi = mirror(solid, plane_xy(0mm)) }'],
+      ['image', 'structure S { let im = image(m, v) }'],
+      ['keep', 'structure S { let k = keep }'],
+      ['exclude', 'structure S { let e = exclude }'],
+      ['under', 'structure S { let u = under }'],
+      ['across', 'structure S { let ac = across }'],
+      ['using', 'structure S { let us = using }'],
+      ['of', 'structure S { let o = of }'],
+      // PRD §8 contract item (ii): `symmetry` is RESERVED by comment only and
+      // gets NO production, so it must still lex as an ordinary identifier.
+      // This row is the runtime evidence for that reservation.
+      ['symmetry', 'structure S { let sy = symmetry }'],
+    ];
+    for (const [word, src] of cases) {
+      expect(countErrorNodes(src), `${word}: ${src}`).toBe(0);
+      expect(nodeNamesSpanning(src, word), `${word} must still reduce to Identifier`).toContain(
+        'Identifier',
+      );
+    }
+  });
+
+  /**
+   * The named-argument-LABEL position, which is where the `at` promotion broke
+   * committed files. `g(at: 1, keep: 2, mirror: 3)` needs all three to still
+   * lex as `Identifier` for `NamedArgument` to match.
+   */
+  it('keeps the new words usable as named-argument labels and param names', () => {
+    for (const src of [
+      'structure S { let r = g(at: 1, keep: 2, mirror: 3) }',
+      'structure S { param of : Length = 1mm }',
+      'structure S { let u = Unit(of: 3mm) }',
+    ]) {
+      expect(countErrorNodes(src), src).toBe(0);
     }
   });
 });
@@ -4064,7 +4174,8 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
    * Admitting it HERE would make the GUI accept what neither the authoritative
    * grammar nor the compiler does — a third dialect, which is exactly what the
    * `AutoTypeArg` note in reify.grammar already forbids. The file stays off the
-   * ledger deliberately; see the MEASUREMENT block below.
+   * ledger deliberately; see the MEASUREMENT blocks in
+   * reifyGrammarCorpusLedger.test.ts.
    */
   it('still refuses a top-level param, which is why arrow_type.ri is not clean', () => {
     for (const src of [
@@ -4080,9 +4191,9 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
    * FAMILY 12's third one-off, "chained comparison `a < b < c < d`". Does not
    * exist either. Measured: 0 errors in both binding and constraint position.
    *
-   * examples/integration_corner_cases.ri:131 is `let chain = a < b < c < d`,
+   * examples/integration_corner_cases.ri:130 is `let chain = a < b < c < d`,
    * and every error on that line came from `chain` — which round 2 had promoted
-   * to a hard `kw<>` — not from the comparison. Lines 133-135 were cascade.
+   * to a hard `kw<>` — not from the comparison. Lines 132-134 were cascade.
    * Round 4's family 1 (`chain` back to `ekw<>`) is the whole fix.
    *
    * The `leftOperandOf` assertion pins the GROUPING, not just the absence of
@@ -4099,20 +4210,6 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
     expect(leftOperandOf('structure def F { let x = a < b < c }')).toBe('a < b');
   });
 });
-
-/**
- * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
- * with the `@external propSource` — through `highlightTree`, and collects the
- * source text of every span that received `t.keyword`.
- */
-function keywordSpans(src: string): string[] {
-  const tree = reifyLRLanguage.parser.parse(src);
-  const spans: string[] = [];
-  highlightTree(tree, classHighlighter, (from, to, classes) => {
-    if (classes.split(' ').includes('tok-keyword')) spans.push(src.slice(from, to));
-  });
-  return spans;
-}
 
 /**
  * Promoting a word out of the `ReservedWord` @specialize list is mandatory
@@ -4243,21 +4340,83 @@ describe('reifyLanguage — fold and indent coverage', () => {
   const EXCLUDED_BRACE_NODES = ['Interpolation'];
 
   /**
+   * `line` with its `//` comment removed, so prose about braces never counts
+   * as grammar. Quote-aware: a `//` inside a string literal
+   * (`LineComment { "//" … }`) is content, and a backslash escapes the next
+   * character both inside a literal and in a char set (`![\\\"{}]`).
+   */
+  function stripLineComment(line: string): string {
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '\\') i++;
+      else if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") quote = ch;
+      else if (line.startsWith('//', i)) return line.slice(0, i);
+    }
+    return line;
+  }
+
+  /**
+   * reify.grammar's comment-stripped lines, split at the `@tokens` header:
+   * `productions` before it, `tokens` after it. The same text means different
+   * things on each side — inside `@tokens` a braced literal DECLARES a token
+   * rather than opening a production body — so every scan below reads exactly
+   * one side.
+   */
+  function grammarSections(grammarSrc: string): { productions: string[]; tokens: string[] } {
+    const lines = grammarSrc.split('\n');
+    const header = lines.findIndex((line) => /^@tokens\b/.test(line));
+    const split = header === -1 ? lines.length : header;
+    return {
+      productions: lines.slice(0, split).map(stripLineComment),
+      tokens: lines.slice(split + 1).map(stripLineComment),
+    };
+  }
+
+  /**
+   * Names declared INSIDE the `@tokens` block whose entire body is one string
+   * literal containing a `{` — a brace opener that has been folded into a
+   * single NAMED token, such as `ImportItemsOpen { ".{" }` (#5931).
+   *
+   * THE SINGLE-LITERAL SHAPE IS LOAD-BEARING, not incidental tightening. The
+   * looser reading — "any token declaration mentioning a braced literal" —
+   * also matches `StringChunk { (![\\\"{}] | "\\" _ | "{{" | "}}")+ }`, whose
+   * `"{{"` is a string ESCAPE and not a body opener at all, and would inject a
+   * phantom into the ledger below. Only a token that IS a brace, whole,
+   * qualifies.
+   */
+  function braceOpenerTokens(grammarSrc: string): string[] {
+    const names: string[] = [];
+    for (const line of grammarSections(grammarSrc).tokens) {
+      const decl = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{\s*("(?:[^"\\]|\\.)*")\s*\}\s*$/);
+      if (decl && decl[2].includes('{')) names.push(decl[1]);
+    }
+    return names;
+  }
+
+  /**
    * Every capitalised production in reify.grammar whose own body contains a
-   * literal `"{"` token. Scans line by line, tracking the most recent
-   * production header, and stops at `@tokens` — inside that block `"{"` is a
-   * token declaration, not a body.
+   * brace opener, tracking the most recent production header line by line.
+   *
+   * Two spellings count as an opener: the anonymous literal `"{"`, and a
+   * reference to a NAMED opener token from `braceOpenerTokens` (today
+   * `ImportItemsOpen`). A combined anonymous literal such as an inline `".{"`
+   * deliberately does not — it produces no node to fold — and is rejected
+   * outright by `admits no production that opens with an anonymous combined
+   * brace literal` below rather than silently skipped here.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
+    const openers = braceOpenerTokens(grammarSrc);
     const found = new Set<string>();
     let current: string | null = null;
-    for (const rawLine of grammarSrc.split('\n')) {
-      if (/^@tokens\b/.test(rawLine)) break;
-      // Strip line comments so prose about braces never counts as a body.
-      const line = rawLine.replace(/\/\/.*$/, '');
+    for (const line of grammarSections(grammarSrc).productions) {
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
-      if (current && line.includes('"{"')) found.add(current);
+      const opensWithBrace =
+        line.includes('"{"') || openers.some((name) => new RegExp(`\\b${name}\\b`).test(line));
+      if (current && opensWithBrace) found.add(current);
     }
     return [...found].sort();
   }
@@ -4292,6 +4451,35 @@ describe('reifyLanguage — fold and indent coverage', () => {
   });
 
   /**
+   * The ledger's omission of a third opener spelling — a combined anonymous
+   * literal such as an inline `".{"` — is a decision, so it is asserted rather
+   * than left to the extractor to swallow. Such a literal produces no node;
+   * see the ImportDeclaration comment in reify.grammar.
+   */
+  it('admits no production that opens with an anonymous combined brace literal', () => {
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const line of grammarSections(readFixture('gui/src/editor/reify.grammar')).productions) {
+      for (const [literal] of line.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
+        scanned += 1;
+        const body = literal.slice(1, -1);
+        if (/[{}]/.test(body) && body !== '{' && body !== '}') offenders.push(line.trim());
+      }
+    }
+    // Sanity: the literal scan found something, so an empty match set cannot
+    // make the check below pass vacuously.
+    expect(scanned).toBeGreaterThan(50);
+    expect(
+      offenders,
+      `These production bodies in reify.grammar open with an anonymous literal ` +
+        `that is more than a bare brace. The lexer consumes such a literal ` +
+        `without emitting a node, so the body's fold returns null and its ` +
+        `opener cannot be styled or bracket-matched. Declare the opener as a ` +
+        `NAMED token in @tokens instead, as ImportItemsOpen is.`,
+    ).toEqual([]);
+  });
+
+  /**
    * And the props actually RESOLVE on the configured parser. The list check
    * above compares two string arrays; it would stay green if `parser.configure`
    * silently dropped the props (a rename of `foldNodeProp`, a node type that
@@ -4319,7 +4507,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * quoted `"}"`.
    */
   function productionBody(grammarSrc: string, name: string): string {
-    const src = grammarSrc.replace(/\/\/.*$/gm, '');
+    const src = grammarSrc.split('\n').map(stripLineComment).join('\n');
     const header = new RegExp(`(^|\\n)${name}\\s*\\{`).exec(src);
     if (!header) throw new Error(`production ${name} not found in reify.grammar`);
     let depth = 1;
@@ -4380,16 +4568,36 @@ describe('reifyLanguage — fold and indent coverage', () => {
   describe('BRACE_FIRST_BODIES vs KEYWORD_LED_BODIES matches the grammar', () => {
     const grammarSrc = readFixture('gui/src/editor/reify.grammar');
 
+    /**
+     * The spellings that count as a brace OPENER at the head of an arm: the
+     * anonymous literal `"{"`, plus every named opener token from
+     * `braceOpenerTokens` — the same definition `braceDelimitedNodeTypes` uses
+     * for list membership, so the two halves of this ledger cannot disagree on
+     * what an opener is.
+     *
+     * The sibling KEYWORD_LED_BODIES assertion below stays literal-only: no
+     * keyword-led body opens an arm with a named token.
+     */
+    const armOpeners = ['"{"', ...braceOpenerTokens(grammarSrc)];
+    /** `opener` appears ANYWHERE in `arm` — the "has a brace at all" reading. */
+    const armHasOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.includes('"{"') : new RegExp(`\\b${opener}\\b`).test(arm);
+    /** `arm` STARTS with `opener` — the positional reading this test is about. */
+    const armStartsWithOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.startsWith('"{"') : new RegExp(`^${opener}\\b`).test(arm);
+
     it.each(BRACE_FIRST_BODIES)('%s opens its braced arm with the brace itself', (name) => {
       const arms = splitTopLevelArms(productionBody(grammarSrc, name));
-      const braceArms = arms.filter((arm) => arm.includes('"{"'));
-      expect(braceArms.length, `${name} has no "{" token in its reify.grammar production at all`).toBeGreaterThan(
-        0,
-      );
+      const braceArms = arms.filter((arm) => armOpeners.some((op) => armHasOpener(arm, op)));
       expect(
-        braceArms.every((arm) => arm.startsWith('"{"')),
+        braceArms.length,
+        `${name} has no brace opener in its reify.grammar production at all — neither a "{" ` +
+          `token nor any named opener (${JSON.stringify(braceOpenerTokens(grammarSrc))})`,
+      ).toBeGreaterThan(0);
+      expect(
+        braceArms.every((arm) => armOpeners.some((op) => armStartsWithOpener(arm, op))),
         `${name} is in BRACE_FIRST_BODIES, but at least one of its arms in reify.grammar has ` +
-          `content before the "{" — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
+          `content before its brace opener — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
       ).toBe(true);
     });
 
@@ -4478,12 +4686,17 @@ describe('reifyLanguage — fold and indent coverage', () => {
     // { let a = 1.0; a }`).
     FnBody: 'fn g() -> Real { let a = 1.0; a }',
     SpecializationBody: 'structure def S { sub x : Foo<T> { bore = 5mm } }',
+    // The derived sub's body (task #6615). Brace-FIRST: the `{` opens the
+    // node, with `mirror of a across P` sitting in the sibling
+    // `SubDerivation`.
+    DerivedBody: 'structure def S { sub b = mirror of a across P { z = 55mm } }',
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
-    // `import a.b {C, D}` — no separator, matching the RULE this port follows
-    // (see the long note on `ImportDeclaration` in reify.grammar).
-    ImportItems: 'import std.mech {Bolt, Nut}',
+    // The `.` is part of the opener token `ImportItemsOpen` (`.{`), so
+    // `ownBraceInterior`'s literal-`{` scan lands one past the dot — the same
+    // `from` the fold assertion for this node expects.
+    ImportItems: 'import std.mech.{Bolt, Nut}',
     // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
     KeyedMemberBlock:
       'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
@@ -4514,6 +4727,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
     FieldSource: FIELD_DEFINITION_SRC,
     PurposeDeclaration: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
     RelateBlock: 'structure def F { relate { fasten(a.frame, b.frame) } }',
+    // Body lines from tests/prd-gate/fixtures/sketch_block_target.ri:9,13.
+    SketchBlock: 'structure def F { sketch profile { let a = point(0mm, 0mm)  fix(a) } }',
     ConstraintDefinition: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
     SubRelateBlock: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
     MatchArmDeclBlock:
@@ -4644,591 +4859,39 @@ describe('reifyLanguage — fold and indent coverage', () => {
       expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
     });
   });
-});
 
-// ── Corpus drift ledger ──────────────────────────────────────────────────
-//
-// The GUI Lezer grammar is a hand-maintained subset of the authoritative
-// tree-sitter-reify/grammar.js. Nothing in CI previously noticed when the
-// language moved ahead of it, so the editor degraded silently. This ledger
-// makes that drift visible.
-//
-// MEASUREMENT (task 5907). The reference prototype for this task was measured
-// over a NON-RECURSIVE walk of the two corpus roots — 146 + 71 = 217 files —
-// and moved them from 7 clean to 57 clean (39 examples + 18 prd-gate
-// fixtures). This ledger walks both roots RECURSIVELY, which picks up
-// subdirectories such as examples/auto/ and examples/best_practices/ for a
-// total of 329 files. The delta landed here measures:
-//
-//   top-level only : 57 / 217  (39 examples + 18 fixtures) — reproduces the
-//                              reference prototype exactly
-//   recursive      : 90 / 329  (the 57 above, plus 33 in subdirectories)
-//
-// MEASUREMENT (task 5927), the catch-up round that inherited this ledger.
-// Fifteen form families were ported, each in its own commit that extended the
-// pinned set below, taking it from 90 to 301 of the same 329 files:
-//
-//   named call arguments · collection literals + index access · keyword
-//   logical operators · range expressions · type parameters + trait bounds ·
-//   the rich `sub` forms · unit expressions + value-level `^` · trait and fn
-//   declarations · lambdas + `@` selectors · parameterized `auto` +
-//   auto_type_arg · port/connect/chain/forall + the quantifier expression ·
-//   match/enum/variant construction · field def/purpose/unit/type alias/
-//   default/meta/pragma/annotation · radix/imaginary/interpolated literals
-//
-// That round left the set at 302 paths, not 301, and the extra one was NOT a
-// grammar gain: the corpus itself grew to 330 files while that task was in
-// flight (`examples/whole_model_cost_min.ri`), and the new file parses clean.
-// Its final measurement is therefore 302 / 330. The fifteenth family is worth
-// zero files — radix, imaginary and interpolated literals already parsed with
-// zero error nodes under the `QuantityLiteral` / `String` catch-alls, so that
-// slice was taken for node SHAPE (an editor cannot style what it cannot name)
-// and is guarded by explicit non-regression assertions above rather than by
-// any movement here.
-//
-// MEASUREMENT (task 5941), catch-up round 3. Five families were ported, taking
-// the pinned set from 302 to 309 of 330 — and the arithmetic is worth stating
-// plainly, because only TWO of the five moved it at all:
-//
-//   relate blocks              +5   the whole ledger movement, less two
-//   constraint def             +2
-//   variant construction in argument position   0
-//   sub_relate_block                            0
-//   match_arm_decl_block                        0
-//
-// The three zero-movement families are taken for node SHAPE, the same
-// justification 5927 recorded for the literal families, and are guarded by the
-// node-name assertions in their slices above rather than by any movement here.
-// For two of them that guarding is the ONLY guarding there is, because the
-// wrong reading parses clean: an argument-position construction could have been
-// widened into `primaryExpression` and silently swallowed a `match`/`where`/
-// `connect` body, and a `sub_relate_block` resolved with precedence instead of
-// the `~poseWhere` marker would silently have stolen every post-pose `where`
-// from `GuardedBlock`. Neither would have shown up as an error node.
-//
-// FOUR OF THE SIX `constraint def` FILES DID NOT TURN CLEAN, and their absence
-// below is not a regression. Each keeps a second, out-of-scope blocker — in
-// order: `some(u)`, `meta.material`, `meta.project`, and a member-level
-// `@annotation`. Their error counts did drop (integration_corner_cases 9→7,
-// integration_full_v01 14→5, m11_annotations 18→10, m9_combined 9→4), which is
-// real progress that this pinned set is deliberately unable to express.
-//
-// MEASUREMENT (task 5950), catch-up round 4. Round 3 handed on twelve families,
-// derived from each not-clean file's FIRST blocker. Ten of them were real and
-// were ported; one is owned elsewhere; two did not exist. The pinned set moved
-// from 309 to 327 of 330:
-//
-//   `chain` demoted to `ekw<>`                 +2
-//   a `ReservedWord` in CALL position          +3
-//   the `%` operator                           +1
-//   `priv param`                               +1
-//   `auto` as a NAMED-ARGUMENT value           +1
-//   a member-level `Annotation`                +1
-//   `meta` demoted to `ekw<>`                  +2
-//   `::` in EXPRESSION position                +3
-//   `keyed_member_block`                       +2
-//   `joint_definition`                         +1
-//   `·` unit multiplication                    +1
-//                                             ────
-//                                              +18
-//
-// TWO OF THOSE CREDITS ARE THE LAST OF TWO CHANGES, not the only one, and the
-// column would mislead without saying so: integration_corner_cases.ri needed
-// BOTH `chain` and the `ReservedWord` callee, and integration_full_v01.ri
-// needed BOTH the callee and `meta`. Each file is credited to the change that
-// FINISHED it. A per-family delta cannot be additive when a file has two
-// blockers; naming the two is cheaper than implying they were independent.
-//
-// WHERE ROUND 3'S FORECAST WAS WRONG — three of its twelve entries, all three
-// found by measuring rather than by trusting the list, and all three now pinned
-// by tests above so the next round does not re-litigate them:
-//
-//   - "two stackup files" was not a list-literal gap. It was `chain`, which
-//     round 2 had promoted to a hard `kw<>`; that is context-free in Lezer, so
-//     `chain` stopped being a legal identifier in three committed files. A
-//     self-inflicted regression, and the cheapest fix in the round.
-//   - "three remaining one-offs" was two. Chained comparison `a < b < c < d`
-//     already parsed with zero errors in both binding and constraint position;
-//     integration_corner_cases.ri:131 is `let chain = …`, so its errors were
-//     the keyword above and :133-135 were cascade.
-//   - "arrow (function) types in a param annotation" was already reachable —
-//     `FunctionType` has been in the grammar all along.
-//
-// WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
-// corpus" is not a finding and "which three, and whose" is:
-//
-//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references.
-//   - stdlib_ns_qualified_type.ri  ) LANDED by #5495 μ, which round 4 named as
-//     the only inheritable work IT HAD IDENTIFIED. Both are now in the ledger
-//     below. The node shapes the two new productions must produce — and the
-//     controls they must not disturb — are pinned in
-//     reifyGrammarQualifiedRef.test.ts, the file that task owns; this ledger
-//     records only that the two fixtures parse clean.
-//   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
-//     and `param` is not a top-level declaration in tree-sitter's
-//     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
-//     (crates/reify-syntax/src/ts_parser.rs:299). Admitting it here would make
-//     the editor accept what neither of those does — a third dialect. The
-//     fixture's own header declares it a deliberate FAIL probe. Both halves are
-//     pinned above: the member-position arrow type IS clean, and the top-level
-//     `param` MUST error.
-//
-// THE ARITHMETIC ABOVE IS INHERITED AND ITS DENOMINATOR IS STALE. Every "of
-// 330" in this block dates from an earlier round's corpus inventory; #5495 μ
-// re-measured it through this test's own walk and `countErrorNodes`, and the
-// corpus is bigger than the block assumes:
-//
-//     361 committed .ri under CORPUS_ROOTS · 358 parse clean · 329 pinned below
-//
-// So arrow_type.ri is NOT the only un-pinned file: 29 currently-clean files sit
-// outside the ratchet — examples/best_practices/angle_crossings.ri, the ten
-// tests/prd-gate/fixtures/pnrg_envelope_*.ri, compose_fn_field_resolves.ri and
-// the rest. That gap is real inheritable work and is the reason this comment no
-// longer claims completeness: a grammar change could regress any of those 29
-// and the ledger — the artifact whose whole purpose is catching exactly that —
-// would stay green.
-//
-// DO NOT RE-STATE THOSE THREE NUMBERS AS THE NEW TRUTH. They were measured on
-// 2026-08-23 and go stale the next time anyone adds a `.ri`, which is how the
-// "330" above rotted in the first place. The LIVE arithmetic is printed by this
-// test's own failure message (`measured N clean of M …; K clean files are not
-// pinned`); to see it on demand, read those three counts off a run rather than
-// off this comment. A future round adding a family should shrink the 29 and
-// leave the counting to the test.
-//
-// AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
-// reasoning for every change above — why `ekw<>` and not `kw<>`, why the
-// callee and not the `ReservedWord` list, why `·` cannot escape `unitOp` —
-// lives on the productions themselves in reify.grammar. #5941 was amended
-// TWICE to stop this file restating them (`eb2394f2cd`, `05e5c50eac`); read
-// the grammar, not a second copy that drifts.
-//
-// `variant_construction` left round 3's inherited list before round 4 began:
-// argument position is now admitted.
-// The narrowing that remains is `primaryExpression` only, it is deliberate, and
-// the note on that production in reify.grammar prices it — see also the pin
-// above asserting that expression-position `Name { … }` must STILL error.
-//
-// AND ONE KNOWN DIVERGENCE, which is not a gap and must not be "fixed" blindly.
-// Underscore-separated DECIMAL literals did not get their own node: `1_000_000`
-// still lexes as `QuantityLiteral` (`1` + unit `_000_000`). The companion-token
-// trick that made `0xDEAD_BEEF` one `RadixLiteral` cannot be reused, because
-// lezer token precedence beats longest match: a separator-aware `Number`
-// ordered above `QuantityLiteral` takes `1_000` out of the ATTESTED `1_000mm`
-// (examples/numeric_separators.ri:17) and strands the `mm`, turning a
-// committed line into an error node. Zero ledger impact either way; pinned by
-// shape tests above so it stays visible. See the fuller accounting on the
-// `Number` token in reify.grammar, which prices the full trade.
-//
-// WHY A PINNED SET AND NOT A COUNT. An absolute floor (`clean.length >= 90`)
-// is coupled to corpus INVENTORY, not to grammar capability: deleting or
-// renaming a currently-clean `.ri` — a routine refactor with no grammar
-// involvement — would fail with "the grammar regressed", a false accusation
-// whose obvious fix (lower the floor) also masks any genuine regression
-// landing alongside it. Conversely, adding 50 unparseable examples would keep
-// a count green while coverage rotted. So the ledger pins the SET instead:
-// every path below is expected to parse clean, filtered by what still exists
-// on disk. Removals drop out naturally, a genuine regression names the exact
-// file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. #5950 turned that ratchet to 327 entries; #5495 μ added its two
-// fixtures. The entries below are a SUBSET of the clean set, not the whole of
-// it — see the re-measured arithmetic above and the 29-file gap it names.
-const EXPECTED_CLEAN = [
-  'examples/ad_hoc_face_selector.ri',
-  'examples/affine_tapered_spacer.ri',
-  'examples/ambient_default_material/ambient_default_surface.ri',
-  'examples/anisotropic_bar.ri',
-  'examples/appearance_surface.ri',
-  'examples/appearance_viewport_egress.ri',
-  'examples/aspect_massive.ri',
-  'examples/auto/bearing_computed_default_unevaluated.ri',
-  'examples/auto/bearing_constraint_select.ri',
-  'examples/auto/bearing_resolved_value.ri',
-  'examples/auto/bearing_unsat.ri',
-  'examples/auto/bounded_fallback_unsound.ri',
-  'examples/auto_binding_sites.ri',
-  'examples/bearing_auto_seal.ri',
-  'examples/best_practices/bolt_circle.ri',
-  'examples/best_practices/clearance_oracle.ri',
-  'examples/best_practices/discrete_choice.ri',
-  'examples/best_practices/hollow_primitives.ri',
-  'examples/best_practices/negation.ri',
-  'examples/best_practices/symmetry_mirror.ri',
-  'examples/bom_lifecycle.ri',
-  'examples/bracket.ri',
-  'examples/buckling_column_p2.ri',
-  'examples/buckling_column_smoke.ri',
-  'examples/buckling_multi_case_smoke.ri',
-  'examples/complex_abs_arg.ri',
-  'examples/complex_div.ri',
-  'examples/complex_literals.ri',
-  'examples/complex_numbers.ri',
-  'examples/complex_transcendental.ri',
-  'examples/conditional_compilation/main.ri',
-  'examples/conditional_compilation/platform_linux.ri',
-  'examples/conditional_compilation/platform_wasm.ri',
-  'examples/continuous_cost_min.ri',
-  'examples/cost_aggregation.ri',
-  'examples/cost_robustness_tradeoff.ri',
-  'examples/cost_subtree_aggregate.ri',
-  'examples/datum_projections.ri',
-  'examples/determinacy_intrinsics.ri',
-  'examples/differential_field_ops.ri',
-  'examples/dimensional_chains.ri',
-  'examples/dimensional_consistency.ri',
-  'examples/dimensionless_unification.ri',
-  'examples/drivebelt_trait_bounds.ri',
-  'examples/dynamics/closed_2prismatic_idyn.ri',
-  'examples/dynamics/closed_4bar_idyn.ri',
-  'examples/dynamics/pendulum_idyn.ri',
-  'examples/dynamics/toolhead_motor_sizing.ri',
-  'examples/error_messages.ri',
-  'examples/extrude_infinite.ri',
-  'examples/fdm_bracket.ri',
-  'examples/fea_bracket_member_access.ri',
-  'examples/fea_cantilever_smoke.ri',
-  'examples/fea_multi_case_bracket.ri',
-  'examples/fea_multi_case_smoke.ri',
-  'examples/fea_pressure_smoke.ri',
-  'examples/fea_shell_channels.ri',
-  'examples/fea_shell_flexure.ri',
-  'examples/fea_shell_too_thick_annotated.ri',
-  'examples/fea_shell_too_thick_auto.ri',
-  'examples/fields/compose.ri',
-  'examples/fields/composed_stiffness.ri',
-  'examples/fields/fn_field.ri',
-  'examples/fields/from_samples.ri',
-  'examples/fields/pointwise_field_combinators.ri',
-  'examples/fields/restrict.ri',
-  'examples/fields/spatial_ops.ri',
-  'examples/fields/std_fields_surface.ri',
-  'examples/fields_analysis.ri',
-  'examples/flexures/cantilever_beam_prb.ri',
-  'examples/flexures/double_parallelogram.ri',
-  'examples/flexures/notch_hinge_circular_prb.ri',
-  'examples/flexures/parallelogram_stage.ri',
-  'examples/flexures/printer_z_compliant_mount.ri',
-  'examples/flexures/yield_warning.ri',
-  'examples/gdt_conformance_satisfied.ri',
-  'examples/gdt_conformance_violated.ri',
-  'examples/generate_bolt_circle.ri',
-  'examples/generics/container.ri',
-  'examples/generics/dim_param.ri',
-  'examples/generics/identity.ri',
-  'examples/generics/unbound_param.ri',
-  'examples/geometric_relations/bolt_plate.ri',
-  'examples/geometric_relations/construction_datum.ri',
-  'examples/geometric_relations/feature_datum_axis.ri',
-  'examples/geometric_relations/global_float.ri',
-  'examples/half_space.ri',
-  'examples/imported_field/openvdb_stress.ri',
-  'examples/integration_corner_cases.ri',
-  'examples/integration_full_v01.ri',
-  'examples/interpolation.ri',
-  'examples/io_export.ri',
-  'examples/io_formats.ri',
-  'examples/joint_dof_self_check.ri',
-  'examples/kernel_queries/adjacent_faces.ri',
-  'examples/kernel_queries/all_queries_walk.ri',
-  'examples/kernel_queries/angle_smoke.ri',
-  'examples/kernel_queries/box_edges.ri',
-  'examples/kernel_queries/box_faces.ri',
-  'examples/kernel_queries/contains_box.ri',
-  'examples/kernel_queries/curvature_smoke.ri',
-  'examples/kernel_queries/directional_selectors.ri',
-  'examples/kernel_queries/distance_box_point.ri',
-  'examples/kernel_queries/filtered_edges.ri',
-  'examples/kernel_queries/geo_equiv_smoke.ri',
-  'examples/kernel_queries/intersects_smoke.ri',
-  'examples/kernel_queries/length_perimeter.ri',
-  'examples/kernel_queries/moment_of_inertia_box.ri',
-  'examples/kernel_queries/normal_smoke.ri',
-  'examples/keyed_forall.ri',
-  'examples/keyed_vents.ri',
-  'examples/kinematic/counter_mass_balance.ri',
-  'examples/kinematic/dock_pickup.ri',
-  'examples/kinematic/four_bar_singular.ri',
-  'examples/kinematic/relate_mounted_fourbar.ri',
-  'examples/kinematic/relate_mounted_revolute.ri',
-  'examples/kinematic/revolute_pivot_offset.ri',
-  'examples/kinematic/spatial_linkage_oriented.ri',
-  'examples/kleene_e2e.ri',
-  'examples/large_assembly.ri',
-  'examples/linalg.ri',
-  'examples/list_helpers.ri',
-  'examples/litter_tray.ri',
-  'examples/load_case.ri',
-  'examples/m10_combined.ri',
-  'examples/m10_connect_advanced.ri',
-  'examples/m10_geometric_types.ri',
-  'examples/m10_purpose_activation.ri',
-  'examples/m11_annotations.ri',
-  'examples/m11_field_calculus.ri',
-  'examples/m5_collection_ops.ri',
-  'examples/m5_combined_all.ri',
-  'examples/m5_connect_chain.ri',
-  'examples/m5_function_safety_factor.ri',
-  'examples/m5_geometry.ri',
-  'examples/m5_geometry_flange.ri',
-  'examples/m5_guarded_enum.ri',
-  'examples/m5_guarded_head_type.ri',
-  'examples/m5_occurrence_process.ri',
-  'examples/m5_purpose.ri',
-  'examples/m5_trait_rigid.ri',
-  'examples/m5_trait_structure.ri',
-  'examples/m5_user_function.ri',
-  'examples/m6_data_carrying_enum.ri',
-  'examples/m6_data_carrying_enum_undef.ri',
-  'examples/m6_fallback_recovery.ri',
-  'examples/m6_generic_enum.ri',
-  'examples/m6_result_fallback.ri',
-  'examples/m6_result_recovery.ri',
-  'examples/m8_materials.ri',
-  'examples/m8_ports.ri',
-  'examples/m8_tolerancing.ri',
-  'examples/m8_units.ri',
-  'examples/m9_combined.ri',
-  'examples/m9_constraint_def.ri',
-  'examples/m9_determinacy.ri',
-  'examples/m9_integration.ri',
-  'examples/m9_trait_conformance.ri',
-  'examples/material_appearance_library.ri',
-  'examples/materials_starter_library.ri',
-  'examples/math_linalg.ri',
-  'examples/modal/cantilever_beam_modes.ri',
-  'examples/modal/printer_gantry_modes.ri',
-  'examples/modal/simply_supported_beam_modes.ri',
-  'examples/modal/transient_step_response.ri',
-  'examples/module_visibility/consumer.ri',
-  'examples/module_visibility/mismatch_variant.ri',
-  'examples/module_visibility/producer.ri',
-  'examples/modulo_index_wrap.ri',
-  'examples/multi_aspect_objective.ri',
-  'examples/multi_aspect_objective_mixed.ri',
-  'examples/multi_kernel/attribute_selectors.ri',
-  'examples/multi_kernel/manifold_boolean.ri',
-  'examples/multi_kernel/pragma_override.ri',
-  'examples/multi_kernel/voxel_to_mesh.ri',
-  'examples/multi_kernel/voxel_to_mesh_iso.ri',
-  'examples/multi_load_bracket.ri',
-  'examples/multi_pane_viewport.ri',
-  'examples/numeric_and_range_literals.ri',
-  'examples/numeric_separators.ri',
-  'examples/objective_inheritance.ri',
-  'examples/option_map_or.ri',
-  'examples/parametric_rate_cross_module.ri',
-  'examples/parametric_vec3_cross_module.ri',
-  'examples/pattern_arbitrary_transforms.ri',
-  'examples/pattern_composition.ri',
-  'examples/perforated_plate.ri',
-  'examples/process/std_process_dfm.ri',
-  'examples/process/std_process_dfm_metrology.ri',
-  'examples/process/std_process_dfm_thickness.ri',
-  'examples/radix_literals.ri',
-  'examples/representation_within.ri',
-  'examples/rigid_mass_props_smoke.ri',
-  'examples/selectors/relational_selectors_v2.ri',
-  'examples/selectors/selector_vocabulary_v2_leaves.ri',
-  'examples/selectors/single_face_by_normal.ri',
-  'examples/selectors/vertices_index_coercion.ri',
-  'examples/shells/thin_walled_bracket.ri',
-  'examples/single_sided_range.ri',
-  'examples/solid-param-direct.ri',
-  'examples/solver_optimality_unproven.ri',
-  'examples/spec-shape-physical.ri',
-  'examples/stdlib/constants.ri',
-  'examples/stdlib/fields.ri',
-  'examples/stdlib/ports_breadth.ri',
-  'examples/stdlib/ports_domains.ri',
-  'examples/stdlib/ports_mechanical.ri',
-  'examples/stdlib/ports_prelude.ri',
-  'examples/stdlib/process.ri',
-  'examples/structural_query_bom.ri',
-  'examples/structural_query_children_members.ri',
-  'examples/structural_query_descendants.ri',
-  'examples/structural_query_filter.ri',
-  'examples/structural_traits_dimensioned.ri',
-  'examples/structure-instance.ri',
-  'examples/sub_placement_assembly.ri',
-  'examples/surface_finish_3mf.ri',
-  'examples/surface_finish_cost.ri',
-  'examples/surface_finish_functional.ri',
-  'examples/surface_finish_viewport.ri',
-  'examples/sweep_degenerate.ri',
-  'examples/tensegrity_cable_net.ri',
-  'examples/tensegrity_membrane_formfind.ri',
-  'examples/tensegrity_membrane_patch.ri',
-  'examples/tensegrity_pavilion.ri',
-  'examples/tensegrity_t_prism.ri',
-  'examples/tolerance-stackup-3part.ri',
-  'examples/tolerance-stackup-rss.ri',
-  'examples/tolerancing/gdt_illegal_modifier.ri',
-  'examples/tolerancing/gdt_legality_rfs.ri',
-  'examples/tolerancing/gdt_oracle_inside.ri',
-  'examples/tolerancing/gdt_oracle_outside.ri',
-  'examples/tolerancing/gdt_pass_weave.ri',
-  'examples/tolerancing/gdt_removed_2018.ri',
-  'examples/tolerancing/gdt_zones.ri',
-  'examples/tolerancing/std_tolerancing_surface.ri',
-  'examples/tolerancing/vc_bolt_pattern_clearance.ri',
-  'examples/tolerancing/vc_bolt_pattern_interference.ri',
-  'examples/tolerancing/vc_boundary_solid.ri',
-  'examples/topology_selectors/all_topology_selectors_wiring.ri',
-  'examples/topology_selectors/block_inertia.ri',
-  'examples/topology_selectors/fillet_top_edges.ri',
-  'examples/trait_assoc_fn_cylinder.ri',
-  'examples/trait_assoc_fn_overload.ri',
-  'examples/trait_assoc_fn_static.ri',
-  'examples/trait_assoc_type_material.ri',
-  'examples/trait_assoc_type_qualified.ri',
-  'examples/trait_hierarchy.ri',
-  'examples/trajectory/ei_robustness.ri',
-  'examples/trajectory/gcode_import_smoke.ri',
-  'examples/trajectory/printer_print_envelope.ri',
-  'examples/trajectory/tots_optimal_ptp.ri',
-  'examples/trajectory/zv_shaped_ramp.ri',
-  'examples/trajectory/zvd_robustness.ri',
-  'examples/type_hygiene/type_hygiene_surface.ri',
-  'examples/undef_self_describing.ri',
-  'examples/unit_expressions.ri',
-  'examples/whole_model_cost_min.ri',
-  'examples/whole_model_joint_drive.ri',
-  'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
-  'tests/prd-gate/fixtures/collection_expr_index_resolves.ri',
-  'tests/prd-gate/fixtures/collection_sub_at_placement_rejected.ri',
-  'tests/prd-gate/fixtures/collection_sub_member_cell_consumable.ri',
-  'tests/prd-gate/fixtures/collection_sub_per_member_cells.ri',
-  'tests/prd-gate/fixtures/collection_sub_value_position_undef_baseline.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri',
-  'tests/prd-gate/fixtures/cost_min_money_objective.ri',
-  'tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri',
-  'tests/prd-gate/fixtures/cross_sub_geometry_ref.ri',
-  'tests/prd-gate/fixtures/dcr_dimension_rejection_channel_fires.ri',
-  'tests/prd-gate/fixtures/dcr_fn_force_param_already_rejects.ri',
-  'tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri',
-  'tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_load_retype_target_resolves.ri',
-  'tests/prd-gate/fixtures/dcr_material_dimension_correct.ri',
-  'tests/prd-gate/fixtures/dcr_material_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_solver_load_dropped_bare.ri',
-  'tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri',
-  'tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri',
-  'tests/prd-gate/fixtures/engine_build_hardening_kappa_mixed_kernel_selector.ri',
-  'tests/prd-gate/fixtures/expected_type_pushdown_arg.ri',
-  'tests/prd-gate/fixtures/expected_type_pushdown_let.ri',
-  'tests/prd-gate/fixtures/faces_by_normal_symbolic_eval_silent.ri',
-  'tests/prd-gate/fixtures/forall_collection_resolves.ri',
-  'tests/prd-gate/fixtures/forall_range_domain_rejected.ri',
-  'tests/prd-gate/fixtures/geometry_let_selector_consumer.ri',
-  'tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri',
-  'tests/prd-gate/fixtures/hand_placed_twin_two_subs_eval.ri',
-  'tests/prd-gate/fixtures/indexed_sub_bare_member_resolves.ri',
-  'tests/prd-gate/fixtures/indexed_sub_coll_arm_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_forall_range_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_inst_arm_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_oob_computed_silent_undef.ri',
-  'tests/prd-gate/fixtures/indexed_sub_oob_literal_silent_undef.ri',
-  'tests/prd-gate/fixtures/indexed_sub_self_member_misrouted.ri',
-  'tests/prd-gate/fixtures/indexed_sub_self_member_nogeom_unsupported.ri',
-  'tests/prd-gate/fixtures/indexed_sub_silent_undef_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_spec_arm_baseline.ri',
-  'tests/prd-gate/fixtures/ir_clean_eval.ri',
-  'tests/prd-gate/fixtures/objective_inherit_ambiguous.ri',
-  'tests/prd-gate/fixtures/posed_subs_distance_query_unresolvable.ri',
-  'tests/prd-gate/fixtures/purpose_nested_structure.ri',
-  'tests/prd-gate/fixtures/quantifier_expr_int_domain_resolves.ri',
-  'tests/prd-gate/fixtures/quantifier_expr_member_access_rejected.ri',
-  'tests/prd-gate/fixtures/quantifier_expr_range_domain_rejected.ri',
-  'tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri',
-  'tests/prd-gate/fixtures/revolute_silent_accept.ri',
-  'tests/prd-gate/fixtures/scalar_codomain_mismatch.ri',
-  'tests/prd-gate/fixtures/self_collection_count_redirect_rejected.ri',
-  'tests/prd-gate/fixtures/single_sub_pose_resolves.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_std_nonexistent_import.ri',
-  'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
-  'tests/prd-gate/fixtures/subbody_objective_ignored.ri',
-  'tests/prd-gate/fixtures/transform3_unresolved.ri',
-  'tests/prd-gate/fixtures/typeparam_member_access.ri',
-  'tests/prd-gate/fixtures/uncons_box_no_error.ri',
-  'tests/prd-gate/fixtures/unit_curated_labels_ascii.ri',
-  'tests/prd-gate/fixtures/unit_middot_mul.ri',
-  'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
-];
+  /**
+   * Behavioural pins for the destructured import's opener: they call the fold
+   * and read its range, and drive the real highlighter and read its spans. The
+   * structural `resolves fold and indent props on %s` guard only checks that
+   * the prop is DEFINED, so it cannot see a fold that returns null because the
+   * opener has no node — see the ImportDeclaration comment in reify.grammar.
+   */
+  it('folds the canonical destructured import to exactly its item list', () => {
+    const src = 'import std.mech.{Bolt, Nut}';
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    let items: SyntaxNode | null = null;
+    do {
+      if (cursor.type.name === 'ImportItems') items = cursor.node;
+    } while (!items && cursor.next());
+    expect(items, 'no ImportItems in the parse').not.toBeNull();
 
-// pg-drift-dir:allow — reviewed directory walk (task 6435). This ledger is the
-// one tracked consumer that globs tests/prd-gate/fixtures/ rather than naming
-// leaves. It does NOT void verify.sh's "adding a fixture is inert" premise:
-// the expectation below is asserted only over EXPECTED_CLEAN ∩ on-disk, so an
-// unpinned new fixture shifts diagnostic counters and nothing more. The pinned
-// subset IS gated — see _GUI_COUPLED_RI_FIXTURES in scripts/verify.sh and the
-// PG-DRIFT-GUI scenario in tests/infra/test_verify_scope.sh.
-const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures']; // pg-drift-dir:allow — reviewed, see above
+    const fold = items!.type.prop(foldNodeProp)!;
+    const range = fold(items!, EditorState.create({ doc: src }));
+    // NOT null — `ImportItems` is listed in BRACE_FIRST_BODIES, and that
+    // membership is a claim that it folds, not merely that it has a prop.
+    expect(range, 'ImportItems resolves a fold prop that folds nothing').not.toBeNull();
+    // The range is the item list itself: `Bolt, Nut`. It starts after the
+    // WHOLE opener (`.{`, two characters), not after the `.`.
+    expect(range).toEqual({ from: src.indexOf('.{') + 2, to: src.lastIndexOf('}') });
+  });
 
-function collectRiFiles(relDir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
-    const rel = `${relDir}/${entry.name}`;
-    if (entry.isDirectory()) out.push(...collectRiFiles(rel));
-    else if (entry.name.endsWith('.ri')) out.push(rel);
-  }
-  return out;
-}
-
-// Wall-clock for the ledger below. The walk itself is fast — 329 files parse
-// in ~0.75 s when this file runs alone — but under the full suite (159 test
-// files across parallel workers) it is CPU-starved and overran vitest's 15 s
-// default, so the timeout is raised explicitly rather than left to chance.
-const LEDGER_TIMEOUT_MS = 120_000;
-
-describe('reify.grammar — corpus drift ledger', () => {
-  it('still parses every committed .ri that is expected to parse clean', () => {
-    // The walk and all ~329 parses live INSIDE the `it`, not in the describe
-    // body: a throw at collection time (a fixture removed mid-walk, an
-    // unreadable file, a pathological input) would otherwise take down every
-    // unrelated slice and snippet test in this file with an error that does
-    // not even name the offending path.
-    const allFiles = CORPUS_ROOTS.flatMap(collectRiFiles).sort();
-    const cleanSet = new Set(
-      allFiles.filter((p) => {
-        // A file that cannot be read or parsed counts as not-clean rather than
-        // aborting the suite.
-        try {
-          return countErrorNodes(readFixture(p)) === 0;
-        } catch {
-          return false;
-        }
-      }),
-    );
-
-    // Paths that have since been deleted or renamed drop out silently — this
-    // ledger tracks grammar capability, not corpus inventory.
-    const stillPresent = EXPECTED_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
-    const regressed = stillPresent.filter((p) => !cleanSet.has(p));
-
-    // Clean but NOT pinned — the ledger's blind spot, reported alongside the
-    // regression list so the coverage gap is always a measured number rather
-    // than a prose claim that goes stale (#5495 μ; the comment block above used
-    // to assert completeness it did not have).
-    const pinnedSet = new Set(EXPECTED_CLEAN);
-    const unpinnedClean = [...cleanSet].filter((p) => !pinnedSet.has(p));
-
-    expect(
-      regressed,
-      `These committed .ri files parsed with zero error nodes but no longer do — ` +
-        `the grammar regressed:\n${regressed.map((p) => `  ${p}`).join('\n')}\n` +
-        `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
-        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
-        `${unpinnedClean.length} clean files are not pinned by this ledger)`,
-    ).toEqual([]);
-  }, LEDGER_TIMEOUT_MS);
+  it('styles the destructured import opener, symmetrically with its closer', () => {
+    const src = 'import a.{Foo}';
+    const spans = punctuationSpans(src);
+    // Sanity: the closer has always been styled, so a helper that collected
+    // nothing at all cannot make the real assertion pass vacuously.
+    expect(spans).toContain('}');
+    expect(spans).toContain('.{');
+  });
 });

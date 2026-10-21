@@ -202,8 +202,8 @@ pub(crate) enum MorphDecision {
     /// preserved by construction).
     Morphed(VolumeMesh),
     /// Fall back to a Gmsh remesh — no producer, no prior [`MorphSource`], the
-    /// source carried no boundary attribution, or `try_morph` returned a
-    /// non-`Ok` outcome (Ineligible / QualityReject / SolverError).
+    /// source carried no, or an empty, boundary attribution, or `try_morph`
+    /// returned a non-`Ok` outcome (Ineligible / QualityReject / SolverError).
     Remesh,
 }
 
@@ -211,10 +211,10 @@ pub(crate) enum MorphDecision {
 /// scratch, per the PRD §4.3 decision tree.
 ///
 /// Returns [`MorphDecision::Remesh`] whenever a precondition is missing — no
-/// `producer`, no prior `source`, or a `source` mesh that carries no boundary
-/// attribution (only the task-4092 attributed producer threads one; without it
-/// `compute_dirichlet_bcs` has no anchors to project) — or when `try_morph`
-/// returns a non-`Ok` outcome.
+/// `producer`, no prior `source`, or a `source` mesh that carries no, or an
+/// empty, boundary attribution (only the task-4092 attributed producer threads
+/// one, and with no attached nodes there is nothing to project) — or when
+/// `try_morph` returns a non-`Ok` outcome.
 ///
 /// ## Diagnostics (engine layer)
 ///
@@ -240,10 +240,15 @@ pub(crate) fn decide_morph_or_remesh(
         (Some(p), Some(s)) => (p, s),
         _ => return MorphDecision::Remesh,
     };
-    // The source mesh must carry a task-4092 boundary association — the morph
-    // projects each boundary node onto the new BRep via the correspondence map,
-    // so without attribution there is nothing to project and we remesh.
-    let Some(boundary) = source.source_mesh.boundary.as_ref() else {
+    // The source must carry a NON-EMPTY task-4092 boundary association: with no
+    // attached nodes there is nothing to project onto the new BRep, so any
+    // producer `Ok` would be vacuous.
+    let Some(boundary) = source
+        .source_mesh
+        .boundary
+        .as_ref()
+        .filter(|b| !b.is_empty())
+    else {
         return MorphDecision::Remesh;
     };
     let request = MorphRequest {
@@ -314,6 +319,7 @@ mod tests {
     use super::*;
     use crate::Engine;
     use reify_core::{Diagnostic, RealizationNodeId, Severity};
+    use reify_ir::NodeAttachment;
     use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 
     fn mesh_with_tets(tets: Vec<u32>) -> VolumeMesh {
@@ -343,7 +349,7 @@ mod tests {
 
     #[test]
     fn morph_source_absent_key_returns_none() {
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
         assert!(
             engine.morph_source(&rnid).is_none(),
@@ -353,7 +359,7 @@ mod tests {
 
     #[test]
     fn morph_source_stores_and_reads_back_most_recent() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         // Store v1, read it back.
@@ -404,7 +410,7 @@ mod tests {
 
     #[test]
     fn invalidate_morph_source_removes_stored_entry_and_returns_it() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         engine.store_morph_source(
@@ -432,7 +438,7 @@ mod tests {
 
     #[test]
     fn invalidate_morph_source_on_absent_key_returns_none() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         assert!(
@@ -443,7 +449,7 @@ mod tests {
 
     #[test]
     fn invalidate_morph_source_leaves_other_ids_intact() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
         let other = RealizationNodeId::new("Part", 1);
 
@@ -493,7 +499,7 @@ mod tests {
     fn morph_composition_slides_hit_cache_refine_now_invalidates_re_establish() {
         use reify_solver_elastic::{RefineTrigger, should_run_refinement};
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         // A coarse solve establishes the initial morph source.
@@ -574,7 +580,7 @@ mod tests {
             RefineTrigger::ExplicitRequest,
             RefineTrigger::UserPause,
         ] {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             let rnid = RealizationNodeId::new("Part", 0);
 
             engine.store_morph_source(
@@ -607,7 +613,7 @@ mod tests {
     fn on_refine_trigger_settled_on_absent_key_returns_none_no_panic() {
         use reify_solver_elastic::RefineTrigger;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let absent = RealizationNodeId::new("Part", 0);
 
         assert!(
@@ -623,7 +629,7 @@ mod tests {
         use reify_solver_elastic::RefineTrigger;
 
         for trigger in [RefineTrigger::ParameterSlide, RefineTrigger::ParameterProbe] {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             let rnid = RealizationNodeId::new("Part", 0);
 
             engine.store_morph_source(
@@ -706,13 +712,15 @@ mod tests {
         }
     }
 
-    /// Build a [`MorphSource`] whose source mesh carries a (non-`None`)
-    /// boundary association — the precondition the helper checks before it can
-    /// build a [`MorphRequest`] (only the task-4092 attributed path threads a
-    /// boundary; the plain path leaves it `None`).
+    /// Build a [`MorphSource`] whose source mesh carries a non-empty boundary
+    /// association — the precondition the helper checks before it can build a
+    /// [`MorphRequest`] (only the task-4092 attributed path threads a boundary;
+    /// the plain path leaves it `None`).
     fn source_with_boundary(tets: Vec<u32>) -> MorphSource {
+        let mut boundary = BoundaryAssociation::default();
+        boundary.associate(0, NodeAttachment::OnFace(GeometryHandleId(1)));
         let mut mesh = mesh_with_tets(tets);
-        mesh.boundary = Some(BoundaryAssociation::default());
+        mesh.boundary = Some(boundary);
         MorphSource {
             source_mesh: mesh,
             old_brep: owned_brep(),
@@ -789,6 +797,27 @@ mod tests {
         assert!(
             matches!(decision, MorphDecision::Remesh),
             "a source mesh with no boundary attribution cannot be morphed"
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn decide_source_with_empty_boundary_remeshes() {
+        // `Some` but node-less: as unprojectable as `None`. The Ok-outcome mock
+        // makes a wrongly-consulted producer observable as `Morphed`.
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::Ok,
+        };
+        let mut mesh = mesh_with_tets(vec![0, 1, 2, 3]);
+        mesh.boundary = Some(BoundaryAssociation::default());
+        let source = MorphSource {
+            source_mesh: mesh,
+            old_brep: owned_brep(),
+        };
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        assert!(
+            matches!(decision, MorphDecision::Remesh),
+            "a node-less boundary association has nothing to project and must remesh, not Morph"
         );
         assert!(diags.is_empty());
     }

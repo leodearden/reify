@@ -110,6 +110,8 @@ No third site may re-implement the predicate (INV-5).
 
 **C1 — Legality table** (normative; each row carries a boundary test):
 
+The living normative copy for `.ri` authors is [`docs/reify-language-spec.md` §4.9](../reify-language-spec.md#49-constructor-argument-conformance), which records the as-built deltas (row 4 at construction sites, the spelling and scope of rows 5 and 9, the scope of D6); this table is the design-time record.
+
 | # | Param declares | Arg supplies | Verdict | Basis |
 |---|---|---|---|---|
 | 1 | `T` | `T` | legal | identity |

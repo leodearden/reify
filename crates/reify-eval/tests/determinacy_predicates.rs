@@ -506,7 +506,7 @@ fn where_guard_determined_activates() {
     let values = eval_source(
         r#"
         structure S {
-            param a : Length = 10
+            param a : Length = 10mm
             where determined(a) {
                 let x = a * 2
             }
@@ -650,7 +650,7 @@ fn determinacy_ri_constraints_satisfied_simple_checker() {
 
     // Use SimpleConstraintChecker — the real production checker.
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // check() internally calls eval() then checks constraints with determinacy context.
     let check = engine.check(&compiled);

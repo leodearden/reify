@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ComputeNodeId, ContentHash, Diagnostic, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, Diagnostic, DiagnosticCode, ValueCellId, VersionId};
 use reify_ir::{OpaqueState, Value};
 
 use crate::cache::NodeId;
@@ -83,6 +83,135 @@ impl ComputeDispatchRegistry {
             volume_mesh_boundary_demand_targets: HashSet::new(),
         }
     }
+}
+
+// ── Missing-trampoline diagnostic: one stem, two constructors (task 5311) ─────
+//
+// All FOUR `@optimized`-target-not-registered emission sites route through the
+// constructor pair below rather than each formatting its own `format!`, so
+// "byte-identical wording across all four" is STRUCTURAL rather than
+// conventional, and `DiagnosticCode::NoRegisteredComputeTrampoline` has exactly
+// one attachment point per form.
+//
+// Why the wording is load-bearing: severity is asserted by 2 tests
+// workspace-wide, but the message TEXT is asserted by ~10 that are entirely
+// severity-blind (`no_stale_undef_invariant_gate.rs`'s `TRAMPOLINE_MISSING`
+// sites, `test_runner.rs`, `cli_build_fea.rs`). Changing the severity is a
+// two-test change; changing this stem is a ten-test change. Single-sourcing it
+// makes the expensive edit impossible to make by accident.
+//
+// TRAP for anyone writing a matcher against these messages: the co-resident
+// `"@optimized target {t:?}: compute trampoline was cancelled"` Error in
+// `engine_admin.rs::dispatch_compute_node` shares this message's
+// `"@optimized target {t:?}: "` PREFIX and must KEEP gating build/eval exit
+// codes. Never widen a matcher to the prefix alone — match the stem below, or
+// better, match `DiagnosticCode::NoRegisteredComputeTrampoline`.
+
+/// The single source of truth for the missing-trampoline message body.
+///
+/// Both constructors below build their message from this const; nothing else
+/// in the workspace may spell it out inline.
+const NO_TRAMPOLINE_STEM: &str = "no registered compute trampoline";
+
+impl crate::Engine {
+    /// Build the SOFT-site missing-trampoline diagnostic — the form emitted by
+    /// the two `engine_eval.rs` call sites that push a diagnostic and then FALL
+    /// THROUGH to body-inlining.
+    ///
+    /// The `(falling back to body-inlining)` clause is present here because it
+    /// is literally what those two sites go on to do.
+    ///
+    /// A METHOD, not a free function taking a `registry_empty: bool`: the
+    /// emptiness predicate is the POLICY, and the two call sites must not each
+    /// compute it. A bare positional bool would let an inverted-polarity typo
+    /// at one site compile and silently flip that site's severity — the same
+    /// class of duplicated-policy drift this constructor pair exists to stop
+    /// for the message text. Reading `self.compute_registry` here spells it
+    /// exactly once.
+    ///
+    /// The severity, per the task-5311 RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4:
+    ///
+    /// - registry entirely EMPTY ⇒
+    ///   [`Severity::Warning`](reify_core::Severity::Warning). An empty compute
+    ///   registry means the driver declared a trampoline-free posture rather
+    ///   than forgetting one trampoline. `reify check` (whose `cmd_check`
+    ///   constructs its engines without ever calling
+    ///   `register_compute_trampolines`) and `reify-lsp` (`Engine::new` with no
+    ///   registration) are both in that posture, and reporting a posture as an
+    ///   `error:` while exiting 0 is the loud/silent mismatch this task closes.
+    /// - registry NON-empty ⇒ [`Severity::Error`](reify_core::Severity::Error).
+    ///   A driver that registered SOME trampolines and is still missing THIS
+    ///   one is a genuine defect. `reify eval` and `reify build` both register
+    ///   the 19-target production bundle, so they stay on this arm and the
+    ///   diagnostic keeps gating their exit codes.
+    ///
+    /// The [`DiagnosticCode`] is the SAME on both arms by design: the code
+    /// names the cause, the severity reports how much the caller's posture
+    /// makes that cause matter.
+    ///
+    /// BOTH SOFT sites and BOTH arms are covered:
+    /// `evaluate_params_and_lets_unified` by the e2e pair in
+    /// `tests/compute_dispatch_registry.rs`
+    /// (`e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` /
+    /// `…_on_a_nonempty_registry_stays_an_error`), and `evaluate_let_bindings`
+    /// by `evaluate_let_bindings_trampoline_severity_tests` in `engine_eval.rs`,
+    /// which drives that second site directly on an empty and a non-empty
+    /// registry.
+    pub(crate) fn soft_no_trampoline_diagnostic(&self, target: &str) -> Diagnostic {
+        let message = format!(
+            "@optimized target {target:?}: {NO_TRAMPOLINE_STEM} (falling back to body-inlining)"
+        );
+        let diagnostic = if self.compute_registry.fns.is_empty() {
+            Diagnostic::warning(message)
+        } else {
+            Diagnostic::error(message)
+        };
+        diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
+}
+
+/// Build the HARD-site missing-trampoline diagnostic — the form emitted by
+/// [`crate::Engine::dispatch_compute_node`] and
+/// [`crate::Engine::run_compute_dispatch`], both of which return `Err` rather
+/// than falling back.
+///
+/// Same [`NO_TRAMPOLINE_STEM`] as the SOFT form, but the
+/// `(falling back to body-inlining)` clause is deliberately ABSENT: fallback is
+/// the eval-loop caller's behaviour, not these helpers'. Direct callers of
+/// either function do NOT body-inline, so the clause would be a false promise.
+///
+/// The severity is UNCONDITIONALLY [`Severity::Error`](reify_core::Severity::Error)
+/// — the empty-registry predicate that
+/// [`Engine::soft_no_trampoline_diagnostic`](crate::Engine::soft_no_trampoline_diagnostic)
+/// applies is deliberately NOT applied here. Per the task-5311 RULING in
+/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4, on the merits:
+///
+/// 1. `fns.is_empty()` can never be true in production at either HARD site.
+///    `dispatch_compute_node` has ZERO non-test callers workspace-wide, and
+///    `run_compute_dispatch`'s `None` arm is reached in production only via
+///    `insert_shell_extract_upstream`, which sits INSIDE the
+///    `compute_dispatch("solver::elastic_static").is_some()` branch — so the
+///    registry is non-empty by construction there. Applying the predicate would
+///    change exactly zero user-observable behaviour while making the contract
+///    murkier.
+/// 2. `dispatch_compute_node`'s rustdoc PROMISES its `Err` arm carries at least
+///    one `Severity::Error`. An `Err` carrying only a Warning is incoherent,
+///    and would be silently swallowed by `reify build` / `reify eval`'s
+///    `has_error_diagnostic` exit gate — a returned failure that stops gating.
+/// 3. `reify check` — the driver whose loud/silent mismatch task 5311 closes —
+///    can only ever reach the two SOFT sites, traced end to end. Nothing
+///    user-observable is lost by leaving these two unconditional.
+///
+/// Both HARD sites are guarded positively by
+/// `dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry`
+/// and `run_compute_dispatch_unregistered_target_is_error_and_coded_even_on_an_empty_registry`,
+/// which feed an EMPTY registry and assert Error anyway.
+pub(crate) fn hard_no_trampoline_diagnostic(target: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "@optimized target {target:?}: {NO_TRAMPOLINE_STEM}"
+    ))
+    .with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
 }
 
 // Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
@@ -266,8 +395,8 @@ impl crate::Engine {
             .or_else(|| self.warm_pool.cost_per_byte_of(&compute_node))
             .unwrap_or(0.0);
         // Cache-miss → pool-hit fallback. Use `checkout` (which discards
-        // the LRU stamp internally) rather than `checkout_with_lru_stamp`
-        // + `.map(|(state, _)| state)`: the prior state is restored back
+        // the LRU stamp internally) rather than `checkout_with_lru_stamp_and_cost`
+        // + `.map(|(state, _, _)| state)`: the prior state is restored back
         // to the CACHE on Cancelled/Failed/unregistered (not back to the
         // pool), so the pool's original `last_accessed` stamp has no
         // downstream consumer here. The next engine_edit cycle that re-
@@ -302,7 +431,11 @@ impl crate::Engine {
             && crate::compute_persist::is_persistable_target(target)
         {
             match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
-                Some(result) => {
+                Some(crate::persistent_cache::WithDiagnostics {
+                    value: result,
+                    diagnostics: replayed,
+                    structured_detail: replayed_detail,
+                }) => {
                     // Fold hook — mirrors the Completed arm.
                     if target == "shell-extract::extract" {
                         crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
@@ -324,7 +457,21 @@ impl crate::Engine {
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
                     self.persistent_hit_count += 1;
-                    return Ok((result, vec![], vec![]));
+                    // Tasks 7245 / 7345: replay the diagnostics and the
+                    // structured detail the original solve emitted, through
+                    // the SAME tuple slots the fresh (trampoline) path uses.
+                    // The eval-path consumers already `extend` from both, so
+                    // a warm serve there says what the cold serve said with
+                    // no consumer change. The engine_build hydration/cascade
+                    // sites drop the structured-detail slot on BOTH paths.
+                    //
+                    // #5062 / INV-EVAL-3 (each diagnostic has exactly one owner
+                    // per serve — replayed XOR freshly-pushed, never both)
+                    // holds STRUCTURALLY for both lists, with no flag and no
+                    // dedup pass: this arm `return`s on a HIT and falls through
+                    // to `invoke_compute_trampoline` only on a MISS, so a
+                    // single dispatch can never do both.
+                    return Ok((result, replayed, replayed_detail));
                 }
                 None => {
                     self.persistent_miss_count += 1;
@@ -555,11 +702,19 @@ impl crate::Engine {
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
+                    // Tasks 7245 / 7345: the trampoline's diagnostics and
+                    // structured detail are stored alongside the value so a
+                    // later warm serve can replay both. Cloned here, before
+                    // the `Ok((..))` below moves them out.
                     crate::compute_persist::persistent_write(
                         cache_dir,
                         target,
                         cache_key,
-                        &effective_value,
+                        crate::persistent_cache::WithDiagnostics {
+                            diagnostics: diagnostics.clone(),
+                            structured_detail: structured_detail.clone(),
+                            value: &effective_value,
+                        },
                     );
                 }
                 // θ / task 3427 step-4: return effective_value (prior on
@@ -624,14 +779,31 @@ impl crate::Engine {
             }
             // Step 3d: Unregistered target — synthesise a Failed diagnostic.
             //
-            // NOTE: the production caller (`engine_eval.rs`) pre-gates on
+            // NOTE: the value-cell caller (`engine_eval.rs`) pre-gates on
             // registration — it body-inlines the unregistered-target path and
             // emits its own diagnostic (PRD §9 Q1) before ever reaching this
-            // function.  This arm is therefore unreachable from production code
-            // and exists as a defensive fallback for direct test calls and any
-            // future caller that does not pre-gate.  The synthesised diagnostic
-            // text intentionally matches the `dispatch_compute_node` wording so
-            // the two helper surfaces stay consistent.
+            // function.  This arm is NOT, however, unreachable from production
+            // code (a claim this comment made until task 5311, and which was
+            // false): it IS reached on a PARTIALLY-registered engine via
+            // `insert_shell_extract_upstream`, which synthesises a
+            // `shell-extract::extract` dispatch from INSIDE the
+            // `compute_dispatch("solver::elastic_static").is_some()` branch and
+            // therefore does not pre-gate on ITS OWN target.  That is the
+            // task-5578 signature, corroborated by
+            // `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`, whose
+            // constructor doc records the eval sweep hitting
+            // `@optimized target "shell-extract::extract": no registered
+            // compute trampoline` for exactly this reason.
+            //
+            // Note the corollary, which is why the HARD sites do not take the
+            // empty-registry downgrade: every production entry to this arm
+            // comes from inside a branch already gated on a REGISTERED target,
+            // so the registry is non-empty by construction here.
+            //
+            // The diagnostic text matching `dispatch_compute_node`'s wording is
+            // now enforced STRUCTURALLY rather than by convention — both call
+            // `hard_no_trampoline_diagnostic`, which single-sources the message
+            // from `NO_TRAMPOLINE_STEM`.
             //
             // ζ / step-10: restore the prior just like Cancelled / Failed —
             // an unregistered target is morally equivalent to a Failed
@@ -650,10 +822,7 @@ impl crate::Engine {
                     );
                 }
                 Err(DispatchError::Failed(
-                    vec![Diagnostic::error(format!(
-                        "@optimized target {:?}: no registered compute trampoline",
-                        target
-                    ))],
+                    vec![hard_no_trampoline_diagnostic(target)],
                     vec![],
                 ))
             }
@@ -995,7 +1164,7 @@ mod tests {
 
     #[test]
     fn register_and_dispatch_registered_target_returns_some() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
         assert!(
             engine.compute_dispatch("test::identity").is_some(),
@@ -1007,7 +1176,7 @@ mod tests {
 
     #[test]
     fn dispatch_unregistered_target_returns_none() {
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         assert!(
             engine.compute_dispatch("nonexistent::target").is_none(),
             "expected None for unregistered target"
@@ -1019,7 +1188,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "test::identity")]
     fn register_duplicate_target_panics_naming_target() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
         // Second registration with the same target must panic.
         engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
@@ -1083,7 +1252,7 @@ mod tests {
     fn run_compute_dispatch_pre_cancelled_returns_dispatch_error_cancelled() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::cancellable_eps1a", cancellable_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "b");
@@ -1143,7 +1312,7 @@ mod tests {
     fn run_compute_dispatch_failed_trampoline_returns_dispatch_error_failed_with_diags() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::always_failed_eps1b", always_failed_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "b");
@@ -1192,6 +1361,103 @@ mod tests {
         );
     }
 
+    /// Task 5311 — the second HARD-site guard, pinned POSITIVELY.
+    ///
+    /// Same shape as (b) above, but with NO trampoline registered at all, so
+    /// `run_compute_dispatch` takes its `None` arm. The engine's compute
+    /// registry is entirely EMPTY here — precisely the input that DOWNGRADES
+    /// the diagnostic to `Severity::Warning` at the two SOFT sites in
+    /// `engine_eval.rs`. This HARD site does NOT apply that predicate, so the
+    /// severity must stay `Severity::Error`; a later sweep applying the
+    /// predicate uniformly across all four sites turns this red.
+    ///
+    /// Why the predicate is inapplicable here ON THE MERITS, not merely because
+    /// a test would break: in production this `None` arm is reached only via
+    /// `insert_shell_extract_upstream`, which sits INSIDE the
+    /// `compute_dispatch("solver::elastic_static").is_some()` branch. The
+    /// registry is therefore non-empty by construction at every production
+    /// entry to this arm, so `fns.is_empty()` could never be true and applying
+    /// it would change exactly zero user-observable behaviour while making the
+    /// contract murkier.
+    ///
+    /// The `(falling back to body-inlining)` clause must remain ABSENT for the
+    /// same reason as at `dispatch_compute_node`: this helper returns `Err` and
+    /// never inlines.
+    #[test]
+    fn run_compute_dispatch_unregistered_target_is_error_and_coded_even_on_an_empty_registry() {
+        use crate::engine_compute::DispatchError;
+
+        // No register_compute_fn call at all — the registry stays EMPTY.
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+        assert!(
+            engine
+                .compute_dispatch("test::never_registered_eps5311")
+                .is_none(),
+            "precondition: the target must be unregistered",
+        );
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::never_registered_eps5311",
+            &[Value::Int(7)],
+            &[],
+            &Value::Undef,
+            &handle,
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+
+        match result {
+            Err(DispatchError::Failed(diags, _)) => {
+                let error_diag = diags
+                    .iter()
+                    .find(|d| d.severity == reify_core::Severity::Error)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "the HARD sites do NOT apply the empty-registry \
+                             downgrade — this arm is unreachable in production \
+                             with an empty registry, so the predicate would \
+                             change nothing; got: {diags:?}"
+                        )
+                    });
+                assert_eq!(
+                    error_diag.code,
+                    Some(reify_core::DiagnosticCode::NoRegisteredComputeTrampoline),
+                    "the HARD form carries the SAME code as the SOFT form; got: {error_diag:?}"
+                );
+                assert!(
+                    error_diag
+                        .message
+                        .contains("test::never_registered_eps5311"),
+                    "expected the diagnostic to name the unknown target, got: {error_diag:?}"
+                );
+                assert!(
+                    !error_diag.message.contains("falling back to body-inlining"),
+                    "the fallback clause is deliberately omitted at the HARD \
+                     sites: this helper returns Err and never inlines; got: \
+                     {error_diag:?}"
+                );
+            }
+            other => panic!("expected Err(DispatchError::Failed(…)), got {other:?}"),
+        }
+    }
+
     /// A panic must be caught the same way when driven through
     /// `run_compute_dispatch` itself, not just
     /// `invoke_compute_trampoline`/`dispatch_compute_node` directly.
@@ -1206,7 +1472,7 @@ mod tests {
     fn run_compute_dispatch_panicking_trampoline_becomes_dispatch_error_failed() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::panic_run_compute_dispatch",
             panics_str_fn as ComputeFn,
@@ -1275,7 +1541,7 @@ mod tests {
     /// (regression: the happy path survives the signature change).
     #[test]
     fn run_compute_dispatch_completed_trampoline_returns_ok_and_flips_vc_to_final() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::identity_eps1c", identity_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "b");
@@ -1401,7 +1667,7 @@ mod tests {
             *m.lock().unwrap() = None;
         }
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::zeta_tracer", zeta_tracer_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "ztp");
@@ -1497,7 +1763,7 @@ mod tests {
 
     #[test]
     fn run_compute_dispatch_completed_donates_new_warm_state_and_cost_to_cache() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::zeta_donate_7", donate_7_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "donate");
@@ -1607,7 +1873,7 @@ mod tests {
         // G2 signal #2: a cold dispatch (no prior warm state) with cost_per_byte:None
         // must populate cost_per_byte > 0.0 from measured wall time.
         // RED: today unwrap_or(0.0) stores exactly 0.0.
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::cold_sleep", cold_sleep_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "cold_cell");
@@ -1709,7 +1975,7 @@ mod tests {
         // Premise: post-fix c_wall = elapsed_secs / 1_000_000 ≤ 0.5/1e6 = 5e-7
         // even for a 500ms hiccup; comfortably < 0.125. Bound requires
         // elapsed > 125000 s to break — not a guessed threshold.
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::cold_wall_1mb", cold_wall_1mb_fn as ComputeFn);
         engine.register_compute_fn("test::traj_style_8byte", traj_style_8byte_fn as ComputeFn);
 
@@ -1815,7 +2081,7 @@ mod tests {
         // Prior cold measurement: cost = 0.5 s/byte (seeded directly).
         // Warm re-dispatch returns cost_per_byte: None.
         // Expected: cost preserved at 0.5 (not clobbered to 0.0).
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::warm_redispatch_none_cost",
             warm_redispatch_none_cost_fn as ComputeFn,
@@ -1913,7 +2179,7 @@ mod tests {
 
     #[test]
     fn run_compute_dispatch_completed_with_none_warm_state_creates_no_compute_entry() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::zeta_no_warm_no_cost",
             no_warm_no_cost_fn as ComputeFn,
@@ -1989,7 +2255,7 @@ mod tests {
     fn run_compute_dispatch_cancelled_restores_prior_warm_state_to_cache() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::zeta_cancelled_restore", cancellable_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "crc");
@@ -2075,7 +2341,7 @@ mod tests {
     fn run_compute_dispatch_failed_restores_prior_warm_state_to_cache() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::zeta_failed_restore", always_failed_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "frc");
@@ -2156,7 +2422,7 @@ mod tests {
     fn run_compute_dispatch_cancelled_with_no_prior_leaves_cache_warm_state_none() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::zeta_cancelled_no_prior", cancellable_fn as ComputeFn);
 
         let cell = ValueCellId::new("T", "cnp");
@@ -2236,7 +2502,7 @@ mod tests {
             *m.lock().unwrap() = None;
         }
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::zeta_idempotent_cancellable",
             cancellable_fn as ComputeFn,
@@ -2331,7 +2597,7 @@ mod tests {
     // in `warm_pool` and the cache Compute entry has been invalidated
     // (engine_edit.rs:2275-2303). At the next dispatch, run_compute_dispatch's
     // cache-miss → pool-hit fallback (engine_compute.rs:275-282) TAKES the
-    // prior out via `checkout_with_lru_stamp`, which REMOVES the pool entry.
+    // prior out via `checkout`, which REMOVES the pool entry.
     // So at the moment the trampoline returns Cancelled / Failed / unregistered:
     //   - The cache has NO Compute entry (engine_edit invalidated it).
     //   - The pool has NO entry (checkout took it).
@@ -2361,7 +2627,7 @@ mod tests {
     fn run_compute_dispatch_cancelled_with_pool_only_prior_survives_into_cache() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::zeta_pool_only_cancelled",
             cancellable_fn as ComputeFn,
@@ -2485,7 +2751,7 @@ mod tests {
             *m.lock().unwrap() = None;
         }
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::zeta_pool_only_idem_cancellable",
             cancellable_fn as ComputeFn,
@@ -2662,7 +2928,7 @@ mod tests {
             fn on_iteration(&self, _update: &SolverProgressUpdate) {}
         }
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::ctx_observer", ctx_observer_progress_fn as ComputeFn);
 
         // Install sink and a NON-cancelled handle.
@@ -2726,7 +2992,7 @@ mod tests {
             fn on_iteration(&self, _update: &SolverProgressUpdate) {}
         }
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::ctx_observer_cancelled",
             ctx_observer_cancel_fn as ComputeFn,
@@ -3074,7 +3340,7 @@ mod tests {
         };
 
         fn make_engine() -> Engine {
-            Engine::new(Box::new(MockConstraintChecker::new()), None)
+            Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
         }
 
         fn make_geometry_handle_value(realization_ref: RealizationNodeId) -> Value {
@@ -3487,7 +3753,7 @@ mod tests {
         entity: &str,
         seed_tolerance: bool,
     ) -> (Engine, Value, Value, ContentHash, ContentHash) {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("solver::elastic_static", compute_fn);
 
         let cell = ValueCellId::new(entity, "result");
@@ -3642,7 +3908,7 @@ mod tests {
 
         // ── (b) non-opted-in target → new value (NotOptedIn) ─────────────────
         {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             // "test::identity" is not in the significance-filter opt-in allowlist.
             engine.register_compute_fn("test::identity_s5b", identity_fn as ComputeFn);
 
@@ -3753,7 +4019,7 @@ mod tests {
     ) -> (crate::cache::EvalOutcome, bool) {
         use crate::cache::EvalOutcome;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("solver::elastic_static", compute_fn);
 
         let out_cell = ValueCellId::new(entity, "result");
@@ -4027,7 +4293,7 @@ mod tests {
     /// where the 3rd element is the structured_detail vec unchanged.
     #[test]
     fn run_compute_dispatch_completed_structured_detail_threads_to_ok_tuple() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::structured_completed_s1",
             structured_completed_fn as ComputeFn,
@@ -4084,7 +4350,7 @@ mod tests {
     fn run_compute_dispatch_failed_structured_detail_threads_to_dispatch_error() {
         use crate::engine_compute::DispatchError;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::structured_failed_s1",
             structured_failed_fn as ComputeFn,
@@ -4153,7 +4419,7 @@ mod tests {
 
     #[test]
     fn optimized_compute_dispatcher_dispatches_registered_target() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::probe", identity_fn as ComputeFn);
 
         let d = OptimizedComputeDispatcher::from_engine(&engine);
@@ -4171,7 +4437,7 @@ mod tests {
 
     #[test]
     fn optimized_compute_dispatcher_unregistered_target_returns_none() {
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let d = OptimizedComputeDispatcher::from_engine(&engine);
         let args = [Value::Scalar {
             si_value: 1.0,
@@ -4204,7 +4470,7 @@ mod tests {
     /// pinned against identical input.
     #[test]
     fn optimized_compute_dispatcher_catches_panicking_trampoline() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::panics", panics_str_fn as ComputeFn);
 
         let d = OptimizedComputeDispatcher::from_engine(&engine);
@@ -4274,7 +4540,7 @@ mod tests {
     /// panic payload text — not an unwind out of this test.
     #[test]
     fn invoke_compute_trampoline_str_panic_becomes_failed_outcome() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::panic_str", panics_str_fn as ComputeFn);
 
         let result = engine.invoke_compute_trampoline(
@@ -4309,7 +4575,7 @@ mod tests {
     /// naming the target, "panicked", AND the panic payload text.
     #[test]
     fn invoke_compute_trampoline_string_panic_becomes_failed_outcome() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::panic_string", panics_string_fn as ComputeFn);
 
         let result = engine.invoke_compute_trampoline(
@@ -4393,7 +4659,7 @@ mod tests {
     /// panicking ones in (a)/(b).
     #[test]
     fn invoke_compute_trampoline_read_then_panic_fn_undef_material_becomes_failed_outcome() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
             "test::read_then_panic",
             panics_on_undef_material_fn as ComputeFn,
@@ -4481,7 +4747,7 @@ mod tests {
     /// the panic unwind out of the process.
     #[test]
     fn dispatch_compute_node_catches_panicking_trampoline() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn("test::panic_dispatch", panics_str_fn as ComputeFn);
 
         let diags = engine
@@ -4505,6 +4771,216 @@ mod tests {
             "expected an Error diagnostic naming the target, \"panicked\", and the \
              panic payload \"boom_str\" (i.e. the same enriched conversion \
              invoke_compute_trampoline performs), got {diags:?}",
+        );
+    }
+
+    // ── Persistent-hit diagnostics replay (task 7245) ─────────────────────────
+
+    /// Dispatch counter for [`never_called_trampoline`], proving a persistent
+    /// HIT skipped the trampoline entirely.
+    static PERSISTENT_REPLAY_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    /// A trampoline that must never run on a persistent HIT. If it does, the
+    /// diagnostics under test would be freshly produced rather than replayed,
+    /// and the test would be measuring the wrong thing.
+    fn never_called_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        PERSISTENT_REPLAY_DISPATCH_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    /// The smallest `ElasticResult` a seeded persistent entry needs: a 1×1×1
+    /// cell grid (2×2×2 nodes) with every slab sized to match.
+    fn minimal_seed_elastic_result() -> crate::persistent_cache::ElasticResult {
+        let total_nodes: usize = 2 * 2 * 2;
+        crate::persistent_cache::ElasticResult {
+            displacement: vec![1.0; total_nodes * 3],
+            stress: vec![2.0; total_nodes * 9],
+            max_von_mises: 42.0,
+            converged: true,
+            iterations: 5,
+            solve_time_ms: 100,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 1.0, 1.0],
+            grid_counts: [1, 1, 1],
+            divergence: vec![3.0; total_nodes],
+            gradient: vec![4.0; total_nodes * 9],
+            curl: vec![5.0; total_nodes * 3],
+            aposteriori: None,
+        }
+    }
+
+    /// What one dispatch against a seeded persistent entry observed.
+    struct SeededEntryServe {
+        /// How often [`never_called_trampoline`] ran during the dispatch.
+        trampoline_runs: usize,
+        persistent_hits: u64,
+        diagnostics: Vec<reify_core::Diagnostic>,
+        structured_detail: Vec<StructuredComputeDetail>,
+    }
+
+    /// Seed `seed` under `cache_key` in a fresh on-disk cache, then run one
+    /// `solver::elastic_static` dispatch for that key with
+    /// [`never_called_trampoline`] registered, so whatever comes back on a HIT
+    /// was replayed, never freshly produced.
+    fn dispatch_against_seeded_entry(
+        seed: &crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
+        cache_key: reify_core::ContentHash,
+    ) -> SeededEntryServe {
+        use crate::cache::{CachedResult, NodeCache, NodeId};
+        use crate::deps::DependencyTrace;
+        use crate::persistent_cache::{ENGINE_VERSION_HASH, write_entry};
+        use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+        use reify_ir::{DeterminacyState, Freshness};
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_entry(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &format!("{cache_key}"),
+            seed,
+        )
+        .expect("test seed write_entry must succeed");
+
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            never_called_trampoline as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "r_7245");
+        let c_id = ComputeNodeId::new("T", 7245);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let count_before = PERSISTENT_REPLAY_DISPATCH_COUNT.load(Ordering::SeqCst);
+        let (_value, diagnostics, structured_detail) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                cache_key,
+            )
+            .expect("the hit path must succeed");
+
+        SeededEntryServe {
+            trampoline_runs: PERSISTENT_REPLAY_DISPATCH_COUNT.load(Ordering::SeqCst) - count_before,
+            persistent_hits: engine.persistent_hit_count(),
+            diagnostics,
+            structured_detail,
+        }
+    }
+
+    /// A persistent HIT must return the diagnostics the original solve emitted.
+    ///
+    /// This is the defect at the dispatch boundary: the hit arm returns the
+    /// reconstructed `Value` but hardcodes `vec![]` for the diagnostics, so a
+    /// warm serve is silent where the cold serve warned. Every consumer does
+    /// `diagnostics.extend(diags)` on this tuple slot, so an empty vec means the
+    /// warning vanishes for the whole rest of the session.
+    #[test]
+    fn persistent_hit_returns_the_replayed_diagnostics() {
+        use crate::persistent_cache::WithDiagnostics;
+        use reify_core::{ContentHash, Severity};
+
+        let warning = reify_core::Diagnostic::warning(
+            "shell candidate too thick for shell elements; falling back to tet mesh",
+        )
+        .with_code(reify_core::DiagnosticCode::ShellTooThick);
+
+        // Seed a persistent entry that CARRIES the warning.
+        let serve = dispatch_against_seeded_entry(
+            &WithDiagnostics {
+                diagnostics: vec![warning],
+                structured_detail: Vec::new(),
+                value: minimal_seed_elastic_result(),
+            },
+            ContentHash(0x7245_aaaa_7245_aaaa_7245_aaaa_7245_aaaa_u128),
+        );
+
+        assert_eq!(
+            serve.trampoline_runs, 0,
+            "the trampoline must not run — otherwise these diagnostics would be \
+             fresh, not replayed",
+        );
+        assert_eq!(
+            serve.persistent_hits, 1,
+            "the dispatch must have been served from the on-disk cache",
+        );
+        let diagnostics = &serve.diagnostics;
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Warning
+                && d.code == Some(reify_core::DiagnosticCode::ShellTooThick)),
+            "the persistent hit must replay the seeded ShellTooThick warning \
+             through the same tuple slot the trampoline path uses, got {diagnostics:?}",
+        );
+    }
+
+    /// A persistent HIT must return the structured detail the original solve
+    /// emitted, through the same third tuple slot the trampoline path fills.
+    ///
+    /// The seeded payload is the live Completed-path one: elastic_static emits
+    /// `Unconstrained` with all six rigid-body modes for an unsupported body.
+    #[test]
+    fn persistent_hit_returns_the_replayed_structured_detail() {
+        use crate::persistent_cache::WithDiagnostics;
+        use reify_core::ContentHash;
+        use reify_solver_elastic::DofDirection;
+
+        let seeded = vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            },
+        )];
+        let serve = dispatch_against_seeded_entry(
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                structured_detail: seeded.clone(),
+                value: minimal_seed_elastic_result(),
+            },
+            ContentHash(0x7345_bbbb_7345_bbbb_7345_bbbb_7345_bbbb_u128),
+        );
+
+        assert_eq!(
+            serve.trampoline_runs, 0,
+            "the trampoline must not run — otherwise this detail would be \
+             fresh, not replayed",
+        );
+        assert_eq!(
+            serve.persistent_hits, 1,
+            "the dispatch must have been served from the on-disk cache",
+        );
+        assert_eq!(
+            serve.structured_detail, seeded,
+            "the persistent hit must replay the seeded structured detail exactly \
+             once through the third tuple slot",
         );
     }
 }

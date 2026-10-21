@@ -1,10 +1,42 @@
 use reify_core::Type;
 use reify_ir::CompiledExpr;
 
+/// The complete set of **list-helper** builtin names — the single source of
+/// truth for [`infer_list_helper_return_type`].
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`infer_list_helper_return_type`]. Pinned in BOTH directions, so the slice
+/// and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward), and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry resolves to `Some` for a well-shaped call, and `panic!`ing
+/// outright if the slice gains a name with no fixture there (reverse). Without
+/// the reverse test a stale entry could linger here after its resolver arm was
+/// removed, and `is_known_builtin` would keep vouching for a name the compiler
+/// no longer understands.
+///
+/// **`generate` is deliberately included** even though the pre-existing
+/// test-only fixtures omit it: the resolver has handled it since task 3994, so
+/// its absence from a hand-maintained list is exactly the drift the reverse
+/// test above exists to prevent. That omission is why this family needed a
+/// production slice rather than another fixture.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map", "generate"];
+
+/// Is `name` a list-helper builtin? Name-only classification — a `.contains`
+/// over [`LIST_HELPER_NAMES`]. Shape-blind: a `true` answer does not imply
+/// [`infer_list_helper_return_type`] claims a given call (it returns `None`
+/// on structural mismatch, by design, to preserve anti-cascade).
+pub(crate) fn is_list_helper(name: &str) -> bool {
+    LIST_HELPER_NAMES.contains(&name)
+}
+
 /// Infer the return type of a list-helper stdlib call from the compiled
 /// argument list.
 ///
-/// Returns `Some(Type)` for the two recognised helpers when their structural
+/// Returns `Some(Type)` for the three recognised helpers when their structural
 /// pattern matches; `None` otherwise.  The caller's existing `else { fallback
 /// }` branch handles both unknown names AND structural-mismatch cases —
 /// preserving anti-cascade identically.
@@ -17,6 +49,9 @@ pub(crate) fn infer_list_helper_return_type(
     name: &str,
     compiled_args: &[CompiledExpr],
 ) -> Option<Type> {
+    // `LIST_HELPER_NAMES` is read by `is_known_builtin`, not consulted as a
+    // guard here — see `units::datum_constructor_result_type` for why gating on
+    // the slice inverts the failure mode for an unlisted arm.
     match name {
         "single" => {
             // single(List<T>) -> T  (task 2698).

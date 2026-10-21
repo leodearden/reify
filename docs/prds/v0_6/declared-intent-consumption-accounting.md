@@ -19,7 +19,7 @@ A designer who declares intent the engine cannot or does not consume today gets 
 ### §0.1 — What this is NOT (G4 boundaries, fixed by the spawn brief + sibling PRDs)
 
 - **NOT the exit-code gate (INV-SF-2).** Error-severity-vs-exit-code coherence (e.g. the investigation's relate operand-type-error-exits-0 finding) is owned by the sibling "eradicate silent undef" PRD's severity gate. This PRD emits correctly-coded, correctly-severitied diagnostics and lets that gate own process exit codes. The ONE exception: mechanism D's inert class fails `reify check` through check's **native constraint-outcome path** (`check_fails`, `main.rs:2299-2305`) — an outcome-class change, not a severity-gate change.
-- **NOT the discrete-solve capability.** CpSat registration/default-ON, `DiscreteFirstFallback` routing, let-tracing, `Int`/`discrete_set` domains, and minimize-over-discrete actually *solving* are owned by `discrete-cost-minimisation.md` (PRD 2, authored 2026-07-24, task/5396). This PRD owns only the **accounting**: mechanism B derives its verdicts from the **live registry contents**, so it is truthful before AND after PRD 2 lands (§3 decision 2).
+- **NOT the discrete-solve capability.** CpSat registration/default-ON, `DiscreteFirstFallback` routing, let-tracing, `Int`/`discrete_set` domains, and minimize-over-discrete actually *solving* are owned by `discrete-cost-minimisation.md` (PRD 2, authored 2026-07-24, task/5396). This PRD owns only the **accounting**: mechanism B derives its verdicts from the **live registry contents**, so it is truthful before AND after PRD 2 lands (§3 decision 2). *(2026-10-08: `discrete_set` catalogs are owned by `docs/prds/v0_6/catalog-membership-constraint.md` — membership is the constraint `x in C`.)*
 - **NOT objective routing.** The component-0 fallback (`registry.rs:208-210`) and objective-side transitive coupling into the *solve* are PRD 2 α's fold/let-tracing territory; mechanism C reads transitive reachability (via landed `build_dependent_cells`, #5188) but changes no routing (§3 decision 3).
 - **NOT undef provenance (INV-SF-1) or placeholder types (INV-SF-5)** — sibling PRDs from the same investigation.
 - **NOT deep relate diagnostics.** The DOF ledger, `reify explain`, and `UndefCause::SolveFailed` refinements for auto-ful relate scopes are #4388 (geometric-relations θ, pending). Mechanism A owns only the zero-auto arm.
@@ -134,7 +134,7 @@ fn supports_auto_kind(&self, ty: &Type) -> bool { matches!(ty, Type::Scalar { ..
 | B7 | producer (γ) | zero-component consumption diagnosed | `dic_min_unconstrained` | Error names the objective + unconsumed auto `a`; `a`'s undef note unchanged; baseline: objective never mentioned |
 | B8 | back-compat (γ) | governing objectives quiet | every existing objective fixture | no new diagnostics (O1); vacuous-bound instantiation quiet (O2) |
 | B9 | producer (δ) | recorded reason rendered | `dic_inert_connect` under `--strict` | strict detail shows "operator undefined for these operand kinds …" (the recorded reason); the generic "inputs undefined (e.g. …)" guess is gone |
-| B10 | consumer (ε) | inert connect refused at compile time | `dic_inert_connect` | `reify check` emits the generation-refusal Error naming the `@face` operands; `connect_compat_a_b` still reported OK; baseline: green + INDETERMINATE |
+| B10 | consumer (ε) | inert connect refused at compile time | `dic_inert_connect` | `reify check` emits the generation-refusal Error naming the `@face` operands and exits non-zero; `connect_compat` unaffected, asserted at the compiler surface (`connect_compat_a_b` generated, no `frame_align_a_b`) and the engine surface (`Engine::check` → Satisfied) — not co-printed by `reify check`, which stops on any compile Error before evaluation (explicit won't-fix, esc-5419-3, 2026-10-02); baseline: green + INDETERMINATE |
 | B11 | consumer (ζ) | ledger accounts all classes | mixed fixture (satisfied + violated + transient-indeterminate + relate block) | summary shows per-class counts with reason breakdown; relate + objective rows present; transient-only stays non-strict green |
 | B12 | consumer (ζ) | inert fails check natively | any fixture with a proven-inert constraint (pre-ε-sweep shape) | `check_fails` true without `--strict`; exit-code behavior itself deferred to the sibling severity-gate PRD |
 
@@ -189,7 +189,7 @@ Bare-B+H-light shape; Greek labels, task IDs at decompose. **Test-layout note (d
 
 - **ε — Inert-constraint detection: compile-time generation refusal + eval backstop + example sweep.**
   Modules: `crates/reify-compiler/src/connect.rs` (refuse generating provably-unverifiable `frame_align` with a coded Error), `crates/reify-eval` (backstop `Structural` classification), `crates/reify-core` (code), `examples/` + `crates/reify-compiler/stdlib` (sweep + repair shapes the new error rejects).
-  **LEAF signal:** B10 — `reify check dic_inert_connect.ri` emits the generation-refusal Error while `connect_compat` still reports OK (baseline green-with-INDETERMINATE probe-verified); the repo's own examples/stdlib check clean post-sweep.
+  **LEAF signal:** B10 — `reify check dic_inert_connect.ri` emits the generation-refusal Error and exits non-zero, while `connect_compat` is asserted unaffected at the compiler and engine surfaces (baseline green-with-INDETERMINATE probe-verified); the repo's own examples/stdlib check clean post-sweep. The literal CLI co-print of `OK connect_compat_a_b` is an explicit won't-fix (esc-5419-3): `reify check` returns on any compile Error before evaluating constraints, and decision 5 makes the refusal a compile Error.
   Prereqs: δ (reason taxonomy carrier). `grammar_confirmed=true`.
 
 - **ζ — `reify check` consumption ledger (integration gate).**
@@ -215,7 +215,7 @@ Bare-B+H-light shape; Greek labels, task IDs at decompose. **Test-layout note (d
 ## §9 — Out of scope for this PRD
 
 - Exit-code semantics for Error diagnostics (INV-SF-2) → sibling silent-undef PRD. (ζ's inert-fails-check rides the native outcome path only.)
-- Discrete/mixed solve capability, CpSat wiring, let-tracing, `Int`/`discrete_set` domains → PRD 2 (task/5396).
+- Discrete/mixed solve capability, CpSat wiring, let-tracing, `Int`/`discrete_set` domains → PRD 2 (task/5396). *(2026-10-08: `discrete_set` → `docs/prds/v0_6/catalog-membership-constraint.md`.)*
 - Objective-only component construction (making unconstrained `minimize` solve) — C diagnoses its absence; building it is a follow-up capability with no current owner (candidate future PRD; noted in η's spec prose as a named gap).
 - Deep relate diagnostics for auto-ful scopes (DOF ledger, `reify explain`) → #4388.
 - Uniqueness honesty (continuous #5388; discrete PRD 2 b4).

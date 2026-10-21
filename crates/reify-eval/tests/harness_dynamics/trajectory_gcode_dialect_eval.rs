@@ -196,20 +196,22 @@ structure def BadDialectHolder {
 }
 "#;
     let compiled = compile_source_with_stdlib(SOURCE);
-    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
-    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
-    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
-    let warnings: Vec<_> = compiled
+    // Ctor-site trait conformance (the `sub =` path) emits at the
+    // CTOR_FIELD_CONFORMANCE_SEVERITY knob. Task 5302 α downgraded that knob to
+    // Warning and this filter moved off `collect_errors` to match; task 5306 δ
+    // flipped it back to Error, so this reverts to the pre-5302 form. The
+    // diagnostic's code and message were unchanged by both moves.
+    let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        warnings
+        errors
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("GcodeDialect")),
         "passing a non-conforming `NotADialect()` to a GcodeDialect-typed param \
-         must produce a trait-conformance warning; got: {warnings:?}"
+         must produce a trait-conformance error; got: {errors:?}"
     );
 }

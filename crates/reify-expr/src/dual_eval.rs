@@ -1,0 +1,2308 @@
+//! Forward-mode dual-number evaluation of a `CompiledExpr`.
+//!
+//! Task #6672 (solver-unification ε).  Design reference:
+//! `docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.7.
+//!
+//! # The one rule that shapes this whole module
+//!
+//! **This is not a second evaluator.**  [`eval_dual`] computes *only tangents*.
+//! Every primal it returns comes from the existing implementation:
+//!
+//! - a subtree that references no seed cell *and contains no kink* is handed
+//!   wholesale to [`crate::eval_expr`] and lifted with [`Tangent::Zero`];
+//! - a node that is traversed obtains its own primal from the crate-private
+//!   value-semantics helpers ([`crate::eval_add`], [`crate::eval_sub`],
+//!   [`crate::eval_mul`], [`crate::eval_div`], [`crate::eval_pow`],
+//!   [`crate::eval_mod`], [`crate::negate_value`], [`crate::eval_eq`],
+//!   [`crate::eval_ne`], [`crate::eval_cmp`]), from [`crate::kleene`], from
+//!   `reify_stdlib::eval_builtin`, or from `crate::field_reductions`.
+//!
+//! The corollary, and the one maintenance rule this module has: wherever
+//! [`crate::eval_expr`] INTERCEPTS a call — before `reify_stdlib::eval_builtin`
+//! OR before `crate::eval_user_function_call` — this module must intercept it
+//! in the same place, on the same operand shapes.  Today that is:
+//!
+//! - the field reductions, at both arities — the whole-field arms
+//!   (lib.rs:459-484) and the bounded `max/min/argmax/argmin(field, bounds)`
+//!   arms (lib.rs:490-533) — see [`field_reduction_kind`];
+//! - the four `UserFunctionCall` families — `solve_load_cases`/5|6
+//!   (lib.rs:751), every `option_recovery::is_combinator` name (lib.rs:783),
+//!   `map_or`/3 (lib.rs:803) and `map_err`/2 (lib.rs:824) — see
+//!   [`is_intercepted_user_fn`].
+//!
+//! The rule used to name only the `eval_builtin` half, which is precisely why
+//! the `UserFunctionCall` half went unconsidered until a review found it; a
+//! rule that misses a case is not repaired by fixing the case alone.
+//!
+//! An interception added on either side and not mirrored here does not fail
+//! loudly.  On the builtin side it silently routes the call to `eval_builtin`,
+//! which typically answers `Undef` for the very operand types the interception
+//! existed to handle.  On the user-function side it silently evaluates the
+//! callee's `.ri` body — which for the intercepted families is a PLACEHOLDER
+//! the intercept exists to bypass (grammar gap, PRD §4.4 raf-12) — so the dual
+//! path returns a WRONG PRIMAL rather than merely losing a tangent.
+//!
+//! So reify's value semantics — dimension algebra, strict-`Undef` propagation,
+//! `sanitize`, the Invariant V `Scalar{DIMENSIONLESS} → Real` collapse,
+//! `Point + Point` rejection — have exactly ONE implementation, and
+//! `eval_dual(e).value == eval_expr(e)` holds by construction rather than by
+//! diligence.  Branch *selection* and branch *value* can never disagree for the
+//! same reason: both come from the same helper call.
+//!
+//! # The `Undef` cliff
+//!
+//! When the primal is `Undef`, the tangent is [`Tangent::None`], never a
+//! finite row.  `Undef` means the value semantics refused to produce a number;
+//! attaching a derivative to that refusal would be inventing one.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use reify_core::{ContentHash, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern, UnOp, Value,
+};
+
+use crate::EvalContext;
+use crate::branch_signature::{
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, KinkKind, KinkSite, ReductionKind,
+};
+use crate::dual::{DualValue, Tangent};
+use crate::kleene::{self, KBool};
+
+/// The ordered column vector a dual evaluation is differentiated against.
+///
+/// Column `j` of every tangent row corresponds to `columns()[j]`.  Consumers
+/// (η's Jacobian, μ's reduced gradient) rely on that ordering being *theirs* —
+/// it is the caller's `auto_params` order, not an internal one.
+pub struct Seeds {
+    columns: Vec<ValueCellId>,
+    index: HashMap<ValueCellId, usize>,
+    /// Memos for the two per-subtree predicates, keyed on
+    /// `CompiledExpr::content_hash`.
+    ///
+    /// Without them, asking "does this subtree touch a seed?" (and "does it
+    /// contain a kink?") at every node walks each node's whole subtree —
+    /// quadratic in depth.  Both predicates are pure functions of
+    /// `(subtree, seed set)`, and a `Seeds` *is* the seed set, so this is the
+    /// correct place to cache them.
+    depends: RefCell<HashMap<ContentHash, bool>>,
+    kinky: RefCell<HashMap<ContentHash, bool>>,
+    /// The FIRST reason a tangent could not be produced during the current
+    /// traversal, with the site that produced it.
+    ///
+    /// The traversal cannot return this alongside the tangent without either
+    /// widening [`Tangent::None`] (which would make `Tangent` unusable as a
+    /// plain comparison value) or threading an eighth parameter through every
+    /// arm, so it is collected here and drained by
+    /// [`jacobian_row`].  First-wins: the innermost, earliest refusal is the
+    /// one that actually explains the failure; later ones are its consequences.
+    refusal: RefCell<Option<NonDifferentiable>>,
+}
+
+impl Seeds {
+    /// Build a seed set from an ordered column vector.
+    ///
+    /// Duplicate cells keep their FIRST column: a repeated auto param would
+    /// otherwise split one variable's derivative across two columns.
+    pub fn new(columns: &[ValueCellId]) -> Self {
+        let mut index = HashMap::with_capacity(columns.len());
+        for (j, id) in columns.iter().enumerate() {
+            index.entry(id.clone()).or_insert(j);
+        }
+        Seeds {
+            columns: columns.to_vec(),
+            index,
+            depends: RefCell::new(HashMap::new()),
+            kinky: RefCell::new(HashMap::new()),
+            refusal: RefCell::new(None),
+        }
+    }
+
+    /// Record why a tangent could not be produced.  The FIRST call in a
+    /// traversal wins; later refusals are downstream consequences of it.
+    fn note_refusal(&self, reason: NonDifferentiable) {
+        let mut slot = self.refusal.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(reason);
+        }
+    }
+
+    /// Drain the recorded refusal, leaving the sink empty for the next row.
+    ///
+    /// A caller that drives MORE THAN ONE traversal through one `Seeds` — the
+    /// solver's dependent-cell fold does — must drain between them.
+    /// [`eval_dual_with_env`] clears the slot on entry, so a reason left in it
+    /// is a reason the next traversal discards.
+    pub fn take_refusal(&self) -> Option<NonDifferentiable> {
+        self.refusal.borrow_mut().take()
+    }
+
+    /// Number of columns — the width of every tangent row.
+    pub fn width(&self) -> usize {
+        self.columns.len()
+    }
+
+    /// The column vector, in order.
+    pub fn columns(&self) -> &[ValueCellId] {
+        &self.columns
+    }
+
+    /// The column index of `id`, or `None` when `id` is not a seed.
+    pub fn column_of(&self, id: &ValueCellId) -> Option<usize> {
+        self.index.get(id).copied()
+    }
+
+    /// True when `expr`'s subtree references at least one seed cell.
+    ///
+    /// A `false` answer is a *proof* that the whole subtree is constant with
+    /// respect to every seed.
+    ///
+    /// # Why `collect_value_refs` and not `expr.walk`
+    ///
+    /// `walk` is allocation-free and sits right here in [`subtree_has_kink`],
+    /// so reaching for it is the obvious optimisation — and it answers a
+    /// DIFFERENT question.  On a `Lambda`, `collect_value_refs` reports the
+    /// CAPTURES and does not descend into the body, while `walk` descends into
+    /// the body and never sees the captures (`reify-ir/src/expr.rs`, the two
+    /// `Lambda` arms).  A walk-based predicate would therefore answer `false`
+    /// for a lambda that captures a seed — and `false` here is a PROOF the fast
+    /// path acts on, so the subtree would be handed to `eval_expr` and lifted
+    /// with `Tangent::Zero`: a silently flat row for a residual that genuinely
+    /// moves.  (`Quantifier` differs too, in the safe direction: `walk` sees
+    /// the bound variable that `collect_value_refs` excludes.)
+    ///
+    /// The allocation-free shape wants a `contains_value_ref_matching`
+    /// predicate on `CompiledExpr` itself, beside the traversal it must mirror;
+    /// restating those 26 arms here would be the same defect one level down.
+    pub fn depends_on_seed(&self, expr: &CompiledExpr) -> bool {
+        if let Some(hit) = self.depends.borrow().get(&expr.content_hash) {
+            return *hit;
+        }
+        let answer = expr.collect_value_refs().iter().any(|id| self.index.contains_key(id));
+        self.depends.borrow_mut().insert(expr.content_hash, answer);
+        answer
+    }
+
+    /// True when `expr`'s subtree contains at least one non-smooth node, **or
+    /// any node this walk cannot see through**.
+    ///
+    /// This gates the seed-independence fast path.  Skipping a seed-independent
+    /// subtree is sound for *tangents*, but it would also skip any kink inside
+    /// it — and then "the record is empty" would mean "we did not look" rather
+    /// than "there is no kink here", which is precisely the guarantee λ (#6679)
+    /// builds on.  [`node_is_kink`] therefore also claims the two node kinds
+    /// whose interior is not in the tree at all (a user-function call's body, an
+    /// arity-1 call a `__field__` cell may shadow with a lambda), so the fast
+    /// path can never be the thing that swallowed a branch.
+    ///
+    /// # The one remaining gap
+    ///
+    /// A `true` here keeps the node off the fast path, and every kind the
+    /// traversal DIFFERENTIATES then records its own kinks.  The kinds it does
+    /// not — `IndexAccess`, `ListLiteral`, the rest of
+    /// [`refuse_or_constant`]'s clients — hand the whole node to
+    /// [`crate::eval_expr`], so a kink nested inside one of those is evaluated
+    /// without being recorded even though this predicate saw it.  That is the
+    /// ONLY shape for which an empty record still under-reports, and
+    /// [`refuse_or_constant`] states it at the point it happens.
+    pub fn subtree_has_kink(&self, expr: &CompiledExpr) -> bool {
+        if let Some(hit) = self.kinky.borrow().get(&expr.content_hash) {
+            return *hit;
+        }
+        let mut found = false;
+        expr.walk(&mut |e| {
+            if !found && node_is_kink(e) {
+                found = true;
+            }
+        });
+        self.kinky.borrow_mut().insert(expr.content_hash, found);
+        found
+    }
+}
+
+/// Tangents bound to cells that are **not** seed columns: a user function's or
+/// lambda's parameters, and a callee's `let` bindings, while its body is being
+/// evaluated.
+///
+/// A parameter cell is not a seed — it is an *interior* cell whose tangent was
+/// computed from the seeds at the call site — so `Seeds` alone cannot resolve
+/// it.  Without this overlay a function body would look seed-independent and
+/// every user-defined function would differentiate to zero.
+///
+/// An *unbound* lookup falls through to [`Tangent::Zero`] — the right answer
+/// for a cell that genuinely does not move with the seeds — but a cell bound
+/// to `Zero` is still stored, because a binding is AUTHORITATIVE over every
+/// earlier binding of the same cell.  Reify lets a `let` shadow a parameter
+/// (a `Shadowing` warning, not an error) and lets two same-named `let`s
+/// coexist with no diagnostic at all, so a cell IS bound more than once; a
+/// skipped zero rebind would leave the shadowed binding's tangent live and
+/// fabricate a non-zero derivative.  "Is this cell bound?" is therefore a
+/// weaker question than "does it carry a tangent?", and only the former gates
+/// the [`DualEnv::carries_tangent`] fast path — erring towards descending.
+#[derive(Default)]
+pub struct DualEnv {
+    bindings: HashMap<ValueCellId, Tangent>,
+    /// Memo for [`DualEnv::carries_tangent`], scoped to one body evaluation,
+    /// which is exactly where it pays.
+    ///
+    /// Each answer carries the [`DualEnv::generation`] that produced it,
+    /// because the two answers age differently.  Bindings only ever GROW, so a
+    /// `true` is permanent: an expression that reaches a bound cell cannot stop
+    /// reaching it.  A `false` is only a claim about the binding set at the
+    /// time, so it is re-checked once that set changes.  Clearing the whole
+    /// memo per binding instead makes `eval_dual_fn_body`'s let-binding loop
+    /// re-walk the remaining body once per `let`.
+    carries: RefCell<HashMap<ContentHash, (u32, bool)>>,
+    /// Why a cell was bound as [`Tangent::None`], for the cells whose binder
+    /// knew.  Read at the point a residual READS the cell, so a row that never
+    /// touches it is never told about it.
+    causes: HashMap<ValueCellId, NonDifferentiable>,
+    /// Bumped once per newly bound cell — never on a rebind, which cannot
+    /// change a membership answer.
+    generation: u32,
+}
+
+impl DualEnv {
+    /// The empty overlay — the state at the residual root.
+    pub fn new() -> Self {
+        DualEnv::default()
+    }
+
+    /// Bind `cell` to `tangent`, displacing any earlier binding of the same
+    /// cell — including with a [`Tangent::Zero`], which is what makes a
+    /// shadowing `let` able to FLATTEN the tangent of the parameter or `let`
+    /// it shadows rather than inherit it.
+    ///
+    /// This is also the only binder that can retire a recorded refusal: a cell
+    /// rebound to a real tangent is differentiable again, so its stale cause
+    /// must not outlive it and condemn the read.
+    pub fn bind(&mut self, cell: ValueCellId, tangent: Tangent) {
+        self.causes.remove(&cell);
+        self.insert(cell, tangent);
+    }
+
+    /// Bind `cell` as NON-differentiable, keeping the reason.
+    ///
+    /// `bind(cell, Tangent::None)` already says the tangent is unavailable;
+    /// this also says WHY, so a residual that reads the cell refuses with the
+    /// construct responsible instead of the generic root-sited fallback.  The
+    /// reason is raised at the READ, not here, which is what keeps a poisoned
+    /// derived cell from condemning rows that never look at it.
+    pub fn bind_refused(&mut self, cell: ValueCellId, cause: NonDifferentiable) {
+        self.causes.insert(cell.clone(), cause);
+        self.insert(cell, Tangent::None);
+    }
+
+    /// The one write to `bindings`, so the [`DualEnv::generation`] counter
+    /// cannot drift from the key set it describes.
+    ///
+    /// It is also where the tangent is CANONICALISED.  Everywhere inside the
+    /// traversal an all-zero row is already collapsed by
+    /// [`Tangent::from_row`], so `is_zero()` means "provably flat" rather than
+    /// "happens to be spelled `Zero`" — and several rules read it that way,
+    /// `pow`'s constant-exponent power rule most sharply.  [`DualEnv::bind`] is
+    /// public, so the overlay is the one door a `Tangent::Scalar(vec![0.0; w])`
+    /// can come through; collapsing it here keeps that equivalence true of
+    /// every tangent in the module rather than of most of them.
+    fn insert(&mut self, cell: ValueCellId, tangent: Tangent) {
+        let tangent = match tangent {
+            Tangent::Scalar(row) => Tangent::from_row(row),
+            other => other,
+        };
+        if self.bindings.insert(cell, tangent).is_none() {
+            self.generation += 1;
+        }
+    }
+
+    /// The tangent bound to `cell`, or `None` when it carries no tangent.
+    pub fn get(&self, cell: &ValueCellId) -> Option<&Tangent> {
+        self.bindings.get(cell)
+    }
+
+    /// Why `cell` was bound as non-differentiable, when its binder recorded it.
+    fn refusal_for(&self, cell: &ValueCellId) -> Option<&NonDifferentiable> {
+        self.causes.get(cell)
+    }
+
+    /// True when no cell is bound at all.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
+    /// True when `expr` references at least one bound cell.
+    ///
+    /// A cell bound to [`Tangent::Zero`] counts, so this can answer `true` for
+    /// a provably flat expression.  That is a missed fast path, never a wrong
+    /// tangent — and it is what keeps "bindings only ever GROW" true, which is
+    /// what the `carries` memo's permanent-`true` rule rests on.
+    ///
+    /// Uses `collect_value_refs` rather than `expr.walk` for the reason
+    /// [`Seeds::depends_on_seed`] states: the two traversals disagree on
+    /// `Lambda`, and this predicate's `false` also gates the fast path.
+    fn carries_tangent(&self, expr: &CompiledExpr) -> bool {
+        if self.bindings.is_empty() {
+            return false;
+        }
+        if let Some(&(generation, hit)) = self.carries.borrow().get(&expr.content_hash)
+            && (hit || generation == self.generation)
+        {
+            return hit;
+        }
+        let answer = expr.collect_value_refs().iter().any(|id| self.bindings.contains_key(id));
+        self.carries.borrow_mut().insert(expr.content_hash, (self.generation, answer));
+        answer
+    }
+}
+
+/// Is THIS node (not its subtree) non-smooth, **or opaque to the walk that asks**?
+/// O(1) on the node's kind.
+///
+/// Sole caller: [`Seeds::subtree_has_kink`], which gates the seed-independence
+/// fast path.  So a `true` here only ever costs a fast path, and the two
+/// `true`s that are not really about smoothness — the calls below — are there
+/// because a fast path taken over a kink is the one failure mode λ (#6679) has
+/// no defence against.
+fn node_is_kink(e: &CompiledExpr) -> bool {
+    match &e.kind {
+        CompiledExprKind::Conditional { .. } | CompiledExprKind::Match { .. } => true,
+        // A CALL IS OPAQUE TO THE WALK, so "is there a kink in here?" is not a
+        // question `subtree_has_kink` can answer about one — and the honest
+        // answer to an unanswerable question, for a predicate whose `false` is
+        // acted on as a PROOF, is the conservative one.
+        //
+        // `CompiledExpr::walk` visits a `UserFunctionCall`'s arguments only:
+        // the callee body lives in the function table, which a bare expression
+        // cannot reach.  An arity-1 `FunctionCall` has the same problem by a
+        // different route — a `Value::Field` cell named `__field__::<name>` may
+        // shadow the builtin with a LAMBDA (see `eval_dual_builtin`), and that
+        // lambda is in the value map, not in the tree at all.
+        //
+        // Cost: one extra node visit per call on an otherwise fast-pathed
+        // subtree.  Its own arguments keep the fast path (they are ordinary
+        // subtrees), the shadow-cell probe is one `eval_expr` pays for every
+        // arity-1 call anyway, and a traversed call records its branches
+        // properly — `eval_dual_fn_body` and `eval_dual_lambda_apply` both do.
+        CompiledExprKind::UserFunctionCall { .. } => true,
+        CompiledExprKind::FunctionCall { args, .. } if args.len() == 1 => true,
+        CompiledExprKind::BinOp { op, .. } => matches!(
+            op,
+            BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::Implies
+                | BinOp::Mod
+        ),
+        CompiledExprKind::FunctionCall { function, args } => {
+            is_kink_builtin(&function.name, args.len())
+                || is_bounded_reduction_shaped(&function.name, args.len())
+        }
+        _ => false,
+    }
+}
+
+/// Statically — with no operand values in hand — could this call be a BOUNDED
+/// field reduction that [`is_kink_builtin`] does not already claim?
+///
+/// `is_kink_builtin` claims `("min" | "max", 2)` for the BINARY NUMERIC kink,
+/// which incidentally keeps `max(field, bounds)` off the fast path.  The
+/// arity-2 `argmax`/`argmin` form has no binary-numeric reading to claim it, so
+/// without this a seed-independent `argmax(field, bounds)` would be swallowed
+/// whole by the fast path and record NOTHING — while genuinely selecting an
+/// extremum grid node.  An empty [`BranchRecord`] has to mean "no kink here",
+/// never "we did not look".
+///
+/// Being a static walk, this answers CONSERVATIVELY: it only suppresses the
+/// fast path.  [`field_reduction_kind`] makes the real decision once the
+/// operand values exist, and a call that turns out not to be a field reduction
+/// falls through to the ordinary refusal path exactly as before.
+fn is_bounded_reduction_shaped(name: &str, arity: usize) -> bool {
+    matches!((name, arity), ("argmax" | "argmin", 2))
+}
+
+/// Forward-mode dual evaluation of `expr` at the point held in `ctx`.
+///
+/// Returns the primal (identical to `eval_expr(expr, ctx)`) paired with
+/// `∂primal/∂x_j` for each seed column `j`.  Every non-smooth node traversed on
+/// the way appends one entry to `record`.
+pub fn eval_dual(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+) -> DualValue {
+    eval_dual_with_env(expr, ctx, seeds, &DualEnv::new(), record)
+}
+
+/// [`eval_dual`] with an outer tangent overlay already populated.
+///
+/// The solver uses this to hand in the tangents of DERIVED cells — cells that
+/// are functions of the auto params but are not themselves seed columns.
+/// Without it a residual that reads a derived cell rather than the auto itself
+/// would differentiate to exactly zero.
+pub fn eval_dual_with_env(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+) -> DualValue {
+    seeds.take_refusal();
+    let mut path: Vec<u16> = Vec::new();
+    eval_dual_at(expr, ctx, seeds, env, record, &mut path)
+}
+
+/// Recursive worker.  `path` is the structural child-index path from the
+/// residual root, pushed on descent and popped on return, so a kink's
+/// [`KinkSite`] is simply a snapshot of it.
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_at(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    // Fast path: a subtree that can reach neither a seed nor a bound parameter,
+    // and hides no kink, has a provably zero derivative and nothing to record —
+    // so evaluate it exactly as the rest of the system would and lift it.
+    if !seeds.depends_on_seed(expr) && !env.carries_tangent(expr) && !seeds.subtree_has_kink(expr) {
+        return DualValue::constant(crate::eval_expr(expr, ctx));
+    }
+
+    match &expr.kind {
+        CompiledExprKind::Literal(v) => DualValue::constant(v.clone()),
+
+        CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
+            let value = ctx.values.get_or_undef(id);
+            // Resolution order is OVERLAY → seed column → zero, and that order
+            // is the scope rule: the overlay IS the inner scope.  Inside a
+            // callee frame it holds exactly that frame's parameters and `let`s
+            // (`eval_dual_fn_body` builds a fresh one), so an overlay binding
+            // must shadow the outer seed set for the same reason
+            // `ctx.with_scope` makes the VALUE shadow it.
+            //
+            // The two are not distinguishable by construction: a seed cell is
+            // `(entity, auto_param)` and a callee cell is
+            // `(function_name, local_name)`, two namespaces that can collide.
+            // Consulting the seed column first made the body of
+            // `fn part(x) = x * 2` under a seed `part::x` take the unit row
+            // while `eval_expr` read the argument's value from the replaced
+            // scope — the primal and the tangent describing different
+            // quantities, reported as an ordinary `Ok` row.
+            //
+            // At the residual root the overlay holds DERIVED cells, which
+            // `fold_dependent_duals` never lets collide with an auto param, so
+            // this order changes nothing there.
+            match env.get(id) {
+                // A cell the overlay bound as non-differentiable.  The refusal
+                // is raised HERE, at the read, for two reasons: the cause names
+                // the construct inside the cell rather than whatever generic
+                // fallback the root reaches for, and a row that never reads
+                // this cell never hears about it — which is the difference
+                // between one poisoned derived cell and a condemned cluster.
+                //
+                // `note_refusal` is first-wins, so the synthesised fallback
+                // below cannot displace a real cause already in the slot —
+                // which is the case for a callee parameter bound `None` by
+                // `eval_dual_fn_body`, whose traversal recorded the reason
+                // moments earlier in the same slot.
+                Some(Tangent::None) => {
+                    seeds.note_refusal(env.refusal_for(id).cloned().unwrap_or_else(|| {
+                        NonDifferentiable::UnsupportedKind {
+                            kind: "a bound cell with no derivative rule",
+                            site: KinkSite::new(path.to_vec()),
+                        }
+                    }));
+                    DualValue::opaque(value)
+                }
+                // A bound parameter's tangent is already expressed in seed
+                // columns, so it is adopted as-is.
+                Some(tangent) => DualValue { value, tangent: tangent.clone() },
+                None => match seeds.column_of(id) {
+                    Some(j) if value.as_f64().is_some() => {
+                        let mut row = vec![0.0; seeds.width()];
+                        row[j] = 1.0;
+                        DualValue { value, tangent: Tangent::Scalar(row) }
+                    }
+                    // A seeded cell holding a NON-scalar (or Undef) value cannot
+                    // carry a scalar tangent.  Refuse loudly rather than emit a
+                    // zero row, which would claim the residual is flat in a
+                    // variable it may well depend on.
+                    Some(_) => {
+                        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                            kind: "a seeded cell holding a non-scalar value",
+                            site: KinkSite::new(path.to_vec()),
+                        });
+                        DualValue::opaque(value)
+                    }
+                    None => DualValue::constant(value),
+                },
+            }
+        }
+
+        CompiledExprKind::UnOp { op, operand } => match op {
+            UnOp::Neg => {
+                let inner = descend(operand, 0, ctx, seeds, env, record, path);
+                let value = crate::negate_value(inner.value.clone());
+                finish_unary(value, &inner, |_| -1.0)
+            }
+            // `not` is Bool-valued: there is no scalar derivative to take.
+            UnOp::Not => {
+                refuse_or_constant(expr, ctx, seeds, env, path, "unary `not` (Bool-valued)")
+            }
+        },
+
+        CompiledExprKind::BinOp { op, left, right } => {
+            eval_dual_binop(*op, left, right, ctx, seeds, env, record, path)
+        }
+
+        CompiledExprKind::FunctionCall { function, args } => {
+            // Dispatch on the BARE name — that is what `eval_expr` does.  The
+            // only `qualified_name` comparison in the evaluator is the
+            // `std::__interp_render` intercept, and that name is in neither
+            // table, so it falls through to the refusal path.
+            eval_dual_builtin(expr, &function.name, args, ctx, seeds, env, record, path)
+        }
+
+        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+            eval_dual_conditional(condition, then_branch, else_branch, ctx, seeds, env, record, path)
+        }
+
+        CompiledExprKind::Match { discriminant, arms } => {
+            eval_dual_match(discriminant, arms, ctx, seeds, env, record, path)
+        }
+
+        CompiledExprKind::UserFunctionCall { function_name, args } => {
+            eval_dual_user_fn(expr, function_name, args, ctx, seeds, env, record, path)
+        }
+
+        // Everything else is a kind this task does not differentiate.
+        _ => refuse_or_constant(expr, ctx, seeds, env, path, kind_name(expr)),
+    }
+}
+
+/// Descend into child `index`, keeping the structural path in sync.
+#[allow(clippy::too_many_arguments)]
+fn descend(
+    child: &CompiledExpr,
+    index: usize,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    path.push(index as u16);
+    let result = eval_dual_at(child, ctx, seeds, env, record, path);
+    path.pop();
+    result
+}
+
+/// Evaluate `expr` with the real evaluator and attach the only honest tangent:
+/// [`Tangent::None`] when the node could move with a seed, [`Tangent::Zero`]
+/// when it provably cannot.
+///
+/// # The one place an empty record still under-reports
+///
+/// This hands the WHOLE node to [`crate::eval_expr`] without traversing it, so
+/// a kink nested inside an undifferentiated kind — `[a, if p then 1 else 2][0]`
+/// — is selected without an entry being emitted.  In the refusing branch that
+/// is harmless: the row comes back as an `Err`, so nothing reads the record.
+/// In the seed-independent branch the row is a legitimate flat one, and its
+/// record is silent about a branch that was taken.
+///
+/// Closing it needs a vocabulary for "a kink is in here and this module cannot
+/// place it", which is λ's (#6679) consumption contract to design, not ε's to
+/// presume — so the gap is stated here and in [`Seeds::subtree_has_kink`]
+/// rather than papered over.  Until then λ must read an empty record as "no
+/// kink in any kind ε differentiates", which is what these two doc comments and
+/// no other say.
+fn refuse_or_constant(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    path: &[u16],
+    kind: &'static str,
+) -> DualValue {
+    let value = crate::eval_expr(expr, ctx);
+    if seeds.depends_on_seed(expr) || env.carries_tangent(expr) {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind,
+            site: KinkSite::new(path.to_vec()),
+        });
+        DualValue::opaque(value)
+    } else {
+        // Provably seed-independent: the derivative exists and is zero.  An
+        // unsupported construct that cannot reach a seed must not poison the
+        // whole residual.
+        DualValue::constant(value)
+    }
+}
+
+/// A human-readable name for an expression kind, for refusal messages.
+fn kind_name(expr: &CompiledExpr) -> &'static str {
+    match &expr.kind {
+        CompiledExprKind::Literal(_) => "Literal",
+        CompiledExprKind::ValueRef(_) => "ValueRef",
+        CompiledExprKind::CrossSubGeometryRef(_) => "CrossSubGeometryRef",
+        CompiledExprKind::BinOp { .. } => "BinOp",
+        CompiledExprKind::UnOp { .. } => "UnOp",
+        CompiledExprKind::FunctionCall { .. } => "FunctionCall",
+        CompiledExprKind::Conditional { .. } => "Conditional",
+        CompiledExprKind::Match { .. } => "Match",
+        CompiledExprKind::UserFunctionCall { .. } => "UserFunctionCall",
+        CompiledExprKind::Lambda { .. } => "Lambda",
+        CompiledExprKind::ListLiteral(_) => "ListLiteral",
+        CompiledExprKind::SetLiteral(_) => "SetLiteral",
+        CompiledExprKind::MapLiteral(_) => "MapLiteral",
+        CompiledExprKind::IndexAccess { .. } => "IndexAccess",
+        CompiledExprKind::MethodCall { .. } => "MethodCall",
+        CompiledExprKind::Quantifier { .. } => "Quantifier",
+        CompiledExprKind::OptionSome(_) => "OptionSome",
+        CompiledExprKind::OptionNone => "OptionNone",
+        CompiledExprKind::MetaAccess { .. } => "MetaAccess",
+        CompiledExprKind::DeterminacyPredicate { .. } => "DeterminacyPredicate",
+        CompiledExprKind::RangeConstructor { .. } => "RangeConstructor",
+        CompiledExprKind::AdHocSelector { .. } => "AdHocSelector",
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => "PurposeReflectiveAggregation",
+        CompiledExprKind::ReflectiveCellList(_) => "ReflectiveCellList",
+        CompiledExprKind::StructureInstanceCtor { .. } => "StructureInstanceCtor",
+        _ => "unsupported expression kind",
+    }
+}
+
+/// A human-readable name for a `Value` variant, for refusal messages.
+fn value_kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Bool(_) => "Bool",
+        Value::Int(_) => "Int",
+        Value::Real(_) => "Real",
+        Value::Scalar { .. } => "Scalar",
+        Value::String(_) => "String",
+        Value::Point(_) => "Point",
+        Value::Vector(_) => "Vector",
+        Value::Direction { .. } => "Direction",
+        Value::Frame { .. } => "Frame",
+        Value::Complex { .. } => "Complex",
+        Value::Matrix { .. } => "Matrix",
+        Value::Tensor(_) => "Tensor",
+        Value::List(_) => "List",
+        Value::Set(_) => "Set",
+        Value::Map(_) => "Map",
+        Value::Option(_) => "Option",
+        Value::Enum { .. } => "Enum",
+        Value::Lambda { .. } => "Lambda",
+        Value::Field { .. } => "Field",
+        Value::Range { .. } => "Range",
+        Value::Undef => "Undef",
+        _ => "non-scalar value",
+    }
+}
+
+fn note(record: &mut BranchRecord, path: &[u16], kind: KinkKind, choice: BranchChoice) {
+    record.push(BranchEntry { site: KinkSite::new(path.to_vec()), kind, choice });
+}
+
+/// Complete a unary node: the tangent is `df/dx · inner_tangent`, subject to
+/// the `Undef` cliff.
+fn finish_unary(value: Value, inner: &DualValue, dfdx: impl Fn(f64) -> f64) -> DualValue {
+    if value.is_undef() {
+        return DualValue::opaque(value);
+    }
+    match &inner.tangent {
+        Tangent::Zero => DualValue::constant(value),
+        Tangent::None => DualValue::opaque(value),
+        Tangent::Scalar(row) => {
+            let Some(x) = inner.value.as_f64() else {
+                return DualValue::opaque(value);
+            };
+            let k = dfdx(x);
+            DualValue::with_row(value, row.iter().map(|t| t * k).collect())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conditional and Match — descend ONLY into the taken branch
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_conditional(
+    condition: &CompiledExpr,
+    then_branch: &CompiledExpr,
+    else_branch: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let cond = descend(condition, 0, ctx, seeds, env, record, path);
+    // The entry is pushed BEFORE descending into the taken branch, so a flip
+    // shows up as a differing `choice` at THIS site rather than as a
+    // realignment of every entry that follows.  That is what makes
+    // `BranchRecord::differs_from` name the kink that actually moved.
+    match cond.value {
+        Value::Bool(true) => {
+            note(record, path, KinkKind::Conditional, BranchChoice::Then);
+            descend(then_branch, 1, ctx, seeds, env, record, path)
+        }
+        Value::Bool(false) => {
+            note(record, path, KinkKind::Conditional, BranchChoice::Else);
+            descend(else_branch, 2, ctx, seeds, env, record, path)
+        }
+        // Undef condition, or a non-bool type error: `eval_expr` yields Undef
+        // without evaluating either branch.
+        _ => {
+            note(record, path, KinkKind::Conditional, BranchChoice::Unresolved);
+            DualValue::opaque(Value::Undef)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_match(
+    discriminant: &CompiledExpr,
+    arms: &[CompiledMatchArm],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let disc = descend(discriminant, 0, ctx, seeds, env, record, path);
+    // §9.2.5 — a wholly-undef discriminant short-circuits before any arm is
+    // tried, exactly as in `eval_expr`.
+    if disc.value.is_undef() {
+        note(record, path, KinkKind::Match, BranchChoice::Unresolved);
+        return DualValue::opaque(Value::Undef);
+    }
+    let Value::Enum { variant, payload, .. } = &disc.value else {
+        note(record, path, KinkKind::Match, BranchChoice::Unresolved);
+        return DualValue::opaque(Value::Undef);
+    };
+    // A DISCRIMINANT THAT CARRIES A TANGENT IS NOT SOMETHING THE ARMS CAN HONOUR.
+    //
+    // The `VariantBind` arm below cracks the payload's VALUES into a child scope
+    // and binds no tangents, so a binder resolves through `env.get` → `None` →
+    // `Tangent::Zero` and the arm body returns a confident FLAT row.  That is
+    // right only while every payload is a compile-time constant — which it is
+    // today, because `reify-compiler`'s `variant_construct` refuses a
+    // non-constant payload value outright ("not yet supported") and lowers it to
+    // `Value::Undef`.  That restriction is marked a deferred follow-up there,
+    // i.e. it belongs to a module this one does not own, so it is CHECKED here
+    // rather than relied on.
+    //
+    // `Tangent::None` gets the same treatment for a different reason: the
+    // discriminant's refusal is already in the first-wins slot, and a confident
+    // row from an arm body makes `jacobian_row` return `Ok` and DISCARD it
+    // unread.
+    //
+    // The refusal is recorded now and applied to the RESULT, after the ordinary
+    // selection below has run: the primal must keep coming from the arm the
+    // evaluator would have taken, or this becomes the second evaluator the
+    // module header forbids.
+    let tangent_is_honest = disc.tangent.is_zero();
+    if !tangent_is_honest {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: if disc.tangent.is_none() {
+                "a `match` whose discriminant has no derivative"
+            } else {
+                "a `match` over a seed-dependent enum payload"
+            },
+            site: KinkSite::new(path.to_vec()),
+        });
+    }
+    let honest = |d: DualValue| {
+        if tangent_is_honest { d } else { DualValue::opaque(d.value) }
+    };
+
+    for (i, arm) in arms.iter().enumerate() {
+        // INV-3 — arm selection is by TAG only; payload determinacy is
+        // irrelevant.  `find` (not `any`) so the selecting pattern is captured.
+        let Some(pattern) = arm.patterns.iter().find(|p| p.selects(variant)) else {
+            continue;
+        };
+        note(record, path, KinkKind::Match, BranchChoice::Arm(i));
+        return honest(match pattern {
+            // INV-2 — crack the payload fields into a child scope so the
+            // binders are confined to exactly this arm's body, mirroring
+            // `eval_variant_bind_arm`.
+            CompiledPattern::VariantBind { binders, .. } => {
+                let mut child = ctx.values.clone();
+                for (field_name, cell) in binders {
+                    let val = payload
+                        .iter()
+                        .find(|(f, _)| f == field_name)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::Undef);
+                    child.insert(cell.clone(), val);
+                }
+                let child_ctx = ctx.with_scope(&child);
+                descend(&arm.body, 1 + i, &child_ctx, seeds, env, record, path)
+            }
+            CompiledPattern::Variant { .. } | CompiledPattern::Wildcard => {
+                descend(&arm.body, 1 + i, ctx, seeds, env, record, path)
+            }
+        });
+    }
+    // No matching arm.
+    note(record, path, KinkKind::Match, BranchChoice::Unresolved);
+    DualValue::opaque(Value::Undef)
+}
+
+// ---------------------------------------------------------------------------
+// Binary operators
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_binop(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    match op {
+        BinOp::And | BinOp::Or | BinOp::Implies => {
+            return eval_dual_kleene(op, left, right, ctx, seeds, env, record, path);
+        }
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            return eval_dual_comparison(op, left, right, ctx, seeds, env, record, path);
+        }
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow | BinOp::Mod => {}
+    }
+
+    let ld = descend(left, 0, ctx, seeds, env, record, path);
+    let rd = descend(right, 1, ctx, seeds, env, record, path);
+
+    // `%` is a kink at every wrap point, so it is recorded even though it is
+    // differentiable in between.  Recorded BEFORE the strict-`Undef` precheck
+    // below, so an undetermined operand does not DROP the entry: a kink was
+    // traversed either way, and `mod_quotient_choice` already answers
+    // `Unresolved` for an operand with no `as_f64`.
+    if op == BinOp::Mod {
+        note(record, path, KinkKind::Mod, mod_quotient_choice(&ld.value, &rd.value));
+    }
+
+    // `eval_binop`'s strict-`Undef` precheck (lib.rs:3852-3855), which the dual
+    // path would otherwise skip by calling the helpers directly.  On this arm
+    // the helpers happen to fall through to `Undef` anyway — but only by
+    // accident of their `_ =>` arms, so stating the rule here makes the
+    // arithmetic path's correctness explicit instead of contingent on every
+    // present AND future helper continuing to do that.
+    if ld.value.is_undef() || rd.value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+
+    // THE PRIMAL COMES FROM THE EXISTING CODE.
+    let value = match op {
+        BinOp::Add => crate::eval_add(&ld.value, &rd.value),
+        BinOp::Sub => crate::eval_sub(&ld.value, &rd.value),
+        BinOp::Mul => crate::eval_mul(&ld.value, &rd.value),
+        BinOp::Div => crate::eval_div(&ld.value, &rd.value),
+        BinOp::Pow => crate::eval_pow(&ld.value, &rd.value),
+        BinOp::Mod => crate::eval_mod(&ld.value, &rd.value),
+        _ => unreachable!("guarded above"),
+    };
+
+    // The Undef cliff: no derivative is attached to a refusal.
+    if value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(value);
+    }
+    if ld.tangent.is_none() || rd.tangent.is_none() {
+        return DualValue::opaque(value);
+    }
+    if ld.tangent.is_zero() && rd.tangent.is_zero() {
+        return DualValue::constant(value);
+    }
+
+    let width = seeds.width();
+    let (Some(lrow), Some(rrow)) = (ld.tangent.materialize(width), rd.tangent.materialize(width))
+    else {
+        return DualValue::opaque(value);
+    };
+    // Join the three numeric scalar variants (`Int`, `Real`, `Scalar`) through
+    // `as_f64` — NOT by matching `Value::Scalar`, which `from_real_scalar`
+    // collapses to `Real` whenever the dimension cancels (Invariant V).
+    let (Some(a), Some(b)) = (ld.value.as_f64(), rd.value.as_f64()) else {
+        return DualValue::opaque(value);
+    };
+
+    let row: Vec<f64> = (0..width)
+        .map(|j| {
+            let (ap, bp) = (lrow[j], rrow[j]);
+            match op {
+                BinOp::Add => ap + bp,
+                BinOp::Sub => ap - bp,
+                BinOp::Mul => ap * b + a * bp,
+                BinOp::Div => (ap * b - a * bp) / (b * b),
+                BinOp::Pow => pow_tangent(a, b, ap, bp, rd.tangent.is_zero()),
+                BinOp::Mod => ap - (a / b).trunc() * bp,
+                _ => unreachable!("guarded above"),
+            }
+        })
+        .collect();
+
+    DualValue::with_row(value, row)
+}
+
+/// The quotient cell `a % b` currently sits in.
+///
+/// **`trunc`, not `floor`.** Reify's `%` is Rust's *truncated* remainder
+/// (`a % b == a − trunc(a/b)·b`), so the truncated quotient is the coefficient
+/// that actually appears in `∂(a % b)/∂b = −trunc(a/b)`.  Labelling the cell
+/// with `floor` instead would disagree with the tangent — and mislabel the
+/// branch — for every negative operand.
+fn mod_quotient_choice(lv: &Value, rv: &Value) -> BranchChoice {
+    match (lv.as_f64(), rv.as_f64()) {
+        (Some(a), Some(b)) if b != 0.0 && (a / b).trunc().is_finite() => {
+            BranchChoice::ModQuotient((a / b).trunc() as i64)
+        }
+        _ => BranchChoice::Unresolved,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_comparison(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let ld = descend(left, 0, ctx, seeds, env, record, path);
+    let rd = descend(right, 1, ctx, seeds, env, record, path);
+
+    // `eval_binop`'s strict-`Undef` precheck (lib.rs:3852-3855).  Here it is
+    // load-bearing rather than belt-and-braces: `eval_eq` has two arms that
+    // answer `Bool(false)` WITHOUT consulting the other operand — `Enum` vs
+    // anything (lib.rs:5007) and a dimensioned `Scalar` vs anything
+    // (lib.rs:5018) — so calling it directly turns "this cell is not known"
+    // into "these are definitely different".
+    //
+    // The kink is still NOTED: one was genuinely traversed, and `Unresolved`
+    // is the honest choice because the evaluator resolved nothing.  Recording
+    // `Unsatisfied` instead would show λ (#6679) a settled branch and buy a
+    // phantom alternation the moment the cell becomes determined, and would
+    // let a `Conditional` above descend a branch `eval_expr` never evaluates —
+    // handing η (#6675) a finite row for a residual whose cost is `Undef`.
+    if ld.value.is_undef() || rd.value.is_undef() {
+        note(record, path, KinkKind::Comparison(op), BranchChoice::Unresolved);
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+
+    let value = match op {
+        BinOp::Eq => crate::eval_eq(&ld.value, &rd.value),
+        BinOp::Ne => crate::eval_ne(&ld.value, &rd.value),
+        BinOp::Lt => crate::eval_cmp(&ld.value, &rd.value, |a, b| a < b),
+        BinOp::Le => crate::eval_cmp(&ld.value, &rd.value, |a, b| a <= b),
+        BinOp::Gt => crate::eval_cmp(&ld.value, &rd.value, |a, b| a > b),
+        BinOp::Ge => crate::eval_cmp(&ld.value, &rd.value, |a, b| a >= b),
+        _ => unreachable!("guarded by the caller"),
+    };
+    let choice = match value {
+        Value::Bool(true) => BranchChoice::Satisfied,
+        Value::Bool(false) => BranchChoice::Unsatisfied,
+        _ => BranchChoice::Unresolved,
+    };
+    note(record, path, KinkKind::Comparison(op), choice);
+    // A Bool has no scalar derivative.  Reporting `Tangent::Zero` here would
+    // let a comparison masquerade as a flat numeric residual.
+    DualValue::opaque(value)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_kleene(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let ld = descend(left, 0, ctx, seeds, env, record, path);
+    let Ok(lk) = KBool::try_from(&ld.value) else {
+        // Short-circuit on type error: the right operand is never evaluated.
+        note(record, path, KinkKind::Kleene(op), BranchChoice::LeftTypeError);
+        return DualValue::opaque(Value::Undef);
+    };
+    // Short-circuit on the absorbing element, matching `eval_and`/`eval_or`/
+    // `eval_implies` exactly.
+    let absorbed = match op {
+        BinOp::And => matches!(lk, KBool::False).then_some(Value::Bool(false)),
+        BinOp::Or => matches!(lk, KBool::True).then_some(Value::Bool(true)),
+        // `False ⇒ anything = True`, vacuously.
+        BinOp::Implies => matches!(lk, KBool::False).then_some(Value::Bool(true)),
+        _ => unreachable!("guarded by the caller"),
+    };
+    if let Some(value) = absorbed {
+        note(record, path, KinkKind::Kleene(op), BranchChoice::LeftAbsorbing);
+        return DualValue::opaque(value);
+    }
+
+    // Pushed before descending into the right operand, so a flip between
+    // `LeftAbsorbing` and `BothEvaluated` is visible AT this site rather than
+    // as a shift of every entry the right subtree contributes.
+    note(record, path, KinkKind::Kleene(op), BranchChoice::BothEvaluated);
+    let rd = descend(right, 1, ctx, seeds, env, record, path);
+    let Ok(rk) = KBool::try_from(&rd.value) else {
+        return DualValue::opaque(Value::Undef);
+    };
+    let folded = match op {
+        BinOp::And => kleene::kleene_and(lk, rk),
+        BinOp::Or => kleene::kleene_or(lk, rk),
+        BinOp::Implies => kleene::kleene_implies(lk, rk),
+        _ => unreachable!("guarded by the caller"),
+    };
+    DualValue::opaque(folded.into())
+}
+
+/// One column of `d(a^b)`.
+///
+/// With a *constant* exponent the identity `b·a^(b−1)·a'` is used, which stays
+/// valid for a NEGATIVE base at integral `b` — the common case in reify, where
+/// `Scalar ^ Int` is the only dimensioned power the value layer accepts.  Only
+/// a seed-dependent exponent needs the general form, which requires `ln a` and
+/// is therefore restricted to a positive base.
+///
+/// `exponent_is_constant` must be a claim about the exponent's VALUE, not about
+/// how its tangent is spelled: a flat exponent routed through the general form
+/// multiplies a zero `bp` by a NaN `ln a` and loses a finite derivative.  The
+/// caller passes `Tangent::is_zero()`, which carries that meaning because
+/// [`Tangent::from_row`] and [`DualEnv::insert`] between them leave no all-zero
+/// `Tangent::Scalar` anywhere in the module.
+fn pow_tangent(a: f64, b: f64, ap: f64, bp: f64, exponent_is_constant: bool) -> f64 {
+    if exponent_is_constant {
+        if b == 0.0 {
+            // Exactly zero, rather than 0·a^(−1)·a' (NaN at a == 0).
+            return 0.0;
+        }
+        return b * a.powf(b - 1.0) * ap;
+    }
+    a.powf(b) * (bp * a.ln() + b * ap / a)
+}
+
+// ---------------------------------------------------------------------------
+// Builtin calls
+// ---------------------------------------------------------------------------
+
+/// A `FunctionCall` node.
+///
+/// The PRIMAL comes from `reify_stdlib::eval_builtin(name, &primal_args)` —
+/// the exact call `eval_expr` makes — so every builtin's dimension handling
+/// (`sqrt` → `dimension.root(2)`, `pow` → a bare `Real`, `asin`/`acos`/`atan`/
+/// `atan2` → `DimensionVector::ANGLE`) is INHERITED rather than restated here.
+/// Field reductions likewise come from `crate::field_reductions`, the same
+/// helpers `eval_expr` intercepts with.
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_builtin(
+    expr: &CompiledExpr,
+    name: &str,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    // Arguments are evaluated FIRST, unconditionally, matching `eval_expr`'s
+    // own order — and so that a kink inside an argument is recorded even when
+    // the call itself is a name this task does not differentiate.  "The record
+    // is what was traversed" has to hold for arguments too.
+    let duals: Vec<DualValue> = args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| descend(a, i, ctx, seeds, env, record, path))
+        .collect();
+    let primal_args: Vec<Value> = duals.iter().map(|d| d.value.clone()).collect();
+
+    // Strict `Undef` propagation, matching `eval_expr`'s short-circuit — which
+    // sits BEFORE the field-shadow lookup below, so this ordering is load-bearing.
+    if primal_args.iter().any(|v| v.is_undef()) {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+
+    // Field reductions are intercepted by `eval_expr` BEFORE `eval_builtin`,
+    // at BOTH arities, so they must be intercepted here too or the primal
+    // invariant breaks.  This sits ahead of the `is_kink_builtin` check below,
+    // which is what keeps the arity-2 `(Field, BoundingBox)` shape away from
+    // the BINARY NUMERIC `min`/`max` kink at its only value-carrying call site.
+    if let Some((kind, extent)) = field_reduction_kind(name, &primal_args) {
+        return eval_field_reduction(
+            kind,
+            extent,
+            &primal_args,
+            &duals,
+            ctx,
+            seeds,
+            record,
+            path,
+        );
+    }
+
+    // `eval_expr` lets a `Value::Field` cell named `__field__::<name>` shadow a
+    // builtin of the same name, applying its lambda to the single argument.
+    // That is the reachable scalar-in scalar-out lambda-application route in a
+    // residual, so it is differentiated rather than refused.
+    //
+    // POSITION IS THE CONTRACT, and it is this one: AFTER the intercepts
+    // mirrored from `eval_expr`'s NAMED arms (the field reductions above),
+    // BEFORE the builtin tables below.  `eval_expr` runs this same lookup in
+    // its catch-all `_` arm, which sits after every named arm and wraps the
+    // `reify_stdlib::eval_builtin` call itself — so a newly mirrored intercept
+    // belongs ABOVE this block, and nothing belongs below it.  Both neighbours
+    // have a measured failure: too EARLY, and a shadowed whole-field reduction
+    // applies the lambda to a `Value::Field` and collapses to `Undef` while
+    // `eval_expr` reduces; too LATE, and `abs`/`sqrt` take the tables while
+    // `eval_expr` applies the lambda — its `_`-arm comment about builtins
+    // never being shadowed is about its own NAMED arms, not about stdlib
+    // builtins, which it resolves inside that arm.  The arity-1 guard cannot
+    // collide with the remaining mirrored intercepts: those are all arity 2.
+    //
+    // The cell probe is deliberately NOT short-circuited on `smooth`/`kinky`
+    // below: `eval_expr` pays it for every 1-arg call that is not one of its
+    // named intercepts, and any short-circuit would re-break the invariant for
+    // exactly the `abs`/`sqrt` shapes above.
+    if args.len() == 1
+        && let Value::Field { lambda, .. } =
+            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
+    {
+        return eval_dual_lambda_apply(&lambda, &duals[0], ctx, seeds, record, path);
+    }
+
+    let smooth = is_differentiable_builtin(name, args.len());
+    let kinky = is_kink_builtin(name, args.len());
+    // Names in neither table (geometry, list, matrix, field ops) are not
+    // differentiated.  The node's only children are its arguments, so "does it
+    // move with a seed?" is exactly "does any argument tangent survive?".
+    if !smooth && !kinky {
+        // An entry is OWED for the arity-2 `argmax`/`argmin` SHAPE:
+        // `is_bounded_reduction_shaped` claims it so `node_is_kink` keeps it off
+        // the fast path, and `field_reduction_kind` has just DECLINED it on the
+        // operand values (the second argument is not a `BoundingBox`), leaving
+        // no later arm to record it.  Without this the record would read to λ
+        // (#6679) as "no kink here" for a node this module positively
+        // identified as one — the arity-1 hole closed in `eval_kink_builtin`,
+        // one arity over.
+        if let Some(kind) =
+            reduction_kind_of(name).filter(|_| is_bounded_reduction_shaped(name, args.len()))
+        {
+            note(record, path, KinkKind::FieldReduction(kind), BranchChoice::Unresolved);
+        }
+        let value = crate::eval_expr(&with_literal_args(expr, &primal_args), ctx);
+        return if duals.iter().all(|d| d.tangent.is_zero()) {
+            DualValue::constant(value)
+        } else {
+            seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                kind: "a builtin with no derivative rule",
+                site: KinkSite::new(path.to_vec()),
+            });
+            DualValue::opaque(value)
+        };
+    }
+
+    let value = reify_stdlib::eval_builtin(name, &primal_args);
+    if kinky {
+        return eval_kink_builtin(name, value, &duals, &primal_args, seeds, record, path);
+    }
+
+    if value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(value);
+    }
+    if duals.iter().any(|d| d.tangent.is_none()) {
+        return DualValue::opaque(value);
+    }
+    if duals.iter().all(|d| d.tangent.is_zero()) {
+        return DualValue::constant(value);
+    }
+    let Some(xs) = primal_args.iter().map(|v| v.as_f64()).collect::<Option<Vec<f64>>>() else {
+        return DualValue::opaque(value);
+    };
+    let Some(partials) = builtin_partials(name, &xs) else {
+        return DualValue::opaque(value);
+    };
+    // A non-finite local derivative — `sqrt(0)`, `asin(±1)` — is a refusal,
+    // never a NaN or Inf smuggled into a Jacobian.
+    //
+    // MASKED BY CONTRIBUTION.  Only a partial belonging to an argument that
+    // actually carries a tangent can reach the answer: `combine` skips every
+    // zero-tangent argument, so an unmasked guard would refuse over a number
+    // that is provably multiplied by nothing.  `pow(w, 2)` is the case that
+    // forces this — the exponent partial `w^2·ln w` is NaN for every `w <= 0`
+    // while `dR/dw = 2w` is perfectly finite, so at `w = 0` (the commonest
+    // initial guess there is) an unmasked guard takes out the whole Jacobian.
+    //
+    // The guard and `combine` share ONE predicate rather than two that happen
+    // to agree today, so the guard can never refuse over a partial `combine`
+    // discards.  At arity 1 this is a provable no-op: the all-zero-tangent case
+    // already returned above, so the sole argument always contributes.
+    if partials.iter().zip(&duals).any(|(p, d)| contributes(d) && !p.is_finite()) {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "a builtin evaluated where its derivative does not exist",
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(value);
+    }
+    combine(value, &duals, &partials, seeds.width())
+}
+
+/// `expr` with every argument replaced by a literal of the primal this
+/// traversal already computed for it.
+///
+/// For a builtin in neither derivative table the primal still has to come from
+/// [`crate::eval_expr`], because `eval_expr` owns a long by-name interception
+/// table — `sample`, `gradient`, `von_mises`, `flat_map`, the field reductions,
+/// `std::__interp_render` by qualified name — and restating that list here is
+/// exactly the defect [`Seeds::depends_on_seed`] declines to commit one level
+/// down.  Handing it the ORIGINAL node, though, makes it re-evaluate arguments
+/// that were just evaluated at the top of [`eval_dual_builtin`], so a chain of
+/// n nested undifferentiated calls — `norm(cross(rotate(cross(..))))` — does
+/// O(n²) argument evaluations for an O(n) tree.
+///
+/// Substituting literals keeps `eval_expr` the single implementation of that
+/// table while making its argument pass O(1) per argument.  Every input the
+/// interception decisions read is preserved: the name, the qualified name, the
+/// arity, the argument VALUES and the result type.  Only the `content_hash`
+/// necessarily changes — it is derived from the substituted children, as any
+/// rebuilt node's must be.
+fn with_literal_args(expr: &CompiledExpr, primal_args: &[Value]) -> CompiledExpr {
+    let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+        // Only `eval_dual_builtin` calls this, and only on its own node.
+        return expr.clone();
+    };
+    let literals: Vec<CompiledExpr> = args
+        .iter()
+        .zip(primal_args)
+        .map(|(a, v)| CompiledExpr::literal(v.clone(), a.result_type.clone()))
+        .collect();
+    let mut content_hash = ContentHash::of(function.qualified_name.as_bytes());
+    for lit in &literals {
+        content_hash = content_hash.combine(lit.content_hash);
+    }
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall { function: function.clone(), args: literals },
+        result_type: expr.result_type.clone(),
+        content_hash,
+    }
+}
+
+/// Does this argument's tangent reach the result at all?
+///
+/// The single predicate behind BOTH the finiteness guard above and `combine`'s
+/// skip below.  Sharing it is the point: a partial the chain rule never reads
+/// must not be able to veto a derivative that exists.
+fn contributes(d: &DualValue) -> bool {
+    !d.tangent.is_zero()
+}
+
+/// A kink this module has no derivative rule for *at these operands* — the
+/// operand values are not all scalars, so there is no local slope to take.
+///
+/// MASKED BY CONTRIBUTION, like every other refusal in this module and through
+/// the same [`contributes`] predicate: an operand that reaches nothing cannot
+/// veto a row.  `abs` is the shape that forces it.  `eval_builtin("abs", [z])`
+/// on a `Value::Complex` returns a finite MODULUS while
+/// `Value::Complex::as_f64()` is `None`, so a *provably constant* complex
+/// operand used to make the node `Tangent::None` and take out the whole
+/// Jacobian — for a residual whose every seeded variable is differentiable.
+///
+/// The `Undef` cliff still binds and is checked FIRST: a refused primal never
+/// carries a zero tangent, whatever its operands contribute.  That is the
+/// min/max/clamp/mod case, where a non-scalar operand also makes the primal
+/// `Undef`, so those keep refusing exactly as before — now with a cause
+/// attached instead of falling through to the root-sited generic.
+fn unresolved_operands(
+    kind: &'static str,
+    value: Value,
+    duals: &[DualValue],
+    seeds: &Seeds,
+    path: &[u16],
+) -> DualValue {
+    let site = KinkSite::new(path.to_vec());
+    if value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal { site });
+        return DualValue::opaque(value);
+    }
+    if duals.iter().any(contributes) {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind { kind, site });
+        return DualValue::opaque(value);
+    }
+    DualValue::constant(value)
+}
+
+/// Chain rule over a multi-argument builtin: `Σ_i (∂f/∂arg_i)·arg_i'`.
+fn combine(value: Value, duals: &[DualValue], partials: &[f64], width: usize) -> DualValue {
+    let mut row = vec![0.0; width];
+    for (i, d) in duals.iter().enumerate() {
+        if !contributes(d) {
+            continue;
+        }
+        let Some(t) = d.tangent.materialize(width) else {
+            return DualValue::opaque(value);
+        };
+        for (j, slot) in row.iter_mut().enumerate() {
+            *slot += partials[i] * t[j];
+        }
+    }
+    DualValue::with_row(value, row)
+}
+
+/// The non-smooth builtins.  `min`/`max` appear at BOTH arities: binary numeric
+/// selection, and the 1-argument field reduction.
+fn is_kink_builtin(name: &str, arity: usize) -> bool {
+    matches!(
+        (name, arity),
+        ("min" | "max", 2)
+            | ("abs" | "sign" | "floor" | "ceil" | "round", 1)
+            | ("clamp", 3)
+            | ("mod", 2)
+            | ("max" | "min" | "argmax" | "argmin", 1)
+    )
+}
+
+/// Which of `eval_expr`'s TWO field-reduction interception tables a call
+/// matched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReductionExtent {
+    /// `max(field)` — the whole-field form (`crate::eval_expr`, lib.rs:459-484).
+    WholeField,
+    /// `max(field, bounds)` — restricted to grid nodes inside a
+    /// `Value::BoundingBox` (`crate::eval_expr`, lib.rs:490-533).
+    Bounded,
+}
+
+/// Which reduction a name spells, independent of the operand values.
+///
+/// Shared by [`field_reduction_kind`] (which then checks the operand SHAPES)
+/// and by the arity-1 arm of [`eval_kink_builtin`] (which is reached only when
+/// those shapes did NOT match), so the two can never disagree about what
+/// `argmin` means.
+fn reduction_kind_of(name: &str) -> Option<ReductionKind> {
+    match name {
+        "max" => Some(ReductionKind::Max),
+        "min" => Some(ReductionKind::Min),
+        "argmax" => Some(ReductionKind::ArgMax),
+        "argmin" => Some(ReductionKind::ArgMin),
+        _ => None,
+    }
+}
+
+/// Recognise a field reduction, at either arity, from the ALREADY-EVALUATED
+/// argument values.
+///
+/// The shape tests here mirror `eval_expr`'s guards exactly — one `Value::Field`
+/// for the whole-field form, `(Value::Field, Value::BoundingBox)` for the
+/// bounded one — because any divergence between the two interception tables
+/// silently breaks the module's headline invariant.  In particular a *non*-
+/// `BoundingBox` second argument must return `None` here, exactly as it falls
+/// through to `eval_builtin` there (lib.rs:488).
+///
+/// Taking the whole slice rather than `(arity, &args[0])` also removes an
+/// unconditional index into the caller's argument vector, which was a latent
+/// panic on a zero-argument call.
+fn field_reduction_kind(name: &str, args: &[Value]) -> Option<(ReductionKind, ReductionExtent)> {
+    let kind = reduction_kind_of(name)?;
+    match args {
+        [Value::Field { .. }] => Some((kind, ReductionExtent::WholeField)),
+        [Value::Field { .. }, Value::BoundingBox { .. }] => {
+            Some((kind, ReductionExtent::Bounded))
+        }
+        _ => None,
+    }
+}
+
+/// A field reduction: record which grid point won, and refuse a tangent when
+/// any operand moves with the seeds.
+///
+/// # Both arities, mirroring `eval_expr`
+///
+/// Field reductions are intercepted at BOTH arities, exactly mirroring
+/// `crate::eval_expr`'s whole-field arms (lib.rs:459-484) and its BOUNDED arms
+/// `max/min/argmax/argmin(field, bounds: BoundingBox)` (lib.rs:490-533).  That
+/// mirroring is the entire reason the module's headline invariant
+/// `eval_dual(e).value == eval_expr(e)` holds *by construction*: both paths
+/// call the same `crate::field_reductions` helpers on the same operands.
+///
+/// **A new interception in `eval_expr` MUST be mirrored here**, or the
+/// invariant silently breaks — which is precisely how the bounded form came to
+/// return `Undef` from the dual path while `eval_expr` returned a finite
+/// scalar (task #6672 review, steps 21-24).
+///
+/// # The recorded winner
+///
+/// The `BranchChoice::FieldArgExtremum` is taken from the argextremum helper
+/// *at the matching extent* — bounded reductions record the bounded winner, so
+/// the recorded grid node is always one the reduction actually considered.
+/// When the argextremum is not computable (an `Analytical` field the whole-field
+/// helpers do not handle; a bounded reduction whose box contains no usable
+/// node) the choice is `BranchChoice::Unresolved`, at both arities: the entry
+/// is still emitted, because λ (#6679) must be able to read an empty record as
+/// "no kink here" rather than "we did not look".
+///
+/// # The tangent
+///
+/// This task does not differentiate *through* a field — PRD §7.7 splits
+/// derivatives three ways, and geometry/field derivatives are the ANALYTIC
+/// source, not the AD one.  Operands that are all seed-independent make the
+/// reduction genuinely flat (`Tangent::Zero`); anything else gets
+/// `Tangent::None`, because a zero row would tell the solver the residual is
+/// flat in a variable it really does depend on.  For the bounded form that
+/// includes the BOX, which chooses which grid node wins.
+#[allow(clippy::too_many_arguments)]
+fn eval_field_reduction(
+    kind: ReductionKind,
+    extent: ReductionExtent,
+    args: &[Value],
+    duals: &[DualValue],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+    path: &[u16],
+) -> DualValue {
+    use crate::field_reductions as fr;
+    let field = &args[0];
+    let (value, arg) = match extent {
+        ReductionExtent::WholeField => match kind {
+            ReductionKind::Max => (fr::compute_max(field), fr::compute_argmax(field)),
+            ReductionKind::Min => (fr::compute_min(field), fr::compute_argmin(field)),
+            ReductionKind::ArgMax => {
+                let a = fr::compute_argmax(field);
+                (a.clone(), a)
+            }
+            ReductionKind::ArgMin => {
+                let a = fr::compute_argmin(field);
+                (a.clone(), a)
+            }
+        },
+        // The bounded computes need the `EvalContext` (an Analytical/Composed
+        // field is grid-sampled through it), unlike their whole-field siblings.
+        //
+        // The recorded winner comes from the BOUNDED argextremum, applied to
+        // the same field and the same box.  Reusing the whole-field
+        // `compute_argmax`/`compute_argmin` sibling here would name a grid node
+        // that may sit outside the box entirely, and λ (#6679) would then see a
+        // PHANTOM flip whenever the global extremum moved while the bounded
+        // winner did not — and MISS a real flip whenever the bounded winner
+        // moved while the global one did not.
+        ReductionExtent::Bounded => {
+            let bounds = &args[1];
+            match kind {
+                ReductionKind::Max => (
+                    fr::compute_max_bounded(field, bounds, ctx),
+                    fr::compute_argmax_bounded(field, bounds, ctx),
+                ),
+                ReductionKind::Min => (
+                    fr::compute_min_bounded(field, bounds, ctx),
+                    fr::compute_argmin_bounded(field, bounds, ctx),
+                ),
+                ReductionKind::ArgMax => {
+                    let a = fr::compute_argmax_bounded(field, bounds, ctx);
+                    (a.clone(), a)
+                }
+                ReductionKind::ArgMin => {
+                    let a = fr::compute_argmin_bounded(field, bounds, ctx);
+                    (a.clone(), a)
+                }
+            }
+        }
+    };
+    // `Unresolved` when the argextremum is not computable — e.g. an unbounded
+    // Analytical field, where `compute_argmax` returns `Undef`.
+    let choice = if arg.is_undef() {
+        BranchChoice::Unresolved
+    } else {
+        BranchChoice::FieldArgExtremum(Box::new(arg))
+    };
+    note(record, path, KinkKind::FieldReduction(kind), choice);
+
+    // The tangent decision takes EVERY operand into account, not just the
+    // field.  For the bounded form the box chooses WHICH grid node wins, so a
+    // box that moves with the seeds moves the result just as surely as a moving
+    // field does; deciding from the field alone would hand back a zero row for
+    // a residual whose value the solved variables genuinely select.
+    if duals.iter().all(|d| d.tangent.is_zero()) {
+        DualValue::constant(value)
+    } else {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: match extent {
+                ReductionExtent::WholeField => "a field reduction over a seed-dependent field",
+                ReductionExtent::Bounded => {
+                    "a bounded field reduction over a seed-dependent field or bounding box"
+                }
+            },
+            site: KinkSite::new(path.to_vec()),
+        });
+        DualValue::opaque(value)
+    }
+}
+
+/// The non-smooth builtins: record the active branch, then take that branch's
+/// derivative.
+#[allow(clippy::too_many_arguments)]
+fn eval_kink_builtin(
+    name: &str,
+    value: Value,
+    duals: &[DualValue],
+    xs_values: &[Value],
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+    path: &[u16],
+) -> DualValue {
+    let xs: Option<Vec<f64>> = xs_values.iter().map(|v| v.as_f64()).collect();
+    let width = seeds.width();
+
+    match (name, duals.len()) {
+        ("min" | "max", 2) => {
+            let kind = if name == "min" { KinkKind::Min } else { KinkKind::Max };
+            let Some(xs) = xs else {
+                note(record, path, kind, BranchChoice::Unresolved);
+                return unresolved_operands(
+                    "`min`/`max` over an operand that is not a scalar",
+                    value,
+                    duals,
+                    seeds,
+                    path,
+                );
+            };
+            // A tie goes to operand 0 — deterministically, and RECORDED, so λ
+            // sees the flip when the tie later breaks the other way.  An
+            // unrecorded arbitrary tie-break is exactly what makes a solver
+            // chatter.
+            let take_left =
+                if name == "min" { xs[0] <= xs[1] } else { xs[0] >= xs[1] };
+            let i = if take_left { 0 } else { 1 };
+            note(record, path, kind, BranchChoice::Operand(i));
+            select(value, &duals[i])
+        }
+        ("abs", 1) => {
+            let Some(xs) = xs else {
+                note(record, path, KinkKind::Abs, BranchChoice::Unresolved);
+                return unresolved_operands(
+                    "`abs` over an operand that is not a scalar",
+                    value,
+                    duals,
+                    seeds,
+                    path,
+                );
+            };
+            let (choice, dfdx) = if xs[0] < 0.0 {
+                (BranchChoice::Negative, Some(-1.0))
+            } else if xs[0] > 0.0 {
+                (BranchChoice::Positive, Some(1.0))
+            } else {
+                // |x| has no derivative at 0.  `signum()` would confidently
+                // return +1, passing a one-sided derivative off as two-sided.
+                (BranchChoice::Zero, None)
+            };
+            // The record is written BEFORE the mask below and unconditionally:
+            // it mirrors the traversal, so a kink that was evaluated appears
+            // whether or not it contributed a tangent.  Suppressing the entry
+            // would read to λ as "no kink here".
+            note(record, path, KinkKind::Abs, choice);
+            match dfdx {
+                Some(k) => combine(value, duals, &[k], width),
+                // MASKED BY CONTRIBUTION, exactly as the smooth-builtin
+                // finiteness guard is, and through the SAME `contributes`
+                // predicate rather than a second one that happens to agree
+                // today.  |x| genuinely has no two-sided derivative at 0 — but
+                // a seed-independent `abs(0)` never reaches the chain rule at
+                // all, so refusing over it vetoes rows that are differentiable
+                // in every seeded variable.  `abs(offset)` with a base-map
+                // `offset` of exactly 0.0 (a symmetric tolerance, a zeroed
+                // eccentricity) is routine, and the fast path cannot swallow it
+                // because `abs` is a kink builtin.
+                //
+                // `Tangent::None` on the argument still refuses: `contributes`
+                // is `!is_zero()`, so it holds for `None` too, and the
+                // first-wins refusal slot keeps the INNER cause as the one
+                // `jacobian_row` reports.
+                //
+                // Deliberate asymmetry with `combine`, which for a constant
+                // argument returns `Tangent::Scalar(vec![0.0; width])`: both
+                // materialize to the same zero contribution, and
+                // `Tangent::Zero` is the stronger, cheaper claim.
+                None if contributes(&duals[0]) => {
+                    seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                        kind: "`abs` evaluated exactly at its kink (x = 0)",
+                        site: KinkSite::new(path.to_vec()),
+                    });
+                    DualValue::opaque(value)
+                }
+                None => DualValue::constant(value),
+            }
+        }
+        ("clamp", 3) => {
+            let Some(xs) = xs else {
+                note(record, path, KinkKind::Clamp, BranchChoice::Unresolved);
+                return unresolved_operands(
+                    "`clamp` over an operand that is not a scalar",
+                    value,
+                    duals,
+                    seeds,
+                    path,
+                );
+            };
+            let (choice, i) = if xs[0] < xs[1] {
+                (BranchChoice::BelowLo, 1)
+            } else if xs[0] > xs[2] {
+                (BranchChoice::AboveHi, 2)
+            } else {
+                (BranchChoice::Interior, 0)
+            };
+            note(record, path, KinkKind::Clamp, choice);
+            // Outside the interior the result IS the bound, so the derivative
+            // is the bound's — zero for the usual constant bounds, but a real
+            // tangent when the bound is itself a function of the seeds.
+            select(value, &duals[i])
+        }
+        ("sign" | "floor" | "ceil" | "round", 1) => {
+            let kind = match name {
+                "sign" => KinkKind::Sign,
+                "floor" => KinkKind::Floor,
+                "ceil" => KinkKind::Ceil,
+                _ => KinkKind::Round,
+            };
+            let choice = match value.as_f64() {
+                Some(v) if v.is_finite() => BranchChoice::IntegerCell(v as i64),
+                _ => BranchChoice::Unresolved,
+            };
+            note(record, path, kind, choice);
+            if value.is_undef() {
+                seeds.note_refusal(NonDifferentiable::UndefPrimal {
+                    site: KinkSite::new(path.to_vec()),
+                });
+                return DualValue::opaque(value);
+            }
+            // Piecewise constant: the derivative is exactly zero almost
+            // everywhere.  That is a genuine `Tangent::Zero`, not a refusal.
+            DualValue::constant(value)
+        }
+        ("max" | "min" | "argmax" | "argmin", 1) => {
+            // `is_kink_builtin` claims this shape, so `node_is_kink` kept the
+            // node off the seed-independence fast path and an entry is OWED
+            // here.  Without one, reaching the `_` catch-all below would leave
+            // an empty record for a node positively identified as a kink — and
+            // "no entries" would mean "we did not look" rather than "no kink",
+            // which is the one thing λ (#6679) may never be told.
+            //
+            // Getting here at all means `field_reduction_kind` DECLINED the
+            // call: the single argument is not a `Value::Field`, so no reduction
+            // ran and there is no winning grid node to name.  The primal is
+            // whatever the stdlib made of it — today always `Undef`, since
+            // `eval_builtin("max", &[x])` routes to the binary form and
+            // `argmax`/`argmin` have no scalar binding at all.  That is an
+            // accident of the stdlib, not a guarantee, so the undef case is
+            // checked rather than assumed.
+            let kind = reduction_kind_of(name).expect("guarded by the match arm");
+            note(record, path, KinkKind::FieldReduction(kind), BranchChoice::Unresolved);
+            if value.is_undef() {
+                seeds.note_refusal(NonDifferentiable::UndefPrimal {
+                    site: KinkSite::new(path.to_vec()),
+                });
+                return DualValue::opaque(value);
+            }
+            // A future scalar binding would still have no derivative rule here.
+            // Masked by contribution, like every other refusal in this module:
+            // an argument that reaches nothing must not veto a row.
+            if contributes(&duals[0]) {
+                seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                    kind: "a 1-argument reduction whose operand is not a field",
+                    site: KinkSite::new(path.to_vec()),
+                });
+                return DualValue::opaque(value);
+            }
+            DualValue::constant(value)
+        }
+        ("mod", 2) => {
+            note(record, path, KinkKind::Mod, mod_quotient_choice(&xs_values[0], &xs_values[1]));
+            let Some(xs) = xs else {
+                return unresolved_operands(
+                    "`mod` over an operand that is not a scalar",
+                    value,
+                    duals,
+                    seeds,
+                    path,
+                );
+            };
+            if value.is_undef() || xs[1] == 0.0 {
+                return unresolved_operands(
+                    "`mod` by zero, where the remainder has no derivative",
+                    value,
+                    duals,
+                    seeds,
+                    path,
+                );
+            }
+            combine(value, duals, &[1.0, -(xs[0] / xs[1]).trunc()], width)
+        }
+        _ => DualValue::opaque(value),
+    }
+}
+
+/// The result of a kink IS one of its operands: adopt that operand's tangent
+/// wholesale rather than recomputing it.
+fn select(value: Value, chosen: &DualValue) -> DualValue {
+    if value.is_undef() {
+        return DualValue::opaque(value);
+    }
+    DualValue { value, tangent: chosen.tangent.clone() }
+}
+
+/// True when `name` at this arity has an entry in [`builtin_partials`].
+fn is_differentiable_builtin(name: &str, arity: usize) -> bool {
+    matches!(
+        (name, arity),
+        ("sqrt" | "exp" | "log" | "log10", 1)
+            | ("sin" | "cos" | "tan" | "asin" | "acos" | "atan", 1)
+            | ("sinh" | "cosh" | "tanh", 1)
+            | ("atan2" | "pow", 2)
+            | ("lerp", 3)
+            | ("remap", 5)
+    )
+}
+
+/// The local partial derivatives `∂f/∂arg_i` of a smooth builtin at `xs`.
+///
+/// `None` when the name/arity has no entry.  A derivative that does not exist
+/// at this point is returned as `NaN` or `±inf` — which the caller's finiteness
+/// guard turns into `Tangent::None` *only for an argument that actually carries
+/// a tangent*.  A non-finite partial on a constant argument is discarded by
+/// `combine` and therefore never refuses anything, so an entry here is free to
+/// state the general form of a partial that is undefined exactly where the
+/// chain rule does not read it.
+fn builtin_partials(name: &str, xs: &[f64]) -> Option<Vec<f64>> {
+    Some(match (name, xs.len()) {
+        ("sqrt", 1) => vec![0.5 / xs[0].sqrt()],
+        ("exp", 1) => vec![xs[0].exp()],
+        // `log` IS the natural logarithm — there is no `ln` binding.
+        ("log", 1) => vec![1.0 / xs[0]],
+        ("log10", 1) => vec![1.0 / (xs[0] * std::f64::consts::LN_10)],
+        ("sin", 1) => vec![xs[0].cos()],
+        ("cos", 1) => vec![-xs[0].sin()],
+        ("tan", 1) => {
+            let c = xs[0].cos();
+            vec![1.0 / (c * c)]
+        }
+        ("asin", 1) => vec![1.0 / (1.0 - xs[0] * xs[0]).sqrt()],
+        ("acos", 1) => vec![-1.0 / (1.0 - xs[0] * xs[0]).sqrt()],
+        ("atan", 1) => vec![1.0 / (1.0 + xs[0] * xs[0])],
+        ("sinh", 1) => vec![xs[0].cosh()],
+        ("cosh", 1) => vec![xs[0].sinh()],
+        ("tanh", 1) => {
+            let t = xs[0].tanh();
+            vec![1.0 - t * t]
+        }
+        // NOTE the argument order: atan2(y, x).
+        ("atan2", 2) => {
+            let (y, x) = (xs[0], xs[1]);
+            let d = x * x + y * y;
+            vec![x / d, -y / d]
+        }
+        ("pow", 2) => {
+            let (x, y) = (xs[0], xs[1]);
+            // The BASE partial at a zero exponent is EXACTLY zero — `x^0` is
+            // the constant `1` — whereas the general form evaluates
+            // `0 · 0^(−1)` = `0 · inf` = NaN at `x == 0`.  This is the same
+            // identity `pow_tangent` states for the BinOp spelling of a power
+            // (see its `b == 0.0` arm); stated once more here so both
+            // spellings of `x^k` compute the same function rather than
+            // disagreeing on which one the author happened to type.
+            let dx = if y == 0.0 { 0.0 } else { y * x.powf(y - 1.0) };
+            // The EXPONENT partial is left as written: `ln x` genuinely does
+            // not exist for `x <= 0`, and the caller's guard is masked by
+            // argument contribution, so this NaN now refuses only when the
+            // exponent actually moves — which is exactly when it must.
+            vec![dx, x.powf(y) * x.ln()]
+        }
+        // lerp(a, b, t) = a + t(b − a)
+        ("lerp", 3) => {
+            let (a, b, t) = (xs[0], xs[1], xs[2]);
+            vec![1.0 - t, t, b - a]
+        }
+        // remap(x, flo, fhi, tlo, thi) = tlo + (x − flo)·(thi − tlo)/(fhi − flo)
+        // With s = fhi − flo, d = thi − tlo, u = (x − flo)/s and k = d/s:
+        //   ∂/∂x = k, ∂/∂flo = −k + u·k, ∂/∂fhi = −u·k,
+        //   ∂/∂tlo = 1 − u, ∂/∂thi = u
+        ("remap", 5) => {
+            let (x, flo, fhi, tlo, thi) = (xs[0], xs[1], xs[2], xs[3], xs[4]);
+            let s = fhi - flo;
+            let k = (thi - tlo) / s;
+            let u = (x - flo) / s;
+            vec![k, -k + u * k, -u * k, 1.0 - u, u]
+        }
+        _ => return None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// User-defined functions and lambdas — "arbitrary user algebra"
+// ---------------------------------------------------------------------------
+
+/// The names `eval_expr` INTERCEPTS before ever reaching
+/// `eval_user_function_call`, and the family each belongs to.
+///
+/// This is the single greppable statement of that set — the `UserFunctionCall`
+/// half of the module's mirroring rule.  `Some(family)` means the evaluator
+/// never runs the callee's `.ri` body for this name and arity, so neither may
+/// the dual path.
+///
+/// The combinator family delegates to `option_recovery::is_combinator` rather
+/// than restating its ten names, so that table has exactly one home and a
+/// combinator added there is covered here by construction.
+fn is_intercepted_user_fn(name: &str, arity: usize) -> Option<&'static str> {
+    if name == "solve_load_cases" && (arity == 5 || arity == 6) {
+        return Some("a `solve_load_cases` multi-case FEA call");
+    }
+    if crate::option_recovery::is_combinator(name, arity) {
+        return Some("an Option-recovery combinator");
+    }
+    if name == "map_or" && arity == 3 {
+        return Some("the `map_or` arrow-type combinator");
+    }
+    if name == "map_err" && arity == 2 {
+        return Some("the `map_err` arrow-type combinator");
+    }
+    None
+}
+
+/// A `UserFunctionCall` node, mirroring `eval_user_function_call`
+/// (`reify-expr/src/lib.rs:1946`) step for step on the value path so the primal
+/// invariant survives the intercepted families, overload selection and the
+/// `@optimized` hook.
+#[allow(clippy::too_many_arguments)]
+fn eval_dual_user_fn(
+    expr: &CompiledExpr,
+    function_name: &str,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    // The mirroring rule, `UserFunctionCall` half.
+    //
+    // This gate fires BEFORE the arguments are descended, not merely before the
+    // strict-`Undef` short-circuit below.  `Seeds::note_refusal` is FIRST-WINS,
+    // so descending into `unwrap_or(some(5mm), undef)`'s second argument would
+    // record an `UndefPrimal` refusal that poisons the row even after the
+    // intercept restored a perfectly good primal — which is why an
+    // arg-descent-then-gate shape cannot work here.
+    //
+    // `refuse_or_constant` evaluates the WHOLE node through `crate::eval_expr`,
+    // so each family's own `Undef` discipline is INHERITED rather than restated
+    // — strict for `solve_load_cases`, non-strict and SUBJECT-tag-driven for
+    // the combinators (lib.rs:780-782).  That is also why this cannot double
+    // evaluate: no argument was evaluated on the dual path at all.
+    if let Some(family) = is_intercepted_user_fn(function_name, args.len()) {
+        return refuse_or_constant(expr, ctx, seeds, env, path, family);
+    }
+
+    let duals: Vec<DualValue> = args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| descend(a, i, ctx, seeds, env, record, path))
+        .collect();
+
+    // Strict `Undef` propagation.
+    if duals.iter().any(|d| d.value.is_undef()) {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+    // The SAME recursion guard the evaluator uses.  Reaching it means the
+    // primal is `Undef`, so there is nothing to differentiate — and stopping
+    // here is what keeps the dual traversal off the stack cliff.
+    if ctx.recursion_depth >= crate::MAX_RECURSION_DEPTH {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "user-function recursion deeper than MAX_RECURSION_DEPTH",
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+    // Overload selection by name, arity and param types, exactly as the
+    // evaluator resolves it — a different overload would be a different
+    // function and therefore a different derivative.
+    let Some(func) = crate::find_matching_compiled_function(ctx.functions, function_name, args)
+    else {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    };
+
+    let primal_args: Vec<Value> = duals.iter().map(|d| d.value.clone()).collect();
+    if let Some(value) = crate::try_compute_dispatch(func, &primal_args, ctx) {
+        // An `@optimized` compute node is opaque to ε: its body was never
+        // traversed, so there is no chain rule to apply and no honest tangent
+        // to report.
+        return if duals.iter().all(|d| d.tangent.is_zero()) {
+            DualValue::constant(value)
+        } else {
+            seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                kind: "an `@optimized` compute-dispatched function",
+                site: KinkSite::new(path.to_vec()),
+            });
+            DualValue::opaque(value)
+        };
+    }
+    eval_dual_fn_body(func, &duals, ctx, seeds, record, path)
+}
+
+/// Build the callee's scope — values AND tangents in parallel — and evaluate
+/// its body.
+///
+/// `#[inline(never)]`, and the `ValueMap`/`DualEnv` locals live here rather
+/// than in `eval_dual_user_fn`, for the same reason
+/// `eval_compiled_function_with_values` and `eval_variant_bind_arm` are
+/// extracted in `lib.rs`: this sits on the recursive user-function chain, whose
+/// per-frame size is budgeted against a fixed stack at `MAX_RECURSION_DEPTH`
+/// (256) levels.  Pinned by
+/// `unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_stack_overflow`.
+#[inline(never)]
+fn eval_dual_fn_body(
+    func: &reify_ir::CompiledFunction,
+    duals: &[DualValue],
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let mut scope = reify_ir::ValueMap::new();
+    let mut body_env = DualEnv::new();
+    for ((param_name, _), dual) in func.params.iter().zip(duals.iter()) {
+        let cell = ValueCellId::new(&func.name, param_name);
+        scope.insert(cell.clone(), dual.value.clone());
+        body_env.bind(cell, dual.tangent.clone());
+    }
+
+    // Everything below this marker is inside the callee, so its sites cannot
+    // collide with the call site's own argument indices — nor with those of a
+    // second call site of the same function, which carries a different prefix.
+    path.push(CALLEE_MARKER);
+    for (i, (binding_name, binding_expr)) in func.body.let_bindings.iter().enumerate() {
+        let bound = {
+            let body_ctx = ctx.with_scope(&scope);
+            path.push(i as u16);
+            let d = eval_dual_at(binding_expr, &body_ctx, seeds, &body_env, record, path);
+            path.pop();
+            d
+        };
+        let cell = ValueCellId::new(&func.name, binding_name);
+        scope.insert(cell.clone(), bound.value.clone());
+        body_env.bind(cell, bound.tangent);
+    }
+
+    path.push(func.body.let_bindings.len() as u16);
+    let result = {
+        let body_ctx = ctx.with_scope(&scope);
+        eval_dual_at(&func.body.result_expr, &body_ctx, seeds, &body_env, record, path)
+    };
+    path.pop();
+    path.pop();
+    result
+}
+
+/// Apply a lambda to one already-dual argument, propagating its tangent
+/// through the body.
+///
+/// Mirrors `apply_lambda` / `apply_lambda_with_point_unpacking`: the same depth
+/// guard, the same arity rule, the same captures-plus-params scope.
+#[inline(never)]
+fn eval_dual_lambda_apply(
+    lambda: &Value,
+    arg: &DualValue,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+    path: &mut Vec<u16>,
+) -> DualValue {
+    let Value::Lambda { params, body, captures } = lambda else {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    };
+    if ctx.recursion_depth >= crate::MAX_RECURSION_DEPTH {
+        seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+            kind: "lambda application deeper than MAX_RECURSION_DEPTH",
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+    // A multi-param lambda is applied by UNPACKING a Point/Vector argument into
+    // its components.  ε carries structured values primal-only (PRD §7.7 makes
+    // geometry derivatives the analytic source, not the AD one), so the primal
+    // still comes from the evaluator and the tangent is a loud refusal.
+    if params.len() != 1 {
+        let value = crate::apply_lambda_with_point_unpacking(lambda, &arg.value, ctx);
+        return if arg.tangent.is_zero() {
+            DualValue::constant(value)
+        } else {
+            seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                kind: "a multi-parameter lambda applied by Point/Vector unpacking",
+                site: KinkSite::new(path.to_vec()),
+            });
+            DualValue::opaque(value)
+        };
+    }
+
+    let mut scope = captures.clone();
+    let mut body_env = DualEnv::new();
+    let (_, cell) = &params[0];
+    scope.insert(cell.clone(), arg.value.clone());
+    body_env.bind(cell.clone(), arg.tangent.clone());
+
+    path.push(CALLEE_MARKER);
+    path.push(0);
+    let result = {
+        let body_ctx = ctx.with_scope(&scope);
+        eval_dual_at(body, &body_ctx, seeds, &body_env, record, path)
+    };
+    path.pop();
+    path.pop();
+    result
+}
+
+// ---------------------------------------------------------------------------
+// The Jacobian-row boundary
+// ---------------------------------------------------------------------------
+
+/// Why a residual has no usable gradient row.
+///
+/// Every variant names the construct responsible, because η (#6675) turns this
+/// into a tier-2 refusal the user reads WITHOUT the surrounding code.
+///
+/// This type exists so that "the derivative is zero" and "we could not compute
+/// the derivative" can never be confused.  Returning a zero row for the second
+/// case is a *claim* — that the residual does not move when the variable moves
+/// — and it is false in the most damaging possible way: the solver believes it
+/// is already stationary in that direction and stops pushing.  PRD §7.7
+/// ("non-numeric operands stop contributing phantom gradients") and INV-SF-7
+/// ("a well-typed wrong value is the worst shape") are the same rule seen from
+/// two sides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NonDifferentiable {
+    /// The residual evaluated to `Undef` — the value semantics refused to
+    /// produce a number, so there is no function to differentiate.
+    UndefPrimal { site: KinkSite },
+    /// A seed-dependent subtree reached a construct with no derivative rule.
+    UnsupportedKind { kind: &'static str, site: KinkSite },
+    /// The residual is not a scalar, so it has no gradient ROW at all.
+    NonScalarResult { got: &'static str },
+    /// A tangent component came out NaN or ±Inf.  The primal may look perfectly
+    /// ordinary, which is exactly why this is checked rather than assumed.
+    NonFiniteTangent { column: usize },
+}
+
+impl NonDifferentiable {
+    /// This refusal with its site re-rooted under `prefix`.
+    ///
+    /// The sibling of [`BranchRecord::prefixed`], and there for the same
+    /// reason: a refusal raised while evaluating some SUBSIDIARY expression — a
+    /// solver dependent cell — is root-relative to THAT expression, so
+    /// reporting it against a residual without moving it would name a site in
+    /// the residual's own tree.  The two variants that carry no site are
+    /// returned unchanged.
+    pub fn prefixed(&self, prefix: &[u16]) -> NonDifferentiable {
+        let moved = |site: &KinkSite| KinkSite::new([prefix, site.path()].concat());
+        match self {
+            NonDifferentiable::UndefPrimal { site } => {
+                NonDifferentiable::UndefPrimal { site: moved(site) }
+            }
+            NonDifferentiable::UnsupportedKind { kind, site } => {
+                NonDifferentiable::UnsupportedKind { kind, site: moved(site) }
+            }
+            other => other.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for NonDifferentiable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NonDifferentiable::UndefPrimal { site } => write!(
+                f,
+                "residual evaluates to undef at expression path {:?}, so it has no derivative",
+                site.path()
+            ),
+            NonDifferentiable::UnsupportedKind { kind, site } => write!(
+                f,
+                "no derivative rule for {kind} at expression path {:?}; \
+                 the residual depends on a solved variable through it",
+                site.path()
+            ),
+            NonDifferentiable::NonScalarResult { got } => write!(
+                f,
+                "residual must be a scalar to have a gradient row, but it evaluated to {got}"
+            ),
+            NonDifferentiable::NonFiniteTangent { column } => write!(
+                f,
+                "derivative with respect to variable {column} is not finite \
+                 (NaN or infinite), so it cannot enter a linear solve"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NonDifferentiable {}
+
+/// One row of a Jacobian: the residual's SI value and `∂r/∂x_j` for every seed
+/// column, or a typed refusal explaining why there is none.
+///
+/// This is the boundary η (#6675) and μ (#6680) call.  Column `j` corresponds
+/// to `seeds.columns()[j]`; the row is always exactly `seeds.width()` wide, so
+/// a caller never has to reason about a short row.
+pub fn jacobian_row(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    record: &mut BranchRecord,
+) -> Result<(f64, Vec<f64>), NonDifferentiable> {
+    jacobian_row_with_env(expr, ctx, seeds, &DualEnv::new(), record)
+}
+
+/// [`jacobian_row`] with an outer tangent overlay — see [`eval_dual_with_env`].
+pub fn jacobian_row_with_env(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    seeds: &Seeds,
+    env: &DualEnv,
+    record: &mut BranchRecord,
+) -> Result<(f64, Vec<f64>), NonDifferentiable> {
+    let dual = eval_dual_with_env(expr, ctx, seeds, env, record);
+
+    // The primal is checked FIRST, so the message names the residual's own
+    // problem rather than a downstream consequence of it.
+    if dual.value.is_undef() {
+        return Err(seeds
+            .take_refusal()
+            .unwrap_or(NonDifferentiable::UndefPrimal { site: KinkSite::root() }));
+    }
+    let Some(primal) = dual.value.as_f64() else {
+        return Err(NonDifferentiable::NonScalarResult { got: value_kind_name(&dual.value) });
+    };
+
+    let width = seeds.width();
+    let Some(row) = dual.tangent.materialize(width) else {
+        // `Tangent::None` reached the root.  The traversal recorded WHY, and
+        // that reason is strictly more useful than the fact itself.
+        return Err(seeds.take_refusal().unwrap_or(NonDifferentiable::UnsupportedKind {
+            kind: "an expression with no derivative rule",
+            site: KinkSite::root(),
+        }));
+    };
+    if let Some(column) = row.iter().position(|t| !t.is_finite()) {
+        return Err(NonDifferentiable::NonFiniteTangent { column });
+    }
+    Ok((primal, row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_intercepted_user_fn;
+
+    /// The gate covers exactly the four families `eval_expr` intercepts before
+    /// `eval_user_function_call`.
+    ///
+    /// A MEMBERSHIP assertion rather than an evaluation, which is what lets the
+    /// `solve_load_cases` arm be pinned at both its arities without standing up
+    /// the FEA kernel.  It lives here rather than in the integration binary
+    /// because `is_intercepted_user_fn` is private and a separate test binary
+    /// cannot see it.
+    #[test]
+    fn the_dual_intercept_gate_covers_exactly_the_families_eval_expr_intercepts() {
+        // lib.rs:751 — BOTH arities; the 6th arg is `options`, which may be
+        // default-padded, so gating only /5 would miss the padded spelling.
+        assert!(is_intercepted_user_fn("solve_load_cases", 5).is_some());
+        assert!(is_intercepted_user_fn("solve_load_cases", 6).is_some());
+
+        // lib.rs:783 — every `option_recovery::is_combinator` name at its
+        // declared arity.  Asserting BOTH directions keeps the delegation
+        // honest: the gate must fire, and the name must still be in the table
+        // the gate delegates to.
+        for (name, arity) in [
+            ("unwrap_or", 2),
+            ("or_default", 2),
+            ("fallback", 2),
+            ("or_else", 2),
+            ("is_some", 1),
+            ("is_none", 1),
+            ("get_or", 3),
+            ("is_ok", 1),
+            ("is_err", 1),
+            ("ok_or", 2),
+        ] {
+            assert!(
+                is_intercepted_user_fn(name, arity).is_some(),
+                "{name}/{arity} is intercepted by eval_expr and must be gated here"
+            );
+            assert!(
+                crate::option_recovery::is_combinator(name, arity),
+                "{name}/{arity} drifted out of is_combinator's own table"
+            );
+        }
+
+        // lib.rs:803 and lib.rs:824 — the two ctx-aware arrow-type combinators,
+        // which `is_combinator` deliberately OMITS because they must apply a
+        // lambda argument.  So they need their own gate entries, and the
+        // omission is asserted rather than assumed.
+        assert!(is_intercepted_user_fn("map_or", 3).is_some());
+        assert!(is_intercepted_user_fn("map_err", 2).is_some());
+        assert!(!crate::option_recovery::is_combinator("map_or", 3));
+        assert!(!crate::option_recovery::is_combinator("map_err", 2));
+
+        // EXACTLY those families: a wrong arity, or an ordinary user function,
+        // must fall through.  Gating one of these would SHADOW a function the
+        // evaluator resolves through `eval_user_function_call` normally — the
+        // mirror defect of the one this gate fixes.
+        for (name, arity) in [
+            ("solve_load_cases", 4),
+            ("solve_load_cases", 7),
+            ("unwrap_or", 1),
+            ("unwrap_or", 3),
+            ("map_or", 2),
+            ("map_err", 3),
+            ("is_some", 2),
+            ("hyp", 2),
+        ] {
+            assert!(
+                is_intercepted_user_fn(name, arity).is_none(),
+                "{name}/{arity} is NOT intercepted by eval_expr; gating it would shadow a real user function"
+            );
+        }
+    }
+}

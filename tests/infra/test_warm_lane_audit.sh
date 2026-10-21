@@ -235,15 +235,17 @@ _hold_lane_lock() {
 # _hold_lane_lock_shared <mount> <lane>
 # Block Q's SHARED counterpart to _hold_lane_lock above (§9.1 Invariant A2):
 # marks <lane> "held by a shared reader" instead of "held by an exclusive
-# consumer" -- the case scripts/warm-lane-audit.sh's own probe (_probe_live,
-# line 330-331) must read as IDLE, not LIVE.
+# consumer" -- the case the production probe (lane_lock_probe in
+# scripts/lib_lane_lock.sh, reached from _probe_live) must read as IDLE, not
+# LIVE.
 #
 # Two deliberate differences from _hold_lane_lock, both load-bearing:
 #   - `flock -s 9`, not `-x` -- this is the entire point of the helper.
 #   - the fd is opened READ-only (`9<"$lock"`, after the `touch`), not `9>` as
 #     the exclusive helper uses. This mirrors the production probe's own
-#     read-only open (`exec 7<"$lock"`, scripts/warm-lane-audit.sh:330), so
-#     the fixture models a real shared READER rather than an artificial
+#     read-only open -- lane_lock_probe takes a scoped `{ ... } 7<"$lock"`
+#     block redirect, never a write-open -- so the fixture models a real
+#     shared READER rather than an artificial
 #     write-opened shared lock, and it avoids relying on Linux's (correct but
 #     non-obvious, and not POSIX-fcntl-portable) acceptance of LOCK_SH on an
 #     O_WRONLY fd.
@@ -2011,8 +2013,9 @@ _BGPIDS=()  # clear so cleanup doesn't double-kill
 # ──────────────────────────────────────────────────────────────────────────────
 # Block K (above) pins live=LIVE|IDLE, but its only lock-holding fixture is
 # _hold_lane_lock, which takes an EXCLUSIVE flock -- and an EXCLUSIVE holder
-# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell
-# _probe_live's real `flock -n -s 7` (scripts/warm-lane-audit.sh:331) apart
+# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell the
+# production probe's real `flock -n -s 7` (lane_lock_probe in
+# scripts/lib_lane_lock.sh) apart
 # from a regressed `flock -n -x 7`: the exact regression this block exists to
 # catch. Block Q closes that gap with a SHARED-lock lane (must read IDLE --
 # the A2 pin) alongside an EXCLUSIVE-lock lane in the SAME run (must stay
@@ -2959,6 +2962,12 @@ assert "S1: the STASH block is emitted with a zero total" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0( |$)"' _ "$OUT"
 assert "S1: an empty stack emits no per-entry detail lines" \
     bash -c '[ "$(printf "%s\n" "$1" | grep -c "^STASH entry ")" = "0" ]' _ "$OUT"
+# Non-vacuity control for S7/S10: a MEASURED empty stack reports stash_unknown=0,
+# so the flag cannot be hard-wired to 1.
+assert "S1: a measured empty stack reports stash_unknown=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S1: the STASH line reads total=0 unknown=0" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=0$"' _ "$OUT"
 
 # -- populate the fixture lane's own stack ------------------------------------
 # Three entries with deliberately awkward messages: an embedded newline (S4) and
@@ -2977,6 +2986,10 @@ assert "S2: HEADROOM carries stash_entries=3" \
     bash -c '[ "$1" = "3" ]' _ "$(_headroom_field "$OUT" stash_entries)"
 assert "S2: the STASH block total agrees" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=3( |$)"' _ "$OUT"
+assert "S2: a measured non-empty stack reports stash_unknown=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S2: the STASH line reads total=3 unknown=0" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=3 unknown=0$"' _ "$OUT"
 
 # -- S3 (c): per-entry detail — ref, branch, message ---------------------------
 # Asserted on the MESSAGES, so this cannot pass on a count-only implementation.
@@ -3006,10 +3019,11 @@ assert "S8: the audit created no new files in the lane" \
 
 # -- S6 (f): APPEND-NEVER-INTERPOSE -------------------------------------------
 # Every pre-existing HEADROOM field keeps its position and value; stash_entries
-# is appended AFTER plan_mismatch, so a consumer matching the old fixed field
-# order keeps working (the runbook convention).
-assert "S6: HEADROOM keeps its field order with stash_entries appended LAST" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM resident=[0-9]+ live=[0-9]+ pinned=[0-9]+ quarantined=[0-9]+ free=[0-9]+ assigned=[0-9]+ state_unknown=[0-9]+ reclaimable=[0-9]+ leaked=[0-9]+ leak_unknown=[0-9]+ divergent_gib=[0-9]+ free_gib=[0-9]+ budget_gib=[0-9]+ plan_stranded=[0-9]+ plan_unknown=[0-9]+ plan_rewritten=[0-9]+ plan_mismatch=[0-9]+ stash_entries=[0-9]+$"' _ "$OUT"
+# is appended AFTER plan_mismatch and stash_unknown after stash_entries, so a
+# consumer matching the old fixed field order keeps working (the runbook
+# convention).
+assert "S6: HEADROOM keeps its field order with stash_entries then stash_unknown appended LAST" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM resident=[0-9]+ live=[0-9]+ pinned=[0-9]+ quarantined=[0-9]+ free=[0-9]+ assigned=[0-9]+ state_unknown=[0-9]+ reclaimable=[0-9]+ leaked=[0-9]+ leak_unknown=[0-9]+ divergent_gib=[0-9]+ free_gib=[0-9]+ budget_gib=[0-9]+ plan_stranded=[0-9]+ plan_unknown=[0-9]+ plan_rewritten=[0-9]+ plan_mismatch=[0-9]+ stash_entries=[0-9]+ stash_unknown=[0-9]+$"' _ "$OUT"
 
 # -- S5 (e): JSON parity -------------------------------------------------------
 S_PY_JSON="$(mktemp /tmp/test-warm-lane-audit-s-json-XXXXXX.py)"
@@ -3018,6 +3032,7 @@ cat > "$S_PY_JSON" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
 assert data["headroom"]["stash_entries"] == 3, data["headroom"]
+assert data["headroom"]["stash_unknown"] == 0, data["headroom"]
 stack = data["stash_stack"]
 assert isinstance(stack, list) and len(stack) == 3, stack
 for obj in stack:
@@ -3052,10 +3067,12 @@ assert "S9: the knob's repo is what gets queried (1, not the lane's 3)" \
 assert "S9: the knob's entry message is what is reported" \
     bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "alt-only entry"' _ "$OUT"
 
-# -- S7 (g): FAIL-OPEN, NEVER GATING (inv.12 / A3-style degradation) -----------
-# A stash query that cannot resolve or fails degrades to 0 with a stderr note
-# and exit 0. An advisory reader must never abort — and must never gate — on a
-# figure it could not collect.
+# -- S7 (g): FAIL-OPEN, NEVER GATING, NEVER SILENT (inv.12 / A3-style) ---------
+# A stash query that cannot resolve reports stash_entries=0 WITH stash_unknown=1
+# (and `unknown=1` on the STASH line), plus a stderr note naming the queried
+# repo, and still exits 0. An advisory reader must never abort — and must never
+# gate — on a figure it could not collect, but an unmeasured stack must never
+# read the same as an empty one either. S1/S2 are the measured-0 controls.
 S_NOTGIT="$(mktemp -d /tmp/test-warm-lane-audit-s-notgit-XXXXXX)"
 _TMPDIRS+=("$S_NOTGIT")
 REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_NOTGIT" run_helper --mount "$S_MOUNT"
@@ -3064,8 +3081,26 @@ assert "S7: stash_entries degrades to 0" \
     bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
 assert "S7: the STASH block is still emitted (stable shape under degradation)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0( |$)"' _ "$OUT"
-assert "S7: a stderr note explains the degradation" \
-    bash -c 'printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+assert "S7: a non-git stash repo reports stash_unknown=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S7: the STASH line reads total=0 unknown=1 for a non-git stash repo" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=1$"' _ "$OUT"
+assert "S7: a stderr note names stash_unknown and the queried non-git path" \
+    bash -c 'printf "%s\n" "$1" | grep "stash_unknown" | grep -qF -- "$2"' _ "$ERR_OUT" "$S_NOTGIT"
+S_PY_JSON_UNKNOWN="$(mktemp /tmp/test-warm-lane-audit-s-json-unknown-XXXXXX.py)"
+_TMPDIRS+=("$S_PY_JSON_UNKNOWN")
+cat > "$S_PY_JSON_UNKNOWN" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+headroom = data["headroom"]
+assert headroom["stash_unknown"] == 1, headroom
+assert headroom["stash_entries"] == 0, headroom
+# Unmeasured: the array stays empty and carries no flag of its own.
+assert data["stash_stack"] == [], data["stash_stack"]
+PYEOF
+REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_NOTGIT" run_helper --mount "$S_MOUNT" --format json
+assert "S7: json reports headroom.stash_unknown=1, stash_entries=0, stash_stack=[] for a non-git stash repo" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$S_PY_JSON_UNKNOWN"
 # ...and an empty mount (no resident lane to resolve a default from) degrades
 # the same way rather than erroring.
 S_EMPTY="$(mktemp -d /tmp/test-warm-lane-audit-s-empty-XXXXXX)"
@@ -3074,5 +3109,178 @@ run_helper --mount "$S_EMPTY"
 assert "S7: an empty mount (nothing to resolve) still exits 0" test "$RC" -eq 0
 assert "S7: an empty mount reports stash_entries=0" \
     bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S7: an empty mount reports stash_unknown=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S7: an empty mount's stderr note names stash_unknown" \
+    bash -c 'printf "%s\n" "$1" | grep -q "stash_unknown"' _ "$ERR_OUT"
+
+# -- S10: a FAILED stash query is reported, not swallowed ---------------------
+# The third degrade path: the repo resolves as a git worktree but `git stash
+# list` itself fails. Reached with a real corrupt fixture — refs/stash pointing
+# at an absent object — rather than a git shim. The two preconditions pin the
+# git behaviour this relies on, so a future git or ref backend that stops
+# failing here reds the block instead of letting it pass vacuously.
+S_BROKEN_ROOT="$(mktemp -d /tmp/test-warm-lane-audit-s-broken-XXXXXX)"
+_TMPDIRS+=("$S_BROKEN_ROOT")
+S_BROKEN="$S_BROKEN_ROOT/repo"
+make_lane "$S_BROKEN" task/9181
+printf 'broken wip\n' > "$S_BROKEN/README.md"
+git -C "$S_BROKEN" stash push -q -m s10
+printf '1111111111111111111111111111111111111111\n' > "$S_BROKEN/.git/refs/stash"
+assert "S10 precondition: the corrupt fixture still resolves as a git worktree" \
+    git -C "$S_BROKEN" rev-parse --git-dir
+assert "S10 precondition: git stash list fails on the corrupt fixture" \
+    bash -c '! git -C "$1" stash list' _ "$S_BROKEN"
+S_BROKEN_REF_BEFORE="$(cat "$S_BROKEN/.git/refs/stash")"
+REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_BROKEN" run_helper --mount "$S_MOUNT"
+assert "S10: a failed stash query still exits 0" test "$RC" -eq 0
+assert "S10: a failed stash query reports stash_entries=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S10: a failed stash query reports stash_unknown=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S10: the STASH line reads total=0 unknown=1 for a failed query" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=1$"' _ "$OUT"
+assert "S10: a failed stash query emits no per-entry detail lines" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "^STASH entry ")" = "0" ]' _ "$OUT"
+assert "S10: a stderr note names stash_unknown and the queried repo" \
+    bash -c 'printf "%s\n" "$1" | grep "stash_unknown" | grep -qF -- "$2"' _ "$ERR_OUT" "$S_BROKEN"
+assert "S10: the audit did not repair or rewrite refs/stash (A1 read-only)" \
+    bash -c '[ "$(cat "$1")" = "$2" ]' _ "$S_BROKEN/.git/refs/stash" "$S_BROKEN_REF_BEFORE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block T — the liveness probe's FAIL-CLOSED direction (task 5738)
+# ──────────────────────────────────────────────────────────────────────────────
+# Blocks K and Q pin what the probe MEASURES. This block pins what this script
+# DECIDES when the measurement cannot be made at all — the half that had never
+# been asserted on either side of the seam, because _probe_live invoked `flock`
+# as a bare command with no env seam to stub. REIFY_WARM_LANE_AUDIT_FLOCK
+# (mirroring the sibling REIFY_WARM_LANE_AUDIT_DF) is what makes it reachable.
+#
+# The direction is CLOSED, and deliberately opposite to
+# scripts/warm-lane-lock-guard.sh's, which fails OPEN on the identical state
+# from the identical shared probe. Why each is right for its own consumer:
+# seam doc §3 — docs/design/merge-verify-lane-dispatch-seam.md.
+#
+# EVERY lock file below is touched UNHELD, so no LIVE verdict in this block can
+# come from real contention — only from the degraded measurement. T7 is the
+# non-vacuity control that keeps the whole block from being satisfied by an
+# audit that had simply started reporting LIVE for everything.
+echo ""
+echo "--- Block T: an unmeasurable lock probe counts LIVE (fail-CLOSED) ---"
+
+T_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-t-XXXXXX)"
+_TMPDIRS+=("$T_MOUNT")
+
+# Two lanes with UNHELD locks, plus one with no lock file at all (the A1 witness
+# in T9: an absent lock is a positive "no consumer ever took this lane", so it
+# stays IDLE even under a broken flock, and must never be created).
+for t_lane in _lane-a _lane-b _lane-nolock; do
+    make_lane "$T_MOUNT/$t_lane"
+    make_lane_state "$T_MOUNT" "$t_lane" "released" "57$((RANDOM % 90 + 10))"
+done
+touch "$T_MOUNT/_lane-a.lock" "$T_MOUNT/_lane-b.lock"
+
+T_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-audit-t-stub-XXXXXX)"
+_TMPDIRS+=("$T_STUB_DIR")
+
+# A flock that is present and executable but always fails with a status that is
+# NOT the would-block code: a tool fault.
+T_FLOCK_BROKEN="$T_STUB_DIR/flock_broken"
+cat > "$T_FLOCK_BROKEN" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "flock: simulated tool failure" >&2
+exit 1
+STUB_EOF
+chmod +x "$T_FLOCK_BROKEN"
+
+# ...and one that reports would-block, so T6 can show BUSY and UNMEASURABLE
+# reaching LIVE by two different routes.
+T_FLOCK_CONFLICT="$T_STUB_DIR/flock_conflict"
+cat > "$T_FLOCK_CONFLICT" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 124
+STUB_EOF
+chmod +x "$T_FLOCK_CONFLICT"
+
+# -- T1-T4: a broken flock (the invocation branch) -----------------------------
+REIFY_WARM_LANE_AUDIT_FLOCK="$T_FLOCK_BROKEN" run_helper --mount "$T_MOUNT"
+assert "T1: a broken flock still exits 0 (advisory, never gating)" test "$RC" -eq 0
+assert "T1: _lane-a reports live=LIVE (fail-CLOSED: unmeasurable counts occupied)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+assert "T2: ...and classifies LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*classification=LIVE"' _ "$OUT"
+# Matched on the LOCK PATH, not the bare lane name: these lanes also draw A5
+# state warnings, and a bare-name grep would pass vacuously against one of
+# those while the probe degraded in total silence.
+assert "T3: a stderr warning names the degraded lane's lock and the direction taken" \
+    bash -c 'printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
+assert "T4: HEADROOM counts BOTH degraded lanes live (live=2)" \
+    bash -c '[ "$1" = "2" ]' _ "$(_headroom_field "$OUT" live)"
+# ...and only those two. The lockless lane needs no flock to be answered, so a
+# broken one must not turn its positive "nobody ever took this lane" into a
+# degradation — the ordering pin, observable only in a pool-wide caller.
+assert "T4: ...but NOT the lockless lane, whose IDLE needs no flock" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
+assert "T4: the partition identity still holds under degradation" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+# -- T5: flock missing entirely (the resolution branch) ------------------------
+REIFY_WARM_LANE_AUDIT_FLOCK=/nonexistent/flock run_helper --mount "$T_MOUNT"
+assert "T5: a missing flock binary exits 0" test "$RC" -eq 0
+assert "T5: ...and reaches the same fail-CLOSED verdict by the resolution branch" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+assert "T5: ...counting both lanes live" \
+    bash -c '[ "$1" = "2" ]' _ "$(_headroom_field "$OUT" live)"
+assert "T5: ...and leaving the lockless lane IDLE here too" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
+
+# -- T6: would-block, i.e. a genuine BUSY rather than a degradation ------------
+REIFY_WARM_LANE_AUDIT_FLOCK="$T_FLOCK_CONFLICT" run_helper --mount "$T_MOUNT"
+assert "T6: a would-block status also reports live=LIVE (BUSY and UNMEASURABLE converge here)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+assert "T6: ...and no fail-CLOSED warning fires, because nothing was unmeasurable" \
+    bash -c '! printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
+
+# -- T7: NON-VACUITY CONTROL — the identical fixture, real flock ---------------
+# Without this, T1/T5/T6 would be satisfied by an audit that had simply started
+# reporting LIVE for every lane.
+run_helper --mount "$T_MOUNT"
+assert "T7: with the real flock the same unheld locks report live=IDLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=IDLE"' _ "$OUT"
+assert "T7: ...for the second lane too" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-b .*live=IDLE"' _ "$OUT"
+assert "T7: ...and HEADROOM reports live=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" live)"
+
+# -- T8: the one deliberate behaviour change -----------------------------------
+# An UNREADABLE lock file with the REAL flock. Previously the failed `exec 7<`
+# fell through to IDLE — fail-OPEN, silently, on the very axis where a broken
+# flock failed CLOSED. Every unmeasurable cause now maps to LIVE uniformly.
+# _lane-b stays readable in the same run: the built-in non-vacuity control.
+if [ "$(id -u)" -ne 0 ]; then
+    chmod 000 "$T_MOUNT/_lane-a.lock"
+    run_helper --mount "$T_MOUNT"
+    chmod 644 "$T_MOUNT/_lane-a.lock"
+    assert "T8: an unreadable lock file exits 0" test "$RC" -eq 0
+    assert "T8: ...reports live=LIVE (uniformly fail-CLOSED, where it once read IDLE)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+    assert "T8: ...and warns, naming that lock" \
+        bash -c 'printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
+    assert "T8: ...while the readable sibling in the SAME run stays IDLE" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-b .*live=IDLE"' _ "$OUT"
+else
+    echo "  SKIP: T8 (running as root — mode 000 does not make a file unreadable)"
+fi
+
+# -- T9: A1 is not weakened on any of those paths ------------------------------
+assert "T9: no lock file was created for the lane that had none" \
+    test ! -e "$T_MOUNT/_lane-nolock.lock"
+assert "T9: ...and it reads IDLE, an absent lock being a positive answer (T4/T5 pin the degraded runs)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
 
 test_summary

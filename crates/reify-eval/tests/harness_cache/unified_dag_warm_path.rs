@@ -1,4 +1,4 @@
-//! θ (task 4361) warm-path test binary.
+//! θ (task 4361) warm-path test module.
 //!
 //! Tests the four θ gaps:
 //!   1. `build_snapshot` multi-entity positional export fix (RecordingKernel-observable).
@@ -6,8 +6,9 @@
 //!   3. `eval_cached` warm `SolveResult::Solved` back-prop (`let y = auto_x + N`).
 //!   4. Concurrent path re-verify + serialization invariant.
 //!
-//! The shared ζ harness (`common/differential.rs`) is `#[path]`-included so
-//! this binary reuses all corpus helpers with zero edits to existing shared files.
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
+//!
 //! `RecordingKernel` is imported from the shared harness (`differential::RecordingKernel`)
 //! where it was promoted during step-9 so that `unified_dag_boundary_cases.rs` could
 //! also use it.  The test-local definition has been removed (see amendment amend: #4361).
@@ -41,7 +42,7 @@ fn engine_with_recording_kernel(
     let exported = kernel.exported_handles_ref();
     let compounds = kernel.compound_members_ref();
     let mut engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel) as Box<dyn GeometryKernel>));
+        Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel) as Box<dyn GeometryKernel>));
     engine.set_build_scheduler(scheduler);
     (engine, exported, compounds)
 }
@@ -249,6 +250,7 @@ fn tessellate_snapshot_matches_cold_and_is_scheduler_agnostic() {
     // ── LegacyMultiPass ──
     let mut legacy_engine = {
         let mut e = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>),
         );
@@ -264,6 +266,7 @@ fn tessellate_snapshot_matches_cold_and_is_scheduler_agnostic() {
     // ── UnifiedDag ──
     let mut unified_engine = {
         let mut e = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>),
         );

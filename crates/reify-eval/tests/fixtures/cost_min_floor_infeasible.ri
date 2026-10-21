@@ -16,8 +16,18 @@
 // un-floored box [10mm, 10.3mm] is non-empty and feasible.
 //
 // Integration test: crates/reify-eval/tests/robustness_floor_signal.rs
-//   asserts result.diagnostics contains code == RobustnessFloorInfeasible
-//   and NO diagnostic with code == ConstraintUnsatisfiable.
+//   - floor_infeasible_surfaces_distinct_diagnostic asserts result.diagnostics
+//     contains code == RobustnessFloorInfeasible and NO diagnostic with
+//     code == ConstraintUnsatisfiable.
+//   - floor_infeasible_message_names_the_margin_not_an_empty_region asserts the
+//     emitted MESSAGE names the 2% robustness margin and does NOT claim the
+//     user's own box (10mm, 10.3mm) is empty.  The FLOORED region is empty (see
+//     above) but the user's box is not, and the code alone was never what misled
+//     the original report — the wording was.  This fixture is that report's
+//     shape, so the message contract is pinned here and not only in the
+//     solver-level sibling
+//     (crates/reify-constraints/tests/robustness_floor.rs::
+//      steep_objective_margin_only_infeasibility_names_the_margin).
 structure CostMinFloorInfeasible {
     param x: Length = auto
     param unit_cost: Money = 5USD

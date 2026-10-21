@@ -496,10 +496,6 @@
     fn three_nearest_node_indices_warns_once_on_non_finite_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
 
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let (subscriber, capture) = warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             // Two non-finite nodes (indices 0 and 1) in one call must still
@@ -627,8 +623,6 @@
     #[test]
     fn build_mixed_region_mesh_warns_once_on_non_finite_node_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
-
-        reify_test_support::prime_tracing_callsite_cache();
 
         let mut poisoned_shell = make_shell_mesh();
         poisoned_shell.vertices[1] = [f64::NAN, 0.0, 0.0];
@@ -770,8 +764,6 @@
     fn build_mixed_region_mesh_warns_once_on_non_finite_location_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
 
-        reify_test_support::prime_tracing_callsite_cache();
-
         let shell = make_shell_mesh();
         let tet = make_tie_tet_mesh();
         let bad_location = ShellTetInterface {
@@ -807,6 +799,199 @@
                 .expect("all-finite fixture should succeed");
         });
         capture.assert_count(0);
+    }
+
+    /// A Hex or Wedge `VolumeMesh` is non-tetrahedral connectivity that
+    /// `build_mixed_region_mesh` (tet-only) cannot process. Both must be
+    /// rejected via `MixedRegionError::UnsupportedConnectivity` instead of
+    /// panicking in the `tet_indices().expect()` guard (task 4996).
+    #[test]
+    fn build_mixed_region_mesh_errors_on_unsupported_connectivity() {
+        let shell = make_shell_mesh();
+
+        // Hex8: 8 vertices (24 f32), P1-only connectivity.
+        let hex = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                1.0, 1.0, 1.0, // node 2
+                0.0, 1.0, 1.0, // node 3
+                0.0, 0.0, 2.0, // node 4
+                1.0, 0.0, 2.0, // node 5
+                1.0, 1.0, 2.0, // node 6
+                0.0, 1.0, 2.0, // node 7
+            ],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &hex, &[])
+            .expect_err("a Hex VolumeMesh must be rejected (tet-only)");
+        assert_eq!(
+            err,
+            MixedRegionError::UnsupportedConnectivity,
+            "Hex connectivity must yield UnsupportedConnectivity, not a panic",
+        );
+
+        // Wedge/PRI6: 6 vertices (18 f32), P1-only connectivity.
+        let wedge = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                0.0, 1.0, 1.0, // node 2
+                0.0, 0.0, 2.0, // node 3
+                1.0, 0.0, 2.0, // node 4
+                0.0, 1.0, 2.0, // node 5
+            ],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &wedge, &[])
+            .expect_err("a Wedge VolumeMesh must be rejected (tet-only)");
+        assert_eq!(
+            err,
+            MixedRegionError::UnsupportedConnectivity,
+            "Wedge connectivity must yield UnsupportedConnectivity, not a panic",
+        );
+    }
+
+    /// A tet index buffer whose length is not a whole multiple of the
+    /// per-element node count must be rejected up front, not silently
+    /// truncated.
+    ///
+    /// Before the divisibility gate the `chunks_exact(nodes_per_tet)` element
+    /// walk dropped the trailing partial chunk and the truncating
+    /// `tet_indices.len() / nodes_per_tet` capacity expression matched the
+    /// loss, so a 5-index P1 mesh returned `Ok` carrying ONE tet instead of
+    /// the caller's malformed input being surfaced at all. Both strides are
+    /// covered (P1 = 4, P2 = 10) so a regression in
+    /// `VolumeMesh::nodes_per_element()` cannot hide behind the P1 case, and
+    /// the reported `stride` pins the divisor. Mirrors
+    /// `refine_with_size_field_errors_on_non_multiple_tet_indices` on the
+    /// `reify-solver-elastic` side.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_multiple_tet_indices() {
+        let shell = make_shell_mesh();
+
+        // P1, stride 4: 5 indices → one whole tet plus a 1-index remainder.
+        let p1 = VolumeMesh {
+            vertices: vec![0.0_f32; 15], // 5 vertices × 3 coords
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &p1, &[])
+            .expect_err("5 P1 indices describe no whole number of tets");
+        assert_eq!(
+            err,
+            MixedRegionError::MalformedTetIndices { len: 5, stride: 4 },
+            "a non-multiple P1 buffer must be reported, not silently truncated \
+             to 1 tet by chunks_exact",
+        );
+
+        // P2, stride 10: 11 indices → same shape defect at the other stride.
+        let p2 = VolumeMesh {
+            vertices: vec![0.0_f32; 33], // 11 vertices × 3 coords
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                order: ElementOrderTag::P2,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &p2, &[])
+            .expect_err("11 P2 indices describe no whole number of tets");
+        assert_eq!(
+            err,
+            MixedRegionError::MalformedTetIndices {
+                len: 11,
+                stride: 10
+            },
+            "the P2 stride must be reported as 10, not 4",
+        );
+    }
+
+    /// A correctly-SHAPED tet buffer carrying an out-of-range index VALUE must
+    /// be rejected at the same up-front gate.
+    ///
+    /// Both structural guards pass here — `Tet` connectivity, and 4 indices at
+    /// P1 stride 4 is exactly one element — so only the index *value* is wrong.
+    /// Unlike the solver-elastic sibling this is not a latent panic in
+    /// `build_mixed_region_mesh` itself: nothing here dereferences the
+    /// connectivity it builds, so an un-gated index 99 would be copied verbatim
+    /// into `UnifiedElement::connectivity` as `n_shell + 99` and returned as an
+    /// apparently-valid `MixedRegionMesh` whose element connectivity dangles
+    /// past `nodes.len()` — deferring the abort to whichever assembly path
+    /// first indexes `nodes[conn[a]]`. Mirrors
+    /// `refine_with_size_field_errors_on_out_of_range_tet_index` on the
+    /// `reify-solver-elastic` side.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_out_of_range_tet_index() {
+        let shell = make_shell_mesh();
+
+        let dangling = VolumeMesh {
+            vertices: vec![0.0_f32; 12], // 4 vertices ⇒ valid ids are 0..=3
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 99],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &dangling, &[])
+            .expect_err("index 99 addresses no vertex of a 4-vertex tet mesh");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidTetIndex {
+                vertex_index: 99,
+                vertex_count: 4,
+            },
+            "an out-of-range index must be reported, not emitted verbatim into \
+             a MixedRegionMesh whose connectivity dangles past nodes.len()",
+        );
+
+        // Both defects at once (5 indices AND index 99): the structural check
+        // runs first, so the report names the shape, not the value.
+        let both = VolumeMesh {
+            vertices: vec![0.0_f32; 12],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 99, 3],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &both, &[])
+            .expect_err("a mis-sized AND out-of-range buffer must still error");
+        assert_eq!(
+            err,
+            MixedRegionError::MalformedTetIndices { len: 5, stride: 4 },
+            "structural-before-semantic: the shape defect wins over the value one",
+        );
+
+        // Positive control for the guarantee the gate buys: every connectivity
+        // entry of an ACCEPTED mesh addresses a node that exists, so a
+        // downstream `nodes[conn[a]]` cannot dangle.
+        let ok = make_p1_tet_mesh();
+        let mesh = build_mixed_region_mesh(&shell, &ok, &[])
+            .expect("a well-formed P1 tet mesh must still be accepted");
+        let n_nodes = mesh.nodes.len();
+        for elem in &mesh.elements {
+            for &node in &elem.connectivity {
+                assert!(
+                    node < n_nodes,
+                    "gated mesh emitted connectivity {node} >= nodes.len() {n_nodes}",
+                );
+            }
+        }
     }
 
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
@@ -979,7 +1164,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Shared primitive op used as a leaf source.
         let prim_box = || CompiledGeometryOp::Primitive {
@@ -1115,7 +1300,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1223,12 +1408,10 @@
         use reify_ir::{ExportFormat, ReprKind};
         use reify_test_support::{
             CapturingSubscriberBuilder, CompiledModuleBuilder, MockConstraintChecker,
-            TopologyTemplateBuilder, prime_tracing_callsite_cache,
+            TopologyTemplateBuilder,
         };
 
-        prime_tracing_callsite_cache();
-
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1306,7 +1489,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1444,7 +1627,7 @@
 
         // ── (A) registered VolumeMesh-demanding consumer → body → VolumeMesh ──
         let module = build_module(Some("test::vm-demand"));
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_volume_mesh_demand("test::vm-demand");
         let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
         assert_eq!(result.len(), 1, "one template → one outer entry");
@@ -1457,7 +1640,7 @@
         );
 
         // ── (B) same module, NO registration → body stays at Step BRep ──
-        let engine_unreg = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine_unreg = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result_unreg = engine_unreg.compute_demanded_reprs(&module, ExportFormat::Step);
         assert_eq!(
             result_unreg[0][0],
@@ -1468,7 +1651,7 @@
 
         // ── (C) consumer target NOT registered → no false override ──
         let module_other = build_module(Some("test::other"));
-        let mut engine_c = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine_c = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine_c.register_volume_mesh_demand("test::vm-demand"); // a DIFFERENT target
         let result_c = engine_c.compute_demanded_reprs(&module_other, ExportFormat::Step);
         assert_eq!(
@@ -1520,7 +1703,7 @@
             .template(template_d)
             .function(consumer_fn(Some("test::vm-demand")))
             .build();
-        let mut engine_d = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine_d = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine_d.register_volume_mesh_demand("test::vm-demand");
         let result_d = engine_d.compute_demanded_reprs(&module_d, ExportFormat::Step);
         assert_eq!(
@@ -1626,7 +1809,7 @@
                 .template(template)
                 .build();
 
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         // Seed the consumer fn ONLY into `engine.functions` — simulating the
         // post-`check()`/`eval()` merged stdlib+module function table without
         // running a real build.

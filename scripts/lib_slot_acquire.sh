@@ -7,7 +7,7 @@
 #
 # FUNCTIONS (defined when sourced):
 #   slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON] [TIMEOUT_DISPOSITION]
-#                                  — shuffle-acquire loop; holds FD 9 in the
+#                [TIMEOUT_EMITTER] — shuffle-acquire loop; holds FD 9 in the
 #                                    CALLER's shell on success. Returns 0 on
 #                                    success (slot held), 75 (EX_TEMPFAIL) on
 #                                    deadline. Sets output globals:
@@ -15,8 +15,9 @@
 #                                      SLOT_ACQUIRE_ELAPSED — wall seconds waited
 #   slot_emit_event VERB [SLOT]    — opt-in event-log append (complete no-op
 #                                    when REIFY_SLOT_EVENT_LOG is unset).
-#   slot_emit_timeout R S W D L    — the slot-timeout sentinel (see below);
-#                                    called from the deadline site only.
+#   slot_emit_timeout R S W D L E  — the slot-timeout sentinel and its
+#                                    slot_timeout record (see below); called
+#                                    from the deadline site only.
 #
 # SLOT-TIMEOUT MARKER:
 #   On the finite-WAIT deadline (the rc=75 path) slot_acquire emits ONE line to
@@ -28,6 +29,10 @@
 #   slot_emit_timeout's header below.  Consumer, reason vocabulary and how this
 #   family relates to @@REIFY_CLOCK_*@@: docs/notes/verify-pipeline-knobs.md.
 #   Guard: tests/infra/test_slot_timeout_marker.sh.
+#
+# EVENT CHANNEL: the same deadline is also written as a slot_timeout record to
+#   REIFY_VERIFY_EVENT_LOG via scripts/lib_event_log.sh, for every caller.
+#   Schema: tests/infra/README.md "Verify event channel".
 #
 # OUTPUT GLOBALS (set by slot_acquire):
 #   SLOT_ACQUIRE_SLOT    — slot number (1..N) acquired; "" on 75 return.
@@ -75,12 +80,22 @@ _REIFY_LIB_SLOT_ACQUIRE_SH_SOURCED=1
 # sourcing idiom for lib_slot_acquire.sh itself.
 # Guarded existence check mirrors verify.sh's lib_test_semaphore.sh sourcing: a
 # missing/mislocated lib surfaces a directed error, not a cryptic `source: No such file`.
-_sa_clock_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_clock_stop.sh"
+_sa_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_sa_clock_lib="$_sa_dir/lib_clock_stop.sh"
 if [ ! -f "$_sa_clock_lib" ]; then
     echo "lib_slot_acquire.sh: required lib not found next to script: $_sa_clock_lib" >&2
     exit 1
 fi
 source "$_sa_clock_lib"
+
+# The verify event channel encoder (event_log_emit_slot_timeout). Sourced by a
+# double-quoted LITERAL path so tests/infra/copy_list_preflight_lib.sh's
+# closure parser sees it and every fixture copy list must carry it.
+if [ ! -f "$_sa_dir/lib_event_log.sh" ]; then
+    echo "lib_slot_acquire.sh: required lib not found next to script: $_sa_dir/lib_event_log.sh" >&2
+    exit 1
+fi
+source "$_sa_dir/lib_event_log.sh"
 
 # ---------------------------------------------------------------------------
 # slot_emit_event VERB [SLOT]
@@ -109,7 +124,7 @@ slot_emit_event() {
 }
 
 # ---------------------------------------------------------------------------
-# slot_emit_timeout REASON SLOTS WAITED DISPOSITION LOCK_BASE
+# slot_emit_timeout REASON SLOTS WAITED DISPOSITION LOCK_BASE EMITTER
 #   Emit the slot-acquisition-timeout sentinel to stderr, ONCE, from the
 #   finite-WAIT deadline site below.  Format:
 #     @@REIFY_SLOT_TIMEOUT@@ reason=<REASON> slots=<SLOTS> waited=<WAITED> disposition=<DISPOSITION> lock=<LOCK_BASE>
@@ -132,13 +147,19 @@ slot_emit_event() {
 #   "everything after the marker", losslessly.  Pinned by the space-bearing
 #   lock-base case in tests/infra/test_slot_timeout_marker.sh (A9).
 #
-#   NON-FATAL BY CONSTRUCTION (`|| return 0`), matching slot_emit_event's
-#   established idiom.  This runs immediately before `return 75` in a function
-#   whose EX_TEMPFAIL contract every wrapper keys on, and whose run_all.sh pool
-#   caller must proceed to run its member unslotted.  A failed write to fd 2
-#   (EPIPE on a dead log reader, ENOSPC on a redirected stderr file) must never
-#   be able to substitute an ERR-exit for that contract: diagnostics never
-#   change control flow.
+#   NON-FATAL BY CONSTRUCTION, matching slot_emit_event's established idiom.
+#   This runs immediately before `return 75` in a function whose EX_TEMPFAIL
+#   contract every wrapper keys on, and whose run_all.sh pool caller must
+#   proceed to run its member unslotted.  A failed write to fd 2 (EPIPE on a
+#   dead log reader, ENOSPC on a redirected stderr file) must never be able to
+#   substitute an ERR-exit for that contract: diagnostics never change control
+#   flow.
+#
+#   THE STRUCTURED TWIN (task 8685): after the text line, the same fields plus
+#   EMITTER go to the REIFY_VERIFY_EVENT_LOG channel as one slot_timeout record
+#   (event_log_emit_slot_timeout; inert when the var is unset).  The text
+#   write ends in `|| true`, not `|| return 0`, so a dead stderr cannot
+#   suppress the record.
 #
 #   A DISTINCT marker family from @@REIFY_CLOCK_*@@ -- but NOT, since task
 #   #6389, outside run_all.sh's re-emission sanitizer. Which side of that line
@@ -154,11 +175,13 @@ slot_emit_event() {
 # ---------------------------------------------------------------------------
 slot_emit_timeout() {
     printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s slots=%s waited=%s disposition=%s lock=%s\n' \
-        "$1" "$2" "$3" "$4" "$5" >&2 || return 0
+        "$1" "$2" "$3" "$4" "$5" >&2 || true
+    event_log_emit_slot_timeout "$1" "$2" "$3" "$4" "$5" "${6:-unknown}"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
-# slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON] [TIMEOUT_DISPOSITION]
+# slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON] [TIMEOUT_DISPOSITION] [TIMEOUT_EMITTER]
 #   N-slot shuffle-acquire loop.  Opens and holds FD 9 in the CALLER's shell
 #   on success (sourced function — not a subshell — so `exec 9>>` mutates the
 #   caller's FD table directly, preserving the single-FD-9 invariant).
@@ -206,6 +229,11 @@ slot_emit_timeout() {
 #                  to per-tool dispatch instead of being classified as a
 #                  starvation verdict; a sentinel with no `disposition=` field
 #                  keeps DF's pre-4212 classify behavior.
+#     TIMEOUT_EMITTER — OPTIONAL 7th arg, the slot_timeout record's `emitter`
+#                  (event channel only; the text sentinel carries no such
+#                  field).  Defaults to the basename of the file that CALLED
+#                  slot_acquire (BASH_SOURCE[1]) -- the wrapper lib or script
+#                  -- and to `unknown` when there is none (a `bash -c` body).
 #
 #   On success  — SLOT_ACQUIRE_SLOT=<N>, SLOT_ACQUIRE_ELAPSED=<secs>,
 #                 FD 9 held open, slot_emit_event ACQUIRE called; returns 0.
@@ -235,6 +263,12 @@ slot_acquire() {
     # (proceed unslotted; run_all.sh's pool worker). Defaulting to fatal keeps
     # every pre-existing caller's wire shape meaning what it already did.
     local _timeout_disposition="${6:-fatal}"
+    # OPTIONAL 7th: the record's emitter (see the arg doc). Fork-free, and
+    # `${BASH_SOURCE[1]:-}` because it is unset under `bash -c` and set -u
+    # callers exist.
+    local _timeout_emitter="${7:-${BASH_SOURCE[1]:-}}"
+    _timeout_emitter="${_timeout_emitter##*/}"
+    [ -n "$_timeout_emitter" ] || _timeout_emitter=unknown
 
     # Output globals — always defined after return (set -u safe on both paths).
     SLOT_ACQUIRE_SLOT=""
@@ -331,7 +365,7 @@ slot_acquire() {
                 # a failed write to fd 2 can never pre-empt the `return 75`
                 # below -- the EX_TEMPFAIL contract every caller keys on.
                 slot_emit_timeout "$_timeout_reason" "$_n" "$(( _now - _start ))" \
-                    "$_timeout_disposition" "$_lock_base"
+                    "$_timeout_disposition" "$_lock_base" "$_timeout_emitter"
                 return 75
             fi
         fi

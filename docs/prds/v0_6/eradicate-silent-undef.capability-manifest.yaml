@@ -119,7 +119,7 @@ tasks:
       kind: grep
       pattern: 'CHECK_ERROR_EXIT_ALLOWLIST'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: bolt-ons-subsumed-and-deleted
     binding: 'capability→producer (this leaf) — GdtIllegalModifier code-match (~:672) + E_DFM_ message-prefix (dfm_has_error_diagnostic ~:688/:2580) both match Error-severity only, so the general gate subsumes them'
@@ -128,7 +128,7 @@ tasks:
       kind: grep
       pattern: 'dfm_has_error_diagnostic'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: absent
   - name: outlier-baseline-real
     binding: 'signal premise (rejection-mechanism, G6 branch 4) — #5386 probe: error text printed, exit 0; finish_check (main.rs:2719) decides exit from constraint outcome alone. The asserted post-ε rejection (exit 1) is delivered BY this leaf; baseline silent-accept bound as the gap'
@@ -137,7 +137,7 @@ tasks:
       kind: manual
       reason: exit-code behaviour asserted by ε's e2e on the #5386 repro shape (boundary rows 5-7)
   - name: healthy-path-error-exists
-    binding: 'signal premise — code-less Error "no registered compute trampoline" on kernel-less FEA check (engine_compute.rs:654, engine_admin.rs:1519, engine_eval.rs:8301); disposition owned by #5311 (pending); the seed entry cites it'
+    binding: 'signal premise — code-less Error "no registered compute trampoline" on kernel-less FEA check; FOUR emission sites, not the three listed here, and those line numbers are stale — resolve by symbol (engine_eval.rs evaluate_params_and_lets_unified + evaluate_let_bindings = SOFT/body-inline; engine_admin.rs dispatch_compute_node + engine_compute.rs run_compute_dispatch = HARD/Err). Corrected 2026-09-01 (esc-5311-3). Disposition owned by #5311 (pending): DiagnosticCode at all four, fns.is_empty() Warning predicate at the two SOFT sites only — see check-diagnostic-truthfulness.md D4 RULING 2026-09-01. The seed entry cites it.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -206,7 +206,7 @@ tasks:
       kind: grep
       pattern: '\-\-deny'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: exit-0-baseline-real
     binding: 'signal premise — probe 2026-07-24: eval on the unbound fixture exits 0 while printing P.d = undef'

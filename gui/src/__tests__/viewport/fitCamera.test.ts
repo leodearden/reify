@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { PerspectiveCamera, Box3, Vector3 } from 'three';
 import { fitCameraToBox, type FitCameraOptions } from '../../viewport/fitCamera';
+import { DEFAULT_FIT_PADDING } from '../../viewport/orbitDistance';
 
 // ---------------------------------------------------------------------------
 // Helper utilities
@@ -171,7 +172,9 @@ describe('fitCameraToBox', () => {
   it('no-ops on a zero-volume (degenerate) box', () => {
     const camera = new PerspectiveCamera(60, 1, 0.1, 1e5);
     const initialPos = camera.position.clone();
-    const controls = { target: new Vector3(99, 99, 99) };
+    // A sentinel minDistance no policy value would coincide with, so "left alone" and
+    // "happened to be rewritten to the same number" stay distinguishable.
+    const controls = { target: new Vector3(99, 99, 99), minDistance: 0.5 };
 
     // Box with zero extent (min === max → radius = 0 → guard should fire)
     const degenBox = new Box3(new Vector3(5, 5, 5), new Vector3(5, 5, 5));
@@ -186,26 +189,48 @@ describe('fitCameraToBox', () => {
     expect(controls.target.x).toBe(99);
     expect(controls.target.y).toBe(99);
     expect(controls.target.z).toBe(99);
+    // …and so must minDistance: the no-mutation contract covers every controls field,
+    // not just target.  A floor derived from a degenerate radius would be meaningless.
+    expect(controls.minDistance).toBe(0.5);
+  });
+
+  // (6b) The framing pass must leave the camera able to approach what it just framed:
+  //      a floor at or above the fitted distance would pin the camera where it landed.
+  it('sets a minDistance strictly between zero and the distance it just fitted to', () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 1e5);
+    const controls = { target: new Vector3(), minDistance: 0.5 };
+    const center = new Vector3();
+    PRINTER_BOX.getCenter(center);
+
+    fitCameraToBox(camera, PRINTER_BOX, { controls });
+
+    const fittedDistance = camera.position.distanceTo(center);
+    expect(controls.minDistance).toBeGreaterThan(0);
+    expect(controls.minDistance).toBeLessThan(fittedDistance);
   });
 
   // (7) CUSTOM PADDING: caller-supplied `padding` must scale camera distance
-  //     linearly — ratio of padded distance to default-padded distance must
-  //     equal the ratio of the padding values (2.2 / 1.1 = 2.0).
+  //     linearly — the distance ratio must equal the padding ratio. Both the
+  //     explicit padding and the expected ratio are DERIVED from
+  //     DEFAULT_FIT_PADDING rather than restating it, so retuning the default
+  //     cannot leave this test asserting a stale relation (SPOT).
   it('scales camera distance proportionally with a custom padding option', () => {
     const center = new Vector3();
     PRINTER_BOX.getCenter(center);
     const aspect = 1.0;
+    const PADDING_MULTIPLE = 2;
 
-    // Default padding (1.1)
+    // Default padding, whatever it currently is.
     const cameraDefault = setupAndFit(60, aspect, PRINTER_BOX);
     const distDefault = cameraDefault.position.distanceTo(center);
 
-    // Explicit padding = 2.2 (exactly 2× the default)
-    const cameraPadded = setupAndFit(60, aspect, PRINTER_BOX, { padding: 2.2 });
+    // Explicit padding, PADDING_MULTIPLE× the default.
+    const cameraPadded = setupAndFit(60, aspect, PRINTER_BOX, {
+      padding: PADDING_MULTIPLE * DEFAULT_FIT_PADDING,
+    });
     const distPadded = cameraPadded.position.distanceTo(center);
 
-    // Distance must scale linearly: ratio ≈ 2.2 / 1.1 = 2.0
-    expect(distPadded / distDefault).toBeCloseTo(2.0, 3);
+    expect(distPadded / distDefault).toBeCloseTo(PADDING_MULTIPLE, 3);
     // Sanity-check: larger padding → strictly larger distance
     expect(distPadded).toBeGreaterThan(distDefault);
   });
