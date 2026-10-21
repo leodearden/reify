@@ -32,6 +32,7 @@ mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
+mod unmeasured_attribution_tests;
 mod watcher_tests;
 mod write_confinement_tests;
 
