@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, max_relation_residual, partition_driving_set,
+    FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
     pose_from_frame, solve_scaling,
 };
 use reify_constraints::scaling::RelateTolerance;
@@ -1318,9 +1318,9 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // ── (b) the solve CONVERGED and the tangency holds within the assertion tol ──
     //
     // This is THE assertion the pre-task silent no-solve would have passed vacuously:
-    // with no residual rows `max_relation_residual` reads a flat 0.0 whatever the
-    // placement. It is meaningful only because (c) proves the rows exist and (e)
-    // proves they measure the right geometry.
+    // with no residual rows the exceedance reads a flat 0.0 whatever the placement.
+    // It is meaningful only because (c) proves the rows exist and (e) proves they
+    // measure the right geometry. Each row is judged against its own unit's rung.
     let solve_errors: Vec<&str> = solution
         .diagnostics
         .iter()
@@ -1338,13 +1338,19 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     };
     let solved_pose = pose_from_frame(roller_pose)
         .expect("the solved roller Frame must convert back to a Pose");
-    let residual = max_relation_residual(&instances, &unknown, &solved_pose);
-    let tol = RelateTolerance::kernel_default();
+    let scaling = solve_scaling(
+        &instances,
+        &unknown,
+        &Pose::identity(),
+        RelateTolerance::kernel_default(),
+    );
+    let exceedance = max_relation_exceedance(&instances, &unknown, &solved_pose, |u| {
+        scaling.assertion_rung(u)
+    });
     assert!(
-        residual < tol.assertion(),
-        "both tangency relations must hold at the solved placement: residual {residual:e} \
-         exceeds the assertion tolerance {:e}",
-        tol.assertion()
+        exceedance <= 1.0,
+        "both tangency relations must hold at the solved placement: the worst row is \
+         {exceedance:e}× its unit's assertion rung"
     );
 
     // ── (c) DOF accounting is OPERAND-CONDITIONAL, per relation ─────────────────
@@ -1352,7 +1358,6 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // The exact integers, not a range: cylinder/plane is codimension 2 and
     // cylinder/cylinder codimension 1, so the scope spends 3 and leaves 3. A silent
     // no-solve measures individual_rank 0 for BOTH.
-    let scaling = solve_scaling(&instances, &unknown, &Pose::identity(), tol);
     let partition = partition_driving_set(&instances, &unknown, &Pose::identity(), &scaling);
     assert_eq!(
         partition.per_relation[0].individual_rank, 2,

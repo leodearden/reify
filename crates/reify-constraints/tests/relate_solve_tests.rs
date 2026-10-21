@@ -28,11 +28,19 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, max_relation_residual, partition_driving_set, pose_from_frame,
-    solve_frame, solve_scaling, static_relation_residuals,
+    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame, solve_scaling,
+    static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_ir::{SolveResult, Value};
+
+/// The largest `|r_i|` over every row of `relations` at `pose`, blind to each row's
+/// unit. Only for the closed-form residual tests here, which compare against a
+/// near-zero or O(1) separator; a pose is judged with [`max_relation_exceedance`]
+/// against per-unit bars.
+fn max_relation_residual(relations: &[RelationInstance], unknown: &FrameUnknown, pose: &Pose) -> f64 {
+    max_relation_exceedance(relations, unknown, pose, |_| 1.0)
+}
 
 /// The kernel-default scaling a scope partition or solve of `relations` from
 /// `witness` uses. Its rank cutoff acts on normalized scaled rows; an unconstrained
@@ -431,29 +439,6 @@ fn solve_frame_b1_converges_within_solver_tol() {
     assert!((pose.translation[0] - 0.10).abs() <= tol.assertion(), "tx: {:?}", pose.translation);
     assert!((pose.translation[1] - 0.20).abs() <= tol.assertion(), "ty: {:?}", pose.translation);
     assert!((pose.translation[2] - 0.045).abs() <= tol.assertion(), "tz: {:?}", pose.translation);
-}
-
-/// The single kernel-defaulted `Length` knob governs the whole tolerance hierarchy:
-/// `kernel_local ≤ solver_convergence ≤ assertion/dedup` (PRD §7.1 coherence law).
-/// Numeric boundary assertions test against the solver's OWN convergence guarantee,
-/// never a hand-picked epsilon — so the ordering must hold by construction.
-#[test]
-fn solve_frame_single_knob_tolerance_hierarchy() {
-    let tol = RelateTolerance::kernel_default();
-    assert!(
-        tol.kernel_local() <= tol.solver_convergence(),
-        "kernel-local {} must be ≤ solver convergence {}",
-        tol.kernel_local(),
-        tol.solver_convergence()
-    );
-    assert!(
-        tol.solver_convergence() <= tol.assertion(),
-        "solver convergence {} must be ≤ assertion/dedup {}",
-        tol.solver_convergence(),
-        tol.assertion()
-    );
-    // All three are strictly-positive lengths (metres).
-    assert!(tol.kernel_local() > 0.0, "tolerances are positive lengths");
 }
 
 // ── step-11 RED: auto(free) + residual seeding + seed bias (B5) ───────────────

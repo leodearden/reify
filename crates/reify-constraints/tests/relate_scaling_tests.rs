@@ -19,6 +19,8 @@ use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless
 
 // ── The tolerance ladder ─────────────────────────────────────────────────────
 
+/// `kernel_local ≤ solver_convergence ≤ assertion/dedup` (PRD §7.1 coherence law),
+/// with the metre-row floor under the convergence rung.
 #[test]
 fn kernel_default_ladder_is_ordered() {
     let tol = RelateTolerance::kernel_default();

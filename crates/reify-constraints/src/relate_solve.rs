@@ -372,17 +372,6 @@ pub fn solve_frame_traced(
     (result, FrameSolveTrace { iterations })
 }
 
-/// The largest absolute residual component over `relations` at `pose`, with no
-/// regard to the unit each row is measured in — a raw "how far from satisfied".
-/// Judge a pose with [`max_relation_exceedance`] instead.
-pub fn max_relation_residual(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    pose: &Pose,
-) -> f64 {
-    max_relation_exceedance(relations, unknown, pose, |_| 1.0)
-}
-
 /// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
 /// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose returned
 /// by [`solve_frame`] as `Solved` meets the bar [`SolveScaling::row_tolerance`];

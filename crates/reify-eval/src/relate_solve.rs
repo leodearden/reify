@@ -1252,7 +1252,7 @@ fn self_anchor_operand_name(rel: &CompiledExpr) -> Option<String> {
 /// dominant `concentric` row for the B1 fixture is `−0.03`, which read out as "off
 /// by −30 mm" — and "off by" states a distance from satisfaction, which has no
 /// direction a reader can act on. Unsigned is also the pre-existing convention on
-/// this path: `max_relation_residual` accumulates `r.abs()`, and every other
+/// this path: `max_relation_exceedance` folds `|r_i|`, and every other
 /// reader-facing magnitude here is a magnitude. Taken ONCE, here, so all three arms
 /// agree rather than each remembering.
 fn fmt_residual(row: ResidualRow) -> String {
@@ -1423,7 +1423,7 @@ pub fn solve_scopes(
 struct ScopeInstances<'a> {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
-    /// `solve_frame`, `max_relation_residual`, `minimal_infeasible_subset`) expects
+    /// `solve_frame`, `max_relation_exceedance`, `minimal_infeasible_subset`) expects
     /// and returns POSITIONS into.
     instances: Vec<RelationInstance>,
     /// `sources[i]` is the `scope.relations` index `instances[i]` was built from,
@@ -2437,8 +2437,8 @@ structure PerpendicularScope {
         // to pass the signed value straight to `fmt_mm`, so the Error read "off by
         // −30 mm". A residual's sign is an artefact of operand order and tangent-
         // frame choice; "off by" is a distance from satisfaction and has no
-        // direction to carry. `max_relation_residual` is the sibling convention
-        // (it accumulates `r.abs()`).
+        // direction to carry. `max_relation_exceedance` is the sibling convention
+        // (it folds `|r_i|`).
         assert!(
             d.message.contains("off by 30 mm") && d.message.contains("off by 5 mm"),
             "both measured magnitudes must render unsigned, in mm; got {:?}",
