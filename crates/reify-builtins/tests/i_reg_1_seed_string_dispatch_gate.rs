@@ -10,8 +10,9 @@
 //! α migrated two families, so this gate sweeps the SEED names only. The
 //! residue it finds is REAL string dispatch on registered names, and it is
 //! all outside α's charter — so it is COUNTED in
-//! [`SEED_STRING_DISPATCH_LEDGER`], one entry per site with a one-sentence WHY
-//! naming the leaf that owns re-homing it, rather than hidden by narrowing the
+//! [`SEED_STRING_DISPATCH_LEDGER`], one entry per (file, name) pair with its
+//! exact site count and a one-sentence WHY naming the leaf that owns re-homing
+//! it, rather than hidden by narrowing the
 //! scan or "fixed" by editing a crate this task does not own. An UNLEDGERED
 //! site fails, naming the file, line and seed name. The workspace-wide grep
 //! gate (every builtin name, not just the seeds) arrives at task ω.
@@ -125,6 +126,13 @@
 //! - **String methods other than `==`**: `name.starts_with("von_mises")`,
 //!   `name.eq("von_mises")`. Not swept because the method surface is open
 //!   ended; the array shape (5) covers the collection form these usually take.
+//!
+//! One limitation runs the other way, over-reporting rather than missing: the
+//! `#[cfg(test)]` mask is IN-FILE only. A test-only module declared out of line
+//! in its parent (`#[cfg(test)] mod tests;`) is scanned as if it were
+//! production code, so its name slices are reported as sites. Those are
+//! ledgered as such (`WHY_OUT_OF_LINE_TEST_MODULE`) until the scanner resolves
+//! out-of-line modules (ticket tkt_0RW1M0N2PGJKPYWNSHA35CJ5T5).
 
 mod common;
 use common::workspace_root;
@@ -151,7 +159,47 @@ struct LedgerEntry {
     why: &'static str,
 }
 
-/// Every seed-name string-dispatch site α leaves standing, one entry each.
+const RELATION_SIGNATURES: &str = "crates/reify-compiler/src/relation_signatures.rs";
+const CONSTRAINTS_RELATE_SOLVE: &str = "crates/reify-constraints/src/relate_solve.rs";
+const EVAL_RELATE_SOLVE: &str = "crates/reify-eval/src/relate_solve.rs";
+const COMPILER_UNITS: &str = "crates/reify-compiler/src/units.rs";
+const STDLIB_GEOMETRY: &str = "crates/reify-stdlib/src/geometry.rs";
+const EVAL_GEOMETRY_OPS: &str = "crates/reify-eval/src/geometry_ops.rs";
+const EVAL_GEOMETRY_OPS_TESTS: &str = "crates/reify-eval/src/geometry_ops/tests.rs";
+const EVAL_REGISTRY_DRIFT_TESTS: &str = "crates/reify-eval/src/registry_drift_tests.rs";
+
+const WHY_RELATION_VOCABULARY: &str =
+    "relation vocabulary dispatch — S9 λ #8741 (RelationSig as a total fn over RelationKind)";
+const WHY_RESIDUAL_DISPATCH: &str =
+    "relate-solve `residual_dispatch` — S6 γ #8830 binds RelationKind exhaustively";
+const WHY_DESCRIBE_DEMAND: &str =
+    "relate-solve `describe_demand` — S6 γ #8830 binds RelationKind exhaustively";
+const WHY_GEOMETRY_QUERY_DERIVE: &str =
+    "GEOMETRY_QUERY_NAMES' arity-2 DERIVE form, a different builtin — τ8 rows in #6944";
+const WHY_DATUM_OFFSET: &str =
+    "arity-2 construction datum `offset(Plane, Length)`, a different builtin — τ7 rows in #6944";
+const WHY_TOPOLOGY_SELECTOR_HELPER: &str =
+    "TopologySelectorHelper string map — #6944 (fk-c02915c1952e)";
+const WHY_OUT_OF_LINE_TEST_MODULE: &str = "out-of-line `#[cfg(test)]` module, not dispatch — the \
+     scanner's cfg(test) mask is in-file only (ticket tkt_0RW1M0N2PGJKPYWNSHA35CJ5T5)";
+
+/// A ledger entry in the compact one-line form the S8-ψ residue uses.
+const fn ledgered(
+    file: &'static str,
+    name: &'static str,
+    sites: usize,
+    why: &'static str,
+) -> LedgerEntry {
+    LedgerEntry {
+        file,
+        name,
+        sites,
+        why,
+    }
+}
+
+/// Every string-dispatch (file, name) pair on a registered name left standing,
+/// one entry each, carrying its exact occurrence count.
 ///
 /// Follows the in-tree `EXEMPTION_LEDGER` pattern named by the ratified
 /// amendment (`crates/reify-compiler/tests/mul_div_static_runtime_parity.rs`)
@@ -164,6 +212,9 @@ struct LedgerEntry {
 /// would break on any unrelated edit above the site, turning this gate into
 /// churn. The cost is that moving a site WITHIN its file does not re-trigger
 /// review; the ledger is small enough to read in full whenever it changes.
+///
+/// Skipped by rustfmt so each `ledgered(..)` entry stays one line per pair.
+#[rustfmt::skip]
 const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     // ── reify-expr's Field-valued interception arms ─────────────────────────
     //
@@ -235,6 +286,72 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
         sites: 1,
         why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
     },
+    // ── S8-ψ's Relation rows, registered before their consumers migrate ────
+    //
+    // The compiler's relation vocabulary: the name slice, the arity-gated resolver and
+    // the per-name operand and ΔDOF tables. S9 λ retires them by reading every relation
+    // signature off its row.
+    ledgered(RELATION_SIGNATURES, "coincident", 3, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "on", 3, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "parallel", 4, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "antiparallel", 4, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "perpendicular", 4, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "concentric", 4, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "flush", 4, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "offset", 6, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "tangent", 3, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "fasten", 3, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "angle", 4, WHY_RELATION_VOCABULARY),
+    ledgered(RELATION_SIGNATURES, "distance", 5, WHY_RELATION_VOCABULARY),
+    //
+    // The relate solve's per-relation residual dispatch: the runtime binding
+    // `RelationKind` exists for (I-REG-2).
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "coincident", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "on", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "parallel", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "antiparallel", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "perpendicular", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "concentric", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "flush", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "offset", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "tangent", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "fasten", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "angle", 1, WHY_RESIDUAL_DISPATCH),
+    ledgered(CONSTRAINTS_RELATE_SOLVE, "distance", 1, WHY_RESIDUAL_DISPATCH),
+    //
+    // The relate solve's per-relation demand description, retired with the
+    // residual dispatch above. `fasten` has no arm here.
+    ledgered(EVAL_RELATE_SOLVE, "coincident", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "on", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "parallel", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "antiparallel", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "perpendicular", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "concentric", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "flush", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "offset", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "tangent", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "angle", 1, WHY_DESCRIBE_DEMAND),
+    ledgered(EVAL_RELATE_SOLVE, "distance", 1, WHY_DESCRIBE_DEMAND),
+    //
+    // Different builtins that merely share a relation name: the arity-2 geometry
+    // queries `angle` / `distance` and the arity-2 construction datum `offset`. They
+    // become rows of their own in #6944, keyed apart from the relation rows by argc.
+    ledgered(COMPILER_UNITS, "offset", 2, WHY_DATUM_OFFSET),
+    ledgered(COMPILER_UNITS, "angle", 2, WHY_GEOMETRY_QUERY_DERIVE),
+    ledgered(COMPILER_UNITS, "distance", 2, WHY_GEOMETRY_QUERY_DERIVE),
+    ledgered(STDLIB_GEOMETRY, "offset", 2, WHY_DATUM_OFFSET),
+    //
+    // The topology-selector helper string map, which #6944 replaces with one
+    // `BuiltinId`-keyed dispatch.
+    ledgered(EVAL_GEOMETRY_OPS, "angle", 1, WHY_TOPOLOGY_SELECTOR_HELPER),
+    ledgered(EVAL_GEOMETRY_OPS, "distance", 1, WHY_TOPOLOGY_SELECTOR_HELPER),
+    //
+    // Test-only modules declared out of line in their parent. Not dispatch at all:
+    // see "What this scan still cannot see" in the module doc.
+    ledgered(EVAL_GEOMETRY_OPS_TESTS, "angle", 3, WHY_OUT_OF_LINE_TEST_MODULE),
+    ledgered(EVAL_GEOMETRY_OPS_TESTS, "distance", 1, WHY_OUT_OF_LINE_TEST_MODULE),
+    ledgered(EVAL_REGISTRY_DRIFT_TESTS, "angle", 2, WHY_OUT_OF_LINE_TEST_MODULE),
+    ledgered(EVAL_REGISTRY_DRIFT_TESTS, "distance", 2, WHY_OUT_OF_LINE_TEST_MODULE),
 ];
 
 fn is_ledgered(file: &str, name: &str) -> bool {
