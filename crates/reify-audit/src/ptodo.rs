@@ -397,10 +397,33 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
     prd_relative_cite_family(bytes, cite_start, id).is_some()
 }
 
+/// The scan loop behind both §8.2 cite spellings ([`cite_occurrences`],
+/// [`legacy_task_cite_occurrences`]): every position where `cite_at` matches,
+/// as `(head, end, id)` in source order. A match resumes the scan at its `end`;
+/// a miss advances one byte.
+fn occurrences_by<'a>(
+    bytes: &'a [u8],
+    cite_at: impl Fn(&[u8], usize) -> Option<(usize, u32)> + 'a,
+) -> impl Iterator<Item = (usize, usize, u32)> + 'a {
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            let head = i;
+            i += 1;
+            if let Some((end, id)) = cite_at(bytes, head) {
+                i = end;
+                return Some((head, end, id));
+            }
+        }
+        None
+    })
+}
+
 /// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
 /// `(head, end, id)` for every numerically well-formed cite on the line, in
 /// source order: `head` the byte offset of the `#`, `end` one past the last
-/// digit — the same span shape as [`legacy_task_cite_occurrences`].
+/// digit — the [`occurrences_by`] span shape [`legacy_task_cite_occurrences`]
+/// shares.
 ///
 /// [`has_canonical_cite`], [`extract_cites`] (both via
 /// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
@@ -417,20 +440,10 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 /// The G-allow owner-cite lane deliberately does NOT scan through here — see
 /// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
 fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    std::iter::from_fn(move || {
-        while i < bytes.len() {
-            let head = i;
-            i += 1;
-            if bytes[head] == b'#'
-                && let Some((end, id)) = digit_run_id(bytes, head + 1)
-            {
-                i = end;
-                return Some((head, end, id));
-            }
-        }
-        None
+    occurrences_by(line.as_bytes(), |bytes, head| {
+        (bytes[head] == b'#')
+            .then(|| digit_run_id(bytes, head + 1))
+            .flatten()
     })
 }
 
@@ -607,19 +620,7 @@ fn has_malformed_cite(line: &str) -> bool {
 /// separate, so the marker lanes' `malformed-cite` verdicts are unaffected by
 /// this stricter contract.
 fn legacy_task_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    std::iter::from_fn(move || {
-        while i < bytes.len() {
-            let head = i;
-            i += 1;
-            if let Some((end, id)) = legacy_task_cite_at(bytes, head) {
-                i = end;
-                return Some((head, end, id));
-            }
-        }
-        None
-    })
+    occurrences_by(line.as_bytes(), legacy_task_cite_at)
 }
 
 /// The legacy cite starting exactly at `head`, as `(end, id)`; see
@@ -3821,11 +3822,14 @@ mod tests {
         }
     }
 
-    /// The payload is the OWNER cites only: a provenance cite sharing the
-    /// line never reaches β.
+    /// Wherever arm (8) claims a line, its payload is the OWNER cites only: a
+    /// provenance cite sharing the line does not reach β through δ-C. On Rust
+    /// that holds only on lines δ-B leaves alone; a δ-B line keeps δ-B's
+    /// all-cites payload, pinned by `scan_file_delta_c_precedence`.
     #[test]
     fn scan_file_delta_c_mixed_line_yields_only_the_owner() {
         let line = "// introduced by #4578; growth owned by #7097";
+        assert!(!has_deferral_prose(line), "δ-B must not claim: {line}");
         for lang in [SweptLang::Rust, SweptLang::SlashComment] {
             assert_eq!(scan_file(line, lang), cited_line(line, &[7097]), "{lang:?}");
         }
