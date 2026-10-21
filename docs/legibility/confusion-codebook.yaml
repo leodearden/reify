@@ -3513,6 +3513,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: watcher-rearm.sh bounded wait hits its own CEILING (exit 124) and the agent immediately re-issues the identical rearm command rather than switching strategy; repeated across two rearm cycles in this session.
+  - date: '2026-10-20'
+    project: reify
+    session: 277b1fd3-64a9-4a1f-be35-3611d35a721f
+    origin_phase: ops
+    manifested_phase: ops
+    note: Weaker match. The same foreground watcher-rearm command exited 137 once (turn 190, the session's only tool_error), and the agent then kept re-issuing the same bounded-wait call rather than switching to a background wait. The digest does not show the exit-137 failure on its own, so this is a partial match.
+  - date: '2026-10-20'
+    project: reify
+    session: 99269aa4-0691-4323-9e8f-63dd36b17a9a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Partial match on the cause: a foreground bounded-wait watcher-rearm call (timeout 3600) terminated with exit 137 (turn 99). The digest shows a single occurrence with no retry, so the blind-retry half of the entry is not evidenced.'
 - id: entry-cand-20260722-3
   title: Watcher script path resolved relative to target project cwd instead of dark-factory tooling root
   severity: medium
@@ -4344,6 +4356,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Monitor is re-issued with the identical while-true watcher command and the same 1800000 ms timeout_ms about 103 times, plus 3 and 24 and 11 more identical re-arms of the same loop. This fits the codebook's pattern of re-issuing a bounded wait identically after its ceiling. The digest does not state the ceiling was hit explicitly, so the match rests on the repeated identical re-arms and the fixed timeout_ms.
+  - date: '2026-10-20'
+    project: reify
+    session: 277b1fd3-64a9-4a1f-be35-3611d35a721f
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The escalation watcher re-issued the identical bounded rearm command (watcher-rearm.sh --level 1 --timeout 3600) five times, and the wait repeatedly hit its own ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING) without any change in approach.'
+  - date: '2026-10-20'
+    project: reify
+    session: 911bee35-4e53-4804-bfd9-bd36c61f47a9
+    origin_phase: ops
+    manifested_phase: ops
+    note: After the bounded watcher-rearm hit its own CEILING (exit 124, turn 58), the agent re-issued a near-identical watcher-rearm.sh call at turn 67 with the same --timeout 3600 and only an added echo/date wrapper, rather than changing the wait strategy.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -8258,6 +8282,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Agent probed .task/iterations.jsonl in the warm-lane worktree (turn 27) and got ''No such file or directory'' (exit 1), matching the codebook''s missing per-lane iterations.jsonl at the expected path. Phase is not supported by the evidence: the verify.sh failure is post-merge, but the probe happens later during unblock investigation.'
+  - date: '2026-10-20'
+    project: reify
+    session: 16a755e6-9365-4ce9-aa7e-b33cf4fec9cf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Agent ran ls and wc against .task-meta/_lane-1/iterations.jsonl, which does not exist (wc: No such file or directory, exit 1). The lane directory lists agent_session.json, metadata.json, plan.json, plan.lock, reviews/ and verdicts/, but no iterations.jsonl.'
+  - date: '2026-10-20'
+    project: reify
+    session: ea97e719-6828-4d7a-a807-b68ac39c7cc4
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probed warm-lane task-meta files (.task/iterations.jsonl, .task/metadata.json, .task/reviews) that do not exist at those paths in the worktree and got 'No such file or directory' errors. This matches the missing per-lane iterations.jsonl at the expected path. The digest does not show which phase the agent was in when it assumed the path.
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -9876,6 +9912,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'Bash({"command": "git rev-parse HEAD && echo \"---files---\" && ls gui/src/__tests__/toolDefNames* 2>&1 && echo \"---diff---\" && git diff HEAD --stat ..."}) -> [exit 2] ... ls: cannot access ''gui/src/__tests__/toolDefNames*'': No such file or directory'
+  - date: '2026-10-20'
+    project: reify
+    session: b43f2ada-5533-47d9-ac36-0b524014b227
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. A trailing glob-based existence probe (ls docs/prds/*.survey*) in a && chain returned exit 2 after earlier steps had already printed output. The digest does not show whether any later step was dropped, and the phases are not evidenced.
 - id: entry-cand-20260910-18
   title: pkill -f pattern textually matches its own invoking command line, self-killing the shell (exit 144)
   severity: medium
