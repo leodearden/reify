@@ -833,3 +833,290 @@ structure def FabricatedFlexureJoint {
         non_joint[0].severity
     );
 }
+
+// ── PRD 5 leaf β (task #6941): the PRB flexure readers check dimensions ─────
+//
+// Boundary rows B4 (`youngs_modulus`) and B5 (`yield_stress`) of
+// `docs/prds/v0_6/dimension-checked-readers.md`. Since #5306 the compiler
+// rejects a wrong-dimension field literal at a `Material(...)` call, so these
+// tests drive the readers BELOW the compiler with hand-built argument values:
+// a wrong dimension that reaches a flexure ctor must be refused (Undef) and
+// named by one `DimensionedArgRejected` Error, never read as SI.
+
+mod dimension_checked_readers {
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, ValueCellId};
+    use reify_ir::arg_acceptance::{
+        Acceptance, ArgSpec, accept_arg, dimensionless_spec, length_spec, pressure_spec,
+    };
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+
+    use super::map_get;
+
+    fn scalar(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    fn structure(type_name: &str, fields: &[(&str, Value)]) -> Value {
+        let fields: PersistentMap<String, Value> = fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    fn steel_like(yield_stress: Value, poisson_ratio: Value) -> Value {
+        structure(
+            "Steel_AISI_1045",
+            &[
+                ("youngs_modulus", scalar(205e9, DimensionVector::PRESSURE)),
+                ("yield_stress", yield_stress),
+                ("poisson_ratio", poisson_ratio),
+            ],
+        )
+    }
+
+    fn origin() -> Value {
+        Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)])
+    }
+
+    fn axis_y() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    /// `prb_cantilever_beam(20mm, 5mm, 0.5mm, material, origin, y)`.
+    fn cantilever_args(material: Value) -> Vec<Value> {
+        vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            material,
+            origin(),
+            axis_y(),
+        ]
+    }
+
+    /// The message the shared reader renders for `value` at `spec`, so these
+    /// tests name the builtin and position without restating the wording
+    /// (INV-SF-6).
+    fn canonical_rejection(value: &Value, spec: &ArgSpec, builtin: &str, path: &str) -> String {
+        let Acceptance::Rejected(rejection) = accept_arg(value, spec) else {
+            unreachable!("{value:?} must be rejected at {}", spec.type_name);
+        };
+        rejection.message(builtin, path)
+    }
+
+    fn errors(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diags.iter().filter(|d| d.severity == Severity::Error).collect()
+    }
+
+    /// The ctor refuses `args` (Undef) and its classifier names exactly one
+    /// `DimensionedArgRejected` Error carrying `expected`.
+    fn assert_refused_with(name: &str, args: &[Value], expected: &str) {
+        let result = reify_stdlib::eval_builtin(name, args);
+        assert_eq!(result, Value::Undef, "{name} must refuse {args:?}");
+        let diags = reify_stdlib::flexure_diagnose(name, args, &result);
+        let errors = errors(&diags);
+        assert_eq!(errors.len(), 1, "{name}: exactly one Error, got {diags:#?}");
+        assert_eq!(
+            errors[0].code,
+            Some(DiagnosticCode::DimensionedArgRejected),
+            "{name}: the Error is the dimension rejection, got {diags:#?}"
+        );
+        assert_eq!(errors[0].message, expected, "{name}: canonical wording");
+    }
+
+    #[test]
+    fn b4_a_length_youngs_modulus_is_refused_and_named() {
+        let wrong_e = scalar(0.2, DimensionVector::LENGTH);
+        let material = structure(
+            "Material",
+            &[
+                ("density", scalar(7850.0, DimensionVector::MASS_DENSITY)),
+                ("youngs_modulus", wrong_e.clone()),
+            ],
+        );
+        let expected = canonical_rejection(
+            &wrong_e,
+            &pressure_spec(),
+            "prb_cantilever_beam",
+            "material.youngs_modulus",
+        );
+        assert_refused_with("prb_cantilever_beam", &cantilever_args(material), &expected);
+    }
+
+    #[test]
+    fn b5_a_length_yield_stress_is_refused_and_named() {
+        let wrong_yield = scalar(0.31, DimensionVector::LENGTH);
+        let material = steel_like(
+            Value::Option(Some(Box::new(wrong_yield.clone()))),
+            Value::Real(0.29),
+        );
+        let expected = canonical_rejection(
+            &wrong_yield,
+            &pressure_spec(),
+            "prb_cantilever_beam",
+            "material.yield_stress",
+        );
+        assert_refused_with("prb_cantilever_beam", &cantilever_args(material), &expected);
+    }
+
+    #[test]
+    fn a_bare_geometry_length_is_refused_not_read_as_metres() {
+        let steel = steel_like(
+            Value::Option(Some(Box::new(scalar(310e6, DimensionVector::PRESSURE)))),
+            Value::Real(0.29),
+        );
+        let mut args = cantilever_args(steel);
+        args[0] = Value::Real(0.02);
+        let expected =
+            canonical_rejection(&args[0], &length_spec(), "prb_cantilever_beam", "length");
+        assert_refused_with("prb_cantilever_beam", &args, &expected);
+    }
+
+    #[test]
+    fn a_bare_neutral_offset_is_refused_not_read_as_zero() {
+        let steel = steel_like(
+            Value::Option(Some(Box::new(scalar(310e6, DimensionVector::PRESSURE)))),
+            Value::Real(0.29),
+        );
+        let mut args = cantilever_args(steel);
+        args.push(Value::length(0.0001));
+        assert!(
+            matches!(
+                reify_stdlib::eval_builtin("prb_fixed_fixed_beam", &args),
+                Value::Map(_)
+            ),
+            "the LENGTH neutral offset twin constructs a joint"
+        );
+        args[6] = Value::Real(0.0001);
+        let expected =
+            canonical_rejection(&args[6], &length_spec(), "prb_fixed_fixed_beam", "neutral");
+        assert_refused_with("prb_fixed_fixed_beam", &args, &expected);
+    }
+
+    /// `prb_let_joint(20mm, 5mm, 0.5mm, 2, material, origin, y)`.
+    fn let_args(material: Value) -> Vec<Value> {
+        vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            Value::Int(2),
+            material,
+            origin(),
+            axis_y(),
+        ]
+    }
+
+    #[test]
+    fn a_dimensioned_poisson_ratio_is_refused_and_a_bare_one_is_read() {
+        let steel_yield = Value::Option(Some(Box::new(scalar(310e6, DimensionVector::PRESSURE))));
+        let bare = steel_like(steel_yield.clone(), Value::Real(0.29));
+        assert!(
+            matches!(
+                reify_stdlib::eval_builtin("prb_let_joint", &let_args(bare)),
+                Value::Map(_)
+            ),
+            "a bare poisson_ratio is dimensionless and must still construct"
+        );
+
+        let wrong_nu = scalar(0.29, DimensionVector::PRESSURE);
+        let material = steel_like(steel_yield, wrong_nu.clone());
+        let expected = canonical_rejection(
+            &wrong_nu,
+            &dimensionless_spec(),
+            "prb_let_joint",
+            "material.poisson_ratio",
+        );
+        assert_refused_with("prb_let_joint", &let_args(material), &expected);
+    }
+
+    // ── positive floors: the correct spellings are unchanged ────────────────
+
+    /// Inline copy of `tests/prd-gate/fixtures/dcr_material_dimension_correct.ri`
+    /// (that fixture is not in verify.sh's `_RUST_COUPLED_RI_FIXTURES`).
+    const MATERIAL_DIMENSION_CORRECT: &str = r#"
+module dcr_material_dimension_correct_inline
+
+structure def DcrMaterialDimensionCorrect {
+    let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let j = prb_cantilever_beam(20mm, 5mm, 0.5mm, m, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+}
+"#;
+
+    const STEEL_YIELD_FLOORS: &str = r#"
+module steel_yield_floors
+
+structure def SteelYieldFloors {
+    let with_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let no_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+}
+"#;
+
+    fn eval_cells(source: &str) -> reify_eval::EvalResult {
+        let compiled = parse_and_compile_with_stdlib(source);
+        make_simple_engine().eval(&compiled)
+    }
+
+    fn validity_upper_si(joint: &Value) -> f64 {
+        let Some(Value::StructureInstance(record)) = map_get(joint, "__flexure_compliance") else {
+            panic!("expected a FlexureCompliance record on {joint:?}");
+        };
+        match record.fields.get("prb_validity_range") {
+            Some(Value::Range {
+                upper: Some(upper), ..
+            }) => match upper.as_ref() {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == DimensionVector::ANGLE => *si_value,
+                other => panic!("expected an ANGLE upper bound, got {other:?}"),
+            },
+            other => panic!("expected a bounded prb_validity_range, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_correct_material_spelling_keeps_its_measured_spring_rate() {
+        let result = eval_cells(MATERIAL_DIMENSION_CORRECT);
+        assert!(
+            errors(&result.diagnostics).is_empty(),
+            "the correct spelling evaluates Error-free: {:#?}",
+            result.diagnostics
+        );
+        let joint = result
+            .values
+            .get(&ValueCellId::new("DcrMaterialDimensionCorrect", "j"))
+            .expect("cell j");
+        let Some(Value::Scalar { si_value, .. }) = map_get(joint, "spring_rate") else {
+            panic!("expected a spring_rate Scalar on {joint:?}");
+        };
+        assert_eq!(*si_value, 1.3802083333333335);
+    }
+
+    #[test]
+    fn steel_yield_stress_present_and_absent_keep_their_validity_ranges() {
+        let result = eval_cells(STEEL_YIELD_FLOORS);
+        let loud: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
+            .collect();
+        assert!(loud.is_empty(), "no Error/Warning diagnostic: {loud:#?}");
+        for cell in ["with_yield", "no_yield"] {
+            let joint = result
+                .values
+                .get(&ValueCellId::new("SteelYieldFloors", cell))
+                .unwrap_or_else(|| panic!("cell {cell}"));
+            assert_eq!(validity_upper_si(joint), 0.08726646259971647, "{cell}");
+        }
+    }
+}
