@@ -119,6 +119,8 @@ pub struct Host {
     pub file: &'static str,
     /// The host file's `/`-separated path under `crate_root`.
     pub path_in_crate: &'static str,
+    /// The PRD decision the host's rows enforce, cited by the crate-tree red message.
+    pub decision: &'static str,
 }
 
 impl Host {
@@ -159,7 +161,8 @@ pub fn assert_crate_tree_at_baselines(rows: &[Ratchet], host: &Host) {
     let failures = crate_tree_failures(rows, &tree, host.file);
     assert!(
         failures.is_empty(),
-        "adoption ratchets out of step (docs/prds/v0_6/solver-crates-layering.md D20):\n{}",
+        "adoption ratchets out of step ({}):\n{}",
+        host.decision,
         failures.join("\n")
     );
 }
@@ -818,6 +821,7 @@ mod tests {
             crate_root: env!("CARGO_MANIFEST_DIR"),
             file: file!(),
             path_in_crate: "src/adoption_ratchet.rs",
+            decision: "probe PRD D1",
         };
         assert_eq!(this_file.problems(), Vec::<String>::new());
         let other_file = Host {
@@ -839,5 +843,36 @@ mod tests {
             problems.contains("src/missing.rs is not a file"),
             "{problems}"
         );
+    }
+
+    fn leaked(text: String) -> &'static str {
+        Box::leak(text.into_boxed_str())
+    }
+
+    #[test]
+    #[should_panic(expected = "adoption ratchets out of step (probe PRD D1):\n\
+                               probe-row: 1 is below its baseline 2")]
+    fn an_off_baseline_crate_tree_is_red_citing_the_host_decision() {
+        let dir = crate::temp_dirs::prefixed_tempdir("adoption-ratchet-driver-");
+        let root = dir.path();
+        let files = [
+            ("src/lib.rs", PROBE_SEED),
+            ("tests/host.rs", ""),
+            ("tests/other.rs", ""),
+        ];
+        for (relative, text) in files {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().expect("a fixture file sits in a directory"))
+                .unwrap_or_else(|error| panic!("creating the parent of {relative}: {error}"));
+            std::fs::write(&path, text)
+                .unwrap_or_else(|error| panic!("writing {relative}: {error}"));
+        }
+        let host = Host {
+            crate_root: leaked(root.display().to_string()),
+            file: leaked(root.join("tests/host.rs").display().to_string()),
+            path_in_crate: "tests/host.rs",
+            decision: "probe PRD D1",
+        };
+        assert_crate_tree_at_baselines(&[probe_row(2)], &host);
     }
 }

@@ -14,6 +14,7 @@ const HOST: Host = Host {
     crate_root: env!("CARGO_MANIFEST_DIR"),
     file: file!(),
     path_in_crate: "tests/adoption_ratchets.rs",
+    decision: "docs/prds/v0_6/solver-crates-layering.md D20",
 };
 
 const SOLVE_REDUCED_DEFINITION_AND_TEST_ITEMS: &[&str] = &[TEST_ITEMS[0], "fn solve_reduced"];
