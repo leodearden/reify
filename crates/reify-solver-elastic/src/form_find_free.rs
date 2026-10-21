@@ -1630,6 +1630,67 @@ mod tests {
         );
     }
 
+    // ---- Free-standing form certification (FreeStandingForm::certify) ----
+
+    #[test]
+    fn certify_accepts_connected_nullity_four_d() {
+        let (members, _kinds) = triplex_topology();
+        let d = assemble_force_density_matrix(6, &members, &closed_form_q());
+
+        let form = FreeStandingForm::certify(&d).expect("closed-form prism D is a form");
+        assert_eq!(form.spectrum().nullity, FREE_FORM_NULLITY);
+    }
+
+    #[test]
+    fn certify_names_the_nullity_of_a_connected_wrong_rank_d() {
+        let (members, kinds) = triplex_topology();
+        let d = assemble_force_density_matrix(6, &members, &generic_admissible_q(&kinds));
+
+        assert_eq!(
+            FreeStandingForm::certify(&d).unwrap_err(),
+            FormDefect {
+                nullity: 1,
+                components: 1,
+            },
+        );
+    }
+
+    #[test]
+    fn certify_rejects_a_disconnected_d_whose_nullity_is_four() {
+        // Four disjoint unit cable pairs: one translation mode per pair makes
+        // the nullity exactly 4, so the count alone certifies nothing.
+        let members = [(0, 1), (2, 3), (4, 5), (6, 7)];
+        let d = assemble_force_density_matrix(8, &members, &[1.0; 4]);
+
+        assert_eq!(
+            FreeStandingForm::certify(&d).unwrap_err(),
+            FormDefect {
+                nullity: 4,
+                components: 4,
+            },
+        );
+    }
+
+    #[test]
+    fn certify_counts_an_isolated_node_as_a_component() {
+        let (members, _kinds) = triplex_topology();
+        let prism_d = assemble_force_density_matrix(6, &members, &closed_form_q());
+        let mut d = Mat::<f64>::zeros(7, 7);
+        for i in 0..6 {
+            for j in 0..6 {
+                d[(i, j)] = prism_d[(i, j)];
+            }
+        }
+
+        assert_eq!(
+            FreeStandingForm::certify(&d).unwrap_err(),
+            FormDefect {
+                nullity: 5,
+                components: 2,
+            },
+        );
+    }
+
     // ---- Explicit-mode feasibility diagnostics ----
 
     #[test]
@@ -2084,6 +2145,57 @@ mod tests {
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
             FreeFormError::SearchDidNotConverge,
         );
+    }
+
+    /// Whether `result` is the search's non-convergence carrying a defect that
+    /// names two connected pieces — the observable a disconnected free-standing
+    /// model must produce, whatever nullity its search happened to stop at.
+    fn is_two_piece_non_convergence(result: &Result<FreeFormResult, FreeFormError>) -> bool {
+        matches!(
+            result,
+            Err(FreeFormError::SearchDidNotConverge {
+                defect: Some(FormDefect { components: 2, .. }),
+            })
+        )
+    }
+
+    #[test]
+    fn line_only_group_ratios_with_an_isolated_node_does_not_converge() {
+        // The search drives D's 4 smallest eigenvalues to 0. The isolated node
+        // contributes a free translation mode, so the triplex itself settles
+        // FLAT (nullity 3) and the total is exactly 4; the extra node keeps the
+        // recovery 3-D. Only the one-connected-piece condition sees through it.
+        let (members, kinds) = triplex_topology();
+        let mut guess = perturbed_prism_guess();
+        guess.push([0.3, 0.2, 0.4]);
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        let result = form_find_free(&guess, &members, &kinds, &spec);
+        assert!(is_two_piece_non_convergence(&result), "{result:?}");
+    }
+
+    #[test]
+    fn line_only_group_ratios_with_a_disconnected_cable_pair_does_not_converge() {
+        let (mut members, mut kinds) = triplex_topology();
+        let mut guess = perturbed_prism_guess();
+        guess.push([0.3, 0.2, 0.4]);
+        guess.push([0.3, 0.2, 0.9]);
+        members.push((6, 7));
+        kinds.push(MemberKind::Cable);
+        let mut group_ids = triplex_group_ids();
+        group_ids.push(3);
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids,
+            seed_ratios: vec![-1.0, 1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        let result = form_find_free(&guess, &members, &kinds, &spec);
+        assert!(is_two_piece_non_convergence(&result), "{result:?}");
     }
 
     #[test]
