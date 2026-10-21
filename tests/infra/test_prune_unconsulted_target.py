@@ -22,6 +22,7 @@ one the dead unit is the newest consult, becomes the anchor and is correctly
 kept, so a 'gone' assertion would fail for the wrong reason.
 """
 
+import fcntl
 import os
 import re
 import shutil
@@ -315,6 +316,69 @@ class Usage(PruneHarness):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertEqual(self.tree(), before)
                 self.assertEqual(self.findmnt_calls(), [])
+
+
+class LaneLocks(PruneHarness):
+    """--lock FILE...: dark_factory's lane lock and compat co-lock. A held lock
+    is a normal contention and exits 0 having read nothing; a lock that cannot
+    be opened is a misconfiguration and fails closed."""
+
+    def setUp(self):
+        super().setUp()
+        self.worktree_base = self.tmp / "worktrees"
+        self.worktree_base.mkdir()
+        self.lane_lock = self.worktree_base / "_merge-verify.lock"
+        self.compat_lock = self.worktree_base / ".merge_verify.lock"
+        self.debug_core = make_core(self.debug)
+        self.release_core = make_core(self.release)
+
+    def hold(self, lock):
+        """Take LOCK_EX on `lock` for the rest of the test, as dark_factory does."""
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o644)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def run_locked(self, *locks):
+        lock_args = [arg for lock in locks for arg in ("--lock", lock)]
+        return self.run_prune("--window-days", 3, *lock_args, self.debug, self.release)
+
+    def assertHeldLockSkips(self, held):
+        self.hold(held)
+        before = self.tree()
+
+        result = self.run_locked(self.lane_lock, self.compat_lock)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tree(), before)
+        self.assertIn(str(held), result.stderr)
+        self.assertEqual(self.findmnt_calls(), [], "the tree was read under a held lock")
+
+    def test_a_held_lane_lock_exits_0_having_read_and_deleted_nothing(self):
+        self.assertHeldLockSkips(self.lane_lock)
+
+    def test_a_held_compat_co_lock_exits_0_having_read_and_deleted_nothing(self):
+        self.assertHeldLockSkips(self.compat_lock)
+
+    def test_free_locks_let_the_trim_run_and_absent_lock_files_are_created(self):
+        result = self.run_locked(self.lane_lock, self.compat_lock)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertAbsent(self.debug_core["superseded"] + self.release_core["superseded"])
+        self.assertPresent(self.debug_core["kept"] + self.release_core["kept"])
+        self.assertTrue(self.lane_lock.is_file())
+        self.assertTrue(self.compat_lock.is_file())
+
+    def test_an_unopenable_lock_fails_closed_naming_it(self):
+        unopenable = self.tmp / "no-such-dir" / "_merge-verify.lock"
+        before = self.tree()
+
+        result = self.run_locked(unopenable, self.compat_lock)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 2, "a lock fault is not a usage error")
+        self.assertEqual(self.tree(), before)
+        self.assertIn(str(unopenable), result.stderr)
+        self.assertEqual(self.findmnt_calls(), [])
 
 
 class Standalone(PruneHarness):
