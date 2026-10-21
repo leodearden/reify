@@ -15,7 +15,9 @@
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::UndefCause;
-use reify_ir::arg_acceptance::{Acceptance, ArgSpec, accept_arg, length_spec, mass_spec};
+use reify_ir::arg_acceptance::{
+    Acceptance, ArgSpec, accept_arg, length_spec, mass_spec, pressure_spec,
+};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 // ── Helper: load and compile the γ fixture ────────────────────────────────────
@@ -497,6 +499,97 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
             si_value: 2.0,
             dimension: DimensionVector::MASS,
         })
+    );
+}
+
+/// Inline for the same reason as [`MASS_DIMENSION_SOURCE`]. A user struct is
+/// the `.ri`-reachable route to a wrong-dimension material field: the `prb_*`
+/// arguments are not type-checked, so `FakeMaterial`'s LENGTH `youngs_modulus`
+/// reaches the flexure reader, as does a bare geometry length.
+const FLEXURE_DIMENSION_SOURCE: &str = "structure def FakeMaterial {
+  param youngs_modulus : Length = 200mm
+}
+
+structure def FlexDim {
+  let wrong_e = prb_cantilever_beam(20mm, 5mm, 0.5mm, FakeMaterial(), point3(0mm,0mm,0mm), vec3(0,1,0))
+  let bare_len = prb_cantilever_beam(0.02, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), vec3(0,1,0))
+  let right = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), vec3(0,1,0))
+}";
+
+/// A flexure ctor refusing a wrong-dimension material field or a bare geometry
+/// length is diagnosed, and the recorded cause is the SPECIFIC
+/// `DimensionedArgRejected`, not the generic `OpContractViolation` (PRD-5 I5);
+/// the correctly-spelled twin is a joint with no cause.
+#[test]
+fn a_flexure_dimension_rejection_records_the_dimensioned_arg_cause() {
+    use reify_core::Severity;
+    use reify_ir::Value;
+
+    let module = compile_source_with_stdlib(FLEXURE_DIMENSION_SOURCE);
+    let errors = collect_errors(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "FlexDim must compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+    engine.set_capture_undef_causes(true);
+    let result = engine.eval(&module);
+
+    let rejections: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    let expected = [
+        canonical_rejection(
+            Value::length(0.2),
+            &pressure_spec(),
+            "prb_cantilever_beam",
+            "material.youngs_modulus",
+        ),
+        canonical_rejection(Value::Real(0.02), &length_spec(), "prb_cantilever_beam", "length"),
+    ];
+    assert_eq!(
+        rejections.len(),
+        expected.len(),
+        "one rejection per wrong cell, got {rejections:#?}"
+    );
+    for message in &expected {
+        assert!(
+            rejections.contains(&message.as_str()),
+            "expected {message:?}, got {rejections:#?}"
+        );
+    }
+
+    let causes = engine.undef_causes();
+    for cell in ["wrong_e", "bare_len"] {
+        let id = ValueCellId::new("FlexDim", cell);
+        assert!(
+            matches!(
+                causes.get(&id),
+                Some(UndefCause::OpContractFailed {
+                    code: DiagnosticCode::DimensionedArgRejected,
+                    ..
+                })
+            ),
+            "{cell}: expected OpContractFailed {{ DimensionedArgRejected }}, got {:?}",
+            causes.get(&id)
+        );
+    }
+
+    let right = ValueCellId::new("FlexDim", "right");
+    assert!(
+        causes.get(&right).is_none(),
+        "the correctly-spelled twin records no cause"
+    );
+    assert!(
+        matches!(result.values.get(&right), Some(Value::Map(_))),
+        "right must be a joint Map, got {:?}",
+        result.values.get(&right)
     );
 }
 
