@@ -6,7 +6,7 @@
 #
 # Usage:
 #   scripts/prune-unconsulted-target.sh --window-days N [--atime-probe PATH]
-#                                       PROFILE_DIR...
+#                                       [--lock FILE]... PROFILE_DIR...
 #
 # Callers:
 #   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy.
@@ -43,14 +43,27 @@
 #   --atime-probe PATH  The path whose mount must maintain atime: the tree
 #                       cargo's fingerprint reads went through (default: the
 #                       profile dir being pruned).
+#   --lock FILE         Repeatable. Taken exclusively and non-blocking, in the
+#                       order given, before any profile is read, and held until
+#                       the script exits, so the trim never overlaps a build in
+#                       the same target. These are dark_factory's flock(2) lane
+#                       locks, created on first use and never unlinked, so an
+#                       absent lock file is created here too. A lock another
+#                       process holds is normal contention: the trim is skipped
+#                       and the script exits 0, because the laptop service must
+#                       end in Result=success. A lock that cannot be opened, or a
+#                       flock fault, means the paths are misconfigured: exit 1,
+#                       nothing read. flock's -E code tells contention apart
+#                       from a fault, which a bare `flock -n` rc 1 cannot.
 #   -h, --help          Print usage and exit 0.
 #
 # Output: nothing on stdout. stderr, per pruned profile:
 #   prune deps=<deps dir> files=N victim_bytes=N window_days=N
 # victim_bytes is the victims' summed apparent size.
 #
-# Exit: 0 pruned or skipped; 1 failure (the unlink pipeline failed); 2 usage
-# error, before anything is read or deleted.
+# Exit: 0 pruned, skipped, or a --lock held elsewhere; 1 failure (a --lock
+# that cannot be taken, or the unlink pipeline failed); 2 usage error, before
+# anything is read or deleted.
 #
 # Executable spec: tests/infra/test_prune_unconsulted_target.py, and through
 # refresh-warm-base.sh, tests/infra/test_refresh_warm_base.sh Block LIVE.
@@ -62,7 +75,8 @@ err()  { printf '[error] %s\n' "$*" >&2; }
 
 _usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") --window-days N [--atime-probe PATH] PROFILE_DIR...
+Usage: $(basename "$0") --window-days N [--atime-probe PATH] [--lock FILE]...
+           PROFILE_DIR...
 
   Delete the deps/ files of cargo units whose .fingerprint was last consulted
   more than N days before the profile's newest consult. Rule, skips and exit
@@ -83,6 +97,7 @@ _is_positive_int() {
 # ── arg parsing ───────────────────────────────────────────────────────────────
 WINDOW_DAYS=""
 ATIME_PROBE=""
+LOCKS=()
 PROFILE_DIRS=()
 
 while [ $# -gt 0 ]; do
@@ -95,6 +110,9 @@ while [ $# -gt 0 ]; do
         --atime-probe)
             [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--atime-probe requires a path"
             ATIME_PROBE="$2"; shift 2 ;;
+        --lock)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--lock requires a path"
+            LOCKS+=("$2"); shift 2 ;;
         --)
             shift; PROFILE_DIRS+=("$@"); break ;;
         -*)
@@ -107,6 +125,26 @@ done
 _is_positive_int "$WINDOW_DAYS" \
     || _usage_error "--window-days must be an integer >= 1 (got '${WINDOW_DAYS}')"
 [ "${#PROFILE_DIRS[@]}" -ge 1 ] || _usage_error "at least one PROFILE_DIR is required"
+
+# ── lane locks: every one taken before the tree is read, held to exit ─────────
+readonly _LOCK_HELD_RC=75
+for _lock in "${LOCKS[@]}"; do
+    if ! exec {_lock_fd}>>"$_lock"; then
+        err "cannot open lock file $_lock — refusing to trim (nothing deleted)."
+        exit 1
+    fi
+    _flock_rc=0
+    flock -n -x -E "$_LOCK_HELD_RC" "$_lock_fd" || _flock_rc=$?
+    case "$_flock_rc" in
+        0) ;;
+        "$_LOCK_HELD_RC")
+            info "lane lock held: $_lock — skipping trim (files=0)."
+            exit 0 ;;
+        *)
+            err "flock on $_lock failed (rc=$_flock_rc) — refusing to trim (nothing deleted)."
+            exit 1 ;;
+    esac
+done
 
 # ── the liveness rule ─────────────────────────────────────────────────────────
 
