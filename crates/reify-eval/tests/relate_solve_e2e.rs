@@ -479,6 +479,70 @@ fn remainder_violated_relation_emits_diagnostic() {
     );
 }
 
+/// The redundant-remainder re-check judges a metre row against the SCALED assertion
+/// rung `assertion · max(L / R_ref, 1)` (PRD §7.3 "Coherence at every scale"), so a
+/// large model's solver-satisfied geometry does not fail its own re-check.
+///
+/// The redundant `offset` repeats the driving one's rows with a target 5e-5 m
+/// further out, so its residual at the solved placement is 5e-5 m. At `L` ≈ 20 m the
+/// metre rung is ≈ 2e-4 m and the remainder is consistent; at `L` ≈ 0.5 m it is
+/// the absolute 1e-5 m and the same 5e-5 m is a colocated conflict.
+#[test]
+fn large_model_redundant_relation_is_judged_against_the_scaled_assertion_rung() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping large_model_redundant_relation_is_judged_against_the_scaled_assertion_rung: \
+             OCCT not available"
+        );
+        return;
+    }
+    let solve_offset_pair = |driving: &str, redundant: &str| {
+        solve_bolt_plate(&bolt_plate_scope_source(
+            None,
+            &[
+                "concentric(bolt.shank_axis, plate.hole_axis)",
+                &format!("offset(bolt.seat_plane, plate.top_plane, {driving})"),
+                &format!("offset(bolt.seat_plane, plate.top_plane, {redundant})"),
+            ],
+        ))
+    };
+    let errors = |solution: &RelateSolution| -> Vec<String> {
+        solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect()
+    };
+
+    let large = solve_offset_pair("20m", "20.00005m");
+    assert_eq!(
+        large.redundant, 1,
+        "the second offset repeats the first's rows"
+    );
+    assert!(
+        matches!(large.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the driving set solves; the bolt is placed"
+    );
+    assert!(
+        errors(&large).is_empty(),
+        "a 5e-5 m remainder is within the metre rung at L ≈ 20 m, got: {:?}",
+        errors(&large)
+    );
+
+    let small = solve_offset_pair("0.5m", "0.50005m");
+    assert_eq!(
+        small.redundant, 1,
+        "the second offset repeats the first's rows"
+    );
+    assert!(
+        errors(&small).iter().any(|m| m.contains("offset")),
+        "a 5e-5 m remainder exceeds the 1e-5 m metre rung at L ≈ 0.5 m and must be \
+         reported as a conflict naming `offset`, got: {:?}",
+        errors(&small)
+    );
+}
+
 /// Pins the instance→source crossing's SECOND consumer: the redundant-remainder
 /// `colocated` check (`operand_refs(built.relation(i))` /
 /// `operand_refs(built.relation(d))`), distinct from
