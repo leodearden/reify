@@ -96,6 +96,12 @@ scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 # refusal path (Block I). The row above maps the artifact only to the pool
 # suite, so that assertion would not be selected on a branch-scope verify.
 scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base.sh
+# Task 9246: the fingerprint-consult liveness trim, shared by refresh-warm-base.sh
+# and the leo-laptop _merge-verify trim timer, pinned by its own .py suite and,
+# through the refresh that calls it, by test_refresh_warm_base.sh Block LIVE.
+scripts/prune-unconsulted-target.sh  tests/infra/test_prune_unconsulted_target.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_refresh_warm_base.sh
+tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted_target.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
