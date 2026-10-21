@@ -32,24 +32,46 @@
 //! RED until step-28 registers `"trajectory::input_shape"` in
 //! `compute_targets::register_compute_fns`. (Step-24 already implemented the
 //! trampoline body; step-28 adds the registration line.)
+//!
+//! Task 6941 ζ (PRD `docs/prds/v0_6/dimension-checked-readers.md`) adds the
+//! reader signals, driven straight through the trampoline: a present field of
+//! the wrong dimension (`target_frequency`, the TOTS limits, a JointLimit's
+//! `max_force`, a waypoint's `t`) is `ComputeOutcome::Failed` carrying α's one
+//! `DimensionedArgRejected` Error, and the TOTS force bound is read from
+//! `actuator_limits` — a joint no limit covers is refused, never solved
+//! against a default.
 
 // Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{ComputeNodeId, ContentHash, DimensionVector, ValueCellId, VersionId};
+use std::f64::consts::PI;
+
+use reify_core::{
+    ComputeNodeId, ContentHash, DiagnosticCode, DimensionVector, Severity, ValueCellId, VersionId,
+};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
-use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
+use reify_eval::trajectory_ops::input_shape_trampoline;
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, DispatchError};
+use reify_ir::arg_acceptance::{
+    Acceptance, ArgSpec, FieldRejection, accept_arg, angular_velocity_spec, dimensionless_spec,
+    force_spec, frequency_spec, time_spec, velocity_spec,
+};
 use reify_ir::{
     DeterminacyState, Freshness, PersistentMap, StructureInstanceData, StructureTypeId, Value,
 };
+use reify_stdlib::impulse_shaper::ImpulseTrain;
+use reify_stdlib::{build_train_for_shaper, shaper_damping_ratio};
 use reify_test_support::make_simple_engine;
 
 // ── Value fixture helpers ─────────────────────────────────────────────────────
 
 /// Build a registry-free `Value::StructureInstance`.
-fn struct_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
-    let fields: PersistentMap<String, Value> = fields.into_iter().collect();
+fn struct_instance(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+    let fields: PersistentMap<String, Value> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
         type_name: type_name.to_string(),
@@ -58,12 +80,35 @@ fn struct_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
     }))
 }
 
+/// `instance` with field `key` set to `value` (inserted or replaced).
+fn with_field(instance: Value, key: &str, value: Value) -> Value {
+    let Value::StructureInstance(mut data) = instance else {
+        panic!("with_field: {key} must be set on a StructureInstance");
+    };
+    data.fields.insert(key.to_string(), value);
+    Value::StructureInstance(data)
+}
+
+/// `instance` with field `key` removed.
+fn without_field(instance: Value, key: &str) -> Value {
+    let Value::StructureInstance(mut data) = instance else {
+        panic!("without_field: {key} must be removed from a StructureInstance");
+    };
+    data.fields.remove(&key.to_string());
+    Value::StructureInstance(data)
+}
+
+/// A dimensioned scalar `Value`.
+fn scalar(si_value: f64, dimension: DimensionVector) -> Value {
+    Value::Scalar {
+        si_value,
+        dimension,
+    }
+}
+
 /// A `Time` scalar `Value` (SI seconds).
 fn time_scalar(s: f64) -> Value {
-    Value::Scalar {
-        si_value: s,
-        dimension: DimensionVector::TIME,
-    }
+    scalar(s, DimensionVector::TIME)
 }
 
 /// A `List<Real>` `Value`.
@@ -76,15 +121,20 @@ fn no_opt() -> Value {
     Value::Option(None)
 }
 
-/// A `Waypoint` StructureInstance.
+/// A `Waypoint` StructureInstance at `t` seconds.
 fn waypoint(t: f64, values: &[f64]) -> Value {
+    waypoint_at(time_scalar(t), values)
+}
+
+/// A `Waypoint` StructureInstance whose `t` field is exactly `t`.
+fn waypoint_at(t: Value, values: &[f64]) -> Value {
     struct_instance(
         "Waypoint",
         vec![
-            ("t".to_string(), time_scalar(t)),
-            ("values".to_string(), reals(values)),
-            ("vels".to_string(), no_opt()),
-            ("accels".to_string(), no_opt()),
+            ("t", t),
+            ("values", reals(values)),
+            ("vels", no_opt()),
+            ("accels", no_opt()),
         ],
     )
 }
@@ -98,29 +148,35 @@ fn cubic_spline_kind() -> Value {
     }
 }
 
+/// A `PiecewisePolynomialProfile` over `waypoints`: natural cubic spline on a
+/// `Real` mechanism placeholder.
+fn pp_profile(waypoints: Vec<Value>) -> Value {
+    struct_instance(
+        "PiecewisePolynomialProfile",
+        vec![
+            ("mechanism", Value::Real(1.0)),
+            ("waypoints", Value::List(waypoints)),
+            ("boundary", struct_instance("NaturalSpline", vec![])),
+            ("spline_kind", cubic_spline_kind()),
+        ],
+    )
+}
+
 /// A `PiecewisePolynomialProfile` with 3 waypoints: start, mid, end — so the
 /// TOTS solver has one interior waypoint to optimise. `mid_val` is the midpoint
 /// q value; changing it exercises cache MISS.
 fn p2p_profile(duration: f64, start: f64, end: f64, mid_val: f64) -> Value {
-    struct_instance(
-        "PiecewisePolynomialProfile",
-        vec![
-            ("mechanism".to_string(), Value::Real(1.0)),
-            (
-                "waypoints".to_string(),
-                Value::List(vec![
-                    waypoint(0.0, &[start]),
-                    waypoint(duration / 2.0, &[mid_val]),
-                    waypoint(duration, &[end]),
-                ]),
-            ),
-            (
-                "boundary".to_string(),
-                struct_instance("NaturalSpline", vec![]),
-            ),
-            ("spline_kind".to_string(), cubic_spline_kind()),
-        ],
-    )
+    pp_profile(vec![
+        waypoint(0.0, &[start]),
+        waypoint(duration / 2.0, &[mid_val]),
+        waypoint(duration, &[end]),
+    ])
+}
+
+/// The 2-waypoint unit ramp the impulse arm shapes (ZV needs no interior
+/// waypoint).
+fn ramp_profile() -> Value {
+    pp_profile(vec![waypoint(0.0, &[0.0]), waypoint(1.0, &[1.0])])
 }
 
 /// A single-mode `Mode` Value (used by TOTSShaper).
@@ -128,10 +184,10 @@ fn mode(freq_hz: f64, zeta: f64, shape: [f64; 3]) -> Value {
     struct_instance(
         "Mode",
         vec![
-            ("frequency".to_string(), Value::Real(freq_hz)),
-            ("damping_ratio".to_string(), Value::Real(zeta)),
+            ("frequency", Value::Real(freq_hz)),
+            ("damping_ratio", Value::Real(zeta)),
             (
-                "shape".to_string(),
+                "shape",
                 Value::List(vec![Value::Vector(
                     shape.iter().map(|&x| Value::Real(x)).collect(),
                 )]),
@@ -140,25 +196,92 @@ fn mode(freq_hz: f64, zeta: f64, shape: [f64; 3]) -> Value {
     )
 }
 
-/// A `TOTSShaper` StructureInstance with slack vel/acc/vib limits and one mode.
-///
-/// Scalar `velocity_limit`/`acceleration_limit` path (no `actuator_limits`
-/// struct): exercises the marshalling fallback.  `vibration_tolerance = 1.0`
-/// (very slack) + `velocity_limit = 5.0` + `acceleration_limit = 50.0` →
-/// feasible for a 0→1 unit ramp with a 5 s baseline.
-fn tots_shaper() -> Value {
+/// An actuator limit (`JointLimit` / `RevoluteJointLimit`) on profile joint
+/// `joint` (a dimensionless index, `param joint : Real`).
+fn joint_limit(type_name: &str, joint: f64, max_force: Value) -> Value {
     struct_instance(
-        "TOTSShaper",
+        type_name,
+        vec![("joint", Value::Real(joint)), ("max_force", max_force)],
+    )
+}
+
+/// The fields one TOTS-family shaper carries, each limit spelled in its
+/// declared dimension, with `vibration_tolerance = 1.0` (very slack), one mode
+/// and one actuator limit on joint 0.
+fn tots_shaper_of_kind(
+    type_name: &str,
+    velocity_limit: Value,
+    acceleration_limit: Value,
+    actuator_limit: Value,
+) -> Value {
+    struct_instance(
+        type_name,
         vec![
-            ("velocity_limit".to_string(), Value::Real(5.0)),
-            ("acceleration_limit".to_string(), Value::Real(50.0)),
-            ("vibration_tolerance".to_string(), Value::Real(1.0)),
-            ("max_iters".to_string(), Value::Int(100)),
-            ("tol".to_string(), Value::Real(1e-6)),
+            ("velocity_limit", velocity_limit),
+            ("acceleration_limit", acceleration_limit),
+            ("vibration_tolerance", Value::Real(1.0)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
             (
-                "modes".to_string(),
+                "modes",
                 Value::List(vec![mode(10.0, 0.05, [1.0, 0.0, 0.0])]),
             ),
+            ("actuator_limits", Value::List(vec![actuator_limit])),
+        ],
+    )
+}
+
+/// A linear `TOTSShaper` (5 m/s, 50 m/s²) whose joint-0 `JointLimit` allows
+/// `max_force_n` newtons — feasible for a 0→1 unit ramp with a 5 s baseline.
+fn tots_shaper_with_force_limit(max_force_n: f64) -> Value {
+    tots_shaper_of_kind(
+        "TOTSShaper",
+        scalar(5.0, DimensionVector::VELOCITY),
+        scalar(50.0, DimensionVector::ACCELERATION),
+        joint_limit(
+            "JointLimit",
+            0.0,
+            scalar(max_force_n, DimensionVector::FORCE),
+        ),
+    )
+}
+
+/// A `TOTSShaper` StructureInstance with slack vel/acc/vib limits, one mode and
+/// a non-binding 1000 N actuator limit on joint 0.
+fn tots_shaper() -> Value {
+    tots_shaper_with_force_limit(1000.0)
+}
+
+/// A `RevoluteTOTSShaper` (5 rad/s, 50 rad/s²) whose joint-0
+/// `RevoluteJointLimit` allows 1000 N·m.
+fn revolute_tots_shaper() -> Value {
+    tots_shaper_of_kind(
+        "RevoluteTOTSShaper",
+        scalar(5.0, DimensionVector::ANGULAR_VELOCITY),
+        scalar(50.0, angular_acceleration()),
+        joint_limit(
+            "RevoluteJointLimit",
+            0.0,
+            scalar(1000.0, DimensionVector::TORQUE),
+        ),
+    )
+}
+
+/// rad·s⁻², composed as the `.ri` decl composes `Rate<AngularVelocity>` (no
+/// `DimensionVector::ANGULAR_ACCELERATION` registry const exists).
+fn angular_acceleration() -> DimensionVector {
+    DimensionVector::ANGULAR_VELOCITY.div(&DimensionVector::TIME)
+}
+
+/// An impulse-family shaper (`ZVShaper` / `ZVDShaper` / `EIShaper`) with the
+/// given `target_frequency` value and ζ = 0.
+fn impulse_shaper(type_name: &str, target_frequency: Value) -> Value {
+    struct_instance(
+        type_name,
+        vec![
+            ("target_frequency", target_frequency),
+            ("damping_ratio", Value::Real(0.0)),
+            ("vibration_tolerance", Value::Real(0.05)),
         ],
     )
 }
@@ -169,13 +292,10 @@ fn zv_shaper(freq_hz: f64, zeta: f64) -> Value {
         "ZVShaper",
         vec![
             (
-                "target_frequency".to_string(),
-                Value::Scalar {
-                    si_value: freq_hz,
-                    dimension: DimensionVector::FREQUENCY,
-                },
+                "target_frequency",
+                scalar(freq_hz, DimensionVector::FREQUENCY),
             ),
-            ("damping_ratio".to_string(), Value::Real(zeta)),
+            ("damping_ratio", Value::Real(zeta)),
         ],
     )
 }
@@ -188,23 +308,7 @@ fn tots_value_inputs(mid_val: f64) -> Vec<Value> {
 
 /// A 2-input `[profile, shaper]` flat list for a ZV dispatch.
 fn zv_value_inputs() -> Vec<Value> {
-    // 2-waypoint ramp (simpler: ZV doesn't need interior waypoints).
-    let profile = struct_instance(
-        "PiecewisePolynomialProfile",
-        vec![
-            ("mechanism".to_string(), Value::Real(1.0)),
-            (
-                "waypoints".to_string(),
-                Value::List(vec![waypoint(0.0, &[0.0]), waypoint(1.0, &[1.0])]),
-            ),
-            (
-                "boundary".to_string(),
-                struct_instance("NaturalSpline", vec![]),
-            ),
-            ("spline_kind".to_string(), cubic_spline_kind()),
-        ],
-    );
-    vec![profile, zv_shaper(10.0, 0.0)]
+    vec![ramp_profile(), zv_shaper(10.0, 0.0)]
 }
 
 // ── Engine setup ──────────────────────────────────────────────────────────────
@@ -490,5 +594,333 @@ fn input_shape_zv_impulse_arm_returns_profile() {
     assert!(
         matches!(&value, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
         "ZV impulse arm must return a PiecewisePolynomialProfile, got {value:?}",
+    );
+}
+
+// ── task 6941 ζ: the trajectory readers refuse a present-but-wrong field ─────
+
+/// Dispatch `input_shape(profile, shaper)` straight through the production
+/// trampoline (no engine, no warm state).
+fn shape(profile: Value, shaper: Value) -> ComputeOutcome {
+    input_shape_trampoline(
+        &[profile, shaper],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    )
+}
+
+/// The message α renders when `spec` refuses `value` at `<owner>.<field>` of
+/// an `input_shape` call — computed from α's own reader, never restated.
+fn canonical_rejection(owner: &str, field: &str, value: &Value, spec: &ArgSpec) -> String {
+    let Acceptance::Rejected(rejection) = accept_arg(value, spec) else {
+        panic!(
+            "fixture {owner}.{field} = {value:?} must be a value {} refuses",
+            spec.type_name
+        );
+    };
+    FieldRejection::new(owner, field, rejection)
+        .to_error("input_shape")
+        .message
+}
+
+/// `outcome` is `Failed` carrying exactly one Error, coded
+/// `DimensionedArgRejected`, whose message is `expected`.
+fn assert_rejected(outcome: &ComputeOutcome, expected: &str) {
+    let ComputeOutcome::Failed { diagnostics, .. } = outcome else {
+        panic!("expected Failed carrying {expected:?}, got {outcome:?}");
+    };
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one diagnostic expected, got {diagnostics:?}"
+    );
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.severity, Severity::Error);
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::DimensionedArgRejected)
+    );
+    assert_eq!(diagnostic.message, expected);
+}
+
+/// The shaped `PiecewisePolynomialProfile` of a `Completed` dispatch.
+fn shaped_profile(outcome: ComputeOutcome, what: &str) -> Value {
+    let ComputeOutcome::Completed { result, .. } = &outcome else {
+        panic!("{what}: expected Completed, got {outcome:?}");
+    };
+    assert!(
+        matches!(result, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
+        "{what}: expected a shaped PiecewisePolynomialProfile, got {result:?}"
+    );
+    result.clone()
+}
+
+/// `last.t − first.t` of a shaped profile, in seconds.
+fn profile_duration(profile: &Value) -> f64 {
+    let Value::StructureInstance(data) = profile else {
+        panic!("a profile is a StructureInstance, got {profile:?}");
+    };
+    let Some(Value::List(waypoints)) = data.fields.get("waypoints") else {
+        panic!("a profile carries a waypoints list, got {data:?}");
+    };
+    let t = |wp: &Value| match wp {
+        Value::StructureInstance(d) => match d.fields.get("t") {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) if *dimension == DimensionVector::TIME => *si_value,
+            other => panic!("a shaped waypoint's t is a Time scalar, got {other:?}"),
+        },
+        other => panic!("a waypoint is a StructureInstance, got {other:?}"),
+    };
+    t(waypoints.last().expect("non-empty")) - t(waypoints.first().expect("non-empty"))
+}
+
+/// (a) `target_frequency` is a FREQUENCY (Hz). An ANGULAR_VELOCITY value
+/// (rad·s⁻¹) used to be stripped to its SI magnitude and multiplied by 2π —
+/// a silent 6.28× mis-design. Every impulse shaper, and a shaper nested in a
+/// `CascadedShaper` behind a valid sibling, now refuses it by name.
+#[test]
+fn impulse_shapers_refuse_an_angular_velocity_target_frequency() {
+    let rad_per_s = scalar(50.0, DimensionVector::ANGULAR_VELOCITY);
+    for type_name in ["ZVShaper", "ZVDShaper", "EIShaper"] {
+        assert_rejected(
+            &shape(ramp_profile(), impulse_shaper(type_name, rad_per_s.clone())),
+            &canonical_rejection(type_name, "target_frequency", &rad_per_s, &frequency_spec()),
+        );
+    }
+
+    let cascaded = struct_instance(
+        "CascadedShaper",
+        vec![(
+            "shapers",
+            Value::List(vec![
+                impulse_shaper("ZVDShaper", scalar(10.0, DimensionVector::FREQUENCY)),
+                impulse_shaper("ZVShaper", rad_per_s.clone()),
+            ]),
+        )],
+    );
+    assert_rejected(
+        &shape(ramp_profile(), cascaded),
+        &canonical_rejection(
+            "ZVShaper",
+            "target_frequency",
+            &rad_per_s,
+            &frequency_spec(),
+        ),
+    );
+}
+
+/// (b) The floor: a 50 Hz `ZVShaper` builds exactly `ImpulseTrain::zv(2π·50,
+/// 0)`, bit for bit, and an absent `damping_ratio` still reads its declared 0.
+#[test]
+fn a_50_hz_zv_shaper_builds_exactly_the_2pi_50_train() {
+    let expected = ImpulseTrain::zv(2.0 * PI * 50.0, 0.0).points();
+    let absent_damping = without_field(zv_shaper(50.0, 0.0), "damping_ratio");
+    for (what, shaper) in [
+        ("damping_ratio: 0", zv_shaper(50.0, 0.0)),
+        ("damping_ratio absent", absent_damping.clone()),
+    ] {
+        let train = build_train_for_shaper(&shaper)
+            .unwrap_or_else(|rejection| {
+                panic!("{what}: a 50 Hz ZVShaper is accepted, got {rejection}")
+            })
+            .unwrap_or_else(|| panic!("{what}: ZVShaper is a recognised shaper"));
+        assert_eq!(train.points(), expected, "{what}");
+    }
+    assert_eq!(shaper_damping_ratio(&absent_damping), Ok(0.0));
+}
+
+/// (c) The TOTS limit and solver fields are read in their declared
+/// dimensions: a LENGTH `velocity_limit`, a PRESSURE `vibration_tolerance` and
+/// a String `max_iters` are each refused by name — never read as a number or
+/// replaced by a default.
+#[test]
+fn tots_shaper_refuses_wrong_dimension_limit_and_solver_fields() {
+    for (field, value, spec) in [
+        (
+            "velocity_limit",
+            scalar(5.0, DimensionVector::LENGTH),
+            velocity_spec(),
+        ),
+        (
+            "vibration_tolerance",
+            scalar(1.0, DimensionVector::PRESSURE),
+            dimensionless_spec(),
+        ),
+        (
+            "max_iters",
+            Value::String("100".to_string()),
+            dimensionless_spec(),
+        ),
+    ] {
+        let shaper = with_field(tots_shaper(), field, value.clone());
+        assert_rejected(
+            &shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper),
+            &canonical_rejection("TOTSShaper", field, &value, &spec),
+        );
+    }
+}
+
+/// (c) An omitted `max_iters` / `tol` reads its declared default (100 /
+/// 1e-6): the re-timed profile is identical to the explicit spelling's.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "heavy TOTS solve; release-only")]
+fn tots_shaper_omitted_max_iters_and_tol_read_their_declared_defaults() {
+    let explicit = shaped_profile(
+        shape(p2p_profile(5.0, 0.0, 1.0, 0.5), tots_shaper()),
+        "explicit max_iters/tol",
+    );
+    let omitted = shaped_profile(
+        shape(
+            p2p_profile(5.0, 0.0, 1.0, 0.5),
+            without_field(without_field(tots_shaper(), "max_iters"), "tol"),
+        ),
+        "omitted max_iters/tol",
+    );
+    assert_eq!(omitted.content_hash(), explicit.content_hash());
+}
+
+/// (d) The force bound is the joint's `actuator_limits` entry. `force_limit`
+/// never existed on `TOTSShaper`, so the solver used to see 1000 N whatever
+/// the author wrote; a binding 2 N limit (unit mass ⇒ |a| ≤ 2 m/s²) must now
+/// re-time the move differently from a slack 1000 N one, and never faster.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "heavy TOTS solve; release-only")]
+fn tots_force_bound_comes_from_the_joint_actuator_limit() {
+    let slack = shaped_profile(
+        shape(
+            p2p_profile(5.0, 0.0, 1.0, 0.5),
+            tots_shaper_with_force_limit(1000.0),
+        ),
+        "1000 N limit",
+    );
+    let binding = shaped_profile(
+        shape(
+            p2p_profile(5.0, 0.0, 1.0, 0.5),
+            tots_shaper_with_force_limit(2.0),
+        ),
+        "2 N limit",
+    );
+    assert_ne!(
+        binding.content_hash(),
+        slack.content_hash(),
+        "a binding actuator limit must change the re-timed profile"
+    );
+    let (t_slack, t_binding) = (profile_duration(&slack), profile_duration(&binding));
+    assert!(
+        t_binding >= t_slack,
+        "the 2 N move ({t_binding:.4} s) must be no faster than the 1000 N one ({t_slack:.4} s)"
+    );
+}
+
+/// (d) A `JointLimit.max_force` is a FORCE; a LENGTH one is refused by name.
+#[test]
+fn tots_refuses_a_length_joint_limit_max_force() {
+    let metres = scalar(1000.0, DimensionVector::LENGTH);
+    let shaper = with_field(
+        tots_shaper(),
+        "actuator_limits",
+        Value::List(vec![joint_limit("JointLimit", 0.0, metres.clone())]),
+    );
+    assert_rejected(
+        &shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper),
+        &canonical_rejection("JointLimit", "max_force", &metres, &force_spec()),
+    );
+}
+
+/// (d) A profile joint no `JointLimit` covers is refused (`Completed` Undef) —
+/// never solved against a substituted bound: with no `actuator_limits` field,
+/// with an empty list, and with a limit on a different joint only.
+#[test]
+fn tots_refuses_a_joint_no_actuator_limit_covers() {
+    for (what, shaper) in [
+        (
+            "no actuator_limits field",
+            without_field(tots_shaper(), "actuator_limits"),
+        ),
+        (
+            "empty actuator_limits",
+            with_field(tots_shaper(), "actuator_limits", Value::List(vec![])),
+        ),
+        (
+            "a limit on joint 1 only",
+            with_field(
+                tots_shaper(),
+                "actuator_limits",
+                Value::List(vec![joint_limit(
+                    "JointLimit",
+                    1.0,
+                    scalar(1000.0, DimensionVector::FORCE),
+                )]),
+            ),
+        ),
+    ] {
+        match shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper) {
+            ComputeOutcome::Completed {
+                result: Value::Undef,
+                ..
+            } => {}
+            other => panic!("{what}: expected Completed Undef, got {other:?}"),
+        }
+    }
+}
+
+/// (e) A waypoint's `t` is a TIME; a LENGTH one is refused by name on both
+/// the impulse (ZV) and the TOTS arm.
+#[test]
+fn a_length_waypoint_time_is_refused_on_both_arms() {
+    let metres = scalar(1.0, DimensionVector::LENGTH);
+    let expected = canonical_rejection("Waypoint", "t", &metres, &time_spec());
+
+    let impulse_profile = pp_profile(vec![
+        waypoint(0.0, &[0.0]),
+        waypoint_at(metres.clone(), &[1.0]),
+    ]);
+    assert_rejected(&shape(impulse_profile, zv_shaper(10.0, 0.0)), &expected);
+
+    let tots_profile = pp_profile(vec![
+        waypoint(0.0, &[0.0]),
+        waypoint_at(metres.clone(), &[0.5]),
+        waypoint(5.0, &[1.0]),
+    ]);
+    assert_rejected(&shape(tots_profile, tots_shaper()), &expected);
+}
+
+/// (f) The revolute member reads its limits as rad/s, rad/s² and a Torque
+/// `max_force`, and re-times the move.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "heavy TOTS solve; release-only")]
+fn revolute_tots_shaper_retimes_with_angular_limits() {
+    let shaped = shaped_profile(
+        shape(p2p_profile(5.0, 0.0, 1.0, 0.5), revolute_tots_shaper()),
+        "RevoluteTOTSShaper",
+    );
+    let duration = profile_duration(&shaped);
+    assert!(
+        duration.is_finite() && duration > 0.0 && duration < 5.0,
+        "a revolute re-time must be faster than the 5 s baseline, got {duration}"
+    );
+}
+
+/// (f) A linear m/s `velocity_limit` on the revolute member is refused by name.
+#[test]
+fn revolute_tots_shaper_refuses_a_linear_velocity_limit() {
+    let metres_per_s = scalar(5.0, DimensionVector::VELOCITY);
+    let shaper = with_field(
+        revolute_tots_shaper(),
+        "velocity_limit",
+        metres_per_s.clone(),
+    );
+    assert_rejected(
+        &shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper),
+        &canonical_rejection(
+            "RevoluteTOTSShaper",
+            "velocity_limit",
+            &metres_per_s,
+            &angular_velocity_spec(),
+        ),
     );
 }
