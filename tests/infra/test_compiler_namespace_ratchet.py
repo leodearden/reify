@@ -100,6 +100,15 @@ class CountingRules(ScratchTree):
         self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:1"])
         self.assertEqual(self.hits("glob_reexports"), [f"{COMPILER_SRC}/a.rs:5"])
 
+    def test_comments_inside_a_braced_use_are_not_code(self):
+        self.src("a.rs", "use crate::{\n    a, // *not* a glob\n};\n"
+                         "use crate::{\n    b, // a ; in a comment\n    c::*,\n};\n")
+        self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:4"])
+
+    def test_cfg_test_item_in_a_production_file_counts(self):
+        self.src("a.rs", "#[cfg(test)]\nuse super::*;\n")
+        self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:2"])
+
     def test_multi_line_statement_ends_at_its_first_semicolon(self):
         self.src("a.rs", "use crate::{\n    a,\n    b,\n};\nfn f(x: i32) -> i32 { x * 2 }\n"
                          "pub use crate::{\n    c,\n};\nconst P: *const u8 = 0 as *const u8;\n")
@@ -114,7 +123,7 @@ class CountingRules(ScratchTree):
         self.assertEqual(self.hits("glob_imports"), [])
 
     def test_allowlist_is_exactly_lib_rs_pub_use_types(self):
-        self.src("lib.rs", "pub use types::*;\npub(crate) use types::*;\npub use other::*;\n")
+        self.src("lib.rs", "pub use types::*; // D9\npub(crate) use types::*;\npub use other::*;\n")
         self.src("a.rs", "pub use types::*;\n")
         self.assertEqual(self.hits("glob_reexports"), [
             f"{COMPILER_SRC}/a.rs:1",
@@ -162,6 +171,12 @@ class CfgTestChildren(ScratchTree):
             "extra attribute above": "#[allow(clippy::all)]\n#[cfg(test)]\nmod tests;\n",
             "inner whitespace": "#[cfg( test )]\nmod tests;\n",
             "visibility-qualified mod": "#[cfg(test)]\npub(crate) mod tests;\n",
+            "comment between": "#[cfg(test)]\n// the tests\nmod tests;\n",
+            "doc comment between": "#[cfg(test)]\n/// unit tests\nmod tests;\n",
+            "blank line between": "#[cfg(test)]\n\nmod tests;\n",
+            "comment after the attribute": "#[cfg(test)] // unit tests\nmod tests;\n",
+            "same-line attribute": "#[cfg(test)] mod tests;\n",
+            "two attributes on one line": "#[allow(clippy::all)] #[cfg(test)]\nmod tests;\n",
         }
         for label, block in blocks.items():
             with self.subTest(label):
@@ -214,10 +229,11 @@ class CfgTestChildren(ScratchTree):
 
     def test_unrecognised_declaration_shapes_fall_to_production(self):
         shapes = {
-            "same-line attribute": "#[cfg(test)] mod tests;\n",
-            "comment between": "#[cfg(test)]\n// the tests\nmod tests;\n",
+            "block comment between": "#[cfg(test)]\n/* the tests */\nmod tests;\n",
+            "indented declaration": "#[cfg(test)]\n    mod tests;\n",
             "compound cfg": "#[cfg(all(test, feature = \"x\"))]\nmod tests;\n",
             "path attribute": "#[cfg(test)]\n#[path = \"a/tests.rs\"]\nmod tests;\n",
+            "same-line path attribute": "#[cfg(test)] #[path = \"a/tests.rs\"] mod tests;\n",
         }
         for label, block in shapes.items():
             with self.subTest(label):

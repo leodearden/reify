@@ -2,9 +2,11 @@
 """Count source constructs in Rust production files against an exact baseline.
 
 The engine behind the C7 ratchet members of PRD
-docs/prds/v0_6/compiler-module-namespace.md. Production files are every *.rs
-under a source root except the files of a column-0 `mod NAME;` whose attribute
-block directly above holds `#[cfg(test)]`; any other declaration shape counts as
+docs/prds/v0_6/compiler-module-namespace.md. Every rule reads code text: a
+file with its `//` comments removed. Production files are every *.rs under a
+source root except the files of a column-0 `mod NAME;` whose attributes include
+`#[cfg(test)]` and no `#[path]`, read from its own line and from the attribute
+and blank lines directly above it; any other declaration shape counts as
 production. Each counter counts the production lines on which a match of its
 pattern starts, and a count above or below its baseline row is a violation.
 """
@@ -33,9 +35,9 @@ class Site:
 
 @dataclass(frozen=True)
 class Counter:
-    """`pattern` is searched MULTILINE over a file's whole text, so `^` anchors at
-    every line start and a match may run onto the lines that follow. `allowed`
-    holds (root-relative path, stripped text of the line a match starts on)."""
+    """`pattern` is searched MULTILINE over a file's whole code text, so `^` anchors
+    at every line start and a match may run onto the lines that follow. `allowed`
+    holds (root-relative path, stripped code of the line a match starts on)."""
 
     name: str
     pattern: str
@@ -81,8 +83,11 @@ class Report:
 
 ROW = re.compile(r"([a-z][a-z0-9_]*) (0|[1-9][0-9]*)")
 MOD_ROOTS = frozenset({"lib.rs", "main.rs", "mod.rs"})
-MOD_DECL = re.compile(r"^(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+LINE_COMMENT = re.compile(r"//[^\n]*")
+MOD_DECL = re.compile(
+    r"^((?P<attributes>#\[.*\])\s*)?(pub(\([^)]*\))?\s+)?mod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;")
 ATTRIBUTE_LINE = re.compile(r"^#\[.*\]\s*$")
+ATTRIBUTE_BOUNDARY = re.compile(r"(?<=\])\s*(?=#\[)")
 PATH_ATTRIBUTE = re.compile(r"^#\[\s*path\s*=")
 
 
@@ -100,8 +105,8 @@ def relative(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def source_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+def code_text(path: Path) -> str:
+    return LINE_COMMENT.sub("", path.read_text(encoding="utf-8", errors="replace"))
 
 
 def rust_files(src: Path) -> list[Path]:
@@ -114,27 +119,36 @@ def moddir(path: Path) -> Path:
     return path.parent if path.name in MOD_ROOTS else path.parent / path.stem
 
 
-def is_cfg_test(line: str) -> bool:
-    return re.sub(r"\s+", "", line) == "#[cfg(test)]"
+def attributes_in(text: str) -> list[str]:
+    return [attribute for attribute in ATTRIBUTE_BOUNDARY.split(text.strip()) if attribute]
 
 
-def attribute_block(lines: Sequence[str], index: int) -> list[str]:
-    start = index
-    while start > 0 and ATTRIBUTE_LINE.match(lines[start - 1]):
-        start -= 1
-    return list(lines[start:index])
+def attributes_above(lines: Sequence[str], index: int) -> list[str]:
+    attributes: list[str] = []
+    for line in reversed(lines[:index]):
+        if ATTRIBUTE_LINE.match(line):
+            attributes += attributes_in(line)
+        elif line.strip():
+            break
+    return attributes
 
 
-def is_cfg_test_block(block: Sequence[str]) -> bool:
-    return (any(is_cfg_test(line) for line in block)
-            and not any(PATH_ATTRIBUTE.match(line) for line in block))
+def is_cfg_test(attribute: str) -> bool:
+    return re.sub(r"\s+", "", attribute) == "#[cfg(test)]"
+
+
+def is_cfg_test_block(attributes: Sequence[str]) -> bool:
+    return (any(is_cfg_test(attribute) for attribute in attributes)
+            and not any(PATH_ATTRIBUTE.match(attribute) for attribute in attributes))
 
 
 def cfg_test_declarations(lines: Sequence[str]) -> Iterator[tuple[str, int]]:
     for index, line in enumerate(lines):
         declaration = MOD_DECL.match(line)
-        if declaration and is_cfg_test_block(attribute_block(lines, index)):
-            yield declaration.group(3), index + 1
+        if declaration:
+            own_line = attributes_in(declaration["attributes"] or "")
+            if is_cfg_test_block([*attributes_above(lines, index), *own_line]):
+                yield declaration["name"], index + 1
 
 
 def cfg_test_modules(root: Path, path: Path, text: str) -> Iterator[CfgTestModule]:
@@ -155,7 +169,7 @@ def cfg_test_children(root: Path, texts: Mapping[Path, str]) -> tuple[CfgTestChi
 
 
 def census(root: Path, src_roots: Sequence[Path], counters: Sequence[Counter]) -> Census:
-    texts = {path: source_text(path) for src in src_roots for path in rust_files(src)}
+    texts = {path: code_text(path) for src in src_roots for path in rust_files(src)}
     skipped = cfg_test_children(root, texts)
     excluded = {child.path for child in skipped}
     sites: dict[str, set[Site]] = {counter.name: set() for counter in counters}
