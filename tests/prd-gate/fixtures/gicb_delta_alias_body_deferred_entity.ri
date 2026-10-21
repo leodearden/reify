@@ -1,0 +1,9 @@
+// /prd generic-instantiation-and-call-binding δ evidence (#7573 gap 1): a
+// parametric alias body resolves exactly as its direct spelling. The direct
+// `Option<Inner>` resolves; today the alias spelling is "unresolved type".
+module gicb_delta_alias_body_deferred_entity
+
+enum Zq { Close, Medium }
+type Inner = Zq
+type Outer<T> = Option<Inner>
+structure def D { param p : Outer<Real> }

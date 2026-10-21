@@ -6,6 +6,8 @@ use reify_core::{
 };
 use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
+use crate::port_path::PortPath;
+
 pub use reify_ir::{CompiledFnBody, CompiledFunction};
 
 /// A compiled import declaration.
@@ -621,44 +623,23 @@ pub enum CompiledForallBody {
     },
     /// Per-element connection body: `forall v in coll: connect <l> <op> <r> [: T(...)]`.
     ///
-    /// Task 2690 — wired. The substituted `coll[0]` placeholder appears
-    /// pre-baked in `left_port_template` and `right_port_template` (e.g.
-    /// `"vents[0].inlet"`); at runtime the engine rewrites each occurrence
-    /// of `format!("{coll_sub_name}[0]")` to `format!("{coll_sub_name}[{i}]")`
-    /// to materialise per-element connections.
+    /// Both endpoints are typed [`PortPath`]s; the bound variable is
+    /// [`PortRoot::Element`](crate::PortRoot::Element), and
+    /// [`PortPath::at_element`] is the only materialiser of it. A
+    /// source-written literal index (`coll[0]`, `bays["intake"]`) is a
+    /// `Literal` root and is never rewritten, so each element's connection
+    /// names the same ports the resolved (non-deferred) path names.
     ///
-    /// **Semantic divergence vs. the resolved (non-deferred) path** (mirrors
-    /// the Constraint variant's `body_expr` doc): a user-written explicit
-    /// `coll[0]` reference inside the connect body — vanishingly rare in
-    /// practice — is *also* rewritten to `coll[i]` for each `i`. Anchoring
-    /// the substring on `coll_sub_name` (not just `[0]`) reduces the risk of
-    /// accidentally rewriting an unrelated literal `[0]` in a port name.
-    ///
-    /// At runtime emission, the engine synthesises a fresh
-    /// compatibility-constraint `ConstraintNodeId` per element and pushes a
-    /// fresh `CompiledConnection` into `EvaluationGraph::connections`. The
-    /// synthetic compatibility constraint is a `Bool::True` literal — the
-    /// connect-time direction-check is NOT replicated at runtime; this
-    /// mirrors the Constraint arm's "compile substitution; trust at runtime"
-    /// policy. Auto-creation of `connector_sub` / `frame_constraint` is
-    /// deferred to a future task.
-    ///
-    /// **Connector-spec drop at runtime** (task 2690 amendment): for the
-    /// rich form (`forall v in coll: connect a -> b : T(p = e, ...)`) the
-    /// captured `connector_type` and `params` fields are populated here at
-    /// compile time, but `engine_edit.rs`'s re-emission drops them — only
-    /// the port-to-port connection is materialised, with `connector_sub`
-    /// set to `None` and `port_mappings` carried verbatim. The deferred
-    /// compile-time path emits an info diagnostic surfacing this limitation;
-    /// the captured fields are kept for a future task that wires
-    /// connector-spec-aware runtime emission.
+    /// At runtime each element gets a fresh `CompiledConnection` paired with a
+    /// synthetic `Bool::True` compatibility constraint: the connect-time
+    /// direction check is not replayed, and `connector_type` / `params` are
+    /// dropped — no `connector_sub` or `frame_constraint` is created, and
+    /// `port_mappings` is carried verbatim.
     Connect {
-        /// Substituted left-side port name (e.g. `"vents[0].inlet"`).
-        left_port_template: String,
+        left: PortPath,
         /// Direction operator from the source `connect` declaration.
         operator: reify_ast::ConnectOp,
-        /// Substituted right-side port name (e.g. `"air_channel"`).
-        right_port_template: String,
+        right: PortPath,
         /// Optional explicit connector type name (e.g. `BoltSet`).
         connector_type: Option<String>,
         /// Pre-substituted, pre-compiled connect parameters

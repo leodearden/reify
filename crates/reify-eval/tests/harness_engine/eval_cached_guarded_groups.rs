@@ -83,7 +83,7 @@ fn eval_cached_supports_or_signals_guarded_groups_and_does_not_panic_on_determin
         .template(template)
         .build();
 
-    let mut engine = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
 
     // (a) must not panic — today this can trip the "not in determinacy
     // snapshot" debug_assert (reify-expr/src/lib.rs:894) when debug
@@ -169,11 +169,11 @@ fn eval_cached_guarded_module_matches_cold_eval_values_for_guard_false() {
         .build();
 
     // Engine A: eval() path (the reference / known-good side).
-    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_a = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result_a = engine_a.eval(&module);
 
     // Engine B: eval_cached() path (the side under fix).
-    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let mut engine_b = Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[]);
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
     // The fallback warning must be present.

@@ -3416,10 +3416,11 @@ pub(crate) struct AliasBodyUseSite<'a> {
     /// PRELUDE alias a label built from a body span is a raw byte offset into
     /// a file the reader never opened. Measured: a 253-byte prelude declaring
     /// `pub type W<U> = Hq<U>` produced a label at bytes 247..252 in a 37-byte
-    /// consumer, ~7x past its end. `reify-cli`'s `mcp_context` feeds the first
-    /// label's span straight to `byte_offset_to_line_col`, whose
-    /// `debug_assert!(offset <= source.len())` then trips in debug builds and
-    /// reports a silently wrong line/col in release.
+    /// consumer, ~7x past its end. A consumer that feeds the first label's
+    /// span straight to `byte_offset_to_line_col` (as reify-cli's
+    /// since-deleted `mcp_context` did, #6665) trips its
+    /// `debug_assert!(offset <= source.len())` in debug builds and reports a
+    /// silently wrong line/col in release.
     ///
     /// No secondary "in alias body, defined here" label accompanies it: spans
     /// carry no module identity, so there is no way to tell the same-module

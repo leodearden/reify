@@ -403,7 +403,7 @@ mod tests {
     };
 
     fn make_engine() -> Engine {
-        Engine::new(Box::new(MockConstraintChecker::new()), None)
+        Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
     }
 
     fn make_mesh() -> Arc<Mesh> {
@@ -1366,7 +1366,7 @@ mod tests {
     fn project_voxel_stub_build_returns_none_no_fabricated_field() {
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+        let mut engine = Engine::with_registered_kernels(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()));
         let mut graph = EvaluationGraph::default();
         let r0 = RealizationNodeId::new("stub-voxel", 0);
         let h = ContentHash::of_str("stub-hash");

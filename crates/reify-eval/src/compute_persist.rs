@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn persistent_write_elastic_static_after_completed_dispatch() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // RED: `set_persistent_cache_dir` does not exist on Engine yet.
         // Step-6 adds it via engine_admin.rs.
@@ -641,7 +641,7 @@ mod tests {
     #[test]
     fn non_persistable_target_writes_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // RED: `set_persistent_cache_dir` not yet added.
         engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn cache_dir_none_writes_nothing() {
         // Engine with NO cache dir (default — the gate fires and skips the write).
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         // Intentionally do NOT call set_persistent_cache_dir.
         crate::compute_targets::register_compute_fns(&mut engine);
 
@@ -784,7 +784,7 @@ mod tests {
         .expect("test seed write_entry must succeed");
 
         // Fresh engine — same cache dir, counting trampoline registered.
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
         engine.register_compute_fn(
             "solver::elastic_static",
@@ -910,7 +910,7 @@ mod tests {
         // Dispatch with KEY_B (no entry → miss → trampoline called).
         let key_b = ContentHash(0x5555_6666_7777_8888_5555_6666_7777_8888_u128);
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
         engine.register_compute_fn(
             "solver::elastic_static",
@@ -1098,7 +1098,7 @@ mod tests {
         .expect("test seed write_entry must succeed");
 
         // Fresh engine — same cache dir, counting trampoline for "solver::buckling".
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
         engine.register_compute_fn(
             "solver::buckling",
@@ -1227,7 +1227,7 @@ mod tests {
         // Dispatch with KEY_B — no persistent entry → miss.
         let key_b = ContentHash(0xbbbb_dcef_8765_4321_bbbb_dcef_8765_4321_u128);
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
         engine.register_compute_fn(
             "solver::buckling",
@@ -1595,7 +1595,7 @@ mod tests {
         c_id: &ComputeNodeId,
         cache_key: ContentHash,
     ) -> (Engine, Vec<reify_core::Diagnostic>) {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.set_persistent_cache_dir(Some(cache_dir.to_path_buf()));
         engine.register_compute_fn(target, trampoline);
         engine.cache_store_mut().put(

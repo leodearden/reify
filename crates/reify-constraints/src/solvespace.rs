@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan, Type, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, SourceSpan, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem,
-    SolveResult, Value, ValueMap,
+    SolveResult, Value, ValueMap, dimension_of,
 };
 
 use crate::sketch::{
@@ -1885,14 +1885,6 @@ fn add_pattern_to_builder(
         }
     }
     Ok(())
-}
-
-/// Extract the DimensionVector from a Type.
-fn dimension_of(ty: &Type) -> DimensionVector {
-    match ty {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    }
 }
 
 #[cfg(test)]

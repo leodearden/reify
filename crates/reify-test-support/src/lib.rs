@@ -8,6 +8,7 @@ pub mod builders;
 pub mod ctor_conformance;
 pub mod ctor_conformance_debt;
 pub mod examples_corpus;
+pub mod finite_difference;
 pub mod fixtures;
 pub mod git_env;
 pub mod helpers;
@@ -20,8 +21,10 @@ pub mod orphan_audit;
 pub mod prd_gate_probe_set;
 pub mod ptodo_cite_marker;
 pub mod rust_fixture_scan;
+pub mod sampled_field_fixtures;
 pub mod skip_sets;
 pub mod specialization_fixtures;
+pub mod stl_bytes;
 pub mod temp_dirs;
 pub mod tensegrity_fixtures;
 pub mod tolerance_fixtures;
@@ -31,7 +34,7 @@ pub mod value_decompose;
 pub mod values;
 pub mod workspace_sweep;
 
-// Not every module is glob-exported below. These five are held back
+// Not every module is glob-exported below. These six are held back
 // deliberately: their item names are generic enough that hoisting them into a
 // crate root which many test files glob-import (`use reify_test_support::*;`)
 // would turn a future same-named item in any other glob-exported module into an
@@ -41,6 +44,7 @@ pub mod workspace_sweep;
 // - `git_env`
 // - `mesh_fixtures`
 // - `rust_fixture_scan`
+// - `stl_bytes`
 pub use builders::*;
 pub use ctor_conformance::*;
 pub use fixtures::*;

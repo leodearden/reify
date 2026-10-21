@@ -123,7 +123,7 @@ and (d) exposes an **off-by-default** exclusion seam Part B flips, such that:
 - **Not** the cold lane itself — the trigger, the single-flight worker, the flock **invocation**, the
   `REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1` **flip** — **all Part B** (dark-factory; shares offline-deep-test-lane's lane).
 - **Not** the `test_cpu_governed_exec.sh` D1–D6 **production-slice contamination** fix — that is a standalone bug,
-  **task #4919** (in-progress). This PRD's cpu_governed_exec split **depends on** #4919 and must **not** duplicate it.
+  **task #4919**. This PRD's cpu_governed_exec split **depends on** #4919 and must **not** duplicate it.
 - **Not** any wall-clock re-tuning — done under `infra-test-wallclock-deflake.md` (§1 premise 2).
 - **Never a gate.** The residue's cold-lane run never blocks a merge — but that invariant is enforced by Part B;
   Part A's role is to keep the residue on the hot path (default 0) and simply *not wire it into* any exclusion.
@@ -249,7 +249,7 @@ task deps-on H8), per DA2.
 
 - The entire dark-factory cold lane (trigger, single-flight worker, flock **invocation**, dedup, fix-spawn,
   escalation, the knob **flip**) — Part B.
-- The `test_cpu_governed_exec.sh` D1–D6 production-slice **contamination** fix — **task #4919** (in-progress); H6
+- The `test_cpu_governed_exec.sh` D1–D6 production-slice **contamination** fix — **task #4919**; H6
   depends on it and must not duplicate it.
 - Any wall-clock re-tuning / re-litigation — done under `infra-test-wallclock-deflake.md`.
 - Fixing any test that turns out RED when first run first-class in the cold lane — a normal fix-task finding

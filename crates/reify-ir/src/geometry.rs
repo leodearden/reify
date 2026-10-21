@@ -2184,9 +2184,10 @@ pub enum GeometryQuery {
     /// sign convention follows the Frenet frame: positive curvature bends
     /// toward the principal normal.
     ///
-    /// Returns `Value::Real` (SI units: 1/m = m⁻¹, i.e. the `Curvature`
-    /// dimension = 1/Length). The eval-side dispatcher wraps this in
-    /// `Value::Scalar { si_value, dimension: Dimension::Curvature }`.
+    /// Returns a raw, untagged `Value::Real` κ (numerically 1/r). The eval-side
+    /// dispatcher tags it as
+    /// `Value::Scalar { si_value, dimension: DimensionVector::CURVATURE }`
+    /// (rad·m⁻¹; η = 1, so the value is unchanged).
     ///
     /// Powers the v0.3 stdlib helper
     /// `curvature(curve: Curve, point: Point3<Length>) -> Scalar<Curvature>`
@@ -2214,9 +2215,10 @@ pub enum GeometryQuery {
     ///
     /// Returns a 2×2 diagonal principal-curvature matrix encoded as nested
     /// `Value::List`: `[[kappa_max, 0.0], [0.0, kappa_min]]` where both
-    /// values are in SI units (1/m). The trace/2 equals the mean curvature H
-    /// and the det equals the Gaussian curvature K = kappa_max * kappa_min.
-    /// The eval-side dispatcher repackages this as `Value::Matrix`.
+    /// values are raw, untagged κ (numerically 1/r). The trace/2 equals the mean
+    /// curvature H and the det equals the Gaussian curvature K = kappa_max * kappa_min.
+    /// The eval-side dispatcher repackages this as a `Value::Matrix` of cells
+    /// tagged `DimensionVector::CURVATURE` (rad·m⁻¹; η = 1).
     ///
     /// Powers the v0.3 stdlib helper
     /// `curvature(surface: Surface, point: Point3<Length>) -> Matrix<2,2,Curvature>`
@@ -4287,6 +4289,44 @@ impl fmt::Display for QueryError {
 }
 
 impl std::error::Error for QueryError {}
+
+// `InvalidReference` is the only invalid-handle case; every other
+// `GeometryError` is a failure carrying its cause.
+impl GeometryError {
+    fn into_failure_text(self) -> String {
+        match self {
+            GeometryError::OperationFailed(msg) => msg,
+            other => other.to_string(),
+        }
+    }
+}
+
+impl From<GeometryError> for QueryError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => QueryError::InvalidHandle(id),
+            other => QueryError::QueryFailed(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for ExportError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => ExportError::InvalidHandle(id),
+            other => ExportError::FormatError(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for TessError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => TessError::InvalidHandle(id),
+            other => TessError::TessellationFailed(other.into_failure_text()),
+        }
+    }
+}
 
 /// Errors from constructing a [`BooleanOpParents`] value with mismatched
 /// slice lengths.

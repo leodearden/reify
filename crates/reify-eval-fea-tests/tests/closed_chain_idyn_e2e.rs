@@ -37,12 +37,13 @@
 //! `MassProperties` solid and needs no `GeometryKernel`, so a
 //! `MockGeometryKernel` suffices (mirrors `rigid_body_dynamics_e2e.rs`).
 
-use reify_constraints::{
-    JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
-};
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
 use reify_stdlib::loop_closure::{loop_residual_jacobian_by_joint, loop_residual_twist};
+use reify_stdlib::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
+use reify_stdlib::loop_closure_value::JointValue;
 use reify_test_support::{
     MockGeometryKernel, collect_errors, errors_only, parse_and_compile_with_stdlib,
 };
@@ -108,7 +109,7 @@ fn closed_2prismatic_virtual_work_identity() {
     // MassProperties solid, so a plain mock kernel is enough.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Locate the top-level `forces` cell. structure_def = `Closed2PrismaticIdyn`;
@@ -231,7 +232,7 @@ fn closed_4bar_live_loop_residual() {
     // unregistered-target Error diagnostic.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.build(&compiled, ExportFormat::Step);
     let eval_errors = collect_errors(&result.diagnostics);
@@ -330,7 +331,7 @@ fn closed_4bar_loop_closes_consistently() {
     // Same engine setup as the sibling tests (see closed_4bar_live_loop_residual).
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.build(&compiled, ExportFormat::Step);
     assert!(
@@ -505,7 +506,7 @@ fn closed_4bar_live_constraint_rank() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.build(&compiled, ExportFormat::Step);
     assert!(
@@ -686,7 +687,7 @@ fn closed_4bar_virtual_work_identity() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.build(&compiled, ExportFormat::Step);
     assert!(

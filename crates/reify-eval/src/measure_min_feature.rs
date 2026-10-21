@@ -71,7 +71,7 @@ mod tests {
     use crate::Engine;
 
     fn make_engine() -> Engine {
-        Engine::new(Box::new(MockConstraintChecker::new()), None)
+        Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
     }
 
     // ── shared fixtures for cfg-independent mock chain ────────────────────────

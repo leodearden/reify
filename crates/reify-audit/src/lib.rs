@@ -23,7 +23,7 @@
 //!    (gated behind `feature = "test-support"`) with HashMap-backed canned
 //!    answers keyed on `(since_sha, until_sha)` for changed-symbol queries
 //!    and `(file, name)` for reference queries, enabling per-commit and
-//!    file-level disambiguation. Per `f-infra-design.md` §5 P1.
+//!    declaration-site disambiguation. Per `f-infra-design.md` §5 P1.
 //!
 //! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
 //! every code path (happy path + false-positive guards + `check_pre_done`
@@ -49,9 +49,12 @@ pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
 pub mod pdoccover_baseline;
+pub mod ratchet_ledger;
 pub mod pdcheck;
 pub mod pcite;
 pub mod pprdstatus;
+pub mod plinecite;
+pub mod plinecite_baseline;
 pub mod pattern_flag;
 /// Crate-internal: shared scaffolding for the lanes that read the task DB.
 /// Not part of the detector API surface — the lanes are.
@@ -340,6 +343,9 @@ pub enum Pattern {
     /// PPRDSTATUS — PRD status-prose drift. The [`pprdstatus`] module doc is
     /// the canonical definition of its lanes, inputs and opt-in rationale.
     PPrdStatus,
+    /// PLINECITE — stale hard line cites. The [`plinecite`] module doc is the
+    /// canonical definition.
+    PLineCite,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -1754,7 +1760,7 @@ impl std::error::Error for JCodemunchCallFailed {}
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
 /// canned answers keyed on `(since_sha, until_sha)` for changed-symbol
 /// queries and `(file, name)` for reference queries, enabling per-commit and
-/// file-level disambiguation. Per `f-infra-design.md` §3 and §5 P1.
+/// declaration-site disambiguation. Per `f-infra-design.md` §3 and §5 P1.
 ///
 /// Object-safe by design — `AuditContext` holds `&'a dyn JCodemunchOps` so
 /// the production and mock impls coexist behind the same vtable (mirrors
@@ -1776,12 +1782,22 @@ pub trait JCodemunchOps {
         until_sha: &str,
     ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed>;
 
-    /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
-    /// non-declaration reference of the symbol across the workspace, scoped
-    /// to the symbol's declaring file so that two same-named symbols in
-    /// different files are not conflated. Production impls MUST scope the
-    /// lookup to `symbol.file` (e.g. pass the file path to jcodemunch-MCP
-    /// for module-level disambiguation); tests key on `(file, name)`.
+    /// Equivalent of `mcp__jcodemunch__find_references(identifier = symbol.name)`:
+    /// the workspace references to `symbol`, where each
+    /// [`SymbolReference::file`] is the REFERENCING site.
+    ///
+    /// Impls MUST NOT narrow the result by the referencing file. jcodemunch's
+    /// lookup is import-based, so the declaring file is never in it, and a
+    /// cross-file caller is exactly the evidence P1 and P5 H2 read as "any
+    /// non-test reference" (#6504).
+    ///
+    /// Impls MAY drop references to same-named symbols declared elsewhere
+    /// when their substrate can tell them apart (`MockJCodemunchOps` keys on
+    /// `(file, name)`). The jcodemunch-backed impl cannot: its lookup is
+    /// name-based with no file parameter, so it over-approximates, counting
+    /// a same-named symbol's importer as a caller. That is a false-negative
+    /// bias, accepted for a low-false-positive detector.
+    ///
     /// Returns an empty vec when the symbol has no callers (an orphan
     /// candidate). Per `f-infra-design.md` §5 P1.
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
@@ -1852,7 +1868,9 @@ impl JCodemunchOps for NoopJCodemunchOps {
 ///
 /// Changed-symbol queries are keyed on `(since_sha, until_sha)` (the
 /// commit-range surface per jcodemunch v1.108.27+); reference queries are
-/// keyed on `(file, name)` for file-level disambiguation.
+/// keyed on `(file, name)` for declaration-site disambiguation, which the
+/// [`JCodemunchOps::find_references`] contract permits but the
+/// jcodemunch-backed impl cannot provide.
 /// Dead-code / untested-symbol data is stored as a flat Vec and filtered by
 /// `min_confidence` at query time (mirrors the real tool's semantics).
 #[cfg(any(test, feature = "test-support"))]

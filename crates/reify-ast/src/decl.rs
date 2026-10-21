@@ -40,8 +40,8 @@ impl ParsedModule {
     /// Render every parse error against `source` as `line:col: message`, in parse order.
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
-    /// The three production surfaces that print parse errors — the two loops in
-    /// `reify-cli/src/main.rs` and `CliToolContext::load_file` — all want exactly this, and
+    /// The two production surfaces that print parse errors — the two loops in
+    /// `reify-cli/src/main.rs` — both want exactly this, and
     /// this is where they get it, so no caller has to rebuild the loop or re-derive positions
     /// its own way.
     ///

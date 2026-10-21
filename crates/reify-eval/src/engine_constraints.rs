@@ -3436,7 +3436,7 @@ structure def Probe {
             0.0001,
             Value::Real(5e-4),
         );
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
 
         // Scalar path's pre-existing (default-Satisfied) entry, to be OVERRIDDEN.
         let mut results = vec![ConstraintCheckEntry {
@@ -3486,7 +3486,7 @@ structure def Probe {
             0.0001,
             Value::Real(0.0),
         );
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
 
         // The scalar path's Indeterminate, with the reason it recorded, is the
         // entry the geometric verdict upgrades.
@@ -3528,7 +3528,7 @@ structure def Probe {
         let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
 
         // No geometry kernel.
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
         let mut results = vec![ConstraintCheckEntry {
             id: node_id,
@@ -3569,7 +3569,7 @@ structure def Probe {
         let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
         let conforms = find_conforms(&module);
         let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
         let mut results = Vec::new();
         let mut diags = Vec::new();
@@ -3608,7 +3608,7 @@ structure def Probe {
 
         // A kernel IS present — but with no explicit actual the pass must not run.
         let mock = MockGeometryKernel::new();
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
 
         let mut results = vec![ConstraintCheckEntry {
             id: node_id,
@@ -3703,7 +3703,7 @@ structure def Probe {
             .clone();
 
         // No geometry kernel → the geometric Conforms cannot measure → Indeterminate.
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let result = engine.check(&module);
 
         let entry = |id: &reify_core::ConstraintNodeId| {
@@ -3803,7 +3803,7 @@ mod unmeasured_reason_capability_tests {
     /// BOTH discriminators and cannot catch a regression here.
     #[test]
     fn registered_non_brep_default_kernel_is_not_measurement_capable() {
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         if !engine.ensure_openvdb_kernel() {
             eprintln!(
                 "skipping stub-mode capability gate: OpenVDB is absent from this \
@@ -3955,7 +3955,7 @@ structure def Probe {
             .id
             .clone();
 
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let checked = engine.check(&module);
         assert_eq!(
             satisfaction_of(&checked.constraint_results, &geometric_id),
@@ -4000,7 +4000,7 @@ structure def Probe {
         let constraints = probe_constraints(&module);
         let [a_id, b_id, c_id] = [0, 1, 2].map(|i| constraints[i].id.clone());
 
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let checked = engine.check(&module);
         for id in [&a_id, &b_id, &c_id] {
             assert_eq!(
@@ -4119,7 +4119,7 @@ structure def Probe {
         assert_eq!(constraints.len(), 11, "fixture declares eleven constraints");
         let (a_id, b_id) = (constraints[1].id.clone(), constraints[10].id.clone());
 
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let checked = engine.check(&module);
         assert_eq!(
             indeterminate_claims(&checked.diagnostics).len(),
@@ -4215,7 +4215,7 @@ structure def B {
         cells: &[(&str, &str, f64)],
     ) -> (crate::CheckResult, Vec<ConstraintUpgrade>) {
         let module = parse_and_compile_with_stdlib(SHARED_LABEL_SOURCE);
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let checked = engine.check(&module);
         let labels: Vec<_> = checked
             .constraint_results
@@ -4300,7 +4300,7 @@ structure def B {
     #[test]
     fn replacement_with_no_upgrades_is_a_no_op() {
         let module = parse_and_compile_with_stdlib(ELEVEN_SOURCE);
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let checked = engine.check(&module);
         assert!(
             !checked.diagnostics.is_empty(),

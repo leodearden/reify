@@ -73,7 +73,7 @@ fn apply_transform_happy_path_mock() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let errors: Vec<_> = result
@@ -171,7 +171,7 @@ fn apply_transform_malformed_arg_mock() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -264,7 +264,7 @@ fn apply_transform_occt_acceptance() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let build_errors: Vec<_> = result
@@ -395,7 +395,7 @@ fn apply_transform_occt_strict_dispatch() {
         compile_errors
     );
 
-    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(
+    let mut engine = reify_eval::Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(
         reify_constraints::SimpleConstraintChecker,
     ));
     let result = engine.build(&compiled, ExportFormat::Step);

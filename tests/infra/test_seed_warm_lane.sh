@@ -48,7 +48,7 @@ SCRIPT="$REPO_ROOT/scripts/seed-warm-lane.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
-# slot_holder_handshake_lib.sh — holder_wait_until_waiter_queued, the causal barrier H5d/H9 use.
+# slot_holder_handshake_lib.sh — holder_wait_until_waiter_queued, the causal barrier Q5d/Q9 use.
 [ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
 
@@ -195,7 +195,7 @@ _TMPDIRS+=("$STUB_DIR")
 # unaffected. _HELPER_LANES_FILE is kept SEPARATE from _REAL_LANES_FILE (task
 # 5609) rather than merged into it: R3's offender message names the call
 # convention ("run_helper_real lane dir was bare /tmp"), and R4 asserts specific
-# run_helper_real lanes are present in _REAL_LANES_FILE as an H5d/H9
+# run_helper_real lanes are present in _REAL_LANES_FILE as a Q5d/Q9
 # subshell-visibility coverage signal — merging the two streams would make R3's
 # message wrong for half its inputs and let a run_helper lane silently satisfy
 # R4's coverage check.
@@ -207,7 +207,7 @@ _HELPER_LANES_FILE="$_LANE_ROOT/.helper-lanes"
 # _REAL_STUB_ROOT: a single per-run parent for every per-invocation PATH stub
 # dir run_helper_real mints (task #5633). WHY a per-run root registered here,
 # rather than `_TMPDIRS+=("$real_stub_dir")` inside run_helper_real itself:
-# two call sites — H5d (Q_LANE8) and H9 (Q_LANE11) — invoke run_helper_real
+# two call sites — Q5d (Q_LANE8) and Q9 (Q_LANE11) — invoke run_helper_real
 # from inside a backgrounded ( ... ) & subshell, where a bash array append is
 # discarded the instant the subshell exits — the exact hazard already
 # documented above for _LANE_ROOT (and, for file-backed state, for
@@ -364,7 +364,7 @@ run_helper_real() {
     # REAL_STUB_DIR: publish this invocation's stub dir as a plain global,
     # like OUT/ERR_OUT/RC below — set immediately after mktemp so it is
     # correct even if a later assertion in this function body were to abort.
-    # Only observable for calls made from the MAIN shell; H5d/H9's
+    # Only observable for calls made from the MAIN shell; Q5d/Q9's
     # backgrounded ( ... ) & calls discard it like any other plain-variable
     # write made inside a subshell (same hazard as _TMPDIRS, documented
     # above). Task #5633 code review: that also means a plain unset/reset
@@ -372,14 +372,14 @@ run_helper_real() {
     # shell either -- a subshell's writes (including unsetting) never
     # propagate out, so the two backgrounded call sites instead reset
     # REAL_STUB_DIR to empty in the MAIN shell, immediately before
-    # backgrounding (see H5d/H9 below), which is the only place such a reset
+    # backgrounding (see Q5d/Q9 below), which is the only place such a reset
     # can actually take effect.
     REAL_STUB_DIR="$real_stub_dir"
     # cp stub that physically copies src to dest (no --reflink needed for tests)
     cat > "$real_stub_dir/cp" << 'REAL_STUB_EOF'
 #!/usr/bin/env bash
 echo "cp $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
-# REIFY_TEST_FD9_SQUATTER=1 (task #5705, H4c): fork a long-lived child that
+# REIFY_TEST_FD9_SQUATTER=1 (task #5705, Q4c): fork a long-lived child that
 # DELIBERATELY inherits every descriptor open in this stub -- including seed's
 # lane-lock FD 9 -- and never closes any of them. That is the one thing seed's
 # own `{ rm -rf ...; } 9<&- &` jobs only do TRANSIENTLY (their 9<&- runs in the
@@ -460,13 +460,13 @@ REAL_SLEEP_RM_STUB_EOF
     # NOTE: stdout is captured via a real FILE (OUT_FILE), NOT command
     # substitution ($(...)). A file redirect has no EOF-on-all-writers
     # semantics: this returns as soon as the direct `bash "$SCRIPT"` child
-    # exits, like a plain `wait`, letting H4 observe seed's own exit
+    # exits, like a plain `wait`, letting Q4 observe seed's own exit
     # independently of ANY detached grandchild this script forks -- present
     # or future. $(...) does not have that property: a backgrounded child of
     # $SCRIPT that inherited stdout (fd 1) would keep a pipe's write end
     # open, so $(...) would block until THAT descendant also exited (the
     # classic bash "command substitution hangs on a background job"
-    # pitfall) -- masking exactly the FD-hygiene bug Block Q/H4 exists to
+    # pitfall) -- masking exactly the FD-hygiene bug Block Q's Q4 exists to
     # catch: with a pipe, the probe below would never run until the leaking
     # background rm had already exited on its own, so the lock would always
     # read back FREE regardless of whether seed itself leaked FD 9.
@@ -496,7 +496,7 @@ REAL_SLEEP_RM_STUB_EOF
     # REIFY_TEST_PIN_RESEED_TRASH/REIFY_TEST_SLEEP_RESEED_TRASH_RM stub and
     # genuinely deleted the trash the stub exists to pin (the intermittent
     # I14g / M-setup failures #5633 fixes).
-    # WHY NOT wait for the grandchild instead: H4 (below) and Block Q/H5d/H9
+    # WHY NOT wait for the grandchild instead: Q4 (below) and Block Q's Q5d/Q9
     # deliberately require this helper to return the instant the DIRECT child
     # exits, as already documented at the OUT_FILE-vs-command-substitution
     # NOTE above — waiting here would serialise every caller on a detached
@@ -2375,44 +2375,44 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # not an fd inherited in this test shell, so contention is against a genuinely
 # separate process -- deterministic RED/GREEN, no fixed-sleep race.
 #
-# H1/H2/H3 (step-1/step-2). H4 (step-3/step-4). H5 (step-5/step-6).
-# H5d, H6a/H6b (task #5223 amend, reviewer_comprehensive test-coverage
-# findings): H5d exercises the previously-untested WAIT="unlimited"
+# Q1/Q2/Q3 (step-1/step-2). Q4 (step-3/step-4). Q5 (step-5/step-6).
+# Q5d, Q6a/Q6b (task #5223 amend, reviewer_comprehensive test-coverage
+# findings): Q5d exercises the previously-untested WAIT="unlimited"
 # block-until-acquired branch (mixed-case, via a backgrounded seed run +
-# done-marker file); H6a/H6b confirm the lock block genuinely spans
+# done-marker file); Q6a/Q6b confirm the lock block genuinely spans
 # --reset-in-place too, not just the --fresh-checkout path every case above
 # exercises.
-# H3 (task 5354, REWRITTEN) + H9 (task 5354, NEW) pin the fail-safe DEFAULT:
+# Q3 (task 5354, REWRITTEN) + Q9 (task 5354, NEW) pin the fail-safe DEFAULT:
 # with the lock HELD and --fresh-checkout but NO --lane-lock, seed REFUSES
-# (H3, WAIT=0 → exit 75) or QUEUEs (H9, WAIT=unlimited → blocks then reseeds)
+# (Q3, WAIT=0 → exit 75) or QUEUEs (Q9, WAIT=unlimited → blocks then reseeds)
 # rather than clobbering the live consumer (the esc-5214 acquire-path regression).
-# H7/H8 (task 5354, NEW) pin the --assume-lane-lock-held opt-out that a caller
+# Q7/Q8 (task 5354, NEW) pin the --assume-lane-lock-held opt-out that a caller
 # already holding ${LANE_DIR}.lock (thin --reseed FD 9, gc reclaim FD 8) uses to
-# skip the default acquire without self-refusing: H7 = the opt-out is honored
-# (seed reseeds instead of refusing), H8 = --assume-lane-lock-held + --lane-lock
+# skip the default acquire without self-refusing: Q7 = the opt-out is honored
+# (seed reseeds instead of refusing), Q8 = --assume-lane-lock-held + --lane-lock
 # is a contradiction (usage error, exit 2).
-# H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
+# Q10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
 # default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
 # to bare --reset-in-place (B13 control arm; no production pool caller) — a held
-# lock is ignored there (exit 0, not 75), the property H6a/H6b (reset-in-place
+# lock is ignored there (exit 0, not 75), the property Q6a/Q6b (reset-in-place
 # WITH --lane-lock) and E1/H3a (reset-in-place, no held lock) leave unpinned.
-# H11/H12/H13 (task 5568, NEW) pin the lane-lock refusal's own discriminant.
+# Q11/Q12/Q13 (task 5568, NEW) pin the lane-lock refusal's own discriminant.
 # The normative statement — why 75 is the wrong code, why the flag is opt-in
 # rather than an unconditional flip, and the dark-factory arm — lives in ONE
 # place: docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11, deliberately NOT
 # restated here (G7 no-lockstep-duplication; same discipline as Block S/inv.12).
 # What each case pins:
-#   H11 — --distinct-lock-refusal-rc on the flock -n arm: 77 with the flag
+#   Q11 — --distinct-lock-refusal-rc on the flock -n arm: 77 with the flag
 #         (a), 75 without it (b, the COMPAT PIN and (a)'s differential
 #         partner: same fixture, same held lock, the flag the only
 #         difference), plus the paths where the flag must be inert — success
 #         (c), --assume-lane-lock-held (d), --record-base (e),
 #         WAIT=unlimited (f).
-#   H12 — the SAME rc contract on the flock -w N queue-timeout arm, with its
+#   Q12 — the SAME rc contract on the flock -w N queue-timeout arm, with its
 #         own compat pin: both arms share ONE rc (one cause, one remediation).
-#   H13 — the LANE_LOCK_CONTENDED stderr token on both arms, UNCONDITIONAL
+#   Q13 — the LANE_LOCK_CONTENDED stderr token on both arms, UNCONDITIONAL
 #         (a/b with the flag absent, c with it present). Its non-vacuity
-#         control is H11c's token-absent assertion on the success path.
+#         control is Q11c's token-absent assertion on the success path.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -2425,7 +2425,7 @@ mkdir -p "$Q_BASE/debug"
 echo "base artifact" > "$Q_BASE/debug/base_artifact.a"
 printf 'RUSTFLAGS=\nINVOCATION=\n' > "$Q_BASE_PARENT/.warm-base-meta"
 
-# ── H1: lock HELD by a live consumer → --lane-lock refuses (EX_TEMPFAIL 75),
+# ── Q1: lock HELD by a live consumer → --lane-lock refuses (EX_TEMPFAIL 75),
 # does NOT clobber the lane (sentinel survives), cp never invoked. ───────────
 Q_LANE1="$(make_isolated_lane Q-lane1)"
 mkdir -p "$Q_LANE1/target"
@@ -2447,20 +2447,20 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE1" --fresh-checkout --lane-lock
 
-assert "H1: lock held by live consumer → exit 75 (EX_TEMPFAIL)" test "$RC" -eq 75
-assert "H1: stderr mentions the lock/live-consumer refusal" \
+assert "Q1: lock held by live consumer → exit 75 (EX_TEMPFAIL)" test "$RC" -eq 75
+assert "Q1: stderr mentions the lock/live-consumer refusal" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer"' _ "$ERR_OUT"
-assert "H1: STDOUT is EMPTY (fail-closed, no path emitted)" \
+assert "Q1: STDOUT is EMPTY (fail-closed, no path emitted)" \
     bash -c '[ -z "$1" ]' _ "$OUT"
-assert "H1: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+assert "Q1: sentinel file in <lane>/target still present (lane NOT clobbered)" \
     test -f "$Q_LANE1/target/SENTINEL.txt"
-assert "H1: cp NEVER invoked (refused before clone)" \
+assert "Q1: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK1_PID" 2>/dev/null || true
 wait "$Q_LOCK1_PID" 2>/dev/null || true
 
-# ── H2: lock FREE → --lane-lock succeeds (RC 0, stdout resolved <lane>/target,
+# ── Q2: lock FREE → --lane-lock succeeds (RC 0, stdout resolved <lane>/target,
 # target replaced from base). ─────────────────────────────────────────────────
 Q_LANE2="$(make_isolated_lane Q-lane2)"
 mkdir -p "$Q_LANE2/target"
@@ -2470,22 +2470,22 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE2" --fresh-checkout --lane-lock
 
-assert "H2: lock free → exit 0" test "$RC" -eq 0
-assert "H2: STDOUT is exactly <lane_dir>/target" \
+assert "Q2: lock free → exit 0" test "$RC" -eq 0
+assert "Q2: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_LANE2/target"'" ]' _ "$OUT"
-assert "H2: sentinel file GONE (target was replaced from base)" \
+assert "Q2: sentinel file GONE (target was replaced from base)" \
     bash -c '[ ! -e "'"$Q_LANE2/target/SENTINEL.txt"'" ]'
-assert "H2: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
+assert "Q2: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
     test -f "$Q_LANE2/target/debug/base_artifact.a"
-assert "H2: cp invoked with --reflink=always" \
+assert "Q2: cp invoked with --reflink=always" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
-# ── H3: fail-safe DEFAULT — lock HELD, --fresh-checkout but NO --lane-lock →
+# ── Q3: fail-safe DEFAULT — lock HELD, --fresh-checkout but NO --lane-lock →
 # seed acquires the lane lock BY DEFAULT (esc-5214/task 5354) and REFUSES
 # (EX_TEMPFAIL 75) rather than clobbering a live consumer's lane. This is the
 # task-required regression: the #5223 guard is no longer bypassable by a caller
 # that simply forgets --lane-lock (the exact esc-5214 acquire-path clobber).
-# Pairs with H9 (queue instead of refuse under WAIT=unlimited). ───────────────
+# Pairs with Q9 (queue instead of refuse under WAIT=unlimited). ───────────────
 Q_LANE3="$(make_isolated_lane Q-lane3)"
 mkdir -p "$Q_LANE3/target"
 echo "sentinel content" > "$Q_LANE3/target/SENTINEL.txt"
@@ -2505,21 +2505,21 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE3" --fresh-checkout
 # NOTE: no --lane-lock above -- the lock is acquired by DEFAULT under --fresh-checkout.
 
-assert "H3: fail-safe default: lock held, no --lane-lock → exit 75 (EX_TEMPFAIL)" \
+assert "Q3: fail-safe default: lock held, no --lane-lock → exit 75 (EX_TEMPFAIL)" \
     test "$RC" -eq 75
-assert "H3: fail-safe default: stderr mentions the lock/live-consumer refusal" \
+assert "Q3: fail-safe default: stderr mentions the lock/live-consumer refusal" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer"' _ "$ERR_OUT"
-assert "H3: fail-safe default: STDOUT is EMPTY (fail-closed, no path emitted)" \
+assert "Q3: fail-safe default: STDOUT is EMPTY (fail-closed, no path emitted)" \
     bash -c '[ -z "$1" ]' _ "$OUT"
-assert "H3: fail-safe default: sentinel survives (lane NOT clobbered)" \
+assert "Q3: fail-safe default: sentinel survives (lane NOT clobbered)" \
     test -f "$Q_LANE3/target/SENTINEL.txt"
-assert "H3: fail-safe default: cp NEVER invoked (refused before clone)" \
+assert "Q3: fail-safe default: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK3_PID" 2>/dev/null || true
 wait "$Q_LOCK3_PID" 2>/dev/null || true
 
-# ── H4: FD-hygiene — a detached background trash-rm must NOT inherit the held
+# ── Q4: FD-hygiene — a detached background trash-rm must NOT inherit the held
 # lane-lock FD 9, so the lock is fully released the instant seed itself exits
 # (not only once the orphaned background rm eventually finishes). ───────────
 # REIFY_WARM_LANE_RESEED_TRASH_SYNC left UNSET (default async path) and a
@@ -2536,36 +2536,36 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_SLEEP_RESEED_TRASH_RM=1 \
     run_helper_real "$Q_BASE" "$Q_LANE4" --fresh-checkout --lane-lock
 
-assert "H4: seed exits 0 (async trash rm spawned)" test "$RC" -eq 0
-assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 leak to background rm)" \
+assert "Q4: seed exits 0 (async trash rm spawned)" test "$RC" -eq 0
+assert "Q4: lane lock is re-acquirable immediately after seed exits (no FD-9 leak to background rm)" \
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4"
 
-# ── H4b (task #5705): the DETERMINISTIC, load-independent companion to H4.
+# ── Q4b (task #5705): the DETERMINISTIC, load-independent companion to Q4.
 #
-# H4 above probes an OBSERVABLE TIMING PROPERTY: it asks whether the lock reads
+# Q4 above probes an OBSERVABLE TIMING PROPERTY: it asks whether the lock reads
 # back free the instant seed exits. That is the right property, but it can only
 # ever fail PROBABILISTICALLY — pre-#5705 it went RED in roughly 2-8% of runs
 # under host load and passed the rest of the time, because the window it catches
 # is the scheduling gap between a background job's fork() and that child's
-# close(9). H4b instead asserts the STRUCTURAL fact that makes the timing
+# close(9). Q4b instead asserts the STRUCTURAL fact that makes the timing
 # property true (technique S, docs/prds/infra-test-wallclock-deflake.md §2):
 # seed must have executed its explicit `flock -u 9` release path, which it
 # announces on stderr. That marker is emitted or it is not — no load, no
-# scheduling, no flake. Keeping BOTH is deliberate: H4 is the end-to-end
-# observation, H4b is the regression guard that cannot silently degrade into a
+# scheduling, no flake. Keeping BOTH is deliberate: Q4 is the end-to-end
+# observation, Q4b is the regression guard that cannot silently degrade into a
 # coin flip.
 #
-# Reuses the $ERR_OUT captured by the H4 run above — no second seed invocation.
-assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOCK_UN path actually ran)" \
+# Reuses the $ERR_OUT captured by the Q4 run above — no second seed invocation.
+assert "Q4b: seed emits the explicit lane-lock release marker on stderr (the LOCK_UN path actually ran)" \
     bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
 
-# ── H4c (task #5705 code review): the BEHAVIOURAL guard. H4/H4b/H4e between
+# ── Q4c (task #5705 code review): the BEHAVIOURAL guard. Q4/Q4b/Q4e between
 # them prove the release path RAN; none of them proves it had the intended
 # EFFECT. ─────────────────────────────────────────────────────────────────────
 #
 # THE COVERAGE HOLE THIS CLOSES, established by mutation: delete
 # `trap _release_lane_lock EXIT` from scripts/seed-warm-lane.sh and exactly two
-# asserts go red — H4b's marker grep and H4e's marker grep. BOTH of the
+# asserts go red — Q4b's marker grep and Q4e's marker grep. BOTH of the
 # "lock is re-acquirable immediately after seed exits" asserts still PASS,
 # because the defect they target is a scheduling race that seed's own detached
 # child almost always loses. So the only permanent guards were structural
@@ -2575,7 +2575,7 @@ assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOC
 # check of the real semantics lived in test_seed_lane_lock_release_soak.sh,
 # which is default-SKIPPING and therefore never runs in the gate.
 #
-# WHY H4's EXISTING KNOB CANNOT FILL IT: REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
+# WHY Q4's EXISTING KNOB CANNOT FILL IT: REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
 # keeps a background rm alive past the probe, but that child is spawned as
 # `{ ...; } 9<&- &` — the redirection is applied by the child BEFORE it execs
 # the sleeping rm stub, so the sleeper holds NO FD 9 and squats on nothing.
@@ -2589,7 +2589,7 @@ assert "H4b: seed emits the explicit lane-lock release marker on stderr (the LOC
 # and is exactly what closing a descriptor cannot do.
 #
 # NON-VACUITY is structural, not a second timing observation: the three
-# H4c-fixture asserts pin that the squatter exists, is still alive at probe
+# Q4c-fixture asserts pin that the squatter exists, is still alive at probe
 # time, and that /proc/<pid>/fd/9 really resolves to THIS lane's lock file. If
 # the fixture ever stops reproducing that shape it fails loudly instead of
 # quietly degrading into "the lock was free because nothing held it".
@@ -2608,20 +2608,20 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
 
 Q_SQPID4C="$(cat "$Q_SQPID_FILE4C" 2>/dev/null || true)"
 
-assert "H4c: seed exits 0 (the squatter fixture does not disturb the reseed itself)" \
+assert "Q4c: seed exits 0 (the squatter fixture does not disturb the reseed itself)" \
     test "$RC" -eq 0
-assert "H4c-fixture: the cp stub recorded a squatter PID (the FD-9 dup-holder was really forked)" \
+assert "Q4c-fixture: the cp stub recorded a squatter PID (the FD-9 dup-holder was really forked)" \
     bash -c '[ -n "$1" ]' _ "$Q_SQPID4C"
-assert "H4c-fixture: that squatter is STILL ALIVE now that seed has exited (it outlives seed by construction)" \
+assert "Q4c-fixture: that squatter is STILL ALIVE now that seed has exited (it outlives seed by construction)" \
     kill -0 "$Q_SQPID4C"
-assert "H4c-fixture: ... and it really holds a dup of seed's lane-lock FD 9 (/proc/<pid>/fd/9 resolves to THIS lane's lock)" \
+assert "Q4c-fixture: ... and it really holds a dup of seed's lane-lock FD 9 (/proc/<pid>/fd/9 resolves to THIS lane's lock)" \
     bash -c '[ "$(readlink "/proc/$1/fd/9" 2>/dev/null)" = "$(realpath "$2")" ]' _ "$Q_SQPID4C" "$Q_LOCK4C"
-assert "H4c: the lane lock is FREE anyway — LOCK_UN dropped it for the whole OFD, not just for seed's own descriptor" \
+assert "Q4c: the lane lock is FREE anyway — LOCK_UN dropped it for the whole OFD, not just for seed's own descriptor" \
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4C"
 
 kill "$Q_SQPID4C" 2>/dev/null || true
 
-# ── H4e (task #5705): the release must cover seed's FAILURE paths, not just its
+# ── Q4e (task #5705): the release must cover seed's FAILURE paths, not just its
 # success tail. A release written as a trailing statement is UNREACHABLE the
 # moment seed aborts after acquiring the lock — and seed has plenty of such
 # aborts downstream of acquisition: the hard reflink error, the same-FS check,
@@ -2638,16 +2638,16 @@ kill "$Q_SQPID4C" 2>/dev/null || true
 # A pre-seeded ORPHANED trash entry (<lane-basename>.<pid> under the lane's own
 # private dirname(LANE)/.reseed-trash) makes the orphan sweep fire, so a real
 # detached child is forked before the abort; REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
-# keeps that child alive past the probe below. An H4e-fixture assert pins that
+# keeps that child alive past the probe below. A Q4e-fixture assert pins that
 # the sweep really ran, so the shape being tested cannot silently stop
 # reproducing if the sweep's entry naming ever changes.
 #
-# HONEST SCOPE, as with H4/H4b: the MARKER assert is the deterministic RED here
+# HONEST SCOPE, as with Q4/Q4b: the MARKER assert is the deterministic RED here
 # — it fails outright while the release is a tail statement. The lock-reacquire
 # assert is the end-to-end companion and can only ever fail probabilistically
 # (the detached child usually wins the race to its own close(9) during the
 # mv+rmdir+cp work that precedes the abort). Both are kept for the same reason
-# H4 and H4b both are.
+# Q4 and Q4b both are.
 Q_LANE4E="$(make_isolated_lane Q-lane4e)"
 mkdir -p "$Q_LANE4E/target"
 echo "stale artifact" > "$Q_LANE4E/target/stale.a"
@@ -2662,20 +2662,20 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_SLEEP_RESEED_TRASH_RM=1 \
     run_helper_real "$Q_BASE" "$Q_LANE4E" --fresh-checkout --lane-lock
 
-assert "H4e: seed ABORTS with exit 1 on the hard reflink error (downstream of a successful lane-lock acquire)" \
+assert "Q4e: seed ABORTS with exit 1 on the hard reflink error (downstream of a successful lane-lock acquire)" \
     test "$RC" -eq 1
-assert "H4e: ... and it really was the reflink hard-error path (stderr names the aborted clone)" \
+assert "Q4e: ... and it really was the reflink hard-error path (stderr names the aborted clone)" \
     bash -c 'printf "%s\n" "$1" | grep -q "Reflink clone FAILED"' _ "$ERR_OUT"
-assert "H4e-fixture: the orphan sweep really forked a detached child before that abort (non-vacuity)" \
+assert "Q4e-fixture: the orphan sweep really forked a detached child before that abort (non-vacuity)" \
     bash -c 'printf "%s\n" "$1" | grep -q "Sweeping orphaned trash entry"' _ "$ERR_OUT"
-assert "H4e: seed emits the lane-lock release marker on the FAILURE path too (release is not tail-only)" \
+assert "Q4e: seed emits the lane-lock release marker on the FAILURE path too (release is not tail-only)" \
     bash -c 'printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
-assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits" \
+assert "Q4e: lane lock is re-acquirable immediately after the ABORTED seed exits" \
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4E"
 
-# ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
+# ── Q5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
 # The WAIT knob lets seed's own lane-lock acquire QUEUE (bounded flock -w N)
-# instead of refusing instantly (flock -n, the WAIT-unset default from H1-H4
+# instead of refusing instantly (flock -n, the WAIT-unset default from Q1-Q4
 # above). It binds only a caller that lets seed self-acquire -- tests/infra
 # (these blocks) and dark-factory's ephemeral warm-seed path
 # (take_lane_lock=False). It is INERT on both production pool acquires, which
@@ -2683,9 +2683,9 @@ assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits
 # and the timeout code (124). See the --lane-lock note in
 # scripts/seed-warm-lane.sh's header.
 #
-# H5a: lock HELD (same backgrounded flock -x holder + _wait_for_reader_lock
-# causal handshake as H1) + WAIT=1 -> still refuses (75), but only AFTER the
-# bounded wait elapses -- i.e. it queued, it did not refuse at 0s like H1.
+# Q5a: lock HELD (same backgrounded flock -x holder + _wait_for_reader_lock
+# causal handshake as Q1) + WAIT=1 -> still refuses (75), but only AFTER the
+# bounded wait elapses -- i.e. it queued, it did not refuse at 0s like Q1.
 # SECONDS is a plain lower-bound check (-ge, not -le/-lt) so it cannot be a
 # flaky wall-clock UPPER bound (tests/infra/test_no_new_wallclock_upper_bounds.sh
 # only flags -le/-lt time comparisons; a slower CI host only ever makes an
@@ -2708,21 +2708,21 @@ reset_calls
 SECONDS=0
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
     run_helper_real "$Q_BASE" "$Q_LANE5" --fresh-checkout --lane-lock
-Q_H5A_WAITED_S=$SECONDS
+Q5A_WAITED_S=$SECONDS
 
-assert "H5a: lock held + WAIT=1 -> exit 75 (EX_TEMPFAIL) after the bounded wait" \
+assert "Q5a: lock held + WAIT=1 -> exit 75 (EX_TEMPFAIL) after the bounded wait" \
     test "$RC" -eq 75
-assert "H5a: bounded wait actually elapsed (queued, not an instant refuse like H1)" \
-    test "$Q_H5A_WAITED_S" -ge 1
-assert "H5a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+assert "Q5a: bounded wait actually elapsed (queued, not an instant refuse like Q1)" \
+    test "$Q5A_WAITED_S" -ge 1
+assert "Q5a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
     test -f "$Q_LANE5/target/SENTINEL.txt"
-assert "H5a: cp NEVER invoked (refused before clone)" \
+assert "Q5a: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK5_PID" 2>/dev/null || true
 wait "$Q_LOCK5_PID" 2>/dev/null || true
 
-# H5b: lock FREE + WAIT=1 -> succeeds exactly as H2 (the knob only changes
+# Q5b: lock FREE + WAIT=1 -> succeeds exactly as Q2 (the knob only changes
 # behavior when the lock is contended; an uncontended flock -w N acquires on
 # the very first try, same as flock -n or a bare blocking flock).
 Q_LANE6="$(make_isolated_lane Q-lane6)"
@@ -2733,13 +2733,13 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
     run_helper_real "$Q_BASE" "$Q_LANE6" --fresh-checkout --lane-lock
 
-assert "H5b: lock free + WAIT=1 -> exit 0" test "$RC" -eq 0
-assert "H5b: STDOUT is exactly <lane_dir>/target" \
+assert "Q5b: lock free + WAIT=1 -> exit 0" test "$RC" -eq 0
+assert "Q5b: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_LANE6/target"'" ]' _ "$OUT"
-assert "H5b: sentinel file GONE (target was replaced from base)" \
+assert "Q5b: sentinel file GONE (target was replaced from base)" \
     bash -c '[ ! -e "'"$Q_LANE6/target/SENTINEL.txt"'" ]'
 
-# H5c: invalid WAIT knob value ("abc") -> usage error (exit 64), no target
+# Q5c: invalid WAIT knob value ("abc") -> usage error (exit 64), no target
 # mutation -- rejected before the flock is even attempted.
 Q_LANE7="$(make_isolated_lane Q-lane7)"
 mkdir -p "$Q_LANE7/target"
@@ -2749,17 +2749,17 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=abc \
     run_helper_real "$Q_BASE" "$Q_LANE7" --fresh-checkout --lane-lock
 
-assert "H5c: invalid WAIT knob ('abc') -> exit 64 (usage error)" test "$RC" -eq 64
-assert "H5c: stderr names the invalid knob (REIFY_WARM_LANE_LANE_LOCK_WAIT)" \
+assert "Q5c: invalid WAIT knob ('abc') -> exit 64 (usage error)" test "$RC" -eq 64
+assert "Q5c: stderr names the invalid knob (REIFY_WARM_LANE_LANE_LOCK_WAIT)" \
     bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_LANE_LOCK_WAIT"' _ "$ERR_OUT"
-assert "H5c: sentinel file in <lane>/target still present (no target mutation)" \
+assert "Q5c: sentinel file in <lane>/target still present (no target mutation)" \
     test -f "$Q_LANE7/target/SENTINEL.txt"
-assert "H5c: cp NEVER invoked (rejected before any mutation)" \
+assert "Q5c: cp NEVER invoked (rejected before any mutation)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
-# ── H5d: bounded-wait "unlimited" (mixed-case) -> blocks until acquired,
+# ── Q5d: bounded-wait "unlimited" (mixed-case) -> blocks until acquired,
 # never refuses. Exercises the bare blocking `flock 9` branch
-# (seed-warm-lane.sh's _llw_unlimited=1 path); same binding scope as H5
+# (seed-warm-lane.sh's _llw_unlimited=1 path); same binding scope as Q5
 # above. Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ──
 Q_LANE8="$(make_isolated_lane Q-lane8)"
 mkdir -p "$Q_LANE8/target"
@@ -2813,11 +2813,11 @@ _BGPIDS+=("$Q_SEED8_PID")
 # OBSERVE seed blocked in its own `flock 9` on the lane lock: the holder lives
 # until killed below, so once seed is queued the two not-done assertions that
 # follow cannot be outrun.
-assert "H5d-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK8} is listed in /proc/locks)" \
+assert "Q5d-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK8} is listed in /proc/locks)" \
     holder_wait_until_waiter_queued "$Q_LOCK8" 150
-assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
+assert "Q5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
-assert "H5d: sentinel file in <lane>/target still present while blocked (no clobber yet)" \
+assert "Q5d: sentinel file in <lane>/target still present while blocked (no clobber yet)" \
     test -f "$Q_LANE8/target/SENTINEL.txt"
 
 # Release the holder; the queued seed should now acquire the lock and run.
@@ -2827,26 +2827,26 @@ wait "$Q_LOCK8_PID" 2>/dev/null || true
 _wait_for_reader_lock "$Q_DONE8" 30
 wait "$Q_SEED8_PID" 2>/dev/null || true
 
-Q_H5D_RC="$(cat "${Q_DONE8}.rc" 2>/dev/null || echo "unset")"
-Q_H5D_OUT="$(cat "${Q_DONE8}.out" 2>/dev/null || echo "")"
+Q5D_RC="$(cat "${Q_DONE8}.rc" 2>/dev/null || echo "unset")"
+Q5D_OUT="$(cat "${Q_DONE8}.out" 2>/dev/null || echo "")"
 
-assert "H5d: after the holder releases, 'unlimited' seed completes with exit 0 (got '${Q_H5D_RC}')" \
-    test "$Q_H5D_RC" -eq 0
-assert "H5d: STDOUT is exactly <lane_dir>/target" \
-    bash -c '[ "$1" = "'"$Q_LANE8/target"'" ]' _ "$Q_H5D_OUT"
-assert "H5d: sentinel file GONE (target was replaced from base after unblocking)" \
+assert "Q5d: after the holder releases, 'unlimited' seed completes with exit 0 (got '${Q5D_RC}')" \
+    test "$Q5D_RC" -eq 0
+assert "Q5d: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE8/target"'" ]' _ "$Q5D_OUT"
+assert "Q5d: sentinel file GONE (target was replaced from base after unblocking)" \
     bash -c '[ ! -e "'"$Q_LANE8/target/SENTINEL.txt"'" ]'
-assert "H5d: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
+assert "Q5d: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
     test -f "$Q_LANE8/target/debug/base_artifact.a"
 
-# ── H6: --lane-lock also guards --reset-in-place, not just --fresh-checkout ──
+# ── Q6: --lane-lock also guards --reset-in-place, not just --fresh-checkout ──
 # The lock block runs BEFORE the mode-split (seed-warm-lane.sh comment: "so it
-# guards BOTH --fresh-checkout and --reset-in-place"), but H1-H5 above only
+# guards BOTH --fresh-checkout and --reset-in-place"), but Q1-Q5 above only
 # ever exercise --fresh-checkout. A future refactor that moved the lock block
 # below the mode-split would silently drop reset-in-place protection with no
-# failing test above -- H6 pins the ordering directly against real fixtures.
+# failing test above -- Q6 pins the ordering directly against real fixtures.
 
-# H6a: lock HELD + --reset-in-place + --lane-lock, on a NON-EMPTY lane target
+# Q6a: lock HELD + --reset-in-place + --lane-lock, on a NON-EMPTY lane target
 # (which --reset-in-place's OWN clobber guard would otherwise refuse with
 # exit 1) -> exit 75, not 1: proves the lock check runs and refuses BEFORE
 # the clobber guard gets a chance to run its own (different) refusal.
@@ -2868,39 +2868,39 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE9" --reset-in-place --lane-lock
 
-assert "H6a: reset-in-place + lock held -> exit 75 (lock check precedes the clobber guard, not exit 1)" \
+assert "Q6a: reset-in-place + lock held -> exit 75 (lock check precedes the clobber guard, not exit 1)" \
     test "$RC" -eq 75
-assert "H6a: stderr mentions the lock/live-consumer refusal (not the clobber-guard message)" \
+assert "Q6a: stderr mentions the lock/live-consumer refusal (not the clobber-guard message)" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer"' _ "$ERR_OUT"
-assert "H6a: sentinel file in <lane>/target still present (lane NOT touched)" \
+assert "Q6a: sentinel file in <lane>/target still present (lane NOT touched)" \
     test -f "$Q_LANE9/target/SENTINEL.txt"
-assert "H6a: cp NEVER invoked" \
+assert "Q6a: cp NEVER invoked" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK9_PID" 2>/dev/null || true
 wait "$Q_LOCK9_PID" 2>/dev/null || true
 
-# H6b: lock FREE + --reset-in-place + --lane-lock, on an EMPTY lane (no
+# Q6b: lock FREE + --reset-in-place + --lane-lock, on an EMPTY lane (no
 # pre-existing target/ at all, mirroring Block E's E1 fixture) -> exit 0:
 # confirms the lock genuinely spans --reset-in-place's uncontended success
-# path too, not just its held-lock refusal path in H6a.
+# path too, not just its held-lock refusal path in Q6a.
 Q_LANE10="$(make_isolated_lane Q-lane10)"
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE10" --reset-in-place --lane-lock
 
-assert "H6b: reset-in-place + lock free + empty lane -> exit 0" test "$RC" -eq 0
-assert "H6b: STDOUT is exactly <lane_dir>/target" \
+assert "Q6b: reset-in-place + lock free + empty lane -> exit 0" test "$RC" -eq 0
+assert "Q6b: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_LANE10/target"'" ]' _ "$OUT"
-assert "H6b: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
+assert "Q6b: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
     test -f "$Q_LANE10/target/debug/base_artifact.a"
-assert "H6b: cp invoked with --reflink=always" \
+assert "Q6b: cp invoked with --reflink=always" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
-# ── H7: --assume-lane-lock-held opt-out is HONORED — a caller that already holds
+# ── Q7: --assume-lane-lock-held opt-out is HONORED — a caller that already holds
 # ${LANE_DIR}.lock passes --assume-lane-lock-held so seed SKIPS its own default
-# acquisition and does NOT self-refuse. The held-lock fixture (H1's backgrounded
+# acquisition and does NOT self-refuse. The held-lock fixture (Q1's backgrounded
 # flock -x holder) simulates the caller's own hold; with the opt-out seed reseeds
 # normally (RC 0, target replaced) instead of refusing (75). This is the
 # mechanism thin --reseed (FD 9) and gc reclaim (FD 8) rely on to avoid the
@@ -2923,21 +2923,21 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE12" --fresh-checkout --assume-lane-lock-held
 
-assert "H7: --assume-lane-lock-held + lock held → exit 0 (seed skipped its own acquire, no self-refuse)" \
+assert "Q7: --assume-lane-lock-held + lock held → exit 0 (seed skipped its own acquire, no self-refuse)" \
     test "$RC" -eq 0
-assert "H7: STDOUT is exactly <lane_dir>/target" \
+assert "Q7: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_LANE12/target"'" ]' _ "$OUT"
-assert "H7: sentinel GONE (target replaced from base — the reseed actually ran)" \
+assert "Q7: sentinel GONE (target replaced from base — the reseed actually ran)" \
     bash -c '[ ! -e "'"$Q_LANE12/target/SENTINEL.txt"'" ]'
-assert "H7: base_artifact.a present in <lane>/target (clone from base succeeded)" \
+assert "Q7: base_artifact.a present in <lane>/target (clone from base succeeded)" \
     test -f "$Q_LANE12/target/debug/base_artifact.a"
-assert "H7: cp invoked with --reflink=always" \
+assert "Q7: cp invoked with --reflink=always" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK12_PID" 2>/dev/null || true
 wait "$Q_LOCK12_PID" 2>/dev/null || true
 
-# ── H7b (task #5705): --assume-lane-lock-held must leave the CALLER's lock
+# ── Q7b (task #5705): --assume-lane-lock-held must leave the CALLER's lock
 # ALONE. seed now drops its lane lock with an explicit `flock -u 9` before
 # exiting (the FD-9 fork-window fix); that release is guarded on
 # _should_acquire_lane_lock, i.e. it runs ONLY on the branch where seed opened
@@ -2946,12 +2946,12 @@ wait "$Q_LOCK12_PID" 2>/dev/null || true
 # very inv.2 clobber window --lane-lock exists to close. That is strictly worse
 # than the bug being fixed, so it gets its own pinned test.
 #
-# WHY H7 ABOVE DOES NOT COVER THIS: H7 holds the lock in a BACKGROUNDED
+# WHY Q7 ABOVE DOES NOT COVER THIS: Q7 holds the lock in a BACKGROUNDED
 # SUBSHELL (`( flock -x 9 ... ) 9>"$LOCK" &`), so its FD 9 belongs to that
 # subshell and seed never inherits it — an unguarded `flock -u 9` inside seed
 # would find FD 9 unopened and change nothing observable. The REAL shape of
 # thin --reseed / gc reclaim is the caller holding the lock on FD 9 in the very
-# process that execs seed, so H7b holds it HERE, in the test shell, and lets
+# process that execs seed, so Q7b holds it HERE, in the test shell, and lets
 # run_helper_real's plain `bash "$SCRIPT"` child inherit it exactly as thin's
 # would.
 #
@@ -2973,31 +2973,31 @@ Q_LOCK12B="${Q_LANE12B}.lock"
 _TMPDIRS+=("$Q_LOCK12B")
 touch "$Q_LOCK12B"
 
-# _h7b_probe_refused / _h7b_probe_acquired: the H4 probe form, wrapped so the
+# _q7b_probe_refused / _q7b_probe_acquired: the Q4 probe form, wrapped so the
 # assert lines stay readable. Both spawn a SEPARATE process (see above).
-_h7b_probe_acquired() { bash -c 'exec 8>"$1"; flock -n 8' _ "$1"; }
-_h7b_probe_refused()  { ! _h7b_probe_acquired "$1"; }
+_q7b_probe_acquired() { bash -c 'exec 8>"$1"; flock -n 8' _ "$1"; }
+_q7b_probe_refused()  { ! _q7b_probe_acquired "$1"; }
 
 exec 9>"$Q_LOCK12B"
-assert "H7b-setup: the TEST SHELL itself holds the lane lock on FD 9 (thin --reseed's real shape, unlike H7's backgrounded subshell)" \
+assert "Q7b-setup: the TEST SHELL itself holds the lane lock on FD 9 (thin --reseed's real shape, unlike Q7's backgrounded subshell)" \
     flock -n 9
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
     run_helper_real "$Q_BASE" "$Q_LANE12B" --fresh-checkout --assume-lane-lock-held
 
-assert "H7b: --assume-lane-lock-held with the caller's lock INHERITED on FD 9 → exit 0 (seed skipped its own acquire)" \
+assert "Q7b: --assume-lane-lock-held with the caller's lock INHERITED on FD 9 → exit 0 (seed skipped its own acquire)" \
     test "$RC" -eq 0
-assert "H7b: seed does NOT announce a lane-lock release it does not own (marker absent from stderr)" \
+assert "Q7b: seed does NOT announce a lane-lock release it does not own (marker absent from stderr)" \
     bash -c '! printf "%s\n" "$1" | grep -q "explicit flock -u before exit"' _ "$ERR_OUT"
-assert "H7b: the CALLER'S LOCK SURVIVED seed — a separate-process probe still cannot acquire it" \
-    _h7b_probe_refused "$Q_LOCK12B"
+assert "Q7b: the CALLER'S LOCK SURVIVED seed — a separate-process probe still cannot acquire it" \
+    _q7b_probe_refused "$Q_LOCK12B"
 
 exec 9>&-
-assert "H7b: ... and that same probe SUCCEEDS once the test shell drops FD 9 (a detector, not a constant refusal)" \
-    _h7b_probe_acquired "$Q_LOCK12B"
+assert "Q7b: ... and that same probe SUCCEEDS once the test shell drops FD 9 (a detector, not a constant refusal)" \
+    _q7b_probe_acquired "$Q_LOCK12B"
 
-# ── H8: --assume-lane-lock-held + --lane-lock is a CONTRADICTION → usage error
+# ── Q8: --assume-lane-lock-held + --lane-lock is a CONTRADICTION → usage error
 # (exit 2). --lane-lock says "acquire the lane lock yourself"; --assume-lane-lock-held
 # says "the caller already holds it, do NOT acquire" — passing both is caller
 # confusion, rejected loudly (naming BOTH flags) rather than silently picking a
@@ -3010,23 +3010,23 @@ reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE13" --fresh-checkout --lane-lock --assume-lane-lock-held
 
-assert "H8: --lane-lock + --assume-lane-lock-held → exit 2 (usage error)" \
+assert "Q8: --lane-lock + --assume-lane-lock-held → exit 2 (usage error)" \
     test "$RC" -eq 2
-assert "H8: stderr names --lane-lock (the contradiction names both flags)" \
+assert "Q8: stderr names --lane-lock (the contradiction names both flags)" \
     bash -c 'printf "%s\n" "$1" | grep -q -- "--lane-lock"' _ "$ERR_OUT"
-assert "H8: stderr names --assume-lane-lock-held (the contradiction names both flags)" \
+assert "Q8: stderr names --assume-lane-lock-held (the contradiction names both flags)" \
     bash -c 'printf "%s\n" "$1" | grep -q -- "--assume-lane-lock-held"' _ "$ERR_OUT"
-assert "H8: sentinel file in <lane>/target still present (no target mutation)" \
+assert "Q8: sentinel file in <lane>/target still present (no target mutation)" \
     test -f "$Q_LANE13/target/SENTINEL.txt"
-assert "H8: cp NEVER invoked (rejected before any mutation)" \
+assert "Q8: cp NEVER invoked (rejected before any mutation)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
-# ── H9: fail-safe DEFAULT queues under WAIT=unlimited — lock HELD,
+# ── Q9: fail-safe DEFAULT queues under WAIT=unlimited — lock HELD,
 # --fresh-checkout but NO --lane-lock + REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited
 # → the default-acquired lane lock BLOCKS until the live consumer releases
-# (never refuses), then reseeds. Pairs with H3 (refuse at WAIT=0): together they
+# (never refuses), then reseeds. Pairs with Q3 (refuse at WAIT=0): together they
 # pin "refuse OR queue rather than clobber" for the no-`--lane-lock` acquire path
-# (the esc-5214 regression). Mirrors H5d's backgrounded-seed + done-marker
+# (the esc-5214 regression). Mirrors Q5d's backgrounded-seed + done-marker
 # pattern, but WITHOUT --lane-lock (the lock is now default-on). ──────────────
 Q_LANE11="$(make_isolated_lane Q-lane11)"
 mkdir -p "$Q_LANE11/target"
@@ -3050,7 +3050,7 @@ Q_DONE11="${Q_LANE11}.done-marker"
 _TMPDIRS+=("$Q_DONE11" "${Q_DONE11}.rc" "${Q_DONE11}.out")
 
 # REAL_STUB_DIR staleness guard (task #5633 code review) -- see the
-# identical comment at H5d/Q_LANE8 above: a reset made inside
+# identical comment at Q5d/Q_LANE8 above: a reset made inside
 # run_helper_real cannot reach the main shell from inside this backgrounded
 # subshell, so it has to happen here instead.
 REAL_STUB_DIR=""
@@ -3066,12 +3066,12 @@ reset_calls
 Q_SEED11_PID=$!
 _BGPIDS+=("$Q_SEED11_PID")
 
-# Same causal barrier as H5d: observe seed queued on the lane lock first.
-assert "H9-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK11} is listed in /proc/locks)" \
+# Same causal barrier as Q5d: observe seed queued on the lane lock first.
+assert "Q9-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK11} is listed in /proc/locks)" \
     holder_wait_until_waiter_queued "$Q_LOCK11" 150
-assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
+assert "Q9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
-assert "H9: sentinel survives while blocked (no clobber yet)" \
+assert "Q9: sentinel survives while blocked (no clobber yet)" \
     test -f "$Q_LANE11/target/SENTINEL.txt"
 
 # Release the holder; the queued seed should now acquire the lock and reseed.
@@ -3081,19 +3081,19 @@ wait "$Q_LOCK11_PID" 2>/dev/null || true
 _wait_for_reader_lock "$Q_DONE11" 30
 wait "$Q_SEED11_PID" 2>/dev/null || true
 
-Q_H9_RC="$(cat "${Q_DONE11}.rc" 2>/dev/null || echo "unset")"
-Q_H9_OUT="$(cat "${Q_DONE11}.out" 2>/dev/null || echo "")"
+Q9_RC="$(cat "${Q_DONE11}.rc" 2>/dev/null || echo "unset")"
+Q9_OUT="$(cat "${Q_DONE11}.out" 2>/dev/null || echo "")"
 
-assert "H9: after the holder releases, the queued seed completes with exit 0 (got '${Q_H9_RC}')" \
-    test "$Q_H9_RC" -eq 0
-assert "H9: STDOUT is exactly <lane_dir>/target" \
-    bash -c '[ "$1" = "'"$Q_LANE11/target"'" ]' _ "$Q_H9_OUT"
-assert "H9: sentinel GONE (target replaced from base after unblocking, queued-then-clobbered)" \
+assert "Q9: after the holder releases, the queued seed completes with exit 0 (got '${Q9_RC}')" \
+    test "$Q9_RC" -eq 0
+assert "Q9: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE11/target"'" ]' _ "$Q9_OUT"
+assert "Q9: sentinel GONE (target replaced from base after unblocking, queued-then-clobbered)" \
     bash -c '[ ! -e "'"$Q_LANE11/target/SENTINEL.txt"'" ]'
-assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)" \
+assert "Q9: base_artifact.a present in <lane>/target (clone from base succeeded)" \
     test -f "$Q_LANE11/target/debug/base_artifact.a"
 
-# ── H10: scoping guard — the fail-safe default acquire is SCOPED to
+# ── Q10: scoping guard — the fail-safe default acquire is SCOPED to
 # --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to bare
 # --reset-in-place — the B13 control arm, with no production pool caller since
 # dark_factory:5380 (seed-warm-lane.sh gates its default acquire on
@@ -3102,12 +3102,12 @@ assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)
 # reset-in-place arm).
 # Production inv.11 exclusivity does not rest on this default for either pool
 # acquire (DF's outer flock holds it): PRD §9.5 inv.11, 2026-09-11 amendment.
-# H6a/H6b exercise reset-in-place WITH --lane-lock, and
+# Q6a/Q6b exercise reset-in-place WITH --lane-lock, and
 # E1/H3a exercise reset-in-place with NO held lock — so a leak of the default-on
-# acquire into reset-in-place would silently pass every case above. H10 pins it
-# directly: a live consumer HOLDS ${LANE}.lock (H7's backgrounded flock -x holder
+# acquire into reset-in-place would silently pass every case above. Q10 pins it
+# directly: a live consumer HOLDS ${LANE}.lock (Q7's backgrounded flock -x holder
 # fixture) and seed runs --reset-in-place WITHOUT --lane-lock/--assume-lane-lock-held
-# on an EMPTY lane (H6b's success-path fixture — reset-in-place refuses a
+# on an EMPTY lane (Q6b's success-path fixture — reset-in-place refuses a
 # non-empty target). Because reset-in-place does NOT default-acquire, the held
 # lock is simply ignored and seed proceeds (RC 0, cp ran); if the default acquire
 # leaked into reset-in-place this would instead refuse with exit 75. ───────────
@@ -3118,7 +3118,7 @@ _TMPDIRS+=("$Q_LOCK14")
 Q_READY14="${Q_LOCK14}.ready-marker"
 _TMPDIRS+=("$Q_READY14")
 touch "$Q_LOCK14"
-# Same causal handshake as H1/H7: the holder touches Q_READY14 only AFTER
+# Same causal handshake as Q1/Q7: the holder touches Q_READY14 only AFTER
 # acquiring flock -x, so the run below fires with the lock provably held.
 ( flock -x 9 && touch "$Q_READY14" && sleep 300 ) 9>"$Q_LOCK14" &
 Q_LOCK14_PID=$!
@@ -3131,19 +3131,19 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
 # NOTE: no --lane-lock and no --assume-lane-lock-held -- bare --reset-in-place
 # must NOT default-acquire, so the held lock above is ignored.
 
-assert "H10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
+assert "Q10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
     test "$RC" -eq 0
-assert "H10: STDOUT is exactly <lane_dir>/target" \
+assert "Q10: STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_LANE14/target"'" ]' _ "$OUT"
-assert "H10: base_artifact.a present in <lane>/target (reset-in-place clone from base ran despite the held lock)" \
+assert "Q10: base_artifact.a present in <lane>/target (reset-in-place clone from base ran despite the held lock)" \
     test -f "$Q_LANE14/target/debug/base_artifact.a"
-assert "H10: cp invoked with --reflink=always (reset-in-place proceeded, not refused)" \
+assert "Q10: cp invoked with --reflink=always (reset-in-place proceeded, not refused)" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
 kill "$Q_LOCK14_PID" 2>/dev/null || true
 wait "$Q_LOCK14_PID" 2>/dev/null || true
 
-# ── H11: --distinct-lock-refusal-rc — the lane-lock refusal gets its OWN exit
+# ── Q11: --distinct-lock-refusal-rc — the lane-lock refusal gets its OWN exit
 # code, distinct from EX_TEMPFAIL 75 (task 5568). ───────────────────────────
 #
 # The contract and its rationale live in ONE place —
@@ -3155,8 +3155,8 @@ wait "$Q_LOCK14_PID" 2>/dev/null || true
 # The flag string is spelled once here and reused by every case below. In
 # seed's own arg parser it must stay a LITERAL, because dark-factory's
 # capability probe text-greps the lane's copy of the script for it.
-Q_H11_FLAG="--distinct-lock-refusal-rc"
-# The stderr marker H13 pins, hoisted here because H11c doubles as H13's
+Q11_FLAG="--distinct-lock-refusal-rc"
+# The stderr marker Q13 pins, hoisted here because Q11c doubles as Q13's
 # non-vacuity control (the token must be ABSENT on a success run).
 Q_CONTENDED_TOKEN="LANE_LOCK_CONTENDED"
 
@@ -3164,10 +3164,10 @@ Q_CONTENDED_TOKEN="LANE_LOCK_CONTENDED"
 # start a BACKGROUNDED flock -x holder on ${LANE}.lock, and block on the
 # _wait_for_reader_lock causal handshake so the lock is provably held before
 # returning (a fixed sleep would race the holder under load). Contention is
-# therefore against a genuinely separate process, as in H1. Sets Q_HELD_LANE /
+# therefore against a genuinely separate process, as in Q1. Sets Q_HELD_LANE /
 # Q_HELD_LOCK_PID; release with _q_release_lane_lock.
 #
-# Factored because H11/H12/H13 need EIGHT near-identical contended fixtures,
+# Factored because Q11/Q12/Q13 need EIGHT near-identical contended fixtures,
 # and hand-copying the holder block is exactly where a dropped
 # _wait_for_reader_lock turns into a flaky test.
 _q_hold_lane_lock() {
@@ -3189,48 +3189,48 @@ _q_release_lane_lock() {
     wait "$Q_HELD_LOCK_PID" 2>/dev/null || true
 }
 
-# H11a: lock HELD + the flag → 77, and the refusal is otherwise IDENTICAL to
-# H1 (fail-closed stdout, lane not clobbered, no clone attempted). The flag
+# Q11a: lock HELD + the flag → 77, and the refusal is otherwise IDENTICAL to
+# Q1 (fail-closed stdout, lane not clobbered, no clone attempted). The flag
 # selects a code; it must not weaken the guard the code reports.
-_q_hold_lane_lock h11a
+_q_hold_lane_lock q11a
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
-    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q11_FLAG"
 
-assert "H11a: lock held + --distinct-lock-refusal-rc → exit 77 (lock contention), NOT 75 (disk pressure)" \
+assert "Q11a: lock held + --distinct-lock-refusal-rc → exit 77 (lock contention), NOT 75 (disk pressure)" \
     test "$RC" -eq 77
-assert "H11a: STDOUT is EMPTY (fail-closed, no path emitted — the flag does not weaken the guard)" \
+assert "Q11a: STDOUT is EMPTY (fail-closed, no path emitted — the flag does not weaken the guard)" \
     bash -c '[ -z "$1" ]' _ "$OUT"
-assert "H11a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+assert "Q11a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
     test -f "$Q_HELD_LANE/target/SENTINEL.txt"
-assert "H11a: cp NEVER invoked (refused before clone)" \
+assert "Q11a: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 _q_release_lane_lock
 
-# H11b: COMPAT PIN — the SAME fixture and the SAME held lock as H11a, with the
+# Q11b: COMPAT PIN — the SAME fixture and the SAME held lock as Q11a, with the
 # flag ABSENT → 75, unchanged. This assertion must stay green FOREVER: it is
 # what keeps an unpatched dark-factory on today's exact behaviour, and hence
-# what makes either landing order safe. Read as a differential against H11a,
+# what makes either landing order safe. Read as a differential against Q11a,
 # it also proves the flag is the SOLE cause of the rc change (nothing else in
 # this invocation differs).
-_q_hold_lane_lock h11b
+_q_hold_lane_lock q11b
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock
 # NOTE: no --distinct-lock-refusal-rc above -- that omission IS the test.
 
-assert "H11b: COMPAT PIN — lock held, flag ABSENT → exit 75 unchanged (an unpatched dark-factory sees today's behaviour)" \
+assert "Q11b: COMPAT PIN — lock held, flag ABSENT → exit 75 unchanged (an unpatched dark-factory sees today's behaviour)" \
     test "$RC" -eq 75
-assert "H11b: COMPAT PIN — sentinel survives (default refusal path otherwise unchanged)" \
+assert "Q11b: COMPAT PIN — sentinel survives (default refusal path otherwise unchanged)" \
     test -f "$Q_HELD_LANE/target/SENTINEL.txt"
 _q_release_lane_lock
 
-# H11c: the flag NEVER perturbs the success path — lock FREE + the flag → 0
-# and the ordinary resolved-path stdout, exactly as H2. A code that only names
+# Q11c: the flag NEVER perturbs the success path — lock FREE + the flag → 0
+# and the ordinary resolved-path stdout, exactly as Q2. A code that only names
 # a refusal must be invisible when there is no refusal.
 #
-# This case also carries H13's NON-VACUITY control: the LANE_LOCK_CONTENDED
-# token must be ABSENT here. Without it, every token assertion in H13 would
+# This case also carries Q13's NON-VACUITY control: the LANE_LOCK_CONTENDED
+# token must be ABSENT here. Without it, every token assertion in Q13 would
 # still pass if the token were printed unconditionally at startup, which would
 # make `grep LANE_LOCK_CONTENDED` a constant rather than a detector. Same
 # fixture, same invocation — one extra assertion rather than a second lane.
@@ -3240,172 +3240,172 @@ echo "sentinel content" > "$Q_LANE17/target/SENTINEL.txt"
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
-    run_helper_real "$Q_BASE" "$Q_LANE17" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+    run_helper_real "$Q_BASE" "$Q_LANE17" --fresh-checkout --lane-lock "$Q11_FLAG"
 
-assert "H11c: flag + lock FREE → exit 0 (the flag never perturbs the success path)" \
+assert "Q11c: flag + lock FREE → exit 0 (the flag never perturbs the success path)" \
     test "$RC" -eq 0
-assert "H11c: flag + lock FREE → STDOUT is exactly <lane_dir>/target" \
+assert "Q11c: flag + lock FREE → STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_LANE17/target"'" ]' _ "$OUT"
-assert "H11c: flag + lock FREE → clone from base actually ran" \
+assert "Q11c: flag + lock FREE → clone from base actually ran" \
     test -f "$Q_LANE17/target/debug/base_artifact.a"
-assert "H11c: NON-VACUITY for H13 — the $Q_CONTENDED_TOKEN token is ABSENT on the success path (a detector, not a constant)" \
+assert "Q11c: NON-VACUITY for Q13 — the $Q_CONTENDED_TOKEN token is ABSENT on the success path (a detector, not a constant)" \
     bash -c '! printf "%s\n" "$2" | grep -q "$1"' _ "$Q_CONTENDED_TOKEN" "$ERR_OUT"
 
-# H11d/H11e/H11f: the flag is ACCEPTED-BUT-INERT — never a usage error —
+# Q11d/Q11e/Q11f: the flag is ACCEPTED-BUT-INERT — never a usage error —
 # wherever seed acquires no lock and no refusal arm is reachable. The usage
 # text and §9.5 inv.11 both invite dark-factory to pass it UNCONDITIONALLY
 # rather than replicating seed's internal mode logic; these three cases pin
 # each path that promise covers, so a future tightening cannot silently turn a
 # DF invocation into a hard exit-2 fault.
 #
-# (Contrast H8: --assume-lane-lock-held + --lane-lock IS a usage error, because
+# (Contrast Q8: --assume-lane-lock-held + --lane-lock IS a usage error, because
 # those two make CONTRADICTORY assertions about who holds the lock; this flag
 # only selects a code for an outcome that may not occur.)
 
-# H11d: under --assume-lane-lock-held, with another process holding the lock.
+# Q11d: under --assume-lane-lock-held, with another process holding the lock.
 # NOT a usage error (exit 2) and NOT a refusal (75/77): exit 0. The holder is
-# BACKGROUNDED (H7's shape), so seed does not inherit FD 9 — and
+# BACKGROUNDED (Q7's shape), so seed does not inherit FD 9 — and
 # --assume-lane-lock-held makes seed skip its own acquire anyway.
-_q_hold_lane_lock h11d
+_q_hold_lane_lock q11d
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
-    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --assume-lane-lock-held "$Q_H11_FLAG"
+    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --assume-lane-lock-held "$Q11_FLAG"
 
-assert "H11d: flag + --assume-lane-lock-held (lock held elsewhere) → exit 0 — accepted-but-inert, NOT a usage error (2) and NOT a refusal (75/77)" \
+assert "Q11d: flag + --assume-lane-lock-held (lock held elsewhere) → exit 0 — accepted-but-inert, NOT a usage error (2) and NOT a refusal (75/77)" \
     test "$RC" -eq 0
-assert "H11d: flag + --assume-lane-lock-held → STDOUT is exactly <lane_dir>/target" \
+assert "Q11d: flag + --assume-lane-lock-held → STDOUT is exactly <lane_dir>/target" \
     bash -c '[ "$1" = "'"$Q_HELD_LANE/target"'" ]' _ "$OUT"
-assert "H11d: flag + --assume-lane-lock-held → stderr carries NO unknown-argument complaint" \
+assert "Q11d: flag + --assume-lane-lock-held → stderr carries NO unknown-argument complaint" \
     bash -c '! printf "%s\n" "$1" | grep -qiE "unknown|unrecognized"' _ "$ERR_OUT"
 _q_release_lane_lock
 
-# H11e: in --record-base mode, which has its OWN validation block rejecting
+# Q11e: in --record-base mode, which has its OWN validation block rejecting
 # positionals and the seed mode flags (exit 2). The riskiest of the inert
 # paths: a future "record-base mode: seed-only flags are invalid here"
 # tightening would convert an unconditional DF invocation into a hard fault.
-Q_H11E_PARENT="$(mktemp -d /tmp/test-seed-Q-h11e-XXXXXX)"
-_TMPDIRS+=("$Q_H11E_PARENT")
-mkdir -p "$Q_H11E_PARENT/target"
+Q11E_PARENT="$(mktemp -d /tmp/test-seed-Q-q11e-XXXXXX)"
+_TMPDIRS+=("$Q11E_PARENT")
+mkdir -p "$Q11E_PARENT/target"
 
 reset_calls
-RUSTFLAGS="" run_helper --record-base "$Q_H11E_PARENT/target" "$Q_H11_FLAG"
+RUSTFLAGS="" run_helper --record-base "$Q11E_PARENT/target" "$Q11_FLAG"
 
-assert "H11e: --record-base + the flag → exit 0 (inert, NOT a record-base usage error)" \
+assert "Q11e: --record-base + the flag → exit 0 (inert, NOT a record-base usage error)" \
     test "$RC" -eq 0
-assert "H11e: --record-base + the flag → STDOUT is exactly the sidecar path" \
-    bash -c '[ "$1" = "'"$Q_H11E_PARENT/.warm-base-meta"'" ]' _ "$OUT"
+assert "Q11e: --record-base + the flag → STDOUT is exactly the sidecar path" \
+    bash -c '[ "$1" = "'"$Q11E_PARENT/.warm-base-meta"'" ]' _ "$OUT"
 
-# H11f: under REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited, where seed blocks until
+# Q11f: under REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited, where seed blocks until
 # acquired and neither refusal arm exists — so $LANE_LOCK_REFUSAL_RC is
 # computed but never reachable.
-Q_LANE_H11F="$(make_isolated_lane Q-lane-h11f)"
-mkdir -p "$Q_LANE_H11F/target"
-echo "sentinel content" > "$Q_LANE_H11F/target/SENTINEL.txt"
+Q_LANE_Q11F="$(make_isolated_lane Q-lane-q11f)"
+mkdir -p "$Q_LANE_Q11F/target"
+echo "sentinel content" > "$Q_LANE_Q11F/target/SENTINEL.txt"
 
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited \
-    run_helper_real "$Q_BASE" "$Q_LANE_H11F" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+    run_helper_real "$Q_BASE" "$Q_LANE_Q11F" --fresh-checkout --lane-lock "$Q11_FLAG"
 
-assert "H11f: WAIT=unlimited + the flag, lock FREE → exit 0 (inert; no refusal arm is reachable)" \
+assert "Q11f: WAIT=unlimited + the flag, lock FREE → exit 0 (inert; no refusal arm is reachable)" \
     test "$RC" -eq 0
-assert "H11f: WAIT=unlimited + the flag → STDOUT is exactly <lane_dir>/target" \
-    bash -c '[ "$1" = "'"$Q_LANE_H11F/target"'" ]' _ "$OUT"
+assert "Q11f: WAIT=unlimited + the flag → STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE_Q11F/target"'" ]' _ "$OUT"
 
-# ── H12: the SAME rc contract on the BOUNDED-QUEUE timeout arm (task 5568).
-# H11 covers the flock -n immediate refusal; this covers flock -w N timing
+# ── Q12: the SAME rc contract on the BOUNDED-QUEUE timeout arm (task 5568).
+# Q11 covers the flock -n immediate refusal; this covers flock -w N timing
 # out. Both arms share ONE rc — identical cause, identical remediation; see
 # §9.5 inv.11 for why splitting them would be wrong. ───────────────────────
 
-# H12a: lock HELD + WAIT=1 + the flag → 77 after the bounded wait elapsed.
+# Q12a: lock HELD + WAIT=1 + the flag → 77 after the bounded wait elapsed.
 # The SECONDS check is a plain LOWER bound (-ge, never -le/-lt): it proves the
-# run queued rather than refusing instantly like H11a, and it cannot flake,
+# run queued rather than refusing instantly like Q11a, and it cannot flake,
 # because a slower host only ever makes an elapsed queued wait LONGER.
 # (tests/infra/test_no_new_wallclock_upper_bounds.sh flags -le/-lt time
-# comparisons for exactly this reason — same idiom and rationale as H5a.)
-_q_hold_lane_lock h12a
+# comparisons for exactly this reason — same idiom and rationale as Q5a.)
+_q_hold_lane_lock q12a
 reset_calls
 SECONDS=0
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
-    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q_H11_FLAG"
-Q_H12A_WAITED_S=$SECONDS
+    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q11_FLAG"
+Q12A_WAITED_S=$SECONDS
 
-assert "H12a: queue timeout + --distinct-lock-refusal-rc → exit 77 (same rc as the flock -n arm; one cause, one code)" \
+assert "Q12a: queue timeout + --distinct-lock-refusal-rc → exit 77 (same rc as the flock -n arm; one cause, one code)" \
     test "$RC" -eq 77
-assert "H12a: bounded wait actually elapsed (queued, not an instant refuse like H11a)" \
-    test "$Q_H12A_WAITED_S" -ge 1
-assert "H12a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+assert "Q12a: bounded wait actually elapsed (queued, not an instant refuse like Q11a)" \
+    test "$Q12A_WAITED_S" -ge 1
+assert "Q12a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
     test -f "$Q_HELD_LANE/target/SENTINEL.txt"
-assert "H12a: cp NEVER invoked (refused before clone)" \
+assert "Q12a: cp NEVER invoked (refused before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 _q_release_lane_lock
 
-# H12b: COMPAT PIN for the queue arm — same fixture, same WAIT=1, flag ABSENT
-# → 75 unchanged. H11b's guarantee, extended to the second refusal arm: both
+# Q12b: COMPAT PIN for the queue arm — same fixture, same WAIT=1, flag ABSENT
+# → 75 unchanged. Q11b's guarantee, extended to the second refusal arm: both
 # arms must keep today's default so an unpatched dark-factory is unaffected.
-_q_hold_lane_lock h12b
+_q_hold_lane_lock q12b
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
     run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock
 # NOTE: no --distinct-lock-refusal-rc above -- that omission IS the test.
 
-assert "H12b: COMPAT PIN — queue timeout, flag ABSENT → exit 75 unchanged" \
+assert "Q12b: COMPAT PIN — queue timeout, flag ABSENT → exit 75 unchanged" \
     test "$RC" -eq 75
-assert "H12b: COMPAT PIN — sentinel survives (default queue-refusal path otherwise unchanged)" \
+assert "Q12b: COMPAT PIN — sentinel survives (default queue-refusal path otherwise unchanged)" \
     test -f "$Q_HELD_LANE/target/SENTINEL.txt"
 _q_release_lane_lock
 
-# ── H13: the OPERATOR-facing half of the discriminant — the stable, machine-
+# ── Q13: the OPERATOR-facing half of the discriminant — the stable, machine-
 # greppable LANE_LOCK_CONTENDED marker on stderr, emitted by BOTH refusal arms
 # UNCONDITIONALLY (task 5568). Why the token exists and why it is ungated:
 # §9.5 inv.11, not restated here (G7). ─────────────────────────────────────
 #
-# NOT redundant with H11/H12, which own the rc contract: these cases assert
+# NOT redundant with Q11/Q12, which own the rc contract: these cases assert
 # only the token, on the two arms x flag-absent/flag-present. The token also
 # UNIFIES the arms, whose prose otherwise diverges ("held by a live consumer"
 # vs "still held ... after waiting Ns") with no shared grep. Non-vacuity — the
-# token must be ABSENT on a success run — is pinned by H11c.
+# token must be ABSENT on a success run — is pinned by Q11c.
 
-# H13a: flock -n refusal, flag ABSENT → the token is present. This is the case
+# Q13a: flock -n refusal, flag ABSENT → the token is present. This is the case
 # that matters most: it is the UNPATCHED-FLEET configuration, where the rc is
 # still the ambiguous 75 and the token is the ONLY discriminant.
-_q_hold_lane_lock h13a
+_q_hold_lane_lock q13a
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock
 
-assert "H13a: flock -n refusal, flag ABSENT → stderr carries the $Q_CONTENDED_TOKEN marker (the ONLY discriminant on an unpatched fleet)" \
+assert "Q13a: flock -n refusal, flag ABSENT → stderr carries the $Q_CONTENDED_TOKEN marker (the ONLY discriminant on an unpatched fleet)" \
     bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_CONTENDED_TOKEN" "$ERR_OUT"
 _q_release_lane_lock
 
-# H13b: flock -w timeout refusal, flag ABSENT → the SAME token, so one grep
+# Q13b: flock -w timeout refusal, flag ABSENT → the SAME token, so one grep
 # catches both arms despite their divergent prose.
-_q_hold_lane_lock h13b
+_q_hold_lane_lock q13b
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
     run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock
 
-assert "H13b: queue-timeout refusal emits the SAME $Q_CONTENDED_TOKEN token (one grep catches BOTH arms)" \
+assert "Q13b: queue-timeout refusal emits the SAME $Q_CONTENDED_TOKEN token (one grep catches BOTH arms)" \
     bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_CONTENDED_TOKEN" "$ERR_OUT"
 _q_release_lane_lock
 
-# H13c: both arms WITH the flag → the token is STILL present, i.e. it is
+# Q13c: both arms WITH the flag → the token is STILL present, i.e. it is
 # unconditional rather than an artifact of the new code path. (The rc under
-# the flag is H11a's/H12a's contract, not re-asserted here.)
-_q_hold_lane_lock h13c1
+# the flag is Q11a's/Q12a's contract, not re-asserted here.)
+_q_hold_lane_lock q13c1
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
-    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q11_FLAG"
 
-assert "H13c: flock -n refusal WITH the flag → the $Q_CONTENDED_TOKEN token is STILL present (unconditional, not gated on the flag)" \
+assert "Q13c: flock -n refusal WITH the flag → the $Q_CONTENDED_TOKEN token is STILL present (unconditional, not gated on the flag)" \
     bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_CONTENDED_TOKEN" "$ERR_OUT"
 _q_release_lane_lock
 
-_q_hold_lane_lock h13c2
+_q_hold_lane_lock q13c2
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
-    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q_H11_FLAG"
+    run_helper_real "$Q_BASE" "$Q_HELD_LANE" --fresh-checkout --lane-lock "$Q11_FLAG"
 
-assert "H13c: queue-timeout refusal WITH the flag → the $Q_CONTENDED_TOKEN token is STILL present on the queue arm too" \
+assert "Q13c: queue-timeout refusal WITH the flag → the $Q_CONTENDED_TOKEN token is STILL present on the queue arm too" \
     bash -c 'printf "%s\n" "$2" | grep -q "$1"' _ "$Q_CONTENDED_TOKEN" "$ERR_OUT"
 _q_release_lane_lock
 
@@ -3835,7 +3835,7 @@ assert "T3: _calls_file_has_trash_rm discriminates -- times out on a calls file 
 # grandchild is a fresh `bash -c`, which always does a cold PATH search.
 # Both are genuine PATH-resolution hazards this control's shape can trigger;
 # the warm-hash variant is instead exercised incidentally by the real seed
-# invocations above (I14, M, H4) rather than reproduced synthetically here.
+# invocations above (I14, M, Q4) rather than reproduced synthetically here.
 _t4_control() {
     local mode="$1"
     local stub area trash go pid_file done_marker
@@ -4817,7 +4817,7 @@ assert "V16 (non-vacuity, caller stdin really wired): under REIFY_WARM_LANE_RESE
     _v_fd_target_is "$V_FDLOG_SYNC" "$V_TRASH_GLOB_SYNC" 0 "$V_STDIN_REAL"
 
 # ── V5-V7: the orphan-sweep arm (:1083) ─────────────────────────────────────
-# Reuses the H4e orphan-trash plant recipe (:2553-2565) — a FRESH lane with a
+# Reuses Q4e's orphan-trash plant recipe — a FRESH lane with a
 # non-empty target/ (a precondition: the orphan sweep lives inside the same
 # `if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A ...)" ]` block as the
 # rename-to-trash it accompanies) plus a pre-planted `<lane>.999999` orphan
@@ -4847,7 +4847,7 @@ set -e
 
 assert "V5-fixture: seed exits 0 (orphan-sweep fixture sanity)" test "$V5_RC" -eq 0
 
-assert "V7 (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors H4e's assert at :2571)" \
+assert "V7 (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors Q4e's fixture assert)" \
     grep -q "Sweeping orphaned trash entry" "$V_SINK3"
 
 assert "V5 (RED, the defect): the detached orphan-sweep rm's fd 1 is NOT the caller's pipe" \
@@ -5003,7 +5003,7 @@ assert "V8: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs lacking a 
 # "flock is NOT re-entrant" comment, next to --assume-lane-lock-held's own
 # flag parsing, names the convention: "thin --reseed on FD 9, gc reclaim on
 # FD 8"). One lane with a NON-EMPTY target/ AND a pre-planted `<lane>.999999`
-# orphan (H4e recipe, :2553-2565) fires BOTH detach sites in ONE run,
+# orphan (Q4e recipe) fires BOTH detach sites in ONE run,
 # mirroring the real caller shape rather than two synthetic ones.
 #
 # Disambiguating the two entries in the SHARED fdlog: the orphan's suffix is
@@ -5057,7 +5057,7 @@ assert "V9-fixture (site fired): the reseed-trash rename entry was logged" \
     _wait_until 10 _v_fdlog_has_entry "$V_FDLOG3" "$V_TRASH_GLOB3" "$V_ORPHAN_PATH3"
 assert "V9-fixture (site fired): the orphan-sweep entry was logged" \
     _wait_until 10 _v_fdlog_has_entry "$V_FDLOG3" "$V_ORPHAN_GLOB3"
-assert "V9-fixture (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors H4e's assert at :2571)" \
+assert "V9-fixture (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors Q4e's fixture assert)" \
     grep -q "Sweeping orphaned trash entry" "$V_SINK4"
 
 assert "V9 (RED, the defect): the detached RESEED-TRASH rm's fd inventory holds no descriptor onto the caller's lane-lock file" \
@@ -5322,7 +5322,7 @@ assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), w
 # called from inside run_helper/run_helper_real after every invocation
 # throughout the file, so this observes every prior Block's fixtures too.
 # State is file-backed (see _TRASH_HITS_FILE above) so appends made from
-# inside a backgrounded subshell (H5d/H9) are not silently discarded. The
+# inside a backgrounded subshell (Q5d/Q9) are not silently discarded. The
 # checker itself is _assert_no_shared_trash_use, promoted into
 # tests/infra/test_helpers.sh (task 5612) and pinned to that home by R7. ────
 assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
@@ -5360,20 +5360,20 @@ assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp
 
 # ── R4: end-to-end coverage — the structural detector must have observed the
 # two run_helper_real invocations made from inside a backgrounded ( ... ) &
-# subshell: H5d's Q_LANE8 and H9's Q_LANE11. These are the ONLY two such
+# subshell: Q5d's Q_LANE8 and Q9's Q_LANE11. These are the ONLY two such
 # sites in the file — every other `( ... ) &` in Block Q is a
 # `( flock -x 9 && touch ... && sleep 300 ) 9>"$LOCK" &` lock-holder, not a
 # seed run. $Q_LANE8/$Q_LANE11 are assigned in the MAIN shell (Block Q, in
-# the H5d/H9 fixture setup, before their respective backgrounded subshells)
+# the Q5d/Q9 fixture setup, before their respective backgrounded subshells)
 # via make_isolated_lane, so both are in scope here. Asserted against
 # _REAL_LANES_FILE, the observation log every run_helper_real invocation
-# appends to via _note_real_lane (including from inside H5d/H9's backgrounded
+# appends to via _note_real_lane (including from inside Q5d/Q9's backgrounded
 # subshells, now that the log is file-backed rather than an array). The
 # ${_REAL_LANES_FILE:-/nonexistent} fallback is defensive only — it keeps this
 # a plain assert FAILURE rather than an unbound-variable abort under set -u if
 # the variable were ever undefined. grep -Fxq matches the lane path literally
 # and as a whole line. ───────────────────────────────────────────────────────
-assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (H5d/H9)" \
+assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (Q5d/Q9)" \
     bash -c 'grep -Fxq -- "$2" "$1" && grep -Fxq -- "$3" "$1"' _ "${_REAL_LANES_FILE:-/nonexistent}" "$Q_LANE8" "$Q_LANE11"
 
 # ── R6: regression guard — no run_helper (as opposed to run_helper_real)
@@ -5514,12 +5514,12 @@ _SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED"
 
 # ── R5: mechanism guard — a recorder append made from inside a backgrounded
 # ( ... ) & subshell must be visible to the parent shell. Drives the REAL
-# _note_shared_trash_use recorder through the exact H5d/H9 shape (a subshell
+# _note_shared_trash_use recorder through the exact Q5d/Q9 shape (a subshell
 # that sets ERR_OUT and calls the recorder, backgrounded, then waited on) with
 # a synthetic ERR_OUT rather than a second real seed run: R2 above already
 # covers "real seed → detector fires" end-to-end, so R5 only needs to prove
 # storage survives a subshell. This is the durable companion to R4 — R4 could
-# go vacuous if H5d/H9 were ever un-backgrounded (it would then silently test
+# go vacuous if Q5d/Q9 were ever un-backgrounded (it would then silently test
 # nothing while still passing), but R5 constructs its own subshell, so it
 # always exercises the subshell-visibility property directly. ──────────────
 : > "$_TRASH_HITS_FILE"

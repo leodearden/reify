@@ -40,8 +40,12 @@
 //! `form_find` signature, or the reify-eval trampoline (those remain anchored-T1a
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
-use crate::form_find::MemberKind;
+use crate::form_find::{
+    ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
+    member_axial_forces, scatter_line_members, scatter_surface_stencils,
+};
 use faer::{Mat, Side};
+use std::borrow::Cow;
 
 /// How the per-member force densities `q` are specified for a free-standing
 /// form-find.
@@ -95,9 +99,11 @@ pub struct FreeFormResult {
 /// input becomes a clean typed error, never a panic or a silently-wrong result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreeFormError {
-    /// A member's force density violates its kind's sign contract (a cable with
-    /// `q ≤ 0` or a strut with `q ≥ 0`).
-    SignViolation,
+    /// The input violates the force-density input contract. A
+    /// [`ForceDensitySpec::GroupRatios`] spec is checked at its seed densities.
+    Input(ForceDensityInputError),
+    /// A [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
+    MalformedGroupSpec(GroupSpecDefect),
     /// The force-density matrix `D` is rank-deficient by the wrong amount: a
     /// valid 3-D free-standing form needs nullity exactly `d + 1 = 4`.
     NullityMismatch {
@@ -106,26 +112,53 @@ pub enum FreeFormError {
         /// Nullity required for a valid form (`d + 1 = 4`).
         expected: usize,
     },
-    /// Input arrays disagree in length (`members`, `kinds`, and the per-member
-    /// `q` / `group_ids`).
-    DimensionMismatch,
     /// The adaptive [`ForceDensitySpec::GroupRatios`] search exhausted its
     /// iteration budget without reaching a nullity-`4` configuration.
     SearchDidNotConverge,
     /// Null-space coordinate recovery was rank-deficient (the recovered basis did
     /// not span a 3-D realisation).
     SingularRecovery,
-    /// A surface triangle is degenerate (collinear / zero-area corners), so its
-    /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge. Surfaced instead
-    /// of assembling a NaN/∞ stencil. (δ / combined struts+cables+membrane.)
+    /// A surface triangle valid at input degenerated (collinear / zero-area
+    /// corners) at a fixed-point iterate, where its cotangent weights
+    /// `cot(θ) = (e_a·e_b)/(2·Area)` diverge. (δ / combined struts+cables+membrane.)
     DegenerateTriangle,
-    /// A membrane surface stress `σ ≤ 0` — a non-tension (slack/compressed)
-    /// surface is infeasible prestress input, the surface analogue of a cable
-    /// with `q ≤ 0`. (δ / combined struts+cables+membrane.)
-    NonTensionSurfaceStress,
-    /// `surfaces` and `surface_stresses` disagree in length — each triangle
-    /// needs exactly one isotropic σ. (δ / combined struts+cables+membrane.)
-    SurfaceCountMismatch,
+}
+
+/// Why a [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupSpecDefect {
+    /// `group_ids` is not parallel to `members`.
+    GroupIdsNotPerMember,
+    /// `group_ids[member]` names a group with no entry in `seed_ratios`.
+    UnseededGroup {
+        /// Position in `members` / `group_ids`.
+        member: usize,
+    },
+    /// `reference_group` names a group with no entry in `seed_ratios`.
+    UnseededReferenceGroup,
+    /// `seed_ratios[group]` is zero, so it fixes no tension / compression sense.
+    ZeroSeed {
+        /// Position in `seed_ratios`.
+        group: usize,
+    },
+}
+
+impl From<ForceDensityInputError> for FreeFormError {
+    fn from(input: ForceDensityInputError) -> Self {
+        FreeFormError::Input(input)
+    }
+}
+
+impl From<GroupSpecDefect> for FreeFormError {
+    fn from(defect: GroupSpecDefect) -> Self {
+        FreeFormError::MalformedGroupSpec(defect)
+    }
+}
+
+impl From<ZeroAreaTriangle> for FreeFormError {
+    fn from(_: ZeroAreaTriangle) -> Self {
+        FreeFormError::DegenerateTriangle
+    }
 }
 
 /// Solve the free-standing Force-Density form-finding problem.
@@ -143,10 +176,12 @@ pub fn form_find_free(
     kinds: &[MemberKind],
     spec: &ForceDensitySpec,
 ) -> Result<FreeFormResult, FreeFormError> {
+    let q0 = seed_densities(spec, members.len())?;
+    let problem = ForceDensityProblem::new(nodes_guess, members, kinds, &q0, &[], &[], &[])?;
     match spec {
         // Deterministic foundation: assemble D, classify nullity, recover
         // coordinates, compute forces.
-        ForceDensitySpec::Explicit(q) => form_find_explicit(nodes_guess, members, kinds, q),
+        ForceDensitySpec::Explicit(_) => form_find_explicit(&problem),
         // Adaptive eigenvalue-minimisation search over relative group densities;
         // on success it produces an admissible q and delegates to the explicit
         // path.
@@ -154,14 +189,46 @@ pub fn form_find_free(
             group_ids,
             seed_ratios,
             reference_group,
-        } => form_find_group_ratios(
-            nodes_guess,
-            members,
-            kinds,
+        } => form_find_group_ratios(&problem, group_ids, seed_ratios, *reference_group),
+    }
+}
+
+/// The densities `spec` fixes before any search, for the input contract: the
+/// explicit `q`, or the [`ForceDensitySpec::GroupRatios`] seed densities, whose
+/// signs the search keeps.
+fn seed_densities(
+    spec: &ForceDensitySpec,
+    n_members: usize,
+) -> Result<Cow<'_, [f64]>, GroupSpecDefect> {
+    match spec {
+        ForceDensitySpec::Explicit(q) => Ok(Cow::Borrowed(q)),
+        ForceDensitySpec::GroupRatios {
             group_ids,
             seed_ratios,
-            *reference_group,
-        ),
+            reference_group,
+        } => {
+            let n_groups = seed_ratios.len();
+            if group_ids.len() != n_members {
+                return Err(GroupSpecDefect::GroupIdsNotPerMember);
+            }
+            if let Some(member) = group_ids.iter().position(|&g| g >= n_groups) {
+                return Err(GroupSpecDefect::UnseededGroup { member });
+            }
+            if *reference_group >= n_groups {
+                return Err(GroupSpecDefect::UnseededReferenceGroup);
+            }
+            if let Some(group) = seed_ratios.iter().position(|&r| r == 0.0) {
+                return Err(GroupSpecDefect::ZeroSeed { group });
+            }
+            let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
+            let group_mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
+            Ok(Cow::Owned(assemble_group_q(
+                n_members,
+                group_ids,
+                &group_sign,
+                &group_mag,
+            )))
+        }
     }
 }
 
@@ -195,13 +262,12 @@ pub fn form_find_free(
 /// [`FreeFormError::SearchDidNotConverge`] rather than a wrong answer.
 ///
 /// # Errors
-/// - [`FreeFormError::DimensionMismatch`] — `members`/`kinds` disagree, or
-///   out-of-range node indices.
-/// - [`FreeFormError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
-///   disagree in length.
-/// - [`FreeFormError::SignViolation`] — a member violates its q-sign contract.
-/// - [`FreeFormError::NonTensionSurfaceStress`] — a surface `σ ≤ 0`.
-/// - [`FreeFormError::DegenerateTriangle`] — a zero-area surface triangle.
+/// - [`FreeFormError::Input`] — the input violates the [`ForceDensityInputError`]
+///   contract (lengths, node indices, q or seed signs, σ tension, input
+///   triangles).
+/// - [`FreeFormError::MalformedGroupSpec`] — a `GroupRatios` spec cannot seed
+///   the search ([`GroupSpecDefect`]).
+/// - [`FreeFormError::DegenerateTriangle`] — a triangle degenerated at an iterate.
 /// - [`FreeFormError::SearchDidNotConverge`] — the GroupRatios search or the
 ///   Explicit combined fixed point exhausted its budget without reaching
 ///   nullity 4. A wrong-nullity `Explicit` spec (with `σ > 0`) surfaces here
@@ -219,24 +285,19 @@ pub fn form_find_free_surfaces(
     surface_stresses: &[f64],
     spec: &ForceDensitySpec,
 ) -> Result<FreeFormResult, FreeFormError> {
-    // Surface count guard (mirrors γ's SurfaceCountMismatch check).
-    if surfaces.len() != surface_stresses.len() {
-        return Err(FreeFormError::SurfaceCountMismatch);
-    }
-    // Surface tension contract: σ must be strictly positive (the surface
-    // analogue of the cable q > 0 rule).
-    for &s in surface_stresses {
-        if s <= 0.0 {
-            return Err(FreeFormError::NonTensionSurfaceStress);
-        }
-    }
-    // Surface node-index contract: a triangle corner past the node array would
-    // panic on the `nodes[gi]` index in `assemble_surface_matrix`. The module
-    // contract promises infeasible input becomes a clean typed error, never a
-    // panic — so reject it here.
-    if !crate::form_find::surface_indices_in_range(surfaces, nodes_guess.len()) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
+    // The input contract, a degenerate INPUT triangle included, is checked
+    // against the caller's own geometry — before the bootstrap below rewrites
+    // `current` into a (non-degenerate) line-only equilibrium.
+    let q0 = seed_densities(spec, members.len())?;
+    let problem = ForceDensityProblem::new(
+        nodes_guess,
+        members,
+        kinds,
+        &q0,
+        &[],
+        surfaces,
+        surface_stresses,
+    )?;
 
     // Empty surfaces delegate to the line-only path with an empty echo.
     if surfaces.is_empty() {
@@ -248,13 +309,6 @@ pub fn form_find_free_surfaces(
     // Non-empty: combined cotangent fixed-point loop.
     // Mirrors γ's form_find_anchored_surfaces loop shape (PRD §4 D3).
     let n = nodes_guess.len();
-
-    // Pre-check: propagate DegenerateTriangle from the INPUT geometry before the
-    // bootstrap below rewrites `current`.  The bootstrap runs the line-only
-    // form-find to get a symmetric starting geometry; a degenerate input triangle
-    // must be caught BEFORE that rewrite so the error comes from the caller's
-    // actual geometry rather than the (non-degenerate) bootstrap result.
-    assemble_surface_matrix(n, surfaces, surface_stresses, nodes_guess)?;
 
     // Bootstrap: start the fixed-point loop from the line-only equilibrium rather
     // than the raw perturbed guess.  Starting from the perturbed guess breaks the
@@ -315,33 +369,15 @@ pub fn form_find_free_surfaces(
         // this iteration's cotangent weights so the densities co-adapt with the
         // geometry; warm-start the next search from the magnitudes just found.
         let q: Vec<f64> = match spec {
-            ForceDensitySpec::Explicit(q) => {
-                if members.len() != kinds.len() || members.len() != q.len() {
-                    return Err(FreeFormError::DimensionMismatch);
-                }
-                if members.iter().any(|&(j, k)| j >= n || k >= n) {
-                    return Err(FreeFormError::DimensionMismatch);
-                }
-                for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-                    let sign_ok = match kind {
-                        MemberKind::Cable => qi > 0.0,
-                        MemberKind::Strut => qi < 0.0,
-                    };
-                    if !sign_ok {
-                        return Err(FreeFormError::SignViolation);
-                    }
-                }
-                q.to_vec()
-            }
+            ForceDensitySpec::Explicit(_) => problem.q().to_vec(),
             ForceDensitySpec::GroupRatios {
                 group_ids,
                 seed_ratios,
                 reference_group,
             } => {
                 let searched = form_find_group_ratios_combined(
+                    &problem,
                     &current,
-                    members,
-                    kinds,
                     group_ids,
                     seed_ratios,
                     &warm_group_mag,
@@ -416,7 +452,7 @@ pub fn form_find_free_surfaces(
         // destabilise a case not covered by this fixture even though none tried here do.
         if matches!(spec, ForceDensitySpec::Explicit(_))
             && let Ok(trial_nodes) =
-                form_find_explicit_combined_relaxed(&current, members, kinds, &q, &surface_mat)
+                form_find_explicit_combined_relaxed(&problem, &current, &surface_mat)
                     .map(|r| r.nodes)
             && let Ok(trial_surface_mat) =
                 assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
@@ -553,27 +589,17 @@ const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
 const GEO_STALL_ITERS: usize = 5;
 
 /// Assemble the surface cotangent-Laplacian contribution `Σ_T σ_T·L_T` at the
-/// given node geometry, producing an `n×n` additive matrix. Reuses the
-/// [`crate::form_find::triangle_cotangent_laplacian`] stencil (now `pub(crate)`)
-/// and maps its `DegenerateTriangle` into [`FreeFormError::DegenerateTriangle`].
+/// given node geometry, producing an `n×n` additive matrix via the anchored
+/// kernel's [`scatter_surface_stencils`]; a zero-area triangle is
+/// [`FreeFormError::DegenerateTriangle`].
 fn assemble_surface_matrix(
     n: usize,
     surfaces: &[(usize, usize, usize)],
     surface_stresses: &[f64],
     nodes: &[[f64; 3]],
 ) -> Result<Mat<f64>, FreeFormError> {
-    use crate::form_find::triangle_cotangent_laplacian;
     let mut s = Mat::<f64>::zeros(n, n);
-    for (&(gi, gj, gk), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
-        let l = triangle_cotangent_laplacian(nodes[gi], nodes[gj], nodes[gk], sigma)
-            .map_err(|_| FreeFormError::DegenerateTriangle)?;
-        let idx = [gi, gj, gk];
-        for a in 0..3 {
-            for b in 0..3 {
-                s[(idx[a], idx[b])] += l[a][b];
-            }
-        }
-    }
+    scatter_surface_stencils::<IsotropicStencil>(&mut s, surfaces, surface_stresses, nodes)?;
     Ok(s)
 }
 
@@ -643,32 +669,16 @@ fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f
 /// proceed and converge toward `x*∈null(D_combined(x*))`. The outer loop's
 /// equilibrium-residual check (`‖D_combined(x)·x‖`) is the correctness gate — at
 /// the fixed point the raw nullity IS 4, so forced and strict nullity agree.
+///
+/// `nodes_guess` is the current iterate, which gauge-fixes the recovery; the
+/// densities are `problem`'s.
 fn form_find_explicit_combined_relaxed(
+    problem: &ForceDensityProblem<'_>,
     nodes_guess: &[[f64; 3]],
-    members: &[(usize, usize)],
-    kinds: &[MemberKind],
-    q: &[f64],
     surface_mat: &Mat<f64>,
 ) -> Result<FreeFormResult, FreeFormError> {
     let n = nodes_guess.len();
-
-    // Dimension + index-range guards (mirror validate_explicit).
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-    if members.iter().any(|&(j, k)| j >= n || k >= n) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-    // Sign contract: cables q>0, struts q<0.
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(FreeFormError::SignViolation);
-        }
-    }
+    let (members, q) = (problem.members(), problem.q());
 
     // Build combined D = CᵀQC + surface_mat.
     let mut d = assemble_force_density_matrix(n, members, q);
@@ -692,19 +702,7 @@ fn form_find_explicit_combined_relaxed(
 
     let nodes = recover_coordinates(nodes_guess, &spectrum)?;
 
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = nodes[j];
-            let pk = nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &nodes);
 
     Ok(FreeFormResult {
         nodes,
@@ -725,32 +723,21 @@ fn form_find_explicit_combined_relaxed(
 /// centre of the search bracket. Starting near the correct combined q avoids the
 /// stall-guard pitfall where coordinate descent at the wrong starting point can
 /// reach a fixed point before the objective hits the nullity-4 minimum.
-#[allow(clippy::too_many_arguments)]
+///
+/// `problem` holds the validated seed densities and `nodes_guess` the current
+/// iterate.
 fn form_find_group_ratios_combined(
+    problem: &ForceDensityProblem<'_>,
     nodes_guess: &[[f64; 3]],
-    members: &[(usize, usize)],
-    kinds: &[MemberKind],
     group_ids: &[usize],
     seed_ratios: &[f64],
     initial_group_mag: &[f64],
     reference_group: usize,
     surface_mat: &Mat<f64>,
 ) -> Result<FreeFormResult, FreeFormError> {
-    // Dimension guards (mirror form_find_group_ratios).
-    if members.len() != kinds.len() || members.len() != group_ids.len() {
-        return Err(FreeFormError::DimensionMismatch);
-    }
+    let members = problem.members();
     let n_groups = seed_ratios.len();
-    if n_groups == 0 || reference_group >= n_groups || group_ids.iter().any(|&g| g >= n_groups) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-    if seed_ratios.contains(&0.0) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
     let n = nodes_guess.len();
-    if members.iter().any(|&(j, k)| j >= n || k >= n) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
 
     let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
     // Warm-start: use the provided initial magnitudes (e.g. from the line-only
@@ -858,21 +845,13 @@ fn form_find_group_ratios_combined(
     // (assembled at an off-symmetry geometry) means D_combined's actual nullity
     // is < 4.  The outer fixed-point loop's residual check (‖D_combined(x)·x‖)
     // is the convergence gate; at the fixed point D_combined has exact nullity 4.
-    let geo = form_find_explicit_combined_relaxed(nodes_guess, members, kinds, &q, surface_mat)?;
+    let geo = form_find_explicit_combined_relaxed(
+        &problem.with_densities(&q)?,
+        nodes_guess,
+        surface_mat,
+    )?;
 
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = geo.nodes[j];
-            let pk = geo.nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, &q, &geo.nodes);
     Ok(FreeFormResult {
         nodes: geo.nodes,
         member_forces,
@@ -1015,19 +994,7 @@ fn combined_result_at(
     q: &[f64],
     geom: &[[f64; 3]],
 ) -> FreeFormResult {
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = geom[j];
-            let pk = geom[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, geom);
     FreeFormResult {
         nodes: geom.to_vec(),
         member_forces,
@@ -1038,40 +1005,23 @@ fn combined_result_at(
     }
 }
 
-/// Explicit-mode pipeline: validate the spec, recover the gauge-fixed
+/// Explicit-mode pipeline: classify the nullity, recover the gauge-fixed
 /// free-standing coordinates, and compute member forces — the deterministic core
 /// that [`ForceDensitySpec::GroupRatios`] also delegates to once its search finds
 /// an admissible `q`.
-fn form_find_explicit(
-    nodes_guess: &[[f64; 3]],
-    members: &[(usize, usize)],
-    kinds: &[MemberKind],
-    q: &[f64],
-) -> Result<FreeFormResult, FreeFormError> {
-    let n = nodes_guess.len();
+fn form_find_explicit(problem: &ForceDensityProblem<'_>) -> Result<FreeFormResult, FreeFormError> {
+    let (members, q) = (problem.members(), problem.q());
 
-    // Up-front feasibility guards + the single dense EVD (length / sign / nullity).
-    let spectrum = validate_explicit(n, members, kinds, q)?;
+    // The single dense EVD, shared by the nullity check and the recovery.
+    let spectrum = explicit_spectrum(problem)?;
     let nullity = spectrum.nullity;
 
     // Gauge-fixed coordinates from null(D), aligned to the caller's guess.
-    let nodes = recover_coordinates(nodes_guess, &spectrum)?;
+    let nodes = recover_coordinates(problem.nodes(), &spectrum)?;
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the recovered geometry, in
     // struts-then-cables (input) order — mirrors the anchored kernel's force pass.
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = nodes[j];
-            let pk = nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &nodes);
 
     Ok(FreeFormResult {
         nodes,
@@ -1116,8 +1066,9 @@ const SEARCH_BRACKET_FACTOR: f64 = 20.0;
 /// which is the single nullity authority: if its classifier still sees the wrong
 /// nullity (the search did not reach an admissible `q`), its
 /// [`FreeFormError::NullityMismatch`] is converted to
-/// [`FreeFormError::SearchDidNotConverge`]. Sign / dimension / singular-recovery
-/// errors propagate unchanged.
+/// [`FreeFormError::SearchDidNotConverge`]. Singular-recovery errors propagate
+/// unchanged; `problem` was validated at the seed densities, whose signs the
+/// search keeps.
 ///
 /// # Scaling
 ///
@@ -1131,39 +1082,14 @@ const SEARCH_BRACKET_FACTOR: f64 = 20.0;
 /// (smallest-`k`) eigensolve and/or a reduced `SCAN` / iteration budget; that is
 /// a deliberate follow-up, out of scope for the 6-node target here.
 fn form_find_group_ratios(
-    nodes_guess: &[[f64; 3]],
-    members: &[(usize, usize)],
-    kinds: &[MemberKind],
+    problem: &ForceDensityProblem<'_>,
     group_ids: &[usize],
     seed_ratios: &[f64],
     reference_group: usize,
 ) -> Result<FreeFormResult, FreeFormError> {
-    // ---- Dimension guards (mirror validate_explicit's first guard) ----
-    // `members` / `kinds` / `group_ids` describe the same member set in order.
-    if members.len() != kinds.len() || members.len() != group_ids.len() {
-        return Err(FreeFormError::DimensionMismatch);
-    }
+    let members = problem.members();
     let n_groups = seed_ratios.len();
-    // `seed_ratios` is indexed by group id, so every group id (and the reference)
-    // must be in range; an empty group set has nothing to search.
-    if n_groups == 0 || reference_group >= n_groups || group_ids.iter().any(|&g| g >= n_groups) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-    // Each group's sign must be well-defined: a zero seed has no sign to hold
-    // fixed while the search varies magnitude.
-    if seed_ratios.contains(&0.0) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-
-    let n = nodes_guess.len();
-
-    // Member node indices must be in range before the search assembles `D`: a
-    // member referencing a node `≥ n` would panic in the objective's
-    // `assemble_force_density_matrix`, so reject it up front (mirrors
-    // `validate_explicit`'s index guard) rather than panic mid-search.
-    if members.iter().any(|&(j, k)| j >= n || k >= n) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
+    let n = problem.nodes().len();
 
     // Per-group sign (fixed throughout) and current magnitude. The reference
     // group's magnitude stays at its seed; free groups start there and are
@@ -1249,7 +1175,7 @@ fn form_find_group_ratios(
     // nullity authority. A genuine convergence (admissible nullity-4 `q`)
     // form-finds; a nullity miss becomes SearchDidNotConverge.
     let q = assemble_group_q(members.len(), group_ids, &group_sign, &group_mag);
-    match form_find_explicit(nodes_guess, members, kinds, &q) {
+    match form_find_explicit(&problem.with_densities(&q)?) {
         Ok(result) => Ok(result),
         Err(FreeFormError::NullityMismatch { .. }) => Err(FreeFormError::SearchDidNotConverge),
         Err(other) => Err(other),
@@ -1374,10 +1300,10 @@ struct SpectrumClassification {
 /// (unanchored) structure.
 ///
 /// Reuses the anchored kernel's rank-1 per-member accumulation
-/// (`crate::form_find::form_find_anchored`): for a member `(j, k)` with force
-/// density `qᵢ`, add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and
-/// `D[k,j]`. Unlike the anchored case there is no free/anchor partition — the
-/// full `D` is what the eigenvalue / null-space form-finding operates on.
+/// ([`scatter_line_members`]): for a member `(j, k)` with force density `qᵢ`,
+/// add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and `D[k,j]`. Unlike
+/// the anchored case there is no free/anchor partition — the full `D` is what
+/// the eigenvalue / null-space form-finding operates on.
 ///
 /// `pub(crate)` so the layer-3 prestress-stability kernel
 /// ([`crate::prestress_stability`], Task 3796) can reuse this exact assembly:
@@ -1390,12 +1316,7 @@ pub(crate) fn assemble_force_density_matrix(
     q: &[f64],
 ) -> Mat<f64> {
     let mut d = Mat::<f64>::zeros(n, n);
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
+    scatter_line_members(&mut d, members, q);
     d
 }
 
@@ -1452,29 +1373,15 @@ fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
     }
 }
 
-/// Validate an explicit-mode force-density spec and classify `D`'s spectrum.
-///
-/// Runs the three up-front feasibility guards in order and returns the matching
-/// [`FreeFormError`] on the first failure:
-///
-/// 1. length agreement across `members` / `kinds` / `q` ([`DimensionMismatch`]),
-/// 2. the per-member sign contract — cables `q > 0`, struts `q < 0`, reusing
-///    [`MemberKind`] ([`SignViolation`]),
-/// 3. the nullity-equals-`d + 1` check via [`classify_spectrum`]
-///    ([`NullityMismatch`], carrying observed vs expected).
+/// Classify the spectrum of a validated problem's `D` and require the nullity a
+/// 3-D free-standing form needs ([`FreeFormError::NullityMismatch`], carrying
+/// observed vs expected, otherwise).
 ///
 /// On success returns the [`SpectrumClassification`] of `D` — computed for the
 /// nullity check and reused by coordinate recovery (step 6) so the dense
 /// eigendecomposition runs only once.
-///
-/// [`DimensionMismatch`]: FreeFormError::DimensionMismatch
-/// [`SignViolation`]: FreeFormError::SignViolation
-/// [`NullityMismatch`]: FreeFormError::NullityMismatch
-fn validate_explicit(
-    n: usize,
-    members: &[(usize, usize)],
-    kinds: &[MemberKind],
-    q: &[f64],
+fn explicit_spectrum(
+    problem: &ForceDensityProblem<'_>,
 ) -> Result<SpectrumClassification, FreeFormError> {
     // A valid 3-D free-standing form needs `D` rank-deficient by exactly
     // `d + 1 = 4`: three coordinate null directions plus the always-present
@@ -1482,42 +1389,12 @@ fn validate_explicit(
     const SPATIAL_DIM: usize = 3;
     const EXPECTED_NULLITY: usize = SPATIAL_DIM + 1;
 
-    // 1. Length agreement across `members` / `kinds` / `q` (mirrors the anchored
-    //    kernel's first guard): disagreeing lengths mean the caller mis-built the
-    //    problem, so reject before indexing them together below.
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-
-    // 1b. Member node indices must be in range. `D` is `n×n`, so a member
-    //     referencing a node `≥ n` would panic on the `d[(j, j)]` index in
-    //     `assemble_force_density_matrix`. The module contract promises infeasible
-    //     input becomes a clean typed error, never a panic — so reject it here.
-    if members.iter().any(|&(j, k)| j >= n || k >= n) {
-        return Err(FreeFormError::DimensionMismatch);
-    }
-
-    // 2. Per-member sign contract, reusing the shared `MemberKind` vocabulary:
-    //    cables carry tension (`q > 0`), struts carry compression (`q < 0`). A
-    //    violation is infeasible input — `D` would still assemble, but the
-    //    self-stress it encodes would be sign-inconsistent — so surface a clean
-    //    diagnostic rather than a silently-wrong form.
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(FreeFormError::SignViolation);
-        }
-    }
-
-    // 3. Nullity check: assemble `D` and classify its spectrum once. A nullity
-    //    other than `d + 1` means this `q` does not admit a 3-D self-stressed
-    //    free-standing form (too few null directions ⇒ over-constrained; too many
-    //    ⇒ an under-determined / degenerate configuration). The classification is
-    //    returned so coordinate recovery (step 6) reuses the single dense EVD.
-    let d = assemble_force_density_matrix(n, members, q);
+    // A nullity other than `d + 1` means this `q` does not admit a 3-D
+    // self-stressed free-standing form (too few null directions ⇒
+    // over-constrained; too many ⇒ an under-determined / degenerate
+    // configuration). The classification is returned so coordinate recovery
+    // (step 6) reuses the single dense EVD.
+    let d = assemble_force_density_matrix(problem.nodes().len(), problem.members(), problem.q());
     let spectrum = classify_spectrum(&d, NULLITY_REL_TOL);
     if spectrum.nullity != EXPECTED_NULLITY {
         return Err(FreeFormError::NullityMismatch {
@@ -1624,6 +1501,7 @@ fn recover_coordinates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::form_find::IndexedInput;
 
     /// The complete 9-cable triplex (triangular antiprism / T-prism): 6 nodes,
     /// 3 struts + 9 cables (3 top, 3 bottom, 3 vertical), in struts-then-cables
@@ -1752,7 +1630,7 @@ mod tests {
         );
     }
 
-    // ---- Explicit-mode feasibility diagnostics (validate_explicit) ----
+    // ---- Explicit-mode feasibility diagnostics ----
 
     #[test]
     fn explicit_cable_with_nonpositive_q_is_sign_violation() {
@@ -1762,8 +1640,14 @@ mod tests {
         // carry tension (q > 0), so this is infeasible input.
         q[3] = -1.0;
         assert_eq!(
-            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
-            FreeFormError::SignViolation,
+            form_find_free(
+                &perturbed_prism_guess(),
+                &members,
+                &kinds,
+                &ForceDensitySpec::Explicit(q),
+            )
+            .unwrap_err(),
+            FreeFormError::Input(ForceDensityInputError::SignViolation { member: 3 }),
         );
     }
 
@@ -1775,8 +1659,14 @@ mod tests {
         // compression (q < 0), so this is infeasible input.
         q[0] = 1.0;
         assert_eq!(
-            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
-            FreeFormError::SignViolation,
+            form_find_free(
+                &perturbed_prism_guess(),
+                &members,
+                &kinds,
+                &ForceDensitySpec::Explicit(q),
+            )
+            .unwrap_err(),
+            FreeFormError::Input(ForceDensityInputError::SignViolation { member: 0 }),
         );
     }
 
@@ -1787,8 +1677,11 @@ mod tests {
         // translation mode), not the d+1 = 4 a valid 3-D form requires. The error
         // carries observed (1) vs expected (4).
         let q = generic_admissible_q(&kinds);
+        let guess = perturbed_prism_guess();
+        let problem = ForceDensityProblem::new(&guess, &members, &kinds, &q, &[], &[], &[])
+            .expect("admissible q is valid input");
         assert_eq!(
-            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
+            explicit_spectrum(&problem).unwrap_err(),
             FreeFormError::NullityMismatch {
                 observed: 1,
                 expected: 4,
@@ -1803,19 +1696,25 @@ mod tests {
         // front before any sign or nullity work.
         let q = vec![1.0; members.len() - 1];
         assert_eq!(
-            validate_explicit(6, &members, &kinds, &q).unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            form_find_free(
+                &perturbed_prism_guess(),
+                &members,
+                &kinds,
+                &ForceDensitySpec::Explicit(q),
+            )
+            .unwrap_err(),
+            FreeFormError::Input(ForceDensityInputError::DimensionMismatch),
         );
     }
 
     #[test]
-    fn explicit_out_of_range_member_index_is_dimension_mismatch() {
+    fn explicit_out_of_range_member_index_is_index_out_of_range() {
         let (mut members, kinds) = triplex_topology();
         let q = closed_form_q();
         // Point a member at node 6 — out of range for the 6-node (0..=5) problem.
         // `D` is 6×6, so without the bounds guard this panics on the `d[(j, j)]`
         // index in `assemble_force_density_matrix`; the guard turns it into a
-        // clean DimensionMismatch through the public entry point (no panic).
+        // clean indexed input error through the public entry point (no panic).
         members[0] = (0, 6);
         assert_eq!(
             form_find_free(
@@ -1825,7 +1724,11 @@ mod tests {
                 &ForceDensitySpec::Explicit(q),
             )
             .unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::MemberEndpoint { member: 0 },
+                index: 6,
+                len: 6,
+            }),
         );
     }
 
@@ -1907,8 +1810,11 @@ mod tests {
         let (members, kinds) = triplex_topology();
         let q = closed_form_q();
         // One dense EVD, shared between the nullity check and recovery.
-        let spectrum = validate_explicit(6, &members, &kinds, &q)
-            .expect("closed-form prism q is feasible (nullity 4)");
+        let prism = canonical_prism();
+        let problem = ForceDensityProblem::new(&prism, &members, &kinds, &q, &[], &[], &[])
+            .expect("closed-form prism q is valid input");
+        let spectrum =
+            explicit_spectrum(&problem).expect("closed-form prism q is feasible (nullity 4)");
 
         // A mildly perturbed symmetric-prism guess (recovery should gauge-fix
         // to it).
@@ -2005,8 +1911,11 @@ mod tests {
         // The valid nullity-4 spectrum for the closed-form prism — identical to
         // the healthy-recovery test's input, so *only* the guess is degenerate
         // here, isolating the SingularRecovery guard.
-        let spectrum = validate_explicit(6, &members, &kinds, &q)
-            .expect("closed-form prism q is feasible (nullity 4)");
+        let prism = canonical_prism();
+        let problem = ForceDensityProblem::new(&prism, &members, &kinds, &q, &[], &[], &[])
+            .expect("closed-form prism q is valid input");
+        let spectrum =
+            explicit_spectrum(&problem).expect("closed-form prism q is feasible (nullity 4)");
 
         // A *coplanar* (degenerate) guess: the canonical prism's x/y arrangement
         // flattened into the z = 0 plane. Per-axis projection onto null(D) leaves
@@ -2178,7 +2087,7 @@ mod tests {
     }
 
     #[test]
-    fn group_ratios_out_of_range_member_index_is_dimension_mismatch() {
+    fn group_ratios_out_of_range_member_index_is_index_out_of_range() {
         let (mut members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // An out-of-range node index (6 ≥ the 6-node problem) must be rejected
@@ -2191,14 +2100,18 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::MemberEndpoint { member: 0 },
+                index: 6,
+                len: 6,
+            }),
         );
     }
 
-    // ---- GroupRatios-mode dimension guards (form_find_group_ratios) ----
+    // ---- GroupRatios-mode group-spec guards (seed_densities) ----
 
     #[test]
-    fn group_ratios_zero_seed_ratio_is_dimension_mismatch() {
+    fn group_ratios_zero_seed_ratio_is_a_zero_seed() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // A zero seed has no sign to hold fixed while the search varies its
@@ -2210,12 +2123,12 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { group: 1 }),
         );
     }
 
     #[test]
-    fn group_ratios_reference_group_out_of_range_is_dimension_mismatch() {
+    fn group_ratios_reference_group_out_of_range_is_unseeded() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // `seed_ratios` is indexed by group id (3 groups ⇒ valid ids 0..=2), so a
@@ -2227,12 +2140,12 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup),
         );
     }
 
     #[test]
-    fn group_ratios_group_id_out_of_range_is_dimension_mismatch() {
+    fn group_ratios_group_id_out_of_range_is_an_unseeded_group() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // A `group_ids` entry referencing a group with no seed ratio (id 3 with
@@ -2246,16 +2159,16 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { member: 0 }),
         );
     }
 
     #[test]
-    fn group_ratios_group_ids_length_mismatch_is_dimension_mismatch() {
+    fn group_ratios_group_ids_length_mismatch_is_not_per_member() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
-        // `group_ids` must be parallel to `members`; one short ⇒ dimension
-        // mismatch, caught before any search work.
+        // `group_ids` must be parallel to `members`; one short is caught before
+        // any search work.
         let mut group_ids = triplex_group_ids();
         group_ids.pop();
         let spec = ForceDensitySpec::GroupRatios {
@@ -2265,7 +2178,7 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember),
         );
     }
 
@@ -2294,7 +2207,7 @@ mod tests {
         assert_eq!(
             form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
                 .unwrap_err(),
-            FreeFormError::SurfaceCountMismatch,
+            FreeFormError::Input(ForceDensityInputError::SurfaceCountMismatch),
         );
     }
 
@@ -2315,7 +2228,7 @@ mod tests {
         assert_eq!(
             form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
                 .unwrap_err(),
-            FreeFormError::NonTensionSurfaceStress,
+            FreeFormError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 1 }),
         );
     }
 
@@ -2324,7 +2237,7 @@ mod tests {
     // `nodes[gi]` index. The module contract promises infeasible input becomes
     // a clean typed error, never a panic.
     #[test]
-    fn surfaces_free_out_of_range_index_is_dimension_mismatch() {
+    fn surfaces_free_out_of_range_index_is_index_out_of_range() {
         let (members, kinds) = triplex_topology();
         let guess = perturbed_prism_guess();
         // Boundary index: 6 is the FIRST invalid index for the 6-node triplex,
@@ -2343,7 +2256,11 @@ mod tests {
         assert_eq!(
             form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
                 .unwrap_err(),
-            FreeFormError::DimensionMismatch,
+            FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::SurfaceCorner { surface: 0 },
+                index: 6,
+                len: 6,
+            }),
         );
     }
 
@@ -2606,8 +2523,8 @@ mod tests {
         );
     }
 
-    // A degenerate (collinear / zero-area) surface triangle must propagate as
-    // FreeFormError::DegenerateTriangle instead of a NaN/∞ stencil.
+    // A degenerate (collinear / zero-area) INPUT surface triangle is an input
+    // error, reported instead of assembling a NaN/∞ stencil.
     #[test]
     fn surfaces_free_degenerate_triangle_is_degenerate_triangle() {
         let (members, kinds) = triplex_topology();
@@ -2639,7 +2556,7 @@ mod tests {
                 &spec,
             )
             .unwrap_err(),
-            FreeFormError::DegenerateTriangle,
+            FreeFormError::Input(ForceDensityInputError::DegenerateTriangle { surface: 0 }),
         );
     }
 

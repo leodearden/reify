@@ -1,6 +1,6 @@
 # PRD: reify-audit PTODO detector — TODO-tracking-invariant enforcement
 
-**Status:** active — F-infra (audit cadence + tracking infrastructure), version-agnostic.
+**Status:** active — F-infra (audit cadence + tracking infrastructure), version-agnostic; gap-fill 2026-10-16: §20 (statuses through the task API, S24 ε #8811).
 **Date:** 2026-06-11. Phase C of the 2026-06-11 two-track audit (Leo-ratified).
 **Approach:** B + contract (citation grammar + violation taxonomy are normative; see §8/§9).
 
@@ -376,6 +376,8 @@ without PTODO (`--pre-done`, or a `--pattern` that omits it) rejects it as an ar
 are now `#[ignore]`d on-demand checks (run with `--ignored`, `REIFY_PTODO_TASKS_DB` at the
 main checkout's DB). They fail loud on a DB they cannot read rather than skipping, and their
 hermetic siblings are the always-on assertions.
+
+**Amendment 2026-10-16 (§20).** The liveness, inverse and G-allow lanes and PDCHECK read task statuses through the task API (the bin's fused-memory client, one `get_statuses` per run), not `.taskmaster/tasks/tasks.db`; `REIFY_PTODO_TASKS_DB` is retired. The fail-soft and `--require-tasks-db` semantics above are unchanged in meaning; §20 is the single home for the change.
 
 ### 6.8 Allowlist — **path-prefix + inline escape; `.md` excluded entirely**
 
@@ -1459,6 +1461,8 @@ did not consider; §18.1 (set-equality is not a drain forcing function) still st
 not contradicted here. This section is the single home for the ruling; §6.6, §6.7 and §18
 carry pointers.
 
+**Amendment 2026-10-16 (§20).** The cadenced sweep's DB-dependent kinds now read statuses through the task API, not tasks.db; the split (structural per merge, liveness in the sweep) and the refusal semantics stand.
+
 **The question.** The ratchet drifts along three axes, and each had a task or an escalation
 treating it alone: (1) *live-but-not-in-baseline* — the oracle's own direction, caught per
 merge; (2) *baseline-but-no-longer-live* — uncaught, proposed by task #7001, declined by §18;
@@ -1573,3 +1577,11 @@ Under (a) the baseline diff is empty; the six lines simply become sweep candidat
   reach on that entry must be stated in the seed commit.
 - The sweep's healing-task rate exceeds what the backlog absorbs: then the question is the
   citation convention (CLAUDE.md → TODO citation convention), not the ratchet.
+
+## 20. Gap-fill amendments (2026-10-16)
+
+- **K9-D9 B — the liveness status source becomes the task API** (`plans/gap-fill-deliberation-reify-20261016.md` §K9-D9, Leo 2026-10-16; finding fk-3dc9e2858c24, review-reify-20261015). PTODO's liveness, inverse and G-allow lanes and PDCHECK read task statuses through the bin's fused-memory client (one `get_statuses` call per run). S24 ε #8811 builds the status-source handle (`task_rows::StatusSource`) with D10's `Unavailable`/`DbUse` degradation; the sqlite open, `ptodo::tasks_db_path`/`open_tasks_db` and `REIFY_PTODO_TASKS_DB` are deleted.
+  - §6.7: "the task DB is absent / unreadable" now reads "statuses are unavailable" (fused-memory unreachable, or a `get_statuses` failure). The fail-soft breadcrumb, structural-lane behaviour and "never exit 125" are unchanged. The `REIFY_PTODO_TASKS_DB` path override and the `<repo-root>/.taskmaster/tasks/tasks.db` default are retired; task worktrees degrade because the lanes run DB-absent by construction (§6.6 forces it), not because the file is untracked.
+  - §19: `--require-tasks-db` keeps its meaning — refuse (exit 255) when statuses are unavailable — under the same or a renamed flag; a rename also changes the dark-factory 5796 sweep invocation. Liveness still never reds a commit gate, and the merge-gate ratchet stays DB-absent and hermetic.
+  - The `*_live` on-demand checks (`g_allow_repo_wide_hard_gate_live`, `engine_seam_g_allow_owner_cites_resolve_live_real_db`) read statuses the same way.
+  - CLAUDE.md §Memory & tasks is unchanged; the rule ("never reach around that API to tasks.db") now holds without exception.

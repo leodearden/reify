@@ -1999,7 +1999,7 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build();
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result = engine.eval(&module);
 
         let child_m = ValueCellId::new("S.child", "m");
@@ -2092,7 +2092,7 @@ mod tests {
             .template(template_s)
             .template(template_c)
             .build();
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result = engine.eval(&module);
 
         let root_n = ValueCellId::new("S", "n");
@@ -2177,7 +2177,7 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build();
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result = engine.eval(&module);
 
         let root_n = ValueCellId::new("S", "n");
@@ -2262,7 +2262,7 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build();
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result = engine.eval(&module);
 
         let root_n = ValueCellId::new("S", "n");

@@ -1,0 +1,12 @@
+module auto_reach_conn_concrete
+trait Signal {}
+
+structure ConnConcrete {
+    param gain : Length = 10mm
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnConcrete { gain = auto }
+}

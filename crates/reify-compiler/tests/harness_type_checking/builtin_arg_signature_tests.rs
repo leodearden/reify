@@ -1318,6 +1318,7 @@ fn dim_kinded_wrong_dimension_source() -> String {
 /// primitive_profile_length_units_e2e.rs`'s `build_compiled`.
 fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::Diagnostic> {
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
         Some(Box::new(
             reify_test_support::mocks::MockGeometryKernel::new(),

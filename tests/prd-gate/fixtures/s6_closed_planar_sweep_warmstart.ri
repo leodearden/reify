@@ -1,0 +1,22 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): closed-chain sweep with a free planar joint (T8; width fix is #8545)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_closed_planar_sweep_warmstart
+
+// Probe (seat L, S6): closed chain whose closing-side free joint is PLANAR.
+// Topology mirrors kinematic_sweep_closed_chain.rs CLOSED_CHAIN_SOURCE with j_b -> planar.
+structure def Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_b = planar(vec3(1, 0, 0), vec3(0, 1, 0),
+                     0mm .. 2000mm, -100mm .. 100mm,
+                     -0.5rad .. 0.5rad)
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_x, j_a)
+    let m2b = body(m2, "solid_c", j_b)
+    let m3  = body(m2b, "solid_d", j_x, j_b)
+
+    let s_cold   = snapshot(m3, [bind(j_a, 500mm)])
+    let sweep_1  = sweep(m3, j_a, 0mm .. 1000mm, 1)
+    let sweep_2  = sweep(m3, j_a, 0mm .. 1000mm, 2)
+}

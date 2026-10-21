@@ -359,6 +359,7 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
         )
         .with_sweep_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -516,6 +517,7 @@ fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_
         )
         .with_loft_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

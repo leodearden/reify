@@ -64,7 +64,7 @@ pub fn build_with_kernel(
     kernel: Box<dyn GeometryKernel>,
 ) -> BuildResult {
     let compiled = compile_source(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
     engine.set_build_scheduler(scheduler);
     engine.build(&compiled, ExportFormat::Step)
 }
@@ -90,7 +90,7 @@ pub fn build_with_kernel_stdlib(
     kernel: Box<dyn GeometryKernel>,
 ) -> BuildResult {
     let compiled = compile_source_with_stdlib(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
     engine.set_build_scheduler(scheduler);
     engine.build(&compiled, ExportFormat::Step)
 }
@@ -1459,7 +1459,7 @@ fn build_occt_recording(source: &str) -> (BuildResult, Vec<GeometryOp>) {
     );
     let recorder = OcctOpRecorder::new(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let ops_ref = recorder.ops_ref();
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(recorder)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(recorder)));
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     let result = engine.build(&compiled, ExportFormat::Step);
     let ops = ops_ref.lock().unwrap().clone();

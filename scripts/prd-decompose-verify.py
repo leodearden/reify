@@ -24,7 +24,7 @@ CLI subcommands:
                                     `total` before trusting it.
 
 Reuses α (`prd-capability-check.py`) in-process via importlib — the same loader
-pattern used by `test_prd_capability_check.py`.  α's file is NOT edited.
+pattern used by `_pcc_test_support.py`.  α's file is NOT edited.
 
 Design decisions:
   D1: negative-assertion mandate — a `rejection` premise binds probe_kind="check"
@@ -57,7 +57,7 @@ from typing import Any, Dict, List, Optional
 # ---------------------------------------------------------------------------
 # Load α (prd-capability-check.py) via importlib
 # ---------------------------------------------------------------------------
-# Mirror the loader pattern in test_prd_capability_check.py so α is reused
+# Mirror the loader pattern in _pcc_test_support.py so α is reused
 # in-process without editing the locked/merged file.
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))

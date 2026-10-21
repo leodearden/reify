@@ -70,6 +70,8 @@ pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
 pub mod solver_progress;
 pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
+mod solver_posture;
+pub use solver_posture::SolverPosture;
 pub mod appearance;
 pub mod dynamics_ops;
 mod dynamics_psd;
@@ -111,6 +113,8 @@ mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
+pub(crate) mod kernel_owner;
+pub(crate) mod volume_mesh_sources;
 #[cfg(test)]
 mod registry_drift_tests;
 // Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
@@ -483,7 +487,9 @@ pub struct Engine {
     /// `None` matches the v0.2 `geometry_kernel: None` semantics (no kernel
     /// configured: `geometry_output` is `None` and tessellation skips).
     default_kernel_name: Option<String>,
-    solver: Option<Box<dyn ConstraintSolver>>,
+    /// The constructor's [`SolverPosture`]: `Some` iff it was `Solve(..)`, so
+    /// the engine holds a solver iff it holds a resolution profile.
+    solve_stage: Option<solver_posture::SolveStage>,
     cache: CacheStore,
     /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
     prelude: &'static [CompiledModule],
@@ -883,10 +889,10 @@ pub struct Engine {
     compute_registry: engine_compute::ComputeDispatchRegistry,
     /// Registry of named constraint solvers selectable via the `#solver(<name>)`
     /// module pragma (Task 2300). Populated at runtime startup via
-    /// `register_solver`; the default fallback solver remains `self.solver`
-    /// (set via `with_solver`). At solve time, `Engine::resolve_solver_for_module`
+    /// `register_solver`; the default fallback solver remains `solve_stage`'s
+    /// (replaceable via `with_solver`). At solve time, `Engine::resolve_solver_for_module`
     /// looks up `module.solver_pragma.name` here; on miss it falls back to
-    /// `self.solver` and emits a "named solver not registered" warning.
+    /// that default and emits a "named solver not registered" warning.
     solvers: HashMap<String, Box<dyn ConstraintSolver>>,
     /// Memory-budgeted pool that holds warm-start state donated by removed
     /// nodes between topology edits. Populated by `edit_source` when value
@@ -1022,6 +1028,9 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// The body each VolumeMesh was meshed from, for Phase-B egress; see
+    /// [`crate::volume_mesh_sources`].
+    volume_mesh_sources: crate::volume_mesh_sources::VolumeMeshSources,
     /// Running totals of the per-call eval-cache counters, folded in at the end
     /// of every [`Engine::eval_cached`] call (task 4152).
     ///
@@ -2453,7 +2462,7 @@ mod tests {
     #[test]
     fn engine_new_populates_structure_registry_from_prelude() {
         use reify_test_support::mocks::MockConstraintChecker;
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let reg = engine.structure_registry();
 
         let id = reg
@@ -2532,7 +2541,7 @@ structure S {
         let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
         let checker = MockConstraintChecker::new();
-        let mut engine = Engine::new(Box::new(checker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval
         engine.eval(&compiled);
@@ -2673,7 +2682,7 @@ structure S {
             .build();
 
         let mut engine =
-            Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+            Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
         // Initial eval — solver fires once; captured holds the eval-path problem.
         engine.eval(&module);
@@ -2796,7 +2805,7 @@ structure S {
         // test independent of ambient REIFY_WARM_STATE_BUDGET_BYTES too.
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         // budget_bytes() returns Option<usize>; the call alone proves wiring.
         let _ = engine.warm_pool().budget_bytes();
         assert_eq!(
@@ -2838,7 +2847,7 @@ structure S {
         // Snapshot the env var before engine construction so both sides share a
         // single read — avoids TOCTOU with concurrent env-mutating tests.
         let snapshot = std::env::var(BUDGET_ENV_VAR).ok();
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let expected = WarmStatePool::from_env_value(snapshot.as_deref());
 
         assert_eq!(
@@ -2867,7 +2876,7 @@ structure S {
         use reify_ir::OpaqueState;
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Pre-populate the pool with two donations using a tiny budget so
         // the second donate triggers an eviction (budget = 1 byte).

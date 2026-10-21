@@ -24,8 +24,8 @@ use reify_eval::Engine;
 #[test]
 fn with_manifest_none_produces_no_diagnostics_and_same_kernel_count() {
     let (engine_new, diags) =
-        Engine::with_registered_kernels_and_manifest(Box::new(SimpleConstraintChecker), None);
-    let engine_old = Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+        Engine::with_registered_kernels_and_manifest(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
+    let engine_old = Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker));
 
     assert!(
         diags.is_empty(),
@@ -49,6 +49,7 @@ fn with_manifest_pinned_missing_kernel_produces_error() {
         .expect("valid manifest");
 
     let (_engine, diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(&manifest),
     );
@@ -82,6 +83,7 @@ fn with_manifest_registered_but_unpinned_kernel_warns() {
         .expect("valid manifest");
 
     let (_engine, diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(&manifest),
     );

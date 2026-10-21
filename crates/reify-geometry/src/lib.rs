@@ -1,4 +1,5 @@
-use reify_ir::{AttributeHistory, DenseSdfGrid, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
+use reify_core::hash::ContentHash;
+use reify_ir::{AttributeHistory, DenseSdfGrid, ElementOrderTag, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VolumeMesh, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -44,31 +45,31 @@ impl SingleKernelHolder {
 
     /// The no-kernel outcome shared by every Mesh-ingest entry point.
     ///
-    /// `GeometryKernel::ingest_mesh` and
-    /// `GeometryKernel::ingest_mesh_at_resolution` must both reproduce the
-    /// trait default's no-kernel message, which is one string; producing it
-    /// once means the two arms cannot drift, so no test is needed to check
-    /// that they agree. `type_name::<Self>()` resolves to `SingleKernelHolder`
-    /// here exactly as it does in the trait default.
+    /// `GeometryKernel::ingest_mesh`, `ingest_mesh_at_resolution` and
+    /// `register_mesh_handle` all reproduce one trait-default message on an
+    /// empty holder (the latter two defaults route through `ingest_mesh`);
+    /// producing it once means the three arms cannot drift.
+    /// `type_name::<Self>()` resolves to `SingleKernelHolder` here exactly as
+    /// it does in the trait default.
     fn no_mesh_kernel_error() -> GeometryError {
-        GeometryError::OperationFailed(format!(
-            "{} does not accept Mesh inputs",
-            std::any::type_name::<Self>()
-        ))
+        GeometryError::OperationFailed(Self::type_named_message("does not accept Mesh inputs"))
+    }
+
+    /// A no-kernel message prefixed with `type_name::<Self>()`, as the trait
+    /// defaults that name their kernel produce it.
+    fn type_named_message(tail: &str) -> String {
+        format!("{} {tail}", std::any::type_name::<Self>())
     }
 }
 
-// INVARIANT: `SingleKernelHolder` must delegate EVERY `GeometryKernel` method to
-// its inner kernel. The trait's defaulted capability methods (extract_edges,
-// execute_split, ingest_mesh, attribute_hook, densify_grid_to_sampled, …) and
-// the forward-through-core defaults (execute_with_history, query_many,
-// export_with_options) silently mask missing delegation — returning
-// None/not-supported (or routing through the holder's own core methods) instead
-// of the inner kernel's real result. Whenever a new `GeometryKernel` method is
-// added, add a delegating override below whose `None` arm reproduces the trait
-// default's no-kernel output. This is guarded by the parity test
-// `tests::delegates_all_capability_methods_to_inner_kernel`, which invokes every
-// method through the holder and asserts the inner kernel saw each call.
+// INVARIANT: every `GeometryKernel` method is forwarded to the inner kernel, and
+// each `None` arm returns exactly what the trait default returns for this
+// holder. A missing forward is silent: the trait default answers in place of
+// the inner kernel, or reroutes to a different method of it (as
+// `register_mesh_handle`'s default does through `ingest_mesh`). Guarded by
+// `tests/forwards_every_kernel_method.rs`, which enumerates the trait's methods
+// from reify-ir's source, so a new trait method fails it until it is forwarded
+// here.
 impl GeometryKernel for SingleKernelHolder {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
@@ -132,7 +133,7 @@ impl GeometryKernel for SingleKernelHolder {
         match self.kernel.as_mut() {
             Some(k) => k.make_compound(handles),
             None => Err(GeometryError::OperationFailed(
-                "no geometry kernel registered".to_string(),
+                "make_compound not supported by this kernel".into(),
             )),
         }
     }
@@ -277,6 +278,13 @@ impl GeometryKernel for SingleKernelHolder {
         }
     }
 
+    fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.register_mesh_handle(mesh),
+            None => Err(Self::no_mesh_kernel_error()),
+        }
+    }
+
     fn ingest_dense_sdf(
         &mut self,
         grid: &DenseSdfGrid,
@@ -294,14 +302,107 @@ impl GeometryKernel for SingleKernelHolder {
             None => None,
         }
     }
+
+    fn volume_mesh(&self, handle: GeometryHandleId) -> Result<VolumeMesh, QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.volume_mesh(handle),
+            None => Err(QueryError::QueryFailed(
+                "volume_mesh projection not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn mesh_surface_to_volume(
+        &self,
+        surface: &Mesh,
+        element_order: ElementOrderTag,
+    ) -> Result<VolumeMesh, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.mesh_surface_to_volume(surface, element_order),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not produce volume meshes",
+            ))),
+        }
+    }
+
+    fn mesh_surface_to_volume_attributed(
+        &self,
+        surface: &Mesh,
+        element_order: ElementOrderTag,
+        face_anchors: &[(GeometryHandleId, [f64; 3])],
+        match_tolerance: f64,
+    ) -> Result<VolumeMesh, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.mesh_surface_to_volume_attributed(
+                surface,
+                element_order,
+                face_anchors,
+                match_tolerance,
+            ),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not produce attributed volume meshes",
+            ))),
+        }
+    }
+
+    fn store_volume_mesh(&self, vm: VolumeMesh) -> Result<GeometryHandleId, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.store_volume_mesh(vm),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not store volume meshes",
+            ))),
+        }
+    }
+
+    fn closest_point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.closest_point_on_shape(handle, point),
+            None => Err(QueryError::QueryFailed(Self::type_named_message(
+                "does not support closest-point projection",
+            ))),
+        }
+    }
+
+    fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.vertex_point(handle),
+            None => Err(QueryError::QueryFailed(Self::type_named_message(
+                "does not support vertex-position queries",
+            ))),
+        }
+    }
+
+    fn realize_mesh_from_voxel(
+        &self,
+        handle: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.realize_mesh_from_voxel(handle, iso_level, adaptive),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not support voxel surfacing (marching cubes)",
+            ))),
+        }
+    }
+
+    fn surface_options_content_hash(&self, iso_level: f64, adaptive: bool) -> ContentHash {
+        match self.kernel.as_ref() {
+            Some(k) => k.surface_options_content_hash(iso_level, adaptive),
+            None => ContentHash(0),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{AttributeHistory, BRepKind, DenseSdfGrid, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
-    use std::sync::{Arc, Mutex};
+    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, TessError, Value};
 
     use super::*;
 
@@ -539,463 +640,5 @@ mod tests {
             .expect("execute through trait object should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
         assert_eq!(handle.repr, Some(BRepKind::Solid));
-    }
-
-    /// Minimal in-test stub kernel that only supports `measure_mesh_deviation`.
-    /// Implements the four required trait methods as `unimplemented!()` stubs,
-    /// following the CountingKernel minimal-stub pattern from reify-ir/src/geometry.rs.
-    ///
-    /// Returns a value derived from both forwarded arguments (handle ID + vertex
-    /// count) so a delegation bug that passes the wrong handle or mesh produces a
-    /// different result and the assertion catches it.
-    struct DeviationStubKernel;
-
-    impl GeometryKernel for DeviationStubKernel {
-        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn export(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), ExportError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
-            // Encode both forwarded arguments into the return value so the delegation
-            // test can verify the correct handle and mesh were passed through — not just
-            // that some value was returned.  A wrong handle or wrong mesh produces a
-            // different f64 and the assertion catches it.
-            Some(handle.0 as f64 + mesh.vertices.len() as f64)
-        }
-    }
-
-    #[test]
-    fn measure_mesh_deviation_delegates_to_registered_kernel() {
-        let mut planner = SingleKernelHolder::new();
-        planner.register_kernel(Box::new(DeviationStubKernel));
-        // Non-trivial handle id (5) and mesh with 3 vertex floats so the expected
-        // encoded value is unambiguous: 5.0 (handle) + 3.0 (vertex count) = 8.0.
-        // Passing a wrong handle or an empty/default mesh produces a different
-        // result and the assertion catches the forwarding bug.
-        let mesh = Mesh { vertices: vec![0.0_f32, 1.0, 2.0], indices: vec![], normals: None };
-        let result = planner.measure_mesh_deviation(GeometryHandleId(5), &mesh);
-        assert_eq!(result, Some(8.0));
-    }
-
-    #[test]
-    fn measure_mesh_deviation_no_kernel_returns_none() {
-        let planner = SingleKernelHolder::new();
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-        let result = planner.measure_mesh_deviation(GeometryHandleId(1), &mesh);
-        assert!(result.is_none());
-    }
-
-    /// A self-contained `GeometryKernel` that records the name of every method
-    /// invoked on it into a shared log. Used by
-    /// `delegates_all_capability_methods_to_inner_kernel` to prove that
-    /// `SingleKernelHolder` forwards each `GeometryKernel` method to its inner
-    /// kernel rather than silently masking it with the trait default.
-    ///
-    /// Every method — including the defaulted capability methods — is overridden
-    /// so the inner kernel logs its own name when (and only when) the holder
-    /// actually delegates. Return values are minimal; the parity check inspects
-    /// the call log, not the results (so `densify_grid_to_sampled` logs and
-    /// returns `Err` rather than constructing a heavyweight `SampledField`).
-    struct RecordingKernel {
-        log: Arc<Mutex<Vec<&'static str>>>,
-        /// Every `VoxelResolution` the inner kernel was actually handed, in
-        /// call order. Separate from `log` because the method NAME alone
-        /// cannot distinguish a real delegating override from the trait
-        /// default — only the request VALUE can.
-        resolutions: Arc<Mutex<Vec<VoxelResolution>>>,
-    }
-
-    /// A fresh `RecordingKernel` together with shared handles to the two logs
-    /// it writes: the method-name call log and the `VoxelResolution` request
-    /// log.
-    type RecordingKernelWithLogs = (
-        RecordingKernel,
-        Arc<Mutex<Vec<&'static str>>>,
-        Arc<Mutex<Vec<VoxelResolution>>>,
-    );
-
-    impl RecordingKernel {
-        fn new() -> RecordingKernelWithLogs {
-            let log = Arc::new(Mutex::new(Vec::new()));
-            let resolutions = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self { log: log.clone(), resolutions: resolutions.clone() },
-                log,
-                resolutions,
-            )
-        }
-
-        fn record(&self, name: &'static str) {
-            self.log.lock().unwrap().push(name);
-        }
-
-        fn handle() -> GeometryHandle {
-            GeometryHandle { id: GeometryHandleId(1), repr: Some(BRepKind::Solid) }
-        }
-    }
-
-    impl GeometryKernel for RecordingKernel {
-        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            self.record("execute");
-            Ok(Self::handle())
-        }
-
-        fn execute_with_history(
-            &mut self,
-            _op: &GeometryOp,
-        ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
-            self.record("execute_with_history");
-            Ok((Self::handle(), AttributeHistory::None))
-        }
-
-        fn reset(&mut self) {
-            self.record("reset");
-        }
-
-        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            self.record("query");
-            Ok(Value::length(0.0))
-        }
-
-        fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
-            self.record("query_many");
-            Ok(queries.iter().map(|_| Value::length(0.0)).collect())
-        }
-
-        fn export(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), ExportError> {
-            self.record("export");
-            Ok(())
-        }
-
-        fn export_with_options(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _options: &ExportOptions,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<Vec<ExportWarning>, ExportError> {
-            self.record("export_with_options");
-            Ok(Vec::new())
-        }
-
-        fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-            self.record("tessellate");
-            Ok(Mesh { vertices: vec![], indices: vec![], normals: None })
-        }
-
-        fn extract_edges(
-            &mut self,
-            _handle: GeometryHandleId,
-        ) -> Result<Vec<GeometryHandleId>, QueryError> {
-            self.record("extract_edges");
-            Ok(vec![])
-        }
-
-        fn extract_faces(
-            &mut self,
-            _handle: GeometryHandleId,
-        ) -> Result<Vec<GeometryHandleId>, QueryError> {
-            self.record("extract_faces");
-            Ok(vec![])
-        }
-
-        fn extract_vertices(
-            &mut self,
-            _handle: GeometryHandleId,
-        ) -> Result<Vec<GeometryHandleId>, QueryError> {
-            self.record("extract_vertices");
-            Ok(vec![])
-        }
-
-        fn densify_grid_to_sampled(
-            &mut self,
-            _handle: GeometryHandleId,
-        ) -> Result<SampledField, QueryError> {
-            // Log then return Err — the parity check inspects the call log, not
-            // the value, so we avoid constructing a heavyweight SampledField.
-            self.record("densify_grid_to_sampled");
-            Err(QueryError::QueryFailed("recorded".into()))
-        }
-
-        fn execute_split(
-            &mut self,
-            _op: &GeometryOp,
-        ) -> Result<Vec<GeometryHandleId>, GeometryError> {
-            self.record("execute_split");
-            Ok(vec![])
-        }
-
-        fn make_compound(
-            &mut self,
-            _handles: &[GeometryHandleId],
-        ) -> Result<GeometryHandle, GeometryError> {
-            self.record("make_compound");
-            Ok(Self::handle())
-        }
-
-        fn ingest_mesh(&mut self, _mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
-            self.record("ingest_mesh");
-            Ok(Self::handle())
-        }
-
-        fn ingest_mesh_at_resolution(
-            &mut self,
-            _mesh: &Mesh,
-            resolution: VoxelResolution,
-        ) -> Result<GeometryHandle, GeometryError> {
-            // Record BOTH the method name and the requested resolution. The
-            // name proves the holder delegated at all; the value proves it
-            // delegated the caller's request VERBATIM rather than falling
-            // through the trait default, which drops `resolution` and calls
-            // `ingest_mesh` instead.
-            self.record("ingest_mesh_at_resolution");
-            self.resolutions.lock().unwrap().push(resolution);
-            Ok(Self::handle())
-        }
-
-        fn ingest_dense_sdf(
-            &mut self,
-            _grid: &DenseSdfGrid,
-            _opts: &ImplicitOptions,
-        ) -> Result<GeometryHandle, GeometryError> {
-            self.record("ingest_dense_sdf");
-            Ok(Self::handle())
-        }
-
-        fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
-            self.record("attribute_hook");
-            None
-        }
-
-        fn measure_mesh_deviation(&self, _handle: GeometryHandleId, _mesh: &Mesh) -> Option<f64> {
-            self.record("measure_mesh_deviation");
-            Some(0.0)
-        }
-    }
-
-    /// Parity guard: `SingleKernelHolder` must delegate EVERY `GeometryKernel`
-    /// method to its inner kernel. The trait's defaulted capability methods
-    /// (extract_*, execute_split, ingest_mesh, attribute_hook,
-    /// densify_grid_to_sampled) and the forward-through-core defaults
-    /// (execute_with_history, query_many, export_with_options) silently mask the
-    /// inner kernel's real implementation when the holder fails to override them
-    /// — the exact failure the lib.rs INVARIANT note warns about. This invokes
-    /// every method through the holder and asserts the inner `RecordingKernel`
-    /// saw each call.
-    ///
-    /// RED until step-4 adds the 10 delegating overrides.
-    #[test]
-    fn delegates_all_capability_methods_to_inner_kernel() {
-        let (kernel, log, _resolutions) = RecordingKernel::new();
-        let mut holder = SingleKernelHolder::new();
-        holder.register_kernel(Box::new(kernel));
-
-        let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
-        };
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-        let dense_grid = DenseSdfGrid::from_fn([2, 2, 2], [0.0; 3], 1e-3, |_| 0.0).unwrap();
-        let dense_opts = ImplicitOptions::new(dense_grid.h(), 1).unwrap();
-        let mut buf = Vec::new();
-
-        // Invoke every GeometryKernel method through the holder.
-        let _ = holder.execute(&op);
-        let ewh = holder.execute_with_history(&op);
-        holder.reset();
-        let _ = holder.query(&GeometryQuery::Volume(GeometryHandleId(1)));
-        let _ = holder.query_many(&[GeometryQuery::Volume(GeometryHandleId(1))]);
-        let _ = holder.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
-        let _ = holder.export_with_options(
-            GeometryHandleId(1),
-            ExportFormat::Step,
-            &ExportOptions::default(),
-            &mut buf,
-        );
-        let _ = holder.tessellate(GeometryHandleId(1), 0.1);
-        let _ = holder.extract_edges(GeometryHandleId(1));
-        let _ = holder.extract_faces(GeometryHandleId(1));
-        let _ = holder.extract_vertices(GeometryHandleId(1));
-        let _ = holder.densify_grid_to_sampled(GeometryHandleId(1));
-        let _ = holder.execute_split(&op);
-        let _ = holder.make_compound(&[GeometryHandleId(1)]);
-        let ingest = holder.ingest_mesh(&mesh);
-        let _ = holder.ingest_mesh_at_resolution(&mesh, VoxelResolution::HonestFloor);
-        let dense_ingest = holder.ingest_dense_sdf(&dense_grid, &dense_opts);
-        let _ = holder.attribute_hook();
-        let deviation = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
-
-        // Also assert result propagation for the three methods whose RecordingKernel
-        // return values are distinguishable from the trait default's no-kernel output.
-        // A buggy override that invokes the inner kernel but then falls back to the
-        // trait default — e.g. `Some(k) => { let _ = k.foo(); <default>  }` — would
-        // still log the call and pass the log-assertion below, but fail here.
-        let (ewh_handle, ewh_hist) = ewh
-            .expect("execute_with_history must propagate the inner kernel's Ok result, \
-                     not fall back to the trait default Err");
-        assert_eq!(
-            ewh_handle.repr,
-            Some(BRepKind::Solid),
-            "execute_with_history must propagate the inner kernel's handle repr"
-        );
-        assert!(
-            matches!(ewh_hist, AttributeHistory::None),
-            "execute_with_history must propagate AttributeHistory::None from the inner kernel"
-        );
-        assert!(
-            ingest.is_ok(),
-            "ingest_mesh must propagate the inner kernel's Ok(handle) result, \
-             not fall back to the Err(OperationFailed(\"does not accept Mesh inputs\")) default"
-        );
-        assert_eq!(
-            deviation,
-            Some(0.0),
-            "measure_mesh_deviation must propagate the inner kernel's Some(0.0), \
-             not fall back to the None default"
-        );
-        assert!(
-            dense_ingest.is_ok(),
-            "ingest_dense_sdf must propagate the inner kernel's Ok(handle) result, \
-             not fall back to the Err(\"does not ingest dense SDF grids\") default"
-        );
-
-        let recorded = log.lock().unwrap();
-        for method in [
-            "execute",
-            "execute_with_history",
-            "reset",
-            "query",
-            "query_many",
-            "export",
-            "export_with_options",
-            "tessellate",
-            "extract_edges",
-            "extract_faces",
-            "extract_vertices",
-            "densify_grid_to_sampled",
-            "execute_split",
-            "make_compound",
-            "ingest_mesh",
-            "ingest_mesh_at_resolution",
-            "ingest_dense_sdf",
-            "attribute_hook",
-            "measure_mesh_deviation",
-        ] {
-            assert!(
-                recorded.contains(&method),
-                "SingleKernelHolder did not delegate `{method}` to the inner kernel; \
-                 recorded calls: {recorded:?}"
-            );
-        }
-    }
-
-    /// The resolution request itself must reach the inner kernel VERBATIM.
-    ///
-    /// `delegates_all_capability_methods_to_inner_kernel` proves only that
-    /// *some* call reached the inner kernel — it cannot on its own separate a
-    /// real delegating override from the trait default, because that default
-    /// routes through `self.ingest_mesh` → the holder's own `ingest_mesh`
-    /// override → the inner kernel's `ingest_mesh`, which logs too. This test
-    /// makes the difference observable. With a real override the inner kernel
-    /// sees `ingest_mesh_at_resolution` carrying the exact `VoxelResolution`
-    /// the caller passed; with the trait default it sees `ingest_mesh` and the
-    /// request is silently downgraded to `VoxelResolution::HonestFloor` — the
-    /// sub-voxel-feature failure task 6560 exists to close, arriving as a
-    /// quietly coarser grid rather than as an error.
-    #[test]
-    fn ingest_mesh_at_resolution_delegates_the_request_verbatim() {
-        let (kernel, log, resolutions) = RecordingKernel::new();
-        let mut holder = SingleKernelHolder::new();
-        holder.register_kernel(Box::new(kernel));
-
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-        let handle = holder
-            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
-            .expect("holder must propagate the inner kernel's Ok(handle)");
-        assert_eq!(handle.id, GeometryHandleId(1));
-
-        assert_eq!(
-            *resolutions.lock().unwrap(),
-            vec![VoxelResolution::MinFeature(1.0)],
-            "the inner kernel must receive the caller's VoxelResolution verbatim"
-        );
-
-        let recorded = log.lock().unwrap();
-        assert_eq!(
-            *recorded,
-            vec!["ingest_mesh_at_resolution"],
-            "the holder must delegate ingest_mesh_at_resolution directly; a \
-             recorded `ingest_mesh` means it fell through the trait default and \
-             silently downgraded the request to VoxelResolution::HonestFloor"
-        );
-    }
-
-    /// The `None` arm must reproduce the trait default's no-kernel output.
-    ///
-    /// Per this impl's delegate-EVERY-method INVARIANT, adding a delegating
-    /// override must not change what an empty holder returns. Agreement with
-    /// `ingest_mesh` is now structural — both arms call
-    /// `SingleKernelHolder::no_mesh_kernel_error` — so what is left to check is
-    /// that the shared message is the right one, in particular that it carries
-    /// the `type_name::<Self>()`-derived `SingleKernelHolder` prefix rather
-    /// than a hard-coded name.
-    #[test]
-    fn ingest_mesh_at_resolution_no_kernel_names_the_holder() {
-        let mut holder = SingleKernelHolder::new();
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-
-        let err = holder
-            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
-            .expect_err("an empty holder must reject mesh ingest");
-
-        match &err {
-            GeometryError::OperationFailed(msg) => {
-                assert!(
-                    msg.contains("SingleKernelHolder does not accept Mesh inputs"),
-                    "the message must name the holder via type_name::<Self>(): {msg}"
-                );
-            }
-            other => panic!("expected OperationFailed, got {other:?}"),
-        }
-    }
-
-    /// An empty holder's `ingest_dense_sdf` returns the trait default's
-    /// no-kernel output, naming the holder via `type_name::<Self>()`.
-    #[test]
-    fn ingest_dense_sdf_no_kernel_names_the_holder() {
-        let mut holder = SingleKernelHolder::new();
-        let grid = DenseSdfGrid::from_fn([2, 2, 2], [0.0; 3], 1e-3, |_| 0.0).unwrap();
-        let opts = ImplicitOptions::new(grid.h(), 1).unwrap();
-
-        match holder.ingest_dense_sdf(&grid, &opts) {
-            Err(GeometryError::OperationFailed(msg)) => assert!(
-                msg.contains("SingleKernelHolder does not ingest dense SDF grids"),
-                "the message must name the holder via type_name::<Self>(): {msg}"
-            ),
-            other => panic!("expected Err(OperationFailed(_)), got {other:?}"),
-        }
     }
 }

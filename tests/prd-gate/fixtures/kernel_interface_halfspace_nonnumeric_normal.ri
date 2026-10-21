@@ -1,0 +1,12 @@
+module kernel_interface_halfspace_nonnumeric_normal
+
+// S10 leaf θ₁ evidence. HalfSpace.nx/ny/nz are raw Value passthroughs with no
+// eval-layer check. Main 274a212e0a: exit 1 with the context-free
+// "geometry error: geometry operation failed: expected numeric value" (no op,
+// no argument, no span). After θ₁: the error names `half_space` and `nz`.
+structure def HS {
+    param h : Solid = half_space(0mm, 0mm, 0mm, 0, 0, true)
+    param b : Solid = box(10mm, 10mm, 10mm)
+    param cut : Solid = intersection(b, h)
+    param v : Volume = volume(cut)
+}

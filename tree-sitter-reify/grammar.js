@@ -19,6 +19,14 @@ function callTail($) {
 }
 
 /**
+ * Precedence of the prefix forms whose last child is an unterminated
+ * expression: lambda body, quantifier predicate, conditional else-branch.
+ * Below `implies` (-15), the loosest operator, so each body extends as far
+ * right as possible. Ruling: docs/reify-language-spec.md §16.
+ */
+const TRAILING_BODY_PREC = -16;
+
+/**
  * The set of member alternatives shared by `_member` and `_guard_member`.
  * Keeping them in a single source of truth prevents the two lists from
  * silently drifting when a new member form is added to one but forgotten in
@@ -323,6 +331,8 @@ module.exports = grammar({
       '}',
     ),
 
+    // `port_declaration` is deliberately absent: trait-required ports are deferred.
+    // See docs/prds/v0_6/generic-assemblies-interface-traits.md (milestone #7882).
     trait_member: $ => choice(
       $.param_declaration,
       $.let_declaration,
@@ -1602,6 +1612,7 @@ module.exports = grammar({
 
     // ── Expressions ─────────────────────────────────────────
     // Precedence (low → high):
+    //  -16: trailing bodies (lambda, quantifier, conditional else) — see TRAILING_BODY_PREC
     //  -15: implies (keyword, right-assoc) — loosest in language
     //  -14: or  (keyword, left-assoc)
     //  -13: and (keyword, left-assoc)
@@ -1648,7 +1659,7 @@ module.exports = grammar({
 
     // ── Lambda expression ─────────────────────────────────
     // |params| body — body extends as far right as possible (lowest precedence)
-    lambda_expression: $ => prec.right(0, seq(
+    lambda_expression: $ => prec.right(TRAILING_BODY_PREC, seq(
       '|',
       commaSep($.lambda_param),
       '|',
@@ -1691,7 +1702,7 @@ module.exports = grammar({
     // ── Quantifier expression ─────────────────────────────
     // forall x in collection: predicate
     // exists x in collection: predicate
-    quantifier_expression: $ => prec.right(0, seq(
+    quantifier_expression: $ => prec.right(TRAILING_BODY_PREC, seq(
       field('quantifier', choice('forall', 'exists')),
       field('variable', $.identifier),
       'in',
@@ -1825,7 +1836,7 @@ module.exports = grammar({
       prec(7, seq(field('op', '!'), field('operand', $._expression))),
     ),
 
-    conditional_expression: $ => prec.right(0, seq(
+    conditional_expression: $ => prec.right(TRAILING_BODY_PREC, seq(
       'if',
       field('condition', $._expression),
       'then',

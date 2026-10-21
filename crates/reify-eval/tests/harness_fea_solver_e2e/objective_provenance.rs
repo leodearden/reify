@@ -40,7 +40,7 @@ fn explicit_objective_records_provenance() {
     let mass_id = ValueCellId::new("WeightedObjective", "mass");
     let stiffness_id = ValueCellId::new("WeightedObjective", "stiffness");
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -97,7 +97,7 @@ fn synthetic_centrality_records_provenance() {
 
     let x_id = ValueCellId::new("CentredBar", "x");
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -165,7 +165,7 @@ fn term_contributions_record_realised_per_term() {
     let mass_id = ValueCellId::new("WeightedObjective", "mass");
     let stiffness_id = ValueCellId::new("WeightedObjective", "stiffness");
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
