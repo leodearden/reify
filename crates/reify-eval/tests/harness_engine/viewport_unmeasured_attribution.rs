@@ -4,15 +4,31 @@
 
 use reify_compiler::{CompiledConstraint, CompiledModule};
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{Diagnostic, DiagnosticCode, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
 use reify_eval::{ConstraintCheckEntry, Engine, SolverPosture, TessellateResult};
-use reify_ir::{IndeterminateReason, Satisfaction, TransientReason};
+use reify_ir::{IndeterminateReason, Satisfaction, TransientReason, Value};
 use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
 const GDT_SOURCE: &str = r#"
 structure def Probe {
     param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
     param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+
+const UNBOUND_TOLERANCE_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+
+const UNBOUND_ACTUAL_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry
     constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
 }
 "#;
@@ -134,4 +150,43 @@ fn check_surface_gains_no_viewport_attribution() {
         "{:#?}",
         result.diagnostics
     );
+}
+
+/// ζ's decline: an undefined operand is the model's defect, so the surface is
+/// not blamed and no measurement cause is recorded.
+fn assert_viewport_declines(tess: &TessellateResult, entry: &ConstraintCheckEntry) {
+    assert!(
+        !tess
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("does not measure geometric conformance")),
+        "{:#?}",
+        tess.diagnostics
+    );
+    assert!(measurement_unavailable(entry).is_none(), "{entry:?}");
+}
+
+/// The checker's own `undefined inputs` cause stands.
+#[test]
+fn viewport_does_not_blame_itself_for_an_unbound_tolerance() {
+    let compiled = parse_and_compile_with_stdlib(UNBOUND_TOLERANCE_SOURCE);
+    let tess = viewport(&compiled);
+    let entry = entry_for(&tess, conforms(&compiled));
+    assert_eq!(entry.satisfaction, Satisfaction::Indeterminate, "{entry:?}");
+    assert_viewport_declines(&tess, entry);
+}
+
+/// The Conforms predicate never reads `actual`, so the checker's verdict is
+/// whatever it is; the viewport only must not claim the cause.
+#[test]
+fn viewport_does_not_blame_itself_for_an_unbound_actual() {
+    let compiled = parse_and_compile_with_stdlib(UNBOUND_ACTUAL_SOURCE);
+    let tess = viewport(&compiled);
+    let act = ValueCellId::new("Probe", "act");
+    assert!(
+        tess.values.get(&act).is_none_or(Value::is_undef),
+        "premise: `act` is undefined on the viewport: {:?}",
+        tess.values.get(&act)
+    );
+    assert_viewport_declines(&tess, entry_for(&tess, conforms(&compiled)));
 }
