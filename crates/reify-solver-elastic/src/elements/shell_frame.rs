@@ -428,6 +428,48 @@ mod tests {
         assert!(d[2][2] > 0.0, "shear term D[2][2] = {} should be positive", d[2][2]);
     }
 
+    // --- ShellSection tests ---
+
+    #[test]
+    fn shell_section_scales_plane_stress_d_and_carries_five_sixths_shear() {
+        let mat = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        let t = 0.05_f64;
+        let section = ShellSection::new(t, mat);
+        let d = plane_stress_d(&mat);
+        let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs();
+
+        let membrane = section.membrane_d();
+        let bending = section.bending_d();
+        let bending_scale = t * t * t / 12.0;
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    close(membrane[i][j], t * d[i][j]),
+                    "membrane_d[{i}][{j}] = {}, expected t·D = {}",
+                    membrane[i][j],
+                    t * d[i][j],
+                );
+                assert!(
+                    close(bending[i][j], bending_scale * d[i][j]),
+                    "bending_d[{i}][{j}] = {}, expected t³/12·D = {}",
+                    bending[i][j],
+                    bending_scale * d[i][j],
+                );
+            }
+        }
+
+        // κ·G = (5/6)·80e9, written independently as E/3 for E = 200e9, ν = 0.25.
+        let kappa_g = section.shear_kappa_g();
+        let expected = 200.0e9 / 3.0;
+        assert!(
+            close(kappa_g, expected),
+            "shear_kappa_g() = {kappa_g}, expected {expected}",
+        );
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "poisson_ratio")]

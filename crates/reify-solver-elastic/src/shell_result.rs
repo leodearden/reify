@@ -631,6 +631,40 @@ mod tests {
         }
     }
 
+    /// Locks the transverse-shear path of `shell_element_stiffness` and
+    /// `shell_element_stress` together on the shear correction κ: the strain energy
+    /// `½·uᵀ·K·u` of a uniform `θ_y = α` state must equal `½·σ_xz·γ_xz·t·A` with
+    /// `σ_xz` recovered by the stress kernel and `γ_xz = α`.
+    ///
+    /// Uniform `θ_y` carries no membrane strain and, by partition of unity, no
+    /// curvature, so the stiffness energy is pure transverse shear. On UNIT_TRI
+    /// (R = identity, J2 = identity) the MITC3 assumed shear is `γ_xz = α`
+    /// everywhere, so stiffness and recovery can only agree if both use one κ·G.
+    #[test]
+    fn shell_transverse_shear_energy_locks_stiffness_and_stress_paths() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let area = 0.5_f64; // UNIT_TRI area
+        let alpha = 0.003_f64;
+
+        let mut u = [0.0_f64; 18];
+        for n in 0..3 {
+            u[6 * n + 4] = alpha; // uniform θ_y at all nodes
+        }
+
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+        let ku = matvec(&k, &u);
+        let u_stiffness = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+        let u_stress = 0.5 * s.mid[0][2] * alpha * t * area;
+
+        assert!(
+            (u_stiffness - u_stress).abs() <= 1e-9 * u_stress.abs(),
+            "½·uᵀKu = {u_stiffness:.12e}, ½·σ_xz·α·t·A = {u_stress:.12e}",
+        );
+    }
+
     /// Zero-DOF regression guard (relocated from lib.rs doctest and strengthened).
     ///
     /// With all 18 DOFs set to zero, every strain/stress accumulation in
