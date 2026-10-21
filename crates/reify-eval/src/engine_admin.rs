@@ -382,10 +382,6 @@ impl Engine {
             // hot path pays zero overhead (no BRepExtrema projection) when γ
             // assertions are not active. Enable via set_capture_repr_tol(true).
             capture_repr_tol: false,
-            // Task 6667: no `check()` is nested inside a realization at
-            // construction. Set/cleared around each of engine_build.rs's three
-            // `self.check(module)` calls; deliberately has no public setter.
-            check_nested_in_build: false,
             // Task 6169: "not recorded". Only the inventory-driven constructors
             // can answer the declared-capability question (they alone hold the
             // KernelRegistration); they overwrite this after construction. The

@@ -21,58 +21,6 @@ use reify_ir::{
 use crate::topology_selectors;
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
-// ── Unmeasured-surface attribution (task 6169 ζ, extended by task 6667) ──────
-
-/// Which kind of measurement a surface failed to make, selecting the reason
-/// clause [`Engine::unmeasured_reason_for`] hands back.
-///
-/// Task 6169 (ζ) established the attribution channel for
-/// `RepresentationWithin`; task 6667 extends the SAME channel, by analogy, to
-/// the two other kinds a non-measuring surface (the GUI, `reify build`,
-/// `reify eval`) leaves unmeasured.  One taxonomy rather than three ad-hoc
-/// string sites is what keeps the wording, the arm ORDERING, and the
-/// stable-token contract (`"does not measure"`) shared across the kinds — and
-/// it is what "reuse ζ's channel, do not invent a parallel one" means
-/// concretely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UnmeasuredMeasurement {
-    /// A `RepresentationWithin` bound with an empty `achieved_repr_tol` — ζ's
-    /// original case.  Three arms; see [`Engine::unmeasured_reason_for`].
-    RepresentationWithin,
-    /// A geometric `Conforms` callout (explicit `actual:` binding) whose
-    /// handles could not be resolved because nothing was realized.  Two arms.
-    GdtConformance,
-    /// A `DFMRule` conformer that was DISCOVERED but skipped, because its
-    /// `subject` never hydrated to a live geometry handle.  Two arms.
-    DfmRule,
-}
-
-/// The user-facing identity of a discovered DFM rule.
-///
-/// A `DFMRule` is a structure conforming to the `DFMRule` trait, not a
-/// `constraint` statement, so there is no `ConstraintNodeId` to name it by —
-/// `measure_dfm_rules` returns only diagnostics.  `rule_name` is a DECLARED
-/// trait param (`crates/reify-compiler/stdlib/process.ri`), which makes it the
-/// stable identity a user can match against their own source.
-///
-/// Falls back to the instance's `type_name` when the field is absent or is not
-/// a string: an empty or missing subject would produce a diagnostic naming
-/// nothing, and a malformed model must never panic the check pass.
-fn dfm_rule_subject_name(spec: &DfmRuleSpec) -> String {
-    if let Value::StructureInstance(data) = &spec.rule_value {
-        if let Some(Value::String(name)) = data.fields.get("rule_name")
-            && !name.is_empty()
-        {
-            return name.clone();
-        }
-        return data.type_name.clone();
-    }
-    // Unreachable via `dfm_rule_spec`, which only matches a StructureInstance;
-    // stated as a value rather than an assertion so a future caller cannot turn
-    // a shape change into a panic on the check path.
-    "<unnamed DFM rule>".to_string()
-}
-
 // ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
 
 /// The process-category kind of a recognized DFM rule, together with the
@@ -789,22 +737,8 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
-    /// ζ's `RepresentationWithin` reason clause — [`Self::unmeasured_reason_for`]
-    /// specialised to [`UnmeasuredMeasurement::RepresentationWithin`].
-    ///
-    /// Kept as a named method so ζ's single emission site (the
-    /// `RepresentationWithin` peel in [`Self::dispatch_constraints`]) reads
-    /// unchanged, and so the three strings it returns stay demonstrably
-    /// byte-identical across task 6667's generalization — pinned by
-    /// `zeta_representation_within_reasons_are_byte_identical_after_the_refactor`.
-    fn unmeasured_reason(&self) -> &'static str {
-        self.unmeasured_reason_for(UnmeasuredMeasurement::RepresentationWithin)
-    }
-
-    /// The reason clause for an Indeterminate that a surface could not measure
-    /// (task-6169 ζ, C-SURFACE 1; extended per-kind by task 6667).
-    ///
-    /// # `RepresentationWithin` — the original three-arm taxonomy
+    /// The reason clause for a `RepresentationWithin` Indeterminate on a run
+    /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
     ///
     /// A pure function of two engine properties, because an empty map has THREE
     /// distinct causes and each has a different fix:
@@ -874,75 +808,22 @@ impl Engine {
     /// type-name scan key could not be resolved, so it states the observable
     /// fact and points at the actionable check rather than asserting a cause it
     /// has not established.
-    ///
-    /// # The task-6667 kinds — TWO arms, and why the asymmetry is correct
-    ///
-    /// [`UnmeasuredMeasurement::GdtConformance`] gets arms 1 and 2 only.  ζ's
-    /// arm 3 exists because `capture_repr_tol` can be ON while a PARTICULAR
-    /// subject still yielded no measurement — "measurement was requested, this
-    /// subject produced none".  The 6667 callers gate on
-    /// `self.realization_handles.is_empty()`, i.e. NOTHING was realized at all,
-    /// so the state arm 3 describes is unreachable from them and a third arm
-    /// would be dead code.  That is the same defect the ζ review round found
-    /// when arm 1 keyed on `default_kernel_name.is_none()` — a branch written
-    /// for surfaces it could never fire on — so it is deliberately not
-    /// reproduced here.
-    ///
-    /// Capability stays FIRST for ζ's stated reason: a stub-mode binary told to
-    /// "run `reify check`" gets a two-hop dead end, because `reify check`
-    /// cannot answer on that binary either.  [`Self::has_repr_capable_kernel`]
-    /// is the right discriminator for the new kinds too — a geometric
-    /// `Conforms` needs `GeometryQuery::MaxDeviation` over B-rep handles, which
-    /// only an OCCT-linked binary can produce.
-    ///
-    /// Every arm of every kind carries the stable token `"does not measure"`.
-    /// That is the one string the pins match on across all kinds; the rest of
-    /// each sentence is deliberately NOT pinned (ζ's pinning contract,
-    /// `representation_within_assertion.rs:185`).
-    fn unmeasured_reason_for(&self, kind: UnmeasuredMeasurement) -> &'static str {
-        match kind {
-            UnmeasuredMeasurement::RepresentationWithin => {
-                if !self.has_repr_capable_kernel() {
-                    "this run does not measure representation tolerance because no \
-                     geometry kernel able to tessellate the subject is registered; \
-                     such a geometry kernel is required — build with OCCT to evaluate \
-                     this RepresentationWithin bound"
-                } else if !self.capture_repr_tol {
-                    "this evaluation surface does not measure representation tolerance \
-                     (no tessellation ran, so no achieved deviation exists for the \
-                     subject); run `reify check` to evaluate this RepresentationWithin \
-                     bound"
-                } else {
-                    "no realization of the subject was tessellated on this run, so no \
-                     achieved deviation exists for it and this run does not measure \
-                     representation tolerance; check that the subject declares a \
-                     realization"
-                }
-            }
-            UnmeasuredMeasurement::GdtConformance => {
-                if !self.has_repr_capable_kernel() {
-                    "this run does not measure geometric conformance because no \
-                     geometry kernel able to tessellate the subject is registered; \
-                     such a geometry kernel is required — build with OCCT to evaluate \
-                     this Conforms callout"
-                } else {
-                    "this evaluation surface does not measure geometric conformance \
-                     (no realization ran, so there is no geometry to compare against \
-                     the nominal feature); run `reify check` to evaluate this Conforms \
-                     callout"
-                }
-            }
-            UnmeasuredMeasurement::DfmRule => {
-                if !self.has_repr_capable_kernel() {
-                    "this run does not measure DFM rules because no geometry kernel \
-                     able to tessellate the subject is registered; such a geometry \
-                     kernel is required — build with OCCT to evaluate this DFM rule"
-                } else {
-                    "this evaluation surface does not measure DFM rules (no \
-                     realization ran, so the rule's subject has no geometry to \
-                     measure); run `reify check` to evaluate this DFM rule"
-                }
-            }
+    fn unmeasured_reason(&self) -> &'static str {
+        if !self.has_repr_capable_kernel() {
+            "this run does not measure representation tolerance because no \
+             geometry kernel able to tessellate the subject is registered; \
+             such a geometry kernel is required — build with OCCT to evaluate \
+             this RepresentationWithin bound"
+        } else if !self.capture_repr_tol {
+            "this evaluation surface does not measure representation tolerance \
+             (no tessellation ran, so no achieved deviation exists for the \
+             subject); run `reify check` to evaluate this RepresentationWithin \
+             bound"
+        } else {
+            "no realization of the subject was tessellated on this run, so no \
+             achieved deviation exists for it and this run does not measure \
+             representation tolerance; check that the subject declares a \
+             realization"
         }
     }
 
@@ -1692,65 +1573,8 @@ impl Engine {
     /// When no geometry kernel is present (`default_kernel_name` is `None`)
     /// **or** the rule's `subject` did not re-hydrate to a live
     /// `Value::GeometryHandle` (e.g. the module was never `build()`-ed),
-    /// the pass emits **nothing** *measured* — no rule is ever measured against
-    /// geometry that does not exist.  This mirrors the `RepresentationWithin`
-    /// empty-`achieved_repr_tol` → Indeterminate path.
-    ///
-    /// # Surface attribution (task 6667) — the no-op is no longer SILENT
-    ///
-    /// The C1 no-op above used to be indistinguishable from "checked and
-    /// clean": a declared `DFMRule` on a non-realizing surface (the GUI,
-    /// `reify build`, `reify eval`) produced no output at all.  When
-    /// `realization_handles` is empty, the pass now emits one `Severity::Info`
-    /// [`DiagnosticCode::ConstraintIndeterminate`] diagnostic per DISCOVERED
-    /// but unmeasured rule, naming the surface and a terminal remedy — ζ's
-    /// channel (task 6169), reused rather than duplicated.  Which specs reach
-    /// the measurement path is unchanged; this is purely an additional
-    /// observation of what was skipped.
-    ///
-    /// # Three deliberate limitations
-    ///
-    /// **(1) The gate is MODULE-wide**, not per-rule, so a module that realized
-    /// at least one subject leaves an unrealizable sibling rule silent — the
-    /// identical limitation ζ documented and filed as
-    /// `tkt_0RSR81KF1TYDY8PDANNHQZCFV2`.
-    ///
-    /// **(2) A `reify build` where NOTHING realizes now attributes nothing.**
-    /// `build` runs no separate authoritative `check()` outside the build-phase
-    /// marker's span (below), so its only `check()` is the nested one, and that
-    /// one is silenced unconditionally. This consequence was PRE-CLEARED by the
-    /// steward in esc-6667-2: it is a not-yet-delivered improvement, not a
-    /// regression, because pre-6667 that surface emitted nothing either. It is
-    /// pinned by `the_build_phase_marker_is_cleared_on_the_way_out`
-    /// (`tests/harness_engine/unmeasured_surface_attribution.rs`) and is NOT
-    /// cause to re-escalate.
-    ///
-    /// **(3) The id-less `rule_name` form is NOT a defect** and must not be
-    /// "fixed" by re-keying this diagnostic to a `ConstraintNodeId`. The
-    /// original task-6667 plan hypothesised that the id-less form was what let
-    /// the attribution leak into `reify check`; that premise is FALSE, measured:
-    /// the GD&T half — which IS keyed by `ConstraintNodeId` — leaked identically
-    /// (step-8's `realize_for_check_emits_no_surface_attribution_for_either_kind`
-    /// was RED on exactly that half), so re-keying would have fixed neither.
-    ///
-    /// # `reify check` output is UNCHANGED — via the BUILD-PHASE MARKER
-    ///
-    /// NOT via realization ordering. The argument this comment used to make —
-    /// "`realize_for_check` populates `realization_handles` before `check()`
-    /// reaches this pass" — IS FALSE: `realize_for_check` delegates to
-    /// `build_with_geometry_output`, which calls `self.check(module)` BEFORE its
-    /// realization loop, so `realization_handles` is empty there and the gate
-    /// legitimately opens. `cmd_check` then folds that `BuildResult`'s
-    /// diagnostics through, so `reify check` measured a DFM rule AND told the
-    /// user to run `reify check` (esc-6667-2, caught by `cli_dfm_overhang.rs`'s
-    /// `check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt`).
-    ///
-    /// What actually keeps the output unchanged is `Engine::check_nested_in_build`,
-    /// set/cleared around each of `engine_build.rs`'s three `self.check(module)`
-    /// calls and read as an extra conjunct on the gate below. `cmd_check`'s
-    /// AUTHORITATIVE `engine.check(&compiled)` (`reify-cli/src/main.rs:944`)
-    /// runs OUTSIDE any build with the marker clear, so on an OCCT build it
-    /// finds `realization_handles` populated and the gate is false.
+    /// the pass emits **nothing** — it is a complete no-op.  This mirrors the
+    /// `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path.
     ///
     /// # DFMRule discovery — two sources
     ///
@@ -1776,16 +1600,6 @@ impl Engine {
         values: &ValueMap,
     ) -> Vec<Diagnostic> {
         // C1 guard: no default kernel → nothing to measure.
-        //
-        // Task 6667 deliberately leaves this early return EXACTLY as it is, and
-        // does NOT hoist discovery above it.  It is not the GUI's case —
-        // `EngineSession::with_registered_kernel` always yields `Some`, and
-        // `reify-kernel-manifold`'s `inventory::submit!` is unconditional, so no
-        // shipped binary reaches it — and moving discovery above it would change
-        // `reify check` behaviour in configurations this task has no signal for.
-        // An accepted, documented limitation: a kernel-free engine (the
-        // `Engine::new(checker, None)` unit-test seam) still gets silence for a
-        // declared DFM rule.
         let kernel_name = match self.default_kernel_name.as_deref() {
             Some(n) => n.to_string(),
             None => return Vec::new(),
@@ -1793,11 +1607,6 @@ impl Engine {
 
         // Collect specs with live handles (skip None subject_handle entries).
         let mut specs: Vec<DfmRuleSpec> = Vec::new();
-        // Task 6667: the rules DISCOVERED but dropped — `dfm_rule_spec` matched
-        // the shape, but `subject_handle` is `None` so there is nothing to
-        // measure.  Purely an additional OBSERVATION of what was skipped; which
-        // specs reach the measurement path is unchanged.
-        let mut skipped_rule_names: Vec<String> = Vec::new();
         // Collect thickness specs (independent of overhang/draft, task ζ=4426).
         // Fired for ANY rule whose `applies_to` carries a LENGTH `min_feature_size`
         // field — so Adding gets both overhang/draft AND thickness checks while
@@ -1847,12 +1656,10 @@ impl Engine {
                     version: template.version(),
                     fields,
                 }));
-                if let Some(spec) = dfm_rule_spec(&si) {
-                    if spec.subject_handle.is_some() {
-                        specs.push(spec);
-                    } else {
-                        skipped_rule_names.push(dfm_rule_subject_name(&spec));
-                    }
+                if let Some(spec) = dfm_rule_spec(&si)
+                    && spec.subject_handle.is_some()
+                {
+                    specs.push(spec);
                 }
                 if let Some(tspec) = dfm_thickness_spec(&si) {
                     thickness_specs.push(tspec);
@@ -1862,12 +1669,10 @@ impl Engine {
 
         // (B) Sub-component StructureInstance values (task-3540 synthetic cells).
         for (_, v) in values.iter() {
-            if let Some(spec) = dfm_rule_spec(v) {
-                if spec.subject_handle.is_some() {
-                    specs.push(spec);
-                } else {
-                    skipped_rule_names.push(dfm_rule_subject_name(&spec));
-                }
+            if let Some(spec) = dfm_rule_spec(v)
+                && spec.subject_handle.is_some()
+            {
+                specs.push(spec);
             }
             if let Some(tspec) = dfm_thickness_spec(v) {
                 thickness_specs.push(tspec);
@@ -1897,77 +1702,12 @@ impl Engine {
             thickness_specs.retain(|tspec| seen.insert(tspec.subject_ref.realization_ref.clone()));
         }
 
-        let mut diags = Vec::new();
-
-        // ── Task 6667: attribute the rules this surface could not measure ────
-        //
-        // A `DFMRule` produces no `ConstraintCheckEntry`, so the pre-6667
-        // behaviour here was not a bare Indeterminate but SILENCE: every
-        // `subject_handle: None` spec was dropped and this pass returned an
-        // empty `Vec`, leaving "not measured here" indistinguishable from
-        // "checked and clean".  That is what the attribution replaces.
-        //
-        // The gate is `realization_handles.is_empty()` — the one-for-one
-        // analogue of ζ's `achieved_repr_tol.is_empty()`, and the exact field
-        // the drop above reads (through `dfm_rule_spec`'s `subject_handle`).
-        //
-        // DEDUPE BY `rule_name`, NOT by the `(kind, subject_handle)` key used
-        // for the measurement path below: that key collapses to `(kind, None)`
-        // for every skipped rule, so one rule reachable from BOTH discovery
-        // source (A) (its template) and source (B) (an instantiated
-        // sub-component value) would otherwise be attributed twice.
-        //
-        // INHERITED LIMITATION, deliberately, exactly as in
-        // `measure_gdt_conformance`: the gate is MODULE-wide rather than
-        // per-rule, so a module that realized at least one subject leaves an
-        // unrealizable sibling rule silent.  Same limitation ζ documented and
-        // filed as tkt_0RSR81KF1TYDY8PDANNHQZCFV2.
-        //
-        // `reify check` OUTPUT IS UNCHANGED — via the BUILD-PHASE MARKER, not
-        // via realization ordering. The ordering argument this comment used to
-        // make ("`realize_for_check` populates `realization_handles` before
-        // `check()` reaches this pass") IS FALSE: `realize_for_check` delegates
-        // to `build_with_geometry_output`, which calls `self.check(module)`
-        // BEFORE its realization loop runs, so `realization_handles` is empty
-        // there and this gate legitimately opens. That leak is what step-7's
-        // CLI contract guard caught (esc-6667-2).
-        //
-        // `check_nested_in_build` is the correcting conjunct: `engine_build.rs`
-        // sets it immediately before and clears it immediately after each of
-        // its three `self.check(module)` calls, so no check nested inside a
-        // realization can attribute. `cmd_check`'s AUTHORITATIVE
-        // `engine.check(&compiled)` runs OUTSIDE any build with the marker
-        // clear, so on an OCCT build `realization_handles` is populated by
-        // then, the gate is false, and `diags` starts empty — byte-identical to
-        // the pre-6667 `Vec::new()`. The accepted exception is a stub-mode
-        // `reify check`, where nothing realizes and that authoritative check
-        // fires arm 1 naming OCCT: the same deliberate stub-mode change ζ's own
-        // arm 1 made.
-        if self.realization_handles.is_empty()
-            && !self.check_nested_in_build
-            && !skipped_rule_names.is_empty()
-        {
-            let reason = self.unmeasured_reason_for(UnmeasuredMeasurement::DfmRule);
-            let mut attributed: HashSet<String> = HashSet::new();
-            for name in &skipped_rule_names {
-                if attributed.insert(name.clone()) {
-                    diags.push(
-                        Diagnostic::info(format!("DFM rule `{name}` indeterminate: {reason}"))
-                            .with_code(DiagnosticCode::ConstraintIndeterminate),
-                    );
-                }
-            }
-        }
-
         // Early-return only when there is truly nothing to measure.
-        //
-        // Returns `diags` rather than a fresh `Vec::new()` so the attributions
-        // above survive it — this is the branch a non-realizing surface takes,
-        // since every spec was dropped.  When the gate above did not fire
-        // `diags` is empty and this is the original early return verbatim.
         if specs.is_empty() && thickness_specs.is_empty() {
-            return diags;
+            return Vec::new();
         }
+
+        let mut diags = Vec::new();
 
         // ── Overhang / draft pass ─────────────────────────────────────────────
         // Scoped so the mutable geometry_kernels borrow ends before the thickness
@@ -2337,51 +2077,6 @@ impl Engine {
             .as_deref()
             .and_then(|n| self.geometry_kernels.get(n));
 
-        // ── Task 6667: surface attribution, hoisted out of the weave loop ────
-        //
-        // Both values are pure functions of engine fields with no loop-local
-        // input, so they are read ONCE — the same argument ζ makes at its own
-        // emission site.  Hoisting also keeps the `&self` reads clear of the
-        // `kernel` borrow held across the loop.
-        //
-        // `realization_handles.is_empty()` is the one-for-one analogue of ζ's
-        // `achieved_repr_tol.is_empty()` gate: it is the exact field the
-        // degraded path reads (phase 1's `resolve_handle` looks handles up in
-        // it), and an ENGINE-STATE gate is what makes this robust — pattern
-        // matching phase 1's handle-blame wordings would break the moment
-        // either string is reworded.
-        //
-        // INHERITED LIMITATION, deliberately: the gate is MODULE-wide rather
-        // than per-callout, so a module that realized at least one subject
-        // leaves an unrealizable sibling with only the pre-existing bare
-        // Warning.  That is the identical limitation ζ documented and filed as
-        // follow-up ticket tkt_0RSR81KF1TYDY8PDANNHQZCFV2; narrowing it needs a
-        // new signal out of the resolution path and would invert ζ's own
-        // regression guard, so it stays out of scope here.
-        //
-        // `reify check` OUTPUT IS UNCHANGED — via the BUILD-PHASE MARKER, not
-        // via realization ordering. The ordering argument this comment used to
-        // make ("`realize_for_check` populates `realization_handles` BEFORE
-        // `check()` reaches this pass") IS FALSE: `realize_for_check` delegates
-        // to `build_with_geometry_output`, which calls `self.check(module)`
-        // BEFORE its realization loop runs, so `realization_handles` is empty
-        // there and this gate legitimately opens (measured: task 6667 step-8's
-        // `realize_for_check_emits_no_surface_attribution_for_either_kind`).
-        //
-        // `check_nested_in_build` is the correcting conjunct: `engine_build.rs`
-        // sets it immediately before and clears it immediately after each of
-        // its three `self.check(module)` calls, so no check nested inside a
-        // realization can attribute. `cmd_check`'s AUTHORITATIVE
-        // `engine.check(&compiled)` runs OUTSIDE any build with the marker
-        // clear, so on an OCCT build `realization_handles` is populated by then
-        // and the gate is false. The accepted exception is a stub-mode `reify
-        // check`, where nothing realizes and that authoritative check fires arm
-        // 1 naming OCCT — the same deliberate stub-mode change ζ's own arm 1
-        // made.
-        let attribute_unmeasured =
-            self.realization_handles.is_empty() && !self.check_nested_in_build;
-        let unmeasured_reason = self.unmeasured_reason_for(UnmeasuredMeasurement::GdtConformance);
-
         for w in work {
             let (satisfaction, diag): (Satisfaction, Option<Diagnostic>) = match w.resolution {
                 GdtConformanceResolution::Indeterminate(reason) => (
@@ -2432,36 +2127,6 @@ impl Engine {
                     }
                 },
             };
-
-            // Task 6667: attribute the Indeterminate to the SURFACE, ADDITIVELY.
-            //
-            // The existing `gdt_indeterminate_diag` Warning is deliberately NOT
-            // replaced, unlike ζ's one-for-one swap of the language checker's
-            // Warning.  ζ replaced a statement that was FALSE (`operator
-            // undefined for these operand kinds` — the operands were fine);
-            // "could not resolve the nominal `feature` geometry handle" is TRUE
-            // on a non-realizing surface, merely incomplete: it states the
-            // observation but names neither the surface nor a remedy.  Two hard
-            // constraints also forbid replacement — `reify-cli`'s
-            // `indeterminacy_subject` parses the literal `Conforms
-            // INDETERMINATE: {reason}` form (main.rs:3253) and both
-            // `merge_post_build_verdicts` and
-            // `drop_falsified_indeterminate_diagnostics` key off it, and
-            // `check_weaves_geometric_conforms_override_only` asserts that exact
-            // prefix.  Adding the attribution alongside closes the INV-SF-4 gap
-            // without discarding a true observation or its span label.
-            //
-            // `w.id` is embedded in the text so `labeled_diagnostics` can
-            // substitute a user-facing label, exactly as ζ's message does.
-            if matches!(satisfaction, Satisfaction::Indeterminate) && attribute_unmeasured {
-                diagnostics.push(
-                    Diagnostic::info(format!(
-                        "constraint {} indeterminate: {unmeasured_reason}",
-                        w.id
-                    ))
-                    .with_code(DiagnosticCode::ConstraintIndeterminate),
-                );
-            }
 
             // Weave: OVERRIDE the matching entry in caller order; push if absent
             // (defensive — the scalar path normally pre-populates it).

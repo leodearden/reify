@@ -17,7 +17,6 @@ mod path_key_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
-mod unmeasured_attribution_tests;
 mod watcher_tests;
 
 use std::sync::{Arc, Mutex};

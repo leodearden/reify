@@ -3284,14 +3284,6 @@ impl Engine {
             geometry_kernels: _,   // registered kernels
             default_kernel_name: _, // default-kernel selection
             repr_capable_kernel: _, // construction-recorded kernel capability (task 6169)
-            // Task 6667: transient phase marker, NOT per-build state. Its
-            // lifetime is bounded by each set/clear pair placed IMMEDIATELY
-            // around a `self.check(module)` call, and no `reset_per_build_state`
-            // call site falls inside such a pair — `build_with_geometry_output`
-            // resets BEFORE its pair, `tessellate_realizations` resets AFTER
-            // its pair. Sweeping it here would nonetheless be wrong in kind: it
-            // would re-open the gate a pair had just closed. MUST-SURVIVE.
-            check_nested_in_build: _,
             solver: _,             // fallback constraint solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
@@ -4183,28 +4175,7 @@ impl Engine {
         // build_snapshot / tessellate_realizations / tessellate_snapshot) now
         // share the post-check placement. See engine_eval.rs for the
         // preservation site (task 3103).
-        // ── Task 6667: build-phase marker, SET / CLEAR around this call ──────
-        //
-        // This `check()` runs NESTED INSIDE `build_with_geometry_output` (`build` / `build_outputs` / `realize_for_check`),
-        // and it runs BEFORE this pass populates `realization_handles`. The two
-        // surface-attribution gates in `engine_constraints.rs`
-        // (`measure_dfm_rules`, `measure_gdt_conformance`) are keyed on
-        // `realization_handles.is_empty()`, so without this marker they open
-        // here and `cmd_check` folds the resulting "nothing was measured"
-        // attribution straight through — making `reify check` measure a DFM
-        // rule AND tell the user to run `reify check`. (esc-6667-2; caught by
-        // `cli_dfm_overhang.rs`'s
-        // `check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt`.)
-        //
-        // Set/cleared TIGHTLY around the call rather than spanning the
-        // function: a function-spanning marker leaks on any early return or
-        // `?`, whereas this region is straight-line, so the pair is leak-proof
-        // without a guard type. `cmd_check`'s AUTHORITATIVE
-        // `engine.check(&compiled)` runs outside any build with the marker
-        // clear, so the attribution still reaches the user when it is true.
-        self.check_nested_in_build = true;
         let check_result = self.check(module);
-        self.check_nested_in_build = false;
         let mut diagnostics = check_result.diagnostics;
 
         // Task 2874: emit imported-tolerance-promise diagnostics
@@ -5735,28 +5706,7 @@ impl Engine {
         // carries semantic risk for cross-template geometry references (task 3441),
         // so Phase-A extraction is deferred; any changes to the realization
         // execution or terminal_handles bookkeeping in build() must be mirrored here.
-        // ── Task 6667: build-phase marker, SET / CLEAR around this call ──────
-        //
-        // This `check()` runs NESTED INSIDE `distance_between_placed`,
-        // and it runs BEFORE this pass populates `realization_handles`. The two
-        // surface-attribution gates in `engine_constraints.rs`
-        // (`measure_dfm_rules`, `measure_gdt_conformance`) are keyed on
-        // `realization_handles.is_empty()`, so without this marker they open
-        // here and `cmd_check` folds the resulting "nothing was measured"
-        // attribution straight through — making `reify check` measure a DFM
-        // rule AND tell the user to run `reify check`. (esc-6667-2; caught by
-        // `cli_dfm_overhang.rs`'s
-        // `check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt`.)
-        //
-        // Set/cleared TIGHTLY around the call rather than spanning the
-        // function: a function-spanning marker leaks on any early return or
-        // `?`, whereas this region is straight-line, so the pair is leak-proof
-        // without a guard type. `cmd_check`'s AUTHORITATIVE
-        // `engine.check(&compiled)` runs outside any build with the marker
-        // clear, so the attribution still reaches the user when it is true.
-        self.check_nested_in_build = true;
         let check_result = self.check(module);
-        self.check_nested_in_build = false;
         let mut diagnostics = check_result.diagnostics;
         let values = check_result.values;
 
@@ -6212,28 +6162,7 @@ impl Engine {
         // build_snapshot / tessellate_realizations / tessellate_snapshot) now
         // share the post-check placement. See engine_eval.rs for the
         // preservation site (task 3103).
-        // ── Task 6667: build-phase marker, SET / CLEAR around this call ──────
-        //
-        // This `check()` runs NESTED INSIDE `tessellate_realizations`,
-        // and it runs BEFORE this pass populates `realization_handles`. The two
-        // surface-attribution gates in `engine_constraints.rs`
-        // (`measure_dfm_rules`, `measure_gdt_conformance`) are keyed on
-        // `realization_handles.is_empty()`, so without this marker they open
-        // here and `cmd_check` folds the resulting "nothing was measured"
-        // attribution straight through — making `reify check` measure a DFM
-        // rule AND tell the user to run `reify check`. (esc-6667-2; caught by
-        // `cli_dfm_overhang.rs`'s
-        // `check_surface_emits_no_unmeasured_attribution_for_dfm_or_gdt`.)
-        //
-        // Set/cleared TIGHTLY around the call rather than spanning the
-        // function: a function-spanning marker leaks on any early return or
-        // `?`, whereas this region is straight-line, so the pair is leak-proof
-        // without a guard type. `cmd_check`'s AUTHORITATIVE
-        // `engine.check(&compiled)` runs outside any build with the marker
-        // clear, so the attribution still reaches the user when it is true.
-        self.check_nested_in_build = true;
         let check_result = self.check(module);
-        self.check_nested_in_build = false;
         let mut diagnostics = check_result.diagnostics;
 
         // Task 2874: emit imported-tolerance-promise diagnostics AFTER
