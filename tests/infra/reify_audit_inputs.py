@@ -74,9 +74,10 @@ class PdiagCorpus:
 
 def pdiag_corpus(root: Path) -> PdiagCorpus:
     """A `for path in [...]` array takes the polarity of the assert after it; a literal assert,
-    its own. test_calls counts the test module's is_swept_path lines, read_calls those in an
-    assert form read here, so a reshaped test cannot drop out unseen."""
-    lines = _lines(root, PDIAG_RS)
+    its own. Only live lines count: a `//` comment line is never read. test_calls counts the
+    test module's is_swept_path lines, read_calls those in an assert form read here, so a
+    reshaped test cannot drop out unseen."""
+    lines = [line for line in _lines(root, PDIAG_RS) if not line.lstrip().startswith("//")]
     swept: list[str] = []
     not_swept: list[str] = []
     pending: list[str] = []
@@ -101,12 +102,11 @@ def pdiag_corpus(root: Path) -> PdiagCorpus:
             (not_swept if literal[1] else swept).append(literal[2])
     starts = [n for n, line in enumerate(lines) if line.startswith("mod tests {")]
     tests = lines[starts[0]:] if starts else []
-    code = [line for line in tests if not line.lstrip().startswith("//")]
     excluded = _block(lines, "const SCOPE_EXCLUDE_PREFIXES", "];")
     return PdiagCorpus(
         swept=tuple(swept),
         not_swept=tuple(not_swept),
-        test_calls=sum("is_swept_path(" in line for line in code),
+        test_calls=sum("is_swept_path(" in line for line in tests),
         read_calls=sum(bool(_ANY_ASSERT.search(line)) for line in tests),
         excluded_prefixes=tuple(match[1] for match in map(_EXCLUDE_ENTRY.match, excluded) if match),
     )

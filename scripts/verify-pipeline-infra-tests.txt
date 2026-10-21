@@ -850,6 +850,11 @@ tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh
 tests/infra/test_verify_scope_record.py    tests/infra/test_verify_scope_record.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_scope_record.sh
 tests/infra/reify_audit_inputs.py    tests/infra/test_verify_scope_record.sh
+tests/infra/verify_ledger_env.py    tests/infra/test_verify_scope_record.sh
+crates/reify-audit/src/ptodo.rs    tests/infra/test_verify_scope_record.sh
+crates/reify-audit/src/pdiag.rs    tests/infra/test_verify_scope_record.sh
+crates/reify-audit/src/pdoccover.rs    tests/infra/test_verify_scope_record.sh
+crates/reify-audit/src/pdoccover_baseline.rs    tests/infra/test_verify_scope_record.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_*.sh
