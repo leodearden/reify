@@ -392,6 +392,33 @@ fn settled_subjects<'s>(graph: &EvaluationGraph, subjects: &'s [Cow<'_, str>]) -
 /// Each re-checked constraint's result paired with its node's label.
 type LabeledConstraintResults<'a> = Vec<(ConstraintResult, Option<&'a str>)>;
 
+// ── ζ unmeasured-measurement attribution (task 6169, extended by #6667) ──────
+
+/// Which measurement a surface left untaken; selects the
+/// [`Engine::unmeasured_reason_for`] wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnmeasuredMeasurement {
+    RepresentationWithin,
+    GdtConformance,
+    DfmRule,
+}
+
+fn measurement_unavailable(detail: &str) -> IndeterminateReason {
+    IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+        detail: detail.to_string(),
+    })
+}
+
+/// ζ's attribution of an unmeasured constraint, rendered from its recorded
+/// `reason`. `id` is embedded so `Engine::labeled_diagnostics` can name it.
+pub(crate) fn unmeasured_attribution(
+    id: &ConstraintNodeId,
+    reason: &IndeterminateReason,
+) -> Diagnostic {
+    Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
+        .with_code(DiagnosticCode::ConstraintIndeterminate)
+}
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -604,7 +631,7 @@ impl Engine {
                     //
                     // Which REMEDY the reason names is a pure function of two
                     // engine fields with no loop-local input — see
-                    // [`Engine::unmeasured_reason`] for the three-cause taxonomy
+                    // [`Engine::unmeasured_reason_for`] for the three-cause taxonomy
                     // and why the arms are ordered as they are.  `id` is embedded
                     // in the text so `labeled_diagnostics` can substitute a
                     // user-facing label, exactly as the language-level checker's
@@ -617,10 +644,7 @@ impl Engine {
                     if let Some(reason) = &indeterminate_reason
                         && self.achieved_repr_tol.is_empty()
                     {
-                        messages.push(
-                            Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
-                                .with_code(DiagnosticCode::ConstraintIndeterminate),
-                        );
+                        messages.push(unmeasured_attribution(&id, reason));
                     }
 
                     rw_slots[i] = Some(ConstraintResult {
@@ -831,9 +855,10 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
-    /// The reason a `RepresentationWithin` Indeterminate records — and its
-    /// diagnostic states — on a run whose `achieved_repr_tol` is empty
-    /// (task-6169 ζ, C-SURFACE 1).
+    /// The reason an Indeterminate records — and its diagnostic states — when
+    /// this run did not take the `kind` of measurement it needs (task-6169 ζ,
+    /// C-SURFACE 1). For a `RepresentationWithin` that is a run whose
+    /// `achieved_repr_tol` is empty.
     ///
     /// A pure function of two engine properties, because an empty map has THREE
     /// distinct causes and each has a different fix:
@@ -903,38 +928,83 @@ impl Engine {
     /// type-name scan key could not be resolved, so it states the observable
     /// fact and points at the actionable check rather than asserting a cause it
     /// has not established.
-    fn unmeasured_reason(&self) -> &'static str {
-        if !self.has_repr_capable_kernel() {
-            "this run does not measure representation tolerance because no \
-             geometry kernel able to tessellate the subject is registered; \
-             such a geometry kernel is required — build with OCCT to evaluate \
-             this RepresentationWithin bound"
-        } else if !self.capture_repr_tol {
-            "this evaluation surface does not measure representation tolerance \
-             (no tessellation ran, so no achieved deviation exists for the \
-             subject); run `reify check` to evaluate this RepresentationWithin \
-             bound"
-        } else {
-            "no realization of the subject was tessellated on this run, so no \
-             achieved deviation exists for it and this run does not measure \
-             representation tolerance; check that the subject declares a \
-             realization"
+    ///
+    /// ## GD&T conformance and DFM rules (task #6667)
+    ///
+    /// The viewport surface measures neither, so their reasons have two arms:
+    /// capability first (keeping the remedy terminal, as above), then the
+    /// surface. Arm 3 has no analogue because no surface that emits these
+    /// reasons ever measures them, and their wording does not claim "no
+    /// realization ran": the viewport does tessellate for display.
+    pub(crate) fn unmeasured_reason_for(&self, kind: UnmeasuredMeasurement) -> &'static str {
+        let capable = self.has_repr_capable_kernel();
+        match kind {
+            UnmeasuredMeasurement::RepresentationWithin if !capable => {
+                "this run does not measure representation tolerance because no \
+                 geometry kernel able to tessellate the subject is registered; \
+                 such a geometry kernel is required — build with OCCT to evaluate \
+                 this RepresentationWithin bound"
+            }
+            UnmeasuredMeasurement::RepresentationWithin if !self.capture_repr_tol => {
+                "this evaluation surface does not measure representation tolerance \
+                 (no tessellation ran, so no achieved deviation exists for the \
+                 subject); run `reify check` to evaluate this RepresentationWithin \
+                 bound"
+            }
+            UnmeasuredMeasurement::RepresentationWithin => {
+                "no realization of the subject was tessellated on this run, so no \
+                 achieved deviation exists for it and this run does not measure \
+                 representation tolerance; check that the subject declares a \
+                 realization"
+            }
+            UnmeasuredMeasurement::GdtConformance if !capable => {
+                "this run does not measure geometric conformance because no \
+                 geometry kernel able to measure the subject is registered; such a \
+                 geometry kernel is required — build with OCCT to evaluate this \
+                 Conforms callout"
+            }
+            UnmeasuredMeasurement::GdtConformance => {
+                "this evaluation surface does not measure geometric conformance \
+                 (no deviation of the `actual` geometry from the nominal feature is \
+                 computed here); run `reify check` to evaluate this Conforms callout"
+            }
+            UnmeasuredMeasurement::DfmRule if !capable => {
+                "this run does not measure DFM rules because no geometry kernel \
+                 able to measure the rule's subject is registered; such a geometry \
+                 kernel is required — build with OCCT to evaluate this DFM rule"
+            }
+            UnmeasuredMeasurement::DfmRule => {
+                "this evaluation surface does not measure DFM rules (no geometry \
+                 query is run against the rule's subject here); run `reify check` \
+                 to evaluate this DFM rule"
+            }
         }
+    }
+
+    /// The `RepresentationWithin` reason of [`Engine::unmeasured_reason_for`].
+    fn unmeasured_reason(&self) -> &'static str {
+        self.unmeasured_reason_for(UnmeasuredMeasurement::RepresentationWithin)
+    }
+
+    /// The reason recorded on an Indeterminate whose `kind` of measurement
+    /// this run did not take.
+    pub(crate) fn unmeasured_indeterminate_reason(
+        &self,
+        kind: UnmeasuredMeasurement,
+    ) -> IndeterminateReason {
+        measurement_unavailable(self.unmeasured_reason_for(kind))
     }
 
     /// The reason recorded on a `RepresentationWithin` Indeterminate decided by
     /// the engine. An empty `achieved_repr_tol` has the causes of
-    /// [`Engine::unmeasured_reason`]; a non-empty one means this surface DID
+    /// [`Engine::unmeasured_reason_for`]; a non-empty one means this surface DID
     /// measure, just not this subject, so the reason names no kernel and no
     /// other surface.
     fn representation_within_indeterminate_reason(&self) -> IndeterminateReason {
-        let detail = if self.achieved_repr_tol.is_empty() {
+        measurement_unavailable(if self.achieved_repr_tol.is_empty() {
             self.unmeasured_reason()
         } else {
             "this run recorded no achieved representation deviation for the subject"
-        };
-        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
-            detail: detail.to_string(),
         })
     }
 
@@ -942,7 +1012,7 @@ impl Engine {
     /// representation measurement a `RepresentationWithin` bound needs — i.e.
     /// one claiming at least one `(_, ReprKind::BRep)` pair.
     ///
-    /// This is the arm-1 discriminator of [`Engine::unmeasured_reason`]; see
+    /// This is the arm-1 discriminator of [`Engine::unmeasured_reason_for`]; see
     /// that method's "Why capability, not `default_kernel_name.is_none()`"
     /// section for why kernel PRESENCE is the wrong question (manifold
     /// registers unconditionally, so no shipped binary has an empty registry).
@@ -963,7 +1033,7 @@ impl Engine {
     /// synthetic `Engine::DEFAULT_KERNEL_NAME` key, NEVER under its real
     /// registry name.  That key resolves to `None` in the registry, so a
     /// lookup-only implementation hands back the benefit-of-the-doubt `true`
-    /// unconditionally and arm 1 of [`Engine::unmeasured_reason`] is dead on
+    /// unconditionally and arm 1 of [`Engine::unmeasured_reason_for`] is dead on
     /// exactly the surfaces it was written for (task 6169 review round).
     ///
     /// So the inventory-driven constructors record the picked registration's
@@ -2604,7 +2674,7 @@ fn template_constraints(t: &TopologyTemplate) -> impl Iterator<Item = &CompiledC
 /// η detection signal: an EXPLICIT `actual` binding. The Conforms predicate
 /// never references `actual`, so this binding (not the body) is the only trace
 /// of geometric intent.
-fn is_geometric_conforms(c: &CompiledConstraint) -> bool {
+pub(crate) fn is_geometric_conforms(c: &CompiledConstraint) -> bool {
     c.arg_bindings.iter().any(|(n, _)| n == "actual")
 }
 
