@@ -3,6 +3,8 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
+#![deny(clippy::iter_over_hash_type)]
+
 use crate::decompose::{ExpandedObjectiveRefs, SubProblem};
 use crate::dependent_reads::{CellReads, DependentCellReads};
 use crate::discrete_fallback::DiscreteFirstFallback;
@@ -475,9 +477,8 @@ impl SolverRegistry {
 
         for (ci, component) in components.iter().enumerate() {
             // Build sub-ResolutionProblem for this component. Autos keep
-            // DECLARATION order, never the component's hash order: CP-SAT
-            // searches in this order, so it decides which model comes back
-            // (PRD2 D4).
+            // DECLARATION order: CP-SAT searches in this order, so it decides
+            // which model comes back (PRD2 D4).
             let sub_auto_params: Vec<AutoParam> = problem
                 .auto_params
                 .iter()
@@ -506,7 +507,8 @@ impl SolverRegistry {
                 .filter(|(id, _)| {
                     matches!(
                         dependent_auto_reads.lookup(id),
-                        CellReads::Foldable(autos) if autos.is_subset(&component.auto_params)
+                        CellReads::Foldable(autos)
+                            if autos.iter().all(|a| component.auto_params.contains(a))
                     )
                 })
                 .cloned()
@@ -1064,6 +1066,10 @@ fn solve_lexicographic(
                 unique: stage_unique,
             } => {
                 // Warm-start the next stage from this stage's solution.
+                #[expect(
+                    clippy::iter_over_hash_type,
+                    reason = "copies a HashMap into a ValueMap; keys are distinct, so iteration order cannot reach the result"
+                )]
                 for (k, v) in &values {
                     current_values.insert(k.clone(), v.clone());
                 }
@@ -1655,13 +1661,10 @@ mod objective_consumption_tests {
             "`a` and `b` are coupled only THROUGH `s`; decomposition follows \
              `dependent_cells`, so they must not split — got {components:?}"
         );
-        let expected: std::collections::HashSet<ValueCellId> =
-            [ValueCellId::new("P", "a"), ValueCellId::new("P", "b")]
-                .into_iter()
-                .collect();
         assert_eq!(
-            components[0].auto_params, expected,
-            "the single component must hold BOTH autos"
+            components[0].auto_params,
+            vec![ValueCellId::new("P", "a"), ValueCellId::new("P", "b")],
+            "the single component must hold BOTH autos, in declaration order"
         );
         assert_eq!(
             verdict,

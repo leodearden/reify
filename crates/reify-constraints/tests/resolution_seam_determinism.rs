@@ -104,8 +104,7 @@ fn dispatched_sub_problems(p: &ResolutionProblem) -> Vec<ResolutionProblem> {
     let spy = always_solved_spy();
     let captured = spy.captured_problems();
     let _ = SolverRegistry::new(Box::new(spy)).solve(p);
-    let calls = captured.lock().unwrap().clone();
-    calls
+    captured.lock().unwrap().clone()
 }
 
 fn axis_order(p: &ResolutionProblem) -> Vec<ValueCellId> {
@@ -128,7 +127,7 @@ fn decompose_returns_components_in_first_constraint_order() {
         decompose_into_components(&p.auto_params, &p.constraints, None, &p.dependent_cells)
             .iter()
             .map(|c| {
-                let autos = c.auto_params.iter().cloned().collect::<Vec<_>>();
+                let autos = c.auto_params.clone();
                 let constraints = c
                     .constraints
                     .iter()
@@ -439,7 +438,7 @@ fn decompose_lists_each_components_autos_in_the_callers_declaration_order() {
             let p = six_autos_two_components(declared);
             decompose_into_components(&p.auto_params, &p.constraints, None, &p.dependent_cells)
                 .iter()
-                .map(|c| c.auto_params.iter().cloned().collect::<Vec<_>>())
+                .map(|c| c.auto_params.clone())
                 .collect::<Vec<_>>()
         });
         assert_every_run_equals(

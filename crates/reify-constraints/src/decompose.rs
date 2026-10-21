@@ -3,6 +3,8 @@
 //! Builds a bipartite graph of constraints ↔ auto params and uses
 //! union-find to identify independent sub-problems.
 
+#![deny(clippy::iter_over_hash_type)]
+
 use crate::classifier::ConstraintClassifier;
 use crate::dependent_reads::{
     DependentCellReads, collect_value_refs, dependent_cell_auto_reads, reach_of,
@@ -14,8 +16,11 @@ use std::collections::{HashMap, HashSet};
 /// An independent sub-problem extracted from a larger constraint problem.
 #[derive(Debug)]
 pub struct SubProblem {
-    /// The auto parameters in this sub-problem.
-    pub auto_params: HashSet<ValueCellId>,
+    /// The component's autos in the caller's `auto_params` DECLARATION order,
+    /// which is the order the registry hands its solver: CP-SAT search and
+    /// multistart axis assignment both depend on it (PRD2
+    /// discrete-cost-minimisation §3 decision 10).
+    pub auto_params: Vec<ValueCellId>,
     /// The constraints in this sub-problem (id + expression).
     pub constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
     /// The domain classification for this sub-problem.
@@ -90,8 +95,8 @@ impl ExpandedObjectiveRefs {
     }
 
     /// Does the objective reach any of `autos`, directly or through a cell?
-    pub(crate) fn reaches_any(&self, autos: &HashSet<ValueCellId>) -> bool {
-        self.refs.iter().any(|r| autos.contains(r))
+    pub(crate) fn reaches_any(&self, autos: &[ValueCellId]) -> bool {
+        autos.iter().any(|a| self.refs.contains(a))
     }
 }
 
@@ -626,11 +631,11 @@ pub(crate) fn decompose_into_components_with_reads(
         // single `let` over the whole model carries `R = |component|` and the
         // scan goes worst-case O(P^2 x C) — on the solve hot path, for exactly
         // the let-indirected models this feature exists to make solvable.
-        let mut params = HashSet::new();
+        let mut params = Vec::new();
         let mut objective_only = Vec::new();
         for (pi, pid) in param_ids.iter().enumerate() {
             if uf.find(pi) == root {
-                params.insert(pid.clone());
+                params.push(pid.clone());
                 if !read_by_a_constraint[pi] {
                     objective_only.push(pi);
                 }
