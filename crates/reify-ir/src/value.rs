@@ -1502,6 +1502,8 @@ fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &
 }
 
 /// ` { name: value, … }` for an enum payload in stored order, or "" for a unit variant.
+/// Stored order is the variant's declaration order, kept on purpose: structure
+/// instances display their fields sorted by name instead.
 fn enum_payload_suffix(payload: &[(String, Value)], render: impl Fn(&Value) -> String) -> String {
     if payload.is_empty() {
         return String::new();

@@ -270,10 +270,12 @@ structure def Fixed : Joint {
 
 // JointPosition — the one `.ri` joint value (PRD
 // docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md §4 C4).
-// Variant names equal `JointKind::position_variant_name`; they deliberately
-// differ from the Prismatic / Revolute / … structures above, because prelude
-// variant heads capture same-named local variants. Coupling and Fixed have
-// no position variant.
+// Variant names are the C4 names. PRD §4 C1 plans
+// `JointKind::position_variant_name` (task β #8829) to return the same names;
+// that method is not on this tree yet, so nothing ties the two today. The
+// names deliberately differ from the Prismatic / Revolute / … structures
+// above, because prelude variant heads capture same-named local variants.
+// Coupling and Fixed have no position variant.
 pub enum JointPosition {
     PrismaticPosition { distance: Length },
     RevolutePosition { angle: Angle },

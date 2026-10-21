@@ -4,8 +4,7 @@
 //! Pins the literal `reify eval` report at the binary surface:
 //!   `Demo.bore = 0.005 m`      (§1 signal: `Ok { value: 5mm }` default, unwrapped)
 //!   `Demo.r = Result::Ok { value: 0.005 m }`
-//!                              (enum rendering for the default Ok variant: the
-//!                               head, then its named payload — task 8834)
+//!                              (the default Ok variant with its named payload)
 //!   `Demo.total = 0.003 m`     (recursive Tree<Length> leaves, 1mm + 2mm, summed
 //!                               via nested two-arm match — INV-5 end-to-end)
 //!   `Demo.tree = Tree::Node { left: Tree::Leaf { value: 0.001 m }, right: Tree::Leaf { value: 0.002 m } }`
@@ -34,9 +33,7 @@ use crate::common;
 /// Also asserts the enum rendering (`Demo.r`, `Demo.tree`) that the example's
 /// own header docstring advertises (amend: review — the CLI surface previously
 /// only pinned the two scalar values, leaving the enum output surface uncovered
-/// here). Those two lines are matched EXACTLY, not by `contains`: since task
-/// 8834 an enum prints its named payload after the `Type::Variant` head, and a
-/// `contains` on the bare head would keep matching whatever followed it.
+/// here). Those two lines are matched exactly so their payload text is pinned.
 #[test]
 fn eval_generic_enum_reports_bore_and_total() {
     let path = common::example_path("m6_generic_enum.ri");

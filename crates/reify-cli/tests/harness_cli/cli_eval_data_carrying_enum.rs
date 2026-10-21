@@ -3,8 +3,7 @@
 //! Pins the literal `reify eval` report at the binary surface:
 //!   `Widget.area = 0.0002 m^2`  (SI-normalized §1 signal: 20mm × 10mm = 200 mm²)
 //!   `Widget.outline = Shape::Rect { width: 0.02 m, height: 0.01 m }`
-//!     (default variant: the head, then its named payload in declaration
-//!      order — task 8834)
+//!     (default variant with its named payload)
 //!
 //! Mirrors the δ precedent `cli_check_variant_construction.rs` — uses
 //! `common::run_subcommand("eval", &common::example_path("m6_data_carrying_enum.ri"))`.
@@ -24,9 +23,7 @@ use crate::common;
 /// format changes, update the `contains` string here; the numeric integration test
 /// will remain stable.
 ///
-/// The outline line is matched EXACTLY, not by `contains`: since task 8834 an
-/// enum prints its named payload after the `Type::Variant` head, and a
-/// `contains` on the bare head would keep matching whatever followed it.
+/// The outline line is matched exactly so its payload text is pinned.
 #[test]
 fn eval_data_carrying_enum_reports_area() {
     let path = common::example_path("m6_data_carrying_enum.ri");
