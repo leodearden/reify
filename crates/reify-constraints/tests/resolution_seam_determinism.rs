@@ -3,11 +3,26 @@
 //! one. Driven only through the public API: `decompose_into_components`,
 //! `SolverRegistry` and `objective_consumption`.
 //!
-//! The permutation source is the HASH SEED. Every run happens on a fresh
-//! thread, which draws fresh `RandomState` keys, so each run sees a different
-//! iteration order for every std map built inside the seam. That seed is the
-//! only thing PRD §2.4's axis-order mechanism ever permuted. The CLI twin, two
-//! separate `reify eval` processes, is
+//! These tests are the guard. The `clippy::iter_over_hash_type` deny on
+//! decompose.rs and registry.rs is only a backstop: it sees a `for` loop over a
+//! std hash type, but not an iterator chain such as
+//! `set.iter().cloned().collect()`, and not an `im` map.
+//!
+//! B11's "a seeded axis permutation does not change the result" is read two
+//! ways:
+//! - Permuting the HASH SEED must not change the result by a single bit. Every
+//!   run happens on a fresh thread, which draws fresh `RandomState` keys, so
+//!   each run sees a different iteration order for every std map built inside
+//!   the seam. That seed is the only thing PRD §2.4's axis-order mechanism ever
+//!   permuted.
+//! - Permuting the caller's DECLARATION order must not move a UNIQUE optimum
+//!   beyond solver tolerance. Declaration order IS the solver's axis order, so
+//!   the simplex walk differs and bit identity is not claimed. Nor is
+//!   invariance claimed for tied optima: multistart breaks ties by start index,
+//!   which is keyed on axis position, and declaration order is the documented
+//!   tie-break (discrete-cost-minimisation §3 decision 10).
+//!
+//! The CLI twin, two separate `reify eval` processes, is
 //! `crates/reify-cli/tests/harness_cli/cli_eval_registry_determinism.rs`.
 
 use reify_constraints::{
@@ -465,5 +480,87 @@ fn registry_hands_each_solver_the_callers_axis_order_under_seeded_permutations()
             &expected_axis_orders(declared),
             &format!("declared {declared:?}: each solver must receive the caller's axis order"),
         );
+    }
+}
+
+const BOWL_MINIMUM_MM: [(&str, f64); 3] = [("x", 30.0), ("y", 70.0), ("z", 50.0)];
+
+/// A dim-3 interior quadratic whose unique minimum is `BOWL_MINIMUM_MM`, each
+/// auto boxed by its own GT/LT pair. The objective unions all three into ONE
+/// component. Only `declared` varies, so the solver's axis order is the only
+/// thing a permutation changes.
+fn bowl(declared: &[&str]) -> ResolutionProblem {
+    let squared_offset = |&(member, millimetres): &(&str, f64)| {
+        let d = binop(BinOp::Sub, len_ref(member), literal(mm(millimetres)));
+        binop(BinOp::Mul, d.clone(), d)
+    };
+    let objective = BOWL_MINIMUM_MM
+        .iter()
+        .map(squared_offset)
+        .reduce(|l, r| binop(BinOp::Add, l, r))
+        .expect("the bowl has axes");
+    let constraints = BOWL_MINIMUM_MM
+        .iter()
+        .flat_map(|&(member, _)| {
+            [
+                gt(len_ref(member), literal(mm(1.0))),
+                lt(len_ref(member), literal(mm(100.0))),
+            ]
+        })
+        .collect();
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(id("x"), mm(10.0));
+    current_values.insert(id("y"), mm(90.0));
+    current_values.insert(id("z"), mm(20.0));
+
+    ResolutionProblem {
+        auto_params: declared.iter().map(|m| bounded_free_auto(m)).collect(),
+        constraints: numbered(constraints),
+        dependent_cells: Vec::new(),
+        current_values,
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, objective)),
+        functions: vec![].into(),
+    }
+}
+
+const BOWL_DECLARATION_ORDERS: [[&str; 3]; 6] = [
+    ["x", "y", "z"],
+    ["x", "z", "y"],
+    ["y", "x", "z"],
+    ["y", "z", "x"],
+    ["z", "x", "y"],
+    ["z", "y", "x"],
+];
+
+/// Metres, so 1e-6 mm.
+const BOWL_TOLERANCE_M: f64 = 1e-9;
+
+#[test]
+fn production_registry_reaches_a_unique_optimum_whatever_the_declaration_order() {
+    for declared in &BOWL_DECLARATION_ORDERS {
+        assert_eq!(
+            dispatched_sub_problems(&bowl(declared))
+                .iter()
+                .map(axis_order)
+                .collect::<Vec<_>>(),
+            vec![ids(declared)],
+            "fixture premise: one component, whose solver sees the axes in \
+             declaration order {declared:?}",
+        );
+
+        let values = match SolverRegistry::production().solve(&bowl(declared)) {
+            SolveResult::Solved { values, .. } => values,
+            other => panic!("declared {declared:?}: expected Solved, got {other:?}"),
+        };
+        for (member, minimum_mm) in BOWL_MINIMUM_MM {
+            let resolved = values[&id(member)].as_f64().expect("a length");
+            let minimum = minimum_mm / 1000.0;
+            assert!(
+                (resolved - minimum).abs() <= BOWL_TOLERANCE_M,
+                "declared {declared:?}: {member} resolved to {resolved} m, \
+                 more than {BOWL_TOLERANCE_M} m from the unique minimum {minimum} m",
+            );
+        }
     }
 }
