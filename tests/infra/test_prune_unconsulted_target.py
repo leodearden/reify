@@ -48,6 +48,23 @@ echo "${REIFY_TEST_FINDMNT_OPTIONS-rw,relatime}"
 exit 0
 """
 
+# df stub: the Nth call prints the Nth byte value of $REIFY_TEST_DF_SEQ_FILE (one
+# per line), repeating the last once the sequence is exhausted.
+STUB_DF = """#!/bin/sh
+echo "df $*" >> "$REIFY_TEST_CALLS_FILE"
+if [ "${REIFY_TEST_DF_FAIL:-}" = "1" ]; then
+    echo "df: SIMULATED failure (REIFY_TEST_DF_FAIL=1)" >&2
+    exit 1
+fi
+n=$(grep -c '^df ' "$REIFY_TEST_CALLS_FILE")
+total=$(wc -l < "$REIFY_TEST_DF_SEQ_FILE")
+[ "$n" -le "$total" ] || n=$total
+echo "Avail"
+sed -n "${n}p" "$REIFY_TEST_DF_SEQ_FILE"
+"""
+
+GIB = 1024 ** 3
+
 
 def make_unit(profile, pkg, hash16, last_use, deps_names):
     """One cargo unit: <profile>/.fingerprint/<pkg>-<hash16>/lib-<pkg> last
@@ -100,6 +117,7 @@ class PruneHarness(unittest.TestCase):
         self.stub_dir = self.tmp / "stub-bin"
         self.stub_dir.mkdir()
         self.write_stub("findmnt", STUB_FINDMNT)
+        self.write_stub("df", STUB_DF)
         self.calls_file = self.tmp / "calls.log"
         self.calls_file.touch()
         self.scratch_tmp = self.tmp / "scratch-tmp"
@@ -129,8 +147,11 @@ class PruneHarness(unittest.TestCase):
                       for p in self.target.rglob("*") if p.is_file())
 
     def findmnt_calls(self):
+        return self.calls_of("findmnt")
+
+    def calls_of(self, tool):
         return [line for line in self.calls_file.read_text().splitlines()
-                if line.startswith("findmnt")]
+                if line.startswith(f"{tool} ")]
 
     def assertPresent(self, paths):
         missing = [str(p) for p in paths if not p.is_file()]
@@ -379,6 +400,82 @@ class LaneLocks(PruneHarness):
         self.assertEqual(self.tree(), before)
         self.assertIn(str(unopenable), result.stderr)
         self.assertEqual(self.findmnt_calls(), [])
+
+
+class FreeSpaceFloor(PruneHarness):
+    """--free-floor-gib N --min-window-days M: while free space is below the
+    floor, tighten the window a day at a time, never below M."""
+
+    def setUp(self):
+        super().setUp()
+        self.anchor = make_anchor(self.debug)
+        self.units = {
+            age: make_unit(self.debug, f"aged{tag}", f"a00000000000000{tag}",
+                           ANCHOR - age * DAY, [f"libaged{tag}-a00000000000000{tag}.rlib"])
+            for age, tag in ((6, "6"), (4.5, "5"), (3.5, "4"), (2.5, "3"), (1.5, "2"))
+        }
+        self.df_seq = self.tmp / "df-seq"
+
+    def run_floor(self, *floor_args, df_gib=(), env=None):
+        self.df_seq.write_text("".join(f"{int(g * GIB)}\n" for g in df_gib))
+        run_env = {"REIFY_TEST_DF_SEQ_FILE": str(self.df_seq), **(env or {})}
+        return self.run_prune("--window-days", 5, *floor_args, self.debug, env=run_env)
+
+    def assertPruned(self, gone_ages):
+        self.assertAbsent([p for age in gone_ages for p in self.units[age]])
+        kept = [p for age, paths in self.units.items() if age not in gone_ages for p in paths]
+        self.assertPresent(kept + self.anchor)
+
+    def test_without_a_floor_the_window_stays_put_and_df_is_never_asked(self):
+        result = self.run_floor(df_gib=[10])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertPruned({6})
+        self.assertEqual(self.calls_of("df"), [])
+
+    def test_below_the_floor_the_window_tightens_down_to_but_not_past_the_minimum(self):
+        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2, df_gib=[10])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertPruned({6, 4.5, 3.5, 2.5})
+        df_calls = self.calls_of("df")
+        self.assertTrue(df_calls)
+        for call in df_calls:
+            self.assertTrue(call.endswith(f" {self.debug}"), call)
+
+    def test_tightening_stops_once_the_floor_is_met(self):
+        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2, df_gib=[10, 100])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertPruned({6, 4.5})
+        windows = re.findall(r"^.*prune deps=.* window_days=(\d+)", result.stderr, re.M)
+        self.assertEqual(windows, ["5", "4"])
+
+    def test_a_failed_measurement_never_deletes_more(self):
+        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2,
+                                env={"REIFY_TEST_DF_FAIL": "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertPruned({6})
+
+    def test_floor_usage_errors_exit_2_before_touching_the_tree(self):
+        cases = (
+            ("floor without minimum", ["--free-floor-gib", 50]),
+            ("minimum without floor", ["--min-window-days", 2]),
+            ("minimum above the window", ["--free-floor-gib", 50, "--min-window-days", 6]),
+            ("zero minimum", ["--free-floor-gib", 50, "--min-window-days", 0]),
+            ("zero floor", ["--free-floor-gib", 0, "--min-window-days", 2]),
+            ("non-integer floor", ["--free-floor-gib", "lots", "--min-window-days", 2]),
+        )
+        before = self.tree()
+        for label, floor_args in cases:
+            with self.subTest(label):
+                result = self.run_floor(*floor_args, df_gib=[10])
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(self.tree(), before)
+                self.assertEqual(self.findmnt_calls(), [])
+                self.assertEqual(self.calls_of("df"), [])
 
 
 class Standalone(PruneHarness):
