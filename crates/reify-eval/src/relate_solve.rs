@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_residual, ResidualRow, partition_driving_set, pose_from_frame, solve_frame,
+    max_relation_exceedance, ResidualRow, partition_driving_set, pose_from_frame, solve_frame,
     solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
@@ -894,9 +894,15 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     if let Some(pose) = solved_pose {
         for &i in &partition.redundant {
             let rel = &instances[i];
-            let resid =
-                max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
-            if resid <= tol.assertion() {
+            // Each row against the assertion rung for its own unit, the metre rung
+            // scaled with the scope's `L` (PRD §7.3 "Coherence at every scale").
+            let exceedance = max_relation_exceedance(
+                std::slice::from_ref(rel),
+                &frame_unknown,
+                &pose,
+                |u| scaling.assertion_rung(u),
+            );
+            if exceedance <= 1.0 {
                 // Satisfied within the assertion tolerance ⇒ silent (a consistent
                 // redundant relation, B2): an opt-in lint hook only, no diagnostic.
                 continue;
