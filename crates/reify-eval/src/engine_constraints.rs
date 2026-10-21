@@ -135,6 +135,27 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
     })
 }
 
+/// A template's evaluated value cells as a `StructureInstance` named after the
+/// template, so the DFM recognizers can duck-type a rule declared at module
+/// level (`structure def MyRule : DFMRule { ... }`).
+pub(crate) fn template_instance_data(
+    template: &TopologyTemplate,
+    values: &ValueMap,
+) -> StructureInstanceData {
+    let mut fields = PersistentMap::new();
+    for cell_decl in &template.value_cells {
+        if let Some(val) = values.get(&cell_decl.id) {
+            fields.insert(cell_decl.id.member.clone(), val.clone());
+        }
+    }
+    StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: template.name.clone(),
+        version: template.version(),
+        fields,
+    }
+}
+
 // ── DFM thickness measurement types (task 4426 ζ) ────────────────────────────
 
 /// A fully-parsed thickness DFM rule ready for the auto-measurement pass.
@@ -407,6 +428,13 @@ fn measurement_unavailable(detail: &str) -> IndeterminateReason {
     IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
         detail: detail.to_string(),
     })
+}
+
+/// ζ's attribution of an unmeasured DFM rule, named by `rule_name`: a DFM rule
+/// has no `ConstraintNodeId`.
+pub(crate) fn unmeasured_dfm_attribution(name: &str, reason: &IndeterminateReason) -> Diagnostic {
+    Diagnostic::info(format!("DFM rule `{name}` indeterminate: {reason}"))
+        .with_code(DiagnosticCode::ConstraintIndeterminate)
 }
 
 /// ζ's attribution of an unmeasured constraint, rendered from its recorded
@@ -1890,12 +1918,7 @@ impl Engine {
         // realizations and inject the handle from `self.realization_handles` so
         // that `dfm_rule_spec` can find a non-None `subject_handle`.
         for template in &module.templates {
-            let mut fields = PersistentMap::new();
-            for cell_decl in &template.value_cells {
-                if let Some(val) = values.get(&cell_decl.id) {
-                    fields.insert(cell_decl.id.member.clone(), val.clone());
-                }
-            }
+            let mut data = template_instance_data(template, values);
             // Override / fill geometry fields from live realization_handles.
             // This is safe because realization_handles is a disjoint Engine
             // field from geometry_kernels — both accessed in sequence, not
@@ -1905,7 +1928,7 @@ impl Engine {
                     continue;
                 };
                 if let Some(&kernel_handle) = self.realization_handles.get(&realization.id) {
-                    fields.insert(
+                    data.fields.insert(
                         name.clone(),
                         Value::GeometryHandle {
                             realization_ref: realization.id.clone(),
@@ -1915,13 +1938,8 @@ impl Engine {
                     );
                 }
             }
-            if !fields.is_empty() {
-                let si = Value::StructureInstance(Box::new(StructureInstanceData {
-                    type_id: StructureTypeId(0),
-                    type_name: template.name.clone(),
-                    version: template.version(),
-                    fields,
-                }));
+            if !data.fields.is_empty() {
+                let si = Value::StructureInstance(Box::new(data));
                 if let Some(spec) = dfm_rule_spec(&si)
                     && spec.subject_handle.is_some()
                 {
