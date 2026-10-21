@@ -574,14 +574,19 @@ class TestScopeDecisionMatchesBash(InClone):
 
 @dataclass(frozen=True)
 class FailingGit:
-    """One git argv shape that exits 128; every other git call runs the real git."""
+    """One git argv shape that exits 128; every other git call runs the real git.
+
+    bash_parity: bash fails wide on it too, so bash's plan is an oracle for it.
+    Where python deliberately diverges, only python's side is asserted, so the
+    case stays green when bash converges.
+    """
 
     label: str
     scope: str
     match: str
     unless: str | None
     warning: str
-    bash_fails_wide: bool
+    bash_parity: bool
 
     def farm(self, dest: Path) -> Path:
         real = shutil.which("git", path=base_env()["PATH"])
@@ -613,19 +618,19 @@ def _c5(scope, what):
 FAILING_GIT = (
     FailingGit(
         "staged primary", "staged", "diff --cached --name-only", None,
-        _c5("staged", "git diff"), bash_fails_wide=False,
+        _c5("staged", "git diff"), bash_parity=False,
     ),
     FailingGit(
         "staged rename source", "staged", "diff --cached --name-status", None,
-        _c5("staged", "rename-source diff"), bash_fails_wide=True,
+        _c5("staged", "rename-source diff"), bash_parity=True,
     ),
     FailingGit(
         "branch primary", "branch", "--name-only --diff-filter=ACMRD", "--cached",
-        _c5("branch", "git diff"), bash_fails_wide=True,
+        _c5("branch", "git diff"), bash_parity=True,
     ),
     FailingGit(
         "branch rename source", "branch", "--name-status --diff-filter=R", "--cached",
-        _c5("branch", "rename-source diff"), bash_fails_wide=True,
+        _c5("branch", "rename-source diff"), bash_parity=True,
     ),
 )
 
@@ -648,18 +653,10 @@ class TestGatherFailsWide(InClone):
                     self.assertEqual(scope["changed_paths"], [])
                     py_wide = [l for l in py.stderr.splitlines() if FAIL_WIDE_MARK in l]
                     self.assertEqual(py_wide, [case.warning])
-                    bash_wide = [l for l in bash.stderr.splitlines() if FAIL_WIDE_MARK in l]
-                    if case.bash_fails_wide:
+                    if case.bash_parity:
                         self.assert_flags_match_bash(record, bash, case.label)
+                        bash_wide = [l for l in bash.stderr.splitlines() if FAIL_WIDE_MARK in l]
                         self.assertEqual(py_wide, bash_wide)
-                    else:
-                        self.assertEqual(
-                            header_fields(bash.stdout)["RUN_RUST"],
-                            "0",
-                            "PRD D5's lead amendment of 2026-10-15 (#9170): the staged primary "
-                            "diff fails wide in python, while bash still fails open",
-                        )
-                        self.assertEqual(bash_wide, [])
 
 
 def derived_rust_set(clone):
@@ -754,16 +751,12 @@ class TestDerivedFixtureCoupling(InClone):
         self.assertEqual(scope["run_rust"], 0, "a pg-drift:allow line is not a reference")
 
     def test_a_new_reference_couples_with_no_list_edit(self):
+        before, _ = self.staged_alone_on_top(fixture(self.REFERENCED))
+        self.assertEqual(flags(before), (0, 0, 0), "premise: no tracked *.rs names the fixture yet")
+        self.clone.reset()
         self.commit_probe_rs()
         scope, _ = self.staged_alone_on_top(fixture(self.REFERENCED))
         self.assertEqual(flags(scope), (1, 1, 1))
-        bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], base_env())
-        self.assertEqual(bash.returncode, 0, bash.stderr)
-        self.assertEqual(
-            header_fields(bash.stdout)["RUN_RUST"],
-            "0",
-            "premise: bash classifies from its own list, which this probe never edits",
-        )
 
     def test_a_new_pin_couples_with_no_list_edit(self):
         self.commit_pin(self.PINNED)
@@ -817,7 +810,7 @@ class TestDerivedFixtureCoupling(InClone):
             "reference grep", "staged", "grep --cached -h -E", None,
             f"verify.sh: WARNING — git grep --cached -E '{FIXTURE_REFERENCE}' -- '*.rs' exited 128 "
             "— every prd-gate fixture counts as Rust-coupled (fail wide, contract C5)",
-            bash_fails_wide=False,
+            bash_parity=False,
         )
         self.clone.stage(fixture(self.UNREFERENCED))
         with tempfile.TemporaryDirectory() as scratch:
@@ -1089,7 +1082,13 @@ class TestSelectorCopiesMatchReifyAudit(InClone):
 class TestHarnessKlocSetIsTheLibs(InClone):
     """The kloc guard's crate set has one owner, harness-layout-lib.sh (PRD D6, §2.3)."""
 
+    PROBE = "crates/reify-doc/tests/zz.rs"
+
     def test_a_crate_added_to_the_lib_is_selected(self):
+        self.assertNotIn(
+            KLOC_LEAF, self.clone.branch_leaves([self.PROBE]), "premise: reify-doc is not consolidatable yet"
+        )
+        self.clone.reset()
         lib = self.clone.root / KLOC_LIB
         text = lib.read_text(encoding="utf-8")
         declared = "declare -ga _HL_CRATES=("
@@ -1097,17 +1096,12 @@ class TestHarnessKlocSetIsTheLibs(InClone):
         lib.write_text(text.replace(declared, declared + "reify-doc "), encoding="utf-8")
         self.clone.git("add", "--", KLOC_LIB)
         self.clone.commit("scope-record probe: reify-doc is consolidatable")
-        branch_commit("crates/reify-doc/tests/zz.rs")(self.clone)
-        record, _, bash = self.side_by_side("branch")
+        branch_commit(self.PROBE)(self.clone)
+        record = scope_record(self.clone.py(BRANCH_SCOPE, base_env()))
         self.assertIn(
             (KLOC_LEAF, {}),
             python_leaves(record),
             "python reads the crate set from harness_layout_consolidatable_crates (D6, §2.3)",
-        )
-        self.assertNotIn(
-            KLOC_LEAF,
-            [glob for glob, _ in bash_leaves(bash.stdout)],
-            "premise: bash's select_harness_kloc_guard still holds its own literal copy",
         )
 
 
