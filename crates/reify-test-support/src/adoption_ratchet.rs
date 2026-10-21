@@ -20,11 +20,12 @@ mod lexer;
 mod source;
 
 use std::cmp::Ordering;
+use std::path::Path;
 
 use census::duplicate_top_level_fns;
 use items::skipped_lines;
 use lexer::{Line, is_ident_char};
-use source::{Hit, SourceFile, hit_lines};
+use source::{Hit, SourceFile, hit_lines, read_crate_tree, source_file};
 
 pub use items::TEST_ITEMS;
 
@@ -106,6 +107,61 @@ pub struct Ratchet {
     pub home: &'static str,
     pub baseline: usize,
     pub measure: Measure,
+}
+
+/// The host of a crate's rows: the crate, and the host file itself, which the
+/// measured tree leaves out so its seeds and docs never count toward a row.
+#[derive(Clone, Copy)]
+pub struct Host {
+    /// The crate's root directory: `env!("CARGO_MANIFEST_DIR")`.
+    pub crate_root: &'static str,
+    /// The host file as `file!()` names it; red messages tell the reader to edit it.
+    pub file: &'static str,
+    /// The host file's `/`-separated path under `crate_root`.
+    pub path_in_crate: &'static str,
+}
+
+impl Host {
+    fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !Path::new(self.file).ends_with(self.path_in_crate) {
+            problems.push(format!(
+                "path_in_crate {:?} does not name the host file ({}): update the constant",
+                self.path_in_crate, self.file
+            ));
+        }
+        let on_disk = Path::new(self.crate_root).join(self.path_in_crate);
+        if !on_disk.is_file() {
+            problems.push(format!("{} is not a file", on_disk.display()));
+        }
+        problems
+    }
+}
+
+/// Panics listing every problem with `host` and every seeded self-test a row of
+/// `rows` fails. A pattern row must flag one inline copy of its seed, count each
+/// copy on a line, ignore copies in comments, strings, out-of-scope paths and
+/// skipped items, and apply its region and view; every row must go red when a
+/// copy is added, or migrated without lowering the baseline.
+pub fn assert_seeded_self_tests(rows: &[Ratchet], host: &Host) {
+    let mut failures = host.problems();
+    failures.extend(seeded_self_test_failures(rows, host.file));
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Panics unless every row of `rows` holds at exactly its baseline over the
+/// `src/` and `tests/` of `host`'s crate, minus the host file, with every file
+/// there one the lexer can follow and every scope entry matching some file.
+pub fn assert_crate_tree_at_baselines(rows: &[Ratchet], host: &Host) {
+    let problems = host.problems();
+    assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+    let tree = read_crate_tree(Path::new(host.crate_root), host.path_in_crate);
+    let failures = crate_tree_failures(rows, &tree, host.file);
+    assert!(
+        failures.is_empty(),
+        "adoption ratchets out of step (docs/prds/v0_6/solver-crates-layering.md D20):\n{}",
+        failures.join("\n")
+    );
 }
 
 fn in_scope(path: &str, include: &[&str], exclude: &[&str]) -> bool {
@@ -213,9 +269,312 @@ fn dangling_scope_entries(row: &Ratchet, tree: &[SourceFile]) -> Vec<&'static st
         .collect()
 }
 
+fn crate_tree_failures(rows: &[Ratchet], tree: &[SourceFile], host_file: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    for dir in ["src/", "tests/"] {
+        if !tree.iter().any(|file| file.path.starts_with(dir)) {
+            failures.push(format!(
+                "the crate tree holds no file under {dir} ({} file(s) read)",
+                tree.len()
+            ));
+        }
+    }
+    for file in tree {
+        if let Some(defect) = &file.defect {
+            failures.push(format!(
+                "{}: the matcher cannot follow this file ({defect:?}), so a row could miscount it",
+                file.path
+            ));
+        }
+    }
+    for row in rows {
+        let dangling = dangling_scope_entries(row, tree);
+        if !dangling.is_empty() {
+            failures.push(format!(
+                "{}: scope entries that match no file: {dangling:?}",
+                row.name
+            ));
+        }
+        failures.extend(check(row, tree, host_file).err());
+    }
+    failures
+}
+
+// ── seeded self-tests ────────────────────────────────────────────────────────
+
+/// One `"<property>: <row>: <problem>"` line per seeded self-test a row fails.
+fn seeded_self_test_failures(rows: &[Ratchet], host_file: &str) -> Vec<String> {
+    if rows.is_empty() {
+        return vec!["the table holds no row, so no seeded self-test runs".to_string()];
+    }
+    rows.iter()
+        .flat_map(|row| {
+            seeded_verdicts(row, host_file)
+                .into_iter()
+                .filter_map(move |(property, verdict)| {
+                    let problem = verdict.err()?;
+                    Some(format!("{property}: {}: {problem}", row.name))
+                })
+        })
+        .collect()
+}
+
+type PatternProperty = fn(&Ratchet, &Pattern) -> Result<(), String>;
+
+const PATTERN_PROPERTIES: &[(&str, PatternProperty)] = &[
+    (
+        "seed_path_is_in_scope_and_seed_holds_one_needle",
+        seed_path_is_in_scope_and_seed_holds_one_needle,
+    ),
+    ("flags_one_seeded_inline_copy", flags_one_seeded_inline_copy),
+    (
+        "counts_each_occurrence_on_a_line",
+        counts_each_occurrence_on_a_line,
+    ),
+    (
+        "ignores_copies_in_non_counted_positions",
+        ignores_copies_in_non_counted_positions,
+    ),
+    (
+        "applies_its_region_to_cfg_test_modules",
+        applies_its_region_to_cfg_test_modules,
+    ),
+    (
+        "applies_its_view_to_doc_comments",
+        applies_its_view_to_doc_comments,
+    ),
+    (
+        "needle_requires_a_left_identifier_boundary",
+        needle_requires_a_left_identifier_boundary,
+    ),
+];
+
+const MIGRATION_PROPERTY: &str = "migrating_one_copy_without_lowering_the_baseline_is_red";
+
+/// Every seeded self-test of `row` by property: the pattern properties for a
+/// pattern row, and for every row, that a re-added or migrated copy is red.
+fn seeded_verdicts(row: &Ratchet, host_file: &str) -> Vec<(&'static str, Result<(), String>)> {
+    let mut verdicts: Vec<_> = match &row.measure {
+        Measure::Occurrences(pattern) => PATTERN_PROPERTIES
+            .iter()
+            .map(|&(property, verdict)| (property, verdict(row, pattern)))
+            .collect(),
+        Measure::DuplicateTopLevelFns { .. } => Vec::new(),
+    };
+    verdicts.push((
+        MIGRATION_PROPERTY,
+        migrating_one_copy_without_lowering_the_baseline_is_red(row, host_file),
+    ));
+    verdicts
+}
+
+fn file_under(prefix_entry: &str) -> String {
+    match prefix_entry.ends_with('/') {
+        true => format!("{prefix_entry}seeded.rs"),
+        false => prefix_entry.to_string(),
+    }
+}
+
+fn seed_path(pattern: &Pattern) -> String {
+    file_under(pattern.include[0])
+}
+
+fn out_of_scope_paths(pattern: &Pattern) -> Vec<String> {
+    let excluded = pattern.exclude.iter().map(|entry| file_under(entry));
+    let candidates = ["src/seeded.rs", "tests/seeded.rs", "benches/seeded.rs"]
+        .map(String::from)
+        .into_iter()
+        .filter(|path| !in_scope(path, pattern.include, pattern.exclude));
+    excluded.chain(candidates).collect()
+}
+
+fn skips_test_items(pattern: &Pattern) -> bool {
+    TEST_ITEMS
+        .iter()
+        .all(|item| pattern.skip_items.contains(item))
+}
+
+fn hits_in(row: &Ratchet, path: &str, text: &str) -> Vec<Hit> {
+    measure(&row.measure, &[source_file(path, text)])
+}
+
+fn expect_hit_count(hits: &[Hit], expected: usize) -> Result<(), String> {
+    match hits.len() == expected {
+        true => Ok(()),
+        false => Err(format!(
+            "expected {expected} hit(s), got {}:\n{}",
+            hits.len(),
+            hit_lines(hits)
+        )),
+    }
+}
+
+/// Hits for `pattern`'s seed in plain code (the control) followed by `tail`.
+fn hits_after_control(row: &Ratchet, pattern: &Pattern, tail: &str) -> Vec<Hit> {
+    let text = format!("{}\n{tail}", pattern.seed);
+    hits_in(row, &seed_path(pattern), &text)
+}
+
+fn seed_path_is_in_scope_and_seed_holds_one_needle(
+    _: &Ratchet,
+    pattern: &Pattern,
+) -> Result<(), String> {
+    let path = seed_path(pattern);
+    if !in_scope(&path, pattern.include, pattern.exclude) {
+        return Err(format!("seed path {path} is outside the row's scope"));
+    }
+    let needles = pattern.seed.matches(pattern.needle).count();
+    if needles != 1 || pattern.seed.contains(['\n', '"']) {
+        return Err(format!(
+            "the seed must be one quote-free line holding the needle once, not {needles}"
+        ));
+    }
+    Ok(())
+}
+
+fn flags_one_seeded_inline_copy(row: &Ratchet, pattern: &Pattern) -> Result<(), String> {
+    let path = seed_path(pattern);
+    let hits = hits_in(row, &path, pattern.seed);
+    match hits.as_slice() {
+        [hit] if hit.path == path && hit.line == 1 => Ok(()),
+        _ => Err(format!(
+            "expected one hit at {path}:1, got {}:\n{}",
+            hits.len(),
+            hit_lines(&hits)
+        )),
+    }
+}
+
+fn counts_each_occurrence_on_a_line(row: &Ratchet, pattern: &Pattern) -> Result<(), String> {
+    let doubled = format!("{} {}", pattern.seed, pattern.seed);
+    let hits = hits_in(row, &seed_path(pattern), &doubled);
+    expect_hit_count(&hits, 2)
+}
+
+fn ignores_copies_in_non_counted_positions(row: &Ratchet, pattern: &Pattern) -> Result<(), String> {
+    let seed = pattern.seed;
+    let mut decoys = vec![
+        format!("// {seed}"),
+        format!("/* {seed} */"),
+        format!("const _S: &str = \"\n{seed}\n\";"),
+        format!("const _R: &str = r#\"{seed}\"#;"),
+    ];
+    for prefix in pattern
+        .skip_items
+        .iter()
+        .filter(|p| !TEST_ITEMS.contains(p))
+    {
+        decoys.push(format!("{prefix} {{\n{seed}\n}}"));
+    }
+    for decoy in &decoys {
+        expect_hit_count(&hits_after_control(row, pattern, decoy), 1)
+            .map_err(|problem| format!("decoy {decoy:?}: {problem}"))?;
+    }
+    for path in out_of_scope_paths(pattern) {
+        let files = [
+            source_file(&path, seed),
+            source_file(&seed_path(pattern), seed),
+        ];
+        expect_hit_count(&measure(&row.measure, &files), 1)
+            .map_err(|problem| format!("out-of-scope {path}: {problem}"))?;
+    }
+    Ok(())
+}
+
+fn applies_its_region_to_cfg_test_modules(row: &Ratchet, pattern: &Pattern) -> Result<(), String> {
+    let seed = pattern.seed;
+    let gated_modules = [
+        format!("#[cfg(test)]\nmod tests {{\n{seed}\n}}"),
+        format!("#[allow(dead_code)] #[cfg(test)] mod tests {{\n{seed}\n}}"),
+    ];
+    let expected = if skips_test_items(pattern) { 1 } else { 2 };
+    for gated in &gated_modules {
+        expect_hit_count(&hits_after_control(row, pattern, gated), expected)
+            .map_err(|problem| format!("gated module {gated:?}: {problem}"))?;
+    }
+    Ok(())
+}
+
+fn applies_its_view_to_doc_comments(row: &Ratchet, pattern: &Pattern) -> Result<(), String> {
+    let seed = pattern.seed;
+    let documented = [
+        format!("/// {seed}"),
+        format!("//! {seed}"),
+        format!("/** {seed} */"),
+        format!("/*! {seed} */"),
+    ];
+    let expected = match pattern.view {
+        View::Code => 1,
+        View::CodeAndDocs => 2,
+    };
+    for comment in &documented {
+        expect_hit_count(&hits_after_control(row, pattern, comment), expected)
+            .map_err(|problem| format!("doc comment {comment:?}: {problem}"))?;
+    }
+    Ok(())
+}
+
+fn needle_requires_a_left_identifier_boundary(
+    row: &Ratchet,
+    pattern: &Pattern,
+) -> Result<(), String> {
+    if !pattern.needle.starts_with(is_ident_char) {
+        return Ok(());
+    }
+    let glued_needle = format!("x{}", pattern.needle);
+    let glued = pattern.seed.replacen(pattern.needle, &glued_needle, 1);
+    expect_hit_count(&hits_after_control(row, pattern, &glued), 1)
+}
+
+fn seeded_tree(row: &Ratchet, copies: usize) -> Vec<SourceFile> {
+    match &row.measure {
+        Measure::Occurrences(pattern) => {
+            let text = vec![pattern.seed; copies].join("\n");
+            vec![source_file(&seed_path(pattern), &text)]
+        }
+        Measure::DuplicateTopLevelFns { root, .. } => (0..=copies)
+            .map(|index| source_file(&format!("{root}seeded_{index}.rs"), "fn seeded_helper() {}"))
+            .collect(),
+    }
+}
+
+fn expect_red_containing(verdict: Result<(), String>, fragments: &[&str]) -> Result<(), String> {
+    match verdict {
+        Err(message) if fragments.iter().all(|fragment| message.contains(fragment)) => Ok(()),
+        other => Err(format!(
+            "expected a red verdict containing {fragments:?}, got {other:?}"
+        )),
+    }
+}
+
+/// BT14: two seeded copies hold at baseline 2, a third is red naming the row and
+/// its home, and migrating one without lowering the baseline is red.
+fn migrating_one_copy_without_lowering_the_baseline_is_red(
+    row: &Ratchet,
+    host_file: &str,
+) -> Result<(), String> {
+    let at_two = Ratchet {
+        baseline: 2,
+        ..*row
+    };
+    check(&at_two, &seeded_tree(row, 2), host_file)
+        .map_err(|red| format!("two copies at baseline 2 must hold, got: {red}"))?;
+    let above = check(&at_two, &seeded_tree(row, 3), host_file);
+    expect_red_containing(
+        above,
+        &[
+            "above its baseline",
+            row.name,
+            row.home,
+            "raise the baseline to 3",
+        ],
+    )?;
+    let below = check(&at_two, &seeded_tree(row, 1), host_file);
+    expect_red_containing(below, &["lower the baseline to 1"])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::source::source_file;
     use super::*;
 
     const PROBE_HOST_FILE: &str = "crates/probe/tests/adoption_ratchets.rs";
