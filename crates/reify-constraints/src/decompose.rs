@@ -18,8 +18,8 @@ use std::collections::{HashMap, HashSet};
 pub struct SubProblem {
     /// The component's autos in the caller's `auto_params` DECLARATION order,
     /// which is the order the registry hands its solver: CP-SAT search and
-    /// multistart axis assignment both depend on it (PRD2
-    /// discrete-cost-minimisation §3 decision 10).
+    /// multistart axis assignment both depend on it
+    /// (discrete-cost-minimisation §3 decision 10).
     pub auto_params: Vec<ValueCellId>,
     /// The constraints in this sub-problem (id + expression).
     pub constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
@@ -549,12 +549,11 @@ pub(crate) fn decompose_into_components_with_reads(
     // the constraints alone don't connect them. Single-term reduces to prior
     // single-expr behavior identically.
     if let Some(objective) = objective {
-        let mut obj_param_indices: Vec<usize> = objective
+        let obj_param_indices: Vec<usize> = objective
             .refs
             .iter()
             .filter_map(|id| param_index.get(id).copied())
             .collect();
-        obj_param_indices.sort_unstable();
         for i in 1..obj_param_indices.len() {
             uf.union(obj_param_indices[0], obj_param_indices[i]);
         }

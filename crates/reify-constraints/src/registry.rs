@@ -14,7 +14,7 @@ use reify_ir::{
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
     RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ε-band constants (task ε — PRD §12.1).
 // Half-width δ = max(REL · |obj*|, ABS) so a near-zero obj* yields a non-degenerate band.
@@ -475,16 +475,20 @@ impl SolverRegistry {
         let mut other_values: HashMap<ValueCellId, Value> = HashMap::new();
         let mut other_unique = true;
 
+        let auto_param_of: HashMap<&ValueCellId, &AutoParam> =
+            problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
+
         for (ci, component) in components.iter().enumerate() {
-            // Build sub-ResolutionProblem for this component. Autos keep
-            // DECLARATION order: CP-SAT searches in this order, so it decides
-            // which model comes back (PRD2 D4).
-            let sub_auto_params: Vec<AutoParam> = problem
+            // Build sub-ResolutionProblem for this component. Its autos come in
+            // the component's DECLARATION order: CP-SAT searches in this order,
+            // so it decides which model comes back
+            // (discrete-cost-minimisation §3 decision 10).
+            let sub_auto_params: Vec<AutoParam> = component
                 .auto_params
                 .iter()
-                .filter(|ap| component.auto_params.contains(&ap.id))
-                .cloned()
+                .map(|id| auto_param_of[id].clone())
                 .collect();
+            let component_autos: HashSet<&ValueCellId> = component.auto_params.iter().collect();
 
             // Attach objective only to the designated component
             let sub_objective = if objective_component == Some(ci) {
@@ -508,7 +512,7 @@ impl SolverRegistry {
                     matches!(
                         dependent_auto_reads.lookup(id),
                         CellReads::Foldable(autos)
-                            if autos.iter().all(|a| component.auto_params.contains(a))
+                            if autos.iter().all(|a| component_autos.contains(a))
                     )
                 })
                 .cloned()
