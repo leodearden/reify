@@ -166,9 +166,7 @@ pub fn shell_element_stress(
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
 
     // Shear stresses: σ_xz = κ·G·γ_xz_phys, σ_yz = κ·G·γ_yz_phys (κ = 5/6)
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let g_mod = e / (2.0 * (1.0 + nu));
+    let g_mod = material.shear_modulus();
     const KAPPA: f64 = 5.0 / 6.0;
     let s_xz = KAPPA * g_mod * g_phys_xz;
     let s_yz = KAPPA * g_mod * g_phys_yz;
@@ -491,9 +489,7 @@ mod tests {
 
         let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
 
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g_mod = e / (2.0 * (1.0 + nu));
+        let g_mod = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let expected_sxz = kappa * g_mod * alpha;
 

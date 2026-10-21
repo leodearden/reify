@@ -239,9 +239,7 @@ pub fn shell_element_stiffness(
     let d_pl = plane_stress_d(material);
 
     // Shear modulus G and transverse-shear D scalar: κ·G
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let g = e / (2.0 * (1.0 + nu));
+    let g = material.shear_modulus();
     let kappa_g = KAPPA * g;
 
     // Shared kinematics: local 2D coords, shape gradients, B_cov, J2⁻ᵀ, det2.
@@ -432,9 +430,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     let t = thickness;
     let d_pl = plane_stress_d(material);
 
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let g = e / (2.0 * (1.0 + nu));
+    let g = material.shear_modulus();
     let kappa_g = KAPPA * g;
 
     let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
@@ -720,9 +716,7 @@ fn degenerate_stiffness_core(
     const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
 
     let d_pl = plane_stress_d(material);
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let g = e / (2.0 * (1.0 + nu));
+    let g = material.shear_modulus();
     let kappa_g = KAPPA * g;
 
     // Parallel-director short-circuit for the rotation bubble: on a flat facet
@@ -1388,9 +1382,7 @@ mod tests {
         let ku = matvec(&k, &u);
         let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
 
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let gmod = e / (2.0 * (1.0 + nu));
+        let gmod = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let area = 0.5_f64;
         let u_analytical = 0.5 * alpha * alpha * kappa * gmod * t * area;
@@ -1656,9 +1648,7 @@ mod tests {
         u[ndp * 1 + 4] = alpha; // θ_y at node 1 (x=1)
 
         let d = plane_stress_d(&mat);
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let area = 0.5_f64;
 
@@ -1796,9 +1786,7 @@ mod tests {
         let ku = matvec(&k, &u);
         let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
 
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let area = 0.5_f64;
         let u_analytical = 0.5 * alpha * alpha * kappa * g * t * area;
@@ -1834,9 +1822,7 @@ mod tests {
         let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
 
         let d = plane_stress_d(&mat);
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let area = 0.5_f64;
         let u_bending = 0.5 * alpha * alpha * d[0][0] * (t * t * t / 12.0) * area;
@@ -2151,9 +2137,7 @@ mod tests {
         let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
 
         let d = plane_stress_d(&mat);
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let area = 0.5_f64;
         let u_bending = 0.5 * alpha * alpha * d[0][0] * (t * t * t / 12.0) * area;
@@ -2724,9 +2708,7 @@ mod tests {
         let ku = matvec(&k, &u);
         let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
 
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let gmod = e / (2.0 * (1.0 + nu));
+        let gmod = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let area = 1.5_f64; // ½·2·1.5, the mid-surface area of this triangle
         let u_analytical = 0.5 * alpha * alpha * kappa * gmod * t * area;

@@ -338,7 +338,7 @@ mod tests {
         assert!((d[0][1] - nu * factor).abs() < tol, "d[0][1] = {}", d[0][1]);
         assert!((d[1][0] - nu * factor).abs() < tol, "d[1][0] = {}", d[1][0]);
         // d[2][2] = E/(2(1+ν))
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         assert!((d[2][2] - g).abs() < tol, "d[2][2] = {}", d[2][2]);
         // Off-diagonal block entries are zero
         for (i, j) in [(0, 2), (1, 2), (2, 0), (2, 1)] {
@@ -418,7 +418,7 @@ mod tests {
 
         // Closed-form entries.
         let factor = e / (1.0 - nu * nu);
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let tol = 1e-9 * factor.abs().max(1.0);
         assert!((d[0][0] - factor).abs() < tol, "D[0][0] = {}", d[0][0]);
         assert!((d[1][1] - factor).abs() < tol, "D[1][1] = {}", d[1][1]);

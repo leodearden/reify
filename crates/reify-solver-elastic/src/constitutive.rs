@@ -172,6 +172,13 @@ impl IsotropicElastic {
         // Off-diagonal blocks are zero (initialised that way).
         d
     }
+
+    /// Shear modulus `G = E / (2(1 + ν))` (engineering-shear convention), equal to
+    /// [`Self::d_matrix`]'s shear diagonal.
+    pub fn shear_modulus(&self) -> f64 {
+        let (e, nu) = (self.youngs_modulus, self.poisson_ratio);
+        e / (2.0 * (1.0 + nu))
+    }
 }
 
 impl ConstitutiveLaw for IsotropicElastic {
@@ -807,9 +814,7 @@ mod tests {
         // ε = (0, 0, 0, γ, 0, 0) → σ_xy = G·γ with G = E / (2(1+ν));
         // all other σ-components vanish.
         let mat = steel_like();
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let gamma = 2.5e-4;
         let strain = [0.0, 0.0, 0.0, gamma, 0.0, 0.0];
 
@@ -954,7 +959,7 @@ mod tests {
         );
 
         // Pure-shear strain → shear modulus G > 0.
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         assert!(g > 0.0, "G = {g} should be positive for ν = {nu}");
         let gamma = 1.0e-4_f64;
         let strain_s = [0.0, 0.0, 0.0, gamma, 0.0, 0.0];
