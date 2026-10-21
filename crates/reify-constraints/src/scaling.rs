@@ -248,3 +248,113 @@ impl RelateTolerance {
         }
     }
 }
+
+// ── Per-solve scaling ────────────────────────────────────────────────────────
+
+/// The kind of a solve unknown, which selects its nominal scale (PRD §7.3).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnknownKind {
+    /// A pose translation component, in metres.
+    PoseTranslation,
+    /// A pose rotation (exponential-map) component, in radians.
+    PoseRotation,
+    /// A scalar `auto`, in its own SI unit, with its bounds box and seed when known.
+    ScalarAuto {
+        bounds: Option<(f64, f64)>,
+        seed: Option<f64>,
+    },
+}
+
+/// The nominal scales and tolerances of ONE solve, which runs in `x̃_j = x_j / s_j`
+/// and `r̃_i = r_i / t_i` (PRD §7.3).
+///
+/// Built once per scope, so the partition, the solve and the post-solve re-check
+/// all read the same characteristic length `L`. Fields are private so
+/// `L ≥ kernel_local` holds by construction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SolveScaling {
+    characteristic_length: f64,
+    tolerance: RelateTolerance,
+}
+
+impl SolveScaling {
+    /// The scaling of a solve whose participating datums span
+    /// `participating_extent` metres: `L` is that extent floored at
+    /// `kernel_local`. A non-finite extent carries no length information and gives
+    /// the floor; the residual it came from fails the solve loudly on its own.
+    pub fn new(participating_extent: f64, tolerance: RelateTolerance) -> Self {
+        let floor = tolerance.kernel_local();
+        let characteristic_length = if participating_extent.is_finite() {
+            participating_extent.max(floor)
+        } else {
+            floor
+        };
+        Self {
+            characteristic_length,
+            tolerance,
+        }
+    }
+
+    /// The characteristic length `L`, in metres.
+    pub fn characteristic_length(&self) -> f64 {
+        self.characteristic_length
+    }
+
+    /// The tolerance ladder this scaling was built from.
+    pub fn tolerance(&self) -> RelateTolerance {
+        self.tolerance
+    }
+
+    /// The nominal scale `s_j` of an unknown of `kind`, in that unknown's SI unit.
+    pub fn unknown_scale(&self, kind: UnknownKind) -> f64 {
+        match kind {
+            UnknownKind::PoseTranslation => self.characteristic_length,
+            UnknownKind::PoseRotation => 1.0,
+            UnknownKind::ScalarAuto { bounds, seed } => scalar_auto_scale(bounds, seed),
+        }
+    }
+
+    /// The nominal tolerance `t_i` of a row measured in `unit`: scale-relative
+    /// `max(ε_rel·L, floor)` for a metre row, the scale-free `ε_rel` otherwise.
+    pub fn row_tolerance(&self, unit: ResidualUnit) -> f64 {
+        let relative = self.tolerance.relative_convergence();
+        match unit {
+            ResidualUnit::Length => {
+                (relative * self.characteristic_length).max(self.tolerance.solver_length_floor())
+            }
+            ResidualUnit::Angle | ResidualUnit::Dimensionless => relative,
+        }
+    }
+
+    /// The post-solve assertion rung of a row measured in `unit`. The metre rung
+    /// grows as `max(L / R_ref, 1)` so it stays above [`row_tolerance`](Self::row_tolerance)
+    /// at every `L`; the angular rungs are absolute (PRD §7.3 "Coherence at every
+    /// scale").
+    pub fn assertion_rung(&self, unit: ResidualUnit) -> f64 {
+        match unit {
+            ResidualUnit::Length => {
+                self.tolerance.assertion()
+                    * (self.characteristic_length / ANGULAR_REFERENCE_RADIUS_M).max(1.0)
+            }
+            ResidualUnit::Angle | ResidualUnit::Dimensionless => {
+                self.tolerance.assertion_rung(unit)
+            }
+        }
+    }
+
+    /// The Gram–Schmidt independence cutoff on normalized SCALED Jacobian rows —
+    /// dimensionless, `ε_rel`.
+    pub fn rank_threshold(&self) -> f64 {
+        self.tolerance.relative_convergence()
+    }
+}
+
+/// A scalar `auto`'s nominal scale: its box width if bounded, else `|seed|`, else 1.
+fn scalar_auto_scale(bounds: Option<(f64, f64)>, seed: Option<f64>) -> f64 {
+    let width = bounds
+        .filter(|(lo, hi)| lo < hi)
+        .map(|(lo, hi)| hi - lo)
+        .filter(|w| w.is_finite());
+    let magnitude = seed.map(f64::abs).filter(|s| s.is_finite() && *s > 0.0);
+    width.or(magnitude).unwrap_or(1.0)
+}
