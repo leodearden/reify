@@ -105,6 +105,11 @@ tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted
 # ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
 # 3b to that sibling (no second inline copy, no silent skip when it is missing).
 scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
+# respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape.
+scripts/gc-worktree-targets.sh       tests/infra/test_gc_worktree_targets.sh
+tests/infra/test_gc_worktree_targets.py  tests/infra/test_gc_worktree_targets.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
