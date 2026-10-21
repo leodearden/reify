@@ -177,9 +177,9 @@ pub(crate) fn check_trait_conformance(
         );
 
     // Build a combined name→type view for phases that only need to know whether the
-    // structure declares a member by name (conflict-suppression, injection-skip, scope
-    // pre-registration). Phases that must distinguish param from let members use
-    // `structure_param_members` / `structure_let_members` directly (phase 5).
+    // structure declares a member by name (conflict-suppression, scope pre-registration,
+    // which records the overrides injection skips). Phases that must distinguish param from
+    // let members use `structure_param_members` / `structure_let_members` directly (phase 5).
     //
     // If a name appears in both maps (no upstream diagnostic prevents it today),
     // the param entry wins: let-first chain means param entries overwrite let entries.
@@ -223,14 +223,7 @@ pub(crate) fn check_trait_conformance(
         diagnostics,
     );
 
-    let available_defaults = check_phase_build_available_defaults_map(
-        &ctx,
-        &pre.inferred_let_exprs,
-        &pre.pass1_skipped,
-        &pre.pass1_param_skipped,
-        &pre.pass2_skipped,
-        &pre.pass2_compile_errors,
-    );
+    let available_defaults = check_phase_build_available_defaults_map(&ctx, &pre);
 
     check_phase_check_members_against_requirements(
         &ctx,
@@ -296,13 +289,8 @@ pub(crate) fn check_trait_conformance(
     check_phase_inject_defaults(
         &ctx,
         structure,
-        &structure_all_members,
         &structure_constraint_labels,
-        pre.inferred_let_exprs,
-        &pre.pass1_skipped,
-        &pre.pass1_param_skipped,
-        &pre.pass2_skipped,
-        &pre.pass2_compile_errors,
+        pre,
         scope,
         value_cells,
         constraints,
@@ -2980,10 +2968,9 @@ mod tests {
 
     /// Pass 2, unannotated-`let` loser whose slot was claimed in Pass 1: `A`'s
     /// `param x` owns the scope slot, so `B`'s unannotated `let x` is dropped without
-    /// being injected — and without the "not cached" internal error that would flag the
-    /// Pass-2 and injection guards drifting apart. Bound order must not matter, because
-    /// Pass 1 runs over every default before Pass 2 does. The Bool `let` makes a
-    /// wrongly injected Let visibly distinct from the Real `param`.
+    /// being injected, and without being reported as phase drift. Bound order must not
+    /// matter, because Pass 1 runs over every default before Pass 2 does. The Bool `let`
+    /// makes a wrongly injected Let visibly distinct from the Real `param`.
     #[test]
     fn unannotated_trait_let_losing_to_same_name_param_is_not_injected() {
         let traits = r"
@@ -3030,6 +3017,34 @@ mod tests {
         assert!(
             injected_named(&run, "x").is_empty(),
             "the conformer's own `x` must win; got injected: {:?}",
+            run.injected_cells
+        );
+    }
+
+    /// Pins a known defect, #9410: a trait default the conformer overrides is still
+    /// advertised, so `A`'s `param x` default falsely satisfies `C`'s `param x` requirement
+    /// although `S`'s own `let x` replaces it and `S` has no `param x`. The fix flips the
+    /// first assertion to the missing-member diagnostic of the control without `A`,
+    /// `let_member_does_not_satisfy_param_requirement`.
+    #[test]
+    fn overridden_trait_param_default_falsely_satisfies_param_requirement() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait C { param x : Real }
+            structure def S : A + C { let x : Real = 2.0 }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "current behaviour (#9410): A's overridden default still satisfies C's \
+             `param x`, so nothing is reported; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            injected_named(&run, "x").is_empty(),
+            "the conformer declares `x`, so nothing is injected for it; got: {:?}",
             run.injected_cells
         );
     }
@@ -3646,7 +3661,8 @@ mod tests {
     /// the helper must return the inferred expression's result_type. This is the common
     /// path for unannotated let defaults that passed Pass 2 compilation successfully.
     /// After task 1914 suggestion #1, this is the only non-defensive path for
-    /// unannotated lets: names in `pass2_compile_errors` never reach this helper.
+    /// unannotated lets: a let recorded as `DefaultDisposition::CompileError` never reaches
+    /// this helper.
     #[test]
     fn resolve_let_advertised_type_uses_inferred_when_no_annotation() {
         let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
@@ -3662,10 +3678,10 @@ mod tests {
     ///
     /// When neither a cell_type annotation nor an inferred expression is available,
     /// the helper returns `Type::Error` (anti-cascade poison). This arm should not be
-    /// reached in practice — the `debug_assert!` at the advertisement call site
-    /// (site 1) catches drift;
-    /// the `Type::Error` fallback is defense in depth for release builds where the
-    /// `debug_assert!` is a no-op (task 3749, tightening of the 3639 G-allow carve-out).
+    /// reached in practice: at the advertisement call site (site 1) it means phase drift,
+    /// which injection reports. The `Type::Error` fallback is defense in depth for release
+    /// builds, where that report's `debug_assert!` is a no-op (task 3749, tightening of the
+    /// 3639 G-allow carve-out).
     #[test]
     fn resolve_let_advertised_type_falls_back_to_error_when_neither_annotation_nor_inferred() {
         let result = resolve_let_advertised_type(&None, None);
