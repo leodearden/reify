@@ -60,6 +60,8 @@ mod boolean_single_build_guard;
 mod conformance_integration;
 #[path = "harness_occt/contains.rs"]
 mod contains;
+#[path = "harness_occt/curated_selection_membership.rs"]
+mod curated_selection_membership;
 #[path = "harness_occt/curve_constructors_integration.rs"]
 mod curve_constructors_integration;
 #[path = "harness_occt/curve_curvature_integration.rs"]
