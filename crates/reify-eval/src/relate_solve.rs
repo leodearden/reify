@@ -27,9 +27,9 @@ use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
     max_relation_residual, ResidualRow, partition_driving_set, pose_from_frame, solve_frame,
-    static_relation_residuals,
+    solve_scaling, static_relation_residuals,
 };
-use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
 
@@ -817,10 +817,13 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // datums already encode the target, so identity is the correct witness here.
     let seed = Pose::identity();
 
-    // 2. Partition at the witness into driving + redundant; the rank-revealing
-    //    tolerance is tied to the solver-convergence tol (design §4).
-    let partition =
-        partition_driving_set(instances, &frame_unknown, &seed, tol.solver_convergence());
+    // ONE scaling for the whole scope, over every instance at the seed, so the
+    // partition, the solve, the conflict search and the re-check share one `L`.
+    let scaling = solve_scaling(instances, &frame_unknown, &seed, tol);
+
+    // 2. Partition at the witness into driving + redundant, by the rank of the
+    //    scaled Jacobian.
+    let partition = partition_driving_set(instances, &frame_unknown, &seed, &scaling);
 
     let mut solution = RelateSolution {
         spent: partition.spent,
@@ -834,7 +837,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // 3. Solve ONLY the driving set for the auto Frame.
     let driving_rels: Vec<RelationInstance> =
         partition.driving.iter().map(|&i| instances[i].clone()).collect();
-    let result = solve_frame(&driving_rels, &frame_unknown, &seed, tol.solver_convergence());
+    let result = solve_frame(&driving_rels, &frame_unknown, &seed, &scaling);
 
     let solved_pose = match result {
         // The solver's `unique` flag is intentionally not consumed here. For strict
@@ -868,7 +871,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 &partition.driving,
                 &frame_unknown,
                 &seed,
-                tol.solver_convergence(),
+                &scaling,
             );
             solution.diagnostics.push(conflict_diagnostic(&conflict, &built, &frame_unknown.sub));
             None
@@ -1700,13 +1703,13 @@ fn minimal_infeasible_subset(
     driving: &[usize],
     unknown: &FrameUnknown,
     seed: &Pose,
-    tol: f64,
+    scaling: &SolveScaling,
 ) -> Vec<usize> {
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
             let pair = [instances[i].clone(), instances[j].clone()];
             if matches!(
-                solve_frame(&pair, unknown, seed, tol),
+                solve_frame(&pair, unknown, seed, scaling),
                 SolveResult::Infeasible { .. }
             ) {
                 return vec![i, j];

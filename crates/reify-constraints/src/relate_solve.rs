@@ -42,7 +42,8 @@
 //! about the shank axis under concentric+flush) is handled gracefully rather than
 //! tripping a singular normal-equations solve. The 6 solved scalars are assembled
 //! into a [`Value::Frame`]; `unique` reflects whether the Jacobian at the solution
-//! pins all 6 DOF.
+//! pins all 6 DOF. Both the solve and the partition run in the scaled coordinates
+//! of one [`SolveScaling`] (PRD §7.3).
 //!
 //! **Backend note (see esc-4386-38).** The plan named a libslvs-backed solve
 //! (extending `solvespace.rs`'s `SystemBuilder`). The bound `Slvs_*` C API models
@@ -60,7 +61,7 @@ use std::collections::HashMap;
 use reify_core::{Diagnostic, DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
 
-use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
+use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
 /// sub. Carries the sub's instance name so the partition can tell which relation
@@ -177,39 +178,43 @@ pub struct RelationPartition {
 
 /// The number of DOF in a rigid Frame unknown.
 const FRAME_DOF: usize = 6;
-/// Central finite-difference step (metres for translation, radians for rotation).
+/// Central finite-difference step, RELATIVE to each unknown's nominal scale: DOF
+/// `j` is perturbed by `FD_STEP · s_j` (PRD §7.3), so the step is dimensionless.
 const FD_STEP: f64 = 1e-6;
-/// Below this norm a Jacobian row is treated as numerically zero (a residual
-/// component insensitive to every DOF — well under the FD noise floor of ~1e-10).
+/// Below this norm a raw Jacobian row is numerically zero (a residual component
+/// insensitive to every DOF — well under the FD noise floor of ~1e-10). Scaled
+/// rows apply it divided by `ε_rel` ([`RankCutoffs`]).
 const ZERO_ROW_FLOOR: f64 = 1e-9;
 
 /// Rank-partition a per-scope relation set at the `witness` config into a driving
 /// set + a redundant remainder, with DOF accounting (ζ step-8).
 ///
-/// `tol` is the rank-revealing tolerance (tied to the solver-convergence tol):
-/// after each Jacobian row is normalized, a Gram–Schmidt residual above `tol`
-/// counts as a new independent direction. See the module docs for the method.
+/// The rank is measured on the SCALED Jacobian of `scaling`, so translation and
+/// rotation columns are commensurate: after each row is normalized, a Gram–Schmidt
+/// residual above [`SolveScaling::rank_threshold`] counts as a new independent
+/// direction. See the module docs for the method.
 pub fn partition_driving_set(
     relations: &[RelationInstance],
     frame_unknown: &FrameUnknown,
     witness: &Pose,
-    tol: f64,
+    scaling: &SolveScaling,
 ) -> RelationPartition {
+    let cutoffs = RankCutoffs::of(scaling);
     let mut basis: Vec<[f64; FRAME_DOF]> = Vec::new();
     let mut driving = Vec::new();
     let mut redundant = Vec::new();
     let mut per_relation = Vec::new();
 
     for (i, rel) in relations.iter().enumerate() {
-        let rows = relation_jacobian(rel, frame_unknown, witness);
+        let (_, rows) = scaled_residual_jacobian(rel, frame_unknown, witness, scaling);
 
         // Individual rank: the rank of this relation's rows on their own (a fresh
         // basis) — the geometry-measured codimension cross-checked against γ.
         let mut solo: Vec<[f64; FRAME_DOF]> = Vec::new();
-        let individual_rank = add_rows_rank(&rows, &mut solo, tol) as u32;
+        let individual_rank = add_rows_rank(&rows, &mut solo, cutoffs) as u32;
 
         // Contribution to the running rank, in input order.
-        let rank_contribution = add_rows_rank(&rows, &mut basis, tol) as u32;
+        let rank_contribution = add_rows_rank(&rows, &mut basis, cutoffs) as u32;
         if rank_contribution > 0 {
             driving.push(i);
         } else {
@@ -306,24 +311,41 @@ const POSE_MEMBER: &str = "pose";
 /// satisfied, starting from `seed` (ζ step-10).
 ///
 /// Returns through the existing [`SolveResult`] contract:
-/// - [`SolveResult::Solved`] — the relation residual converged `≤ tol` (the method
-///   guarantee). `values` maps `ValueCellId::new(unknown.sub, "pose")` to a
-///   [`Value::Frame`] assembled from the 6 solved scalars; `unique` is `true` iff
-///   the Jacobian at the solution pins all 6 Frame DOF (no residual gauge freedom).
+/// - [`SolveResult::Solved`] — every residual row converged within its own nominal
+///   tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method guarantee).
+///   `values` maps `ValueCellId::new(unknown.sub, "pose")` to a [`Value::Frame`]
+///   assembled from the 6 solved scalars; `unique` is `true` iff the Jacobian at
+///   the solution pins all 6 Frame DOF (no residual gauge freedom).
 /// - [`SolveResult::Infeasible`] — the driving relations are mutually inconsistent
-///   (no pose drives the residual below `tol`). Step-16 refines the geometric
+///   (no pose drives every row within its tolerance). Step-16 refines the geometric
 ///   minimal-conflict diagnostic; ζ step-10 maps non-convergence to a build-failing
 ///   `Infeasible` so the contract is honoured.
-///
-/// `tol` is the solver-convergence tolerance — feed it from
-/// [`RelateTolerance::solver_convergence`](crate::scaling::RelateTolerance::solver_convergence).
 pub fn solve_frame(
     driving: &[RelationInstance],
     unknown: &FrameUnknown,
     seed: &Pose,
-    tol: f64,
+    scaling: &SolveScaling,
 ) -> SolveResult {
-    match gauss_newton_solve(driving, unknown, seed, tol) {
+    solve_frame_traced(driving, unknown, seed, scaling).0
+}
+
+/// What a [`solve_frame_traced`] run did on its way to its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameSolveTrace {
+    /// Trial steps taken, accepted or rejected (`0` when the seed already
+    /// converged).
+    pub iterations: u32,
+}
+
+/// [`solve_frame`], also reporting the run's [`FrameSolveTrace`].
+pub fn solve_frame_traced(
+    driving: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> (SolveResult, FrameSolveTrace) {
+    let (outcome, iterations) = gauss_newton_solve(driving, unknown, seed, scaling);
+    let result = match outcome {
         Some((pose, fully_pinned)) => {
             // `auto(free)` waives the uniqueness check (PRD §7.1 step 3): report
             // `unique:false` even when all 6 DOF are pinned. Strict `auto` reports
@@ -346,26 +368,35 @@ pub fn solve_frame(
                 unknown.sub
             ))],
         },
-    }
+    };
+    (result, FrameSolveTrace { iterations })
 }
 
-/// The largest absolute residual component over `relations` at `pose` — the
-/// geometry-backed measure of "how far from satisfied" the relation set is. A pose
-/// returned by [`solve_frame`] as `Solved` has `max_relation_residual ≤ tol`. Also
-/// the post-solve assertion primitive reused for the redundant-remainder check
-/// (step-14).
+/// The largest absolute residual component over `relations` at `pose`, with no
+/// regard to the unit each row is measured in — a raw "how far from satisfied".
+/// Judge a pose with [`max_relation_exceedance`] instead.
 pub fn max_relation_residual(
     relations: &[RelationInstance],
     unknown: &FrameUnknown,
     pose: &Pose,
 ) -> f64 {
-    let mut max = 0.0_f64;
-    for rel in relations {
-        for r in relation_residual(rel, unknown, pose) {
-            max = max.max(r.abs());
-        }
-    }
-    max
+    max_relation_exceedance(relations, unknown, pose, |_| 1.0)
+}
+
+/// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
+/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose returned
+/// by [`solve_frame`] as `Solved` meets the bar [`SolveScaling::row_tolerance`];
+/// the redundant-remainder re-check applies [`SolveScaling::assertion_rung`].
+pub fn max_relation_exceedance(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    pose: &Pose,
+    bar: impl Fn(ResidualUnit) -> f64,
+) -> f64 {
+    relations
+        .iter()
+        .flat_map(|rel| relation_residual_rows(rel, unknown, pose))
+        .fold(0.0_f64, |max, row| max.max(row.value.abs() / bar(row.unit)))
 }
 
 /// Convert a solved [`Value::Frame`] (or [`Value::Transform`]) back into a [`Pose`]
@@ -390,48 +421,58 @@ pub fn pose_from_frame(v: &Value) -> Option<Pose> {
 
 // ── Jacobian assembly ────────────────────────────────────────────────────────
 
-/// The `m × 6` residual Jacobian of `rel` w.r.t. the 6 Frame DOF at `witness`,
-/// by central finite differences. Returns one `[f64; 6]` row per residual
-/// component (empty if the relation has no residual model).
-fn relation_jacobian(
+/// The kind of Frame DOF `dof` (`0..3` translation, `3..6` rotation).
+fn dof_kind(dof: usize) -> UnknownKind {
+    if dof < 3 {
+        UnknownKind::PoseTranslation
+    } else {
+        UnknownKind::PoseRotation
+    }
+}
+
+/// The SCALED residual `r̃_i = r_i / t_i` of `rel` at `x`, each row over the nominal
+/// tolerance of its own unit (PRD §7.3).
+fn scaled_residual(
     rel: &RelationInstance,
     unknown: &FrameUnknown,
-    witness: &Pose,
-) -> Vec<[f64; FRAME_DOF]> {
-    let base = relation_residual(rel, unknown, witness);
-    let m = base.len();
-    if m == 0 {
-        return Vec::new();
-    }
-    let mut jac = vec![[0.0; FRAME_DOF]; m];
+    x: &Pose,
+    scaling: &SolveScaling,
+) -> Vec<f64> {
+    relation_residual_rows(rel, unknown, x)
+        .into_iter()
+        .map(|row| row.value / scaling.row_tolerance(row.unit))
+        .collect()
+}
+
+/// `rel`'s scaled residual at `x` and its `m × 6` Jacobian `J̃` in the scaled
+/// unknowns `x̃_j = x_j / s_j`, by central differences of step `FD_STEP · s_j`.
+/// One `[f64; 6]` row per residual component (both empty if the relation has no
+/// residual model).
+fn scaled_residual_jacobian(
+    rel: &RelationInstance,
+    unknown: &FrameUnknown,
+    x: &Pose,
+    scaling: &SolveScaling,
+) -> (Vec<f64>, Vec<[f64; FRAME_DOF]>) {
+    let residual = scaled_residual(rel, unknown, x, scaling);
+    let mut jac = vec![[0.0; FRAME_DOF]; residual.len()];
     for dof in 0..FRAME_DOF {
-        let rp = relation_residual(rel, unknown, &witness.perturbed(dof, FD_STEP));
-        let rm = relation_residual(rel, unknown, &witness.perturbed(dof, -FD_STEP));
-        if rp.len() != m || rm.len() != m {
+        let h = FD_STEP * scaling.unknown_scale(dof_kind(dof));
+        let rp = scaled_residual(rel, unknown, &x.perturbed(dof, h), scaling);
+        let rm = scaled_residual(rel, unknown, &x.perturbed(dof, -h), scaling);
+        if rp.len() != residual.len() || rm.len() != residual.len() {
             continue;
         }
         for (r, row) in jac.iter_mut().enumerate() {
             row[dof] = (rp[r] - rm[r]) / (2.0 * FD_STEP);
         }
     }
-    jac
+    (residual, jac)
 }
 
-/// Evaluate `rel`'s residual at pose `x`: transform each MOVING datum operand
+/// Evaluate `rel`'s residual rows at pose `x`: transform each MOVING datum operand
 /// (one whose sub is the auto unknown) by `x`, leave anchors fixed, then dispatch
 /// on the relation name. A zero residual means the relation is satisfied at `x`.
-fn relation_residual(rel: &RelationInstance, unknown: &FrameUnknown, x: &Pose) -> Vec<f64> {
-    // The solver reads magnitudes only — it minimises the vector and differentiates it,
-    // and neither operation consults a unit. Stripping the tags here keeps every number,
-    // and therefore every convergence property, exactly as it was; only the diagnostic
-    // path ([`static_relation_residuals`]) needs to say what it measured.
-    relation_residual_rows(rel, unknown, x)
-        .into_iter()
-        .map(|row| row.value)
-        .collect()
-}
-
-/// [`relation_residual`] with each component still carrying its [`ResidualUnit`].
 fn relation_residual_rows(
     rel: &RelationInstance,
     unknown: &FrameUnknown,
@@ -585,7 +626,7 @@ fn pick_ab(datums: &[(Value, bool)]) -> Option<(&Value, &Value)> {
 ///
 /// It is tempting to pass a sentinel [`FrameUnknown`] naming no real sub, since
 /// by construction nothing moves. That is WRONG, and wrong in both directions.
-/// [`relation_residual`] marks an operand moving iff `op.sub == unknown.sub`, and
+/// [`relation_residual_rows`] marks an operand moving iff `op.sub == unknown.sub`, and
 /// [`pick_ab`] then resolves `a` to the first MOVING operand *else*
 /// `datums.first()`, and `b` to the first NON-MOVING operand *else*
 /// `datums.last()`. With zero moving operands, `a` falls through to `datums[0]`
@@ -673,9 +714,9 @@ pub fn comparable_datum_operands(rel: &RelationInstance) -> usize {
 
 /// One residual component with the unit it is measured in.
 ///
-/// The solver reads only [`ResidualRow::value`] (via [`relation_residual`], which
-/// strips the tags), so tagging changes no number and no convergence behaviour.
-/// The tag exists for the DIAGNOSTIC path, which has to say what it measured.
+/// The unit selects the row's nominal tolerance in the scaled solve and its
+/// assertion rung in the post-solve and static checks, which also have to say what
+/// they measured.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResidualRow {
     pub value: f64,
@@ -1290,16 +1331,40 @@ fn vector_value(v: [f64; 3]) -> Value {
 
 // ── Rank-revealing Gram–Schmidt ──────────────────────────────────────────────
 
+/// The cutoffs [`add_rows_rank`] applies to SCALED Jacobian rows.
+#[derive(Debug, Clone, Copy)]
+struct RankCutoffs {
+    /// The Gram–Schmidt residual above which a normalized row is independent.
+    independence: f64,
+    /// The norm below which a row is numerically zero. A genuine scaled row has
+    /// norm ~`1/ε_rel`, so the raw [`ZERO_ROW_FLOOR`] is divided by `ε_rel`, which
+    /// keeps today's cut between real rows and FD noise.
+    zero_row: f64,
+}
+
+impl RankCutoffs {
+    fn of(scaling: &SolveScaling) -> Self {
+        Self {
+            independence: scaling.rank_threshold(),
+            zero_row: ZERO_ROW_FLOOR / scaling.tolerance().relative_convergence(),
+        }
+    }
+}
+
 /// Add `rows` to the orthonormal `basis` one at a time, returning how many were
 /// linearly independent of the running span. Each row is normalized before
-/// Gram–Schmidt so the rank test is purely about direction independence (scale-
-/// and unit-invariant); a row whose post-orthogonalization residual exceeds `tol`
-/// is a new independent direction. Numerically-zero rows are skipped.
-fn add_rows_rank(rows: &[[f64; FRAME_DOF]], basis: &mut Vec<[f64; FRAME_DOF]>, tol: f64) -> usize {
+/// Gram–Schmidt so the rank test is purely about direction independence; a row
+/// whose post-orthogonalization residual exceeds `cutoffs.independence` is a new
+/// independent direction. Numerically-zero rows are skipped.
+fn add_rows_rank(
+    rows: &[[f64; FRAME_DOF]],
+    basis: &mut Vec<[f64; FRAME_DOF]>,
+    cutoffs: RankCutoffs,
+) -> usize {
     let mut added = 0;
     for row in rows {
         let n = norm6(row);
-        if n < ZERO_ROW_FLOOR {
+        if n < cutoffs.zero_row {
             continue;
         }
         let mut v = *row;
@@ -1311,7 +1376,7 @@ fn add_rows_rank(rows: &[[f64; FRAME_DOF]], basis: &mut Vec<[f64; FRAME_DOF]>, t
             }
         }
         let r = norm6(&v);
-        if r > tol {
+        if r > cutoffs.independence {
             scale6_inplace(&mut v, 1.0 / r);
             basis.push(v);
             added += 1;
@@ -1327,41 +1392,54 @@ fn add_rows_rank(rows: &[[f64; FRAME_DOF]], basis: &mut Vec<[f64; FRAME_DOF]>, t
 /// in a handful of iterations; the cap only bounds genuinely-inconsistent inputs.
 const MAX_SOLVE_ITERS: usize = 200;
 
-/// Drive `unknown`'s pose from `seed` to satisfy `relations` by damped Gauss–Newton.
+/// Drive `unknown`'s pose from `seed` to satisfy `relations` by damped Gauss–Newton
+/// in the scaled coordinates of `scaling`, returning the outcome and the number of
+/// trial steps taken.
 ///
-/// Returns `Some((pose, unique))` when the residual converges `≤ tol` (`unique` =
-/// "all 6 DOF pinned at the solution"), or `None` when no pose drives the residual
-/// below `tol` within [`MAX_SOLVE_ITERS`]. `λI` damping keeps the normal-equations
-/// solve well-posed even when the Jacobian is rank-deficient (a residual gauge
-/// freedom), so the gauge DOF simply stays near its seed rather than blowing up.
+/// The outcome is `Some((pose, unique))` once every scaled row is within one
+/// nominal tolerance, `max|r̃| ≤ 1` (`unique` = "all 6 DOF pinned at the
+/// solution"), or `None` when no pose gets there within [`MAX_SOLVE_ITERS`].
+/// Damping keeps the normal-equations solve well-posed even when the Jacobian is
+/// rank-deficient (a residual gauge freedom), so the gauge DOF simply stays near
+/// its seed rather than blowing up.
 fn gauss_newton_solve(
     relations: &[RelationInstance],
     unknown: &FrameUnknown,
     seed: &Pose,
-    tol: f64,
-) -> Option<(Pose, bool)> {
+    scaling: &SolveScaling,
+) -> (Option<(Pose, bool)>, u32) {
+    let cutoffs = RankCutoffs::of(scaling);
+    let scales: [f64; FRAME_DOF] = std::array::from_fn(|dof| scaling.unknown_scale(dof_kind(dof)));
+    // `λ` is stated relative to the scaled normal matrix's nominal curvature
+    // `ε_rel⁻²`, so the schedule below keeps its unscaled meaning.
+    let relative = scaling.tolerance().relative_convergence();
+    let nominal_curvature = 1.0 / (relative * relative);
+
     let mut x = pose_to_vec6(seed);
-    let (mut r, mut jac) = combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x));
+    let (mut r, mut jac) =
+        combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x), scaling);
 
     // No residual rows at all (empty/row-free driving set) ⇒ nothing to pin; the
     // seed trivially "satisfies" the (empty) set and leaves all 6 DOF free.
     if r.is_empty() {
-        return Some((vec6_to_pose(&x), false));
+        return (Some((vec6_to_pose(&x), false)), 0);
     }
 
     let mut cost = sum_sq(&r);
     let mut lambda = 1e-3_f64;
+    let mut iterations = 0;
 
     for _ in 0..MAX_SOLVE_ITERS {
-        if max_abs(&r) <= tol {
-            let unique = rank_of(&jac, tol) >= FRAME_DOF;
-            return Some((vec6_to_pose(&x), unique));
+        if max_abs(&r) <= 1.0 {
+            let unique = rank_of(&jac, cutoffs) >= FRAME_DOF;
+            return (Some((vec6_to_pose(&x), unique)), iterations);
         }
+        iterations += 1;
 
-        // Normal equations: (JᵀJ + λI) δ = Jᵀr, step is x ← x − δ.
+        // Normal equations: (J̃ᵀJ̃ + λ·ε_rel⁻²·I) δ̃ = J̃ᵀr̃, step is x ← x − δ̃·s.
         let (mut a, g) = normal_equations(&jac, &r);
         for (i, row) in a.iter_mut().enumerate() {
-            row[i] += lambda;
+            row[i] += lambda * nominal_curvature;
         }
         let delta = match solve6(&a, &g) {
             Some(d) => d,
@@ -1376,10 +1454,11 @@ fn gauss_newton_solve(
         };
 
         let mut x_new = x;
-        for (xi, di) in x_new.iter_mut().zip(delta.iter()) {
-            *xi -= *di;
+        for ((xi, di), si) in x_new.iter_mut().zip(delta.iter()).zip(scales.iter()) {
+            *xi -= *di * *si;
         }
-        let (r_new, jac_new) = combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x_new));
+        let (r_new, jac_new) =
+            combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x_new), scaling);
         let cost_new = sum_sq(&r_new);
 
         if cost_new < cost {
@@ -1399,28 +1478,29 @@ fn gauss_newton_solve(
     }
 
     // Converged on the final iterate?
-    if max_abs(&r) <= tol {
-        Some((vec6_to_pose(&x), rank_of(&jac, tol) >= FRAME_DOF))
+    let outcome = if max_abs(&r) <= 1.0 {
+        Some((vec6_to_pose(&x), rank_of(&jac, cutoffs) >= FRAME_DOF))
     } else {
         None
-    }
+    };
+    (outcome, iterations)
 }
 
-/// Concatenate every relation's residual + matching Jacobian rows at `pose` into one
-/// `(residual, jacobian)` pair (rows aligned 1:1). Built together so the residual
-/// vector and Jacobian block can never drift in length.
+/// Concatenate every relation's scaled residual + matching Jacobian rows at `pose`
+/// into one `(residual, jacobian)` pair (rows aligned 1:1). Built together so the
+/// residual vector and Jacobian block can never drift in length.
 fn combined_residual_jacobian(
     relations: &[RelationInstance],
     unknown: &FrameUnknown,
     pose: &Pose,
+    scaling: &SolveScaling,
 ) -> (Vec<f64>, Vec<[f64; FRAME_DOF]>) {
     let mut res = Vec::new();
     let mut jac = Vec::new();
     for rel in relations {
-        let rows = relation_jacobian(rel, unknown, pose);
-        let rr = relation_residual(rel, unknown, pose);
-        // `relation_jacobian` sizes itself from `relation_residual` at the same pose,
-        // so the lengths match. Make the invariant LOUD in debug builds so a future
+        let (rr, rows) = scaled_residual_jacobian(rel, unknown, pose, scaling);
+        // `scaled_residual_jacobian` sizes the Jacobian from the residual at the same
+        // pose, so the lengths match. Make the invariant LOUD in debug builds so a future
         // residual/Jacobian length divergence surfaces in tests rather than silently
         // dropping a constraint (which could spuriously report `Solved`/under-determined);
         // the `if` keeps release builds defensively guarded.
@@ -1442,9 +1522,9 @@ fn combined_residual_jacobian(
 
 /// The rank of a Jacobian block (number of linearly-independent rows), via the same
 /// rank-revealing Gram–Schmidt the partition uses.
-fn rank_of(jac: &[[f64; FRAME_DOF]], tol: f64) -> usize {
+fn rank_of(jac: &[[f64; FRAME_DOF]], cutoffs: RankCutoffs) -> usize {
     let mut basis = Vec::new();
-    add_rows_rank(jac, &mut basis, tol)
+    add_rows_rank(jac, &mut basis, cutoffs)
 }
 
 /// Form the 6×6 normal matrix `A = JᵀJ` and gradient `g = Jᵀr`.

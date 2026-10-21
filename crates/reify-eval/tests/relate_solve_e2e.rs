@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, max_relation_residual, partition_driving_set,
-    pose_from_frame,
+    pose_from_frame, solve_scaling,
 };
 use reify_constraints::scaling::RelateTolerance;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
@@ -1288,8 +1288,8 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // The exact integers, not a range: cylinder/plane is codimension 2 and
     // cylinder/cylinder codimension 1, so the scope spends 3 and leaves 3. A silent
     // no-solve measures individual_rank 0 for BOTH.
-    let partition =
-        partition_driving_set(&instances, &unknown, &Pose::identity(), tol.solver_convergence());
+    let scaling = solve_scaling(&instances, &unknown, &Pose::identity(), tol);
+    let partition = partition_driving_set(&instances, &unknown, &Pose::identity(), &scaling);
     assert_eq!(
         partition.per_relation[0].individual_rank, 2,
         "tangent(cylinder, plane) is codimension 2 — one rotational row (axis ⟂ normal) \
