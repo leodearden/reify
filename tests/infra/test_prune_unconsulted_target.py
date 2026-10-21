@@ -34,6 +34,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "prune-unconsulted-target.sh"
+REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
 
 DAY = 24 * 3600
 ANCHOR = datetime(2026, 3, 10, tzinfo=timezone.utc).timestamp()
@@ -64,6 +65,15 @@ sed -n "${n}p" "$REIFY_TEST_DF_SEQ_FILE"
 """
 
 GIB = 1024 ** 3
+
+
+def write_executable(path, body):
+    path.write_text(body)
+    path.chmod(0o755)
+
+
+def env_without(*prefixes):
+    return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
 
 
 def make_unit(profile, pkg, hash16, last_use, deps_names):
@@ -127,12 +137,10 @@ class PruneHarness(unittest.TestCase):
         self.release = self.target / "release"
 
     def write_stub(self, name, body):
-        stub = self.stub_dir / name
-        stub.write_text(body)
-        stub.chmod(0o755)
+        write_executable(self.stub_dir / name, body)
 
     def run_prune(self, *args, script=SCRIPT, env=None):
-        run_env = {k: v for k, v in os.environ.items() if not k.startswith("REIFY_TEST_")}
+        run_env = env_without("REIFY_TEST_", "GIT_")
         run_env["PATH"] = f"{self.stub_dir}{os.pathsep}{run_env.get('PATH', '')}"
         run_env["REIFY_TEST_CALLS_FILE"] = str(self.calls_file)
         run_env["TMPDIR"] = str(self.scratch_tmp)
@@ -476,6 +484,91 @@ class FreeSpaceFloor(PruneHarness):
                 self.assertEqual(self.tree(), before)
                 self.assertEqual(self.findmnt_calls(), [])
                 self.assertEqual(self.calls_of("df"), [])
+
+
+# A stand-in sibling for refresh-warm-base.sh: records its argv, one call per
+# line, tab-separated, and prunes nothing.
+RECORDING_PRUNE = """#!/bin/sh
+printf '%s\t' "$@" >> "$REIFY_TEST_PRUNE_RECORD"
+printf '\n' >> "$REIFY_TEST_PRUNE_RECORD"
+exit 0
+"""
+
+
+class RefreshDelegation(PruneHarness):
+    """refresh-warm-base.sh's Step 3b prune comes ONLY from its sibling
+    prune-unconsulted-target.sh: with a no-op sibling nothing is pruned, and
+    with no sibling the refresh fails closed rather than skipping the prune."""
+
+    def setUp(self):
+        super().setUp()
+        real_cp = shutil.which("cp")
+        self.write_stub("cp", f"""#!/usr/bin/env bash
+args=()
+for a in "$@"; do
+    [ "$a" = "--reflink=always" ] && continue
+    args+=("$a")
+done
+exec {real_cp} "${{args[@]}}"
+""")
+        self.lane = self.make_git_lane(self.tmp / "lane")
+        self.advancing = self.lane / "advancing"
+        make_anchor(self.advancing / "debug")
+        self.dead = make_unit(self.advancing / "debug", "dead", "deadbeef00009246",
+                              ANCHOR - 37 * DAY, ["libdead-deadbeef00009246.rlib"])
+        self.base = self.tmp / "base"
+        self.scripts_dir = self.tmp / "scripts"
+        self.scripts_dir.mkdir()
+        self.refresh = self.scripts_dir / REFRESH.name
+        shutil.copy2(REFRESH, self.refresh)
+        self.record = self.tmp / "prune-record"
+        self.record.touch()
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], env=env_without("GIT_"),
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def make_git_lane(self, lane):
+        """A clean worktree whose HEAD is on main, with an untracked advancing/
+        (mirrors mk_git_advancing in tests/infra/test_refresh_warm_base.sh)."""
+        lane.mkdir()
+        (lane / ".placeholder").write_text("placeholder\n")
+        self.git("init", "-q", "-b", "main", str(lane))
+        self.git("-C", str(lane), "add", "--", ".placeholder")
+        self.git("-C", str(lane), "-c", "user.email=warm-lane-test@localhost",
+                 "-c", "user.name=Warm Lane Test", "-c", "commit.gpgsign=false",
+                 "commit", "-q", "--no-verify", "-m", "fixture: hermetic advancing lane")
+        (lane / "advancing").mkdir()
+        return lane
+
+    def run_refresh(self):
+        head = self.git("-C", str(self.lane), "rev-parse", "HEAD")
+        return self.run_prune(self.advancing, self.base, "--landed-commit", head,
+                              script=self.refresh,
+                              env={"REIFY_TEST_PRUNE_RECORD": str(self.record)})
+
+    def partials(self):
+        return sorted(self.tmp.glob("base.gen.*.partial"))
+
+    def test_the_prune_is_the_siblings_and_nothing_else_prunes(self):
+        write_executable(self.scripts_dir / SCRIPT.name, RECORDING_PRUNE)
+
+        result = self.run_refresh()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.record.read_text().splitlines()
+        self.assertEqual(len(calls), 1, calls)
+        profile_arg = calls[0].rstrip("\t").split("\t")[-1]
+        self.assertRegex(profile_arg, rf"^{re.escape(str(self.base))}\.gen\.\d+\.partial/debug$")
+        gen = Path(os.readlink(self.base))
+        self.assertPresent([gen / "debug" / "deps" / p.name for p in self.dead])
+
+    def test_a_missing_sibling_fails_the_refresh_closed(self):
+        result = self.run_refresh()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.lexists(self.base), "the base advanced without a prune")
+        self.assertEqual(self.partials(), [])
 
 
 class Standalone(PruneHarness):
