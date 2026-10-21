@@ -761,10 +761,12 @@ fn get_mechanism_descriptors_current_value_si_updates_after_preview_parameter() 
 
 /// Source for step-9: 1-body mechanism where y_axis is bound to a bare
 /// dimensionless number `0.5`.  `bind(y_axis, 0.5)` — NumberLiteral →
-/// initial_value_si should be Some(0.5) (no unit conversion).
+/// initial_value_si should be Some(0.5) (no unit conversion).  The joint is a
+/// revolute so the bare number stays a legal bind (radians); a prismatic
+/// refuses a bare number at eval (#6941).
 const SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = revolute(vec3(1, 0, 0), 0rad .. 1rad)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 0.5)])

@@ -667,6 +667,16 @@ pub fn accept_arg_or_bare(value: &crate::value::Value, spec: &ArgSpec) -> Accept
     }
 }
 
+/// [`accept_arg`] as a reader's `Result`: `Ok(Some(si))` accepted, `Ok(None)`
+/// unresolved, `Err` refused — the strict twin of [`read_arg_or_bare`], so a
+/// bare number at a dimensioned position is an `Err`.
+pub fn read_arg(
+    value: &crate::value::Value,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, ArgRejection> {
+    acceptance_reading(accept_arg(value, spec))
+}
+
 /// [`accept_arg_or_bare`] as a reader's `Result`: `Ok(Some(si))` accepted,
 /// `Ok(None)` unresolved, `Err` refused.
 ///
@@ -679,7 +689,12 @@ pub fn read_arg_or_bare(
     value: &crate::value::Value,
     spec: &ArgSpec,
 ) -> Result<Option<f64>, ArgRejection> {
-    match accept_arg_or_bare(value, spec) {
+    acceptance_reading(accept_arg_or_bare(value, spec))
+}
+
+/// A positional [`Acceptance`] as a reader's `Result`.
+fn acceptance_reading(acceptance: Acceptance) -> Result<Option<f64>, ArgRejection> {
+    match acceptance {
         Acceptance::Accepted(si) => Ok(Some(si)),
         Acceptance::Undefined => Ok(None),
         Acceptance::Rejected(rejection) => Err(rejection),

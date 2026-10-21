@@ -1576,9 +1576,17 @@ pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
     Value::Map(m)
 }
 
-// ── Fallback-Warning diagnostic hook (task 4471) ─────────────────────────
+// ── Diagnostic hook: center_of_mass fallback (task 4471), snapshot binds ──
 
-/// Fallback-Warning diagnostic hook for `center_of_mass`.
+/// Diagnostic hook for `snapshot` and `center_of_mass`.
+///
+/// `snapshot` (PRD 5 boundary row B7): on a `Value::Undef` result, one
+/// `DimensionedArgRejected` Error per binding whose value its joint refuses
+/// by dimension, named `bindings[i].value`
+/// ([`crate::loop_closure::binding_rejections`]). A correct snapshot is not
+/// diagnosed.
+///
+/// `center_of_mass` — the fallback Warning:
 ///
 /// Mirrors the `dfm::diagnose` / `flexure_diagnose` **both-path** pattern:
 /// runs on both the success AND `Value::Undef` result paths (registered as
@@ -1592,13 +1600,20 @@ pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
 /// id so authors can identify which body to annotate.
 ///
 /// All other cases return an empty `Vec`:
-/// - Any name other than `"center_of_mass"`.
+/// - Any name other than `"snapshot"` / `"center_of_mass"`.
 /// - `result` is `Value::Undef` (arity error, degenerate all-zero-mass path,
 ///   etc. — the explicit rung was used correctly or the call was invalid).
 /// - All bodies are unresolved (pure-legacy — stays silent).
 /// - All bodies are resolved (no fallback occurred).
 pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
-    // Scoped to center_of_mass only.
+    if name == "snapshot" {
+        return match (result, args.get(1)) {
+            (Value::Undef, Some(Value::List(bindings))) => {
+                crate::loop_closure::binding_rejections(name, bindings)
+            }
+            _ => Vec::new(),
+        };
+    }
     if name != "center_of_mass" {
         return Vec::new();
     }

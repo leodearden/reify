@@ -51,7 +51,11 @@
 //! design rationale and convergence-tolerance defaults (1 µm position, 1 µrad
 //! rotation — surfaced as `NewtonConfig` knobs in `reify_constraints::loop_closure`).
 
+use reify_core::Diagnostic;
 use reify_ir::Value;
+use reify_ir::arg_acceptance::{
+    ArgRejection, angle_spec, length_spec, read_arg, read_arg_or_bare,
+};
 
 use crate::eval_builtin;
 use crate::loop_closure_value::{JointKind, JointValue};
@@ -518,7 +522,11 @@ pub type LoopClosureSolverInputs = (
 ///   * missing/non-List `path_a` or `path_b`,
 ///   * either path empty or missing the leading world sentinel,
 ///   * any chain joint that has no resolvable SI value (no binding, not
-///     0-DOF, no midpoint — e.g. malformed Maps, unbounded ranges).
+///     0-DOF, no midpoint — e.g. malformed Maps, unbounded ranges),
+///   * any chain joint whose binding is present but refused (a value of the
+///     wrong dimension or shape for its kind) — the author's bind is never
+///     silently replaced by the range midpoint; [`binding_rejections`] names
+///     the dimension refusals.
 ///
 /// The world sentinel at chain head is identified by `kind = "world"`
 /// (matching `mechanism::is_world`) and dropped before composition — the
@@ -592,7 +600,7 @@ pub fn extract_loop_closure_chains(
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
-        if let Some(v_jv) = direct_binding_value(joint, bindings) {
+        if let Some(v_jv) = direct_binding_value(joint, bindings).ok()? {
             vals_b_initial.push(v_jv);
         } else {
             // KCC-γ step-10: multi-DOF kinds (planar / spherical /
@@ -691,123 +699,181 @@ fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
     Some(path[1..].to_vec())
 }
 
+/// A present binding whose value does not read as its joint's motion
+/// variable: the wrong dimension (see [`BindRejection`]) or the wrong shape.
+struct RefusedBinding;
+
 /// Look up a joint's motion value via a *direct* binding entry (no coupling
-/// recursion, no midpoint fallback), wrapped as a typed [`JointValue`].
+/// recursion, no midpoint fallback), read per the joint's kind by
+/// [`jointvalue_from_bound_value`].
 ///
-/// Linear scan — same shape as snapshot.rs's `value_for` direct-binding
-/// arm, but returns the bound value as a per-DOF surface keyed on joint
-/// kind:
-///
-///   * `prismatic` / `revolute`              → `JointValue::Scalar(s)`
-///   * `coupling`                            → delegates to parent kind
-///   * `fixed`                               → `JointValue::Scalar(0.0)`
-///     (sentinel; `transform_at("fixed", _)` ignores the value)
-///   * `planar`     ← `Value::List([len, len, ang])` → `JointValue::Planar`
-///   * `spherical`  ← `Value::Orientation { w, x, y, z }` → `JointValue::Sphere`
-///   * `cylindrical` ← `Value::List([len, ang])`    → `JointValue::Cyl`
-///
-/// Returns None when no binding entry's `joint` field is structurally equal
-/// to `joint`, when the joint kind is unknown, or when the bound `value`
-/// shape doesn't match the expected per-kind surface (e.g. a Scalar bound
-/// to a planar joint, or a Vector bound to a revolute).
+/// `Ok(None)` when no binding entry's `joint` field is structurally equal to
+/// `joint`; `Err` when one is but its `value` is refused — so a caller never
+/// mistakes a refused bind for an unbound joint and seeds it from the range
+/// midpoint instead.
 ///
 /// Used in the closing-side `chain_b` walk to distinguish "user-pinned
 /// joint with explicit binding" (fixed initial value) from "free joint
 /// the solver should iterate" (no direct binding, falls through to
 /// midpoint seed + free_b membership).
-///
-/// **Dimension validation is deferred.**  `Value::as_f64()` returns the
-/// bare `si_value` regardless of the carried `Dimension`, so a user who
-/// binds a length-dimensioned scalar to a revolute joint (or vice versa)
-/// will silently feed a wrong-magnitude SI numeric value into the
-/// solver's `vals_a` / `vals_b_initial`.  The closed-chain path here is
-/// upstream of snapshot.rs's `transform_at` validation site, which
-/// catches the dimension mismatch when the solver-converged value is
-/// rehydrated for the FK re-walk via `wrap_jointvalue_for_joint` →
-/// `transform_at`.  In practice the residual-evaluation path inside
-/// `solve_loop_closure` invokes `chain_transform`, which itself routes
-/// through dimension-checked Transform composition; a wrong-dimension
-/// value will surface as a non-converging residual rather than as a
-/// silent acceptance of an inconsistent configuration.  Callers that
-/// want eager validation should compose this with the joint-kind
-/// predicate at the snapshot boundary.
-fn direct_binding_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> {
-    for entry in bindings {
-        let map = match entry {
-            Value::Map(m) => m,
-            _ => continue,
-        };
-        if map.get(&Value::String("joint".to_string())) == Some(joint)
-            && let Some(v) = map.get(&Value::String("value".to_string()))
-        {
-            return jointvalue_from_bound_value(joint, v);
-        }
+fn direct_binding_value(
+    joint: &Value,
+    bindings: &[Value],
+) -> Result<Option<JointValue>, RefusedBinding> {
+    let Some(bound) = bound_value(joint, bindings) else {
+        return Ok(None);
+    };
+    match jointvalue_from_bound_value(joint, bound) {
+        Ok(Some(jv)) => Ok(Some(jv)),
+        Ok(None) | Err(_) => Err(RefusedBinding),
     }
-    None
+}
+
+/// The `value` of the first binding entry whose `joint` is structurally equal
+/// to `joint` — the same left-to-right first match as snapshot.rs's
+/// `value_for`. Malformed entries are skipped.
+fn bound_value<'a>(joint: &Value, bindings: &'a [Value]) -> Option<&'a Value> {
+    bindings.iter().find_map(|entry| match entry {
+        Value::Map(map) if map.get(&Value::String("joint".to_string())) == Some(joint) => {
+            map.get(&Value::String("value".to_string()))
+        }
+        _ => None,
+    })
+}
+
+/// A bound value refused by dimension: the rejection, and for a multi-DOF
+/// joint the index of the refused component.
+struct BindRejection {
+    component: Option<usize>,
+    rejection: ArgRejection,
+}
+
+/// A LENGTH motion component in metres: a finite LENGTH Scalar. A bare number
+/// is refused — it would otherwise read as metres, the 10-vs-10mm hazard.
+pub(crate) fn length_component(v: &Value) -> Result<Option<f64>, ArgRejection> {
+    Ok(read_arg(v, &length_spec())?.filter(|m| m.is_finite()))
+}
+
+/// An ANGLE motion component in radians: a finite ANGLE Scalar, or a bare
+/// number read as radians (the legacy spelling `transform_at`'s `trig_input`
+/// also accepts; retiring it is PRD 3's).
+fn angle_component(v: &Value) -> Result<Option<f64>, ArgRejection> {
+    Ok(read_arg_or_bare(v, &angle_spec())?.filter(|r| r.is_finite()))
 }
 
 /// Convert a bound `Value` (the `value` field of a `bind(joint, value)`
 /// binding Map) into the typed `JointValue` shape that matches the joint's
-/// kind.  Inverse of `value_for_joint` — `direct_binding_value` calls this
-/// after locating a matching binding entry.
+/// kind, reading each component at its own dimension.  Inverse of
+/// [`value_for_joint`] — `direct_binding_value` calls this after locating a
+/// matching binding entry.
 ///
-/// Per-kind surface contract (mirrors `value_for_joint` at loop_closure.rs:399):
-///   * `prismatic` / `revolute`              → `Scalar(v.as_f64()?)`
+/// Per-kind surface contract (mirrors [`value_for_joint`]):
+///   * `prismatic` ← LENGTH                  → `Scalar(m)`
+///   * `revolute`  ← ANGLE (or bare radians) → `Scalar(rad)`
 ///   * `coupling`                            → recurses through `parent` kind
 ///   * `fixed`                               → `Scalar(0.0)` (value ignored)
 ///   * `planar`     ← `Value::List([len, len, ang])` → `Planar([x, y, θ])`
 ///   * `spherical`  ← `Value::Orientation`           → `Sphere([w, x, y, z])`
 ///   * `cylindrical` ← `Value::List([len, ang])`     → `Cyl([d, θ])`
-fn jointvalue_from_bound_value(joint: &Value, bound: &Value) -> Option<JointValue> {
+///
+/// `Err` names the component refused by dimension; `Ok(None)` is any other
+/// unreadable value (wrong shape, unresolved, non-finite, unknown kind).
+fn jointvalue_from_bound_value(
+    joint: &Value,
+    bound: &Value,
+) -> Result<Option<JointValue>, BindRejection> {
     let map = match joint {
         Value::Map(m) => m,
-        _ => return None,
+        _ => return Ok(None),
     };
     let kind = match map.get(&Value::String("kind".to_string())) {
         Some(Value::String(s)) => s.as_str(),
-        _ => return None,
+        _ => return Ok(None),
+    };
+    let whole = |rejection| BindRejection {
+        component: None,
+        rejection,
+    };
+    let component = |reader: fn(&Value) -> Result<Option<f64>, ArgRejection>,
+                     items: &[Value],
+                     index: usize| {
+        reader(&items[index]).map_err(|rejection| BindRejection {
+            component: Some(index),
+            rejection,
+        })
     };
     match kind {
-        "prismatic" | "revolute" => Some(JointValue::Scalar(bound.as_f64()?)),
-        "coupling" => {
-            let parent = map.get(&Value::String("parent".to_string()))?;
-            jointvalue_from_bound_value(parent, bound)
-        }
+        "prismatic" => Ok(length_component(bound).map_err(whole)?.map(JointValue::Scalar)),
+        "revolute" => Ok(angle_component(bound).map_err(whole)?.map(JointValue::Scalar)),
+        "coupling" => match map.get(&Value::String("parent".to_string())) {
+            Some(parent) => jointvalue_from_bound_value(parent, bound),
+            None => Ok(None),
+        },
         // 0-DOF: `transform_at("fixed", _)` ignores the value; downstream
         // chain machinery ignores the Scalar payload via the kind dispatch.
-        "fixed" => Some(JointValue::Scalar(0.0)),
+        "fixed" => Ok(Some(JointValue::Scalar(0.0))),
         "planar" => {
             let items = match bound {
                 Value::List(items) if items.len() == 3 => items,
-                _ => return None,
+                _ => return Ok(None),
             };
-            let x = items[0].as_f64()?;
-            let y = items[1].as_f64()?;
-            let theta = items[2].as_f64()?;
-            Some(JointValue::Planar([x, y, theta]))
+            let x = component(length_component, items, 0)?;
+            let y = component(length_component, items, 1)?;
+            let theta = component(angle_component, items, 2)?;
+            Ok(x.zip(y)
+                .zip(theta)
+                .map(|((x, y), theta)| JointValue::Planar([x, y, theta])))
         }
         "spherical" => match bound {
-            Value::Orientation { w, x, y, z } => Some(JointValue::Sphere([*w, *x, *y, *z])),
-            _ => None,
+            Value::Orientation { w, x, y, z } => Ok(Some(JointValue::Sphere([*w, *x, *y, *z]))),
+            _ => Ok(None),
         },
         "cylindrical" => {
             let items = match bound {
                 Value::List(items) if items.len() == 2 => items,
-                _ => return None,
+                _ => return Ok(None),
             };
-            let d = items[0].as_f64()?;
-            let theta = items[1].as_f64()?;
-            Some(JointValue::Cyl([d, theta]))
+            let d = component(length_component, items, 0)?;
+            let theta = component(angle_component, items, 1)?;
+            Ok(d.zip(theta).map(|(d, theta)| JointValue::Cyl([d, theta])))
         }
-        _ => None,
+        _ => Ok(None),
     }
+}
+
+/// The diagnostics `builtin` (`snapshot`) owes for `bindings`: one
+/// `DimensionedArgRejected` Error per binding whose value its joint refuses
+/// by dimension, named `bindings[i].value` (`bindings[i].value[c]` for a
+/// multi-DOF component), worded by the shared reader.
+pub(crate) fn binding_rejections(builtin: &str, bindings: &[Value]) -> Vec<Diagnostic> {
+    bindings
+        .iter()
+        .enumerate()
+        .filter_map(|(i, entry)| {
+            let Value::Map(map) = entry else {
+                return None;
+            };
+            let joint = map.get(&Value::String("joint".to_string()))?;
+            let value = map.get(&Value::String("value".to_string()))?;
+            let BindRejection {
+                component,
+                rejection,
+            } = jointvalue_from_bound_value(joint, value).err()?;
+            let path = match component {
+                Some(c) => format!("bindings[{i}].value[{c}]"),
+                None => format!("bindings[{i}].value"),
+            };
+            Some(rejection.to_error(builtin, &path))
+        })
+        .collect()
 }
 
 /// Resolve a joint's motion value to a typed [`JointValue`] via the same
 /// fallback chain `snapshot::value_for` uses.
 ///
 /// Resolution order:
-/// 1. Direct binding by structural `Value::Eq` on the joint Map.
+/// 1. Direct binding by structural `Value::Eq` on the joint Map; a refused
+///    binding resolves to None rather than falling through.
 /// 2. Coupling-tracks-parent: when `joint` is a coupling and isn't directly
 ///    bound, recurse on the coupling's `parent` joint.
 /// 3. Fixed joint sentinel: `JointValue::Scalar(0.0)` (snapshot.rs's
@@ -820,7 +886,7 @@ fn jointvalue_from_bound_value(joint: &Value, bound: &Value) -> Option<JointValu
 /// no range_x).  KCC-γ step-10: multi-DOF kinds now resolve to the typed
 /// per-DOF surface rather than collapsing to None at the f64-shim.
 fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> {
-    if let Some(v) = direct_binding_value(joint, bindings) {
+    if let Some(v) = direct_binding_value(joint, bindings).ok()? {
         return Some(v);
     }
     if let Some(parent) = coupling_parent(joint) {

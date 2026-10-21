@@ -37,6 +37,7 @@ use crate::dynamics::rnea::{
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
 use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
+use crate::loop_closure_value::JointValue;
 use crate::mechanism::is_world;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
@@ -1334,7 +1335,7 @@ fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<(Value, Ve
         // `bind`'s happy path returns for driving joints, so driving-joint
         // behaviour is unchanged. This is the same internal constructor that
         // loop-closure free-joint synthesis already calls at snapshot.rs:384.
-        bindings.push(crate::snapshot::make_binding(at.clone(), value.clone()));
+        bindings.push(crate::snapshot::make_binding(at.clone(), sample_bind_value(at, value)));
     }
     let snapshot =
         crate::eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings.clone())]);
@@ -1342,6 +1343,25 @@ fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<(Value, Ve
         return None;
     }
     Some((snapshot, bindings))
+}
+
+/// The bind value for a trajectory sample's position at joint `at`.
+///
+/// A sample position is a bare `JointValue` BY DECLARATION
+/// (`pub type JointValue = Real`, #5412) in SI units, while `snapshot`
+/// refuses a bare number at a LENGTH position. So a bare value is dimensioned
+/// here — the one boundary where the type is declared bare — through
+/// [`crate::loop_closure::value_for_joint`], the SPOT for "JointValue →
+/// per-kind dimensioned Value" (prismatic → metres, revolute → radians,
+/// coupling → its parent's). Any other value passes through unchanged.
+fn sample_bind_value(at: &Value, value: &Value) -> Value {
+    let bare = match value {
+        Value::Real(r) => *r,
+        Value::Int(i) => *i as f64,
+        other => return other.clone(),
+    };
+    crate::loop_closure::value_for_joint(at, &JointValue::Scalar(bare))
+        .unwrap_or_else(|| value.clone())
 }
 
 // ── closed_chain_inverse_dynamics — KKT bridge (task 4146 step-8) ─────────────

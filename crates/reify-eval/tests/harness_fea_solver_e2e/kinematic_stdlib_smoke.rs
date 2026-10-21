@@ -67,7 +67,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 ///   `cyl_jac`        = `joint_jacobian(cyl)` → 2-element List of analytic twist columns
 ///                     [ Map{angular=[0,0,0], linear=[0,0,1]}, Map{angular=[0,0,1], linear=[0,0,0]} ]
 ///   `screw_joint`    = `screw(prism, 1mm)` → coupling Map { kind="coupling", ratio=1mm/(2π) }
-///   `screw_xform`    = `transform_at(screw_joint, 6.283185307179586)` (2π rad-equivalent input)
+///   `screw_xform`    = `transform_at(screw_joint, 6.283185307179586m)` (2π-equivalent LENGTH input: the prismatic parent's coupled value is a length)
 ///                     → Transform { translation=[1mm,0,0], rotation=identity }
 ///   `screw_jac`      = `joint_jacobian(screw_joint)` → Map { angular=[0,0,0], linear=[1mm/(2π),0,0] }
 ///   `gear_joint`     = `gear(rev, 20, 30)` → coupling Map { kind="coupling", ratio=−1.5 }
@@ -75,7 +75,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 ///                     → Transform { rotation=(cos(−π/4),0,0,sin(−π/4)), translation=0 }
 ///   `gear_jac`       = `joint_jacobian(gear_joint)` → Map { angular=[0,0,−1.5], linear=[0,0,0] }
 ///   `rp_joint`       = `rack_and_pinion(prism, 10mm)` → coupling Map { kind="coupling", ratio=0.01 }
-///   `rp_xform`       = `transform_at(rp_joint, 6.283185307179586)` → Transform { translation=[0.02π,0,0] }
+///   `rp_xform`       = `transform_at(rp_joint, 6.283185307179586m)` → Transform { translation=[0.02π,0,0] }
 ///   `rp_jac`         = `joint_jacobian(rp_joint)` → Map { angular=[0,0,0], linear=[0.01,0,0] }
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
@@ -121,7 +121,7 @@ structure def Kinematic {
     let cyl_jac   = joint_jacobian(cyl)
 
     let screw_joint  = screw(prism, 1mm)
-    let screw_xform  = transform_at(screw_joint, 6.283185307179586)
+    let screw_xform  = transform_at(screw_joint, 6.283185307179586m)
     let screw_jac    = joint_jacobian(screw_joint)
 
     let gear_joint   = gear(rev, 20, 30)
@@ -129,7 +129,7 @@ structure def Kinematic {
     let gear_jac     = joint_jacobian(gear_joint)
 
     let rp_joint     = rack_and_pinion(prism, 10mm)
-    let rp_xform     = transform_at(rp_joint, 6.283185307179586)
+    let rp_xform     = transform_at(rp_joint, 6.283185307179586m)
     let rp_jac       = joint_jacobian(rp_joint)
 }
 "#;
