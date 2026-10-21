@@ -16,6 +16,7 @@ import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from fnmatch import fnmatchcase
 from functools import reduce
 from pathlib import Path
@@ -67,28 +68,39 @@ def _git(repo_root: Path, env: Mapping[str, str], *args: str) -> GitOutput:
     return GitOutput(proc.returncode, proc.stdout.decode("utf-8", "surrogateescape"))
 
 
+class Widening(Enum):
+    """Why a staged or branch request runs every check family, as scope all does."""
+
+    MERGE_IN_PROGRESS = "merge_in_progress"
+    ROLE_FORCES_ALL = "role_forces_all"
+    NO_MERGE_BASE = "no_merge_base"
+    CHANGED_PATHS_UNREAD = "changed_paths_unread"
+
+
 @dataclass(frozen=True)
 class ResolvedScope:
-    """The scope a run actually uses, and the notices that changed it."""
+    """The scope a run actually uses, why it widened (None: it did not), and the notices saying so."""
 
     mode: Scope
     merge_base: str | None
+    widened: Widening | None
     notices: tuple[str, ...]
 
 
 def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str]) -> ResolvedScope:
     """A merge in progress, then a force_scope_all role, force scope all; branch needs a merge base."""
     mode = invocation.scope
+    widened = None
     notices = []
     if mode is not Scope.ALL and _merge_in_progress(repo_root, env):
         notices.append(MERGE_HEAD_NOTICE)
-        mode = Scope.ALL
+        mode, widened = Scope.ALL, Widening.MERGE_IN_PROGRESS
     if mode is not Scope.ALL and ROLE_TABLE[invocation.role].force_scope_all:
         notices.append(
             f"verify.sh: DF_VERIFY_ROLE={invocation.role.value} — forcing --scope all "
             "(integrity gate never narrows, contract C2)"
         )
-        mode = Scope.ALL
+        mode, widened = Scope.ALL, Widening.ROLE_FORCES_ALL
     merge_base = None
     if mode is Scope.BRANCH:
         found = _git(repo_root, env, "merge-base", "main", "HEAD")
@@ -96,8 +108,8 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
             merge_base = found.lines[0]
         else:
             notices.append(MERGE_BASE_WARNING)
-            mode = Scope.ALL
-    return ResolvedScope(mode, merge_base, tuple(notices))
+            mode, widened = Scope.ALL, Widening.NO_MERGE_BASE
+    return ResolvedScope(mode, merge_base, widened, tuple(notices))
 
 
 def _merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
@@ -112,6 +124,7 @@ def _merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
 class ScopeDecision:
     mode: Scope
     merge_base: str | None
+    widened: Widening | None
     run_rust: bool
     run_gui: bool
     run_occt_gate: bool
@@ -135,13 +148,21 @@ class ScopeDecision:
                 f"ScopeDecision: scope all carries no paths (changed_paths="
                 f"{self.changed_paths!r}, rename_sources={self.rename_sources!r})"
             )
+        families = (self.run_rust, self.run_gui, self.run_occt_gate, self.gui_path_signal)
+        has_paths = bool(self.changed_paths or self.rename_sources)
+        if self.widened is not None and (has_paths or not all(families)):
+            raise ValueError(
+                f"ScopeDecision: a request widened by {self.widened.value} runs every family "
+                f"over no paths ({self!r})"
+            )
 
     @classmethod
-    def wide(cls, resolved: ResolvedScope) -> "ScopeDecision":
-        """Every check family on, no paths: scope all, or a fail-wide."""
+    def wide(cls, resolved: ResolvedScope, widened: Widening | None) -> "ScopeDecision":
+        """Every check family on, no paths: a requested scope all, or a request `widened` to it."""
         return cls(
             mode=resolved.mode,
             merge_base=resolved.merge_base,
+            widened=widened,
             run_rust=True,
             run_gui=True,
             run_occt_gate=True,
@@ -153,6 +174,7 @@ class ScopeDecision:
     def to_json(self) -> dict:
         return {
             "mode": self.mode.value,
+            "widened": None if self.widened is None else self.widened.value,
             "merge_base": self.merge_base,
             "run_rust": int(self.run_rust),
             "run_gui": int(self.run_gui),
@@ -359,6 +381,7 @@ def decide_scope(resolved: ResolvedScope, changed: ChangedSet, facts: ScopeFacts
     return ScopeDecision(
         mode=resolved.mode,
         merge_base=resolved.merge_base,
+        widened=None,
         run_rust=rust,
         run_gui=rust or signals.gui,
         run_occt_gate=signals.gate,
@@ -426,9 +449,12 @@ def decide(
 ) -> tuple[ScopeDecision, tuple[str, ...]]:
     resolved = resolve_scope(invocation, repo_root, env)
     if resolved.mode is Scope.ALL:
-        return ScopeDecision.wide(resolved), resolved.notices
+        return ScopeDecision.wide(resolved, resolved.widened), resolved.notices
     changed = gather_changed(resolved, repo_root, env)
     if isinstance(changed, GatherFailure):
-        return ScopeDecision.wide(resolved), (*resolved.notices, changed.warning)
+        return ScopeDecision.wide(resolved, Widening.CHANGED_PATHS_UNREAD), (
+            *resolved.notices,
+            changed.warning,
+        )
     facts, warnings = gather_facts(resolved.mode, changed, repo_root, env)
     return decide_scope(resolved, changed, facts), (*resolved.notices, *warnings)
