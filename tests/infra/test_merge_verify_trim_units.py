@@ -82,11 +82,9 @@ def parse_prune_argv(argv):
 
 
 class DeployContract(unittest.TestCase):
-    """dark_factory install_laptop_merge_verify_trim.sh step 1, check for check."""
-
-    def test_the_four_deliverables_exist(self):
-        for path in (PRUNE_SCRIPT, GC_SCRIPT, SERVICE, TIMER):
-            self.assertTrue(path.is_file(), path)
+    """dark_factory install_laptop_merge_verify_trim.sh step 1: the checks the
+    other classes do not already imply. File existence, and the service naming
+    the installed copy, follow from UnitFiles' stronger argv[0] assertion."""
 
     def test_the_prune_script_is_executable(self):
         self.assertTrue(os.access(PRUNE_SCRIPT, os.X_OK))
@@ -96,10 +94,9 @@ class DeployContract(unittest.TestCase):
         lines = PRUNE_SCRIPT.read_text(encoding="utf-8").splitlines()
         self.assertEqual([line for line in lines if sourcing.search(line)], [])
 
-    def test_the_service_runs_the_installed_copy(self):
-        self.assertIn(INSTALLED_PRUNE, SERVICE.read_text(encoding="utf-8"))
-
     def test_the_gc_script_knows_merge_verify(self):
+        # The installer's text check only; test_gc_worktree_targets.py is the
+        # behavioural guard of the exemption.
         self.assertIn("_merge-verify", GC_SCRIPT.read_text(encoding="utf-8"))
 
 
