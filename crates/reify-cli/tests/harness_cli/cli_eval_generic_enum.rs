@@ -3,10 +3,13 @@
 //!
 //! Pins the literal `reify eval` report at the binary surface:
 //!   `Demo.bore = 0.005 m`      (§1 signal: `Ok { value: 5mm }` default, unwrapped)
-//!   `Demo.r = Result::Ok`     (enum-tag rendering for the default Ok variant)
+//!   `Demo.r = Result::Ok { value: 0.005 m }`
+//!                              (enum rendering for the default Ok variant: the
+//!                               head, then its named payload — task 8834)
 //!   `Demo.total = 0.003 m`     (recursive Tree<Length> leaves, 1mm + 2mm, summed
 //!                               via nested two-arm match — INV-5 end-to-end)
-//!   `Demo.tree = Tree::Node`  (enum-tag rendering for the recursive Tree value)
+//!   `Demo.tree = Tree::Node { left: Tree::Leaf { value: 0.001 m }, right: Tree::Leaf { value: 0.002 m } }`
+//!                              (the recursive Tree value, nested payloads printed)
 //!
 //! Mirrors the DCE ζ precedent `cli_eval_data_carrying_enum.rs` — uses
 //! `common::run_subcommand("eval", &common::example_path("m6_generic_enum.ri"))`.
@@ -28,10 +31,12 @@ use crate::common;
 /// output format changes, update the `contains` strings here; the numeric
 /// integration tests will remain stable.
 ///
-/// Also asserts the enum-tag rendering (`Demo.r = Result::Ok`,
-/// `Demo.tree = Tree::Node`) that the example's own header docstring
-/// advertises (amend: review — the CLI surface previously only pinned the
-/// two scalar values, leaving the enum-tag output surface uncovered here).
+/// Also asserts the enum rendering (`Demo.r`, `Demo.tree`) that the example's
+/// own header docstring advertises (amend: review — the CLI surface previously
+/// only pinned the two scalar values, leaving the enum output surface uncovered
+/// here). Those two lines are matched EXACTLY, not by `contains`: since task
+/// 8834 an enum prints its named payload after the `Type::Variant` head, and a
+/// `contains` on the bare head would keep matching whatever followed it.
 #[test]
 fn eval_generic_enum_reports_bore_and_total() {
     let path = common::example_path("m6_generic_enum.ri");
@@ -45,9 +50,10 @@ fn eval_generic_enum_reports_bore_and_total() {
         stdout.contains("Demo.bore = 0.005 m"),
         "stdout should contain 'Demo.bore = 0.005 m' (§1 signal)\nstdout: {stdout}"
     );
+    let expected_r = "Demo.r = Result::Ok { value: 0.005 m }";
     assert!(
-        stdout.contains("Demo.r = Result::Ok"),
-        "stdout should contain 'Demo.r = Result::Ok' (enum-tag rendering)\nstdout: {stdout}"
+        stdout.lines().any(|line| line == expected_r),
+        "stdout should contain the exact line {expected_r:?} (enum payload rendering)\nstdout: {stdout}"
     );
     // amend: review — this exact-decimal match relies on 1mm + 2mm summing to
     // an exactly-representable shortest-form f64 (0.001 + 0.002 == 0.003 in
@@ -61,8 +67,9 @@ fn eval_generic_enum_reports_bore_and_total() {
         stdout.contains("Demo.total = 0.003 m"),
         "stdout should contain 'Demo.total = 0.003 m' (INV-5 Tree<Length> sum)\nstdout: {stdout}"
     );
+    let expected_tree = "Demo.tree = Tree::Node { left: Tree::Leaf { value: 0.001 m }, right: Tree::Leaf { value: 0.002 m } }";
     assert!(
-        stdout.contains("Demo.tree = Tree::Node"),
-        "stdout should contain 'Demo.tree = Tree::Node' (enum-tag rendering)\nstdout: {stdout}"
+        stdout.lines().any(|line| line == expected_tree),
+        "stdout should contain the exact line {expected_tree:?} (nested enum payload rendering)\nstdout: {stdout}"
     );
 }

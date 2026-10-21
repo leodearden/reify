@@ -374,6 +374,7 @@
   "tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri",
   "tests/prd-gate/fixtures/revolute_silent_accept.ri",
   "tests/prd-gate/fixtures/rotational_closure_prestate.ri",
+  "tests/prd-gate/fixtures/s6_joint_position_display.ri",
   "tests/prd-gate/fixtures/scalar_codomain_mismatch.ri",
   "tests/prd-gate/fixtures/self_collection_count_redirect_rejected.ri",
   "tests/prd-gate/fixtures/shear_angles_component_deg_compare_pre.ri",

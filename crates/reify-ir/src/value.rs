@@ -14374,3 +14374,6 @@ mod feature {
         }
     }
 }
+
+#[cfg(test)]
+mod enum_display_tests;
