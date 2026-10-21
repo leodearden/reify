@@ -26,6 +26,7 @@
 //   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping)
 //   (every joint kind but Coupling also carries constrained-DOF `*_stiffness`
 //    params; see "Constrained-DOF compliance" above the joint structures)
+//   - pub enum JointPosition           (one named-field variant per driving kind — C4)
 //   - structure def JointBinding       (element type of snapshot()'s `bindings` arg)
 //   - structure def Twist              (spatial velocity — transform_log/exp element)
 //   - structure def JacobianColumn     (dpose/dq column of joint_jacobian)
@@ -263,6 +264,22 @@ structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {
 structure def Fixed : Joint {
     param translational_stiffness : Option<TranslationalStiffness> = none
     param rotational_stiffness    : Option<RotationalStiffness>    = none
+}
+
+// ── JointPosition enum ───────────────────────────────────────────────────────
+
+// JointPosition — the one `.ri` joint value (PRD
+// docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md §4 C4).
+// Variant names equal `JointKind::position_variant_name`; they deliberately
+// differ from the Prismatic / Revolute / … structures above, because prelude
+// variant heads capture same-named local variants. Coupling and Fixed have
+// no position variant.
+pub enum JointPosition {
+    PrismaticPosition { distance: Length },
+    RevolutePosition { angle: Angle },
+    CylindricalPosition { distance: Length, angle: Angle },
+    PlanarPosition { x: Length, y: Length, angle: Angle },
+    SphericalPosition { orientation: Orientation },
 }
 
 // ── Binding / Jacobian element types ─────────────────────────────────────────
