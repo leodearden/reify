@@ -52,7 +52,7 @@ fn load_case_ctor_round_trips_to_structure_instance() {
 structure def LoadCaseFixture {
     let case = LoadCase(
         name: "g",
-        loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
+        loads: [PointLoad(point: "a", force: 10.0N), PointLoad(point: "b", force: 20.0N)],
         supports: [FixedSupport(target: "r")]
     )
 }
@@ -181,7 +181,7 @@ fn load_case_member_access_reads_name_loads_supports_through() {
 structure def LoadCaseAccess {
     let case          = LoadCase(
         name: "g",
-        loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
+        loads: [PointLoad(point: "a", force: 10.0N), PointLoad(point: "b", force: 20.0N)],
         supports: [FixedSupport(target: "r")]
     )
     let case_name     = self.case.name

@@ -1995,7 +1995,7 @@ pub structure GantryFea {
     param wall      : Length = 5mm
     param span      : Length = 800mm
     param rho_cfrp  : Density = 1600kg/m^3
-    param test_load : Real = 1000.0   // N (PointLoad.force is Real today)
+    param test_load : Force = 1000N
     // Drive-side chain inputs, PINNED LITERALS (Printer pins them against
     // the O6 derived cells): @optimized dispatch does NOT fire for cells
     // re-evaluated in sub-INSTANCE scope (found 2026-08-26 — the instance
@@ -2034,7 +2034,7 @@ pub structure GantryFea {
         material_static, half_span, h_eq, h_eq, [tip], [mount],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
     let defl_cant = max(r_static.displacement)
-    let k_cant    : Stiffness = test_load * 1N / defl_cant
+    let k_cant    : Stiffness = test_load / defl_cant
     let k_pair_ss : Stiffness = k_cant * 4        // SS bound, both tubes, mid-load
     let k_pair_ff : Stiffness = k_pair_ss * 4     // clamped-clamped analytic bound
     // Euler-Bernoulli cross-check: FEA/beam-theory ratio, constrained to a
@@ -2177,9 +2177,9 @@ pub structure AFrame {
     param steel_e   : Pressure = 210GPa
     param rho_steel : Density = 7850kg/m^3
     param rho_core  : Density = 2300kg/m^3   // epoxy granite / mineral cast
-    param test_load : Real = 1000.0    // N — receptance probes
-    param rail_load_peak    : Real = 750.0
-    param rail_load_stretch : Real = 7500.0
+    param test_load : Force = 1000N    // receptance probes
+    param rail_load_peak    : Force = 750N
+    param rail_load_stretch : Force = 7500N
     param f1_floor : Frequency = 40Hz  // == Envelope drive_f1_min
 
     // ── Y-chain inputs, PINNED LITERALS (== O6/O1 derived truth; #6662) ─────
@@ -2449,7 +2449,7 @@ pub structure AFrame {
         [PointLoad(point: "tip", force: test_load)], [mount],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
     let defl_pil = max(r_pil.displacement)
-    let k_pil_fea : Stiffness = test_load * 1N / defl_pil
+    let k_pil_fea : Stiffness = test_load / defl_pil
     let k_pil_eb  : Stiffness = 3 * steel_e * pil_i_steel / (stub_l * stub_l * stub_l)
     let pil_fea_vs_eb = k_pil_fea / k_pil_eb
 

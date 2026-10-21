@@ -40,6 +40,17 @@ module dcr_solver_load_dropped_dimensioned
 //   The call site is ALREADY units-correct: the field's `Real` declaration is
 //   what fails. How γ1 (#6922) reads its signal instead:
 //   docs/notes/ctor-conformance-flip-leaf-signals.md.
+//
+// POST-γ2 RE-MEASUREMENT (2026-10-21, task #6941; PointLoad.force declared
+// `Force`):
+//   `reify check` EXIT 0 / `reify eval` EXIT 0, no Error diagnostic.
+//   result.max_von_mises = 5139325.407682254 Pa, iterations = 718, equal to the
+//   bare control's eval on the pre-γ2 tree. (The decompose literal above has
+//   drifted with unrelated solver changes, esc-6922-1.) The units-correct
+//   spelling now compiles AND applies its force. Machine pin, against an
+//   in-process control rather than a literal:
+//   `gamma2_dimensioned_b1_fixture_solves_identically_to_its_bare_respelling`
+//   (crates/reify-eval-fea-tests/tests/solve_elastic_static_e2e.rs).
 
 structure DcrSolverLoadDroppedDimensioned {
     param length : Length = 1000mm

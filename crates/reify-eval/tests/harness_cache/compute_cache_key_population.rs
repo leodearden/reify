@@ -102,7 +102,7 @@ structure FeaDupCellSmoke {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000.0N)
     let mount = FixedSupport(target: "root")
 
     // `height` in BOTH the width and the height slot: the legal authoring

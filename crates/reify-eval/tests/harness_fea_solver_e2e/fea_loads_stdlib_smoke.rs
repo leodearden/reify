@@ -8,7 +8,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::ValueCellId;
+use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -18,11 +18,25 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
+fn pressure(pascals: f64) -> Value {
+    Value::Scalar {
+        si_value: pascals,
+        dimension: DimensionVector::PRESSURE,
+    }
+}
+
+fn force_density(newtons_per_cubic_metre: f64) -> Value {
+    Value::Scalar {
+        si_value: newtons_per_cubic_metre,
+        dimension: DimensionVector::FORCE_DENSITY,
+    }
+}
+
 // ── step-1 (RED) → step-2 (GREEN) : TractionLoad ────────────────────────────
 
 /// Bare `TractionLoad()` constructor lowers to a `Value::StructureInstance`
 /// whose `type_name` is `"TractionLoad"` and whose fields carry the two
-/// declared defaults: `face = ""`, `traction = 0.0`.
+/// declared defaults: `face = ""`, `traction = 0Pa`.
 #[test]
 fn traction_load_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
@@ -56,11 +70,11 @@ structure def TractionLoadFixture {
                 "TractionLoad.face default must be \"\"; fields: {:?}",
                 data.fields
             );
-            // traction default = 0.0
+            // traction default = 0Pa
             assert_eq!(
                 field(&data.fields, "traction"),
-                Some(&Value::Real(0.0)),
-                "TractionLoad.traction default must be 0.0; fields: {:?}",
+                Some(&pressure(0.0)),
+                "TractionLoad.traction default must be 0Pa; fields: {:?}",
                 data.fields
             );
         }
@@ -71,13 +85,13 @@ structure def TractionLoadFixture {
     }
 }
 
-/// `TractionLoad(face: "top", traction: 5.0)` constructor round-trips the
+/// `TractionLoad(face: "top", traction: 5.0Pa)` constructor round-trips the
 /// caller-supplied field values through the structure instance.
 #[test]
 fn traction_load_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
 structure def TractionLoadFixture2 {
-    let load = TractionLoad(face: "top", traction: 5.0)
+    let load = TractionLoad(face: "top", traction: 5.0Pa)
 }
 "#;
 
@@ -101,8 +115,8 @@ structure def TractionLoadFixture2 {
             );
             assert_eq!(
                 field(&data.fields, "traction"),
-                Some(&Value::Real(5.0)),
-                "TractionLoad.traction override must be 5.0; fields: {:?}",
+                Some(&pressure(5.0)),
+                "TractionLoad.traction override must be 5.0Pa; fields: {:?}",
                 data.fields
             );
         }
@@ -117,7 +131,7 @@ structure def TractionLoadFixture2 {
 
 /// Bare `BodyForce()` constructor lowers to a `Value::StructureInstance` whose
 /// `type_name` is `"BodyForce"` and whose fields carry the two declared
-/// defaults: `body = ""`, `force_density = 0.0`.
+/// defaults: `body = ""`, `force_density = 0N/m^3`.
 #[test]
 fn body_force_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
@@ -151,11 +165,11 @@ structure def BodyForceFixture {
                 "BodyForce.body default must be \"\"; fields: {:?}",
                 data.fields
             );
-            // force_density default = 0.0
+            // force_density default = 0N/m^3
             assert_eq!(
                 field(&data.fields, "force_density"),
-                Some(&Value::Real(0.0)),
-                "BodyForce.force_density default must be 0.0; fields: {:?}",
+                Some(&force_density(0.0)),
+                "BodyForce.force_density default must be 0N/m^3; fields: {:?}",
                 data.fields
             );
         }
@@ -166,13 +180,13 @@ structure def BodyForceFixture {
     }
 }
 
-/// `BodyForce(body: "all", force_density: -77000.0)` constructor round-trips
+/// `BodyForce(body: "all", force_density: -77000.0N/m^3)` constructor round-trips
 /// the caller-supplied field values through the structure instance.
 #[test]
 fn body_force_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
 structure def BodyForceFixture2 {
-    let load = BodyForce(body: "all", force_density: -77000.0)
+    let load = BodyForce(body: "all", force_density: -77000.0N/m^3)
 }
 "#;
 
@@ -196,8 +210,8 @@ structure def BodyForceFixture2 {
             );
             assert_eq!(
                 field(&data.fields, "force_density"),
-                Some(&Value::Real(-77000.0)),
-                "BodyForce.force_density override must be -77000.0; fields: {:?}",
+                Some(&force_density(-77000.0)),
+                "BodyForce.force_density override must be -77000.0N/m^3; fields: {:?}",
                 data.fields
             );
         }

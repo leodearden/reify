@@ -57,7 +57,7 @@ structure FdmBracket {
     let infill_query_pt = point3(20mm,  20mm, 5mm)   // deep centre          → infill zone
 
     // FEA loads and supports: cantilever with tip load.
-    let load    = PointLoad(point: "tip", force: 1000.0)
+    let load    = PointLoad(point: "tip", force: 1000.0N)
     let support = FixedSupport(target: "root")
 
     // As-printed heterogeneous solve — 6-arg Field overload (no options arg).

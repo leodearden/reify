@@ -43,7 +43,7 @@ structure ThinWalledBracket {
     let material = Steel_AISI_1045()
 
     // Loads: 20 N point load applied at the bracket tip.
-    let tip_load = PointLoad(point: "tip", force: 20.0)
+    let tip_load = PointLoad(point: "tip", force: 20.0N)
 
     // Supports: fully clamped (fixed) at the bracket root.
     let mount = FixedSupport(target: "root")

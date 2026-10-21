@@ -4,7 +4,7 @@ structure def FeaImplicitBracket {
     let material = Steel_AISI_1045()
     let f = sdf_box(50mm, 30mm, web)
     let body = implicit(f, vec3(70mm, 50mm, 40mm), 2mm)
-    let tip_load = PointLoad(point: "tip", force: 750.0)
+    let tip_load = PointLoad(point: "tip", force: 750.0N)
     let mount = FixedSupport(target: "root")
     let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions(shell_force: ShellForce.Off))
     constraint result.max_von_mises < 310MPa

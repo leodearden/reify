@@ -33,7 +33,7 @@ structure AnisotropicBar {
     // Shared loads / supports: 1000 N tip load, fixed root support.
     // Both arms use the identical load / support so the deflection delta is
     // attributable solely to the constitutive law.
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000.0N)
     let mount    = FixedSupport(target: "root")
 
     // ── Isotropic baseline ────────────────────────────────────────────────────

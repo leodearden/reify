@@ -37,7 +37,7 @@ structure BucklingColumnSmoke {
     let material = Steel_AISI_1045()
 
     // Load: 1000 N axial compressive load at the column top.
-    let tip_load = PointLoad(point: "top", force: 1000.0)
+    let tip_load = PointLoad(point: "top", force: 1000.0N)
 
     // Support: pin-pin — fixed supports at both ends (lateral restraint).
     let base_support = FixedSupport(target: "base")

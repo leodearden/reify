@@ -35,7 +35,7 @@ structure FeaBodyCantilever {
     // (String `point`/`target` placeholders — face-selector BC attribution is
     // task 4092, out of scope; the realized path clamps x_min / loads x_max by
     // coordinate.)
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000.0N)
     let mount = FixedSupport(target: "root")
 
     // Body-arg FEA solve: the @optimized dispatcher routes this to the

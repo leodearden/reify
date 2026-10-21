@@ -40,6 +40,23 @@ module dcr_load_ctor_dimension_silent
 //   How γ1 (#6922), γ2 (#6941) and γ3 (#5802) read their signals instead, and
 //   this file's predicted post-γ2 diagnostic set:
 //   docs/notes/ctor-conformance-flip-leaf-signals.md.
+//
+// POST-γ2 RE-MEASUREMENT (2026-10-21, task #6941; fea_multi_case.ri now declares
+// PointLoad.force : Force, PressureLoad.magnitude : Pressure,
+// TractionLoad.traction : Pressure, BodyForce.force_density : ForceDensity):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, three Errors, on the OPPOSITE
+//   bindings from POST-δ:
+//   * ArgTypeMismatch, PointLoad.force on `bare_point`: Real at a Force field;
+//   * ArgTypeMismatch, PressureLoad.magnitude on `bare_pressure`: Real at a
+//     Pressure field;
+//   * ArgTypeMismatch, BodyForce.force_density on `body_force`: Real at a
+//     ForceDensity field.
+//   `dimensioned_point` and `traction` now conform. The exit code is still not
+//   γ2's signal; the per-binding set is, pinned by
+//   crates/reify-compiler/tests/harness_ctor_conformance_survey/fea_load_retype.rs.
+//   The three bare spellings stay on purpose: CTOR_CONFORMANCE_CORPUS_RESIDUAL
+//   defers them to #8008, and the corpus guard
+//   `corpus_has_no_bare_fea_load_magnitude` excepts exactly them.
 
 structure def DcrLoadCtorDimensionSilent {
     let dimensioned_point = PointLoad(point: "tip", force: 5000N)

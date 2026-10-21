@@ -24,14 +24,14 @@ structure BucklingMultiCaseSmoke {
     // LoadCase "operating": 1 kN axial tip load.
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "top", force: 1000.0)],
+        loads:    [PointLoad(point: "top", force: 1000.0N)],
         supports: [FixedSupport(target: "base")],
     )
 
     // LoadCase "overload": 2 kN axial tip load — twice the operating load.
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "top", force: 2000.0)],
+        loads:    [PointLoad(point: "top", force: 2000.0N)],
         supports: [FixedSupport(target: "base")],
     )
 

@@ -19,7 +19,7 @@ structure RawLambdaMaterialField {
         z_axis: vec3(0.0, 0.0, 1.0))
     let mat_field = fn_field(|p : Point3<Length>| AnisotropicMaterial(law: Steel_AISI_1045(), frame: frame))
     let r = solve_elastic_static(mat_field, 100mm, 10mm, 10mm,
-        [PointLoad(point: "tip", force: 100.0)],
+        [PointLoad(point: "tip", force: 100.0N)],
         [FixedSupport(target: "root")])
     let d = max(r.displacement)
 }

@@ -22,19 +22,19 @@ structure def CaseSwitchDisplayRouting {
 
     let lc_operating = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: "tip", force: 1000.0N)],
         supports: [mount],
     )
 
     let lc_overload = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        loads:    [PointLoad(point: "tip", force: 2000.0N)],
         supports: [mount],
     )
 
     let lc_transport = LoadCase(
         name:     "transport",
-        loads:    [PointLoad(point: "tip", force: 3000.0)],
+        loads:    [PointLoad(point: "tip", force: 3000.0N)],
         supports: [mount],
     )
 

@@ -47,12 +47,12 @@ const TWO_CASE_SOURCE: &str = r#"
 structure def BucklingMultiCaseFixture {
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "top", force: 1000.0)],
+        loads:    [PointLoad(point: "top", force: 1000.0N)],
         supports: [FixedSupport(target: "base")],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "top", force: 2000.0)],
+        loads:    [PointLoad(point: "top", force: 2000.0N)],
         supports: [FixedSupport(target: "base")],
     )
     let result = solve_buckling_load_cases(

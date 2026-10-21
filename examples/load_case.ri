@@ -16,7 +16,7 @@
 structure def LoadCaseDemo {
     let case          = LoadCase(
         name: "g",
-        loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
+        loads: [PointLoad(point: "a", force: 10.0N), PointLoad(point: "b", force: 20.0N)],
         supports: [FixedSupport(target: "r")]
     )
     let case_name     = self.case.name

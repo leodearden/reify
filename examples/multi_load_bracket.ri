@@ -78,13 +78,13 @@ structure MultiLoadBracket {
 
     let operating = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
+        loads:    [PointLoad(point: "load_face", force: 5000.0N,  direction: vec3(0.0, -1.0, 0.0))],
         supports: [mount],
     )
 
     let overload = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "load_face", force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
+        loads:    [PointLoad(point: "load_face", force: 10000.0N, direction: vec3(0.0, -1.0, 0.0))],
         supports: [mount],
     )
 

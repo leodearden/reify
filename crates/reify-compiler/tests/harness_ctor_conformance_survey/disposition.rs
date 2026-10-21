@@ -134,11 +134,10 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// the source of their current exit 1.
 /// How each owning leaf reads its signal instead is recorded once, in
 /// `docs/notes/ctor-conformance-flip-leaf-signals.md`.
-/// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
-/// show that the units-CORRECT `force: 1000N` contributed exactly ZERO force to
-/// `solve_elastic_static` while the bare control contributed 1000 N (until γ1
-/// #6922 widened the reader). Dimension the call site and the measurement it
-/// encodes is gone.
+/// Every reader gate those files were written for has landed (#6922, #6941) and
+/// reads its signal below the compiler, so what is left is the deliberately
+/// wrong spelling itself: dimension it and the defect the file pins is gone.
+/// #8008 owns deciding each entry's permanent disposition.
 ///
 /// So these are NOT un-migrated call sites that nobody got around to. That
 /// distinction is the entire reason this table carries a `why` column.
@@ -164,7 +163,8 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// The `why` column's Greek leaf labels are
 /// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
 /// cite so the attribution stays legible if those cluster tasks are re-split:
-/// γ1/ε/η are #6922, γ2/β/ζ are #6941.
+/// γ1/ε/η are #6922, γ2/β/ζ are #6941. Those cites name the leaf whose reader
+/// gate landed; the owner column names who retires the entry.
 ///
 /// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
 ///
@@ -185,24 +185,35 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
     (
         "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
         "force",
-        "#6941",
-        "leaf γ2: PointLoad.force is declared `Real` in fea_multi_case.ri, so the \
-         units-CORRECT `force: 5000N` warns; γ2 retypes the FIELD, and the call site \
-         is already right",
+        "#8008",
+        "deliberately bare before-image `bare_point = PointLoad(point: \"tip\", force: \
+         5000.0)`: since γ2 #6941 declared PointLoad.force : Force it fails at compile \
+         (#5306 ArgTypeMismatch), on the opposite binding from the pre-γ2 \
+         `dimensioned_point` site",
     ),
     (
         "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
-        "traction",
-        "#6941",
-        "leaf γ2: TractionLoad.traction is declared `Real` in fea_multi_case.ri; same \
-         retype, and TractionLoad reaches no solver at all today (INV-SF-3)",
+        "force_density",
+        "#8008",
+        "deliberately bare before-image `body_force = BodyForce(body: \"all\", \
+         force_density: -77000.0)`: since γ2 #6941 declared BodyForce.force_density : \
+         ForceDensity it fails at compile (#5306 ArgTypeMismatch)",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
+        "magnitude",
+        "#8008",
+        "deliberately bare before-image `bare_pressure = PressureLoad(magnitude: \
+         1000000.0)`: since γ2 #6941 declared PressureLoad.magnitude : Pressure it fails \
+         at compile (#5306 ArgTypeMismatch)",
     ),
     (
         "tests/prd-gate/fixtures/dcr_material_dimension_silent.ri",
         "youngs_modulus",
-        "#6941",
-        "leaf β, boundary row B4: `youngs_modulus: 200mm` is read as 0.2 Pa by \
-         material_field_si, measured 1e12x wrong at exit 0 with zero Error diagnostics",
+        "#8008",
+        "deliberately-wrong before-image `Material(youngs_modulus: 200mm)` (row B4), kept \
+         failing at compile (#5306 ArgTypeMismatch); the reader gate landed in #6941 (β), \
+         whose flexure readers reject a LENGTH youngs_modulus as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
@@ -231,31 +242,29 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "target_frequency",
-        "#6941",
-        "leaf ζ: `ZVShaper(target_frequency: 50rad/s)` is stored verbatim as rad·s^-1 \
-         and the Hz->rad/s marshalling then multiplies by 2π — a 6.28x error",
+        "#8008",
+        "deliberately-wrong before-image `ZVShaper(target_frequency: 50rad/s)`, kept \
+         failing at compile (#5306 ArgTypeMismatch); the reader gate landed in #6941 (ζ), \
+         whose shaper reader rejects an ANGULAR_VELOCITY target_frequency as \
+         DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri",
         "target_frequency",
-        "#6941",
-        "leaf ζ signal fixture: the same 6.28x error, but CONSUMED via input_shape so \
-         read_scalar_si actually runs — the ctor alone never reaches the reader",
-    ),
-    (
-        "tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri",
-        "force",
-        "#6941",
-        "leaf γ2: γ1 #6922 widened the load reader, so a FORCE-dimensioned PointLoad \
-         now applies exactly the bare control's force; the site fails at compile only \
-         because PointLoad.force is still declared `Real`, which γ2 retypes",
+        "#8008",
+        "deliberately-wrong before-image `shaper_rads = ZVShaper(target_frequency: \
+         50rad/s)` consumed via input_shape, kept failing at compile (#5306 \
+         ArgTypeMismatch); the reader gate landed in #6941 (ζ), which refuses it as \
+         DimensionedArgRejected below the compiler",
     ),
     (
         "tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri",
         "yield_stress",
-        "#6941",
-        "leaf β, boundary row B5: `yield_stress: 310mm` is stored as Some(0.31 m) and \
-         material_field_si reads it as 0.31 Pa, at exit 0 with zero diagnostics",
+        "#8008",
+        "deliberately-wrong before-image `Steel_AISI_1045(yield_stress: some(310mm))` \
+         (row B5), kept failing at compile (#5306 ArgTypeMismatch); the reader gate \
+         landed in #6941 (β), whose flexure readers reject a LENGTH yield_stress as \
+         DimensionedArgRejected",
     ),
 ];
 
@@ -1501,8 +1510,8 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 /// The `examples/`-keyed sibling has had this at gate cadence since α
 /// (`ctor_conformance_migration_debt_entries_are_all_live`). Without the same
 /// guard here, this table's only staleness check lives inside the `#[ignore]`d
-/// `generate_ctor_conformance_corpus_survey`: when #6941 lands and retires its
-/// six sites, the entries would rot until someone remembered to run an ignored
+/// `generate_ctor_conformance_corpus_survey`: when an owning task retires its
+/// sites, the entries would rot until someone remembered to run an ignored
 /// test — and a waiver that outlives its site is a permanent hole in the gate at a
 /// `(file, param)` pair nobody is looking at any more. The four sibling hygiene
 /// tests cannot see it: path existence, cite form, sort order and disjointness are
@@ -1510,7 +1519,7 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # Cost
 ///
-/// The entries name SIX distinct files, so this compiles six `.ri` members
+/// The entries name FIVE distinct files, so this compiles five `.ri` members
 /// plus the cached stdlib prelude — the same order as
 /// [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`], and nowhere near
 /// the 689-member corpus walk that keeps the generator `#[ignore]`d per

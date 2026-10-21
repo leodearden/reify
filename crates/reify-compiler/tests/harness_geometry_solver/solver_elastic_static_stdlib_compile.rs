@@ -174,7 +174,7 @@ fn solve_elastic_static_direct_point_load_compiles_clean() {
 structure FEACantileverTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -205,7 +205,7 @@ structure FEAPressureTest {
     let body = box(1000mm, 100mm, 100mm)
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PressureLoad(magnitude: 1000000.0, face: face(body, "x_max"), direction: "normal")],
+        [PressureLoad(magnitude: 1000000.0Pa, face: face(body, "x_max"), direction: "normal")],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -271,7 +271,7 @@ structure FEAMultiCaseTest {
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [LoadCase(
             name: "c",
-            loads: [PointLoad(point: "tip", force: 1000.0)],
+            loads: [PointLoad(point: "tip", force: 1000.0N)],
             supports: [FixedSupport(target: "root")]
         )],
         ElasticOptions()
@@ -346,7 +346,7 @@ fn constitutive_law_input_struct_is_retired() {
 structure DirectPassRegression {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -492,7 +492,7 @@ structure FEABodyCantilever {
     let result = solve_elastic_static(
         Steel_AISI_1045(),
         body,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -538,7 +538,7 @@ structure StressPredicateProbe {
     param yield_limit : Pressure = 250MPa
     let r = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )

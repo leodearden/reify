@@ -56,7 +56,7 @@ structure FeaShellFlexure {
     let material = Steel_AISI_1045()
 
     // Loads: 10 N point load applied at the flexure tip.
-    let tip_load = PointLoad(point: "tip", force: 10.0)
+    let tip_load = PointLoad(point: "tip", force: 10.0N)
 
     // Supports: fully clamped (fixed) at the flexure root.
     let mount = FixedSupport(target: "root")

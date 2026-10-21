@@ -24,6 +24,15 @@ module dcr_solver_load_dropped_bare
 //   docs/notes/ctor-conformance-flip-leaf-signals.md.
 //
 // γ1 must leave this number UNCHANGED while making the dimensioned twin match it.
+//
+// POST-γ2 (2026-10-21, task #6941): MIGRATED, not retired. PointLoad.force is
+// declared `Force`, so the bare `force: 1000.0` became a compile Error; this
+// control now spells `force: 1000N` and is identical to its dimensioned twin.
+// Retiring it instead would have edited scripts/verify.sh's
+// _GUI_COUPLED_RI_FIXTURES (a verify-pipeline file) and the GUI grammar ledger.
+//   `reify check` EXIT 0 / `reify eval` EXIT 0, no Error diagnostic.
+//   result.max_von_mises = 5139325.407682254 Pa, iterations = 718, unchanged
+//   from this file's bare-spelling eval on the pre-γ2 tree.
 
 structure DcrSolverLoadDroppedBare {
     param length : Length = 1000mm
@@ -31,7 +40,7 @@ structure DcrSolverLoadDroppedBare {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000N)
     let mount    = FixedSupport(target: "root")
 
     let result = solve_elastic_static(

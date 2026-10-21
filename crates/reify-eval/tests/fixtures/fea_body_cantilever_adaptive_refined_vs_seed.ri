@@ -13,7 +13,7 @@ structure FeaBodyCantileverAdaptiveRefinedVsSeed {
 
     let body = box(1000mm, 100mm, 100mm)
 
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000.0N)
     let mount = FixedSupport(target: "root")
 
     let refined = solve_elastic_static(

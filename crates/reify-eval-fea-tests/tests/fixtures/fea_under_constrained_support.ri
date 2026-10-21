@@ -22,7 +22,7 @@ structure FeaUnderConstrainedSupport {
     let material = Steel_AISI_1045()
 
     // Tip load, same as the smoke test.
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000.0N)
 
     // Present support, but targeting "tip" instead of the auto-clamped "root".
     let mount = FixedSupport(target: "tip")

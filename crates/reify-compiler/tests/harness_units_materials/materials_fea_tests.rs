@@ -1014,14 +1014,14 @@ structure ProbeTransitiveConformance {
     let a = solve_elastic_static(
         ABS_Plastic(),
         1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
     let b = solve_buckling(
         Steel_AISI_1045(),
         1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         BucklingOptions()
     )

@@ -12,7 +12,7 @@ module support_policy_body_pinned_root
 structure SupportPolicyBodyPinnedRoot {
     let material = Steel_AISI_1045()
     let body = box(1000mm, 100mm, 100mm)
-    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let tip_load = PointLoad(point: "tip", force: 1000.0N)
     let pinned_mount = PinnedSupport(target: "root")
     let result = solve_elastic_static(material, body, [tip_load], [pinned_mount], ElasticOptions())
 }

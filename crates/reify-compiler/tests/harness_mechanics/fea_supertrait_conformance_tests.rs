@@ -74,7 +74,7 @@ structure SmokeDirect {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -133,7 +133,7 @@ structure BucklingPreserve {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         BucklingOptions()
     )
@@ -173,7 +173,7 @@ structure NonConforming {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -231,7 +231,7 @@ structure StructRefNonConforming {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
@@ -303,7 +303,7 @@ structure DirectConformer {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0)],
+        [PointLoad(point: "tip", force: 1000.0N)],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )

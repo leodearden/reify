@@ -32,7 +32,7 @@ fn instance_scope_fea_source() -> &'static str {
             param span : Length = 1000mm
             param w    : Length = 100mm
             param h    : Length = 100mm
-            param load : Real   = 1000.0
+            param load : Force  = 1000N
 
             let material = Steel_AISI_1045()
             let tip      = PointLoad(point: "tip", force: load)
@@ -42,7 +42,7 @@ fn instance_scope_fea_source() -> &'static str {
                 material, span, w, h, [tip], [mount], ElasticOptions()
             )
             let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
+            let k        : Stiffness = load / defl
         }
 
         structure Asm {
@@ -138,7 +138,7 @@ fn instance_scope_fea_cells_equal_template_solved_values() {
 
     // ── (3) The downstream chain is determinate ─────────────────────────────
     //
-    // `defl = max(r_static.displacement)` and `k = load * 1N / defl` are
+    // `defl = max(r_static.displacement)` and `k = load / defl` are
     // ordinary lets over the instance map. With the shell in place they went
     // Undef; this is the chain the task reports as undef.
     for member in ["defl", "k"] {
@@ -277,7 +277,7 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
             param span : Length = 1000mm
             param w    : Length = 100mm
             param h    : Length = 100mm
-            param load : Real   = 1000.0
+            param load : Force  = 1000N
 
             let material = Steel_AISI_1045()
             let tip      = PointLoad(point: "tip", force: load)
@@ -287,7 +287,7 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
                 material, span, w, h, [tip], [mount], ElasticOptions()
             )
             let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
+            let k        : Stiffness = load / defl
         }
 
         structure AsmAuto {

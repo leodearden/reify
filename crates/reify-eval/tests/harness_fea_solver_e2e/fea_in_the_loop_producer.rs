@@ -127,7 +127,7 @@ structure FeaOptimizedBracket {
     param thickness : Length = auto(free)
 
     let material = Steel_AISI_1045()
-    let tip_load  = PointLoad(point: "tip", force: 50.0)
+    let tip_load  = PointLoad(point: "tip", force: 50.0N)
     let mount     = FixedSupport(target: "root")
 
     let yield_limit = 310MPa

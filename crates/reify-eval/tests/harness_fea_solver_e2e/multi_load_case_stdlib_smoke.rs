@@ -597,12 +597,12 @@ const SOLVE_LOAD_CASES_SOURCE: &str = r#"
 structure def SolveLoadCasesFixture {
     let lc1       = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: "tip", force: 1000.0N)],
         supports: [FixedSupport(target: "root")],
     )
     let lc2       = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        loads:    [PointLoad(point: "tip", force: 2000.0N)],
         supports: [FixedSupport(target: "root")],
     )
     let result        = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
@@ -771,13 +771,13 @@ const PER_CASE_OPTIONS_SOURCE: &str = r#"
 structure def PerCaseOptionsFixture {
     let lc_high  = LoadCase(
         name:     "high_res",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: "tip", force: 1000.0N)],
         supports: [FixedSupport(target: "root")],
         options:  some(ElasticOptions(max_iter: 500)),
     )
     let lc_low   = LoadCase(
         name:     "low_res",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: "tip", force: 1000.0N)],
         supports: [FixedSupport(target: "root")],
     )
     let result     = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
@@ -901,7 +901,7 @@ const SINGLE_CASE_SOURCE: &str = r#"
 structure def SingleCaseFixture {
     let lc1  = LoadCase(
         name:     "only",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: "tip", force: 1000.0N)],
         supports: [FixedSupport(target: "root")],
     )
     let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
@@ -918,12 +918,12 @@ const TWO_CASE_SHARED_MESH_SOURCE: &str = r#"
 structure def TwoCaseSharedMeshFixture {
     let lc1  = LoadCase(
         name:     "light",
-        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        loads:    [PointLoad(point: "tip", force: 1000.0N)],
         supports: [FixedSupport(target: "root")],
     )
     let lc2  = LoadCase(
         name:     "heavy",
-        loads:    [PointLoad(point: "tip", force: 5000.0)],
+        loads:    [PointLoad(point: "tip", force: 5000.0N)],
         supports: [FixedSupport(target: "root")],
     )
     let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())

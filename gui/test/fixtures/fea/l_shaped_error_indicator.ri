@@ -43,7 +43,7 @@ structure LShapedErrorIndicator {
     let material = Steel_AISI_1045()
 
     // Loads: 500 N point load applied at the box-grid "tip".
-    let tip_load = PointLoad(point: "tip", force: 500.0)
+    let tip_load = PointLoad(point: "tip", force: 500.0N)
 
     // Supports: fully clamped (fixed) at the box-grid "root".
     // NOTE: "tip"/"root" are canonical box-grid keywords resolved independently

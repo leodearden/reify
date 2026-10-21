@@ -28,7 +28,7 @@ structure def PressureMultiCaseFixture {
     let b = box(1000mm, 100mm, 100mm)
     let lc1 = LoadCase(
         name:     "pressure_case",
-        loads:    [PressureLoad(magnitude: 1.0e6, face: face(b, "x_max"), direction: "normal")],
+        loads:    [PressureLoad(magnitude: 1.0e6Pa, face: face(b, "x_max"), direction: "normal")],
         supports: [FixedSupport(target: "root")],
     )
     let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
@@ -252,7 +252,7 @@ structure def InlinePressureBeam {
     let body = box(length, width, height)
     let result = solve_elastic_static(
         material, length, width, height,
-        [PressureLoad(magnitude: 1.0e6, face: face(body, "x_max"), direction: "normal")],
+        [PressureLoad(magnitude: 1.0e6Pa, face: face(body, "x_max"), direction: "normal")],
         [mount], ElasticOptions()
     )
 }
@@ -266,7 +266,7 @@ structure def LetBoundPressureBeam {
     let material = Steel_AISI_1045()
     let mount = FixedSupport(target: "root")
     let body = box(length, width, height)
-    let pressure = PressureLoad(magnitude: 1.0e6, face: face(body, "x_max"), direction: "normal")
+    let pressure = PressureLoad(magnitude: 1.0e6Pa, face: face(body, "x_max"), direction: "normal")
     let result = solve_elastic_static(
         material, length, width, height, [pressure], [mount], ElasticOptions()
     )

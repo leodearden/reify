@@ -32,13 +32,13 @@ let mount = FixedSupport("mount_face")
 
 let operating = LoadCase(
     name:     "operating",
-    loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: "load_face", force: 5000.0N,  direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
 let overload = LoadCase(
     name:     "overload",
-    loads:    [PointLoad(point: "load_face", force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: "load_face", force: 10000.0N, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
@@ -268,7 +268,7 @@ See §4 for the per-case `mesh_size` / `element_order` option interaction and th
 ```
 let tight_case = LoadCase(
     name:     "fine_check",
-    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: "load_face", force: 5000.0N, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
     options:  some(ElasticOptions(cg_tolerance: 1e-10, shell_force: ShellForce.Off)),
 )
@@ -280,7 +280,7 @@ let tight_case = LoadCase(
 ```
 let coarse_case = LoadCase(
     name:     "coarse_sanity",
-    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
+    loads:    [PointLoad(point: "load_face", force: 5000.0N, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
     options:  some(ElasticOptions(mesh_size: 0.02, shell_force: ShellForce.Off)),
 )

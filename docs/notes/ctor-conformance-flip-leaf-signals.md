@@ -107,6 +107,15 @@ probe-backed: a scratch structure declaring `param force : Force = 0N`, given
   becomes a compile-time Error, so γ2 migrates or retires the control in its
   own diff. Once migrated, it is identical to the dimensioned twin.
 
+OUTCOME: the prediction held. After γ2 (#6941), `dcr_load_ctor_dimension_silent.ri`
+exits 1 on exactly `bare_point`, `bare_pressure` and `body_force` (held by
+`harness_ctor_conformance_survey/fea_load_retype.rs`), and those three sites are
+deferred to #8008. The control was migrated to `force: 1000N`, not retired, and
+`dcr_solver_load_dropped_dimensioned.ri` exits 0 with the control's
+`max_von_mises` and iteration count (held in-process by
+`solve_elastic_static_e2e.rs::gamma2_dimensioned_b1_fixture_solves_identically_to_its_bare_respelling`).
+γ1's end-to-end `.ri` route is therefore open.
+
 ### γ3 (#5802): rows B2 and B3
 
 - **B2 (bare spelling → `DimensionedArgRejected`).** Pre-empted from `.ri`:

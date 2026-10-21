@@ -1094,12 +1094,12 @@ const BUCKLING_MULTI_CASE_PROBE_SRC: &str = r#"structure BucklingMultiCaseProbe 
 
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "top", force: 1000.0)],
+        loads:    [PointLoad(point: "top", force: 1000.0N)],
         supports: [FixedSupport(target: "base")],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "top", force: 2000.0)],
+        loads:    [PointLoad(point: "top", force: 2000.0N)],
         supports: [FixedSupport(target: "base")],
     )
 
