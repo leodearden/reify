@@ -42,7 +42,8 @@
 
 use crate::form_find::{
     ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
-    member_axial_forces, scatter_line_members, scatter_surface_stencils,
+    free_equilibrium_residual_relative, member_axial_forces, scatter_line_members,
+    scatter_surface_stencils,
 };
 use faer::{Mat, Side};
 use std::borrow::Cow;
@@ -575,16 +576,11 @@ pub fn form_find_free_surfaces(
 }
 
 /// Equilibrium-residual convergence tolerance for the free-standing cotangent
-/// fixed point, applied RELATIVE to `D`'s own magnitude so convergence is
-/// gauge-free as well as coordinate-scale-free — see
-/// [`all_node_equilibrium_residual_relative`] for the residual and why it is
-/// normalised this way.
-///
-/// CALIBRATED, not guessed: `d_scale` measured at `7.895` at the δ
-/// `GroupRatios` golden's converged state
-/// (`tensegrity_delta_combined_form_find.rs`), so the previous absolute
-/// `1e-10` corresponds to a relative `1.267e-11`; this `1e-11` is therefore
-/// ~1.27× tighter and stays ~12.7× below that golden's independently-checked
+/// fixed point, applied to [`all_node_equilibrium_residual_relative`]: each
+/// row's net force RELATIVE to that row of `D`, so convergence is gauge-free as
+/// well as coordinate-scale-free. Row norms are uniform at the δ `GroupRatios`
+/// golden's converged state (`tensegrity_delta_combined_form_find.rs`), so the
+/// value stays ~100× below that golden's independently-checked
 /// `EQUIL_TOL = 1e-9`.
 const FREE_SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
@@ -617,61 +613,13 @@ fn assemble_surface_matrix(
     Ok(s)
 }
 
-/// ALL-node equilibrium residual `‖D·x‖∞ / (d_scale·(1+scale))` — the
-/// free-standing fixed-point signal, scaled by the coordinate magnitude AND
-/// by `d_scale = ‖D‖∞` (over ALL rows: unlike the anchored kernel's
-/// `free_equilibrium_residual_relative`, every node is free in the
-/// free-standing case, so there is no free-row restriction to apply). `D` is
-/// exactly linear in the force densities `q` and the surface stresses `σ`,
-/// so normalising only by coordinate scale would make convergence depend on
-/// the overall gauge; dividing by `d_scale` cancels that factor exactly,
-/// since numerator and denominator both scale linearly with a uniform q/σ
-/// rescaling. See [`FREE_SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the
-/// calibration that keeps this in a known, auditable relationship to the
-/// previous absolute bound.
-///
-/// `d_scale <= 0` returns `f64::INFINITY` rather than dividing by zero: `D`
-/// identically zero across every row makes the numerator vacuously 0 — not
-/// because equilibrium was reached, but because nothing acts on any node at
-/// all. Returning `INFINITY` forces the fixed point to keep iterating (and
-/// ultimately report `SearchDidNotConverge`) instead of breaking out at
-/// iteration 0 and echoing the caller's unsolved initial guess back as a
-/// "converged" result.
-#[allow(clippy::needless_range_loop)] // `axis` indexes nodes[j][axis] inside the j-sum
+/// ALL-node equilibrium residual — the free-standing fixed point's stop test:
+/// the anchored kernel's per-row criterion with every row free, since every
+/// node is free here. One definition carries the per-row normalisation (exactly
+/// gauge-invariant) and the zero/NaN-row rejection.
 fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
-    let n = nodes.len();
-    let mut resid = 0.0_f64;
-    let mut scale = 0.0_f64;
-    for i in 0..n {
-        for axis in 0..3 {
-            let mut net = 0.0_f64;
-            for j in 0..n {
-                net += d[(i, j)] * nodes[j][axis];
-            }
-            resid = resid.max(net.abs());
-        }
-    }
-    for p in nodes {
-        for &c in p {
-            scale = scale.max(c.abs());
-        }
-    }
-
-    // d_scale = ‖D‖∞ over ALL rows — see the guard-and-gauge rationale in the
-    // function doc above.
-    let mut d_scale = 0.0_f64;
-    for i in 0..n {
-        let mut row = 0.0_f64;
-        for j in 0..n {
-            row += d[(i, j)].abs();
-        }
-        d_scale = d_scale.max(row);
-    }
-    if d_scale <= 0.0 {
-        return f64::INFINITY;
-    }
-
-    resid / (d_scale * (1.0 + scale))
+    let every_row: Vec<usize> = (0..nodes.len()).collect();
+    free_equilibrium_residual_relative(d, nodes, &every_row)
 }
 
 /// Combined-D geometry recovery, returning the recovered nodes: it **forces

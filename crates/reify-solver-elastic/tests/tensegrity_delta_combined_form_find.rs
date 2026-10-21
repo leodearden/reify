@@ -514,8 +514,10 @@ fn combined_explicit_disconnected_twin_is_not_certified() {
 
     let twin_nodes: Vec<[f64; 3]> = nodes.iter().map(|p| [p[0] + 5.0, p[1], p[2]]).collect();
     nodes.extend(twin_nodes);
-    let twin_members: Vec<(usize, usize)> =
-        members.iter().map(|&(a, b)| (a + OFFSET, b + OFFSET)).collect();
+    let twin_members: Vec<(usize, usize)> = members
+        .iter()
+        .map(|&(a, b)| (a + OFFSET, b + OFFSET))
+        .collect();
     members.extend(twin_members);
     kinds.extend(kinds.clone());
     let twin_surfaces: Vec<(usize, usize, usize)> = surfaces

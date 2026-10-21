@@ -762,7 +762,7 @@ fn is_singular_reduced_solve(
 
 /// The stop criterion's measure ([`SURFACE_EQUILIBRIUM_REL_TOL`]): the per-row
 /// residual at the geometry's own coordinate scale, ~0 at a fixed point.
-fn free_equilibrium_residual_relative(
+pub(crate) fn free_equilibrium_residual_relative(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
