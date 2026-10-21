@@ -2789,6 +2789,66 @@ mod tests {
         );
     }
 
+    // ── per-row criterion (task 7801): each node's net force is judged against
+    // its OWN row of D, so a healthy row can neither mask a degenerate one nor
+    // lend its stiffness to a soft one.
+
+    #[test]
+    fn all_node_equilibrium_residual_rejects_a_zero_row_beside_healthy_rows() {
+        let prism_d = combined_d_at_canonical_prism(0.2, 1.0);
+        let mut d = Mat::<f64>::zeros(7, 7);
+        for i in 0..6 {
+            for j in 0..6 {
+                d[(i, j)] = prism_d[(i, j)];
+            }
+        }
+        let mut nodes = canonical_prism();
+        nodes.push([0.3, 0.2, 0.4]);
+
+        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
+        assert_eq!(
+            resid,
+            f64::INFINITY,
+            "an isolated node's zero row must reject, got {resid}",
+        );
+    }
+
+    #[test]
+    fn all_node_equilibrium_residual_rejects_a_nan_row_beside_healthy_rows() {
+        // Every other row is healthy, so only the NaN branch can reject.
+        let nodes = vec![[1.0, 1.0, 1.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let mut d = Mat::<f64>::zeros(3, 3);
+        d[(0, 1)] = 8.5;
+        d[(1, 0)] = 8.5;
+        d[(2, 0)] = f64::NAN;
+
+        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
+        assert_eq!(
+            resid,
+            f64::INFINITY,
+            "a NaN-carrying row must reject beside healthy rows, got {resid}",
+        );
+    }
+
+    #[test]
+    fn all_node_equilibrium_residual_judges_each_row_against_its_own_stiffness() {
+        // Chain 0 —soft (q = 1)— 1 —stiff (q = 2^20)— 2. The stiff member is
+        // balanced (nodes 1 and 2 coincide); the soft one is 2^-20 off, which
+        // its own row norm (2) sees but the stiff row norm (2 + 2^21) hides.
+        const SOFT: f64 = 1.0;
+        const STIFF: f64 = 1_048_576.0; // 2^20
+        const OFFSET: f64 = 1.0 / 1_048_576.0; // 2^-20
+        let d = assemble_force_density_matrix(3, &[(0, 1), (1, 2)], &[SOFT, STIFF]);
+        let nodes = vec![[1.0 + OFFSET, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]];
+
+        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
+        assert!(
+            resid > FREE_SURFACE_EQUILIBRIUM_REL_TOL,
+            "the soft row's imbalance must not read as converged: residual {resid:e} \
+             vs tolerance {FREE_SURFACE_EQUILIBRIUM_REL_TOL:e}",
+        );
+    }
+
     // ── gauge lock (task 6413), continued — defect D2: the eigenvalue-gap
     // DESCENT STEP. Step-2 (above) fixes only the outer stop test; it does
     // NOT touch `combined_eig_gap_objective` / `combined_geometry_descent_step`,
