@@ -258,7 +258,9 @@ fn seed_densities(
 /// The search+recovery is wrapped in an outer cotangent fixed point (assemble
 /// combined `D` at the current geometry → search/recover → repeat until the
 /// combined free-node equilibrium residual `‖D(x)·x‖` settles to machine
-/// precision), mirroring γ's `form_find_anchored_surfaces`.
+/// precision), mirroring γ's `form_find_anchored_surfaces`. The residual is the
+/// stop test; the final iterate's combined `D` must then also certify as one
+/// connected nullity-4 form.
 ///
 /// [`ForceDensitySpec::Explicit`] admissibility: with `σ > 0` present, the
 /// membrane's cotangent weights are part of `D`, so `q` must be a COMBINED
@@ -280,13 +282,13 @@ fn seed_densities(
 ///   the search ([`GroupSpecDefect`]).
 /// - [`FreeFormError::DegenerateTriangle`] — a triangle degenerated at an iterate.
 /// - [`FreeFormError::SearchDidNotConverge`] — the GroupRatios search or the
-///   Explicit combined fixed point exhausted its budget without reaching
-///   nullity 4. A wrong-nullity `Explicit` spec (with `σ > 0`) surfaces here
-///   too, not as `NotAForm`: the combined kernel forces nullity 4
-///   internally and gates on the equilibrium residual instead — see the
-///   negative guard
-///   `combined_explicit_line_only_q_is_not_a_combined_self_stress` in
-///   `tests/tensegrity_delta_combined_form_find.rs`.
+///   combined fixed point ended without a free-standing form. `defect` names
+///   the final iterate's [`FormDefect`] when its combined `D` is not a form: an
+///   isolated node, a disconnected piece, or a nullity other than 4 — a
+///   wrong-nullity `Explicit` spec (with `σ > 0`) included, see the negative
+///   guard `combined_explicit_line_only_q_is_not_a_combined_self_stress` in
+///   `tests/tensegrity_delta_combined_form_find.rs`. `defect` is `None` when
+///   the budget or stall guard ended a valid form short of equilibrium.
 /// - [`FreeFormError::SingularRecovery`] — null-space basis is not 3-D.
 pub fn form_find_free_surfaces(
     nodes_guess: &[[f64; 3]],
@@ -386,7 +388,7 @@ pub fn form_find_free_surfaces(
                 seed_ratios,
                 reference_group,
             } => {
-                let searched = form_find_group_ratios_combined(
+                let searched_q = form_find_group_ratios_combined(
                     &problem,
                     &current,
                     group_ids,
@@ -396,9 +398,9 @@ pub fn form_find_free_surfaces(
                     &surface_mat,
                 )?;
                 for (i, &g) in group_ids.iter().enumerate() {
-                    warm_group_mag[g] = searched.force_densities[i].abs().max(1e-10);
+                    warm_group_mag[g] = searched_q[i].abs().max(1e-10);
                 }
-                searched.force_densities
+                searched_q
             }
         };
 
@@ -464,7 +466,6 @@ pub fn form_find_free_surfaces(
         if matches!(spec, ForceDensitySpec::Explicit(_))
             && let Ok(trial_nodes) =
                 form_find_explicit_combined_relaxed(&problem, &current, &surface_mat)
-                    .map(|r| r.nodes)
             && let Ok(trial_surface_mat) =
                 assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
         {
@@ -540,6 +541,24 @@ pub fn form_find_free_surfaces(
         last_result = Some(combined_result_at(members, &q, &current));
     }
 
+    // Certify the final iterate whether or not the loop converged, so a model
+    // that is not one connected nullity-4 form names its defect even when its
+    // residual never settled (an isolated node's zero row keeps it unsettled).
+    let mut result = last_result.expect("every loop exit follows a stored iterate");
+    let surface_mat_final =
+        assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
+    let mut d_final = assemble_force_density_matrix(n, members, &result.force_densities);
+    for i in 0..n {
+        for j in 0..n {
+            d_final[(i, j)] += surface_mat_final[(i, j)];
+        }
+    }
+    let form = FreeStandingForm::certify(&d_final).map_err(|defect| {
+        FreeFormError::SearchDidNotConverge {
+            defect: Some(defect),
+        }
+    })?;
+
     // Non-convergence: match the line-only `form_find_free` contract — return
     // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
     // Returning `Ok` with `converged=false` would create an asymmetry where
@@ -549,25 +568,9 @@ pub fn form_find_free_surfaces(
         return Err(FreeFormError::SearchDidNotConverge { defect: None });
     }
 
-    let mut result = last_result.expect("converged guarantees a result was stored");
     result.converged = true;
+    result.nullity = form.spectrum().nullity;
     result.surface_stresses = surface_stresses.to_vec();
-
-    // Re-classify D_combined at the final geometry to report the honest fixed-point
-    // nullity (4 for a valid combined form) rather than an intermediate-iteration value.
-    // The convergence residual (< FREE_SURFACE_EQUILIBRIUM_REL_TOL) guarantees the 4
-    // coordinate-translation modes are in null(D_combined) to machine precision, so
-    // classify_spectrum reliably reports nullity 4 here.
-    let surface_mat_final =
-        assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
-    let mut d_final = assemble_force_density_matrix(n, members, &result.force_densities);
-    for i in 0..n {
-        for j in 0..n {
-            d_final[(i, j)] += surface_mat_final[(i, j)];
-        }
-    }
-    result.nullity = classify_spectrum(&d_final, NULLITY_REL_TOL).nullity;
-
     Ok(result)
 }
 
@@ -671,15 +674,15 @@ fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f
     resid / (d_scale * (1.0 + scale))
 }
 
-/// Combined-D geometry recovery used by [`form_find_group_ratios_combined`]: it
-/// **forces nullity = 4** — the 4 smallest-|λ| eigenvectors are taken as the
-/// approximate null space regardless of whether their eigenvalues are truly near
-/// zero. At intermediate geometry iterations the combined D may not have exact
-/// nullity 4 (the cotangent weights depend on geometry and the current iterate is
-/// not yet the fixed point); forcing nullity 4 lets the outer fixed-point loop
-/// proceed and converge toward `x*∈null(D_combined(x*))`. The outer loop's
-/// equilibrium-residual check (`‖D_combined(x)·x‖`) is the correctness gate — at
-/// the fixed point the raw nullity IS 4, so forced and strict nullity agree.
+/// Combined-D geometry recovery, returning the recovered nodes: it **forces
+/// nullity = 4** — the 4 smallest-|λ| eigenvectors are taken as the approximate
+/// null space regardless of whether their eigenvalues are truly near zero. At
+/// intermediate geometry iterations the combined D may not have exact nullity 4
+/// (the cotangent weights depend on geometry and the current iterate is not yet
+/// the fixed point); forcing nullity 4 lets the outer fixed-point loop proceed
+/// toward `x*∈null(D_combined(x*))`. The outer loop's equilibrium residual
+/// (`‖D_combined(x)·x‖`) is the stop test, and certifying its final iterate is
+/// the validity gate.
 ///
 /// `nodes_guess` is the current iterate, which gauge-fixes the recovery; the
 /// densities are `problem`'s.
@@ -687,47 +690,27 @@ fn form_find_explicit_combined_relaxed(
     problem: &ForceDensityProblem<'_>,
     nodes_guess: &[[f64; 3]],
     surface_mat: &Mat<f64>,
-) -> Result<FreeFormResult, FreeFormError> {
+) -> Result<Vec<[f64; 3]>, FreeFormError> {
     let n = nodes_guess.len();
-    let (members, q) = (problem.members(), problem.q());
 
     // Build combined D = CᵀQC + surface_mat.
-    let mut d = assemble_force_density_matrix(n, members, q);
+    let mut d = assemble_force_density_matrix(n, problem.members(), problem.q());
     for i in 0..n {
         for j in 0..n {
             d[(i, j)] += surface_mat[(i, j)];
         }
     }
 
-    // Classify, then FORCE nullity=4: take the 4 smallest-|λ| eigenvectors as
-    // the approximate null space.  The actual nullity is reported in the result
-    // for diagnostic purposes (converges to 4 at the fixed point).
-    let raw = classify_spectrum(&d, NULLITY_REL_TOL);
-    let actual_nullity = raw.nullity;
-    let spectrum = SpectrumClassification {
-        eigenvalues: raw.eigenvalues,
-        eigenvectors: raw.eigenvectors,
-        nullity: 4,
-        max_mag: raw.max_mag,
-    };
-
-    let nodes = recover_coordinates(nodes_guess, &spectrum)?;
-
-    let member_forces = member_axial_forces(members, q, &nodes);
-
-    Ok(FreeFormResult {
-        nodes,
-        member_forces,
-        force_densities: q.to_vec(),
-        nullity: actual_nullity,
-        converged: true,
-        surface_stresses: Vec::new(),
-    })
+    let spectrum = SpectrumClassification::forced_nullity(&d, FREE_FORM_NULLITY);
+    recover_coordinates(nodes_guess, &spectrum)
 }
 
-/// Adaptive GroupRatios search operating on the COMBINED `D = CᵀQC + surface_mat`.
-/// Mirrors [`form_find_group_ratios`] but the objective includes the fixed additive
-/// surface term so the search drives the COMBINED nullity toward 4.
+/// Adaptive GroupRatios search operating on the COMBINED `D = CᵀQC + surface_mat`,
+/// returning the searched per-member `q`. Mirrors [`form_find_group_ratios`] but
+/// the objective includes the fixed additive surface term so the search drives
+/// the COMBINED nullity toward 4. Unlike the line-only search it certifies
+/// nothing: the outer loop's residual is the stop test, and certifying its final
+/// iterate is the validity gate.
 ///
 /// `initial_group_mag` are warm-start magnitudes (e.g. from a line-only bootstrap)
 /// that replace the `seed_ratios` absolute values as the starting point AND as the
@@ -745,7 +728,7 @@ fn form_find_group_ratios_combined(
     initial_group_mag: &[f64],
     reference_group: usize,
     surface_mat: &Mat<f64>,
-) -> Result<FreeFormResult, FreeFormError> {
+) -> Result<Vec<f64>, FreeFormError> {
     let members = problem.members();
     let n_groups = seed_ratios.len();
     let n = nodes_guess.len();
@@ -851,26 +834,11 @@ fn form_find_group_ratios_combined(
 
     let q = assemble_group_q(members.len(), group_ids, &group_sign, &group_mag);
 
-    // Recover geometry from the near-null space of D_combined.  The relaxed
-    // solver forces nullity=4 on D_combined even when the asymmetric surface_mat
-    // (assembled at an off-symmetry geometry) means D_combined's actual nullity
-    // is < 4.  The outer fixed-point loop's residual check (‖D_combined(x)·x‖)
-    // is the convergence gate; at the fixed point D_combined has exact nullity 4.
-    let geo = form_find_explicit_combined_relaxed(
-        &problem.with_densities(&q)?,
-        nodes_guess,
-        surface_mat,
-    )?;
-
-    let member_forces = member_axial_forces(members, &q, &geo.nodes);
-    Ok(FreeFormResult {
-        nodes: geo.nodes,
-        member_forces,
-        force_densities: q,
-        nullity: geo.nullity,
-        converged: true,
-        surface_stresses: Vec::new(),
-    })
+    // The outer loop moves the geometry itself, so the recovered nodes are not
+    // returned; a found `q` whose forced-nullity recovery cannot span 3-D is
+    // still this search's error.
+    form_find_explicit_combined_relaxed(&problem.with_densities(&q)?, nodes_guess, surface_mat)?;
+    Ok(q)
 }
 
 /// Eigenvalue-gap objective for the free-standing combined fixed point: the
@@ -998,8 +966,8 @@ fn combined_geometry_descent_step(
 /// Assemble a [`FreeFormResult`] at a fixed geometry + force-density vector:
 /// per-member axial force `Nᵢ = qᵢ·Lᵢ` on `geom`, carrying `q` through as the
 /// reported densities. `nullity` / `converged` / `surface_stresses` are filled by
-/// the caller (the combined outer loop re-classifies the honest nullity and sets
-/// the echo on convergence).
+/// the caller (the combined outer loop's tail takes the nullity from the final
+/// iterate's certificate and sets the echo on convergence).
 fn combined_result_at(
     members: &[(usize, usize)],
     q: &[f64],
@@ -1303,6 +1271,18 @@ struct SpectrumClassification {
     /// re-folding the spectrum, which could otherwise drift from the
     /// threshold's own value.
     max_mag: f64,
+}
+
+impl SpectrumClassification {
+    /// `d`'s spectrum with its `nullity` smallest-|λ| eigenvectors taken as the
+    /// null block whatever their eigenvalues: a FORCED width, not the observed
+    /// one.
+    fn forced_nullity(d: &Mat<f64>, nullity: usize) -> SpectrumClassification {
+        SpectrumClassification {
+            nullity,
+            ..classify_spectrum(d, NULLITY_REL_TOL)
+        }
+    }
 }
 
 /// Assemble the full `N×N` force-density matrix `D = Cᵀ Q C` for the whole
