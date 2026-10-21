@@ -57,10 +57,10 @@
 
 use std::collections::HashMap;
 
-use reify_core::{Diagnostic, ValueCellId};
+use reify_core::{Diagnostic, DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
 
-use crate::scaling::ResidualUnit;
+use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
 /// sub. Carries the sub's instance name so the partition can tell which relation
@@ -233,6 +233,67 @@ pub fn partition_driving_set(
         free,
         per_relation,
     }
+}
+
+// ── Characteristic length ────────────────────────────────────────────────────
+
+/// The [`SolveScaling`] of one relate-scope solve of `unknown` near `witness`.
+///
+/// `L` is PRD §7.3's characteristic length, as decided in §11 Q4: the bounding-box
+/// diagonal of every datum origin (moving operands at `witness`) together with the
+/// moving frame's origin, which is the rotation centre — so `L` is never shorter
+/// than the rotation unknowns' lever arm — and no shorter than the largest
+/// `Length` metric operand.
+pub fn solve_scaling(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    witness: &Pose,
+    tolerance: RelateTolerance,
+) -> SolveScaling {
+    SolveScaling::new(participating_extent(relations, unknown, witness), tolerance)
+}
+
+fn participating_extent(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    witness: &Pose,
+) -> f64 {
+    let mut points = vec![witness.translation];
+    let mut longest_length_operand = 0.0_f64;
+    for op in relations.iter().flat_map(|rel| &rel.operands) {
+        if is_datum(&op.datum) {
+            let moving = op.sub.as_deref() == Some(unknown.sub.as_str());
+            let origin = if moving {
+                datum_origin(&transform_datum(&op.datum, witness))
+            } else {
+                datum_origin(&op.datum)
+            };
+            points.extend(origin);
+        } else if let Value::Scalar {
+            si_value,
+            dimension,
+        } = &op.datum
+            && *dimension == DimensionVector::LENGTH
+        {
+            longest_length_operand = longest_length_operand.max(si_value.abs());
+        }
+    }
+    points.retain(|p| p.iter().all(|c| c.is_finite()));
+    bbox_diagonal(&points).max(longest_length_operand)
+}
+
+/// The diagonal of the axis-aligned box around `points`; `0.0` when empty.
+fn bbox_diagonal(points: &[[f64; 3]]) -> f64 {
+    let Some(&first) = points.first() else {
+        return 0.0;
+    };
+    let (lo, hi) = points.iter().fold((first, first), |(lo, hi), p| {
+        (
+            std::array::from_fn(|i| lo[i].min(p[i])),
+            std::array::from_fn(|i| hi[i].max(p[i])),
+        )
+    });
+    norm3(sub3(hi, lo))
 }
 
 // ── Driving-set solve ────────────────────────────────────────────────────────
@@ -1098,6 +1159,14 @@ fn origin_of(v: &Value) -> Option<[f64; 3]> {
         Value::Point(_) => vec3_of(v),
         Value::Axis { origin, .. } | Value::Plane { origin, .. } => vec3_of(origin),
         _ => None,
+    }
+}
+
+/// The origin of any datum that has one: [`origin_of`]'s kinds plus a `Frame`.
+fn datum_origin(v: &Value) -> Option<[f64; 3]> {
+    match v {
+        Value::Frame { origin, .. } => vec3_of(origin),
+        _ => origin_of(v),
     }
 }
 
