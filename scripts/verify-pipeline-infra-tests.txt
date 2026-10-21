@@ -110,6 +110,14 @@ scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.s
 # wrapper, same pair shape.
 scripts/gc-worktree-targets.sh       tests/infra/test_gc_worktree_targets.sh
 tests/infra/test_gc_worktree_targets.py  tests/infra/test_gc_worktree_targets.sh
+# Task 9246: leo-laptop's _merge-verify trim units, the deploy contract
+# dark_factory's install_laptop_merge_verify_trim.sh checks (it reads the prune
+# and gc scripts too), and the service's ExecStart run against a fixture.
+deploy/systemd/reify-merge-verify-trim.service    tests/infra/test_merge_verify_trim_units.sh
+deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_trim_units.sh
+tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
+scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
