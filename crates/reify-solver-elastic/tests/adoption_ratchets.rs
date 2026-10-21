@@ -61,7 +61,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "inline-shear-modulus",
         home: "IsotropicElastic::shear_modulus (solver-crates-layering D5, leaf γ)",
-        baseline: 16,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::whole_file(
             "/ (2.0 * (1.0 + nu))",
             SRC,

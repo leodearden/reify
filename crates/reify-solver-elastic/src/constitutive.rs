@@ -833,6 +833,27 @@ mod tests {
     }
 
     #[test]
+    fn shear_modulus_is_e_over_two_one_plus_nu() {
+        // E = 200e9, ν = 0.25: 1 + ν = 1.25, 2(1 + ν) = 2.5, G = 80e9 — every
+        // intermediate is exact in f64, so the comparison is exact.
+        let exact = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        assert_eq!(exact.shear_modulus(), 80.0e9);
+
+        // The D matrix's shear diagonal μ is computed by a different expression
+        // (½·(1 − 2ν)·E/((1 + ν)(1 − 2ν))); the method must agree with it.
+        let mat = steel_like();
+        let mu = mat.d_matrix()[3][3];
+        let g = mat.shear_modulus();
+        assert!(
+            (g - mu).abs() <= 1e-12 * mu.abs(),
+            "shear_modulus() = {g}, d_matrix()[3][3] = {mu}",
+        );
+    }
+
+    #[test]
     fn d_matrix_zero_poisson_limit_is_diagonal_with_e_and_e_over_two() {
         // ν = 0 ⇒ λ = 0, μ = E/2; the D matrix collapses to
         // diag(E, E, E, E/2, E/2, E/2).
