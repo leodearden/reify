@@ -5,15 +5,16 @@
 //! (`scalars_equal`), never by restating a constant's literal value.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, solve_scaling,
+    FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
+    pose_from_frame, solve_frame, solve_frame_traced, solve_scaling,
 };
 use reify_constraints::scaling::{
     RelateTolerance, ResidualUnit, Rung, SolveScaling, ToleranceLadderError, ToleranceRungs,
     UnknownKind,
 };
-use reify_core::DimensionVector;
 use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, scalars_equal};
-use reify_ir::Value;
+use reify_core::{DimensionVector, ValueCellId};
+use reify_ir::{SolveResult, Value};
 use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless};
 
 // ── The tolerance ladder ─────────────────────────────────────────────────────
@@ -569,4 +570,252 @@ fn extent_scales_exactly_with_physical_scale() {
     let base = at_scale(1.0);
     assert!(base > RelateTolerance::kernel_default().kernel_local());
     assert_eq!(at_scale(1024.0), 1024.0 * base);
+}
+
+// ── B15: the scaled solve is invariant under physical rescaling (PRD §8) ─────
+
+/// 2^10, about three decades. A power-of-two rescale is exact in IEEE-754, so each
+/// comparison between the two scales below is an arithmetic identity rather than a
+/// tuned tolerance: any mismatch is a real scale leak.
+const K: f64 = 1024.0;
+
+/// `concentric` (2 dimensionless + 2 metre rows) and `flush` (2 dimensionless + 1
+/// metre row) at physical scale `k`. The moving datums sit ~1–1.5 mm off their
+/// anchors and the seed is rotated ~0.2 rad about a skew axis, so the solve is
+/// nonlinear in metre- AND radian-scale unknowns, with `L` ≈ 2 mm at `k = 1`.
+fn b15_fixture(k: f64) -> (Vec<RelationInstance>, FrameUnknown, Pose) {
+    let relations = vec![
+        rel(
+            "concentric",
+            vec![
+                moving(z_axis_at(0.0012 * k, -0.0008 * k, 0.0)),
+                anchor(z_axis_at(0.0, 0.0, 0.0)),
+            ],
+        ),
+        rel(
+            "flush",
+            vec![
+                moving(z_plane_at(0.0012 * k, -0.0008 * k, 0.0015 * k)),
+                anchor(z_plane_at(0.0, 0.0, 0.0005 * k)),
+            ],
+        ),
+    ];
+    let seed = Pose {
+        translation: [0.0005 * k, -0.0003 * k, 0.0004 * k],
+        rotation: [0.12, -0.15, 0.08],
+    };
+    (relations, moving_unknown(), seed)
+}
+
+/// The scaling a scope solve of `relations` from `seed` uses.
+fn scaling_for(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+) -> SolveScaling {
+    solve_scaling(relations, unknown, seed, RelateTolerance::kernel_default())
+}
+
+fn verdict(result: &SolveResult) -> &'static str {
+    match result {
+        SolveResult::Solved { .. } => "solved",
+        SolveResult::Infeasible { .. } => "infeasible",
+        _ => "other",
+    }
+}
+
+/// The solved pose and `unique` flag of a `Solved` result.
+fn solved(result: &SolveResult) -> (Pose, bool) {
+    match result {
+        SolveResult::Solved { values, unique } => {
+            let frame = &values[&ValueCellId::new(MOVING, "pose")];
+            (pose_from_frame(frame).expect("a solved Frame"), *unique)
+        }
+        other => panic!("expected Solved, got {other:?}"),
+    }
+}
+
+/// Both instances sit above the 1 mm crossover, so the floor is inactive and the
+/// fixture exercises the scaling, not the floor.
+#[test]
+fn b15_precondition_both_instances_are_above_the_crossover() {
+    for k in [1.0, K] {
+        let (relations, unknown, seed) = b15_fixture(k);
+        let scaling = scaling_for(&relations, &unknown, &seed);
+        let l = scaling.characteristic_length();
+        assert!(l >= 1e-3, "k = {k}: L = {l}");
+        assert_eq!(
+            scaling.row_tolerance(ResidualUnit::Length),
+            scaling.tolerance().relative_convergence() * l,
+            "k = {k}"
+        );
+    }
+}
+
+#[test]
+fn b15_convergence_verdict_and_iteration_count_are_scale_invariant() {
+    let run = |k: f64| {
+        let (relations, unknown, seed) = b15_fixture(k);
+        solve_frame_traced(
+            &relations,
+            &unknown,
+            &seed,
+            &scaling_for(&relations, &unknown, &seed),
+        )
+    };
+    let (base, base_trace) = run(1.0);
+    let (large, large_trace) = run(K);
+
+    let (base_pose, base_unique) = solved(&base);
+    let (large_pose, large_unique) = solved(&large);
+    assert_eq!(base_unique, large_unique);
+    assert_eq!(base_trace.iterations, large_trace.iterations);
+    assert!(
+        base_trace.iterations >= 2,
+        "the stop test must fire mid-sequence, not at the seed: {base_trace:?}"
+    );
+    assert_eq!(large_pose.rotation, base_pose.rotation);
+    for i in 0..3 {
+        assert_eq!(
+            large_pose.translation[i],
+            K * base_pose.translation[i],
+            "axis {i}"
+        );
+    }
+}
+
+/// Negative control for the test above: the scaled geometry solved against the
+/// BASE scaling — an absolute bar — stops at a different iterate.
+#[test]
+fn b15_fixture_detects_a_scale_leak() {
+    let (base_relations, base_unknown, base_seed) = b15_fixture(1.0);
+    let base_scaling = scaling_for(&base_relations, &base_unknown, &base_seed);
+    let (relations, unknown, seed) = b15_fixture(K);
+    let own_scaling = scaling_for(&relations, &unknown, &seed);
+
+    let (scaled, scaled_trace) = solve_frame_traced(&relations, &unknown, &seed, &own_scaling);
+    let (leaky, leaky_trace) = solve_frame_traced(&relations, &unknown, &seed, &base_scaling);
+    assert_ne!(
+        (verdict(&leaky), leaky_trace.iterations),
+        (verdict(&scaled), scaled_trace.iterations),
+        "an absolute bar must change the stop iterate, or the B15 fixture cannot see a leak"
+    );
+}
+
+#[test]
+fn b15_infeasible_verdict_is_scale_invariant() {
+    let run = |k: f64| {
+        let relations = vec![
+            rel(
+                "concentric",
+                vec![
+                    moving(z_axis_at(0.0, 0.0012 * k, 0.0)),
+                    anchor(z_axis_at(0.0, 0.0, 0.0)),
+                ],
+            ),
+            rel(
+                "concentric",
+                vec![
+                    moving(z_axis_at(0.0, 0.0012 * k, 0.0)),
+                    anchor(z_axis_at(0.0008 * k, 0.0, 0.0)),
+                ],
+            ),
+        ];
+        let unknown = moving_unknown();
+        let seed = Pose {
+            translation: [0.0002 * k, -0.0004 * k, 0.0],
+            rotation: [0.05, 0.1, -0.03],
+        };
+        let scaling = scaling_for(&relations, &unknown, &seed);
+        assert!(scaling.characteristic_length() >= 1e-3, "k = {k}");
+        solve_frame_traced(&relations, &unknown, &seed, &scaling)
+    };
+    let (base, base_trace) = run(1.0);
+    let (large, large_trace) = run(K);
+    assert_eq!(verdict(&base), "infeasible");
+    assert_eq!(verdict(&large), "infeasible");
+    assert_eq!(base_trace.iterations, large_trace.iterations);
+}
+
+#[test]
+fn b15_partition_is_scale_invariant() {
+    let run = |k: f64| {
+        let (mut relations, unknown, seed) = b15_fixture(k);
+        relations.push(rel(
+            "parallel",
+            vec![
+                moving(z_axis_at(0.0012 * k, -0.0008 * k, 0.0)),
+                anchor(z_axis_at(0.0, 0.0, 0.0)),
+            ],
+        ));
+        let scaling = scaling_for(&relations, &unknown, &seed);
+        partition_driving_set(&relations, &unknown, &seed, &scaling)
+    };
+    let base = run(1.0);
+    let large = run(K);
+    assert_eq!(
+        base.redundant,
+        vec![2],
+        "`parallel` repeats concentric's tilt rows"
+    );
+    assert_eq!(large.driving, base.driving);
+    assert_eq!(large.redundant, base.redundant);
+    assert_eq!((large.spent, large.free), (base.spent, base.free));
+    for (l, b) in large.per_relation.iter().zip(&base.per_relation) {
+        assert_eq!(
+            (l.individual_rank, l.rank_contribution),
+            (b.individual_rank, b.rank_contribution),
+            "{}",
+            b.name
+        );
+    }
+}
+
+/// The scaled contract: a `Solved` pose has every row within its own nominal
+/// tolerance, i.e. `max|r̃| ≤ 1`.
+#[test]
+fn solved_pose_meets_every_row_tolerance() {
+    for k in [1.0, K] {
+        let (relations, unknown, seed) = b15_fixture(k);
+        let scaling = scaling_for(&relations, &unknown, &seed);
+        let (pose, _) = solved(&solve_frame(&relations, &unknown, &seed, &scaling));
+        let exceedance =
+            max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
+        assert!(exceedance <= 1.0, "k = {k}: max|r̃| = {exceedance}");
+    }
+}
+
+/// The redundant-remainder re-check's metre rung scales with `L`; its angular
+/// rungs do not.
+#[test]
+fn redundant_metre_row_is_judged_against_the_scaled_assertion_rung() {
+    let tol = RelateTolerance::kernel_default();
+    let exceedance = |relation: RelationInstance, scaling: SolveScaling| {
+        max_relation_exceedance(&[relation], &moving_unknown(), &Pose::identity(), |u| {
+            scaling.assertion_rung(u)
+        })
+    };
+    let offset_by = |moving_plane: Value| {
+        rel(
+            "offset",
+            vec![
+                moving(moving_plane),
+                anchor(z_plane_at(0.0, 0.0, 0.0)),
+                metric(meters(20.0)),
+            ],
+        )
+    };
+
+    // A 5e-5 m metre error with exact angular rows.
+    let long = offset_by(z_plane_at(0.0, 0.0, 20.00005));
+    assert!(exceedance(long.clone(), SolveScaling::new(20.0, tol)) <= 1.0);
+    assert!(exceedance(long, SolveScaling::new(0.5, tol)) > 1.0);
+
+    // A 5e-5 rad tilt with an exact metre row.
+    let tilt = 5e-5_f64;
+    let tilted = offset_by(plane_val(
+        point3(0.0, 0.0, 20.0),
+        vec3_dimensionless(tilt.sin(), 0.0, tilt.cos()),
+    ));
+    assert!(exceedance(tilted, SolveScaling::new(20.0, tol)) > 1.0);
 }
