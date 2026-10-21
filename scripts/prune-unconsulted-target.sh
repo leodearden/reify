@@ -6,7 +6,9 @@
 #
 # Usage:
 #   scripts/prune-unconsulted-target.sh --window-days N [--atime-probe PATH]
-#                                       [--lock FILE]... PROFILE_DIR...
+#                                       [--lock FILE]...
+#                                       [--free-floor-gib G --min-window-days M]
+#                                       PROFILE_DIR...
 #
 # Callers:
 #   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy.
@@ -55,6 +57,15 @@
 #                       flock fault, means the paths are misconfigured: exit 1,
 #                       nothing read. flock's -E code tells contention apart
 #                       from a fault, which a bare `flock -n` rc 1 cannot.
+#   --free-floor-gib G  Both or neither; integers, 1 <= M <= N. After the pass
+#   --min-window-days M at N days, while the filesystem of the FIRST
+#                       PROFILE_DIR has less than G GiB available (df), tighten
+#                       the window one day and prune again, stopping at M days.
+#                       Never below M: relatime updates atime at most once a
+#                       day, so a live unit's recorded consult can lag its real
+#                       one by up to 24h, and M must clear that lag plus one
+#                       build. A df failure stops the tightening, so a failed
+#                       measurement never deletes more.
 #   -h, --help          Print usage and exit 0.
 #
 # Output: nothing on stdout. stderr, per pruned profile:
@@ -76,7 +87,7 @@ err()  { printf '[error] %s\n' "$*" >&2; }
 _usage() {
     cat >&2 <<EOF
 Usage: $(basename "$0") --window-days N [--atime-probe PATH] [--lock FILE]...
-           PROFILE_DIR...
+           [--free-floor-gib G --min-window-days M] PROFILE_DIR...
 
   Delete the deps/ files of cargo units whose .fingerprint was last consulted
   more than N days before the profile's newest consult. Rule, skips and exit
@@ -98,6 +109,8 @@ _is_positive_int() {
 WINDOW_DAYS=""
 ATIME_PROBE=""
 LOCKS=()
+FREE_FLOOR_GIB=""
+MIN_WINDOW_DAYS=""
 PROFILE_DIRS=()
 
 while [ $# -gt 0 ]; do
@@ -113,6 +126,12 @@ while [ $# -gt 0 ]; do
         --lock)
             [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--lock requires a path"
             LOCKS+=("$2"); shift 2 ;;
+        --free-floor-gib)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--free-floor-gib requires a value"
+            FREE_FLOOR_GIB="$2"; shift 2 ;;
+        --min-window-days)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--min-window-days requires a value"
+            MIN_WINDOW_DAYS="$2"; shift 2 ;;
         --)
             shift; PROFILE_DIRS+=("$@"); break ;;
         -*)
@@ -125,6 +144,14 @@ done
 _is_positive_int "$WINDOW_DAYS" \
     || _usage_error "--window-days must be an integer >= 1 (got '${WINDOW_DAYS}')"
 [ "${#PROFILE_DIRS[@]}" -ge 1 ] || _usage_error "at least one PROFILE_DIR is required"
+if [ -n "$FREE_FLOOR_GIB" ] || [ -n "$MIN_WINDOW_DAYS" ]; then
+    [ -n "$FREE_FLOOR_GIB" ] && [ -n "$MIN_WINDOW_DAYS" ] \
+        || _usage_error "--free-floor-gib and --min-window-days must be given together"
+    _is_positive_int "$FREE_FLOOR_GIB" \
+        || _usage_error "--free-floor-gib must be an integer >= 1 (got '${FREE_FLOOR_GIB}')"
+    _is_positive_int "$MIN_WINDOW_DAYS" && [ "$MIN_WINDOW_DAYS" -le "$WINDOW_DAYS" ] \
+        || _usage_error "--min-window-days must be an integer from 1 to --window-days (got '${MIN_WINDOW_DAYS}')"
+fi
 
 # ── lane locks: every one taken before the tree is read, held to exit ─────────
 readonly _LOCK_HELD_RC=75
@@ -259,6 +286,38 @@ _prune_profile() {
     _SUMMARY_FILE=""
 }
 
-for _profile in "${PROFILE_DIRS[@]}"; do
-    _prune_profile "$_profile" "$WINDOW_DAYS"
-done
+# _prune_pass <window_days>: one prune of every profile at that window. Each
+# pass re-reads the .fingerprint trees, which no pass ever edits.
+_prune_pass() {
+    local profile
+    for profile in "${PROFILE_DIRS[@]}"; do
+        _prune_profile "$profile" "$1"
+    done
+}
+
+# _free_bytes <path>: stdout the bytes available on <path>'s filesystem; fails
+# when df fails or prints anything but a byte count on its last line.
+_free_bytes() {
+    local out
+    out="$(df -B1 --output=avail -- "$1" 2>/dev/null)" || return 1
+    out="${out##*$'\n'}"
+    out="${out//[[:space:]]/}"
+    case "$out" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$out"
+}
+
+_window_days="$WINDOW_DAYS"
+_prune_pass "$_window_days"
+if [ -n "$FREE_FLOOR_GIB" ]; then
+    _floor_bytes=$(( FREE_FLOOR_GIB * 1024 * 1024 * 1024 ))
+    while [ "$_window_days" -gt "$MIN_WINDOW_DAYS" ]; do
+        if ! _free="$(_free_bytes "${PROFILE_DIRS[0]}")"; then
+            info "cannot measure free space on ${PROFILE_DIRS[0]} — not tightening the window."
+            break
+        fi
+        [ "$_free" -lt "$_floor_bytes" ] || break
+        _window_days=$(( _window_days - 1 ))
+        info "free ${_free} bytes below the ${FREE_FLOOR_GIB} GiB floor; tightening window to ${_window_days} days."
+        _prune_pass "$_window_days"
+    done
+fi
