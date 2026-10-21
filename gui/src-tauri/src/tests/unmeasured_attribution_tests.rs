@@ -17,6 +17,26 @@ structure def Probe {
 }
 "#;
 
+const DFM_SOURCE: &str = r#"
+import std.process
+
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+
 /// The terminal remedy reachable on this binary: `reify check` when OCCT is
 /// linked, the kernel itself otherwise.
 #[cfg(feature = "gui")]
@@ -87,6 +107,22 @@ fn gui_viewport_attributes_an_unmeasured_geometric_conforms() {
     assert_eq!(claiming.len(), 1, "{:#?}", state.tessellation_diagnostics);
     let message = claiming[0];
     for token in ["does not measure", "geometric conformance"] {
+        assert!(message.contains(token), "lacks {token:?}: {message}");
+    }
+    assert_names_a_terminal_remedy(message);
+}
+
+/// A declared DFM rule is no longer silent on the panel: one Info says why.
+#[test]
+fn gui_viewport_attributes_an_unmeasured_dfm_rule() {
+    let state = load(DFM_SOURCE, "dfm_viewport");
+    let naming: Vec<&str> = infos(&state)
+        .into_iter()
+        .filter(|m| m.contains("overhang-check"))
+        .collect();
+    assert_eq!(naming.len(), 1, "{:#?}", state.tessellation_diagnostics);
+    let message = naming[0];
+    for token in ["does not measure", "DFM"] {
         assert!(message.contains(token), "lacks {token:?}: {message}");
     }
     assert_names_a_terminal_remedy(message);
