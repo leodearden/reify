@@ -2585,8 +2585,12 @@ pub(crate) fn resolve_parameterized_alias(
         return None;
     }
     let got = type_args.len();
-    if let Some(arity_error) = check_alias_arity(alias_entry, got, alias_entry.span, "defined here")
-    {
+    if let Some(arity_error) = check_alias_arity(
+        alias_entry,
+        got,
+        use_site.span,
+        "wrong number of type arguments",
+    ) {
         diagnostics.push(arity_error);
         return None;
     }
@@ -3445,9 +3449,9 @@ pub(crate) struct AliasBodyUseSite<'a> {
     ///
     /// Two residues of the same hazard class are deliberately left alone,
     /// both pre-dating this field: `resolve_parameterized_alias` anchors its
-    /// own arity and internal-error labels at `alias_entry.span`, and the
-    /// message text still echoes the body's arguments AS WRITTEN (`given 'U'`
-    /// where the direct spelling says `given 'Real'`).
+    /// internal-error label at `alias_entry.span`, and the message text still
+    /// echoes the body's arguments AS WRITTEN (`given 'U'` where the direct
+    /// spelling says `given 'Real'`).
     pub(crate) span: SourceSpan,
 }
 

@@ -1043,7 +1043,7 @@ fn self_recursive_parameterized_alias_does_not_stack_overflow() {
     );
 }
 
-// ─── nested parametric alias arity mismatch ───────────────────────────────
+// ─── parametric alias arity mismatch ──────────────────────────────────────
 
 /// The text of `source` that `diagnostic`'s first label covers; `None` when the
 /// label's span does not lie inside `source`.
@@ -1052,11 +1052,11 @@ fn first_label_text<'a>(source: &'a str, diagnostic: &Diagnostic) -> Option<&'a 
     source.get(span.start as usize..span.end as usize)
 }
 
-/// Assert `errs` hold exactly one alias-arity error — `P` given two type
-/// arguments where it takes one — and that its first label covers `anchor` in
-/// `source`: the written use that triggered the expansion, in the module the
-/// diagnostic will be rendered against.
-fn assert_sole_arity_error_covers(errs: &[&Diagnostic], source: &str, anchor: &str) {
+/// Assert `errs` hold exactly one alias-arity error — one naming `P` and
+/// stating `counts` (e.g. `expects 1 type argument(s), got 2`) — and that its
+/// first label covers `anchor` in `source`: the written use that triggered the
+/// instantiation, in the module the diagnostic will be rendered against.
+fn assert_sole_arity_error_covers(errs: &[&Diagnostic], source: &str, counts: &str, anchor: &str) {
     let arity_errs: Vec<&Diagnostic> = errs
         .iter()
         .copied()
@@ -1066,18 +1066,34 @@ fn assert_sole_arity_error_covers(errs: &[&Diagnostic], source: &str, anchor: &s
         panic!("expected exactly one arity diagnostic; got: {errs:?}");
     };
     assert!(
-        arity_err.message.contains("'P'")
-            && arity_err
-                .message
-                .contains("expects 1 type argument(s), got 2"),
-        "expected an arity error naming P; got: {errs:?}"
+        arity_err.message.contains("'P'") && arity_err.message.contains(counts),
+        "expected an arity error naming P and stating `{counts}`; got: {errs:?}"
     );
     assert_eq!(
         first_label_text(source, arity_err),
         Some(anchor),
         "the arity error must be labelled at the use that triggered the \
-         expansion, not at an offset into an alias definition; got: {arity_err:?}"
+         instantiation, not at an offset into an alias definition; got: {arity_err:?}"
     );
+}
+
+/// Compile `consumer_source` as a module that sees `prelude_source`'s `pub`
+/// declarations, returning the consumer's compiled module alone.
+fn compile_against_prelude(
+    prelude_source: &str,
+    consumer_source: &str,
+) -> reify_compiler::CompiledModule {
+    let prelude = compile_source_named(prelude_source, "arity_prelude");
+    let parsed = reify_syntax::parse(
+        consumer_source,
+        reify_core::ModulePath::single("arity_consumer"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "consumer parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile_with_prelude(&parsed, std::slice::from_ref(&prelude))
 }
 
 #[test]
@@ -1090,7 +1106,12 @@ fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
         }
     "#;
     let module = compile_source(source);
-    assert_sole_arity_error_covers(&errors_only(&module), source, "Q<Int>");
+    assert_sole_arity_error_covers(
+        &errors_only(&module),
+        source,
+        "expects 1 type argument(s), got 2",
+        "Q<Int>",
+    );
 }
 
 /// A non-parametric alias body is resolved eagerly by the alias-DFS pre-pass,
@@ -1108,7 +1129,12 @@ fn alias_dfs_nested_arity_mismatch_is_reported_once_at_the_body_use() {
         }
     "#;
     let module = compile_source(source);
-    assert_sole_arity_error_covers(&errors_only(&module), source, "Q<Int>");
+    assert_sole_arity_error_covers(
+        &errors_only(&module),
+        source,
+        "expects 1 type argument(s), got 2",
+        "Q<Int>",
+    );
 }
 
 /// The arity error raised while expanding a PRELUDE alias joins the CONSUMER's
@@ -1117,22 +1143,148 @@ fn alias_dfs_nested_arity_mismatch_is_reported_once_at_the_body_use() {
 /// be an offset into a file the consumer never opened.
 #[test]
 fn prelude_nested_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
-    let prelude = compile_source_named(
-        "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
-        "nested_arity_prelude",
-    );
     let consumer_source = "structure def S { param q : Q<Int> = [1] }";
-    let parsed = reify_syntax::parse(
+    let compiled = compile_against_prelude(
+        "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
         consumer_source,
-        reify_core::ModulePath::single("nested_arity_consumer"),
     );
+    assert_sole_arity_error_covers(
+        &errors_only(&compiled),
+        consumer_source,
+        "expects 1 type argument(s), got 2",
+        "Q<Int>",
+    );
+}
+
+/// Written directly, `P<Int, Int>` is itself the use: the arity error is
+/// labelled there, not at `P`'s definition.
+#[test]
+fn direct_alias_arity_mismatch_is_anchored_at_the_use() {
+    let source = r#"
+        type P<T> = List<T>
+        structure def S {
+            param q : P<Int, Int> = undef
+        }
+    "#;
+    let module = compile_source(source);
+    assert_sole_arity_error_covers(
+        &errors_only(&module),
+        source,
+        "expects 1 type argument(s), got 2",
+        "P<Int, Int>",
+    );
+}
+
+/// A non-parametric alias body naming `P` directly is resolved by the alias-DFS
+/// pre-pass, which surfaces the arity error at that body use; resolving
+/// `param r : R` afterwards must not report it a second time.
+#[test]
+fn alias_dfs_direct_arity_mismatch_is_reported_once_at_the_body_use() {
+    let source = r#"
+        type P<T> = List<T>
+        type R = P<Int, Int>
+        structure def S {
+            param r : R = undef
+        }
+    "#;
+    let module = compile_source(source);
+    assert_sole_arity_error_covers(
+        &errors_only(&module),
+        source,
+        "expects 1 type argument(s), got 2",
+        "P<Int, Int>",
+    );
+}
+
+/// As for the nested spelling, a direct use of a PRELUDE alias raises its arity
+/// error into the CONSUMER's diagnostics: anchored at the alias definition it
+/// would be an offset into a file the consumer never opened.
+#[test]
+fn prelude_direct_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
+    let consumer_source = "structure def S { param q : P<Int, Int> = undef }";
+    let compiled = compile_against_prelude("pub type P<T> = List<T>\n", consumer_source);
+    assert_sole_arity_error_covers(
+        &errors_only(&compiled),
+        consumer_source,
+        "expects 1 type argument(s), got 2",
+        "P<Int, Int>",
+    );
+}
+
+// An alias with defaulted params accepts a RANGE of argument counts
+// (`required..=total`, reported as `N-M`) rather than one exact count, so the
+// nested path's range logic is only reached by a nested alias that has defaults.
+
+/// `P<A, B = Int>` takes one or two arguments, so the nested `P<X>` is in range:
+/// no arity error, and `B` falls back to its default.
+#[test]
+fn nested_alias_with_defaulted_param_accepts_the_in_range_arity() {
+    let source = r#"
+        type P<A, B = Int> = Map<A, B>
+        type Q<X> = P<X>
+        structure def S {
+            param q : Q<String> = undef
+        }
+    "#;
+    let module = compile_source(source);
+    let errs = errors_only(&module);
     assert!(
-        parsed.errors.is_empty(),
-        "consumer parse errors: {:?}",
-        parsed.errors
+        errs.is_empty(),
+        "an in-range nested arity must not be reported; got: {errs:?}"
     );
-    let compiled = reify_compiler::compile_with_prelude(&parsed, std::slice::from_ref(&prelude));
-    assert_sole_arity_error_covers(&errors_only(&compiled), consumer_source, "Q<Int>");
+    let q_cell = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found")
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "q")
+        .expect("q not found");
+    assert_eq!(
+        q_cell.cell_type,
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+        "Q<String> = P<String> must fill P's defaulted `B` with Int"
+    );
+}
+
+/// One argument past `P<A, B = Int>`'s total: reported as the `1-2` range.
+#[test]
+fn nested_alias_with_defaulted_param_reports_excess_arity_as_a_range() {
+    let source = r#"
+        type P<A, B = Int> = Map<A, B>
+        type Q<X> = P<X, X, X>
+        structure def S {
+            param q : Q<Int> = undef
+        }
+    "#;
+    let module = compile_source(source);
+    assert_sole_arity_error_covers(
+        &errors_only(&module),
+        source,
+        "expects 1-2 type argument(s), got 3",
+        "Q<Int>",
+    );
+}
+
+/// One argument short of `P<A, B, C = Int>`'s required two: reported as the
+/// `2-3` range, so the lower bound counts only the params without defaults.
+#[test]
+fn nested_alias_with_defaulted_param_reports_missing_arity_as_a_range() {
+    let source = r#"
+        type P<A, B, C = Int> = Map<A, B>
+        type Q<X> = P<X>
+        structure def S {
+            param q : Q<Int> = undef
+        }
+    "#;
+    let module = compile_source(source);
+    assert_sole_arity_error_covers(
+        &errors_only(&module),
+        source,
+        "expects 2-3 type argument(s), got 1",
+        "Q<Int>",
+    );
 }
 
 // ─── step-33: module boundary separation — CompiledTypeAlias ───────────────
