@@ -481,18 +481,17 @@ post-extraction count.
 
 ## Compiler namespace ratchet (`compiler-namespace-ratchet-baseline.txt`)
 
-`test_compiler_namespace_ratchet.sh` counts two constructs over non-test
-`crates/reify-compiler/src`: `glob_reexports`, visibility-qualified column-0
-glob re-exports minus `lib.rs`'s `pub use types::*;`, and `glob_imports`,
-unqualified column-0 glob imports. A `use` is matched through its first `;`
-and counted at its first line, so a glob on a continuation line of a braced
-`use` still counts. Files that a `#[cfg(test)]` `mod NAME;`
-declares are skipped, and each skip names its declaration. The baseline is
-exact: it reds on growth, naming every counted line, and on a stale row, naming
-the row to write, so a leaf that removes globs lowers its row in the same diff.
-The engine, `source_count_ratchet.py`, holds no policy, so the type-walker
-ratchet (#8638) can reuse it. Contract: PRD
-`docs/prds/v0_6/compiler-module-namespace.md` §4 C7.
+`test_compiler_namespace_ratchet.sh` holds reify-compiler's glob re-exports and
+glob imports at an exact baseline, so each leaf of PRD
+`docs/prds/v0_6/compiler-module-namespace.md` lowers its row in the same diff.
+Contract: that PRD's §4 C7. The counters are `COUNTERS` in
+`test_compiler_namespace_ratchet.py`; the counting rules are the module
+docstring of the engine, `source_count_ratchet.py`.
+
+A new count ratchet picks its engine by shape: an exact two-way baseline over
+Rust production code, skipping `#[cfg(test)]` child files, is
+`source_count_ratchet.py`; a one-way ceiling over any path glob is
+`adoption_ratchet.py` (above).
 
 ## Verify event channel
 
