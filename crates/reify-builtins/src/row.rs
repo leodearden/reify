@@ -269,31 +269,32 @@ mod tests {
 
     // ── Family ───────────────────────────────────────────────────────────────
 
-    /// α seeds exactly two families. Both variants must exist and be
-    /// distinguishable.
+    /// Every declared family exists and is distinguishable from every other.
     #[test]
-    fn family_has_the_two_seed_variants() {
-        assert_ne!(
-            Family::Parse,
-            Family::Analysis,
-            "Parse and Analysis must be distinct Family variants"
-        );
+    fn family_variants_are_pairwise_distinct() {
+        let all = [Family::Parse, Family::Analysis, Family::Relation];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(a, b, "Family variants must be pairwise distinct");
+            }
+        }
     }
 
     // ── BindingKind ──────────────────────────────────────────────────────────
 
-    /// All five PRD decision-4 binding kinds are declared now, even though α
-    /// seeds only `EvalBuiltin`. The kind column must cover the full ~358-name
-    /// surface — a later τ adding `GeometryOp` rows must not also have to widen
-    /// the vocabulary.
+    /// All six binding kinds are declared: PRD decision 4's five plus R6's
+    /// `Relation`. The kind column must cover the full ~358-name surface — a
+    /// later τ adding `GeometryOp` rows must not also have to widen the
+    /// vocabulary.
     #[test]
-    fn binding_kind_declares_all_five_decision_4_variants() {
+    fn binding_kind_declares_all_six_variants() {
         let all = [
             BindingKind::EvalBuiltin,
             BindingKind::ExprIntercept,
             BindingKind::EnginePostProcess,
             BindingKind::GeometryOp,
             BindingKind::CompileOnly,
+            BindingKind::Relation,
         ];
         // Pairwise-distinct: catches a copy-paste that aliases two variants.
         for (i, a) in all.iter().enumerate() {
