@@ -977,6 +977,8 @@ SELECTION_SCENARIOS = {
     "staged crate source": ("staged", staged("crates/reify-doc/src/lib.rs")),
     "staged docs only": ("staged", staged(DOCS_PATH)),
     "staged upper-case extension": ("staged", staged("docs/Probe.TS")),
+    "staged deletion": ("staged", lambda c: c.git("rm", "-q", "--", "crates/reify-doc/src/util.rs")),
+    "staged .task/ only": ("staged", lambda c: c.stage_ignored(".task/zz-scope-record")),
     "branch added top-level test": ("branch", branch_commit("crates/reify-eval/tests/zz_probe.rs")),
     "branch modified harness root": ("branch", branch_commit("crates/reify-eval/tests/harness_cache.rs")),
     "branch modified standalone": ("branch", branch_commit("crates/reify-eval/tests/achieved_repr_tol.rs")),
@@ -995,7 +997,7 @@ SELECTION_SCENARIOS = {
 
 
 class TestInfraSelectionMatchesBash(InClone):
-    """The six selectors pick bash's selective-infra leaves, in bash's order, with their env."""
+    """bash's selectors pick bash's selective-infra leaves, in bash's order, with their env."""
 
     def test_each_selector(self):
         for label, (scope, change) in SELECTION_SCENARIOS.items():
@@ -1004,7 +1006,13 @@ class TestInfraSelectionMatchesBash(InClone):
                 if change is not None:
                     change(self.clone)
                 record, py, bash = self.side_by_side(scope)
-                self.assertEqual(python_leaves(record), bash_leaves(bash.stdout), label)
+                self.assertEqual(
+                    python_leaves(record),
+                    bash_leaves(bash.stdout),
+                    f"{label}: python's infra_selection differs from bash's selective-infra leaves — "
+                    "mirror the scripts/verify.sh selector change in scripts/reify_verify/selection.py "
+                    "in the same diff (PRD D13)",
+                )
                 self.assert_stderr_within_bash(py, bash, label)
 
     def test_premise_the_scenarios_select_something(self):
