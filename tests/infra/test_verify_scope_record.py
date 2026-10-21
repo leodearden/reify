@@ -362,6 +362,7 @@ class TestPrintScopeCli(unittest.TestCase):
                 self.assertEqual(set(record), RECORD_KEYS)
                 scope = record["scope"]
                 self.assertEqual(scope["mode"], "all")
+                self.assertIsNone(scope["widened"], "a requested scope all was not widened")
                 for flag in SCOPE_FLAGS:
                     self.assert_int_flag(scope, flag, 1)
                 self.assertEqual(scope["changed_paths"], [])
@@ -444,7 +445,8 @@ class TestEffectiveScope(InClone):
         self.clone.merge_head().write_text(self.clone.base + "\n", encoding="utf-8")
         with tempfile.TemporaryDirectory() as foreign:
             py = self.clone.py(self.STAGED, base_env(), cwd=foreign)
-        self.assertEqual(scope_record(py)["scope"]["mode"], "all")
+        scope = scope_record(py)["scope"]
+        self.assertEqual((scope["mode"], scope["widened"]), ("all", "merge_in_progress"))
         self.assertIn(MERGE_HEAD_NOTICE, py.stderr.splitlines())
         bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], base_env())
         self.assertEqual(bash.returncode, 0, bash.stderr)
@@ -459,7 +461,11 @@ class TestEffectiveScope(InClone):
             with self.subTest(role=role):
                 env = base_env(DF_VERIFY_ROLE=role)
                 py = self.clone.py(self.STAGED, env)
-                self.assertEqual(scope_record(py)["scope"]["mode"], "all" if forced else "staged")
+                scope = scope_record(py)["scope"]
+                self.assertEqual(
+                    (scope["mode"], scope["widened"]),
+                    ("all", "role_forces_all") if forced else ("staged", None),
+                )
                 bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], env)
                 self.assertEqual(bash.returncode, 0, bash.stderr)
                 bash_notices = [l for l in bash.stderr.splitlines() if FORCED_SCOPE_MARK in l]
@@ -471,7 +477,8 @@ class TestEffectiveScope(InClone):
         self.clone.git("branch", "-D", "main")
         argv = ["test", "--scope", "branch", "--print-scope"]
         py = self.clone.py(argv, base_env())
-        self.assertEqual(scope_record(py)["scope"]["mode"], "all")
+        scope = scope_record(py)["scope"]
+        self.assertEqual((scope["mode"], scope["widened"]), ("all", "no_merge_base"))
         self.assertIn(MERGE_BASE_WARNING, py.stderr.splitlines())
         bash = self.clone.bash(["test", "--scope", "branch", "--print-plan"], base_env())
         self.assertEqual(bash.returncode, 0, bash.stderr)
@@ -481,7 +488,7 @@ class TestEffectiveScope(InClone):
         self.clone.git("branch", "-f", "main", "HEAD")
         py = self.clone.py(["test", "--scope", "branch", "--print-scope"], base_env())
         scope = scope_record(py)["scope"]
-        self.assertEqual(scope["mode"], "branch")
+        self.assertEqual((scope["mode"], scope["widened"]), ("branch", None))
         self.assertEqual(scope["merge_base"], self.clone.git("merge-base", "main", "HEAD"))
 
 
@@ -552,6 +559,7 @@ class TestScopeDecisionMatchesBash(InClone):
                 record, py, bash = self.side_by_side("staged")
                 self.assert_flags_match_bash(record, bash, label)
                 self.assert_expected(record, expected, label)
+                self.assertIsNone(record["scope"]["widened"], f"{label}: decided over its paths")
                 staged = [p for p in self.clone.name_list("--cached") if not p.startswith(".task/")]
                 self.assertEqual(record["scope"]["changed_paths"], staged, label)
                 self.assert_stderr_within_bash(py, bash, label)
@@ -647,7 +655,11 @@ class TestGatherFailsWide(InClone):
                     self.clone.stage(DOCS_PATH)
                     record, py, bash = self.side_by_side(case.scope, case.env(Path(scratch)))
                     scope = record["scope"]
-                    self.assertEqual(scope["mode"], case.scope)
+                    self.assertEqual(
+                        (scope["mode"], scope["widened"]),
+                        (case.scope, "changed_paths_unread"),
+                        "the record says the request was widened, not decided over its paths",
+                    )
                     for flag in SCOPE_FLAGS:
                         self.assertEqual(scope[flag], 1, flag)
                     self.assertEqual(scope["changed_paths"], [])
