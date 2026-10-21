@@ -504,9 +504,10 @@ that reintroduces guard 1's class wholesale and walks back into the §14 regime.
   - **(R) future subject.** The cite, past one optional `)`, is followed by ` will` as a
     whole word.
   - **(S) landing clause.** The cite, past one optional `)`, is followed by ` land` /
-    ` lands` as a whole word, AND its clause contains a whole-word `until` · `when` ·
-    `once` · `after` · `before`. The clause is the text since the last `.` `;` `:` `!` `?`
-    that is followed by whitespace.
+    ` lands` as a whole word, AND a whole-word `until` · `when` · `once` · `after` ·
+    `before` sits in its clause with at most four words between it and the cite (words are
+    runs of ASCII alphanumerics and `_`). The clause is the text since the last `.` `;` `:`
+    `!` `?` that is followed by whitespace. The four-word reach is §21's 2026-10-21 row.
 
   The payload is `Cited(owner ids)` only, deduped. Through δ-C, a provenance cite on the same
   line never reaches liveness: `introduced by #4578; growth owned by #7097` resolves #7097
@@ -1764,3 +1765,22 @@ SPLITS its census row rather than flipping it to gated. Owner-form promises are 
 - **Any widening.** A widening of `OWNER_PHRASES`, `SUBORDINATORS` or the cite forms arrives
   with a fresh enumeration, a hand-inspected FP count and a dated row here — including a row
   when the answer is no.
+
+### Narrowing 2026-10-21 (task #7098 review): rule (S) gets a four-word reach
+
+Rule (S) used to accept a subordinator ANYWHERE in the cite's clause, and a comma or dash
+does not break a clause. So a subordinator that governs some other verb also qualified:
+`// when the cache is cold the fallback in #4578 lands first` made #4578 an owner. The
+subordinator now has to sit within four words before the cite (`SUBORDINATOR_REACH`).
+
+Measured on the 2026-10-21 tree with the §21 method's file set, using a Python
+approximation of rule (S) with the PRD-relative filter off (so this is an upper bound):
+
+- 24 full-line `//` comment lines have a cite followed by ` land(s)` with a subordinator in
+  its clause.
+- Words between the subordinator and the cite: 0 on 20 lines; 1 on `until KCC-ζ (task 3845)
+  lands`; 2 on the PRD-relative `When PRD task #7 lands`; 3 on the PRD-relative
+  `until PRD tasks #5–#9 land`; 4 on `after engine wiring (PRD #2947-#2949) lands`.
+
+Effect: the bound drops **zero** measured lines, so §21's 53 / 45 / 4 / 4 counts stand. It
+is prospective FP control. Widening the reach falls under the "Any widening" rule above.

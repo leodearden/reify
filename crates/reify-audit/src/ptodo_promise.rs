@@ -3,7 +3,7 @@
 //! provenance. Normative grammar and measurements:
 //! `docs/prds/reify-audit-ptodo-detector.md` §8.1 (δ-C), §21.
 
-use crate::scan_util::{contains_word, is_word_byte};
+use crate::scan_util::is_word_byte;
 
 /// Rule (L): a phrase that, ending immediately before a cite, makes the cited
 /// task the owner of the work. Closed: widening it is gated by PRD §16's
@@ -24,7 +24,12 @@ const OWNER_PHRASES: &[&str] = &[
 
 /// Rule (S): the words that make a `#N lands` clause a condition on the
 /// future rather than narration (PRD §21).
-const SUBORDINATORS: &[&str] = &["until", "when", "once", "after", "before"];
+const SUBORDINATORS: &[&[u8]] = &[b"until", b"when", b"once", b"after", b"before"];
+
+/// Rule (S): the most words that may separate a [`SUBORDINATORS`] word from
+/// the cite it governs. The widest governing shape on the 2026-10-21 tree is
+/// `after engine wiring (PRD #2947-#2949) lands` (PRD §21).
+const SUBORDINATOR_REACH: usize = 4;
 
 /// `true` when the cite spanning `line[head..end]` is in owner position.
 /// `head` is the cite's first byte (the `#` of a canonical cite, the `t` of a
@@ -91,9 +96,10 @@ fn will_on_right(right: &[u8]) -> bool {
     next_word_is(right, b"will")
 }
 
-/// (S) the cite is the subject of ` land(s)` inside a clause that a
-/// [`SUBORDINATORS`] word opens. The clause runs from the last sentence
-/// punctuation followed by whitespace (or the line start) up to the cite.
+/// (S) the cite is the subject of ` land(s)` and a [`SUBORDINATORS`] word
+/// governs it: one sits within [`SUBORDINATOR_REACH`] words before the cite,
+/// in the same clause. The clause runs from the last sentence punctuation
+/// followed by whitespace (or the line start) up to the cite.
 fn lands_in_subordinate_clause(line: &str, head: usize, right: &[u8]) -> bool {
     if !(next_word_is(right, b"land") || next_word_is(right, b"lands")) {
         return false;
@@ -106,12 +112,12 @@ fn lands_in_subordinate_clause(line: &str, head: usize, right: &[u8]) -> bool {
                 && bytes[i].is_ascii_whitespace()
         })
         .unwrap_or(0);
-    line.get(start..head).is_some_and(|clause| {
-        let clause = clause.to_ascii_lowercase();
-        SUBORDINATORS
-            .iter()
-            .any(|word| contains_word(&clause, word))
-    })
+    bytes[start..head]
+        .split(|&b| !is_word_byte(b))
+        .filter(|word| !word.is_empty())
+        .rev()
+        .take(SUBORDINATOR_REACH + 1)
+        .any(|word| is_one_of(word, SUBORDINATORS))
 }
 
 /// `text` is a single space followed by the whole word `word`
@@ -275,6 +281,10 @@ mod tests {
             ("/// shipped this form until #6890 renamed it", "#6890"),
             ("/// until task 6663 DID reinterpret", "task 6663"),
             ("//! Task #6082 lands `x.rs` here rather than", "#6082"),
+            (
+                "// when the cache is cold the fallback in #4578 lands first",
+                "#4578",
+            ),
             ("/// Grammar CAPABILITY, owned by the #5907 series", "#5907"),
             (
                 "/// This test carried `#[ignore = \"blocked on #5951\"]`",
