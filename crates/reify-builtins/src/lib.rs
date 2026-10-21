@@ -38,11 +38,12 @@
 //!   name, not just the seeds — arrives at task ω.
 //! - **I-REG-2**: every `BuiltinId` is bound exactly once in its
 //!   [`BindingKind`]'s owning dispatcher, via an exhaustive match with no `_`
-//!   arm. The per-kind sub-enums this crate generates (`EvalBuiltinId`, …) are
-//!   what give that requirement teeth: a row added to a group adds a variant
-//!   to its sub-enum and stops the owning crate compiling until it is bound,
-//!   and an arm with no row has no variant to match, so it cannot be written
-//!   at all. Drift is therefore UNREPRESENTABLE rather than test-caught — see
+//!   arm. The per-kind sub-enums this crate generates (`EvalBuiltinId`,
+//!   `RelationKind`, …) are what give that requirement teeth: a row added to a
+//!   group adds a variant to its sub-enum and stops the owning crate compiling
+//!   until it is bound, and an arm with no row has no variant to match, so it
+//!   cannot be written at all. `RelationKind` has no exhaustive dispatcher
+//!   yet; that binding is S6 γ #8830's. Drift is therefore UNREPRESENTABLE rather than test-caught — see
 //!   the "Negative-test proof recipe" section on `reify-stdlib`'s
 //!   `registry_dispatch` module, whose E0004 text was observed by temporary
 //!   mutation-then-revert, not guessed.
@@ -73,7 +74,7 @@ pub mod row;
 // re-exported here is spelled `row`: `row` is the MODULE, and the accessor is
 // `row_for(id)`.
 pub use registry::{
-    BuiltinId, EvalBuiltinId, artifact_basis_rows, lookup, name_group, row_for, rows,
+    BuiltinId, EvalBuiltinId, RelationKind, artifact_basis_rows, lookup, name_group, row_for, rows,
 };
 pub use resolvers::scalar_or_real;
 pub use row::{Arity, ArgSlot, Basis, BindingKind, BuiltinRow, Family, ResultSpec};

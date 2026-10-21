@@ -1,6 +1,9 @@
-//! The registry: α's seed rows (parse + analysis).
+//! The registry: α's seed rows (parse + analysis) and S8-ψ's relation rows.
 //!
-//! Every result type below reproduces today's legacy value VERBATIM. α makes
+//! The rest of this module doc concerns α's EvalBuiltin group; the Relation
+//! group's provenance is stated in its own group comment.
+//!
+//! Every α result type below reproduces today's legacy value VERBATIM. α makes
 //! zero corrections (PRD §7.3(6)) — the seed migration's job is to move the
 //! source of truth, not to change any answer. Each row's `//` comment names
 //! where its type came from, with a `file.rs:LINE` anchor and the originating
@@ -172,6 +175,123 @@ crate::macros::registry! {
             basis: Ruling("#2884")
         },
     }
+
+    // ── Relation group (S8-ψ) ───────────────────────────────────────────────
+    //
+    // The geometric-relation vocabulary. Every row types to `Type::Relation`,
+    // a DOF-removal directive. The arities are the ones reify-compiler's
+    // relation_signatures enforces: `relation_fn_result_type`'s arity-3 gates
+    // for offset, angle and distance (their arity-2 forms are the datum
+    // constructor and the geometry queries, which are NOT these rows), and
+    // `TangentCombo::arity` for tangent's two datums plus one radius per
+    // curved surface. Compiler typing of these names stays in
+    // relation_signatures until S9 λ #8741 rewires it onto these rows, and the
+    // owning exhaustive binding of `RelationKind` (I-REG-2) is S6 γ #8830's.
+    // `arg_slots` is one `Any` per slot up to the arity's upper bound; operand
+    // policy is not encoded in the row.
+    //
+    // tangent is ARTIFACT: the design doc rules only the 2-operand
+    // `<HasAxis & HasRadius>` surface form (#5588, pending). This row encodes
+    // #5540's trailing-radius 3|4 form, which #5588 keeps as the
+    // explicit-override path.
+    Relation => RelationKind, as_relation {
+        Coincident {
+            name: "coincident",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+        On {
+            name: "on",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+        Parallel {
+            name: "parallel",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+        Antiparallel {
+            name: "antiparallel",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+        Perpendicular {
+            name: "perpendicular",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.4")
+        },
+        Concentric {
+            name: "concentric",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §7")
+        },
+        Flush {
+            name: "flush",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §7")
+        },
+        Offset {
+            name: "offset",
+            family: Relation,
+            arity: Exact(3),
+            arg_slots: [Any, Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §7")
+        },
+        Tangent {
+            name: "tangent",
+            family: Relation,
+            arity: Range(3, 4),
+            arg_slots: [Any, Any, Any, Any],
+            result: Const(Type::Relation),
+            basis: Artifact
+        },
+        Fasten {
+            name: "fasten",
+            family: Relation,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+        Angle {
+            name: "angle",
+            family: Relation,
+            arity: Exact(3),
+            arg_slots: [Any, Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+        Distance {
+            name: "distance",
+            family: Relation,
+            arity: Exact(3),
+            arg_slots: [Any, Any, Any],
+            result: Const(Type::Relation),
+            basis: Doc("docs/design/geometric-relations.md §3.1")
+        },
+    }
 }
 
 /// The names of every row whose signature has no independent justification
@@ -184,12 +304,14 @@ crate::macros::registry! {
 /// and PRD §7.3(7) requires each τ task text to enumerate its Artifact rows
 /// with one sentence each on why they were left unresolved.
 ///
-/// α returns a THREE-row ledger — `von_mises`, `max_shear`,
-/// `principal_stresses` (ratified 2026-08-17, Leo, unblock of #6001). Each
-/// reproduces the legacy arg-aware reduction rather than the constrained-input,
+/// The ledger holds FOUR rows. α's three — `von_mises`, `max_shear`,
+/// `principal_stresses` (ratified 2026-08-17, Leo, unblock of #6001) — each
+/// reproduce the legacy arg-aware reduction rather than the constrained-input,
 /// Pressure-fixed signature #2884 actually rules; see the per-row comments for
 /// why each was left unresolved. The other four seed rows trace to a Ruling or a
-/// Physics derivation.
+/// Physics derivation. S8-ψ adds `tangent`, whose trailing-radius 3|4 arity no
+/// document or ruling decides (see the Relation group comment); the other
+/// eleven relation rows cite the design doc.
 pub fn artifact_basis_rows() -> Vec<&'static str> {
     rows()
         .iter()
