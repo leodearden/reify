@@ -100,6 +100,8 @@ mod survey_site;
 mod sweep;
 #[path = "harness_ctor_conformance_survey/disposition.rs"]
 mod disposition;
+#[path = "harness_ctor_conformance_survey/fea_load_retype.rs"]
+mod fea_load_retype;
 #[path = "harness_ctor_conformance_survey/stamp.rs"]
 mod stamp;
 #[path = "harness_ctor_conformance_survey/render.rs"]

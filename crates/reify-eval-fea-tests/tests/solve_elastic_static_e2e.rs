@@ -1709,14 +1709,15 @@ structure Gamma1PointLoad {
 "#;
 
 static FORCE_REWRITES: AtomicU32 = AtomicU32::new(0);
+static FORCE_UNSPELLINGS: AtomicU32 = AtomicU32::new(0);
 
-fn dimensioned_force_wrapper(
+/// `value_inputs` with every `PointLoad.force` in the loads list (input 4)
+/// passed through `respell`, counting each rewrite on `rewrites`.
+fn respell_point_load_forces(
     value_inputs: &[Value],
-    realization_inputs: &[RealizationReadHandle],
-    options: &Value,
-    prior_warm_state: Option<&OpaqueState>,
-    cancellation: &CancellationHandle,
-) -> ComputeOutcome {
+    respell: fn(&Value) -> Option<Value>,
+    rewrites: &AtomicU32,
+) -> Vec<Value> {
     let mut inputs = value_inputs.to_vec();
     if let Some(Value::List(loads)) = inputs.get_mut(4) {
         for load in loads.iter_mut() {
@@ -1727,16 +1728,35 @@ fn dimensioned_force_wrapper(
                 continue;
             }
             if let Some(force) = data.fields.get_mut("force")
-                && let Value::Real(newtons) = *force
+                && let Some(respelled) = respell(force)
             {
-                *force = Value::Scalar {
-                    si_value: newtons,
-                    dimension: DimensionVector::FORCE,
-                };
-                FORCE_REWRITES.fetch_add(1, Ordering::SeqCst);
+                *force = respelled;
+                rewrites.fetch_add(1, Ordering::SeqCst);
             }
         }
     }
+    inputs
+}
+
+/// The elastic-static solver behind a bare-Real → FORCE-Scalar re-spelling.
+fn dimensioned_force_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let inputs = respell_point_load_forces(
+        value_inputs,
+        |force| match *force {
+            Value::Real(newtons) => Some(Value::Scalar {
+                si_value: newtons,
+                dimension: DimensionVector::FORCE,
+            }),
+            _ => None,
+        },
+        &FORCE_REWRITES,
+    );
     reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
         &inputs,
         realization_inputs,
@@ -1746,11 +1766,44 @@ fn dimensioned_force_wrapper(
     )
 }
 
-/// `(max_von_mises, iterations)` of `Gamma1PointLoad.result` on `engine`,
-/// after asserting the eval raised no Error diagnostic.
-fn gamma1_solve(engine: &mut reify_eval::Engine, label: &str) -> (Value, i64) {
-    let compiled = parse_and_compile_with_stdlib(GAMMA1_POINT_LOAD_SOURCE);
-    let eval = engine.eval(&compiled);
+/// The elastic-static solver behind a FORCE-Scalar → bare-Real re-spelling:
+/// [`dimensioned_force_wrapper`] inverted.
+fn bare_force_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let inputs = respell_point_load_forces(
+        value_inputs,
+        |force| match force {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::FORCE => Some(Value::Real(*si_value)),
+            _ => None,
+        },
+        &FORCE_UNSPELLINGS,
+    );
+    reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
+        &inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// `(max_von_mises, iterations)` of `<structure>.result` once `engine` evaluates
+/// `compiled`, after asserting the eval raised no Error diagnostic.
+fn solve_result(
+    engine: &mut reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+    structure: &str,
+    label: &str,
+) -> (Value, i64) {
+    let eval = engine.eval(compiled);
     let errors: Vec<_> = eval
         .diagnostics
         .iter()
@@ -1762,9 +1815,9 @@ fn gamma1_solve(engine: &mut reify_eval::Engine, label: &str) -> (Value, i64) {
     );
     let result = eval
         .values
-        .get(&ValueCellId::new("Gamma1PointLoad", "result"))
+        .get(&ValueCellId::new(structure, "result"))
         .cloned()
-        .unwrap_or_else(|| panic!("{label}: Gamma1PointLoad.result not found"));
+        .unwrap_or_else(|| panic!("{label}: {structure}.result not found"));
     let max_von_mises = extract_max_von_mises(&result)
         .unwrap_or_else(|| panic!("{label}: no max_von_mises in {result:?}"));
     let iterations = match extract_field(&result, "iterations") {
@@ -1772,6 +1825,12 @@ fn gamma1_solve(engine: &mut reify_eval::Engine, label: &str) -> (Value, i64) {
         other => panic!("{label}: iterations must be Value::Int, got {other:?}"),
     };
     (max_von_mises, iterations)
+}
+
+/// `(max_von_mises, iterations)` of `Gamma1PointLoad.result` on `engine`.
+fn gamma1_solve(engine: &mut reify_eval::Engine, label: &str) -> (Value, i64) {
+    let compiled = parse_and_compile_with_stdlib(GAMMA1_POINT_LOAD_SOURCE);
+    solve_result(engine, &compiled, "Gamma1PointLoad", label)
 }
 
 #[test]
@@ -1815,5 +1874,55 @@ fn gamma1_force_dimensioned_point_load_solves_identically_to_the_bare_spelling()
     assert_eq!(
         dimensioned_iterations, control_iterations,
         "a FORCE-dimensioned PointLoad must take the bare control's iteration count"
+    );
+}
+
+// ── task 6941 γ2: the units-correct B1 fixture compiles and applies its force ──
+//
+// PRD dimension-checked-readers boundary row B1, end to end in `.ri`: once
+// `PointLoad.force : Force`, `tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri`
+// (`force: 1000N`) compiles with no Error and solves. The control is the SAME
+// compiled module solved through [`bare_force_wrapper`], so the force reaches
+// the solver as the bare Real the bare spelling used to carry; both must solve
+// identically. The control is never pinned to a literal (esc-6922-1 drift).
+
+#[test]
+fn gamma2_dimensioned_b1_fixture_solves_identically_to_its_bare_respelling() {
+    let compiled = parse_and_compile_with_stdlib(include_str!(
+        "../../../tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri"
+    ));
+    let structure = "DcrSolverLoadDroppedDimensioned";
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let (dimensioned_mvm, dimensioned_iterations) =
+        solve_result(&mut engine, &compiled, structure, "FORCE-dimensioned");
+
+    FORCE_UNSPELLINGS.store(0, Ordering::SeqCst);
+    let mut control_engine = make_simple_engine();
+    control_engine.register_compute_fn("solver::elastic_static", bare_force_wrapper as ComputeFn);
+    let (control_mvm, control_iterations) = solve_result(
+        &mut control_engine,
+        &compiled,
+        structure,
+        "bare re-spelling",
+    );
+    assert!(
+        FORCE_UNSPELLINGS.load(Ordering::SeqCst) >= 1,
+        "anti-vacuity: the control must have re-spelled the FORCE-dimensioned tip load"
+    );
+    assert!(
+        control_iterations > 0,
+        "anti-vacuity: the control must actually solve, got {control_mvm:?} after \
+         {control_iterations} iterations"
+    );
+
+    assert_eq!(
+        dimensioned_mvm, control_mvm,
+        "`force: 1000N` must solve to the max_von_mises of the same load re-spelled bare"
+    );
+    assert_eq!(
+        dimensioned_iterations, control_iterations,
+        "`force: 1000N` must take the bare re-spelling's iteration count"
     );
 }
