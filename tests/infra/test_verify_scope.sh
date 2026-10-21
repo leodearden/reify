@@ -1262,14 +1262,10 @@ assert "CANON-1: plan contains the tests/infra/test_orchestrator_config_canonica
     plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
 assert "CANON-1: leaf runs through the selective-infra timeout+bash loop shape" \
     plan_has 'test_orchestrator_config_canonical_path.*timeout.*bash'
-canon_scope_all_inert() {
-    local field
-    for field in RUN_RUST RUN_GUI RUN_OCCT_GATE; do
-        [ "$(plan_header_field "$PLAN_OUT" scope "$field")" = 0 ] || return 1
-    done
-}
-assert "CANON-1: scope decision keeps RUN_RUST, RUN_GUI and RUN_OCCT_GATE at 0 (gate ADDED, not a re-escalation)" \
-    canon_scope_all_inert
+for canon_field in RUN_RUST RUN_GUI RUN_OCCT_GATE; do
+    assert "CANON-1: scope decision keeps $canon_field at 0 (gate ADDED, not a re-escalation)" \
+        test "$(plan_header_field "$PLAN_OUT" scope "$canon_field")" = 0
+done
 assert "CANON-1: no cargo test/nextest workspace pass (the gate is hermetic bash — no cargo, no npm)" \
     plan_lacks 'cargo (test|nextest run) --workspace'
 assert "CANON-1: no cargo clippy" plan_lacks 'cargo clippy'
