@@ -305,64 +305,112 @@ fn crate_tree_failures(rows: &[Ratchet], tree: &[SourceFile], host_file: &str) -
 
 // ── seeded self-tests ────────────────────────────────────────────────────────
 
-/// One `"<property>: <row>: <problem>"` line per seeded self-test a row fails.
+/// One `"<property>: <row>: <problem>"` line per seeded self-test a row fails,
+/// and one line per pattern property that no row of `rows` exercises, since that
+/// property would otherwise pass without ever running.
 fn seeded_self_test_failures(rows: &[Ratchet], host_file: &str) -> Vec<String> {
     if rows.is_empty() {
         return vec!["the table holds no row, so no seeded self-test runs".to_string()];
     }
-    rows.iter()
-        .flat_map(|row| {
-            seeded_verdicts(row, host_file)
-                .into_iter()
-                .filter_map(move |(property, verdict)| {
-                    let problem = verdict.err()?;
-                    Some(format!("{property}: {}: {problem}", row.name))
-                })
-        })
-        .collect()
+    let row_failures = rows.iter().flat_map(|row| {
+        seeded_verdicts(row, host_file)
+            .into_iter()
+            .filter_map(move |(property, verdict)| {
+                let problem = verdict.err()?;
+                Some(format!("{property}: {}: {problem}", row.name))
+            })
+    });
+    let unexercised = unexercised_properties(rows).map(|property| {
+        format!(
+            "{}: no row exercises this self-test; the table needs {}",
+            property.name, property.tested_rows
+        )
+    });
+    unexercised.chain(row_failures).collect()
 }
 
-type PatternProperty = fn(&Ratchet, &Pattern) -> Result<(), String>;
+/// A seeded self-test over one pattern row.
+struct PatternProperty {
+    name: &'static str,
+    /// Whether the property tests a row with this pattern.
+    tests: fn(&Pattern) -> bool,
+    /// The rows `tests` accepts, as the red message for a table holding none names them.
+    tested_rows: &'static str,
+    verdict: fn(&Ratchet, &Pattern) -> Result<(), String>,
+}
 
-const PATTERN_PROPERTIES: &[(&str, PatternProperty)] = &[
-    (
+impl PatternProperty {
+    const fn on_every_pattern_row(
+        name: &'static str,
+        verdict: fn(&Ratchet, &Pattern) -> Result<(), String>,
+    ) -> PatternProperty {
+        PatternProperty {
+            name,
+            tests: |_| true,
+            tested_rows: "a pattern row",
+            verdict,
+        }
+    }
+}
+
+const PATTERN_PROPERTIES: &[PatternProperty] = &[
+    PatternProperty::on_every_pattern_row(
         "seed_path_is_in_scope_and_seed_holds_one_needle",
         seed_path_is_in_scope_and_seed_holds_one_needle,
     ),
-    ("flags_one_seeded_inline_copy", flags_one_seeded_inline_copy),
-    (
+    PatternProperty::on_every_pattern_row(
+        "flags_one_seeded_inline_copy",
+        flags_one_seeded_inline_copy,
+    ),
+    PatternProperty::on_every_pattern_row(
         "counts_each_occurrence_on_a_line",
         counts_each_occurrence_on_a_line,
     ),
-    (
+    PatternProperty::on_every_pattern_row(
         "ignores_copies_in_non_counted_positions",
         ignores_copies_in_non_counted_positions,
     ),
-    (
+    PatternProperty::on_every_pattern_row(
         "applies_its_region_to_cfg_test_modules",
         applies_its_region_to_cfg_test_modules,
     ),
-    (
+    PatternProperty::on_every_pattern_row(
         "applies_its_view_to_doc_comments",
         applies_its_view_to_doc_comments,
     ),
-    (
-        "needle_requires_a_left_identifier_boundary",
-        needle_requires_a_left_identifier_boundary,
-    ),
+    PatternProperty {
+        name: "needle_requires_a_left_identifier_boundary",
+        tests: needle_starts_with_an_identifier_char,
+        tested_rows: "a pattern row whose needle starts with an identifier character",
+        verdict: needle_requires_a_left_identifier_boundary,
+    },
 ];
 
 const MIGRATION_PROPERTY: &str = "migrating_one_copy_without_lowering_the_baseline_is_red";
 
-/// Every seeded self-test of `row` by property: the pattern properties for a
-/// pattern row, and for every row, that a re-added or migrated copy is red.
+fn pattern_of(row: &Ratchet) -> Option<&Pattern> {
+    match &row.measure {
+        Measure::Occurrences(pattern) => Some(pattern),
+        Measure::DuplicateTopLevelFns { .. } => None,
+    }
+}
+
+fn unexercised_properties(rows: &[Ratchet]) -> impl Iterator<Item = &'static PatternProperty> {
+    PATTERN_PROPERTIES
+        .iter()
+        .filter(|property| !rows.iter().filter_map(pattern_of).any(property.tests))
+}
+
+/// Every seeded self-test of `row` by property: the pattern properties that
+/// test a pattern row, and for every row, that a re-added or migrated copy is red.
 fn seeded_verdicts(row: &Ratchet, host_file: &str) -> Vec<(&'static str, Result<(), String>)> {
-    let mut verdicts: Vec<_> = match &row.measure {
-        Measure::Occurrences(pattern) => PATTERN_PROPERTIES
+    let mut verdicts: Vec<_> = match pattern_of(row) {
+        Some(pattern) => PATTERN_PROPERTIES
             .iter()
-            .map(|&(property, verdict)| (property, verdict(row, pattern)))
+            .filter(|property| (property.tests)(pattern))
+            .map(|property| (property.name, (property.verdict)(row, pattern)))
             .collect(),
-        Measure::DuplicateTopLevelFns { .. } => Vec::new(),
+        None => Vec::new(),
     };
     verdicts.push((
         MIGRATION_PROPERTY,
@@ -517,13 +565,14 @@ fn applies_its_view_to_doc_comments(row: &Ratchet, pattern: &Pattern) -> Result<
     Ok(())
 }
 
+fn needle_starts_with_an_identifier_char(pattern: &Pattern) -> bool {
+    pattern.needle.starts_with(is_ident_char)
+}
+
 fn needle_requires_a_left_identifier_boundary(
     row: &Ratchet,
     pattern: &Pattern,
 ) -> Result<(), String> {
-    if !pattern.needle.starts_with(is_ident_char) {
-        return Ok(());
-    }
     let glued_needle = format!("x{}", pattern.needle);
     let glued = pattern.seed.replacen(pattern.needle, &glued_needle, 1);
     expect_hit_count(&hits_after_control(row, pattern, &glued), 1)
@@ -782,6 +831,39 @@ mod tests {
     #[test]
     fn seeded_self_tests_reject_an_empty_table() {
         assert_eq!(seeded_self_test_failures(&[], PROBE_HOST_FILE).len(), 1);
+    }
+
+    fn unexercised_names(rows: &[Ratchet]) -> Vec<&'static str> {
+        unexercised_properties(rows)
+            .map(|property| property.name)
+            .collect()
+    }
+
+    fn probe_row_named(name: &str) -> Ratchet {
+        *PROBE_ROWS
+            .iter()
+            .find(|row| row.name == name)
+            .unwrap_or_else(|| panic!("no probe row is named {name}"))
+    }
+
+    #[test]
+    fn seeded_self_tests_name_each_pattern_property_that_no_row_exercises() {
+        let census_only = [probe_row_named("probe-census")];
+        let every_property: Vec<_> = PATTERN_PROPERTIES.iter().map(|p| p.name).collect();
+        assert_eq!(unexercised_names(&census_only), every_property);
+        let punctuation_needle_only = [probe_row_named("probe-whole-file")];
+        assert_eq!(
+            unexercised_names(&punctuation_needle_only),
+            ["needle_requires_a_left_identifier_boundary"]
+        );
+        assert_eq!(
+            seeded_self_test_failures(&punctuation_needle_only, PROBE_HOST_FILE),
+            [
+                "needle_requires_a_left_identifier_boundary: no row exercises this self-test; \
+                 the table needs a pattern row whose needle starts with an identifier character"
+            ]
+        );
+        assert_eq!(unexercised_names(PROBE_ROWS), Vec::<&str>::new());
     }
 
     #[test]
