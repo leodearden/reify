@@ -203,6 +203,7 @@ mod tests {
     use super::*;
     use crate::row::{Arity, BindingKind, Family};
     use reify_core::{DimensionVector, Type};
+    use strum::{EnumCount, IntoEnumIterator};
 
     /// The 7 α seed names, in declaration order.
     const SEED_NAMES: [&str; 7] = [
@@ -213,6 +214,23 @@ mod tests {
         "principal_stresses",
         "safety_factor",
         "stress_invariants",
+    ];
+
+    /// The 12 Relation rows and their arities, in declaration order —
+    /// restated independently of the table so a drifted row reds here.
+    const RELATION_ROWS: [(&str, Arity); 12] = [
+        ("coincident", Arity::Exact(2)),
+        ("on", Arity::Exact(2)),
+        ("parallel", Arity::Exact(2)),
+        ("antiparallel", Arity::Exact(2)),
+        ("perpendicular", Arity::Exact(2)),
+        ("concentric", Arity::Exact(2)),
+        ("flush", Arity::Exact(2)),
+        ("offset", Arity::Exact(3)),
+        ("tangent", Arity::Range(3, 4)),
+        ("fasten", Arity::Exact(2)),
+        ("angle", Arity::Exact(3)),
+        ("distance", Arity::Exact(3)),
     ];
 
     fn scalar(dim: DimensionVector) -> Type {
@@ -269,11 +287,16 @@ mod tests {
 
     // ── table shape ──────────────────────────────────────────────────────────
 
-    /// α seeds exactly 7 rows, in declaration order.
+    /// α's EvalBuiltin group holds exactly its 7 seed rows, in declaration
+    /// order.
     #[test]
     fn the_seed_table_holds_exactly_the_seven_alpha_rows() {
         assert_eq!(
-            rows().iter().map(|r| r.name).collect::<Vec<_>>(),
+            rows()
+                .iter()
+                .filter(|r| r.binding == BindingKind::EvalBuiltin)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
             SEED_NAMES.to_vec(),
             "α seeds the parse family (2) and the analysis family (5)"
         );
@@ -329,6 +352,87 @@ mod tests {
             Arity::Exact(2),
             "safety_factor is helpers::binary — (tensor, yield)"
         );
+    }
+
+    // ── the Relation group (S8-ψ) ────────────────────────────────────────────
+
+    /// The Relation group mints `RelationKind` with one variant per row, and
+    /// its rows are exactly [`RELATION_ROWS`], in order.
+    #[test]
+    fn relation_group_mints_relation_kind_with_one_variant_per_row() {
+        assert_eq!(RelationKind::iter().count(), 12);
+        assert_eq!(RelationKind::COUNT, 12);
+        assert_eq!(
+            rows()
+                .iter()
+                .filter(|r| r.binding == BindingKind::Relation)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
+            RELATION_ROWS.map(|(name, _)| name).to_vec(),
+            "the Relation-bound rows must be exactly the 12 relation names, in order"
+        );
+    }
+
+    /// Each Relation row declares its arity, its kind and family, a
+    /// `Type::Relation` result, and one arg slot per accepted operand.
+    #[test]
+    fn relation_rows_declare_their_arity_and_type_to_relation() {
+        for (name, arity) in RELATION_ROWS {
+            let r = row_named(name);
+            assert_eq!(r.arity, arity, "{name}");
+            assert_eq!(r.binding, BindingKind::Relation, "{name}");
+            assert_eq!(r.family, Family::Relation, "{name}");
+            assert_eq!(r.result.const_type(), Some(&Type::Relation), "{name}");
+            let upper = match arity {
+                Arity::Exact(n) | Arity::Range(_, n) => n,
+                Arity::Variadic => panic!("{name}: no relation row is variadic"),
+            };
+            assert_eq!(
+                r.arg_slots.len(),
+                upper,
+                "{name}: one arg slot per slot up to the arity's upper bound"
+            );
+        }
+    }
+
+    /// `RelationKind` widens to `BuiltinId` and narrows back, and a widened
+    /// relation id is never an `EvalBuiltin`.
+    #[test]
+    fn relation_kind_widens_and_narrows_losslessly() {
+        for k in RelationKind::iter() {
+            let id = BuiltinId::from(k);
+            assert_eq!(id.as_relation(), Some(k), "{k:?} must round-trip");
+            assert_eq!(id.as_eval_builtin(), None, "{k:?} is not an EvalBuiltin");
+            assert_eq!(row_for(id).binding, BindingKind::Relation, "{k:?}");
+        }
+    }
+
+    /// A relation row resolves at exactly its declared arity. The arity-2
+    /// datum / geometry-query forms of `offset`, `angle` and `distance` stay
+    /// with their legacy families, and tangent's two arities are ONE row.
+    #[test]
+    fn lookup_resolves_relation_rows_only_at_their_declared_arity() {
+        for (name, arity) in RELATION_ROWS {
+            for argc in 0..=5 {
+                assert_eq!(
+                    lookup(name, argc)
+                        .and_then(BuiltinId::as_relation)
+                        .is_some(),
+                    arity.matches(argc),
+                    "{name}@{argc}: the row declares {arity:?}"
+                );
+            }
+        }
+        for name in ["offset", "angle", "distance", "tangent"] {
+            assert_eq!(
+                lookup(name, 2),
+                None,
+                "{name}@2 must not resolve to a registry row — its arity-2 form \
+                 belongs to a legacy family"
+            );
+        }
+        assert_eq!(lookup("tangent", 3), Some(BuiltinId::Tangent));
+        assert_eq!(lookup("tangent", 4), Some(BuiltinId::Tangent));
     }
 
     // ── result types: every one reproduces today's legacy value verbatim ─────
@@ -584,7 +688,11 @@ mod lint {
         /// and leaf θ's corpus migration, and must land as one diff.
         /// Per PRD §7.3(7) this set is a claim, not an omission: parse's two
         /// rows and analysis's other two assert an independent basis.
-        const EXPECTED_ARTIFACT_ROWS: &[&str] = &["von_mises", "max_shear", "principal_stresses"];
+        /// `tangent` (S8-ψ) encodes #5540's trailing-radius 3|4 arity, which no
+        /// document or ruling decides — the design doc rules only the
+        /// 2-operand surface form, pending #5588.
+        const EXPECTED_ARTIFACT_ROWS: &[&str] =
+            &["von_mises", "max_shear", "principal_stresses", "tangent"];
 
         let actual = artifact_basis_rows();
         assert_eq!(
