@@ -4,12 +4,17 @@
 //! The tolerance ladder is pinned BEHAVIOURALLY against #6653's `==` policy
 //! (`scalars_equal`), never by restating a constant's literal value.
 
+use reify_constraints::relate_solve::{
+    FrameUnknown, Operand, Pose, RelationInstance, solve_scaling,
+};
 use reify_constraints::scaling::{
     RelateTolerance, ResidualUnit, Rung, SolveScaling, ToleranceLadderError, ToleranceRungs,
     UnknownKind,
 };
 use reify_core::DimensionVector;
 use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, scalars_equal};
+use reify_ir::Value;
+use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless};
 
 // ── The tolerance ladder ─────────────────────────────────────────────────────
 
@@ -380,4 +385,188 @@ fn scalar_auto_scale_follows_box_then_seed_then_unit() {
         assert_eq!(scale(Some((4.0, 4.0)), Some(0.0)), 1.0);
         assert_eq!(scale(None, None), 1.0);
     }
+}
+
+// ── Characteristic length of a relation set (PRD §11 Q4) ─────────────────────
+
+/// The moving sub of every fixture below.
+const MOVING: &str = "m";
+
+fn moving_unknown() -> FrameUnknown {
+    FrameUnknown {
+        sub: MOVING.to_string(),
+        free: false,
+    }
+}
+
+fn moving(datum: Value) -> Operand {
+    Operand {
+        sub: Some(MOVING.to_string()),
+        datum,
+    }
+}
+
+fn anchor(datum: Value) -> Operand {
+    Operand {
+        sub: Some("a".to_string()),
+        datum,
+    }
+}
+
+fn metric(datum: Value) -> Operand {
+    Operand { sub: None, datum }
+}
+
+fn rel(name: &str, operands: Vec<Operand>) -> RelationInstance {
+    RelationInstance {
+        name: name.to_string(),
+        operands,
+        nominal_delta_dof: None,
+    }
+}
+
+fn z_axis_at(x: f64, y: f64, z: f64) -> Value {
+    axis_val(point3(x, y, z), vec3_dimensionless(0.0, 0.0, 1.0))
+}
+
+fn z_plane_at(x: f64, y: f64, z: f64) -> Value {
+    plane_val(point3(x, y, z), vec3_dimensionless(0.0, 0.0, 1.0))
+}
+
+fn direction(x: f64, y: f64, z: f64) -> Value {
+    Value::Direction { x, y, z }
+}
+
+fn translated(translation: [f64; 3]) -> Pose {
+    Pose {
+        translation,
+        rotation: [0.0; 3],
+    }
+}
+
+fn length_of(relations: &[RelationInstance], witness: &Pose) -> f64 {
+    solve_scaling(
+        relations,
+        &moving_unknown(),
+        witness,
+        RelateTolerance::kernel_default(),
+    )
+    .characteristic_length()
+}
+
+/// `L` is the bounding-box diagonal of the datum origins — moving operands at the
+/// witness pose — together with the moving frame's origin, which is its rotation
+/// centre.
+#[test]
+fn extent_is_the_bbox_diagonal_of_datum_origins_and_the_rotation_centre() {
+    let relations = [rel(
+        "parallel",
+        vec![
+            moving(z_axis_at(0.003, 0.0, 0.0)),
+            anchor(z_plane_at(0.0, 0.004, 0.0)),
+        ],
+    )];
+
+    // Box {(0.003, 0, 0), (0, 0.004, 0), centre (0, 0, 0)}: 3-4-5 mm.
+    let at_identity = length_of(&relations, &Pose::identity());
+    assert!(close(at_identity, 0.005), "L = {at_identity}");
+
+    // The witness moves the moving origin to (0.003, 0, 0.012) and the centre to
+    // (0, 0, 0.012): box 3 × 4 × 12 mm, diagonal 13 mm.
+    let lifted = length_of(&relations, &translated([0.0, 0.0, 0.012]));
+    assert!(close(lifted, 0.013), "L = {lifted}");
+}
+
+/// Coincident datums 0.05 m from the pose origin still give rotations a 0.05 m
+/// lever arm, so `L` is 0.05 m, not the kernel floor.
+#[test]
+fn rotation_centre_counts_as_a_lever_arm() {
+    let relations = [rel(
+        "coincident",
+        vec![
+            moving(point3(0.05, 0.0, 0.0)),
+            anchor(point3(0.05, 0.0, 0.0)),
+        ],
+    )];
+    let l = length_of(&relations, &Pose::identity());
+    assert!(close(l, 0.05), "L = {l}");
+}
+
+/// A DRIVE magnitude is a physical extent of the configuration the solve drives
+/// to; an angle is not a length and does not contribute.
+#[test]
+fn length_metric_operands_set_a_minimum_extent() {
+    let distance = [rel(
+        "distance",
+        vec![
+            moving(point3(0.0, 0.0, 0.0)),
+            anchor(point3(0.0, 0.0, 0.0)),
+            metric(meters(20.0)),
+        ],
+    )];
+    assert_eq!(length_of(&distance, &Pose::identity()), 20.0);
+
+    let angle = [rel(
+        "angle",
+        vec![
+            moving(z_axis_at(0.0, 0.0, 0.0)),
+            anchor(z_axis_at(0.0, 0.0, 0.0)),
+            metric(Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::ANGLE,
+            }),
+        ],
+    )];
+    assert_eq!(
+        length_of(&angle, &Pose::identity()),
+        RelateTolerance::kernel_default().kernel_local()
+    );
+}
+
+#[test]
+fn direction_only_relation_sets_floor_at_kernel_local() {
+    let relations = [rel(
+        "parallel",
+        vec![
+            moving(direction(0.0, 0.0, 1.0)),
+            anchor(direction(0.0, 0.0, 1.0)),
+        ],
+    )];
+    assert_eq!(
+        length_of(&relations, &Pose::identity()),
+        RelateTolerance::kernel_default().kernel_local()
+    );
+}
+
+/// Every term of `L` is degree-1 homogeneous in physical scale. A power-of-two
+/// factor makes the rescale exact in IEEE-754, so the comparison is exact.
+#[test]
+fn extent_scales_exactly_with_physical_scale() {
+    let at_scale = |k: f64| {
+        let relations = [
+            rel(
+                "concentric",
+                vec![
+                    moving(z_axis_at(0.001 * k, 0.0005 * k, 0.002 * k)),
+                    anchor(z_axis_at(-0.0015 * k, 0.002 * k, 0.0)),
+                ],
+            ),
+            rel(
+                "offset",
+                vec![
+                    moving(z_plane_at(0.0, 0.0, 0.0015 * k)),
+                    anchor(z_plane_at(0.0, 0.0, -0.001 * k)),
+                    metric(meters(0.0025 * k)),
+                ],
+            ),
+        ];
+        let witness = Pose {
+            translation: [0.0005 * k, -0.0003 * k, 0.0002 * k],
+            rotation: [0.1, -0.2, 0.15],
+        };
+        length_of(&relations, &witness)
+    };
+    let base = at_scale(1.0);
+    assert!(base > RelateTolerance::kernel_default().kernel_local());
+    assert_eq!(at_scale(1024.0), 1024.0 * base);
 }
