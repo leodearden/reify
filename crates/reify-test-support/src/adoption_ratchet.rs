@@ -1,11 +1,217 @@
-//! The adoption-ratchet engine: counts the inline copies of a primitive in a
-//! crate's `src/` and `tests/` and holds each count at a committed baseline.
+//! The adoption-ratchet engine: each row counts the inline copies of a primitive
+//! that a later leaf extracts, in a crate's `src/` and `tests/`, and the count
+//! must equal the row's committed baseline. Above it is a re-added copy; below it
+//! means the migrating leaf has to lower the baseline in the same diff.
+//!
+//! These rows are not `tests/infra/adoption-ratchet.manifest` rows: that engine
+//! reds only above a ceiling, so a migrated copy would go unrecorded, and it
+//! matches line by line, so it cannot skip `#[cfg(test)]` items or string contents.
+//!
+//! A host is one integration-test file per crate (`tests/adoption_ratchets.rs`).
+//! It holds a [`Host`] constant naming itself, a `RATCHETS: &[Ratchet]` table, and
+//! two `#[test]` fns: one calls [`assert_seeded_self_tests`] and the other
+//! [`assert_crate_tree_at_baselines`]. The measured tree leaves the host out, so
+//! its seeds and docs never count toward a row.
 
 mod census;
 mod health;
 mod items;
 mod lexer;
 mod source;
+
+use std::cmp::Ordering;
+
+use census::duplicate_top_level_fns;
+use items::skipped_lines;
+use lexer::{Line, is_ident_char};
+use source::{Hit, SourceFile, hit_lines};
+
+pub use items::TEST_ITEMS;
+
+/// The text of a line that a pattern reads.
+#[derive(Clone, Copy)]
+pub enum View {
+    /// Code with comments removed and string and char literal contents blanked.
+    Code,
+    /// The code view plus the text of the doc comments on the line.
+    CodeAndDocs,
+}
+
+/// A literal needle counted in the files under `include` (path prefixes; a
+/// directory ends in `/`) minus `exclude`, outside the `skip_items` items.
+#[derive(Clone, Copy)]
+pub struct Pattern {
+    pub needle: &'static str,
+    pub include: &'static [&'static str],
+    pub exclude: &'static [&'static str],
+    pub skip_items: &'static [&'static str],
+    pub view: View,
+    /// One inline copy of the needle on a single quote-free line.
+    pub seed: &'static str,
+}
+
+impl Pattern {
+    /// A pattern over production code: `#[cfg(test)]` items are skipped, so test
+    /// modules never count. No path is excluded and only the code view is read.
+    pub const fn production(
+        needle: &'static str,
+        include: &'static [&'static str],
+        seed: &'static str,
+    ) -> Pattern {
+        Pattern {
+            needle,
+            include,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed,
+        }
+    }
+
+    /// A pattern over whole files: no item is skipped, so `#[cfg(test)]` modules
+    /// count along with every other line under `include`.
+    pub const fn whole_file(
+        needle: &'static str,
+        include: &'static [&'static str],
+        seed: &'static str,
+    ) -> Pattern {
+        Pattern {
+            skip_items: WHOLE_FILE,
+            ..Pattern::production(needle, include, seed)
+        }
+    }
+}
+
+const NO_PATHS: &[&str] = &[];
+const WHOLE_FILE: &[&str] = &[];
+
+/// What a row counts.
+#[derive(Clone, Copy)]
+pub enum Measure {
+    /// Each occurrence of the pattern's needle.
+    Occurrences(Pattern),
+    /// Helper fns defined in several files under `root`; a definition under
+    /// `shared_dir` is the copy the other files duplicate.
+    DuplicateTopLevelFns {
+        root: &'static str,
+        shared_dir: &'static str,
+    },
+}
+
+/// One row: a measure held at a committed baseline.
+#[derive(Clone, Copy)]
+pub struct Ratchet {
+    pub name: &'static str,
+    /// Where copies belong instead: the PRD decision and the leaf that lowers the row.
+    pub home: &'static str,
+    pub baseline: usize,
+    pub measure: Measure,
+}
+
+fn in_scope(path: &str, include: &[&str], exclude: &[&str]) -> bool {
+    let under = |prefix: &&str| path.starts_with(prefix);
+    include.iter().any(under) && !exclude.iter().any(under)
+}
+
+/// Non-overlapping occurrences of `needle` in `text`; a needle starting with an
+/// identifier character must not continue a longer identifier on its left.
+fn occurrences_in(text: &str, needle: &str) -> usize {
+    let needs_left_boundary = needle.starts_with(is_ident_char);
+    text.match_indices(needle)
+        .filter(|&(at, _)| {
+            let continues_identifier = text[..at].chars().next_back().is_some_and(is_ident_char);
+            !(needs_left_boundary && continues_identifier)
+        })
+        .count()
+}
+
+fn counted_occurrences(pattern: &Pattern, line: &Line) -> usize {
+    let in_code = occurrences_in(&line.code, pattern.needle);
+    let in_docs = match pattern.view {
+        View::Code => 0,
+        View::CodeAndDocs => occurrences_in(&line.doc, pattern.needle),
+    };
+    in_code + in_docs
+}
+
+fn hits_in_file(pattern: &Pattern, file: &SourceFile) -> Vec<Hit> {
+    let skipped = skipped_lines(&file.lines, pattern.skip_items);
+    let mut hits = Vec::new();
+    for (index, line) in file.lines.iter().enumerate() {
+        if skipped[index] {
+            continue;
+        }
+        for _ in 0..counted_occurrences(pattern, line) {
+            hits.push(Hit {
+                path: file.path.clone(),
+                line: index + 1,
+                text: line.raw.trim().to_string(),
+            });
+        }
+    }
+    hits
+}
+
+fn count_occurrences(pattern: &Pattern, files: &[SourceFile]) -> Vec<Hit> {
+    files
+        .iter()
+        .filter(|file| in_scope(&file.path, pattern.include, pattern.exclude))
+        .flat_map(|file| hits_in_file(pattern, file))
+        .collect()
+}
+
+fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
+    match how {
+        Measure::Occurrences(pattern) => count_occurrences(pattern, files),
+        Measure::DuplicateTopLevelFns { root, shared_dir } => {
+            duplicate_top_level_fns(root, shared_dir, files)
+        }
+    }
+}
+
+/// Strict ratchet: the measured count must equal the row's `baseline`. Above it, a
+/// copy was added; below it, a leaf migrated copies and must lower the row in the
+/// same diff. A row's home does not exist until its leaf lands, so a genuinely new
+/// copy that cannot use it yet raises the baseline instead.
+fn check(ratchet: &Ratchet, files: &[SourceFile], host_file: &str) -> Result<(), String> {
+    let hits = measure(&ratchet.measure, files);
+    let (name, home, baseline) = (ratchet.name, ratchet.home, ratchet.baseline);
+    let count = hits.len();
+    match count.cmp(&baseline) {
+        Ordering::Equal => Ok(()),
+        Ordering::Greater => Err(format!(
+            "{name}: {count} is above its baseline {baseline}: an inline copy was added; \
+             route it through {home}\n\
+             (if that home is not extracted yet, a genuinely new copy may raise the baseline \
+             to {count} in {}, with the reason in the commit message)\n{}",
+            host_file,
+            hit_lines(&hits)
+        )),
+        Ordering::Less => Err(format!(
+            "{name}: {count} is below its baseline {baseline}: \
+             lower the baseline to {count} in {}",
+            host_file
+        )),
+    }
+}
+
+/// The include / exclude entries (or census root and shared dir) of `row` that
+/// prefix no file in `tree`.
+fn dangling_scope_entries(row: &Ratchet, tree: &[SourceFile]) -> Vec<&'static str> {
+    let entries: Vec<&'static str> = match &row.measure {
+        Measure::Occurrences(pattern) => pattern
+            .include
+            .iter()
+            .chain(pattern.exclude)
+            .copied()
+            .collect(),
+        Measure::DuplicateTopLevelFns { root, shared_dir } => vec![*root, *shared_dir],
+    };
+    entries
+        .into_iter()
+        .filter(|entry| !tree.iter().any(|file| file.path.starts_with(entry)))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
