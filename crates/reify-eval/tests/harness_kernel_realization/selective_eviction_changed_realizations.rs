@@ -58,7 +58,7 @@ structure TwoBody {
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Resolve the `RealizationNodeId` backing the geometry cell named `member`,
@@ -976,6 +976,7 @@ structure Solved {
 "#;
     let compiled = reify_test_support::parse_and_compile_with_stdlib(SOLVED_SRC);
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     )

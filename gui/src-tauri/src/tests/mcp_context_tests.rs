@@ -10,7 +10,7 @@ use crate::mcp_context::{TauriToolContext, mcp_tool_call_impl};
 fn make_loaded_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -38,6 +38,7 @@ fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Tauri
     std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -54,7 +55,7 @@ fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Tauri
 /// Mirrors make_loaded_session() but accepts parameterized source and module name.
 fn make_tauri_context_with_source(source: &str, module_name: &str) -> TauriToolContext {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(source, module_name)
         .expect("load_from_source should succeed");

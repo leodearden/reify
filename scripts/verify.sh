@@ -1602,6 +1602,8 @@ is_occt_crate() {
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
 #     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     curvature_rad_literal.ri (read via std::fs::read_to_string by
+#     curvature_dimension_tests.rs, task 6179),
 #     jacobian_column_members.ri (read via std::fs::read_to_string by
 #     jacobian_column_member_access.rs's fixture_source(), task 6102),
 #     joint_constrained_dof_compliance.ri (same idiom, by
@@ -1610,6 +1612,10 @@ is_occt_crate() {
 #     (both read via std::fs::read_to_string by materials_fea_tests.rs, task
 #     6877 — the mixin one pins the Damped-mixin SUBSTRATE with probe-local
 #     trait names, the preset one pins the LANDED stdlib surface)
+#     occt_internals_centroid_translated_profile.ri,
+#     occt_internals_fillet_extruded_wire.ri,
+#     occt_internals_fillet_translated_disjoint_union.ri (built via
+#     Engine::build by occt_repr_policy_fixtures_e2e.rs, task 8669)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1633,10 +1639,9 @@ is_occt_crate() {
 #     shift_invert_modal_e2e.rs's shift_changes_the_mode_set_and_warns_once —
 #     the two files differ ONLY in their `sigma:` literal and header, so the
 #     mode-set difference between them IS the signal, task 7261)
-#   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
+#   named by a WAIVER TABLE in a compiled test (task 5305): the six fixtures
 #     keyed by (file, param) in harness_ctor_conformance_survey/disposition.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
-#     curvature_rad_literal.ri,
 #     dcr_load_ctor_dimension_silent.ri,
 #     dcr_material_dimension_silent.ri,
 #     dcr_reader_ctor_dimension_silent.ri,
@@ -1680,7 +1685,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -3871,7 +3876,7 @@ add_test_passes() {
     # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
     # can emit an `-E` filterset — and an `-E` here would narrow away the very
     # gui-gated tests this pass exists to run (asserted by (b8) in
-    # tests/infra/test_compute_trampoline_registration_wired.sh), so they would all
+    # tests/infra/test_verify_gui_feature_test_pass.sh), so they would all
     # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
     # that single construction site.  The two arms below therefore mirror its
     # nextest/cargo-test if/else by hand so this pass is shape-identical on a
@@ -4523,10 +4528,16 @@ build_plan() {
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
         local _leaf_env
+        # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
+        # slot_acquire deadline or nested run_all.sh never writes into this
+        # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
+        # unset extends the scrub prefix's documented `env -u ...` argv, so one
+        # env invocation builds the member environment; it is per member
+        # command, so verify.sh's own processes keep the channel.
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi

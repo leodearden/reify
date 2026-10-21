@@ -26,14 +26,14 @@ use crate::types::EntityTreeNode;
 fn engine_session_new_with_mock_kernel() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let _session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let _session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 }
 
 #[test]
 fn load_from_source_returns_gui_state_with_values() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -51,7 +51,7 @@ fn load_from_source_returns_gui_state_with_values() {
 fn load_from_source_returns_gui_state_with_constraints() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -102,6 +102,7 @@ const TRI_VERDICT_SRC: &str = r#"structure def TriVerdict {
 #[test]
 fn load_from_source_emits_all_three_verdict_tokens_in_node_id_order() {
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -132,7 +133,7 @@ fn load_from_source_emits_all_three_verdict_tokens_in_node_id_order() {
 fn load_from_source_width_value_is_80mm() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -159,7 +160,7 @@ fn load_from_source_resolves_stdlib_enum_access_without_inline_redecl() {
     // step now consults stdlib enums.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Minimal synthetic source — references stdlib enum `CorrosionClass.C5` only,
     // no inline redecl, no stdlib trait bounds (keeps the test focused on the
@@ -179,7 +180,7 @@ fn load_from_source_resolves_stdlib_enum_access_without_inline_redecl() {
 fn load_from_source_with_invalid_source_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = session.load_from_source("this is not valid reify syntax {{{}}", "bad");
     assert!(result.is_err(), "invalid source should return Err");
@@ -189,7 +190,7 @@ fn load_from_source_with_invalid_source_returns_err() {
 fn preview_parameter_changes_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -268,7 +269,7 @@ structure Kinematic {
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -298,6 +299,7 @@ pub structure Top {
 /// usage at the `sync_demand` harness below.
 fn make_nested_composed_session() -> EngineSession {
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -313,7 +315,7 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
     // for m2 (bodies_count=2) has two joints with correct kind/dimension/range.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
         .expect("load kinematic");
@@ -410,7 +412,7 @@ fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
 fn get_mechanism_descriptors_returns_empty_when_module_has_no_mechanisms() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket");
@@ -445,7 +447,7 @@ fn get_mechanism_descriptors_filters_errored_mechanisms() {
     // `bodies_count == 2` is no longer a clean discriminator.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(DUPLICATE_SOLID_SOURCE, "kinematic")
         .expect(
@@ -467,7 +469,7 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
     // range_lower_si=None, range_upper_si=None.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(COUPLING_FIXED_SOURCE, "kinematic")
         .expect("load coupling/fixed mechanism");
@@ -633,7 +635,7 @@ fn get_mechanism_descriptors_resolves_driving_param_via_ast() {
     // should have driving_param_cell_id = Some("Kinematic.y_pos").
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -668,7 +670,7 @@ fn get_mechanism_descriptors_literal_bind_yields_no_driving_param() {
     // cannot be resolved → driving_param_cell_id must be None.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
         .expect("load snapshot+literal source");
@@ -696,7 +698,7 @@ fn get_mechanism_descriptors_current_value_si_reflects_initial_param() {
     // descriptor should have current_value_si = Some(0.1) (y_pos = 100mm = 0.1 SI).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -730,7 +732,7 @@ fn get_mechanism_descriptors_current_value_si_updates_after_preview_parameter() 
     // fresh get_mechanism_descriptors call must report current_value_si = Some(0.15).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -781,7 +783,7 @@ structure Kinematic {
 fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -827,7 +829,7 @@ fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
 fn get_mechanism_descriptors_param_bind_binding_updates_after_preview_parameter() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
         .expect("load snapshot+param source");
@@ -864,7 +866,7 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_preview_parameter(
 fn get_mechanism_descriptors_literal_bind_produces_read_only_literal_bound_binding() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
         .expect("load snapshot+literal source");
@@ -904,7 +906,7 @@ fn get_mechanism_descriptors_literal_bind_produces_read_only_literal_bound_bindi
 fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE, "kinematic")
         .expect("load snapshot+number-literal source");
@@ -1428,7 +1430,7 @@ fn resolve_driving_params_emits_debug_for_param_checked_match() {
 fn preview_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1442,7 +1444,7 @@ fn preview_parameter_invalid_cell_id_returns_err() {
 fn preview_parameter_constraints_still_correct() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1467,7 +1469,7 @@ fn preview_parameter_constraints_still_correct() {
 fn load_file_returns_gui_state() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Use the examples/bracket.ri file from project root
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1487,7 +1489,7 @@ fn load_file_returns_gui_state() {
 fn update_source_changes_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1511,7 +1513,7 @@ fn update_source_changes_width() {
 fn update_source_with_invalid_source_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1527,7 +1529,7 @@ fn update_source_with_invalid_source_returns_err() {
 fn constraint_violation_roundtrip() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1562,7 +1564,7 @@ fn constraint_violation_roundtrip() {
 fn get_source_location_end_to_end() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1594,7 +1596,7 @@ fn get_source_location_end_to_end() {
 fn get_source_location_accepts_template_name_returns_first_cell_span() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1639,7 +1641,7 @@ fn get_source_location_accepts_template_name_returns_first_cell_span() {
 fn get_source_location_returns_source_location_info() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1666,7 +1668,7 @@ fn get_source_location_returns_source_location_info() {
 fn export_end_to_end() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1724,7 +1726,7 @@ fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
     // Clone the recorder BEFORE the kernel is boxed — it is unreachable through the
     // boxed `dyn GeometryKernel` afterwards (see `MockGeometryKernel::reset_calls_ref`).
     let ops = kernel.operations_ref();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(&bounded_bracket_source(), "bracket")
@@ -1767,7 +1769,7 @@ fn export_refusal_does_not_overwrite_an_existing_file() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(&bounded_bracket_source(), "bracket")
@@ -1801,7 +1803,7 @@ fn export_refusal_does_not_overwrite_an_existing_file() {
 fn source_map_consistent_after_load_file_then_update() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1833,7 +1835,7 @@ fn source_map_consistent_after_load_file_then_update() {
 fn get_source_location_correct_after_load_file_then_update() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1867,7 +1869,7 @@ fn get_source_location_correct_after_load_file_then_update() {
 fn export_no_unnecessary_clone() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -1902,7 +1904,7 @@ fn export_no_unnecessary_clone() {
 fn get_source_location_correct_after_failed_update() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (1) Load valid source
     session
@@ -1964,7 +1966,7 @@ fn get_source_location_correct_after_failed_update() {
 fn get_source_location_uses_explicit_key_lookup() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -2942,7 +2944,7 @@ const DECLARED_DIMENSION_SRC: &str = r#"structure def DeclaredScope {
 fn preview_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -2977,7 +2979,7 @@ fn preview_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
 fn preview_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -3050,7 +3052,7 @@ fn preview_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_m
     // (2) …and the engine refuses it, naming both dimensions.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -3085,7 +3087,7 @@ fn preview_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_m
 fn preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
         .expect("initial load");
@@ -3159,7 +3161,7 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let loaded = session
         .load_from_source(BARE_NUMBER_COVERAGE_SRC, "bare_number_coverage")
         .expect("initial load");
@@ -3249,7 +3251,7 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
 fn every_value_cell_reports_its_declared_dimension_whatever_its_value_holds() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let loaded = session
         .load_from_source(DECLARED_DIMENSION_SRC, "declared_dimension")
         .expect("initial load");
@@ -3743,7 +3745,7 @@ fn the_bare_number_refusal_suggests_a_literal_in_the_canonical_spelling() {
 fn preview_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -3764,7 +3766,7 @@ fn preview_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mi
 fn preview_parameter_unknown_cell_still_reports_unknown_parameter() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -3784,7 +3786,7 @@ fn preview_parameter_unknown_cell_still_reports_unknown_parameter() {
 fn build_gui_state_includes_meshes_from_tessellation() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3800,7 +3802,7 @@ fn build_gui_state_includes_meshes_from_tessellation() {
 fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3839,7 +3841,7 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
 fn build_gui_state_no_kernel_returns_empty_meshes() {
     let checker = SimpleConstraintChecker;
     // No geometry kernel
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3869,7 +3871,7 @@ fn build_gui_state_no_kernel_returns_empty_meshes() {
 fn build_gui_state_tessellation_preserves_values_and_constraints() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3898,7 +3900,7 @@ fn build_gui_state_tessellation_preserves_values_and_constraints() {
 fn preview_parameter_produces_updated_meshes() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let initial_state = session
         .load_from_source(bracket_source(), "bracket")
@@ -3924,7 +3926,7 @@ fn preview_parameter_produces_updated_meshes() {
 fn update_source_produces_meshes() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -3948,7 +3950,7 @@ fn update_source_produces_meshes() {
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
@@ -3972,7 +3974,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
 #[test]
 fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let source = warn_source_with_unknown_port_type();
 
@@ -4044,7 +4046,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
 fn engine_get_diagnostics_clean_source_returns_empty() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4066,7 +4068,7 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
 #[test]
 fn get_source_location_returns_none_without_module() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let loc = session.get_source_location("Bracket.width");
     assert!(
@@ -4086,7 +4088,7 @@ fn get_source_location_returns_none_without_module() {
 #[test]
 fn get_source_location_returns_none_when_module_name_broken() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4109,7 +4111,7 @@ fn get_source_location_returns_none_when_module_name_broken() {
 #[test]
 fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let source = warn_source_with_unknown_port_type_with_width();
 
@@ -4150,7 +4152,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
 #[test]
 fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(warn_source_with_unknown_port_type(), "initial")
@@ -4204,7 +4206,7 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4279,7 +4281,7 @@ fn get_diagnostics_severity_strings_match_as_wire_str() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4323,7 +4325,7 @@ fn get_diagnostics_severity_strings_match_as_wire_str() {
 fn resolve_source_fallback_when_source_map_missing() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4359,7 +4361,7 @@ fn resolve_source_fallback_when_source_map_missing() {
 fn resolve_source_fallback_when_module_name_missing() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4444,7 +4446,7 @@ fn build_line_offsets_only_newlines() {
 fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load warning source — establishes a non-empty diagnostics state
     session
@@ -4480,7 +4482,7 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     // including the optimised offset_to_line_col_fast path.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = bracket_source();
     session
@@ -4677,7 +4679,7 @@ fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = bracket_source();
     session
@@ -4759,7 +4761,7 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -4913,7 +4915,7 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
 #[test]
 fn resolve_source_returns_none_without_loaded_module() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // No load — compiled is None. resolve_source should return None gracefully.
     assert_eq!(session.resolve_source_for_test(), None);
 }
@@ -4925,7 +4927,7 @@ fn resolve_source_returns_none_without_loaded_module() {
 #[test]
 fn resolve_source_returns_none_when_module_name_broken() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4940,7 +4942,7 @@ fn resolve_source_returns_none_when_module_name_broken() {
 #[test]
 fn resolve_source_returns_none_when_source_map_broken() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4972,7 +4974,7 @@ fn module_key_underscored_name() {
 fn module_key_matches_load_from_source_insertion() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -4993,7 +4995,7 @@ fn module_key_matches_load_from_source_insertion() {
 fn module_key_matches_update_source_insertion() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .update_source("bracket.ri", bracket_source())
         .expect("update_source should succeed");
@@ -5026,7 +5028,7 @@ fn module_key_empty_name_panics() {
 #[test]
 fn resolve_source_returns_key_and_source_after_load() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed with bracket source");
@@ -5055,7 +5057,7 @@ fn get_diagnostics_returns_empty_when_module_name_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -5089,7 +5091,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -5121,7 +5123,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken() {
 #[test]
 fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // This source reliably produces a compiler warning (unknown port type), not
     // an error — the same fixture used by engine_get_diagnostics_returns_populated_warning.
@@ -5157,7 +5159,7 @@ fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
 #[test]
 fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Same real warning-producing fixture as above.
 
@@ -5194,7 +5196,7 @@ fn get_diagnostics_debug_asserts_when_module_name_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -5219,7 +5221,7 @@ fn get_diagnostics_debug_asserts_when_source_map_broken() {
     use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -5242,7 +5244,7 @@ fn get_diagnostics_debug_asserts_when_source_map_broken() {
 #[test]
 fn resolve_source_returns_updated_content_after_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed with bracket source");
@@ -5275,7 +5277,7 @@ fn resolve_source_returns_updated_content_after_update_source() {
 #[test]
 fn get_source_location_file_key_updates_after_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Load with a warning-producing source that has an S.width parameter.
     session
@@ -5409,7 +5411,7 @@ fn entity_tree_node_default_type_name_is_none() {
 #[test]
 fn get_entity_tree_no_module_returns_empty_vec() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let tree = session.get_entity_tree();
     assert!(tree.is_empty(), "no module loaded → empty tree");
 }
@@ -5418,7 +5420,7 @@ fn get_entity_tree_no_module_returns_empty_vec() {
 fn get_entity_tree_bracket_returns_single_root_node() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5433,7 +5435,7 @@ fn get_entity_tree_bracket_returns_single_root_node() {
 fn get_entity_tree_bracket_children_have_correct_kinds() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5467,7 +5469,7 @@ fn get_entity_tree_bracket_children_have_correct_kinds() {
 fn get_entity_tree_bracket_param_entity_paths_correct() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5487,7 +5489,7 @@ fn get_entity_tree_bracket_param_entity_paths_correct() {
 fn get_entity_tree_has_mesh_true_when_realization_exists() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5501,7 +5503,7 @@ fn get_entity_tree_has_mesh_true_when_realization_exists() {
 #[test]
 fn get_entity_tree_no_realization_has_mesh_false() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Load a module with no realizations via source (no geometry ops)
     session
@@ -5517,7 +5519,7 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 #[test]
 fn get_entity_tree_sub_component_produces_nested_node() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(
@@ -5568,7 +5570,7 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5602,7 +5604,7 @@ fn load_from_compiled_yields_valid_session() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.load_from_compiled(compiled, "test");
 
     assert!(result.is_ok(), "load_from_compiled should return Ok");
@@ -5637,7 +5639,7 @@ fn get_entity_tree_has_mesh_true_via_injected_compiled() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5661,7 +5663,7 @@ fn get_entity_tree_has_mesh_false_via_injected_compiled() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5686,7 +5688,7 @@ fn parse_dependent_apis_return_none_on_load_from_compiled_session() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_compiled(compiled, "test")
         .expect("load_from_compiled");
@@ -5713,7 +5715,7 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
     // Verify type_name for value cells is cell_type.to_string()
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load");
@@ -5744,7 +5746,7 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
 fn get_entity_tree_sub_node_type_name_from_structure_name() {
     // Load source with a sub-component, verify type_name = structure_name
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(
             r#"structure Bolt { param mass: Length = 1mm }
@@ -5807,7 +5809,7 @@ fn get_entity_identity_map_no_module_returns_empty() {
     use crate::types::EntityIdentity;
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
     assert!(map.is_empty(), "no module loaded → empty identity map");
 }
@@ -5820,7 +5822,7 @@ fn get_entity_identity_map_bracket_has_expected_keys() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5846,7 +5848,7 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5881,7 +5883,7 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5915,7 +5917,7 @@ fn get_entity_identity_map_value_cell_structural_fingerprint_format() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5944,7 +5946,7 @@ fn get_entity_identity_map_value_cell_has_source_span() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5966,7 +5968,7 @@ fn get_entity_identity_map_root_template_has_no_source_span() {
     use std::collections::HashMap;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -5998,7 +6000,7 @@ fn def_info_serialization_roundtrip() {
 #[test]
 fn get_containing_definition_no_module_returns_none() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.get_containing_definition(1, 1);
     assert!(result.is_none(), "no module loaded → None");
 }
@@ -6007,7 +6009,7 @@ fn get_containing_definition_no_module_returns_none() {
 #[test]
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
@@ -6023,7 +6025,7 @@ fn get_containing_definition_inside_structure_returns_some() {
 #[test]
 fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
     let source = "structure Foo { param x: Length = 1mm }\n// outside any def";
     session
@@ -6042,7 +6044,7 @@ fn get_containing_definition_outside_def_returns_none() {
 #[test]
 fn get_containing_definition_occurrence_returns_occurrence_kind() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // Foo is on line 1; Bar (occurrence) is on line 2.
     let source = "structure Foo {}\noccurrence Bar {}";
     session
@@ -6059,7 +6061,7 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 #[test]
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
@@ -6082,7 +6084,7 @@ fn get_containing_definition_span_valid_and_starts_at_zero() {
 #[test]
 fn get_def_preview_no_module_returns_error() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.get_def_preview("Bracket");
     assert!(result.is_err(), "no module loaded → Err");
 }
@@ -6092,7 +6094,7 @@ fn get_def_preview_no_module_returns_error() {
 fn get_def_preview_unknown_name_returns_error() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6108,7 +6110,7 @@ fn get_def_preview_unknown_name_returns_error() {
 fn get_def_preview_valid_name_returns_gui_state_with_values() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6126,7 +6128,7 @@ fn get_def_preview_valid_name_returns_gui_state_with_values() {
 fn get_def_preview_param_defaults_are_evaluated() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6149,7 +6151,7 @@ fn get_def_preview_param_defaults_are_evaluated() {
 #[test]
 fn get_def_preview_no_default_param_is_undetermined() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // 'x' has no default expression — must be Undetermined in preview.
     session
         .load_from_source("structure Bar { param x: Length }", "test")
@@ -6175,7 +6177,7 @@ fn get_def_preview_no_default_param_is_undetermined() {
 fn get_def_preview_result_is_cached() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6196,7 +6198,7 @@ fn get_def_preview_result_is_cached() {
 fn get_def_preview_cache_invalidated_on_reload() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -6205,7 +6207,7 @@ fn get_def_preview_cache_invalidated_on_reload() {
     // Reload with a different width default.
     let checker2 = SimpleConstraintChecker;
     let kernel2 = MockGeometryKernel::new();
-    let mut session2 = EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+    let mut session2 = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(kernel2)));
     session2
         .load_from_source(&bracket_source_with_width("120mm"), "bracket")
         .expect("reload with different width");
@@ -6246,7 +6248,7 @@ fn entity_tree_and_identity_map_entity_paths_are_consistent() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6481,7 +6483,7 @@ fn all_new_commands_callable_on_bracket_fixture() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6532,7 +6534,7 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6559,7 +6561,7 @@ fn build_duplicate_template_session() -> EngineSession {
         .template(dup2)
         .build();
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session.inject_compiled_for_test(compiled);
     session
 }
@@ -6630,7 +6632,7 @@ fn get_entity_tree_warns_on_duplicate_template_names_in_release() {
 #[test]
 fn commit_state_populates_parsed_cache() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Before load → None.
     assert!(
@@ -6675,7 +6677,7 @@ fn commit_state_populates_line_offsets_cache() {
     // - "structure B {}" = 14 chars → '\n' at byte 29
     let source = "structure A {}\nstructure B {}\nstructure C {}";
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Before load → None.
     assert!(
@@ -6712,7 +6714,7 @@ fn commit_state_populates_line_offsets_cache() {
 #[test]
 fn commit_state_refreshes_caches_on_update_source() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
     let source1 = "structure A { param x: Length = 1mm }";
@@ -6765,7 +6767,7 @@ fn commit_state_refreshes_caches_on_update_source() {
 #[test]
 fn get_containing_definition_reads_from_parsed_cache() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -6810,7 +6812,7 @@ fn get_containing_definition_reads_from_parsed_cache() {
 #[test]
 fn get_containing_definition_reads_from_line_offsets_cache() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -7041,7 +7043,7 @@ fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_
         .template(t3)
         .build();
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session.inject_compiled_for_test(compiled);
     session.recheck_for_test();
     // parsed_cache remains None — broken-invariant state.
@@ -7075,7 +7077,7 @@ fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
         .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -7097,7 +7099,7 @@ fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
     // pipeline to emit Diagnostic::error("geometry error: ...") via
     // tessellate_from_values.
     let kernel = FailingMockGeometryKernel;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -7145,7 +7147,7 @@ fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
 fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel = FailingMockGeometryKernel;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // load_from_source succeeds even when the geometry kernel will fail
     // (tessellation happens inside build_gui_state, not during load).
@@ -7193,7 +7195,7 @@ fn build_gui_state_tessellation_unresolved_source_tags_diagnostics() {
 fn build_gui_state_compile_diagnostics_populated_from_warning() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(warn_source_with_unknown_port_type(), "warn_test")
@@ -7238,7 +7240,7 @@ fn build_gui_state_compile_diagnostics_empty_on_clean_source() {
     let kernel = MockGeometryKernel::new()
         .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![]);
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -7271,7 +7273,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
 
     let checker = SimpleConstraintChecker;
     // No geometry kernel — freshness wiring is independent of tessellation.
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     session
         .load_from_source(&source, "bracket")
@@ -7388,7 +7390,7 @@ fn freshness_wires_through_get_entity_tree_for_realization_failure() {
     // FailingMockGeometryKernel causes all geometry operations to fail, which
     // makes engine.build() call mark_realization_failed on the realization.
     let kernel = FailingMockGeometryKernel;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -7494,7 +7496,7 @@ structure Parent {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "parent_child")
@@ -7679,7 +7681,7 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
 fn is_idle_returns_false_on_fresh_session() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     assert!(
         !session.is_idle(),
         "fresh session should not be idle (compiled and last_check are None)"
@@ -7690,7 +7692,7 @@ fn is_idle_returns_false_on_fresh_session() {
 fn is_idle_returns_true_after_load_from_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
@@ -7723,7 +7725,7 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // 1 + 2: engine builds GuiState with compile_diagnostics populated
     let gui_state = session
@@ -7804,7 +7806,7 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 fn load_file_with_user_import_resolves_imported_structure() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7870,7 +7872,7 @@ fn load_file_with_user_import_resolves_imported_structure() {
 fn load_file_solo_helper_no_imports_works() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7922,7 +7924,7 @@ fn load_file_solo_helper_no_imports_works() {
 fn load_file_unresolved_import_returns_clear_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -7977,7 +7979,7 @@ fn load_file_unresolved_import_returns_clear_err() {
 fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::PathBuf, String) {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -8104,7 +8106,7 @@ fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
 fn update_source_after_load_file_with_unresolved_import_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -8160,7 +8162,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
 fn update_source_with_divergent_path_keeps_loaded_module_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -8232,7 +8234,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = "structure Solo { param w: Length = 7mm }\n";
     let state = session
@@ -8368,7 +8370,7 @@ fn update_source_failure_after_load_file_leaves_prior_compiled_source_map_and_fi
 fn setup_collision_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Return the first Warning diagnostic whose `message` mentions both `name` and
@@ -8571,7 +8573,7 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
 fn load_file_with_std_import_does_not_double_seed_stdlib() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let dir = tempfile::tempdir().expect("tempdir should be created");
 
@@ -8637,7 +8639,7 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
 fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let bad_source = "this is not valid {{{}}}";
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
@@ -8703,7 +8705,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
 fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let bad_source = "this is not valid reify syntax {{{}}}";
     // A parse-error source — `{{{` is invalid reify syntax so `parsed.errors` is non-empty.
@@ -8775,7 +8777,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
 fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // First, induce a parse error so compile_failure is populated (ColdStart kind).
     let _ = session
@@ -8816,7 +8818,7 @@ fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
 fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a successful compiled state (compiled is Some).
     session
@@ -8857,7 +8859,7 @@ fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
 fn compile_failure_records_cold_start_then_live_edit_kinds() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // 1. Cold-start failure: compiled is None at failure time → ColdStart kind.
     let _ = session.load_from_source("this is not valid reify syntax {{{}}}", "bad");
@@ -8912,7 +8914,7 @@ fn compile_failure_records_cold_start_then_live_edit_kinds() {
 fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .build_gui_state()
@@ -8947,7 +8949,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let err = session
         .load_file(&file_path)
@@ -9017,7 +9019,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
 {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a successful compiled state (Ok return guarantees compiled is Some).
     session
@@ -9079,7 +9081,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
  {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load valid source via load_from_source — sets compiled = Some, file_path = None,
     // so update_source takes the single-file branch.
@@ -9148,7 +9150,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // load_file sets compiled = Some AND file_path = Some(...)
     session
@@ -9213,7 +9215,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_file(&file_path)
@@ -9281,7 +9283,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a successful compiled state.
     session
@@ -9349,7 +9351,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
 #[test]
 fn get_entity_at_source_location_no_module_returns_none() {
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = session.get_entity_at_source_location(1, 1);
     assert!(
         result.is_none(),
@@ -9363,7 +9365,7 @@ fn get_entity_at_source_location_no_module_returns_none() {
 fn get_entity_at_source_location_zero_line_or_col_returns_none() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9389,7 +9391,7 @@ fn get_entity_at_source_location_zero_line_or_col_returns_none() {
 fn get_entity_at_source_location_width_cell_returns_bracket_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9409,7 +9411,7 @@ fn get_entity_at_source_location_width_cell_returns_bracket_width() {
 fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9433,7 +9435,7 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
 fn get_entity_at_source_location_structure_header_returns_none_or_template_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9455,7 +9457,7 @@ fn get_entity_at_source_location_structure_header_returns_none_or_template_name(
 fn get_entity_at_source_location_constraint_line_returns_template_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9475,7 +9477,7 @@ fn get_entity_at_source_location_constraint_line_returns_template_name() {
 fn get_entity_at_source_location_past_end_of_source_returns_none() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -9516,7 +9518,7 @@ fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_st
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(THREE_STRUCT_SOURCE, "multi")
         .expect("load should succeed");
@@ -9593,7 +9595,7 @@ impl crate::engine::AutoResolveEmitter for RecordingEmitter {
 fn engine_session_no_auto_resolve_emission_when_source_has_no_auto_params() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let recorder = RecordingEmitter::new();
     let events = std::sync::Arc::clone(&recorder.events);
@@ -9644,7 +9646,7 @@ fn engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9689,7 +9691,7 @@ fn engine_session_auto_resolve_iteration_parameter_payload_matches_resolved_valu
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9752,7 +9754,7 @@ fn engine_session_auto_resolve_constraint_progress_projects_satisfaction_to_bool
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9801,7 +9803,7 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9873,7 +9875,7 @@ fn engine_session_auto_resolve_emitter_fires_on_preview_parameter_when_solver_pr
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -9937,7 +9939,7 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -10019,7 +10021,7 @@ fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_r
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -10096,7 +10098,7 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     let solver = MockConstraintSolver::new_solved(solved);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
+    let mut session = EngineSession::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None)
         .with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
@@ -10181,6 +10183,26 @@ fn with_registered_kernel_production_session_resolves_auto_param() {
     );
 }
 
+/// Task #6689 (solver-driver-parity I1): the GUI's production session names
+/// its solver posture, and `EngineSession::new` holds the posture it is given.
+#[test]
+fn with_registered_kernel_session_names_a_fresh_solve_posture() {
+    use reify_eval::SolverPosture;
+    use reify_ir::ResolutionProfile;
+
+    let production = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+    assert_eq!(
+        production.core_state_for_test().engine().solver_posture(),
+        SolverPosture::Solve(ResolutionProfile::FRESH),
+    );
+    let solver_free =
+        EngineSession::new(SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
+    assert_eq!(
+        solver_free.core_state_for_test().engine().solver_posture(),
+        SolverPosture::SolverFree,
+    );
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
@@ -10194,7 +10216,7 @@ fn engine_session_exposes_core_state_with_read_accessors() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -10239,7 +10261,7 @@ fn engine_session_exposes_core_state_with_read_accessors() {
 fn preview_parameter_updates_only_last_check_via_commit_check() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(bracket_source(), "bracket")
@@ -10321,7 +10343,7 @@ fn preview_parameter_updates_only_last_check_via_commit_check() {
 fn load_file_commits_file_path_atomically_via_commit_state() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Pre-load: file_path must be None on a fresh session.
     assert!(
@@ -10389,7 +10411,7 @@ fn load_file_commits_file_path_atomically_via_commit_state() {
 fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Write bracket.ri to a tempdir and load it — file_path becomes Some(tmp_path).
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -10478,7 +10500,7 @@ fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() 
     use reify_core::ValueCellId;
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingWarmPoolEventEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10632,7 +10654,7 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
     use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10678,7 +10700,7 @@ fn fea_case_emitter_no_fire_when_no_multi_case() {
     use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10723,7 +10745,7 @@ fn fea_case_emitter_re_fires_on_each_check() {
     use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -10779,7 +10801,7 @@ fn fea_case_emitter_wires_through_real_commit_path() {
 }"#;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaCaseEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -11459,7 +11481,7 @@ structure def TPrism {
 fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(t_prism_source(), "t_prism")
@@ -11518,7 +11540,7 @@ fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
 fn build_gui_state_yields_empty_wires_for_non_tensegrity_module() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -11566,7 +11588,7 @@ structure def TOnly {
 fn build_tensegrity_wires_filters_non_tensegrity_wire_struct_instances() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(tensegrity_struct_no_wires_source(), "tonly")
@@ -11689,7 +11711,7 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingModeShapeFrameEmitter::new();
     let captured = Arc::clone(&recorder.frames);
@@ -11788,7 +11810,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // No emitter installed.
 
     let mut values = ValueMap::new();
@@ -11821,7 +11843,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
     use reify_ir::{ValueMap, Value};
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingModeShapeFrameEmitter::new();
     let captured = Arc::clone(&recorder.frames);
@@ -11928,7 +11950,7 @@ fn mode_shape_scale_verified_geometry_matches_hand_computed() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingModeShapeFrameEmitter::new();
     let captured = Arc::clone(&recorder.frames);
@@ -12003,7 +12025,7 @@ fn mode_shape_scale_degenerate_fallback() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // ── Case A: zero displacement ───────────────────────────────────────────
     {
@@ -12110,7 +12132,7 @@ fn cantilever_fixture_realizes_body() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "FeaCantileverSmoke")
@@ -12166,7 +12188,7 @@ fn register_compute_fns_dispatch_yields_real_elastic_result() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "FeaCantileverSmoke")
@@ -12295,7 +12317,7 @@ fn solve_publishes_then_clears_cancel_handle() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
@@ -12358,7 +12380,7 @@ fn preview_parameter_success_fires_solve_lifecycle() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
@@ -12406,7 +12428,7 @@ fn preview_parameter_edit_check_err_still_fires_solve_finished() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish the eval snapshot via load_from_source so edit_check runs
     // (without a snapshot edit_check returns NotInitialized before the lifecycle).
@@ -13555,7 +13577,7 @@ fn build_gui_state_shell_flexure_populates_element_kind_and_von_mises_top() {
     let source = include_str!("../../../../examples/fea_shell_flexure.ri");
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "FeaShellFlexure")
@@ -13620,7 +13642,7 @@ fn build_gui_state_fea_cantilever_smoke_has_von_mises_and_displaced_positions() 
     let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "FeaCantileverSmoke")
@@ -14614,7 +14636,7 @@ fn set_solver_progress_sink_forwards_to_engine_and_emits_on_cantilever() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let (sink, captured_updates) = RecordingSolverProgressSink::new();
     session.set_solver_progress_sink(Arc::new(sink));
@@ -14664,7 +14686,7 @@ fn with_solve_slot_wires_published_handle_to_engine() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
@@ -14704,7 +14726,7 @@ fn with_solve_slot_wires_published_handle_to_engine() {
 fn staleness_api_clean_after_successful_load() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -14732,7 +14754,7 @@ fn staleness_api_clean_after_successful_load() {
 fn staleness_api_record_reload_error_appends_diagnostic() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -14810,7 +14832,7 @@ fn staleness_api_cold_start_reload_error_has_no_location() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     // Fresh session — never loaded, so core.compiled() is None.
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Inject a reload error without a prior successful load (cold-start path).
     session.record_reload_error("cold-boom".to_string());
@@ -14851,7 +14873,7 @@ fn staleness_api_cold_start_reload_error_has_no_location() {
 fn staleness_api_cleared_after_successful_reload() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -14897,7 +14919,7 @@ fn staleness_api_cleared_after_successful_reload() {
 fn build_gui_state_live_edit_failure_content_matches_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (1) Load valid bracket source successfully.
     session
@@ -14998,7 +15020,7 @@ fn build_gui_state_cold_start_failure_surfaces_failing_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     // Fresh session — no prior successful load, so compiled is None.
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // (1) Attempt a cold-start load with a failing source: replace `thickness` in the
     //     box() call with an unresolved name `bogus_thk`.
@@ -15180,7 +15202,7 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
 fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Establish a good compile state keyed to "bracket.ri".
     session
@@ -15260,7 +15282,7 @@ fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
 fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positions_are_last_good() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load a source that produces a Warning at a known line.
     // warn_source_with_unknown_port_type() is:
@@ -15620,7 +15642,7 @@ fn engine_session_active_fea_case_default_then_switch() {
     let kernel = MockGeometryKernel::new();
     let tess_arc = kernel.tessellate_tolerances_ref();
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Load bracket_source: this is a non-FEA scene, so tess_mesh_cache is NOT
     // populated (gated on FEA presence since amendment 3).
@@ -15764,7 +15786,7 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     session
         .load_from_source(source, "FeaMultiCaseBracket")
@@ -15877,7 +15899,7 @@ fn gui_auto_type_resolution_no_op_contract() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _state = session
         .load_from_source(source, "beta_inject_no_op")
@@ -15958,7 +15980,7 @@ structure def MembranePatch {
 fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(membrane_patch_source(), "membrane_patch")
@@ -16025,7 +16047,7 @@ fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
 fn build_gui_state_yields_empty_surfaces_for_non_surface_module() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -16084,7 +16106,7 @@ fn surface_data_from_instance_returns_none_for_malformed_field() {
 fn build_tensegrity_surfaces_filters_non_tensegrity_surface_struct_instances() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Re-use the tensegrity-only source that has no tensegrity_surfaces() call.
     let source = r#"
@@ -16209,6 +16231,7 @@ fn build_constraints_sorts_constraints_by_node_id() {
 fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     // ── Control run: NO observed-demand sync ─────────────────────────────────
     let mut control = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16228,6 +16251,7 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     //    cell as observed demand BEFORE editing. No panel constraints, so the
     //    constraints fall OUTSIDE the observed cone (would-prune). ────────────
     let mut synced = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16353,6 +16377,7 @@ structure E {
 }
 "#;
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16428,6 +16453,7 @@ fn sync_demand_populates_production_demand_selectively() {
     let sb = NodeId::Value(ValueCellId::new(entity, "sb"));
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16621,6 +16647,7 @@ fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
     let sb = NodeId::Value(ValueCellId::new(entity, "sb"));
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16701,6 +16728,7 @@ structure Tank {
 "#;
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16758,6 +16786,7 @@ structure Part {
 }
 "#;
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16792,6 +16821,7 @@ structure Part {
 }
 "#;
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -16854,7 +16884,7 @@ structure def BearingAssembly {
     // Mirrors the GUI binary's construction at gui/src-tauri/src/main.rs:651.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = session
         .load_from_source(BEARING_CONSTRAINT_SELECT_SOURCE, "bearing_constraint_select");
@@ -16898,7 +16928,7 @@ structure def BearingAssembly {
 fn build_gui_state_populates_reason_for_unbound_param() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Source with one unbound param (outer_d) and one determined literal param (width).
     let source = r#"
@@ -16947,7 +16977,7 @@ fn get_parameters_mcp_carries_reason_for_unbound_param() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = r#"
 structure UndefMcpTest {
@@ -16997,7 +17027,7 @@ structure UndefMcpTest {
 fn build_gui_state_populates_reason_for_propagated_undef() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // `derived_r` is a Let cell whose Undef is propagated from the unbound
     // param `outer_d`.  PRD A3: the origins side-map has no entry for
@@ -17041,7 +17071,7 @@ structure UndefEpsilonPropagatedTest {
 fn build_gui_state_bt12_wall_thickness_reason_names_both_causes_no_invented_cause() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let source = r#"
 structure Tube {
@@ -17168,7 +17198,7 @@ fn multi_pane_source() -> &'static str {
 fn build_gui_state_extracts_display_routing_happy_path() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(multi_pane_source(), "multi_pane")
@@ -17238,7 +17268,7 @@ fn build_gui_state_display_only_gate_excludes_stl_output() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "gated")
@@ -17264,7 +17294,7 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
     // inv.2 empty: bracket_source() has no DisplayOutput subs → display_panes must be empty.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -17317,7 +17347,7 @@ fn build_gui_state_drops_display_output_with_unresolved_subject() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "partial")
@@ -17376,7 +17406,7 @@ fn build_gui_state_extracts_display_appearance_happy_path() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "styled")
@@ -17441,7 +17471,7 @@ fn build_gui_state_drops_dangling_appearance_directive() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "partial_styled")
@@ -17500,7 +17530,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(source, "no_style_output")
@@ -17526,7 +17556,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
     // (b) No DisplayOutput at all → display_appearance is also empty.
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let kernel2 = reify_test_support::MockGeometryKernel::new();
-    let mut session2 = crate::engine::EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+    let mut session2 = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(kernel2)));
 
     let state2 = session2
         .load_from_source(bracket_source(), "bracket")
@@ -17578,7 +17608,7 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "multi_pane_viewport")
@@ -17786,7 +17816,7 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(appearance_wiring_source(), "app_wiring")
@@ -17891,7 +17921,7 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "appearance_viewport_egress")
@@ -18233,7 +18263,7 @@ fn build_gui_state_fea_diagnostics_populated_from_unconstrained_structured_detai
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -18289,7 +18319,7 @@ fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve(
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -18359,7 +18389,7 @@ fn set_active_fea_case_carries_fea_diagnostics_from_structured_detail() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -18450,7 +18480,7 @@ fn fea_diagnostics_emitter_fires_unconstrained_modes() {
     use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18510,7 +18540,7 @@ fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
     use reify_eval::CheckResult;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18561,7 +18591,7 @@ fn fea_diagnostics_emitter_fires_on_preview_parameter() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -18614,7 +18644,7 @@ fn load_from_compiled_emits_fea_diagnostics() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18655,7 +18685,7 @@ fn load_from_source_emits_fea_diagnostics() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18692,7 +18722,7 @@ fn load_file_emits_fea_diagnostics() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -18737,7 +18767,7 @@ fn update_source_emits_fea_diagnostics() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -18859,7 +18889,7 @@ fn fea_convergence_emitter_fires_converged() {
     let values = make_elastic_result_value_map_with_convergence(convergence_status);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18907,7 +18937,7 @@ fn fea_convergence_emitter_fires_none_for_no_elastic_result() {
     use reify_eval::CheckResult;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -18971,7 +19001,7 @@ fn fea_convergence_emitter_fires_not_converged_with_reason() {
     let values = make_elastic_result_value_map_with_convergence(convergence_status);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -19026,7 +19056,7 @@ fn fea_convergence_emitter_fires_on_preview_parameter() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
@@ -19118,7 +19148,7 @@ fn build_gui_state_surfaces_finish_process_polished_as_gloss() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -19183,7 +19213,7 @@ fn build_gui_state_surfaces_coating_anodize_dark() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -19247,7 +19277,7 @@ fn build_gui_state_coating_wins_over_finish_process() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -19310,7 +19340,7 @@ fn build_gui_state_coating_only_no_material_resolves() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -19377,7 +19407,7 @@ fn build_gui_state_uncoated_coating_with_material_resolves_material() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -19440,7 +19470,7 @@ fn build_gui_state_uncoated_coating_with_material_resolves_material() {
 fn build_gui_state_finish_process_without_material_resolves_none() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(surface_finish_wiring_source(), "surface_finish_wiring")
@@ -19506,7 +19536,7 @@ fn load_surface_finish_viewport_state() -> crate::types::GuiState {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "surface_finish_viewport")
@@ -19767,7 +19797,7 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(&contents, "affine_tapered_spacer")
@@ -20274,6 +20304,7 @@ fn full_scene_debug_read_does_not_leak_hidden_meshes_into_the_fea_case_switch() 
 #[test]
 fn engine_session_registers_fea_and_shell_extract_dispatch() {
     let session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -20328,6 +20359,7 @@ mod gui_feature_tests {
     #[test]
     fn from_engine_registers_mesh_morph_producer() {
         let session = EngineSession::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -20360,7 +20392,7 @@ fn slice_bracket(span: reify_core::SourceSpan) -> &'static str {
 
 #[test]
 fn resolve_param_default_span_slices_the_default_literal_only() {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -20389,7 +20421,7 @@ fn resolve_param_default_span_slices_the_default_literal_only() {
 fn resolve_param_default_span_resolves_a_non_first_member() {
     // `thickness` is the THIRD param in bracket_source(). A single case on the
     // first member would not catch a first-member / off-by-one bias.
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -20404,13 +20436,13 @@ fn resolve_param_default_span_resolves_a_non_first_member() {
 fn resolve_param_default_span_returns_none_with_no_module_loaded() {
     // parsed_cache is None on a fresh session (and on load_from_compiled-injected
     // sessions). Must degrade to None, never panic.
-    let session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
 }
 
 #[test]
 fn resolve_param_default_span_returns_none_for_unknown_entity() {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -20419,7 +20451,7 @@ fn resolve_param_default_span_returns_none_for_unknown_entity() {
 
 #[test]
 fn resolve_param_default_span_returns_none_for_unknown_member() {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -20429,7 +20461,7 @@ fn resolve_param_default_span_returns_none_for_unknown_member() {
 #[test]
 fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
     // No '.' — parse_cell_id returns Err, which this method maps to None.
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
@@ -20449,7 +20481,7 @@ const INSTANCE_PATH_SRC: &str = "structure def Leaf { param width : Length = 80m
                                  }";
 
 fn instance_path_session() -> EngineSession {
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(INSTANCE_PATH_SRC, "holder")
         .expect("load should succeed");
@@ -20580,7 +20612,7 @@ fn resolve_param_default_span_returns_none_for_param_without_default() {
     // PRD §6.1's explicit "returns None if the param has no default literal to
     // rewrite". Shape verified against real source (examples/appearance_surface.ri:16,
     // `param name : String` inside a structure def).
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source("structure def S { param t : Length }", "s")
         .expect("load should succeed");
@@ -20598,7 +20630,7 @@ fn resolve_param_default_span_resolves_an_occurrence_entity() {
     // the walk get_containing_definition already delegates to, matches BOTH.
     const SRC: &str = "occurrence def Machining { param feed_rate : Real = 100 }";
 
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     session
         .load_from_source(SRC, "machining")
         .expect("load should succeed");
@@ -20666,7 +20698,7 @@ fn broken_curated_fillet_source() -> &'static str {
 fn build_gui_state_surfaces_build_time_geometry_error_in_compile_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(broken_curated_fillet_source(), "broken_fillet")
@@ -20736,7 +20768,7 @@ fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
         .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
         .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
         .load_from_source(bracket_source(), "bracket")
@@ -20846,6 +20878,7 @@ fn writeback_session_from(source: &str) -> (tempfile::TempDir, std::path::PathBu
     std::fs::write(&path, source).expect("write part.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -21672,6 +21705,7 @@ fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing
     std::os::unix::fs::symlink(&target, &link).expect("creating the symlink should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -21735,6 +21769,7 @@ fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
     std::fs::write(&entry_path, entry_source).expect("write main.ri");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -21913,6 +21948,7 @@ fn apply_param_to_source_refuses_a_session_with_no_file_on_disk() {
     // must be refused rather than silently degrading to an engine-state-only
     // edit, which is the ephemeral behaviour INV-GUI-3 exists to replace.
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -21999,6 +22035,7 @@ fn commit_parameter_refuses_a_fileless_session_and_still_discards_the_preview() 
     // replaces. The refusal must still leave the postcondition intact: state ≡
     // source, with the preview gone.
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -22149,6 +22186,7 @@ fn gui_value_of(session: &mut EngineSession, cell_id: &str) -> (String, String) 
 /// fixed `b"MOCK_EXPORT_DATA"` whatever the geometry.
 fn reloaded_value_of(path: &Path, cell_id: &str) -> (String, String) {
     let mut fresh = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -22522,7 +22560,7 @@ fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
     // `reset_count()` needs `&MockGeometryKernel`, which the boxed
     // `dyn GeometryKernel` inside the engine no longer exposes.
     let reset_calls = kernel.reset_calls_ref();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     assert_eq!(
         *reset_calls.lock().unwrap(),

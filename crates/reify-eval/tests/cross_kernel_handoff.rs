@@ -341,6 +341,7 @@ fn occt_manifold_engine() -> (Engine, KernelCallCounts) {
     );
 
     let engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         kernels,
         registry,

@@ -28,7 +28,9 @@ use reify_fdm::{
 };
 use reify_ir::{OpaqueState, Value};
 
-use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
+use super::as_printed_material::field_int;
+use super::{rejected_input_outcome, struct_data, structure};
+use crate::arg_acceptance::{FieldRejection, dimensionless_spec, length_spec, read_field};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
@@ -229,6 +231,12 @@ pub(crate) fn fdm_slice_dispatch(
     prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // A wrong-dimension FDMProcess field fails the node whether or not a slicer
+    // is installed.
+    let settings = match read_slice_settings(value_inputs) {
+        Ok(settings) => settings,
+        Err(rejection) => return rejected_input_outcome(rejection.to_error("fdm_slice")),
+    };
     let Some(bin) = slicer_bin else {
         return ComputeOutcome::Completed {
             result: degraded_toolpath_value(),
@@ -246,8 +254,7 @@ pub(crate) fn fdm_slice_dispatch(
         };
     };
 
-    // ── present-slicer path: compose settings, key the reslice cache, run ───────
-    let settings = read_slice_settings(value_inputs);
+    // ── present-slicer path: key the reslice cache on the settings, run ────────
     // A body realization handle is REQUIRED to key the reslice cache: the content
     // hash is the only distinguishing input between two bodies under identical
     // settings. Collapsing to a 0 sentinel when absent would alias distinct
@@ -333,19 +340,25 @@ const SLICE_CANCEL_GRACE: Duration = Duration::from_millis(500);
 /// Read the mechanically-relevant [`SliceSettings`] off the `FDMProcess` value
 /// (`value_inputs[1]`, mirroring the stdlib `fdm_slice(body, process, options)`
 /// arg order). Missing / `Undef` fields fall back to conventional defaults so a
-/// partial process still yields a deterministic, sliceable profile.
-fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
+/// partial process still yields a deterministic, sliceable profile; a numeric
+/// field of the wrong dimension is an `Err`.
+fn read_slice_settings(value_inputs: &[Value]) -> Result<SliceSettings, FieldRejection> {
     let process = value_inputs.get(1).and_then(struct_data);
-    SliceSettings {
-        // `field_scalar` yields the SI-metre magnitude of the `Length` field
+    let layer_height_m = match process {
+        Some(p) => read_field(p, "layer_height", &length_spec())?,
+        None => None,
+    };
+    let infill_density = match process {
+        Some(p) => read_field(p, "infill_density", &dimensionless_spec())?,
+        None => None,
+    };
+    Ok(SliceSettings {
+        // `read_field` yields the SI-metre magnitude of the `Length` field
         // (`0.2mm` -> 0.0002 m); `SliceSettings.layer_height` is documented in mm
         // and passed verbatim to PrusaSlicer `--layer-height` (which expects mm),
         // so convert m -> mm (×1000). The `.unwrap_or(0.2)` Undef fallback is
         // already mm, so the real-process and Undef paths now agree.
-        layer_height: process
-            .and_then(|p| field_scalar(p, "layer_height"))
-            .map(|m| m * 1000.0)
-            .unwrap_or(0.2),
+        layer_height: layer_height_m.map(|m| m * 1000.0).unwrap_or(0.2),
         // Undef-path fallbacks mirror the stdlib `FDMProcess` defaults
         // (walls = 3, top_bottom_layers = 4) so an Undef process yields the same
         // profile `FDMProcess()` would, all in one consistent (mm) unit system.
@@ -354,13 +367,11 @@ fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
             .and_then(|p| field_int(p, "top_bottom_layers"))
             .unwrap_or(4)
             .max(0) as u32,
-        infill_density: process
-            .and_then(|p| field_real(p, "infill_density"))
-            .unwrap_or(0.2),
+        infill_density: infill_density.unwrap_or(0.2),
         infill_pattern: process
             .map(read_infill_pattern)
             .unwrap_or(InfillPattern::Gyroid),
-    }
+    })
 }
 
 /// Map the `FDMProcess.infill_pattern` enum value to an [`InfillPattern`];
@@ -1418,8 +1429,7 @@ mod tests {
     #[test]
     fn read_slice_settings_converts_layer_height_metres_to_mm() {
         use reify_core::DimensionVector;
-        // `0.2mm` evaluates to a Length Scalar of si_value 0.0002 m; `field_scalar`
-        // ignores the dimension, so LENGTH is just for realism.
+        // `0.2mm` evaluates to a Length Scalar of si_value 0.0002 m.
         let process = structure(
             "FDMProcess",
             vec![(
@@ -1430,7 +1440,8 @@ mod tests {
                 },
             )],
         );
-        let settings = read_slice_settings(&[Value::Undef, process, Value::Undef]);
+        let settings = read_slice_settings(&[Value::Undef, process, Value::Undef])
+            .expect("a LENGTH layer_height reads");
         assert_eq!(
             settings.layer_height, 0.2,
             "0.0002 m must convert to 0.2 mm, not stay 0.0002"
@@ -1447,8 +1458,28 @@ mod tests {
             "--layer-height must be 0.2 (mm), not 0.0002; got {args:?}"
         );
         // The Undef-process fallback is mm-consistent with the converted real path.
-        let undef = read_slice_settings(&[Value::Undef, Value::Undef, Value::Undef]);
+        let undef = read_slice_settings(&[Value::Undef, Value::Undef, Value::Undef])
+            .expect("an Undef process reads the defaults");
         assert_eq!(undef.layer_height, 0.2, "Undef fallback stays 0.2 mm");
+    }
+
+    /// task 6922 η: a bare `layer_height` is rejected, not read as metres.
+    #[test]
+    fn read_slice_settings_rejects_a_bare_layer_height() {
+        let process = structure("FDMProcess", vec![("layer_height", Value::Real(0.2))]);
+        let Err(rejection) = read_slice_settings(&[Value::Undef, process, Value::Undef]) else {
+            unreachable!("a bare layer_height must be rejected");
+        };
+        let diagnostic = rejection.to_error("fdm_slice");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
+        assert!(
+            diagnostic.message.contains("FDMProcess.layer_height"),
+            "got {:?}",
+            diagnostic.message
+        );
     }
 
     /// REVIEW-FIX (blocking issue 2/2, robustness_unit_mismatch): the STL

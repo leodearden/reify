@@ -1,5 +1,6 @@
 # Machine-readable twin of trampoline-decode-and-result-build.capability-manifest.md
 # Every grep delivered_check below was confirmed RED at main 8e6ffcac9d (2026-10-12).
+# Retro-critic sitting 2026-10-20 (R5): α's buckling-panicking-material-reader-gone and modal-read-scalar-si-gone and γ's support-unknown-variant-no-fallback dropped; β eigen-knob-fallbacks-gone and ν validation-variants-moved re-anchored; κ T11 binding respelled.
 prd: docs/prds/v0_6/trampoline-decode-and-result-build.md
 schema_version: 1
 tasks:
@@ -23,14 +24,6 @@ tasks:
           pattern: "ComputeInputMalformed"
           paths: ["crates/reify-core/src/diagnostics.rs"]
           expect: "present"
-      - name: "modal-read-scalar-si-gone"
-        binding: "grep: fn read_scalar_si defined in modal_ops.rs at main (maps non-numeric to 0.0, dimension-blind)"
-        verdict: PASS
-        delivered_check:
-          kind: "grep"
-          pattern: "fn read_scalar_si"
-          paths: ["crates/reify-eval/src/modal_ops.rs"]
-          expect: "absent"
       - name: "modal-material-reader-gone"
         binding: "grep: fn extract_isotropic_material in modal_ops.rs at main (missing field -> 0.0)"
         verdict: PASS
@@ -39,16 +32,8 @@ tasks:
           pattern: "fn extract_isotropic_material"
           paths: ["crates/reify-eval/src/modal_ops.rs"]
           expect: "absent"
-      - name: "buckling-panicking-material-reader-gone"
-        binding: "grep: buckling::extract_material panics on malformed input at main; #6922 may already re-home it, either way the buckling-local reader is gone after α"
-        verdict: PASS
-        delivered_check:
-          kind: "grep"
-          pattern: "fn extract_material"
-          paths: ["crates/reify-eval/src/compute_targets/buckling.rs"]
-          expect: "absent"
       - name: "ratchet-member-registered"
-        binding: "producer:α — tests/infra/test_trampoline_decode_ratchet.{py,sh}; manifest row lands same diff (esc-4914-162)"
+        binding: "producer:μ #8711 (rows member on #8730's rust_construct_ratchet engine, R5 M2; no bespoke engine) — tests/infra/test_trampoline_decode_ratchet.{py,sh}; manifest row lands in the creating diff (esc-4914-162); α adds its rows"
         verdict: PASS
         delivered_check:
           kind: "grep"
@@ -56,7 +41,7 @@ tasks:
           paths: ["tests/infra/run-all-classification.manifest"]
           expect: "present"
       - name: "upstream-6922-shape"
-        binding: "producer:#6922 upstream (pending, under review on task/6922) — fea_inputs.rs / fea_value_shape.rs that α generalizes; re-measure after it lands"
+        binding: "producer:#6922 upstream (pending, under review on task/6922) — fea_inputs.rs / fea_value_shape.rs / FieldRejection / failed_outcome that α generalizes (R5 M3); re-measure after it lands. R5 polarity: modal-read-scalar-si-gone and buckling-panicking-material-reader-gone dropped (greened by #6941/#6922 before α)"
         verdict: PASS
         delivered_check:
           kind: "manual"
@@ -72,11 +57,11 @@ tasks:
     title: "Options decoders (ElasticOptions, ModalOptions, BucklingOptions); no Rust default literal; decoded read set unchanged; #7079 attaches its declaration afterwards"
     capabilities:
       - name: "eigen-knob-fallbacks-gone"
-        binding: "grep: extract_eigen_knobs restates ModalOptions defaults (10, 1e-9, 200) at main"
+        binding: "grep: extract_eigen_knobs restates ModalOptions defaults (10, 1e-9, 200) at main (R5 polarity: anchored on `fn extract_eigen_knobs\\(` so the two #[cfg(test)] extract_eigen_knobs_* fns do not match)"
         verdict: PASS
         delivered_check:
           kind: "grep"
-          pattern: "fn extract_eigen_knobs"
+          pattern: "fn extract_eigen_knobs\\("
           paths: ["crates/reify-eval/src/modal_ops.rs"]
           expect: "absent"
       - name: "buckling-option-fallbacks-gone"
@@ -96,7 +81,7 @@ tasks:
           paths: ["crates/reify-eval/src/compute_targets/elastic_static.rs"]
           expect: "absent"
       - name: "ctor-fills-defaults"
-        binding: "substrate: CompiledExprKind::StructureInstanceCtor.defaults fills every non-supplied param (reify_ir::expr); no production code hand-builds an options instance (all type_name: \"ElasticOptions\" constructions are #[cfg(test)])"
+        binding: "substrate: CompiledExprKind::StructureInstanceCtor.defaults fills every non-supplied param (reify_ir::expr); no production code hand-builds an options instance (all type_name: \"ElasticOptions\" constructions are #[cfg(test)]). R5 B1: absent is hand-built-only; Undef is ctor-reachable (eval_structure_instance_ctor keeps an Undef slot), so Undef takes the per-position policy"
         verdict: PASS
         delivered_check:
           kind: "manual"
@@ -141,14 +126,6 @@ tasks:
         delivered_check:
           kind: "manual"
           reason: "rejection must be observed firing by the D3 workflow, not grepped"
-      - name: "support-unknown-variant-no-fallback"
-        binding: "grep: modal_ops DeclaredSupport maps FixedSupport and every unrecognized support type name to Fixed at main (gap-fill 2026-10-16 K5-3: an unknown Support type_name decodes to InputDecodeError UnknownVariant; added after commit_planning, three writes)"
-        verdict: PASS
-        delivered_check:
-          kind: "grep"
-          pattern: "every unrecognized support type name"
-          paths: ["crates/reify-eval/src"]
-          expect: "absent"
   - label: "δ"
     task_id: 8686
     title: "StructureInstanceData::registry_free + REGISTRY_FREE; consts and Rust StructureTypeId(0) producers migrated; registry reads re-stamp by name"
@@ -324,7 +301,7 @@ tasks:
           paths: ["crates/reify-core/src/diagnostics.rs"]
           expect: "present"
       - name: "T11-reachable-from-ri"
-        binding: "grammar/semantic: von_mises([[..]]) nested-list literal is the shipped spelling (examples/fields_analysis.ri header, fea_stress_reductions_smoke); asymmetric fixture panics in debug today — probe at decompose with reify eval"
+        binding: "grammar/semantic (R5 M6 respelled): von_mises(matrix([[1.0Pa, 2.0Pa, 0Pa], [0Pa, 0Pa, 0Pa], [0Pa, 0Pa, 0Pa]])) panics in debug and returns the upper-triangle answer in release today; control matrix([[100.0Pa, 0Pa, 0Pa], ...]) -> 100 Pa. The bare nested list is not a Matrix argument (Undef via OpContractViolation, exit 0) and gets a coded diagnostic from κ's classifier"
         verdict: PASS
         delivered_check:
           kind: "manual"
@@ -370,11 +347,11 @@ tasks:
     title: "validate_regular3d covers data length and axis geometry for every shell-extract entry point"
     capabilities:
       - name: "validation-variants-moved"
-        binding: "grep: DataLengthMismatch exists only in medial.rs (MedialError) at main"
+        binding: "grep: DataLengthMismatch exists only in medial.rs (MedialError) at main (R5 polarity: anchored on the variant declaration so a doc mention does not satisfy it)"
         verdict: PASS
         delivered_check:
           kind: "grep"
-          pattern: "DataLengthMismatch"
+          pattern: "^\\s*DataLengthMismatch\\b"
           paths: ["crates/reify-shell-extract/src/grid_validation.rs"]
           expect: "present"
       - name: "T13-no-panic"
@@ -416,7 +393,7 @@ tasks:
     title: "dynamics/eval.rs partitioned along its measured groups"
     capabilities:
       - name: "partition-shape"
-        binding: "h14: seven measured groups; preconditions wired by the S6 session 2026-10-13: S6 ρ #8845 (MechanismTree, fk-38811e6f7300), σ #8847 (dynamics on Joint), λ #8839 (bindings move)"
+        binding: "h14: seven measured groups; preconditions wired by the S6 session 2026-10-13: S6 ρ #8845 (MechanismTree, fk-38811e6f7300), σ #8847 (dynamics on Joint), λ #8839 (bindings move); released by S6, no longer held"
         verdict: PASS
         delivered_check:
           kind: "manual"
@@ -524,7 +501,7 @@ tasks:
     title: "FDM input decoders (FDMProcess, AsPrintedOptions, FDMCouponOverride); missing field into_failed; read_slice_settings decodes once with no default literals; degenerate build_direction a coded Error (gap-fill 2026-10-16 K5-6)"
     capabilities:
       - name: "slice-settings-default-literals-gone"
-        binding: "grep: fdm_slice::read_slice_settings restates FDMProcess .ri defaults with unwrap_or literals at main (layer height 0.2 mm and others)"
+        binding: "grep: fdm_slice::read_slice_settings restates FDMProcess .ri defaults with unwrap_or literals at main (layer height 0.2 mm and others). R5 polarity: also matches a comment (fdm_slice.rs:343) and, after #6922, infill_density.unwrap_or(0.2); υ re-anchors this check on the slice-settings fields it removes before landing (three writes)"
         verdict: PASS
         delivered_check:
           kind: "grep"

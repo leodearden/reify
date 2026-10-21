@@ -67,7 +67,7 @@ fn value_eval_consumer_reads_minted_selector_finite_eval() {
     let compiled = compile_source_with_stdlib(WIDGET_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let cell_id = ValueCellId::new("Widget", "n_top");
@@ -90,7 +90,7 @@ fn value_eval_consumer_reads_minted_selector_finite_eval_cached() {
     let compiled = compile_source_with_stdlib(WIDGET_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
     let cell_id = ValueCellId::new("Widget", "n_top");
@@ -112,7 +112,7 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
     let compiled = compile_source_with_stdlib(WIDGET_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     // Establish baseline.
     engine.eval(&compiled);
 
@@ -199,7 +199,7 @@ fn end_effector_track_fixture_peak_differs_per_location() {
     let compiled = compile_source_with_stdlib(TRACK_FIXTURE_PROBE_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let peak_at = |cell: &str| {
@@ -313,7 +313,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
     let compiled = compile_source_with_stdlib(R3E_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3e_track", identity_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
@@ -338,7 +338,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
     let compiled = compile_source_with_stdlib(R3E_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3e_track", identity_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
@@ -376,7 +376,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
     let compiled = compile_source_with_stdlib(R3E_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3e_track", identity_track_fn as ComputeFn);
     // Establish baseline.
     engine.eval(&compiled);
@@ -465,7 +465,7 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval() {
     let compiled = compile_source_with_stdlib(R3F_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3f_track", identity_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
@@ -490,7 +490,7 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
     let compiled = compile_source_with_stdlib(R3F_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3f_track", identity_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
@@ -545,7 +545,7 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_ed
     let compiled = compile_source_with_stdlib(R3F_SRC);
     assert_no_compile_errors(&compiled);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.register_compute_fn("test::r3f_track", identity_track_fn as ComputeFn);
     // Establish edit_source's baseline precondition against the DISTINCT
     // trivial module — see the doc comment above for why.

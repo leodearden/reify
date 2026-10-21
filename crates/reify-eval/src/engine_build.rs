@@ -3373,7 +3373,7 @@ impl Engine {
             geometry_kernels: _,   // registered kernels
             default_kernel_name: _, // default-kernel selection
             repr_capable_kernel: _, // construction-recorded kernel capability (task 6169)
-            solver: _,             // fallback constraint solver
+            solve_stage: _,        // constructor-named solve profile + fallback solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
             prelude_functions: _,  // pre-flattened prelude fns
@@ -14108,7 +14108,7 @@ mod reset_per_build_state_tests {
     /// A fresh kernel-less `Engine` with one seeded entry in every per-build
     /// reset class plus representative must-survive fields.
     fn seeded_engine() -> Engine {
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let rid = RealizationNodeId::new("Seed", 0);
 
         // ── reset-EVERY-surface ───────────────────────────────────────────

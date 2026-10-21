@@ -51,11 +51,11 @@ tasks:
     title: "type_compat.rs: explicit imports, delete overload facade, four-way split"
     capabilities:
       - name: "overload-facade-deleted"
-        binding: "grep: facade re-export present in type_compat.rs at main (#7338)"
+        binding: "grep: facade re-export present in type_compat.rs at main (#7338); anchored on the pub(crate) facade, not the private import constraint_arg_type_conforms keeps (retro-critic R8 M3, 2026-10-20)"
         verdict: PASS
         delivered_check:
           kind: grep
-          pattern: "use reify_core::overload::\\{type_carries_trait_object"
+          pattern: "^pub\\(crate\\) use reify_core::overload::"
           paths: ["crates/reify-compiler/src/type_compat.rs"]
           expect: absent
       - name: "type-compat-glob-import-gone"
@@ -160,11 +160,11 @@ tasks:
           paths: ["crates/reify-compiler/src/lib.rs"]
           expect: absent
       - name: "wildcard-imports-lint-denied"
-        binding: "producer:κ — construction-time lint (D10); gate runs clippy -D warnings"
+        binding: "producer:κ — construction-time lint (D10); gate runs clippy -D warnings; anchored on the deny attribute, not any mention (retro-critic R8 polarity, 2026-10-20)"
         verdict: PASS
         delivered_check:
           kind: grep
-          pattern: "wildcard_imports"
+          pattern: "deny\\(([^)]*,\\s*)?clippy::wildcard_imports"
           paths: ["crates/reify-compiler/src/lib.rs"]
           expect: present
       - name: "lint-exemption-shape-verified"
@@ -221,11 +221,11 @@ tasks:
           paths: ["crates/reify-compiler/src/"]
           expect: present
       - name: "behaviour-pins-byte-identical"
-        binding: "fixture outputs recorded 2026-10-12 (alias cycle rc 1; enum in Option rc 0; member_enum_ctor rc 0; shadow_payload_binder rc 0)"
-        verdict: PASS
+        binding: "fixture outputs recorded 2026-10-12 (alias cycle rc 1; enum in Option rc 0; member_enum_ctor rc 0; shadow_payload_binder rc 0); bound (retro-critic R8 M5, 2026-10-20): the two s7 fixtures plus the M1 guarded-let and trait-conformance Option<E> cases become harness tests asserting exit code and diagnostics, landed before mu's rewrite (PRD §5 rows 6-7, 11-12)"
+        verdict: OPEN
         delivered_check:
           kind: manual
-          reason: "byte-identical reify check output is judged by the gate's suites and the leaf's own run, not a grep"
+          reason: "bound to mu's pre-rewrite harness tests (gate members); nothing in the gate reads tests/prd-gate/fixtures, so the pin is the harness test, not this manifest row"
   - label: "ν"
     task_id: 8650
     title: "CompilationScope sub_* maps become one SubFacts record behind query methods"
@@ -238,16 +238,39 @@ tasks:
           pattern: "^\\s+pub\\(crate\\) sub_[a-z_]+:"
           paths: ["crates/reify-compiler/src/scope.rs"]
           expect: absent
+  - label: "σ"
+    task_id: 9419
+    title: "Trait-bound predicates, AST substitution and EntityDefRef below entity; sketch_unsupported::diagnostic lifted (entity and guards in different SCCs)"
+    note: "New leaf filed by the retro-critic sitting, ruling R10 (2026-10-20); prereq beta #8615; xi #8657 depends on it."
+    capabilities:
+      - name: "trait-bound-predicates-left-entity"
+        binding: "grep: pub fn satisfies_trait_bound defined in entity.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) fn satisfies_trait_bound\\b|^pub fn satisfies_trait_bound\\b"
+          paths: ["crates/reify-compiler/src/entity.rs"]
+          expect: absent
+      - name: "trait-bounds-module-declared"
+        binding: "producer:σ — trait_bounds.rs below entity; lib.rs pub use keeps C3's root path"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^(pub )?mod trait_bounds;"
+          paths: ["crates/reify-compiler/src/lib.rs"]
+          expect: present
   - label: "ξ"
     task_id: 8657  # hand-stamped: held leaf, excluded from commit_planning (x_seam_wait S3 alpha)
     title: "reify-compiler rows on the INV-ARCH-1 module-SCC ratchet"
     capabilities:
       - name: "scc-tool-owner"
-        binding: "no SCC tool on main; S3 alpha builds it (lead ruling 1); xi is held on S3 alpha"
-        verdict: OPEN
+        binding: "grep: S3 alpha #8673 landed scripts/module-scc-baseline.json with reify-compiler in its excluded map; xi removes that line (retro-critic R8 polarity, 2026-10-20)"
+        verdict: PASS
         delivered_check:
-          kind: manual
-          reason: "baseline path is fixed by the tool's owner; bind a grep for reify-compiler in that baseline at decompose"
+          kind: grep
+          pattern: '"reify-compiler": "glob imports hide edges'
+          paths: ["scripts/module-scc-baseline.json"]
+          expect: absent
   - label: "π"
     task_id: 8661
     title: "strum::EnumCount on the nine geometry-kind enums (fk-bb1ba38a6a46)"

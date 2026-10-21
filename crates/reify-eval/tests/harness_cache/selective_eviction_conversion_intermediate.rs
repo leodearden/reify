@@ -161,6 +161,7 @@ fn engine_over_brep_and_mesh_kernels(tessellated: &Tessellated) -> Engine {
         },
     );
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         kernels,
         registry,

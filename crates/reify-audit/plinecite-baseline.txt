@@ -95,8 +95,6 @@ crates/reify-compiler/src/conformance/mod.rs :: entity.rs:329
 crates/reify-compiler/src/conformance/mod.rs :: examples/dynamics/pendulum_idyn.ri:24
 crates/reify-compiler/src/conformance/mod.rs :: examples/m6_result_recovery.ri:30
 crates/reify-compiler/src/conformance/mod.rs :: expr.rs:782
-crates/reify-compiler/src/conformance/mod.rs :: let_type_disambiguation_tests.rs:234
-crates/reify-compiler/src/conformance/mod.rs :: let_type_disambiguation_tests.rs:470
 crates/reify-compiler/src/conformance/mod.rs :: mod.rs:256
 crates/reify-compiler/src/conformance/mod.rs :: mod.rs:993
 crates/reify-compiler/src/conformance/mod.rs :: stdlib/trajectory.ri:103

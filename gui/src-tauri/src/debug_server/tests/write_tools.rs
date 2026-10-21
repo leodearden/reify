@@ -998,6 +998,7 @@ async fn reify_save_file_errors_when_no_source_is_loaded() {
     // The message is the one the reify-mcp surface already uses for this
     // condition, so a client cannot meet two spellings of it.
     let engine = Arc::new(Mutex::new(EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(reify_test_support::MockGeometryKernel::new())),
     )));

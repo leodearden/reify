@@ -56,6 +56,13 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 | `ArgRejection` exists to convert | `reify_ir::arg_acceptance::ArgRejection` | PASS |
 | delivered | `pub struct Rejection` present in `crates/reify-core/src/diagnostics.rs`; `fn eval_builtin(…) -> BuiltinOutcome` present in `crates/reify-stdlib/src/lib.rs` | — |
 
+### S8-ψ — Relation binding kind; the relation rows mint `RelationKind` (retro-critic 2026-10-20, R6)
+| Capability | Evidence | Verdict |
+|---|---|---|
+| the minting mechanism exists | `registry!` (`macros.rs`) emits one typed sub-enum per `BindingKind` group with `strum::EnumIter`, plus a narrowing `BuiltinId::as_<kind>()`; `lookup(name, argc)` already disambiguates arity overloads | PASS |
+| the leaf DAG admits it | reify-builtins depends on reify-core and strum only (`dag_invariant.rs`); the relation facts it rows today live in reify-compiler `relation_signatures.rs` (`RELATION_FN_NAMES`, `relation_fn_result_type`) | PASS |
+| delivered | `Relation => RelationKind` present in `crates/reify-builtins/src/registry.rs`; `BindingKind::Relation\b` present in `crates/reify-builtins/src` | — |
+
 ### S8-α2 — Success-path advisories (dfm, flexure, snapshot)
 | Capability | Evidence | Verdict |
 |---|---|---|
@@ -227,3 +234,9 @@ Rulings from `plans/gap-fill-deliberation-reify-20261016.md`. Every new or chang
 
 - §K6-D5: S8-α2 #8889 gains `flexure-geometry-reclassifier-deleted` (`fn classify_geometry_invalid` absent in `crates/reify-stdlib/src/flexures`) and the enumerated flexure corrections above (three writes: this row, the `.yaml`, #8889's `metadata.delivered_checks`).
 - §K9-D4: new leaf S8-χ #9289 (smoothness column), two checks above.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+Ruling R6 (`plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`). Both new checks confirmed red at main `66dcd71ef5` with `git grep -E`.
+
+- R6 (S9 B1 → C1): new leaf S8-ψ #9418 (relation binding kind, 12 relation rows minting `RelationKind`), two checks above (three writes: this section, the `.yaml`, #9418's `metadata.delivered_checks`). #6944 loses its τ9 relation half and its dependency on #8741, and gains a dependency on S8-ψ. Its checks are unchanged, since none names a relation.

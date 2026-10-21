@@ -1,0 +1,17 @@
+module support_policy_body_tip_target
+
+// support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf β.
+// Body overload of solve_elastic_static with a support whose target names no face the realized
+// path can realize ("tip"). Today the support is ignored: on the gmsh path the solve clamps the AABB
+// x-min face. Under `reify eval` (no gmsh kernel registered, #6660) the body overload's pre-hydration
+// guard returns Failed with no diagnostic, so nothing is solved and no support is read. After β it
+// is refused (ruling R10): β's in-process gmsh test gets Failed with one FeaSupportNotRealized Error
+// naming the support and its span, and records the gmsh before-image.
+
+structure SupportPolicyBodyTipTarget {
+    let material = Steel_AISI_1045()
+    let body = box(1000mm, 100mm, 100mm)
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let wrong_mount = FixedSupport(target: "tip")
+    let result = solve_elastic_static(material, body, [tip_load], [wrong_mount], ElasticOptions())
+}

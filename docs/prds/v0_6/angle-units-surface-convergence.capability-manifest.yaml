@@ -665,9 +665,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: harness_units
+      # widened 2026-10-19 by the cargo-native-harness-layout decompose: β₄ moves the root to harness_units/main.rs
+      pattern: 'harness_units|^mod [a-z_0-9]+;'
       paths:
       - crates/reify-compiler/tests/harness_units.rs
+      - crates/reify-compiler/tests/harness_units/main.rs
       expect: present
   - name: drift-guard-registrations-not-needed
     binding: VERIFIED, not assumed — tests/infra/run-all-classification.manifest has

@@ -155,9 +155,12 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src/assembly/mod.rs
   - name: no-external-data-readers
-    binding: 'git grep for `k_e.data` / `ElementStiffness {` outside crates/reify-solver-elastic finds
-      none in src or tests (measured), so the accessor migration is crate-internal.'
-    verdict: PASS
+    binding: 'R2 M4 (retro-critic sitting 2026-10-19) corrected this binding: the original grep searched
+      only the `k_e.data` spelling and missed one external reader, crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs
+      (`ke.data` / `ke.n_dofs`, :330 and :347). ε migrates it to get()/n_dofs() in the same diff; the
+      file is in ε''s files. Re-run the reader grep as `\.data\[|\.n_dofs\b` over crates/*/{src,tests}
+      outside reify-solver-elastic before closing.'
+    verdict: FAIL→corrected
     delivered_check:
       kind: manual
       reason: 'scope measurement; the ratchet row in α carries the gate.'
@@ -301,37 +304,8 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'discovered by running the suites; this leaf owns the outcome.'
-- label: κ
-  task_id: 8632
-  title: 'solver-layering κ: GeometryError::BackendUnavailable; structural routing in both map_geometry_error'
-  capabilities:
-  - name: typed-variant
-    binding: 'GeometryError (crates/reify-ir/src/geometry.rs) has InvalidReference, OperationFailed,
-      InitFailed, MeshContractViolation; no exhaustive match outside its Display impl (measured).'
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: BackendUnavailable
-      expect: present
-      paths:
-      - crates/reify-ir/src/geometry.rs
-  - name: substring-parsers-gone
-    binding: 'grep:mesher.rs and volume_refine.rs `msg.contains(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER)` present at main (one each, production).'
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: 'msg\.contains\(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER\)'
-      expect: absent
-      paths:
-      - crates/reify-solver-elastic/src
-  - name: stub-arm-compilable
-    binding: 'reify-kernel-gmsh build.rs reruns on GMSH_LIB_DIR/GMSH_INCLUDE_DIR and omits cfg(has_gmsh)
-      when the lib is not found, so the stub arms compile with an empty GMSH_LIB_DIR (the mechanism
-      check-manifold-deps.sh''s behavioural loop uses).'
-    verdict: PASS
-    delivered_check:
-      kind: manual
-      reason: 'a stub-build compile is run by the implementer; the gate host always has gmsh.'
+# κ #8632 removed (retro-critic R2 polarity): cancelled 2026-10-14, subsumed by S10 β₁ #8935 (S10 R5
+# removes the gmsh-free build). Its checks were dead: substring-parsers-gone would go green through #8935, not κ.
 - label: λ
   task_id: 8637
   title: 'solver-layering λ: TetSpatialIndex<''a> owns its mesh borrow and tol; TetShape<''a> carries its mesh'
@@ -483,6 +457,16 @@ tasks:
       expect: present
       paths:
       - crates/reify-constraints/src/solver/uniqueness.rs
+  - name: no-stitched-solver-tests-file
+    binding: 'R2 polarity: inline-test-module-gone alone goes green on a verbatim `#[cfg(test)] mod tests;`
+      plus src/solver/tests.rs stitch, which D19 forbids. Path-absent twin; absent at main (a guard,
+      so it holds before and after).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/solver/tests.rs
 - label: ρ
   task_id: 8660
   title: 'solver-layering ρ: PRD close'
@@ -559,11 +543,12 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src
   - name: non-finite-input-error
-    binding: 'grep: no `NonFinite {` variant in crates/reify-solver-elastic/src at main (only NonFiniteEntry / NonFiniteSize elsewhere).'
+    binding: 'grep: no `NonFinite {` variant in crates/reify-solver-elastic/src at main (only NonFiniteEntry / NonFiniteSize elsewhere).
+      R2 polarity: anchored on `NonFinite \{ what` so φ-ff''s SpectrumError cannot satisfy it.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'NonFinite \{'
+      pattern: 'NonFinite \{ what'
       expect: present
       paths:
       - crates/reify-solver-elastic/src
@@ -600,11 +585,13 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src
   - name: eigen-calls-leave-solvers
-    binding: 'grep: `.self_adjoint_eigen(Side::Lower)` with a panicking .expect at form_find_free.rs:1418 and prestress_stability.rs:230/408/682 at main.'
+    binding: 'grep: `.self_adjoint_eigen(Side::Lower)` with a panicking .expect at form_find_free.rs:1418 and prestress_stability.rs:230/408/682 at main.
+      R2 polarity: anchored on `\.self_adjoint_eigen\(` (the leaf''s ratchet needle); the bare word also
+      matched three doc-prose lines in prestress_stability.rs.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: self_adjoint_eigen
+      pattern: '\.self_adjoint_eigen\('
       expect: absent
       paths:
       - crates/reify-solver-elastic/src/prestress_stability.rs

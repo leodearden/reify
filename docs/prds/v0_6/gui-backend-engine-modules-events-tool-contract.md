@@ -1204,3 +1204,4 @@ capability-manifest pair carries the new delivered checks.
   `macro-support-in-schema`.
 - Cross-reference: K7-D3's standalone **#9279** (the chat sidecar's landlock workspace follows the open
   design; respawn on change) depends on λ #8947 for `design_loaded`.
+- **2026-10-19, gui-engine-admission** (gap-fill lead, from that stream's cross-reference lines; `docs/prds/v0_6/gui-engine-admission.md`): §4.10 placement row 3 is superseded when that PRD's α #9387 lands, because the host guard is re-homed onto `EntryDocument::resolve_target`. ξ #8950, η #8943 and ο #8951 carry notes.

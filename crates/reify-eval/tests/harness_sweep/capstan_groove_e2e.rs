@@ -578,6 +578,7 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 fn check_dev_capstan() -> CheckResult {
     let compiled = dev_capstan_compiled();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         None,
     );
@@ -668,6 +669,7 @@ fn tessellate_dev_capstan() -> TessellateResult {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(planner)),
     );

@@ -110,7 +110,7 @@ Every `kind: grep` check below was run with `git grep -E` against `HEAD` and is 
 
 - **shell-fallback-code** — producer:μ — no input-neutral shell-capability code at main. **PASS**. Check: grep `FeaShellRouteInputFallback` present in `crates/reify-core/src`.
 - **shell-requires-tet-code** — producer:μ. **PASS**. Check: grep `FeaShellRouteInputRequiresTet` present in `crates/reify-core/src`.
-- **dims-support-code** — producer:μ — dims supports other than the root clamp are silent on tet at main. **PASS**. Check: grep `FeaDimsSupportNotRealized` present in `crates/reify-core/src`.
+- **dims-support-code** — producer:μ — dims supports other than the root clamp are silent on tet at main. **PASS**. Check: grep `FeaSupportNotRealized` present in `crates/reify-core/src`. (Corrected 2026-10-19, support-realization-policy ruling R1: one cross-solver code; whichever of ξ #9120 / μ #9119 lands first mints it, so this check no longer discriminates μ from ξ — μ's other four checks do.)
 - **supports-present-arm-gone** — grep: FeaUnderConstrained's supports-present-none-root arm at main (elastic_static trampoline). **PASS**. Check: grep `!any_support_targets\(supports, SYNTHETIC_CLAMP_FACE\)` absent in `crates`.
 - **multi-load-bracket-root** — producer:μ (R3) — the example's dims support targets "mount_face" at main. **PASS**. Check: grep `FixedSupport\(\"mount_face\"\)` absent in `examples/multi_load_bracket.ri`.
 - **supports-decoder-upstream** — producer:#8683 upstream (S15 γ SupportSpec / LoadSpec). **PASS**. Check: manual — hard edge μ ← #8683; μ ← λ intra-batch.

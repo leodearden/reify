@@ -116,11 +116,11 @@ tasks:
   title: 'dependency-invalidation-stratum δ: one dependency walk (DependencyGraph)'
   capabilities:
   - name: three-walks-and-paired-sites
-    binding: 'deps.rs ReverseDependencyIndex::build_from_graph_and_fields, build_trace_map_and_fields, DependencyMap::from_graph; paired production sites engine_eval 1, engine_edit 2, engine_purposes 2, plus the reverse-only rebuild in invalidate_realization_dirty_cone (git grep at 8e6ffcac9d).'
-    verdict: PASS
+    binding: 'deps.rs ReverseDependencyIndex::build_from_graph_and_fields, build_trace_map_and_fields, DependencyMap::from_graph; paired production sites engine_eval 1, engine_edit 2, engine_purposes 2, plus the reverse-only rebuild in invalidate_realization_dirty_cone (git grep at 8e6ffcac9d). Retro-critic R13 (2026-10-20): the absent check also covers fn build_from_graph / fn build_trace_map, which D3 deletes and reify-runtime lib.rs, realization_staleness.rs and selective_eviction_staleness_differential.rs still read.'
+    verdict: 'PASS (corrected 2026-10-20, retro-critic R13: absent pattern widened)'
     delivered_check:
       kind: grep
-      pattern: fn build_from_graph_and_fields|fn build_trace_map_and_fields|struct DependencyMap\b
+      pattern: fn build_from_graph(_and_fields)?\b|fn build_trace_map(_and_fields)?\b|struct DependencyMap\b
       paths:
       - crates/reify-eval/src
       expect: absent
@@ -185,8 +185,8 @@ tasks:
       contract and wires nothing.'
     verdict: PASS
   - name: runtime-policy-has-own-consumer
-    binding: 'reify-runtime commitment.rs consumes NodeCommitmentOverride::OnlyRunOnFinalInputs with its own has_intermediate_inputs check; no gating:: call outside reify-eval tests (git grep at 8e6ffcac9d).'
-    verdict: PASS
+    binding: 'reify-runtime commitment.rs consumes NodeCommitmentOverride::OnlyRunOnFinalInputs with its own has_intermediate_inputs check; no gating:: call outside reify-eval tests (git grep at 8e6ffcac9d). Corrected by retro-critic R13 M7 (2026-10-20): the policy is declared but not consumed — check_commitment, CommitmentTracker and from_config_overrides each carry a G-allow "no production caller pending #5023", and reify.toml [[node_overrides]] has no effect; it stays an owned placeholder under #5023 and ζ re-justifies the three G-allow reasons in its diff.'
+    verdict: FAIL→corrected
   - name: inv-eval-6-row-repointed
     binding: 'docs/invariants.md INV-EVAL-6 reads "type+test (completion transaction + panic boundary)", status proposed, owner async-recalc Phase A (bookmark).'
     verdict: PASS
@@ -202,20 +202,25 @@ tasks:
   capabilities:
   - name: inline-hash-sites
     binding: 'git grep ''id_hash.combine(expr_hash)'' at 8e6ffcac9d: graph.rs 6, engine_edit.rs 2, plus a
-      structural_classifier doc restatement; ValueCellNode has only pub fields and no constructor.'
-    verdict: PASS
+      structural_classifier doc restatement; ValueCellNode has only pub fields and no constructor.
+      Retro-critic R13 (2026-10-20): paths narrowed to the engine files, because ValueCellNode::new keeps
+      the canonical spelling in graph.rs.'
+    verdict: 'PASS (corrected 2026-10-20, retro-critic R13: paths narrowed)'
     delivered_check:
       kind: grep
       pattern: id_hash\.combine\(expr_hash\)
       paths:
-      - crates/reify-eval/src
+      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-eval/src/engine_edit.rs
+      - crates/reify-eval/src/engine_purposes.rs
+      - crates/reify-eval/src/engine_build.rs
       expect: absent
   - name: constructor-present
-    binding: 'post-delivery check.'
-    verdict: PASS
+    binding: 'post-delivery check. Retro-critic R13 (2026-10-20): anchored on one line, since git grep is line-based and a wrapped signature would leave a multi-line pattern red.'
+    verdict: 'PASS (corrected 2026-10-20, retro-critic R13: line-anchored pattern)'
     delivered_check:
       kind: grep
-      pattern: 'pub fn new\(\s*id: ValueCellId'
+      pattern: 'pub fn new\('
       paths:
       - crates/reify-eval/src/graph.rs
       expect: present

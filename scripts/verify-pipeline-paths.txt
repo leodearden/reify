@@ -284,3 +284,13 @@ scripts/lib_rust_production_view.sh
 #   here; until it lands, an agent iterating on the runner at --scope branch
 #   discovers a break only at merge time.
 scripts/gui-vitest-run.sh
+#
+# gui/src/__tests__/reifyGrammarCorpus.expected-clean.json (task #9096, S18
+#   PRD D6): the GUI grammar drift ledger's pin set. It is read by
+#   gui/src/__tests__/reifyGrammarCorpusLedger.test.ts and by
+#   tests/infra/test_verify_scope.sh's PG-DRIFT-GUI today, and by the S18
+#   Python planner (β) to classify tests/prd-gate/fixtures/*.ri edits. It is
+#   data that changes scope decisions, neither sourced by nor named in a
+#   verify.sh plan line, so neither auto-derivation clause covers it and a
+#   JSON-only diff would otherwise take the merge-worker config fast path.
+gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
