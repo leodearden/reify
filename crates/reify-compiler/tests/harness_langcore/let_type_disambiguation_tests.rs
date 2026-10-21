@@ -732,8 +732,8 @@ structure S : MutualLets {
 ///
 /// **Single root-cause diagnostic — no secondary phantom cascade.**  Exactly one
 /// root-cause "unresolved `b`" error must be present.  No cascade diagnostics of
-/// the form "available default has Real" (which would indicate a poisoned
-/// `inferred_let_exprs` entry was advertised as a valid default) and no
+/// the form "available default has Real" (which would indicate a let that failed
+/// to compile was advertised as a valid default) and no
 /// "type mismatch for trait member 'a'" phantom from the same root cause.
 ///
 /// The error count is pinned at `<= 1` as a prose-independent backstop (check (d)):

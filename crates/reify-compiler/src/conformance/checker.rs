@@ -1467,7 +1467,8 @@ pub(super) fn check_phase_check_members_against_requirements(
     // colliding with a DEFAULTED trait member (which never enters ctx.requirements) must
     // implicitly_converts_to the trait's declared type — closing the silent-accept gap
     // (probe-7: scalar override vs tensor-defaulted trait param). Compatible collision stays
-    // legal (override idiom); mirrors the kind-agnostic inject-skip in check_phase_inject_defaults.
+    // legal (override idiom); mirrors the kind-agnostic DefaultDisposition::OverriddenByConformer,
+    // which pre-register records by name whatever the default's kind.
     //
     // Guard: skip defaults whose name is already covered by a requirement in ctx.requirements.
     // A sub-trait can override a parent's `param x : Option<T> = none` default with a REQUIRED
