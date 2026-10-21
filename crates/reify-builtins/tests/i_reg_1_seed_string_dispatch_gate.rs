@@ -20,6 +20,14 @@
 //! mirroring `reify-compiler`'s `units.rs` disjointness list — so a row added
 //! by a later τ migration is swept automatically instead of silently escaping.
 //!
+//! S8-ψ's Relation rows were registered BEFORE their consumers migrate, so the
+//! string dispatch on the relation names is ledgered too, per owning leaf: the
+//! compiler's relation vocabulary (S9 λ #8741), the relate-solve residual and
+//! demand dispatch (S6 γ #8830), and the same-name arity-2 builtins that are
+//! not relation rows at all (#6944). Each entry carries the exact number of
+//! occurrences its (file, name) pair has, so a leaf that retires sites must
+//! shrink the count, and a pair that grows a site reds.
+//!
 //! # What counts as a violation
 //!
 //! Five shapes. The first three are observed in the tree; shapes 4 and 5 have
@@ -137,6 +145,8 @@ struct LedgerEntry {
     file: &'static str,
     /// The seed name dispatched on.
     name: &'static str,
+    /// The exact number of occurrences the scan finds for this (file, name).
+    sites: usize,
     /// Which leaf OWNS re-homing this site, and why α cannot.
     why: &'static str,
 }
@@ -168,21 +178,25 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     LedgerEntry {
         file: "crates/reify-expr/src/lib.rs",
         name: "von_mises",
+        sites: 1,
         why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
     },
     LedgerEntry {
         file: "crates/reify-expr/src/lib.rs",
         name: "principal_stresses",
+        sites: 1,
         why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
     },
     LedgerEntry {
         file: "crates/reify-expr/src/lib.rs",
         name: "max_shear",
+        sites: 1,
         why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
     },
     LedgerEntry {
         file: "crates/reify-expr/src/lib.rs",
         name: "safety_factor",
+        sites: 1,
         why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
     },
     // ── reify-expr's re-entrant call back into eval ─────────────────────────
@@ -194,6 +208,7 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     LedgerEntry {
         file: "crates/reify-expr/src/analysis.rs",
         name: "safety_factor",
+        sites: 1,
         why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
     },
     // The other three arrive at `eval_builtin` ONE HOP LATER, through
@@ -205,16 +220,19 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     LedgerEntry {
         file: "crates/reify-expr/src/analysis.rs",
         name: "von_mises",
+        sites: 1,
         why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
     },
     LedgerEntry {
         file: "crates/reify-expr/src/analysis.rs",
         name: "principal_stresses",
+        sites: 1,
         why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
     },
     LedgerEntry {
         file: "crates/reify-expr/src/analysis.rs",
         name: "max_shear",
+        sites: 1,
         why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
     },
 ];
@@ -225,7 +243,7 @@ fn is_ledgered(file: &str, name: &str) -> bool {
         .any(|e| e.file == file && e.name == name)
 }
 
-fn seed_names() -> BTreeSet<String> {
+fn registered_names() -> BTreeSet<String> {
     reify_builtins::rows()
         .iter()
         .map(|r| r.name.to_string())
@@ -240,7 +258,7 @@ fn seed_names() -> BTreeSet<String> {
 /// meant six full-workspace sweeps per binary.
 ///
 /// Memoising is sound because BOTH of `scan`'s inputs are fixed for the whole
-/// binary: [`workspace_root`] is a constant path, and [`seed_names`] is derived
+/// binary: [`workspace_root`] is a constant path, and [`registered_names`] is derived
 /// from the immutable `rows()` table, so there is no second key a later τ could
 /// widen without widening the table itself. `OnceLock` also makes the shared
 /// sweep safe under the test harness's default parallel threads.
@@ -250,7 +268,7 @@ fn seed_names() -> BTreeSet<String> {
 /// than against whatever the tree happens to contain.
 fn workspace_sites() -> &'static [Site] {
     static SITES: OnceLock<Vec<Site>> = OnceLock::new();
-    SITES.get_or_init(|| scan(&workspace_root(), &seed_names()))
+    SITES.get_or_init(|| scan(&workspace_root(), &registered_names()))
 }
 
 // ── the gate ────────────────────────────────────────────────────────────────
@@ -318,15 +336,17 @@ fn every_ledger_entry_names_a_site_that_still_exists() {
 /// # Two granularities, two assertions
 ///
 /// The ledger models `(file, name)` PAIRS — deliberately de-lined, and
-/// [`is_ledgered`] keys on exactly that pair. [`scan`] returns per-OCCURRENCE
-/// sites. The two coincide today (one occurrence per pair), but a `sites.len()
-/// == LEDGER.len()` comparison would CONFLATE the two ways they can diverge,
-/// which are opposite defects with opposite fixes:
+/// [`is_ledgered`] keys on exactly that pair — each carrying the exact
+/// occurrence count `sites`. [`scan`] returns per-OCCURRENCE sites. A
+/// `sites.len() == LEDGER.len()` comparison would CONFLATE the ways the two
+/// can diverge, which are different defects with different fixes:
 ///
 /// - a pair the scan no longer sees is a SCANNER regression — the gate goes
 ///   quietly vacuous;
-/// - a pair that grew a SECOND occurrence is NEW RESIDUE, which the primary
-///   gate accepts silently precisely because `is_ledgered` is pair-keyed.
+/// - a pair that grew an occurrence is NEW RESIDUE, which the primary gate
+///   accepts silently precisely because `is_ledgered` is pair-keyed;
+/// - a pair that lost an occurrence is RETIRED residue, so its `sites` count
+///   must shrink.
 ///
 /// So each is asserted on its own, with a message naming its own cause.
 #[test]
@@ -352,10 +372,10 @@ fn the_scan_still_finds_every_ledgered_site() {
          Sites found:\n{sites:#?}"
     );
 
-    // (b) Occurrence-level: a ledgered pair must not quietly grow a second
-    //     dispatch site. Nothing else in this file would notice — the primary
-    //     gate is pair-keyed by design, so this is the only place the addition
-    //     surfaces.
+    // (b) Occurrence-level: each ledgered pair's occurrence count must EQUAL
+    //     its `sites`. Nothing else in this file would notice a change — the
+    //     primary gate is pair-keyed by design, so this is the only place an
+    //     added or retired occurrence surfaces.
     let mut by_pair: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
     for site in sites {
         by_pair
@@ -363,19 +383,40 @@ fn the_scan_still_finds_every_ledgered_site() {
             .or_default()
             .push(site.line);
     }
-    let duplicated: Vec<String> = by_pair
-        .iter()
-        .filter(|(_, lines)| lines.len() > 1)
-        .map(|((file, name), lines)| format!("  {file} \u{2014} {name:?} at lines {lines:?}"))
-        .collect();
+    let mut grew = Vec::new();
+    let mut shrank = Vec::new();
+    for e in SEED_STRING_DISPATCH_LEDGER {
+        let lines = by_pair.get(&(e.file, e.name)).cloned().unwrap_or_default();
+        let line = format!(
+            "  {} \u{2014} {:?}: expected {}, found {} at lines {lines:?}",
+            e.file,
+            e.name,
+            e.sites,
+            lines.len()
+        );
+        if lines.len() > e.sites {
+            grew.push(line);
+        } else if lines.len() < e.sites {
+            shrank.push(line);
+        }
+    }
     assert!(
-        duplicated.is_empty(),
+        grew.is_empty(),
         "{} already-ledgered (file, name) pair(s) grew an ADDITIONAL dispatch \
          site \u{2014} new residue, not a scanner regression. The primary gate \
          accepts these silently because the ledger is keyed on (file, name), \
          so they are named here instead: re-home them onto `BuiltinId`, or \
-         widen the ledger entry's WHY so the addition is reviewed.\n{}",
-        duplicated.len(),
-        duplicated.join("\n")
+         raise the entry's `sites` and widen its WHY so the addition is \
+         reviewed.\n{}",
+        grew.len(),
+        grew.join("\n")
+    );
+    assert!(
+        shrank.is_empty(),
+        "{} ledgered (file, name) pair(s) have FEWER occurrences than their \
+         `sites` count \u{2014} residue was retired, so the ledger must shrink: \
+         lower `sites`, or delete the entry once it reaches zero.\n{}",
+        shrank.len(),
+        shrank.join("\n")
     );
 }
