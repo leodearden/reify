@@ -1,3 +1,75 @@
+//! Finds the helper fns defined at top level in several files under a root.
+
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
+
+use super::items::{fn_name, split_attributes};
+use super::lexer::{Line, nesting_after};
+use super::source::{Hit, SourceFile};
+
+const TEST_ATTRIBUTE: &str = "#[test]";
+
+/// The helper fns defined at nesting depth zero as `(name, 1-based line)`: not
+/// `#[test]` fns and not named `test_*`. Only lines that start at depth zero are
+/// read, so multi-line attributes and signatures never look like definitions.
+fn top_level_helpers(lines: &[Line]) -> Vec<(&str, usize)> {
+    let mut helpers = Vec::new();
+    let mut depth = 0;
+    let mut test_attribute_pending = false;
+    for (index, line) in lines.iter().enumerate() {
+        let starts_at_top_level = depth == 0;
+        depth = line.code.chars().fold(depth, nesting_after);
+        if !starts_at_top_level || line.code.trim().is_empty() {
+            continue;
+        }
+        let (attributes, rest) = split_attributes(&line.code);
+        test_attribute_pending |= attributes.contains(&TEST_ATTRIBUTE);
+        if rest.is_empty() {
+            continue;
+        }
+        let helper =
+            fn_name(rest).filter(|name| !test_attribute_pending && !name.starts_with("test_"));
+        if let Some(name) = helper {
+            helpers.push((name, index + 1));
+        }
+        test_attribute_pending = false;
+    }
+    helpers
+}
+
+/// One hit per helper copy beyond the kept one, over the files under `root`: a
+/// name defined in several files is counted once per file. The kept copy is the
+/// first under `shared_dir`, so a local redefinition of a shared helper is the
+/// copy and never the shared one; with none, it is the first in path order.
+/// Every hit names the kept copy.
+pub(super) fn duplicate_top_level_fns(
+    root: &str,
+    shared_dir: &str,
+    files: &[SourceFile],
+) -> Vec<Hit> {
+    let mut definitions: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+    for file in files.iter().filter(|file| file.path.starts_with(root)) {
+        for (name, line) in top_level_helpers(&file.lines) {
+            let defined_in = definitions.entry(name).or_default();
+            defined_in.entry(file.path.as_str()).or_insert(line);
+        }
+    }
+    let mut hits = Vec::new();
+    for (name, defined_in) in &definitions {
+        let mut copies: Vec<_> = defined_in.iter().collect();
+        copies.sort_by_key(|(path, _)| Reverse(path.starts_with(shared_dir)));
+        let Some((&(kept, _), extra_copies)) = copies.split_first() else {
+            continue;
+        };
+        hits.extend(extra_copies.iter().map(|&(path, &line)| Hit {
+            path: path.to_string(),
+            line,
+            text: format!("fn {name} (also in {kept})"),
+        }));
+    }
+    hits
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::source::source_file;
