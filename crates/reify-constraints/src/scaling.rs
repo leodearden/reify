@@ -314,10 +314,16 @@ impl SolveScaling {
         }
     }
 
+    /// The solver's relative convergence tolerance `ε_rel` (dimensionless).
+    pub fn relative_convergence(&self) -> f64 {
+        self.tolerance.relative_convergence()
+    }
+
     /// The nominal tolerance `t_i` of a row measured in `unit`: scale-relative
     /// `max(ε_rel·L, floor)` for a metre row, the scale-free `ε_rel` otherwise.
+    /// The floor takes over below the crossover `L = floor / ε_rel` (1 mm).
     pub fn row_tolerance(&self, unit: ResidualUnit) -> f64 {
-        let relative = self.tolerance.relative_convergence();
+        let relative = self.relative_convergence();
         match unit {
             ResidualUnit::Length => {
                 (relative * self.characteristic_length).max(self.tolerance.solver_length_floor())
@@ -345,7 +351,7 @@ impl SolveScaling {
     /// The Gram–Schmidt independence cutoff on normalized SCALED Jacobian rows —
     /// dimensionless, `ε_rel`.
     pub fn rank_threshold(&self) -> f64 {
-        self.tolerance.relative_convergence()
+        self.relative_convergence()
     }
 }
 

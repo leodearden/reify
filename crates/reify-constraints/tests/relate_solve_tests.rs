@@ -38,7 +38,11 @@ use reify_ir::{SolveResult, Value};
 /// unit. Only for the closed-form residual tests here, which compare against a
 /// near-zero or O(1) separator; a pose is judged with [`max_relation_exceedance`]
 /// against per-unit bars.
-fn max_relation_residual(relations: &[RelationInstance], unknown: &FrameUnknown, pose: &Pose) -> f64 {
+fn max_relation_residual(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    pose: &Pose,
+) -> f64 {
     max_relation_exceedance(relations, unknown, pose, |_| 1.0)
 }
 

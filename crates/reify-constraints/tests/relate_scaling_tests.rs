@@ -648,7 +648,7 @@ fn b15_precondition_both_instances_are_above_the_crossover() {
         assert!(l >= 1e-3, "k = {k}: L = {l}");
         assert_eq!(
             scaling.row_tolerance(ResidualUnit::Length),
-            scaling.tolerance().relative_convergence() * l,
+            scaling.relative_convergence() * l,
             "k = {k}"
         );
     }
@@ -771,6 +771,38 @@ fn b15_partition_is_scale_invariant() {
             b.name
         );
     }
+}
+
+/// Below the 1 mm crossover the metre rows take the floor tolerance, and the
+/// damping's nominal curvature over-states theirs. At `L` ≈ 0.18 mm the solve
+/// still converges in no more steps than the same geometry above the crossover.
+#[test]
+fn sub_millimetre_scope_converges_as_fast_as_above_the_crossover() {
+    let run = |k: f64| {
+        let (relations, unknown, seed) = b15_fixture(k);
+        let scaling = scaling_for(&relations, &unknown, &seed);
+        let (result, trace) = solve_frame_traced(&relations, &unknown, &seed, &scaling);
+        (relations, unknown, scaling, result, trace)
+    };
+    let (.., above) = run(1.0);
+    let (relations, unknown, scaling, result, below) = run(1.0 / 16.0);
+
+    let l = scaling.characteristic_length();
+    assert!(l < 1e-3, "L = {l} must sit below the crossover");
+    assert_eq!(
+        scaling.row_tolerance(ResidualUnit::Length),
+        scaling.tolerance().solver_length_floor(),
+        "L = {l}: the metre rows must take the floor tolerance"
+    );
+
+    let (pose, _) = solved(&result);
+    let exceedance =
+        max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
+    assert!(exceedance <= 1.0, "max|r̃| = {exceedance}");
+    assert!(
+        below.iterations <= above.iterations,
+        "sub-mm {below:?} vs above the crossover {above:?}"
+    );
 }
 
 /// The scaled contract: a `Solved` pose has every row within its own nominal

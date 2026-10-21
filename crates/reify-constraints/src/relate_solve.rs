@@ -1325,9 +1325,12 @@ fn vector_value(v: [f64; 3]) -> Value {
 struct RankCutoffs {
     /// The Gram–Schmidt residual above which a normalized row is independent.
     independence: f64,
-    /// The norm below which a row is numerically zero. A genuine scaled row has
-    /// norm ~`1/ε_rel`, so the raw [`ZERO_ROW_FLOOR`] is divided by `ε_rel`, which
-    /// keeps today's cut between real rows and FD noise.
+    /// The norm below which a row is numerically zero: the raw [`ZERO_ROW_FLOOR`]
+    /// over `ε_rel`, the FD-noise cut of an angular or dimensionless row. A genuine
+    /// row of those units has norm ~`1/ε_rel` at every `L`; a genuine metre row has
+    /// ~`L / row_tolerance(Length)`, which is `1/ε_rel` above the 1 mm crossover and
+    /// `L / floor` below it (100 at the default `kernel_local`). Both stay far
+    /// above this cut.
     zero_row: f64,
 }
 
@@ -1335,7 +1338,7 @@ impl RankCutoffs {
     fn of(scaling: &SolveScaling) -> Self {
         Self {
             independence: scaling.rank_threshold(),
-            zero_row: ZERO_ROW_FLOOR / scaling.tolerance().relative_convergence(),
+            zero_row: ZERO_ROW_FLOOR / scaling.relative_convergence(),
         }
     }
 }
@@ -1400,8 +1403,11 @@ fn gauss_newton_solve(
     let cutoffs = RankCutoffs::of(scaling);
     let scales: [f64; FRAME_DOF] = std::array::from_fn(|dof| scaling.unknown_scale(dof_kind(dof)));
     // `λ` is stated relative to the scaled normal matrix's nominal curvature
-    // `ε_rel⁻²`, so the schedule below keeps its unscaled meaning.
-    let relative = scaling.tolerance().relative_convergence();
+    // `ε_rel⁻²`, so the schedule below keeps its unscaled meaning. That is the
+    // curvature of angular rows at every `L` and of metre rows above the 1 mm
+    // crossover. Below it a metre row's is `(L / floor)²`, so the solve starts
+    // over-damped there and spends a few more steps relaxing `λ`.
+    let relative = scaling.relative_convergence();
     let nominal_curvature = 1.0 / (relative * relative);
 
     let mut x = pose_to_vec6(seed);
