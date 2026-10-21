@@ -43,11 +43,25 @@
 //! the row's variant ident AND its name literal (S7's lint test pins that
 //! pairing), and each group's sub-enum name and accessor name.
 //!
+//! ## The variant-ident convention
+//!
+//! The ident is the row name in PascalCase. When a name group holds more than
+//! one row, the bare PascalCase ident belongs to the row registered FIRST. Each
+//! later same-name row appends a PascalCase ROLE word naming what distinguishes
+//! it — a geometry-query `angle`@2 row registered after the relation `angle`@3
+//! is `AngleQuery`, a datum-constructor `offset`@2 row is `OffsetDatum` — and
+//! never an arity numeral, so an ident never changes when a sibling overload is
+//! added later. A range-arity overload (tangent's 3|4 operands) stays ONE row
+//! with `Arity::Range` and the bare ident. The mechanical half — every ident of
+//! an overloaded group starts with the row name — is enforced by `registry.rs`'s
+//! `every_variant_ident_matches_its_row_name` lint.
+//!
 //! # Emitted items
 //!
 //! - `pub enum BuiltinId` — one variant per row, flattened across groups in
 //!   source order.
-//! - `pub enum <KindId>` per group, plus `BuiltinId::<accessor>()`.
+//! - `pub enum <KindId>` per group, plus the narrowing `BuiltinId::<accessor>()`
+//!   and its inverse, the widening `From<KindId> for BuiltinId`.
 //! - `rows()` / `row_for(id)` — the row table.
 //! - `lookup(name, argc)` / `name_group(name)` — the ONLY string→builtin
 //!   resolution in the workspace (I-REG-1).
@@ -105,15 +119,26 @@ macro_rules! registry {
                     "Narrow to [`", stringify!($kind_id), "`], or `None` if this row \
                      is bound by a different kind."
                 )]
-                // Unreachable when every row in the registry belongs to this
-                // one group — true of α, whose seven seed rows are all
-                // EvalBuiltin. The arm is still required the moment a second
-                // group appears, so it is allowed rather than conditional.
+                // Unreachable in a single-group invocation, where every row
+                // belongs to this one group. The crate's registry has two
+                // groups, so there the arm is live; the allow stays for
+                // single-group invocations such as test fakes.
                 #[allow(unreachable_patterns)]
                 pub fn $accessor(self) -> Option<$kind_id> {
                     match self {
                         $( BuiltinId::$variant => Some($kind_id::$variant), )*
                         _ => None,
+                    }
+                }
+            }
+
+            // The widening inverse of the accessor above. An exhaustive match
+            // with no `_` arm, emitted from the same repetition, so it is total
+            // by construction.
+            impl ::core::convert::From<$kind_id> for BuiltinId {
+                fn from(id: $kind_id) -> Self {
+                    match id {
+                        $( $kind_id::$variant => BuiltinId::$variant, )*
                     }
                 }
             }
@@ -289,8 +314,10 @@ mod tests {
         crate::macros::registry! {
             EvalBuiltin => EvalBuiltinId, as_eval_builtin {
                 // A same-name arity PAIR — the thing `lookup(name, argc)`
-                // exists to disambiguate (`floor`@1/@2, `offset`@2/@3).
-                FooOne {
+                // exists to disambiguate (`floor`@1/@2, `offset`@2/@3). Idents
+                // follow the module doc's convention: the first-registered row
+                // keeps the bare ident, the later one appends a role word.
+                Foo {
                     name: "foo",
                     family: Parse,
                     arity: Exact(1),
@@ -298,7 +325,7 @@ mod tests {
                     result: Const(Type::String),
                     basis: Ruling("#0001")
                 },
-                FooTwo {
+                FooPair {
                     name: "foo",
                     family: Parse,
                     arity: Exact(2),
@@ -341,8 +368,8 @@ mod tests {
         assert_eq!(
             BuiltinId::iter().collect::<Vec<_>>(),
             vec![
-                BuiltinId::FooOne,
-                BuiltinId::FooTwo,
+                BuiltinId::Foo,
+                BuiltinId::FooPair,
                 BuiltinId::Bar,
                 BuiltinId::Baz,
             ],
@@ -357,8 +384,8 @@ mod tests {
         assert_eq!(
             EvalBuiltinId::iter().collect::<Vec<_>>(),
             vec![
-                EvalBuiltinId::FooOne,
-                EvalBuiltinId::FooTwo,
+                EvalBuiltinId::Foo,
+                EvalBuiltinId::FooPair,
                 EvalBuiltinId::Bar
             ],
             "EvalBuiltinId must hold exactly the EvalBuiltin group's rows"
@@ -373,10 +400,7 @@ mod tests {
     /// `as_<kind>()` round-trips a row of that kind and declines every other.
     #[test]
     fn as_kind_accessors_round_trip_and_decline_foreign_rows() {
-        assert_eq!(
-            BuiltinId::FooOne.as_eval_builtin(),
-            Some(EvalBuiltinId::FooOne)
-        );
+        assert_eq!(BuiltinId::Foo.as_eval_builtin(), Some(EvalBuiltinId::Foo));
         assert_eq!(BuiltinId::Bar.as_eval_builtin(), Some(EvalBuiltinId::Bar));
         assert_eq!(
             BuiltinId::Baz.as_eval_builtin(),
@@ -389,7 +413,7 @@ mod tests {
             Some(CompileOnlyId::Baz),
             "Baz must round-trip through its OWN kind"
         );
-        assert_eq!(BuiltinId::FooOne.as_compile_only(), None);
+        assert_eq!(BuiltinId::Foo.as_compile_only(), None);
     }
 
     /// `From<KindId> for BuiltinId` is the inverse of the narrowing accessor:
@@ -440,8 +464,8 @@ mod tests {
         assert_eq!(
             rows.iter().map(|r| r.id).collect::<Vec<_>>(),
             vec![
-                BuiltinId::FooOne,
-                BuiltinId::FooTwo,
+                BuiltinId::Foo,
+                BuiltinId::FooPair,
                 BuiltinId::Bar,
                 BuiltinId::Baz
             ],
@@ -504,8 +528,8 @@ mod tests {
     /// declines everything else.
     #[test]
     fn lookup_resolves_by_name_and_argc() {
-        assert_eq!(fake::lookup("foo", 1), Some(BuiltinId::FooOne));
-        assert_eq!(fake::lookup("foo", 2), Some(BuiltinId::FooTwo));
+        assert_eq!(fake::lookup("foo", 1), Some(BuiltinId::Foo));
+        assert_eq!(fake::lookup("foo", 2), Some(BuiltinId::FooPair));
         assert_eq!(fake::lookup("baz", 1), Some(BuiltinId::Baz));
         assert_eq!(fake::lookup("baz", 2), Some(BuiltinId::Baz));
 
@@ -541,7 +565,7 @@ mod tests {
     fn name_group_returns_every_id_sharing_a_name() {
         assert_eq!(
             fake::name_group("foo"),
-            [BuiltinId::FooOne, BuiltinId::FooTwo].as_slice(),
+            [BuiltinId::Foo, BuiltinId::FooPair].as_slice(),
             "both arities of an overloaded name belong to one group"
         );
         assert_eq!(fake::name_group("bar"), [BuiltinId::Bar].as_slice());

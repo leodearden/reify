@@ -615,12 +615,13 @@ mod lint {
     /// Equality can only hold for a name owned by ONE row. A same-name arity
     /// overload — the shape `lookup(name, argc)`, [`name_group`] and
     /// [`Arity`] all exist to support (`floor`@1/@2, `offset`@2/@3; the
-    /// macro's own test table proves it with `FooOne`/`FooTwo`, both named
+    /// macro's own test table proves it with `Foo`/`FooPair`, both named
     /// `"foo"`) — needs two DISTINCT idents for one name, so at most one of
     /// them can snake_case back to it. Overloaded groups are therefore
     /// skipped here and held to the weaker relation the shape admits: each
-    /// variant's snake_case form must START with its row name, so
-    /// `FloorOne`/`FloorTwo` still cannot drift onto some unrelated name.
+    /// variant's snake_case form must START with its row name, so `Floor` and a
+    /// role-suffixed sibling still cannot drift onto some unrelated name. The
+    /// naming convention itself is documented in `macros.rs`.
     ///
     /// α seeds no overloads (`every_seed_name_group_holds_exactly_one_row`),
     /// so the skip is unreachable today. It exists so the first τ to register
