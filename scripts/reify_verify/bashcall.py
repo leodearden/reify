@@ -1,8 +1,8 @@
 """bashcall — a bash library function or data file verify reads, as a typed record (PRD D15).
 
-Each module declares the BashCall and DataFile constants it uses, so the set
-of seams is collected from the modules and never kept as a hand list. run
-forks ONE `bash -c` per call. The function name and its arguments travel as
+Each module declares the BashCall and DataFile constants it uses, so a later
+--print-gates (PRD D15) can collect them from the modules. run forks ONE
+`bash -c` per call. The function name and its arguments travel as
 argv and are never interpolated into the script text.
 """
 
