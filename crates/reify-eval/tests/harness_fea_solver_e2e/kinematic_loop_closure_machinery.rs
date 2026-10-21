@@ -271,3 +271,125 @@ fn loop_closure_machinery_solves_planar_in_loop_e2e() {
          fields, got fields={fields:?}"
     );
 }
+
+// ── PRD 5 leaf δ (task #6941): a wrong-dimension loop-closure bind is named ──
+//
+// Boundary row B7: binding an angle to a prismatic (or a length to a revolute)
+// in a closed loop used to evaluate to undef with no diagnostic, the joint
+// silently freed to its range midpoint. It is now refused with one
+// `DimensionedArgRejected` Error naming `bindings[0].value`, and the capture
+// pass records that specific cause.
+
+/// `examples/dynamics/closed_2prismatic_idyn.ri`'s closed loop.
+const PRISMATIC_LOOP_SOURCE: &str = r#"
+structure def PrismaticLoop {
+    let axis_z = vec3(0, 0, 1)
+    let j_a = prismatic(axis_z, 0mm .. 1000mm)
+    let j_b = prismatic(axis_z, 0mm .. 2000mm)
+    let m = body(body(body(mechanism(), point_mass(2kg), j_a), point_mass(3kg), j_b), point_mass(1kg), j_b, j_a)
+    let wrong = snapshot(m, [bind(j_a, 30deg)])
+    let right = snapshot(m, [bind(j_a, 300mm)])
+}
+"#;
+
+/// A two-revolute closed loop: the closing body rides `j_s` on `j_r`.
+const REVOLUTE_LOOP_SOURCE: &str = r#"
+structure def RevoluteLoop {
+    let axis_z = vec3(0, 0, 1)
+    let j_r = revolute(axis_z, 0rad .. 3.141592653589793rad)
+    let j_s = revolute(axis_z, -3.141592653589793rad .. 3.141592653589793rad)
+    let m = body(body(body(mechanism(), point_mass(2kg), j_r), point_mass(3kg), j_s), point_mass(1kg), j_s, j_r)
+    let wrong = snapshot(m, [bind(j_r, 300mm)])
+    let right = snapshot(m, [bind(j_r, 30deg)])
+}
+"#;
+
+fn assert_wrong_bind_is_named(source: &str, structure: &str, wrong: Value, spec: &reify_ir::arg_acceptance::ArgSpec) {
+    use reify_core::{DiagnosticCode, Severity};
+    use reify_ir::UndefCause;
+    use reify_ir::arg_acceptance::{Acceptance, accept_arg};
+
+    let module = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    engine.set_capture_undef_causes(true);
+    let result = engine.eval(&module);
+
+    let Acceptance::Rejected(rejection) = accept_arg(&wrong, spec) else {
+        unreachable!("{wrong:?} must be rejected at {}", spec.type_name);
+    };
+    let expected = rejection.message("snapshot", "bindings[0].value");
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{structure}: exactly one Error, got {errors:#?}");
+    assert_eq!(errors[0].code, Some(DiagnosticCode::DimensionedArgRejected));
+    assert_eq!(errors[0].message, expected);
+
+    let wrong_id = ValueCellId::new(structure, "wrong");
+    assert!(
+        get_value_from(&result.values, structure, "wrong").is_undef(),
+        "{structure}.wrong is undef"
+    );
+    assert!(
+        matches!(
+            engine.undef_causes().get(&wrong_id),
+            Some(UndefCause::OpContractFailed {
+                code: DiagnosticCode::DimensionedArgRejected,
+                ..
+            })
+        ),
+        "{structure}.wrong: expected OpContractFailed {{ DimensionedArgRejected }}, got {:?}",
+        engine.undef_causes().get(&wrong_id)
+    );
+    assert!(
+        !get_value_from(&result.values, structure, "right").is_undef(),
+        "{structure}.right: the correctly-spelled twin snapshots"
+    );
+}
+
+#[test]
+fn an_angle_bound_to_a_closed_loop_prismatic_is_named() {
+    assert_wrong_bind_is_named(
+        PRISMATIC_LOOP_SOURCE,
+        "PrismaticLoop",
+        Value::angle(30f64.to_radians()),
+        &reify_ir::arg_acceptance::length_spec(),
+    );
+}
+
+#[test]
+fn a_length_bound_to_a_closed_loop_revolute_is_named() {
+    assert_wrong_bind_is_named(
+        REVOLUTE_LOOP_SOURCE,
+        "RevoluteLoop",
+        Value::length(0.3),
+        &reify_ir::arg_acceptance::angle_spec(),
+    );
+}
+
+/// The dynamics boundary: `TrajectorySample.values` are bare `JointValue`s by
+/// declaration (#5412), and binding them to the loop's prismatic joints must
+/// keep reading SI metres once prismatic binds refuse a bare number.
+#[test]
+fn inverse_dynamics_on_a_closed_prismatic_loop_still_reads_bare_samples() {
+    let source = r#"
+structure def PrismaticLoopIdyn {
+    let axis_z = vec3(0, 0, 1)
+    let j_a = prismatic(axis_z, 0mm .. 1000mm)
+    let j_b = prismatic(axis_z, 0mm .. 2000mm)
+    let m = body(body(body(mechanism(), point_mass(2kg), j_a), point_mass(3kg), j_b), point_mass(1kg), j_b, j_a)
+    let sample = TrajectorySample(t: 0s, values: [0.3, 0.3, 0.3], vels: [0.7, 0.7], accels: [1.5, 1.5])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
+    let forces = inverse_dynamics(m, traj)
+}
+"#;
+    let module = parse_and_compile_with_stdlib(source);
+    let result = make_simple_engine().eval(&module);
+    assert!(
+        !get_value_from(&result.values, "PrismaticLoopIdyn", "forces").is_undef(),
+        "inverse_dynamics resolves; diagnostics: {:#?}",
+        result.diagnostics
+    );
+}

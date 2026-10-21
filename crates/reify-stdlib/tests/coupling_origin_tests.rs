@@ -319,3 +319,114 @@ fn snapshot_places_screw_follower_body_at_parent_pivot() {
         "follower body bound only through its lift",
     );
 }
+
+// ── PRD 5 leaf δ (task #6941): joint LENGTH positions refuse a bare number ──
+//
+// A bare number at a LENGTH position used to be read as SI metres (the
+// 10-vs-10mm 1000× hazard); each position below now refuses it, while its
+// LENGTH-dimensioned twin is unchanged.
+
+fn planar_xy() -> Value {
+    eval_builtin(
+        "planar",
+        &[
+            axis(1.0, 0.0, 0.0),
+            axis(0.0, 1.0, 0.0),
+            closed_range(Value::length(-1.0), Value::length(1.0)),
+            closed_range(Value::length(-1.0), Value::length(1.0)),
+            closed_range(Value::angle(-PI), Value::angle(PI)),
+        ],
+    )
+}
+
+fn cylindrical_z() -> Value {
+    eval_builtin(
+        "cylindrical",
+        &[
+            axis(0.0, 0.0, 1.0),
+            closed_range(Value::length(0.0), Value::length(1.0)),
+            closed_range(Value::angle(0.0), Value::angle(PI)),
+        ],
+    )
+}
+
+#[test]
+fn a_bare_prismatic_displacement_is_refused() {
+    let p = unpivoted_prismatic_x();
+    assert!(eval_builtin("transform_at", &[p.clone(), Value::Real(0.3)]).is_undef());
+    assert_transform_close(
+        &eval_builtin("transform_at", &[p, Value::length(0.3)]),
+        IDENTITY,
+        [0.3, 0.0, 0.0],
+        "LENGTH twin",
+    );
+}
+
+#[test]
+fn a_bare_screw_lead_is_refused() {
+    let lift = unpivoted_prismatic_x();
+    assert!(eval_builtin("screw", &[lift.clone(), Value::Real(0.005)]).is_undef());
+    let nut = eval_builtin("screw", &[lift, Value::length(0.005)]);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[nut, Value::length(TEN_LEADS_M)]),
+        IDENTITY,
+        [0.05, 0.0, 0.0],
+        "LENGTH-lead twin",
+    );
+}
+
+#[test]
+fn a_bare_rack_pitch_radius_is_refused() {
+    let rack = unpivoted_prismatic_x();
+    assert!(eval_builtin("rack_and_pinion", &[rack.clone(), Value::Real(0.02)]).is_undef());
+    let pinion = eval_builtin("rack_and_pinion", &[rack, Value::length(0.02)]);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[pinion, Value::length(10.0)]),
+        IDENTITY,
+        [0.2, 0.0, 0.0],
+        "LENGTH-pitch-radius twin",
+    );
+}
+
+#[test]
+fn a_bare_prismatic_coupling_offset_is_refused() {
+    let p = unpivoted_prismatic_x();
+    assert!(
+        eval_builtin("couple", &[p.clone(), Value::Real(2.0), Value::Real(0.1)]).is_undef()
+    );
+    let c = eval_builtin("couple", &[p, Value::Real(2.0), Value::length(0.1)]);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[c, Value::length(0.2)]),
+        IDENTITY,
+        [0.5, 0.0, 0.0],
+        "LENGTH-offset twin",
+    );
+}
+
+#[test]
+fn a_bare_planar_length_component_is_refused() {
+    let p = planar_xy();
+    let bare_y = Value::List(vec![Value::length(0.3), Value::Real(0.4), Value::angle(0.0)]);
+    assert!(eval_builtin("transform_at", &[p.clone(), bare_y]).is_undef());
+    let twin = Value::List(vec![Value::length(0.3), Value::length(0.4), Value::angle(0.0)]);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[p, twin]),
+        IDENTITY,
+        [0.3, 0.4, 0.0],
+        "LENGTH-component twin",
+    );
+}
+
+#[test]
+fn a_bare_cylindrical_length_component_is_refused() {
+    let c = cylindrical_z();
+    let bare = Value::List(vec![Value::Real(0.3), Value::angle(0.0)]);
+    assert!(eval_builtin("transform_at", &[c.clone(), bare]).is_undef());
+    let twin = Value::List(vec![Value::length(0.3), Value::angle(0.0)]);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[c, twin]),
+        IDENTITY,
+        [0.0, 0.0, 0.3],
+        "LENGTH-component twin",
+    );
+}
