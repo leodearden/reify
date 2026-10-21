@@ -26,10 +26,11 @@
 //! genuinely-zero column (an unconstrained DOF) from an O(1) gradient entry.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, ResidualUnit,
-    comparable_datum_operands, max_relation_residual, partition_driving_set, pose_from_frame,
-    solve_frame, static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
+    max_relation_residual, partition_driving_set, pose_from_frame, solve_frame,
+    static_relation_residuals,
 };
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
 use reify_ir::{SolveResult, Value};
 
 /// Numeric rank-revealing tolerance handed to the partition. The Jacobian entries

@@ -32,9 +32,10 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame,
+    FrameUnknown, Operand, Pose, RelationInstance, max_relation_residual, partition_driving_set,
+    pose_from_frame,
 };
+use reify_constraints::scaling::RelateTolerance;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,

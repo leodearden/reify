@@ -19,7 +19,10 @@ fn kernel_default_ladder_is_ordered() {
     assert!(tol.kernel_local() <= tol.solver_convergence(), "{tol:?}");
     assert!(tol.solver_convergence() <= tol.assertion(), "{tol:?}");
     assert!(0.0 < tol.solver_length_floor(), "{tol:?}");
-    assert!(tol.solver_length_floor() <= tol.solver_convergence(), "{tol:?}");
+    assert!(
+        tol.solver_length_floor() <= tol.solver_convergence(),
+        "{tol:?}"
+    );
 }
 
 /// The solver's metre rung, read at the angular reference radius, IS the `==`
@@ -30,7 +33,10 @@ fn convergence_rung_is_the_equality_length_floor() {
     let s = RelateTolerance::kernel_default().solver_convergence();
     assert!(scalars_equal(0.0, 0.99 * s, DimensionVector::LENGTH));
     assert!(!scalars_equal(0.0, 1.01 * s, DimensionVector::LENGTH));
-    assert_eq!(s, LENGTH_FLOOR_M, "the convergence rung is based on the `==` floor");
+    assert_eq!(
+        s, LENGTH_FLOOR_M,
+        "the convergence rung is based on the `==` floor"
+    );
 }
 
 /// ε_rel is the `==` verdict's angle floor (PRD §7.3: ε_rel = absolute_floor(ANGLE)).
@@ -62,7 +68,10 @@ fn custom_ladder_is_accepted_and_derives_coherently() {
         2e-6 / ANGULAR_REFERENCE_RADIUS_M,
         "ε_rel follows the CONFIGURED convergence rung"
     );
-    assert_eq!(tol.assertion_angle(), tol.assertion() / ANGULAR_REFERENCE_RADIUS_M);
+    assert_eq!(
+        tol.assertion_angle(),
+        tol.assertion() / ANGULAR_REFERENCE_RADIUS_M
+    );
     assert_eq!(tol.assertion_dimensionless(), tol.assertion_angle().sin());
 }
 
@@ -97,29 +106,50 @@ fn assert_display_names(err: &ToleranceLadderError, values: &[f64]) {
 #[test]
 fn incoherent_ladders_are_refused_naming_the_rung() {
     // A non-positive rung.
-    let err = refused(ToleranceRungs { kernel_local_m: 0.0, ..rungs() });
+    let err = refused(ToleranceRungs {
+        kernel_local_m: 0.0,
+        ..rungs()
+    });
     assert_eq!(
         err,
-        ToleranceLadderError::NotPositiveFinite { rung: Rung::KernelLocal, value: 0.0 }
+        ToleranceLadderError::NotPositiveFinite {
+            rung: Rung::KernelLocal,
+            value: 0.0
+        }
     );
     assert_display_names(&err, &[0.0]);
 
-    let err = refused(ToleranceRungs { solver_length_floor_m: -1e-9, ..rungs() });
+    let err = refused(ToleranceRungs {
+        solver_length_floor_m: -1e-9,
+        ..rungs()
+    });
     assert_eq!(
         err,
-        ToleranceLadderError::NotPositiveFinite { rung: Rung::SolverLengthFloor, value: -1e-9 }
+        ToleranceLadderError::NotPositiveFinite {
+            rung: Rung::SolverLengthFloor,
+            value: -1e-9
+        }
     );
     assert_display_names(&err, &[-1e-9]);
 
     // A non-finite rung.
-    let err = refused(ToleranceRungs { assertion_m: f64::INFINITY, ..rungs() });
+    let err = refused(ToleranceRungs {
+        assertion_m: f64::INFINITY,
+        ..rungs()
+    });
     assert_eq!(
         err,
-        ToleranceLadderError::NotPositiveFinite { rung: Rung::Assertion, value: f64::INFINITY }
+        ToleranceLadderError::NotPositiveFinite {
+            rung: Rung::Assertion,
+            value: f64::INFINITY
+        }
     );
     assert_display_names(&err, &[f64::INFINITY]);
 
-    let err = refused(ToleranceRungs { solver_convergence_m: f64::NAN, ..rungs() });
+    let err = refused(ToleranceRungs {
+        solver_convergence_m: f64::NAN,
+        ..rungs()
+    });
     assert!(
         matches!(
             err,
@@ -130,7 +160,10 @@ fn incoherent_ladders_are_refused_naming_the_rung() {
     );
 
     // kernel_local > solver_convergence.
-    let err = refused(ToleranceRungs { kernel_local_m: 2e-6, ..rungs() });
+    let err = refused(ToleranceRungs {
+        kernel_local_m: 2e-6,
+        ..rungs()
+    });
     assert_eq!(
         err,
         ToleranceLadderError::OutOfOrder {
@@ -143,7 +176,10 @@ fn incoherent_ladders_are_refused_naming_the_rung() {
     assert_display_names(&err, &[2e-6, 1e-6]);
 
     // solver_convergence > assertion.
-    let err = refused(ToleranceRungs { solver_convergence_m: 2e-5, ..rungs() });
+    let err = refused(ToleranceRungs {
+        solver_convergence_m: 2e-5,
+        ..rungs()
+    });
     assert_eq!(
         err,
         ToleranceLadderError::OutOfOrder {
@@ -156,7 +192,10 @@ fn incoherent_ladders_are_refused_naming_the_rung() {
     assert_display_names(&err, &[2e-5, 1e-5]);
 
     // solver_length_floor > solver_convergence.
-    let err = refused(ToleranceRungs { solver_length_floor_m: 2e-6, ..rungs() });
+    let err = refused(ToleranceRungs {
+        solver_length_floor_m: 2e-6,
+        ..rungs()
+    });
     assert_eq!(
         err,
         ToleranceLadderError::OutOfOrder {
@@ -173,7 +212,10 @@ fn incoherent_ladders_are_refused_naming_the_rung() {
 fn assertion_rung_is_selected_by_row_unit() {
     let tol = RelateTolerance::kernel_default();
     assert_eq!(tol.assertion_rung(ResidualUnit::Length), tol.assertion());
-    assert_eq!(tol.assertion_rung(ResidualUnit::Angle), tol.assertion_angle());
+    assert_eq!(
+        tol.assertion_rung(ResidualUnit::Angle),
+        tol.assertion_angle()
+    );
     assert_eq!(
         tol.assertion_rung(ResidualUnit::Dimensionless),
         tol.assertion_dimensionless()

@@ -25,10 +25,11 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, comparable_datum_operands,
-    max_relation_residual, ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame,
-    solve_frame, static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
+    max_relation_residual, ResidualRow, partition_driving_set, pose_from_frame, solve_frame,
+    static_relation_residuals,
 };
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
 
@@ -1000,7 +1001,7 @@ enum StaticVerdict {
 ///    Arm 4 runs first so this arm's reason is only ever given for a genuinely
 ///    UNMODELLED combination;
 /// 6. otherwise each row against the assertion rung for ITS OWN unit
-///    ([`assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
+///    ([`RelateTolerance::assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
 ///    violated.
 ///
 /// The counts therefore always sum to the scope's relation count, which is what
@@ -1025,7 +1026,7 @@ enum StaticVerdict {
 /// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
 /// degrees for an orientation row, and a bare number for a direction/dot/cosine
 /// row, which has no length reading at all. That same unit tag also selects the
-/// rung the row is JUDGED against ([`assertion_rung`]) — rendering a row in one
+/// rung the row is JUDGED against ([`RelateTolerance::assertion_rung`]) — rendering a row in one
 /// unit while thresholding it in another would leave the category error in place
 /// where it does the most damage, since a static violation FAILS the build. [`conflict_diagnostic`] is deliberately NOT reused: it
 /// needs an auto sub and a driving/redundant partition that a zero-auto scope does
@@ -1207,26 +1208,13 @@ fn static_verdict(
     let (dominant, exceedance) = rows
         .iter()
         .copied()
-        .map(|row| (row, row.value.abs() / assertion_rung(row.unit, &tol)))
+        .map(|row| (row, row.value.abs() / tol.assertion_rung(row.unit)))
         .reduce(|m, r| if r.1 > m.1 { r } else { m })
         .expect("rows is non-empty — the empty case returned Unverifiable above");
     if exceedance <= 1.0 {
         StaticVerdict::Verified
     } else {
         StaticVerdict::Violated(dominant, inst)
-    }
-}
-
-/// The assertion rung a residual row is judged against — the one for ITS unit.
-///
-/// The three rungs are all derived from [`RelateTolerance`]'s single base length
-/// (see [`RelateTolerance::assertion_angle`]), so they move together under an edit
-/// to the hierarchy and cannot drift into three independent hand-picked epsilons.
-fn assertion_rung(unit: ResidualUnit, tol: &RelateTolerance) -> f64 {
-    match unit {
-        ResidualUnit::Length => tol.assertion(),
-        ResidualUnit::Angle => tol.assertion_angle(),
-        ResidualUnit::Dimensionless => tol.assertion_dimensionless(),
     }
 }
 

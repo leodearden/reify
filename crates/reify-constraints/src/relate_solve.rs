@@ -51,13 +51,16 @@
 //! there; the self-contained Gauss–Newton over the already-tested residual model
 //! satisfies the same `SolveResult` contract without a second slvs integration.
 //!
-//! One kernel-defaulted [`RelateTolerance`] knob governs the whole hierarchy
-//! `kernel_local ≤ solver_convergence ≤ assertion/dedup` (PRD §7.1 coherence law).
+//! The tolerance hierarchy `kernel_local ≤ solver_convergence ≤ assertion/dedup`
+//! (PRD §7.1 coherence law) and the row dimensions it is applied by live in
+//! [`crate::scaling`].
 
 use std::collections::HashMap;
 
 use reify_core::{Diagnostic, ValueCellId};
 use reify_ir::{SolveResult, Value};
+
+use crate::scaling::ResidualUnit;
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
 /// sub. Carries the sub's instance name so the partition can tell which relation
@@ -232,91 +235,6 @@ pub fn partition_driving_set(
     }
 }
 
-// ── Tolerance hierarchy ──────────────────────────────────────────────────────
-
-/// The single kernel-defaulted `Length` tolerance knob governing the relate-solve
-/// (PRD §7.1 coherence law). One base length seeds the whole hierarchy
-/// `kernel_local ≤ solver_convergence ≤ assertion/dedup`: the kernel's own datum
-/// realization floor, the solver's residual-convergence target, and the (looser)
-/// post-solve assertion/dedup tolerance. Numeric boundary checks test "within the
-/// solver's convergence tolerance" — a method guarantee — never a hand-picked epsilon.
-#[derive(Debug, Clone, Copy)]
-pub struct RelateTolerance {
-    kernel_local: f64,
-    solver_convergence: f64,
-    assertion: f64,
-}
-
-impl RelateTolerance {
-    /// The kernel-default hierarchy: a `1e-7 m` kernel-local floor (OCCT
-    /// `Precision::Confusion` order), a `1e-6 m` solver-convergence target, and a
-    /// `1e-5 m` assertion/dedup tolerance. Derived from the single base length so
-    /// `kernel_local ≤ solver_convergence ≤ assertion` holds by construction.
-    pub fn kernel_default() -> Self {
-        let kernel_local = 1e-7;
-        Self {
-            kernel_local,
-            solver_convergence: kernel_local * 10.0, // 1e-6 m
-            assertion: kernel_local * 100.0,         // 1e-5 m
-        }
-    }
-
-    /// The tightest rung — the kernel's local datum-realization floor (metres).
-    pub fn kernel_local(&self) -> f64 {
-        self.kernel_local
-    }
-
-    /// The solver's residual-convergence target (metres / dimensionless). A solve
-    /// that returns [`SolveResult::Solved`] guarantees the relation residual is
-    /// `≤` this value.
-    pub fn solver_convergence(&self) -> f64 {
-        self.solver_convergence
-    }
-
-    /// The (loosest) post-solve assertion/dedup tolerance, for a row measured in
-    /// METRES. A row measured in radians or as a pure number is judged against
-    /// [`assertion_angle`](Self::assertion_angle) /
-    /// [`assertion_dimensionless`](Self::assertion_dimensionless) instead — a
-    /// residual row vector is not dimensionally homogeneous (see [`ResidualUnit`]),
-    /// so one rung cannot serve all three.
-    pub fn assertion(&self) -> f64 {
-        self.assertion
-    }
-
-    /// The radius (metres) at which the angular rung is defined.
-    ///
-    /// An orientation error `θ` displaces a point at radius `R` by `θ·R`, so an
-    /// angle has no length reading until a radius is named. One metre is that
-    /// reference: a feature there, mis-oriented by
-    /// [`assertion_angle`](Self::assertion_angle), is displaced by exactly
-    /// [`assertion`](Self::assertion). Naming the radius is the point — comparing
-    /// radians against the metre rung with no reference scale is a category error
-    /// however close the two numbers happen to land.
-    const ANGULAR_REFERENCE_RADIUS_M: f64 = 1.0;
-
-    /// The assertion rung for a row measured in RADIANS — the angle that displaces
-    /// a feature at [`ANGULAR_REFERENCE_RADIUS_M`](Self::ANGULAR_REFERENCE_RADIUS_M)
-    /// by the length rung. Derived from the same base length, so the three rungs
-    /// cannot drift apart under an edit to one of them.
-    pub fn assertion_angle(&self) -> f64 {
-        self.assertion / Self::ANGULAR_REFERENCE_RADIUS_M
-    }
-
-    /// The assertion rung for a DIMENSIONLESS row — a unit-vector component
-    /// difference, a dot product, or a cosine difference.
-    ///
-    /// The sine of the angular rung: every dimensionless form here measures the
-    /// sine of a misalignment between two UNIT directions (exactly, for
-    /// `perpendicular`'s dot product; to first order for the rest), so this is the
-    /// same physical misalignment expressed in the unit the row carries. It is a
-    /// meaningful rung only because those forms normalize their operands first —
-    /// an unnormalized dot scales with the operands' magnitudes, and no fixed
-    /// threshold means anything against a number that does.
-    pub fn assertion_dimensionless(&self) -> f64 {
-        self.assertion_angle().sin()
-    }
-}
-
 // ── Driving-set solve ────────────────────────────────────────────────────────
 
 /// The `ValueCellId` member name under which a solved auto-sub Frame is keyed in
@@ -337,7 +255,7 @@ const POSE_MEMBER: &str = "pose";
 ///   `Infeasible` so the contract is honoured.
 ///
 /// `tol` is the solver-convergence tolerance — feed it from
-/// [`RelateTolerance::solver_convergence`].
+/// [`RelateTolerance::solver_convergence`](crate::scaling::RelateTolerance::solver_convergence).
 pub fn solve_frame(
     driving: &[RelationInstance],
     unknown: &FrameUnknown,
@@ -691,32 +609,6 @@ pub fn comparable_datum_operands(rel: &RelationInstance) -> usize {
 }
 
 // ── Residual rows and their units ────────────────────────────────────────────
-
-/// What a residual row's number MEASURES.
-///
-/// A residual row vector is NOT dimensionally homogeneous, and nothing about an
-/// `f64` says so. [`axis_coincidence_residual`] alone returns two dimensionless
-/// tilt rows followed by two metre rows; `perpendicular` and `angle` return
-/// dimensionless rows only. A caller that renders `max |row|` as millimetres
-/// therefore states a FABRICATED length whenever the dominant row is angular —
-/// the exact confidently-wrong claim the static-verification arm exists to
-/// prevent, so the unit travels WITH the number instead of being re-derived by
-/// the renderer from the relation name (which cannot work: `concentric` mixes
-/// both in one vector).
-///
-/// The unit is declared where each row is BUILT, because that is the only place
-/// it is known without re-doing [`residual_dispatch`]'s name/operand-kind
-/// dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResidualUnit {
-    /// Metres — a position delta, offset or distance error.
-    Length,
-    /// Radians — an orientation delta (the exponential-map log rows).
-    Angle,
-    /// A pure number — a direction-component difference, a dot product, or a
-    /// cosine difference. Has no length or angle reading.
-    Dimensionless,
-}
 
 /// One residual component with the unit it is measured in.
 ///
