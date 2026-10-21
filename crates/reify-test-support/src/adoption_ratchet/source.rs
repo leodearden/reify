@@ -52,12 +52,15 @@ fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
 }
 
 /// `src/` and `tests/` of the crate at `crate_root` except `leave_out`:
-/// crate-relative `/`-separated paths, sorted; a file that cannot be read panics
-/// naming it, and so does a `leave_out` that names no file.
+/// crate-relative `/`-separated paths, sorted. A missing `src/` or `tests/`
+/// contributes no file; a file that cannot be read panics naming it, and so does
+/// a `leave_out` that names no file.
 pub(super) fn read_crate_tree(crate_root: &Path, leave_out: &str) -> Vec<SourceFile> {
     let mut paths = Vec::new();
-    for dir in ["src", "tests"] {
-        collect_rs_files(&crate_root.join(dir), &mut paths);
+    for dir in ["src", "tests"].map(|dir| crate_root.join(dir)) {
+        if dir.is_dir() {
+            collect_rs_files(&dir, &mut paths);
+        }
     }
     let (left_out, mut files): (Vec<_>, Vec<_>) = paths
         .into_iter()
@@ -100,7 +103,11 @@ mod tests {
     ];
 
     fn write_fixture_crate(root: &Path) {
-        for relative in FIXTURE_FILES {
+        write_fixture_files(root, FIXTURE_FILES);
+    }
+
+    fn write_fixture_files(root: &Path, files: &[&str]) {
+        for relative in files {
             let path = root.join(relative);
             fs::create_dir_all(path.parent().expect("a fixture file sits in a directory"))
                 .unwrap_or_else(|error| panic!("creating the parent of {relative}: {error}"));
@@ -125,6 +132,15 @@ mod tests {
         let tree = read_crate_tree(dir.path(), "tests/host.rs");
         let paths: Vec<&str> = tree.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths, ["src/lib.rs", "src/nested/deep.rs", "tests/b.rs"]);
+    }
+
+    #[test]
+    fn read_crate_tree_reads_a_crate_with_no_src_dir_as_holding_no_src_file() {
+        let dir = crate::temp_dirs::prefixed_tempdir("adoption-ratchet-tree-");
+        write_fixture_files(dir.path(), &["tests/host.rs", "tests/b.rs"]);
+        let tree = read_crate_tree(dir.path(), "tests/host.rs");
+        let paths: Vec<&str> = tree.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["tests/b.rs"]);
     }
 
     #[test]
