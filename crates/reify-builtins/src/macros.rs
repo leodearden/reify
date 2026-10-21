@@ -392,6 +392,38 @@ mod tests {
         assert_eq!(BuiltinId::FooOne.as_compile_only(), None);
     }
 
+    /// `From<KindId> for BuiltinId` is the inverse of the narrowing accessor:
+    /// every sub-enum variant widens to the id of its own row and narrows back
+    /// to itself, and the widened id still declines a foreign narrowing.
+    #[test]
+    fn each_sub_enum_widens_to_builtin_id_losslessly() {
+        for k in EvalBuiltinId::iter() {
+            let id = BuiltinId::from(k);
+            assert_eq!(id.as_eval_builtin(), Some(k), "{k:?} must round-trip");
+            assert_eq!(
+                fake::row_for(id).binding,
+                crate::row::BindingKind::EvalBuiltin,
+                "{k:?} must widen onto an EvalBuiltin row"
+            );
+        }
+        for k in CompileOnlyId::iter() {
+            let id = BuiltinId::from(k);
+            assert_eq!(id.as_compile_only(), Some(k), "{k:?} must round-trip");
+            assert_eq!(
+                fake::row_for(id).binding,
+                crate::row::BindingKind::CompileOnly,
+                "{k:?} must widen onto a CompileOnly row"
+            );
+        }
+
+        assert_eq!(BuiltinId::from(CompileOnlyId::Baz), BuiltinId::Baz);
+        assert_eq!(
+            BuiltinId::from(CompileOnlyId::Baz).as_eval_builtin(),
+            None,
+            "a widened id must still decline a foreign kind's narrowing"
+        );
+    }
+
     // ── the row table ────────────────────────────────────────────────────────
 
     /// `rows()` yields one row per declaration, in source order, each carrying
