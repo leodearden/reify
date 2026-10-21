@@ -39,7 +39,7 @@ impl Engine {
         let mut reason: Option<IndeterminateReason> = None;
         for template in &module.templates {
             for c in Self::collect_active_constraints(template, values) {
-                if !is_gdt_callout(c) {
+                if !is_gdt_callout(c) || has_undefined_operand(c, values) {
                     continue;
                 }
                 let reason = reason.get_or_insert_with(|| {
@@ -76,4 +76,12 @@ impl Engine {
 /// `tolerance`.
 fn is_gdt_callout(c: &CompiledConstraint) -> bool {
     is_geometric_conforms(c) && c.arg_bindings.iter().any(|(n, _)| n == "tolerance")
+}
+
+/// ζ's decline: an undefined operand is the model's defect, not the surface's,
+/// so the checker's own verdict and cause stand.
+fn has_undefined_operand(c: &CompiledConstraint, values: &ValueMap) -> bool {
+    std::iter::once(&c.expr)
+        .chain(c.arg_bindings.iter().map(|(_, e)| e))
+        .any(|e| reify_constraints::has_undefined_leaf(e, values))
 }
