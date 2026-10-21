@@ -1,9 +1,93 @@
+//! Holds the lexed source files of a crate and the lines a measure counts in
+//! them.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::health::{LexDefect, lex_defect};
+use super::lexer::{Line, lex};
+
+pub(super) struct SourceFile {
+    pub(super) path: String,
+    pub(super) lines: Vec<Line>,
+    pub(super) defect: Option<LexDefect>,
+}
+
+pub(super) fn source_file(path: &str, text: &str) -> SourceFile {
+    let lexed = lex(text);
+    let defect = lex_defect(&lexed);
+    SourceFile {
+        path: path.to_string(),
+        lines: lexed.lines,
+        defect,
+    }
+}
+
+pub(super) struct Hit {
+    pub(super) path: String,
+    pub(super) line: usize,
+    pub(super) text: String,
+}
+
+pub(super) fn hit_lines(hits: &[Hit]) -> String {
+    hits.iter()
+        .map(|hit| format!("  {}:{}: {}", hit.path, hit.line, hit.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("reading directory {}: {error}", dir.display()));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("listing {}: {error}", dir.display()))
+            .path();
+        if path.is_dir() {
+            collect_rs_files(&path, found);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            found.push(path);
+        }
+    }
+}
+
+/// `src/` and `tests/` of the crate at `crate_root` except `leave_out`:
+/// crate-relative `/`-separated paths, sorted; a file that cannot be read panics
+/// naming it, and so does a `leave_out` that names no file.
+pub(super) fn read_crate_tree(crate_root: &Path, leave_out: &str) -> Vec<SourceFile> {
+    let mut paths = Vec::new();
+    for dir in ["src", "tests"] {
+        collect_rs_files(&crate_root.join(dir), &mut paths);
+    }
+    let (left_out, mut files): (Vec<_>, Vec<_>) = paths
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(crate_root)
+                .expect("found under the crate root");
+            let parts: Vec<_> = relative.iter().map(|part| part.to_string_lossy()).collect();
+            (parts.join("/"), path)
+        })
+        .partition(|(relative, _)| relative == leave_out);
+    assert!(
+        !left_out.is_empty(),
+        "the left-out path {leave_out:?} names no .rs file under src/ or tests/ of {}; \
+         the measured tree would otherwise count the host's own seeds",
+        crate_root.display()
+    );
+    files.sort();
+    files
+        .iter()
+        .map(|(relative, path)| {
+            let text = fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+            source_file(relative, &text)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::Path;
-
-    use super::super::health::LexDefect;
     use super::*;
 
     const FIXTURE_FILES: &[&str] = &[
