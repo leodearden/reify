@@ -56,9 +56,10 @@ pub fn worst_case_residual_fraction(
     f_hi_hz: f64,
     n_samples: usize,
 ) -> f64 {
-    // A shaper that does not resolve to an impulse train must never read as
-    // robust — return +∞ so any "residual ≤ tolerance?" check fails for it.
-    let Some(train) = reify_stdlib::build_train_for_shaper(shaper) else {
+    // A shaper that does not resolve to an impulse train — unrecognised, or
+    // carrying a field its declared dimension refuses — must never read as
+    // robust: return +∞ so any "residual ≤ tolerance?" check fails for it.
+    let Ok(Some(train)) = reify_stdlib::build_train_for_shaper(shaper) else {
         return f64::INFINITY;
     };
 
@@ -73,7 +74,9 @@ pub fn worst_case_residual_fraction(
     // built the train (`reify_stdlib::shaper_damping_ratio`), so the sweep
     // evaluates the train at exactly the ζ it was constructed from — the default
     // and numeric-coercion contract cannot drift between the two.
-    let zeta = reify_stdlib::shaper_damping_ratio(shaper);
+    let Ok(zeta) = reify_stdlib::shaper_damping_ratio(shaper) else {
+        return f64::INFINITY;
+    };
 
     // Sweep [f_lo_hz, f_hi_hz] uniformly at n_samples points, convert each Hz to
     // rad/s (ω = 2π·f), evaluate the Singer–Seering residual, and keep the worst
@@ -221,6 +224,7 @@ use std::sync::Arc;
 use reify_ir::{OpaqueState, Value};
 use reify_stdlib::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
 
+use crate::compute_targets::rejected_input_outcome;
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Generic warm-state cache entry for a completed trajectory ComputeNode
@@ -328,6 +332,9 @@ fn undef_outcome() -> ComputeOutcome {
 ///
 /// Three `value_inputs`: `[profile, mech, modal]` (same order as the .ri fn).
 ///
+/// A waypoint `t` the reader refuses is `Failed` carrying the one
+/// `DimensionedArgRejected` Error naming it (`rejected_input_outcome`).
+///
 /// Cooperative cancellation: polls on entry; a pre-cancelled handle returns
 /// `Cancelled` immediately without running the simulation.
 ///
@@ -369,7 +376,12 @@ pub fn simulate_trajectory_trampoline(
 
     // ── cache MISS ────────────────────────────────────────────────────────────
     // Delegate to the stdlib Value→Value composer (runs the full simulation).
-    let result = reify_stdlib::simulate_trajectory_value(profile, mech, modal);
+    let result = match reify_stdlib::simulate_trajectory_value(profile, mech, modal) {
+        Ok(result) => result,
+        Err(rejection) => {
+            return rejected_input_outcome(rejection.to_error("simulate_trajectory"));
+        }
+    };
     if matches!(result, Value::Undef) {
         return undef_outcome();
     }
@@ -392,6 +404,10 @@ pub fn simulate_trajectory_trampoline(
 /// input_shape` (registered in `compute_targets::register_compute_fns`).
 ///
 /// Two `value_inputs`: `[profile, shaper]`.
+///
+/// A field the readers refuse (a shaper limit, an actuator limit, a waypoint
+/// `t`) is `Failed` carrying the one `DimensionedArgRejected` Error naming it
+/// (`rejected_input_outcome`).
 ///
 /// Cooperative cancellation: polls on entry.
 ///
@@ -426,7 +442,10 @@ pub fn input_shape_trampoline(
     }
 
     // ── cache MISS ────────────────────────────────────────────────────────────
-    let result = reify_stdlib::input_shape_value(profile, shaper);
+    let result = match reify_stdlib::input_shape_value(profile, shaper) {
+        Ok(result) => result,
+        Err(rejection) => return rejected_input_outcome(rejection.to_error("input_shape")),
+    };
     if matches!(result, Value::Undef) {
         return undef_outcome();
     }

@@ -787,23 +787,25 @@ fn tots_shaper_omitted_max_iters_and_tol_read_their_declared_defaults() {
 /// never existed on `TOTSShaper`, so the solver used to see 1000 N whatever
 /// the author wrote; a binding 2 N limit (unit mass ⇒ |a| ≤ 2 m/s²) must now
 /// re-time the move differently from a slack 1000 N one, and never faster.
+///
+/// Both shapers cap the solve at the same `SQP_ITERS` iterations: an active
+/// force bound keeps the SQP from meeting its step tolerance, so it would
+/// otherwise run all 100 default iterations (~30 min of debug CPU), and the
+/// best feasible iterate is already bound-limited well before that.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "heavy TOTS solve; release-only")]
 fn tots_force_bound_comes_from_the_joint_actuator_limit() {
-    let slack = shaped_profile(
-        shape(
-            p2p_profile(5.0, 0.0, 1.0, 0.5),
-            tots_shaper_with_force_limit(1000.0),
-        ),
-        "1000 N limit",
-    );
-    let binding = shaped_profile(
-        shape(
-            p2p_profile(5.0, 0.0, 1.0, 0.5),
-            tots_shaper_with_force_limit(2.0),
-        ),
-        "2 N limit",
-    );
+    const SQP_ITERS: i64 = 10;
+    let shaped_with_force_limit = |max_force_n: f64, what: &str| {
+        let shaper = with_field(
+            tots_shaper_with_force_limit(max_force_n),
+            "max_iters",
+            Value::Int(SQP_ITERS),
+        );
+        shaped_profile(shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper), what)
+    };
+    let slack = shaped_with_force_limit(1000.0, "1000 N limit");
+    let binding = shaped_with_force_limit(2.0, "2 N limit");
     assert_ne!(
         binding.content_hash(),
         slack.content_hash(),

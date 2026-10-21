@@ -570,6 +570,49 @@ pub fn rotational_damping_spec() -> ArgSpec {
     }
 }
 
+/// Returns the [`ArgSpec`] for an ANGULAR-VELOCITY reader position (rad·s⁻¹):
+/// the revolute twin of [`velocity_spec`] (`RevoluteTOTSShaper.velocity_limit`).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn angular_velocity_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "AngularVelocity",
+        dimension: reify_core::DimensionVector::ANGULAR_VELOCITY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for an ANGULAR-ACCELERATION reader position
+/// (rad·s⁻²): the revolute twin of [`acceleration_spec`]
+/// (`RevoluteTOTSShaper.acceleration_limit`, declared `Rate<AngularVelocity>`).
+///
+/// Composed from the registry as `ANGULAR_VELOCITY / TIME`, exactly as the
+/// `.ri` declaration composes it: no `ANGULAR_ACCELERATION` registry const
+/// exists yet (minting one is `docs/prds/v0_6/angle-dimension-completion.md`
+/// leaf δ's).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn angular_acceleration_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "AngularAcceleration",
+        dimension: reify_core::DimensionVector::ANGULAR_VELOCITY
+            .div(&reify_core::DimensionVector::TIME),
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a TORQUE reader position (N·m·rad⁻¹): the
+/// revolute twin of [`force_spec`] (`RevoluteJointLimit.max_force`).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn torque_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Torque",
+        dimension: reify_core::DimensionVector::TORQUE,
+        migration_hint: None,
+    }
+}
+
 
 /// Returns the [`ArgSpec`] for a DELIBERATELY-BARE reader position — one whose
 /// quantity is genuinely dimensionless (a ratio, a count, a relative
@@ -956,7 +999,7 @@ mod tests {
     fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
         use reify_core::DimensionVector as DV;
 
-        let cases: [(&str, ArgSpec, DV); 13] = [
+        let cases: [(&str, ArgSpec, DV); 16] = [
             ("pressure_spec", pressure_spec(), DV::PRESSURE),
             ("force_spec", force_spec(), DV::FORCE),
             ("mass_spec", mass_spec(), DV::MASS),
@@ -990,6 +1033,17 @@ mod tests {
                 rotational_damping_spec(),
                 DV::ROTATIONAL_DAMPING,
             ),
+            (
+                "angular_velocity_spec",
+                angular_velocity_spec(),
+                DV::ANGULAR_VELOCITY,
+            ),
+            (
+                "angular_acceleration_spec",
+                angular_acceleration_spec(),
+                DV::ANGULAR_VELOCITY.div(&DV::TIME),
+            ),
+            ("torque_spec", torque_spec(), DV::TORQUE),
         ];
 
         for (name, spec, expected) in cases {
