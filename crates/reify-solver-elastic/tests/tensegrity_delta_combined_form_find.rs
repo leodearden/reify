@@ -340,11 +340,10 @@ fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
         ("canonical", canonical_prism()),
         ("perturbed", perturbed_prism_guess()),
     ] {
-        assert_eq!(
-            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
-                .unwrap_err(),
-            FreeFormError::SearchDidNotConverge,
-            "line-only q from {label} guess must not converge under σ={sigma} \
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec);
+        assert!(
+            matches!(result, Err(FreeFormError::SearchDidNotConverge { .. })),
+            "line-only q from {label} guess must not converge under σ={sigma}, got {result:?} \
              (the membrane already contributes w=σ/(2√3) to every horizontal \
              edge, so this q leaves D_combined with the wrong nullity)",
         );

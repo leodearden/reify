@@ -532,10 +532,11 @@ fn describe_free(e: FreeFormError) -> &'static str {
             "sign violation — cable groups require positive seed ratios (q > 0) \
              and strut groups require negative seed ratios (q < 0)"
         }
-        FreeFormError::NullityMismatch { .. } => {
-            "nullity mismatch — the force-density matrix D must be rank-deficient by \
-             exactly d+1 = 4 for a valid 3-D free-standing form; the supplied q does not \
-             achieve this"
+        FreeFormError::NotAForm(..) => {
+            "not a free-standing form — the force-density matrix D must be rank-deficient \
+             by exactly d+1 = 4 on ONE connected structure; the supplied q does not achieve \
+             this, and an isolated node or a disconnected piece adds a translation mode of \
+             its own"
         }
         FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
             "dimension mismatch — the members and their kinds disagree in length"
@@ -555,10 +556,11 @@ fn describe_free(e: FreeFormError) -> &'static str {
             "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
              strut groups < 0), so it cannot be zero"
         }
-        FreeFormError::SearchDidNotConverge => {
-            "search did not converge — the adaptive GroupRatios search exhausted its \
-             iteration budget without reaching a nullity-4 configuration; verify that \
-             the seed signs are consistent (struts compressive, cables tensile)"
+        FreeFormError::SearchDidNotConverge { .. } => {
+            "search did not converge — the adaptive GroupRatios search or the combined \
+             fixed point ended without a certified nullity-4 form on ONE connected \
+             structure; verify that the seed signs are consistent (struts compressive, \
+             cables tensile) and that no node or piece is disconnected from the rest"
         }
         FreeFormError::SingularRecovery => {
             "singular recovery — null-space coordinate recovery failed to produce a \
