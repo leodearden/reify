@@ -306,4 +306,179 @@ mod tests {
             ["tests/common/"]
         );
     }
+
+    const PROBE_DEFINITION_AND_TEST_ITEMS: &[&str] = &[TEST_ITEMS[0], "fn probe_definition"];
+
+    const PROBE_ROWS: &[Ratchet] = &[
+        Ratchet {
+            name: "probe-production",
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::Occurrences(Pattern::production(
+                "probe_copy(",
+                &["src/"],
+                "let a = probe_copy(1);",
+            )),
+        },
+        Ratchet {
+            name: "probe-whole-file",
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::Occurrences(Pattern {
+                exclude: &["src/excluded.rs"],
+                ..Pattern::whole_file(".data[", &["src/", "tests/"], "let v = k_e.data[0];")
+            }),
+        },
+        Ratchet {
+            name: "probe-code-and-docs",
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::Occurrences(Pattern {
+                skip_items: &["impl Probe", "pub struct Probe"],
+                view: View::CodeAndDocs,
+                ..Pattern::whole_file("Probe {", &["src/", "tests/"], "let p = Probe { x: 1 };")
+            }),
+        },
+        Ratchet {
+            name: "probe-skips-its-definition",
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::Occurrences(Pattern {
+                skip_items: PROBE_DEFINITION_AND_TEST_ITEMS,
+                ..Pattern::production(
+                    "probe_definition",
+                    &["src/"],
+                    "let d = probe_definition(1);",
+                )
+            }),
+        },
+        Ratchet {
+            name: "probe-census",
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::DuplicateTopLevelFns {
+                root: "tests/",
+                shared_dir: "tests/common/",
+            },
+        },
+    ];
+
+    #[test]
+    fn seeded_self_tests_pass_for_a_well_formed_probe_table() {
+        let failures = seeded_self_test_failures(PROBE_ROWS, PROBE_HOST_FILE);
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    fn malformed_seed_row(name: &'static str, pattern: Pattern) -> Ratchet {
+        Ratchet {
+            name,
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::Occurrences(pattern),
+        }
+    }
+
+    #[test]
+    fn seeded_self_tests_name_the_row_and_property_of_each_malformed_seed() {
+        let rows = [
+            malformed_seed_row(
+                "seed-lacks-its-needle",
+                Pattern::production("probe_copy(", &["src/"], "let a = other(1);"),
+            ),
+            malformed_seed_row(
+                "seed-holds-it-twice",
+                Pattern::production(
+                    "probe_copy(",
+                    &["src/"],
+                    "let a = probe_copy(probe_copy(1));",
+                ),
+            ),
+            malformed_seed_row(
+                "seed-has-a-quote",
+                Pattern::production("probe_copy(", &["src/"], "let a = probe_copy(\"x\");"),
+            ),
+            malformed_seed_row(
+                "seed-path-out-of-scope",
+                Pattern {
+                    exclude: &["src/"],
+                    ..Pattern::production("probe_copy(", &["src/"], "let a = probe_copy(1);")
+                },
+            ),
+        ];
+        let failures = seeded_self_test_failures(&rows, PROBE_HOST_FILE);
+        for row in &rows {
+            assert!(
+                failures.iter().any(|line| line.contains(row.name)
+                    && line.contains("seed_path_is_in_scope_and_seed_holds_one_needle")),
+                "no seed failure names {}:\n{}",
+                row.name,
+                failures.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn seeded_self_tests_reject_an_empty_table() {
+        assert_eq!(seeded_self_test_failures(&[], PROBE_HOST_FILE).len(), 1);
+    }
+
+    #[test]
+    fn crate_tree_failures_report_defects_dangling_entries_and_off_baseline_rows() {
+        let tree = [
+            source_file("src/a.rs", "let s = \"never closed;"),
+            source_file("src/b.rs", PROBE_SEED),
+        ];
+        let dangling = Ratchet {
+            name: "probe-dangling",
+            home: "the probe home",
+            baseline: 0,
+            measure: Measure::Occurrences(Pattern::production(
+                "probe_copy(",
+                &["src/missing/"],
+                PROBE_SEED,
+            )),
+        };
+        let failures = crate_tree_failures(&[dangling, probe_row(2)], &tree, PROBE_HOST_FILE);
+        for expected in [
+            "the crate tree holds no file under tests/",
+            "src/a.rs: the matcher cannot follow this file (EndsInsideLiteralOrComment)",
+            "probe-dangling: scope entries that match no file: [\"src/missing/\"]",
+            "probe-row: 1 is below its baseline 2",
+        ] {
+            assert!(
+                failures.iter().any(|line| line.contains(expected)),
+                "{expected:?} missing from:\n{}",
+                failures.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn host_problems_accept_this_file_and_name_a_path_in_crate_that_is_not_the_host_file() {
+        let this_file = Host {
+            crate_root: env!("CARGO_MANIFEST_DIR"),
+            file: file!(),
+            path_in_crate: "src/adoption_ratchet.rs",
+        };
+        assert_eq!(this_file.problems(), Vec::<String>::new());
+        let other_file = Host {
+            path_in_crate: "src/lib.rs",
+            ..this_file
+        };
+        let problems = other_file.problems().join("\n");
+        assert!(
+            problems.contains("\"src/lib.rs\"") && problems.contains(file!()),
+            "{problems}"
+        );
+        let missing = Host {
+            file: "x/src/missing.rs",
+            path_in_crate: "src/missing.rs",
+            ..this_file
+        };
+        let problems = missing.problems().join("\n");
+        assert!(
+            problems.contains("src/missing.rs is not a file"),
+            "{problems}"
+        );
+    }
 }
