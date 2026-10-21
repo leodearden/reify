@@ -13,10 +13,14 @@ run inside a fixture:
   2. `rm` and `du` are PATH stubs that record their argv and REFUSE (exit 97,
      touching nothing) any operand whose realpath is outside the fixture root,
      else exec the real binary. Every test asserts no REFUSED line was recorded.
+`flock` is a PATH stub too: it records its argv and, when told to, touches a
+target before taking the lock, standing in for a lane that builds between the
+sweep's idle check and its lock.
 """
 
 import fcntl
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -48,6 +52,18 @@ for a in "$@"; do
             exit 97 ;;
     esac
 done
+if [ "$REIFY_TEST_FAILING_COMMAND" = "{name}" ]; then
+    echo "{name}: simulated failure" >&2
+    exit 1
+fi
+exec {real} "$@"
+"""
+
+BUILDING_FLOCK_STUB = """#!/usr/bin/env bash
+echo "flock $*" >> "$REIFY_TEST_CALLS_FILE"
+if [ -n "$REIFY_TEST_BUILD_BEFORE_LOCK" ]; then
+    touch -- "$REIFY_TEST_BUILD_BEFORE_LOCK"
+fi
 exec {real} "$@"
 """
 
@@ -63,6 +79,9 @@ class GcWorktreeTargets(unittest.TestCase):
             stub = self.stub_dir / name
             stub.write_text(GUARD_STUB.format(name=name, real=shutil.which(name)))
             stub.chmod(0o755)
+        flock_stub = self.stub_dir / "flock"
+        flock_stub.write_text(BUILDING_FLOCK_STUB.format(real=shutil.which("flock")))
+        flock_stub.chmod(0o755)
         self.calls_file = self.root / "calls.log"
         self.calls_file.touch()
         self.worktrees = self.root / ".worktrees"
@@ -120,6 +139,36 @@ class GcWorktreeTargets(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for target in (self.merge_verify, self.idle, self.held, self.fresh):
             self.assertTrue(target.is_dir(), f"dry run removed {target}")
+
+    def test_a_target_built_between_the_idle_check_and_the_lane_lock_is_kept(self):
+        shutil.rmtree(self.held)  # task-idle is now the only lock the sweep takes
+
+        result, _ = self.run_gc(env={"REIFY_TEST_BUILD_BEFORE_LOCK": str(self.idle)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.idle.is_dir(), "a target built just before its lane lock was removed")
+
+    def test_a_failed_removal_fails_the_sweep_naming_the_target(self):
+        result, _ = self.run_gc(env={"REIFY_TEST_FAILING_COMMAND": "rm"})
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertRegex(result.stderr, re.compile(
+            rf"ERROR: removing {re.escape(str(self.worktrees))}/task-(idle|held)/target failed"))
+
+    def test_an_unopenable_lane_lock_fails_the_sweep_and_removes_nothing(self):
+        if os.geteuid() == 0:
+            self.skipTest("root opens a lock file in a read-only directory")
+        self.worktrees.chmod(0o555)
+        self.addCleanup(self.worktrees.chmod, 0o755)
+
+        result, calls = self.run_gc()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertRegex(result.stderr, re.compile(
+            rf"ERROR: cannot open lane lock {re.escape(str(self.worktrees))}/task-(idle|held)\.lock"))
+        self.assertTrue(self.idle.is_dir(), "a target was removed without its lane lock")
+        self.assertTrue(self.held.is_dir(), "a target was removed without its lane lock")
+        self.assertNotIn("rm ", calls)
 
 
 if __name__ == "__main__":
