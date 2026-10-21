@@ -119,7 +119,7 @@ tasks:
       kind: grep
       pattern: 'CHECK_ERROR_EXIT_ALLOWLIST'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: bolt-ons-subsumed-and-deleted
     binding: 'capability→producer (this leaf) — GdtIllegalModifier code-match (~:672) + E_DFM_ message-prefix (dfm_has_error_diagnostic ~:688/:2580) both match Error-severity only, so the general gate subsumes them'
@@ -128,7 +128,7 @@ tasks:
       kind: grep
       pattern: 'dfm_has_error_diagnostic'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: absent
   - name: outlier-baseline-real
     binding: 'signal premise (rejection-mechanism, G6 branch 4) — #5386 probe: error text printed, exit 0; finish_check (main.rs:2719) decides exit from constraint outcome alone. The asserted post-ε rejection (exit 1) is delivered BY this leaf; baseline silent-accept bound as the gap'
@@ -206,7 +206,7 @@ tasks:
       kind: grep
       pattern: '\-\-deny'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: exit-0-baseline-real
     binding: 'signal premise — probe 2026-07-24: eval on the unbound fixture exits 0 while printing P.d = undef'
