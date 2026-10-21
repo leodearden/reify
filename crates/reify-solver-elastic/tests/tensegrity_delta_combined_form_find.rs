@@ -18,7 +18,8 @@
 //! assembly.
 
 use reify_solver_elastic::{
-    ForceDensitySpec, FreeFormError, FreeFormResult, MemberKind, form_find_free_surfaces,
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, MemberKind,
+    form_find_free_surfaces,
 };
 
 // ---------------------------------------------------------------------------
@@ -424,4 +425,152 @@ fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Certification of the combined fixed point (task 7801): a model that is not
+// ONE connected structure is never a converged free-standing form. Every
+// fixture starts from the δ golden's own converged state, where today's
+// kernel otherwise reports Ok(converged) on it.
+// ---------------------------------------------------------------------------
+
+const DELTA_SIGMA: f64 = 0.2;
+
+fn delta_group_ratios_spec() -> ForceDensitySpec {
+    ForceDensitySpec::GroupRatios {
+        group_ids: triplex_group_ids(),
+        seed_ratios: vec![-1.0, 1.0, 1.0],
+        reference_group: 1,
+    }
+}
+
+/// The δ GroupRatios golden's converged `(x*, q*)`.
+fn delta_fixed_point() -> (Vec<[f64; 3]>, Vec<f64>) {
+    let (members, kinds) = triplex_topology();
+    let golden = form_find_free_surfaces(
+        &perturbed_prism_guess(),
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &delta_group_ratios_spec(),
+    )
+    .expect("δ GroupRatios golden must form-find");
+    (golden.nodes, golden.force_densities)
+}
+
+fn assert_two_piece_non_convergence(result: &Result<FreeFormResult, FreeFormError>) {
+    assert!(
+        matches!(
+            result,
+            Err(FreeFormError::SearchDidNotConverge {
+                defect: Some(FormDefect { components: 2, .. }),
+            })
+        ),
+        "a model of two connected pieces must not converge, got {result:?}",
+    );
+}
+
+#[test]
+fn combined_explicit_isolated_node_is_not_certified() {
+    let (members, kinds) = triplex_topology();
+    let (mut nodes, q_star) = delta_fixed_point();
+    nodes.push([0.3, 0.2, 0.4]);
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &ForceDensitySpec::Explicit(q_star),
+    );
+    assert_two_piece_non_convergence(&result);
+}
+
+#[test]
+fn combined_group_ratios_isolated_node_is_not_certified() {
+    let (members, kinds) = triplex_topology();
+    let (mut nodes, _q_star) = delta_fixed_point();
+    nodes.push([0.3, 0.2, 0.4]);
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &delta_group_ratios_spec(),
+    );
+    assert_two_piece_non_convergence(&result);
+}
+
+#[test]
+fn combined_explicit_disconnected_twin_is_not_certified() {
+    const OFFSET: usize = 6;
+    let (mut members, mut kinds) = triplex_topology();
+    let mut surfaces = prism_surfaces();
+    let (mut nodes, mut q) = delta_fixed_point();
+
+    let twin_nodes: Vec<[f64; 3]> = nodes.iter().map(|p| [p[0] + 5.0, p[1], p[2]]).collect();
+    nodes.extend(twin_nodes);
+    let twin_members: Vec<(usize, usize)> =
+        members.iter().map(|&(a, b)| (a + OFFSET, b + OFFSET)).collect();
+    members.extend(twin_members);
+    kinds.extend(kinds.clone());
+    let twin_surfaces: Vec<(usize, usize, usize)> = surfaces
+        .iter()
+        .map(|&(a, b, c)| (a + OFFSET, b + OFFSET, c + OFFSET))
+        .collect();
+    surfaces.extend(twin_surfaces);
+    q.extend(q.clone());
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &surfaces,
+        &[DELTA_SIGMA; 4],
+        &ForceDensitySpec::Explicit(q),
+    );
+    // Two exact copies of a nullity-4 form, converged at iteration 0: the
+    // nullity is structural, so it is pinned along with the piece count.
+    assert_eq!(
+        result.unwrap_err(),
+        FreeFormError::SearchDidNotConverge {
+            defect: Some(FormDefect {
+                nullity: 8,
+                components: 2,
+            }),
+        },
+    );
+}
+
+// A cable pair rather than a twin: under GroupRatios the twin ends in
+// SingularRecovery from the inner search's forced-nullity recovery.
+#[test]
+fn combined_group_ratios_disconnected_cable_pair_is_not_certified() {
+    let (mut members, mut kinds) = triplex_topology();
+    let (mut nodes, _q_star) = delta_fixed_point();
+    nodes.push([0.3, 0.2, 0.4]);
+    nodes.push([0.3, 0.2, 0.9]);
+    members.push((6, 7));
+    kinds.push(MemberKind::Cable);
+    let mut group_ids = triplex_group_ids();
+    group_ids.push(3);
+    let spec = ForceDensitySpec::GroupRatios {
+        group_ids,
+        seed_ratios: vec![-1.0, 1.0, 1.0, 1.0],
+        reference_group: 1,
+    };
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &spec,
+    );
+    assert_two_piece_non_convergence(&result);
 }
