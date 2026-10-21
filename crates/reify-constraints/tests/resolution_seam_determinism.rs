@@ -355,3 +355,116 @@ fn production_registry_is_bit_identical_across_hash_seeds() {
          solve_ranked results whatever the hash seed",
     );
 }
+
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+fn seeded_shuffle<T>(items: &mut [T], seed: u64) {
+    let mut state = seed;
+    for i in (1..items.len()).rev() {
+        let j = (xorshift(&mut state) % (i as u64 + 1)) as usize;
+        items.swap(i, j);
+    }
+}
+
+const SIX_AUTOS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
+const FIRST_COMPONENT: [&str; 3] = ["b", "d", "f"];
+const SECOND_COMPONENT: [&str; 3] = ["a", "c", "e"];
+
+/// The declaration order of the six autos: identity, then three seeded
+/// permutations.
+fn declaration_orders() -> Vec<Vec<&'static str>> {
+    let mut orders = vec![SIX_AUTOS.to_vec()];
+    for seed in [1, 2, 4] {
+        let mut order = SIX_AUTOS.to_vec();
+        seeded_shuffle(&mut order, seed);
+        orders.push(order);
+    }
+    orders
+}
+
+fn sum(members: &[&str]) -> CompiledExpr {
+    members
+        .iter()
+        .map(|m| len_ref(m))
+        .reduce(|l, r| binop(BinOp::Add, l, r))
+        .expect("at least one member")
+}
+
+/// Components {b, d, f} (first constraint `f + b + d`, whose syntactic order
+/// is not declaration order) and {a, c, e}.
+fn six_autos_two_components(declared: &[&str]) -> ResolutionProblem {
+    problem(
+        declared,
+        vec![
+            ge(sum(&["f", "b", "d"]), literal(mm(3.0))),
+            ge(sum(&["e", "c"]), literal(mm(2.0))),
+            ge(sum(&["a", "e"]), literal(mm(2.0))),
+        ],
+        None,
+    )
+}
+
+/// Each component's autos in `declared` order, components in constraint order.
+fn expected_axis_orders(declared: &[&str]) -> Vec<Vec<ValueCellId>> {
+    [FIRST_COMPONENT, SECOND_COMPONENT]
+        .iter()
+        .map(|members| {
+            declared
+                .iter()
+                .filter(|m| members.contains(m))
+                .map(|m| id(m))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn decompose_lists_each_components_autos_in_the_callers_declaration_order() {
+    let orders = declaration_orders();
+    let distinct: std::collections::BTreeSet<_> =
+        orders.iter().map(|o| expected_axis_orders(o)).collect();
+    assert_eq!(
+        distinct.len(),
+        orders.len(),
+        "fixture premise: every permutation reorders some component's autos",
+    );
+
+    for declared in &orders {
+        let runs = across_fresh_threads(RUNS, || {
+            let p = six_autos_two_components(declared);
+            decompose_into_components(&p.auto_params, &p.constraints, None, &p.dependent_cells)
+                .iter()
+                .map(|c| c.auto_params.iter().cloned().collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        });
+        assert_every_run_equals(
+            &runs,
+            &expected_axis_orders(declared),
+            &format!(
+                "declared {declared:?}: each component must list its autos in declaration order"
+            ),
+        );
+    }
+}
+
+#[test]
+fn registry_hands_each_solver_the_callers_axis_order_under_seeded_permutations() {
+    for declared in &declaration_orders() {
+        let runs = across_fresh_threads(RUNS, || {
+            dispatched_sub_problems(&six_autos_two_components(declared))
+                .iter()
+                .map(axis_order)
+                .collect::<Vec<_>>()
+        });
+        assert_every_run_equals(
+            &runs,
+            &expected_axis_orders(declared),
+            &format!("declared {declared:?}: each solver must receive the caller's axis order"),
+        );
+    }
+}
