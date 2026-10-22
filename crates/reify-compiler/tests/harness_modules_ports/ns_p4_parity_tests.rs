@@ -17,7 +17,7 @@ use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
 use reify_core::{Diagnostic, ModulePath, Severity};
-use reify_eval::Engine;
+use reify_eval::{Engine, SolverPosture};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 
@@ -202,7 +202,12 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
             );
             Compiled {
                 module: reify_compiler::compile_with_prelude(&parsed, prelude),
-                engine: Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, prelude),
+                engine: Engine::with_prelude(
+                    SolverPosture::SolverFree,
+                    Box::new(MockConstraintChecker::new()),
+                    None,
+                    prelude,
+                ),
             }
         }
     }
