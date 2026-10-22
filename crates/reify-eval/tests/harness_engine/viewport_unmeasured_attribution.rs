@@ -48,9 +48,21 @@ fn engine() -> Engine {
     )
 }
 
+/// No kernel at all, so no measurement-capable one.
+fn kernel_less_engine() -> Engine {
+    Engine::new(
+        SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        None,
+    )
+}
+
 /// Evaluate `compiled`, then take the viewport's snapshot of it.
 fn viewport(compiled: &CompiledModule) -> TessellateResult {
-    let mut engine = engine();
+    viewport_with(engine(), compiled)
+}
+
+fn viewport_with(mut engine: Engine, compiled: &CompiledModule) -> TessellateResult {
     engine.eval(compiled);
     engine
         .tessellate_snapshot(compiled)
@@ -355,4 +367,63 @@ fn check_surface_gains_no_dfm_viewport_attribution() {
         "{:#?}",
         result.diagnostics
     );
+}
+
+/// A second declaration sharing `OverhangRule`'s `rule_name`, on its own subject.
+const SECOND_OVERHANG_RULE: &str = r#"
+structure def SecondOverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(20mm, 20mm, 20mm)
+}
+"#;
+
+fn same_named_rules_on_two_subjects_source() -> String {
+    format!("{DFM_RULE_DECLS}\n{SECOND_OVERHANG_RULE}")
+}
+
+/// `measure_dfm_rules` measures per subject, so the viewport attributes per
+/// subject too: one name, two Infos.
+#[test]
+fn same_named_dfm_rules_on_two_subjects_are_each_attributed() {
+    let found = viewport_attributions(&same_named_rules_on_two_subjects_source());
+    assert_eq!(found.len(), 2, "{found:#?}");
+    assert!(
+        found.iter().all(|m| m.contains("overhang-check")),
+        "{found:#?}"
+    );
+}
+
+/// The capability arm: with no kernel able to measure, the remedy is the
+/// kernel itself, never a `reify check` that could not measure either.
+fn assert_names_the_kernel_not_check(message: &str) {
+    for token in ["does not measure", "geometry kernel", "OCCT"] {
+        assert!(message.contains(token), "lacks {token:?}: {message}");
+    }
+    assert!(!message.contains("reify check"), "{message}");
+}
+
+#[test]
+fn kernel_less_viewport_names_the_kernel_for_a_geometric_conforms() {
+    let compiled = parse_and_compile_with_stdlib(GDT_SOURCE);
+    let tess = viewport_with(kernel_less_engine(), &compiled);
+    let found = attributions(&tess.diagnostics);
+    assert_eq!(found.len(), 1, "{:#?}", tess.diagnostics);
+    assert!(found[0].contains("geometric conformance"), "{}", found[0]);
+    assert_names_the_kernel_not_check(found[0]);
+}
+
+#[test]
+fn kernel_less_viewport_names_the_kernel_for_a_dfm_rule() {
+    let compiled = parse_and_compile_with_stdlib(DFM_RULE_DECLS);
+    let tess = viewport_with(kernel_less_engine(), &compiled);
+    let found = attributions(&tess.diagnostics);
+    assert_eq!(found.len(), 1, "{:#?}", tess.diagnostics);
+    assert!(
+        found[0].contains("DFM rule `overhang-check`"),
+        "{}",
+        found[0]
+    );
+    assert_names_the_kernel_not_check(found[0]);
 }

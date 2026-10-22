@@ -20,6 +20,10 @@ use reify_ir::{
 
 use crate::graph::EvaluationGraph;
 use crate::topology_selectors;
+use crate::unmeasured_attribution::{
+    MeasurementCapability, UnmeasuredMeasurement, measurement_unavailable,
+    unmeasured_constraint_attribution, unmeasured_reason,
+};
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
 // ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
@@ -135,13 +139,40 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
     })
 }
 
+/// The values [`dfm_rule_spec`] and [`dfm_thickness_spec`] duck-type, in
+/// `measure_dfm_rules`' discovery order: (A) each template that could declare a
+/// rule, synthesized from its evaluated cells with its named geometry overlaid
+/// from `live_handles` when given; then (B) every evaluated value.
+pub(crate) fn dfm_rule_candidates<'a>(
+    module: &'a CompiledModule,
+    values: &'a ValueMap,
+    live_handles: Option<&'a HashMap<reify_core::RealizationNodeId, GeometryHandleId>>,
+) -> impl Iterator<Item = Cow<'a, Value>> + 'a {
+    let declared = module
+        .templates
+        .iter()
+        .filter(|t| may_declare_dfm_rule(t))
+        .filter_map(move |t| {
+            let mut data = template_instance_data(t, values);
+            if let Some(handles) = live_handles {
+                overlay_live_geometry(t, handles, &mut data);
+            }
+            (!data.fields.is_empty()).then(|| Cow::Owned(Value::StructureInstance(Box::new(data))))
+        });
+    declared.chain(values.iter().map(|(_, v)| Cow::Borrowed(v)))
+}
+
+/// Both DFM recognizers require a `severity` and an `applies_to` field, which a
+/// synthesized template instance takes only from its value cells.
+fn may_declare_dfm_rule(template: &TopologyTemplate) -> bool {
+    let declares = |member: &str| template.value_cells.iter().any(|c| c.id.member == member);
+    declares("severity") && declares("applies_to")
+}
+
 /// A template's evaluated value cells as a `StructureInstance` named after the
 /// template, so the DFM recognizers can duck-type a rule declared at module
 /// level (`structure def MyRule : DFMRule { ... }`).
-pub(crate) fn template_instance_data(
-    template: &TopologyTemplate,
-    values: &ValueMap,
-) -> StructureInstanceData {
+fn template_instance_data(template: &TopologyTemplate, values: &ValueMap) -> StructureInstanceData {
     let mut fields = PersistentMap::new();
     for cell_decl in &template.value_cells {
         if let Some(val) = values.get(&cell_decl.id) {
@@ -153,6 +184,31 @@ pub(crate) fn template_instance_data(
         type_name: template.name.clone(),
         version: template.version(),
         fields,
+    }
+}
+
+/// Override / fill each named realization's field with its live kernel handle:
+/// a fresh `eval()` never invokes the kernel, so geometry cells are not live
+/// `Value::GeometryHandle`s until `build()` stamps `realization_handles`.
+fn overlay_live_geometry(
+    template: &TopologyTemplate,
+    live_handles: &HashMap<reify_core::RealizationNodeId, GeometryHandleId>,
+    data: &mut StructureInstanceData,
+) {
+    for realization in &template.realizations {
+        let Some(ref name) = realization.name else {
+            continue;
+        };
+        if let Some(&kernel_handle) = live_handles.get(&realization.id) {
+            data.fields.insert(
+                name.clone(),
+                Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash: [0u8; 32],
+                    kernel_handle: Some(kernel_handle),
+                },
+            );
+        }
     }
 }
 
@@ -413,40 +469,6 @@ fn settled_subjects<'s>(graph: &EvaluationGraph, subjects: &'s [Cow<'_, str>]) -
 /// Each re-checked constraint's result paired with its node's label.
 type LabeledConstraintResults<'a> = Vec<(ConstraintResult, Option<&'a str>)>;
 
-// ── ζ unmeasured-measurement attribution (task 6169, extended by #6667) ──────
-
-/// Which measurement a surface left untaken; selects the
-/// [`Engine::unmeasured_reason_for`] wording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnmeasuredMeasurement {
-    RepresentationWithin,
-    GdtConformance,
-    DfmRule,
-}
-
-fn measurement_unavailable(detail: &str) -> IndeterminateReason {
-    IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
-        detail: detail.to_string(),
-    })
-}
-
-/// ζ's attribution of an unmeasured DFM rule, named by `rule_name`: a DFM rule
-/// has no `ConstraintNodeId`.
-pub(crate) fn unmeasured_dfm_attribution(name: &str, reason: &IndeterminateReason) -> Diagnostic {
-    Diagnostic::info(format!("DFM rule `{name}` indeterminate: {reason}"))
-        .with_code(DiagnosticCode::ConstraintIndeterminate)
-}
-
-/// ζ's attribution of an unmeasured constraint, rendered from its recorded
-/// `reason`. `id` is embedded so `Engine::labeled_diagnostics` can name it.
-pub(crate) fn unmeasured_attribution(
-    id: &ConstraintNodeId,
-    reason: &IndeterminateReason,
-) -> Diagnostic {
-    Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
-        .with_code(DiagnosticCode::ConstraintIndeterminate)
-}
-
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -659,8 +681,8 @@ impl Engine {
                     //
                     // Which REMEDY the reason names is a pure function of two
                     // engine fields with no loop-local input — see
-                    // [`Engine::unmeasured_reason_for`] for the three-cause taxonomy
-                    // and why the arms are ordered as they are.  `id` is embedded
+                    // `unmeasured_attribution::unmeasured_reason` for the three-cause
+                    // taxonomy and why the arms are ordered as they are.  `id` is embedded
                     // in the text so `labeled_diagnostics` can substitute a
                     // user-facing label, exactly as the language-level checker's
                     // message does.
@@ -672,7 +694,7 @@ impl Engine {
                     if let Some(reason) = &indeterminate_reason
                         && self.achieved_repr_tol.is_empty()
                     {
-                        messages.push(unmeasured_attribution(&id, reason));
+                        messages.push(unmeasured_constraint_attribution(&id, reason));
                     }
 
                     rw_slots[i] = Some(ConstraintResult {
@@ -883,135 +905,13 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
-    /// The reason an Indeterminate records — and its diagnostic states — when
-    /// this run did not take the `kind` of measurement it needs (task-6169 ζ,
-    /// C-SURFACE 1). For a `RepresentationWithin` that is a run whose
-    /// `achieved_repr_tol` is empty.
-    ///
-    /// A pure function of two engine properties, because an empty map has THREE
-    /// distinct causes and each has a different fix:
-    ///   1. **No kernel able to tessellate the subject is registered** — this
-    ///      run cannot measure anything at all (a stub-mode binary, whichever
-    ///      subcommand asked) → the remedy is a kernel.
-    ///   2. **Capable kernel present, capture OFF** — nobody ever asked for a
-    ///      measurement on this surface (`reify build`, `reify eval`) → the
-    ///      remedy is `reify check`.
-    ///   3. **Capable kernel present, capture ON, still nothing measured** —
-    ///      tessellation ran (or would have) but produced no achieved deviation
-    ///      for THIS subject.
-    ///
-    /// Kernel capability is tested FIRST, ahead of `capture_repr_tol`, so the
-    /// remedy handed to the user is always TERMINAL.  Testing capture first
-    /// sent a stub-mode `reify build` into arm 2 — "run `reify check`" — whose
-    /// only answer on that same binary is arm 1's "build with OCCT": a two-hop
-    /// dead end, and a milder instance of the very defect class C-SURFACE 1
-    /// exists to remove.
-    ///
-    /// ## Why capability, not `default_kernel_name.is_none()`
-    ///
-    /// An earlier revision discriminated on `default_kernel_name.is_none()`.
-    /// That is **never true on any shipped binary**, so arm 1 was dead code on
-    /// exactly the surfaces it was written for.  `reify-kernel-manifold`'s
-    /// `inventory::submit!` is UNCONDITIONAL (no `cfg` gate — its `manifold3d`
-    /// dep compiles its own C++ tree, so there is no "manifold absent" case),
-    /// and `crates/reify-cli/src/main.rs`'s `extern crate reify_kernel_manifold
-    /// as _;` states verbatim that the `"manifold"` key is always present in
-    /// the binary's registry.  `pick_lexmin_brep_kernel` ends in
-    /// `.or_else(|| registered.values().next())`, so a stub-mode (no-OCCT)
-    /// binary still gets `default_kernel_name == Some("manifold")` — a
-    /// Mesh-only kernel that cannot tessellate the B-rep subject.  The old test
-    /// coverage passed only because `Engine::new(checker, None)` (unit tests)
-    /// is the sole shape that reaches an empty registry.
-    ///
-    /// So the question arm 1 must actually ask is not "is *a* kernel
-    /// registered" but "is a kernel that can produce the measurement
-    /// registered".  OCCT is the only BRep producer in the workspace
-    /// (`reify-kernel-occt`'s submit is `cfg(has_occt)`-gated; manifold claims
-    /// Mesh only, openvdb Voxel/Mesh), so `supports_any_repr(ReprKind::BRep)`
-    /// over this engine's own kernels is an exact test for "this binary was
-    /// built with OCCT".
-    ///
-    /// Capability is read off the static registry keyed by this engine's own
-    /// `geometry_kernels` names, because `GeometryKernel` is a behavioural
-    /// trait with no descriptor accessor — see
-    /// [`Engine::has_repr_capable_kernel`].  Kernel-absence is still read as a
-    /// fact about the BINARY rather than merely this engine because every
-    /// surface that both dispatches constraints and can carry a
-    /// `RepresentationWithin` builds its engine with
-    /// `Engine::with_registered_kernel` (`cmd_check`'s assertion branch,
-    /// `cmd_build`, the GUI session); `eval()` never dispatches constraints, so
-    /// the CLI's deliberately kernel-free `eval` engines cannot reach here.
-    ///
-    /// Emitting arm 2's remedy unconditionally would also put "run `reify
-    /// check`" into the diagnostics of the pre-`check()` pass inside
-    /// `tessellate_realizations` (engine_build.rs), which runs before the map is
-    /// populated and is therefore precisely a surface that DOES measure.
-    ///
-    /// Arm 3 is deliberately CAUSE-NEUTRAL and mentions neither `kernel` nor
-    /// `OCCT`.  Blaming the kernel there would be a false statement — one is
-    /// demonstrably registered — and exactly the INV-SF-4 misattribution this
-    /// task exists to remove, merely relocated from the operand kinds to the
-    /// kernel.  With a kernel present the engine genuinely cannot tell whether
-    /// the subject declares no realization at all, or declares one whose
-    /// type-name scan key could not be resolved, so it states the observable
-    /// fact and points at the actionable check rather than asserting a cause it
-    /// has not established.
-    ///
-    /// ## GD&T conformance and DFM rules (task #6667)
-    ///
-    /// The viewport surface measures neither, so their reasons have two arms:
-    /// capability first (keeping the remedy terminal, as above), then the
-    /// surface. Arm 3 has no analogue because no surface that emits these
-    /// reasons ever measures them, and their wording does not claim "no
-    /// realization ran": the viewport does tessellate for display.
-    pub(crate) fn unmeasured_reason_for(&self, kind: UnmeasuredMeasurement) -> &'static str {
-        let capable = self.has_repr_capable_kernel();
-        match kind {
-            UnmeasuredMeasurement::RepresentationWithin if !capable => {
-                "this run does not measure representation tolerance because no \
-                 geometry kernel able to tessellate the subject is registered; \
-                 such a geometry kernel is required — build with OCCT to evaluate \
-                 this RepresentationWithin bound"
-            }
-            UnmeasuredMeasurement::RepresentationWithin if !self.capture_repr_tol => {
-                "this evaluation surface does not measure representation tolerance \
-                 (no tessellation ran, so no achieved deviation exists for the \
-                 subject); run `reify check` to evaluate this RepresentationWithin \
-                 bound"
-            }
-            UnmeasuredMeasurement::RepresentationWithin => {
-                "no realization of the subject was tessellated on this run, so no \
-                 achieved deviation exists for it and this run does not measure \
-                 representation tolerance; check that the subject declares a \
-                 realization"
-            }
-            UnmeasuredMeasurement::GdtConformance if !capable => {
-                "this run does not measure geometric conformance because no \
-                 geometry kernel able to measure the subject is registered; such a \
-                 geometry kernel is required — build with OCCT to evaluate this \
-                 Conforms callout"
-            }
-            UnmeasuredMeasurement::GdtConformance => {
-                "this evaluation surface does not measure geometric conformance \
-                 (no deviation of the `actual` geometry from the nominal feature is \
-                 computed here); run `reify check` to evaluate this Conforms callout"
-            }
-            UnmeasuredMeasurement::DfmRule if !capable => {
-                "this run does not measure DFM rules because no geometry kernel \
-                 able to measure the rule's subject is registered; such a geometry \
-                 kernel is required — build with OCCT to evaluate this DFM rule"
-            }
-            UnmeasuredMeasurement::DfmRule => {
-                "this evaluation surface does not measure DFM rules (no geometry \
-                 query is run against the rule's subject here); run `reify check` \
-                 to evaluate this DFM rule"
-            }
-        }
-    }
 
-    /// The `RepresentationWithin` reason of [`Engine::unmeasured_reason_for`].
-    fn unmeasured_reason(&self) -> &'static str {
-        self.unmeasured_reason_for(UnmeasuredMeasurement::RepresentationWithin)
+    /// The engine facts that select [`unmeasured_reason`]'s remedy.
+    fn measurement_capability(&self) -> MeasurementCapability {
+        MeasurementCapability {
+            brep_kernel: self.has_repr_capable_kernel(),
+            captures_repr_tol: self.capture_repr_tol,
+        }
     }
 
     /// The reason recorded on an Indeterminate whose `kind` of measurement
@@ -1020,28 +920,30 @@ impl Engine {
         &self,
         kind: UnmeasuredMeasurement,
     ) -> IndeterminateReason {
-        measurement_unavailable(self.unmeasured_reason_for(kind))
+        measurement_unavailable(unmeasured_reason(kind, self.measurement_capability()))
     }
 
     /// The reason recorded on a `RepresentationWithin` Indeterminate decided by
     /// the engine. An empty `achieved_repr_tol` has the causes of
-    /// [`Engine::unmeasured_reason_for`]; a non-empty one means this surface DID
-    /// measure, just not this subject, so the reason names no kernel and no
-    /// other surface.
+    /// [`unmeasured_reason`]; a non-empty one means this surface DID measure,
+    /// just not this subject, so the reason names no kernel and no other
+    /// surface.
     fn representation_within_indeterminate_reason(&self) -> IndeterminateReason {
-        measurement_unavailable(if self.achieved_repr_tol.is_empty() {
-            self.unmeasured_reason()
+        if self.achieved_repr_tol.is_empty() {
+            self.unmeasured_indeterminate_reason(UnmeasuredMeasurement::RepresentationWithin)
         } else {
-            "this run recorded no achieved representation deviation for the subject"
-        })
+            measurement_unavailable(
+                "this run recorded no achieved representation deviation for the subject",
+            )
+        }
     }
 
     /// Whether this engine holds a geometry kernel that can produce the
     /// representation measurement a `RepresentationWithin` bound needs — i.e.
     /// one claiming at least one `(_, ReprKind::BRep)` pair.
     ///
-    /// This is the arm-1 discriminator of [`Engine::unmeasured_reason_for`]; see
-    /// that method's "Why capability, not `default_kernel_name.is_none()`"
+    /// This is the arm-1 discriminator of [`unmeasured_reason`]; see that
+    /// function's "Why capability, not `default_kernel_name.is_none()`"
     /// section for why kernel PRESENCE is the wrong question (manifold
     /// registers unconditionally, so no shipped binary has an empty registry).
     ///
@@ -1061,7 +963,7 @@ impl Engine {
     /// synthetic `Engine::DEFAULT_KERNEL_NAME` key, NEVER under its real
     /// registry name.  That key resolves to `None` in the registry, so a
     /// lookup-only implementation hands back the benefit-of-the-doubt `true`
-    /// unconditionally and arm 1 of [`Engine::unmeasured_reason_for`] is dead on
+    /// unconditionally and arm 1 of [`unmeasured_reason`] is dead on
     /// exactly the surfaces it was written for (task 6169 review round).
     ///
     /// So the inventory-driven constructors record the picked registration's
@@ -1099,7 +1001,9 @@ impl Engine {
     /// acceptable here for the same reason it is there — and more so: this runs
     /// only on the cold path where a `RepresentationWithin` already came back
     /// Indeterminate with an empty map, never on the C2 hot path, which returns
-    /// before any of this.
+    /// before any of this. The viewport pass also asks once per attributed
+    /// callout or DFM rule, where the production constructors' recorded answer
+    /// makes it a field read.
     fn has_repr_capable_kernel(&self) -> bool {
         // Construction-recorded answer wins: the inventory-driven constructors
         // are the only sites that hold the `KernelRegistration` the capability
@@ -1872,6 +1776,9 @@ impl Engine {
     ///
     /// # DFMRule discovery — two sources
     ///
+    /// Both are enumerated by [`dfm_rule_candidates`], shared with the viewport
+    /// pass so the two discover the same rules.
+    ///
     /// **(A) Top-level templates**: for each `module.templates` entry, the
     /// evaluator stores individual field cells (e.g. `OverhangRule.severity`)
     /// but no whole-structure `Value::StructureInstance`.  We synthesize one
@@ -1907,58 +1814,17 @@ impl Engine {
         // Subtracting/Parting (rejected by `dfm_rule_spec`) get thickness only.
         let mut thickness_specs: Vec<DfmThicknessSpec> = Vec::new();
 
-        // (A) Top-level templates — synthesize a StructureInstance from their
-        // evaluated cell values so that dfm_rule_spec can duck-type the shape.
-        //
-        // Geometry cells (e.g. `param subject : Solid = box(...)`) are NOT
-        // present as live `Value::GeometryHandle` in `eval_result.values` after
-        // a fresh `eval()` call: the kernel is not invoked during pure evaluation
-        // (only `build()` calls the kernel and stamps `realization_handles`).
-        // To expose live handles, we additionally iterate the template's named
-        // realizations and inject the handle from `self.realization_handles` so
-        // that `dfm_rule_spec` can find a non-None `subject_handle`.
-        for template in &module.templates {
-            let mut data = template_instance_data(template, values);
-            // Override / fill geometry fields from live realization_handles.
-            // This is safe because realization_handles is a disjoint Engine
-            // field from geometry_kernels — both accessed in sequence, not
-            // simultaneously.
-            for realization in &template.realizations {
-                let Some(ref name) = realization.name else {
-                    continue;
-                };
-                if let Some(&kernel_handle) = self.realization_handles.get(&realization.id) {
-                    data.fields.insert(
-                        name.clone(),
-                        Value::GeometryHandle {
-                            realization_ref: realization.id.clone(),
-                            upstream_values_hash: [0u8; 32],
-                            kernel_handle: Some(kernel_handle),
-                        },
-                    );
-                }
-            }
-            if !data.fields.is_empty() {
-                let si = Value::StructureInstance(Box::new(data));
-                if let Some(spec) = dfm_rule_spec(&si)
-                    && spec.subject_handle.is_some()
-                {
-                    specs.push(spec);
-                }
-                if let Some(tspec) = dfm_thickness_spec(&si) {
-                    thickness_specs.push(tspec);
-                }
-            }
-        }
-
-        // (B) Sub-component StructureInstance values (task-3540 synthetic cells).
-        for (_, v) in values.iter() {
-            if let Some(spec) = dfm_rule_spec(v)
+        // Sources (A) and (B). Declared rules take their geometry from the live
+        // `realization_handles`, so `dfm_rule_spec` can find a non-None
+        // `subject_handle`; that map is a disjoint Engine field from
+        // `geometry_kernels`, borrowed only until this loop ends.
+        for candidate in dfm_rule_candidates(module, values, Some(&self.realization_handles)) {
+            if let Some(spec) = dfm_rule_spec(&candidate)
                 && spec.subject_handle.is_some()
             {
                 specs.push(spec);
             }
-            if let Some(tspec) = dfm_thickness_spec(v) {
+            if let Some(tspec) = dfm_thickness_spec(&candidate) {
                 thickness_specs.push(tspec);
             }
         }
@@ -2137,12 +2003,7 @@ impl Engine {
     ) {
         // Fast no-op for non-GD&T modules (B4 / C2): keep every module without an
         // explicit-`actual` Conforms byte-identical and allocation-free.
-        let has_geometric_conforms = module
-            .templates
-            .iter()
-            .flat_map(template_constraints)
-            .any(is_geometric_conforms);
-        if !has_geometric_conforms {
+        if !declares_geometric_conforms(module) {
             return;
         }
 
@@ -2229,19 +2090,7 @@ impl Engine {
             let mut work = Vec::new();
             for template in &module.templates {
                 for c in Self::collect_active_constraints(template, values) {
-                    if !is_geometric_conforms(c) {
-                        continue;
-                    }
-                    let binding = |name: &str| {
-                        c.arg_bindings
-                            .iter()
-                            .find(|(n, _)| n == name)
-                            .map(|(_, e)| e)
-                    };
-                    let (Some(tol_expr), Some(act_expr)) =
-                        (binding("tolerance"), binding("actual"))
-                    else {
-                        // An `actual` with no `tolerance` is not a Conforms callout.
+                    let Some((tol_expr, act_expr)) = gdt_callout_operands(c) else {
                         continue;
                     };
 
@@ -2305,7 +2154,7 @@ impl Engine {
                             .get("material_condition")
                             .cloned()
                             .unwrap_or_else(|| Value::enum_unit("MaterialCondition", "RFS"));
-                        let feature_departure = binding("feature_departure")
+                        let feature_departure = arg_binding(c, "feature_departure")
                             .map(|e| eval_expr(e, &ctx))
                             .unwrap_or(Value::Scalar {
                                 si_value: 0.0,
@@ -2692,8 +2541,34 @@ fn template_constraints(t: &TopologyTemplate) -> impl Iterator<Item = &CompiledC
 /// η detection signal: an EXPLICIT `actual` binding. The Conforms predicate
 /// never references `actual`, so this binding (not the body) is the only trace
 /// of geometric intent.
-pub(crate) fn is_geometric_conforms(c: &CompiledConstraint) -> bool {
+fn is_geometric_conforms(c: &CompiledConstraint) -> bool {
     c.arg_bindings.iter().any(|(n, _)| n == "actual")
+}
+
+/// Whether any template declares a geometric Conforms, guard-blind: the fast
+/// no-op test of every GD&T conformance pass.
+pub(crate) fn declares_geometric_conforms(module: &CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .flat_map(template_constraints)
+        .any(is_geometric_conforms)
+}
+
+/// The `(tolerance, actual)` operands of a callout `measure_gdt_conformance`
+/// measures; `None` otherwise, since an `actual` with no `tolerance` is not a
+/// Conforms callout.
+pub(crate) fn gdt_callout_operands(
+    c: &CompiledConstraint,
+) -> Option<(&CompiledExpr, &CompiledExpr)> {
+    Some((arg_binding(c, "tolerance")?, arg_binding(c, "actual")?))
+}
+
+fn arg_binding<'c>(c: &'c CompiledConstraint, name: &str) -> Option<&'c CompiledExpr> {
+    c.arg_bindings
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, e)| e)
 }
 
 /// Tessellation deflection forwarded to [`reify_ir::GeometryQuery::MaxDeviation`]'s
@@ -3855,6 +3730,7 @@ mod unmeasured_reason_capability_tests {
     use reify_constraints::SimpleConstraintChecker;
 
     use crate::Engine;
+    use crate::unmeasured_attribution::{UnmeasuredMeasurement, unmeasured_reason};
 
     /// The shipped stub-mode shape, isolated to the ONE axis on which a
     /// CAPABILITY test differs from a PRESENCE test: a registered kernel that
@@ -3912,7 +3788,10 @@ mod unmeasured_reason_capability_tests {
              measurement, however the lex-min picker selected it as default"
         );
 
-        let reason = engine.unmeasured_reason();
+        let reason = unmeasured_reason(
+            UnmeasuredMeasurement::RepresentationWithin,
+            engine.measurement_capability(),
+        );
         assert!(
             reason.contains("geometry kernel"),
             "INV-SF-4: the missing CAPABILITY is the established cause and is \
