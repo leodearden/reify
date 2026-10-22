@@ -130,7 +130,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
         // No geometry is emitted — reify eval is a value inspector only.
         //
         // `realize_for_check`, NOT `build()` (task 5318) — the same esc-5748-6
-        // reason `cmd_check` gives at its two sites above: `build()` also runs
+        // reason `cmd_check` gives at its two sites in cmd/check.rs: `build()` also runs
         // the Phase-B product-export walk, and `eval` writes no artifact, so
         // that walk's EXPORT-ONLY diagnostics are false errors here, and a false
         // EXIT — the tail of this function returns FAILURE on any

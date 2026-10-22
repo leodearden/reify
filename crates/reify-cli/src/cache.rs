@@ -690,9 +690,9 @@ fn resolve_cache_root_with_cli(cli_dir: Option<&Path>) -> Result<(PathBuf, u64),
 ///
 /// Hand-rolled per-handler parsing keeps the flag schema local to each
 /// sub-subcommand and matches the existing `cmd_gui` / `cmd_doc` patterns
-/// in `main.rs`.  Unknown `--`-prefixed tokens are NOT rejected here — the
-/// caller is responsible for its own typo gate so it can use a
-/// subcommand-specific usage banner.
+/// in `cmd/gui.rs` / `cmd/doc.rs`.  Unknown `--`-prefixed tokens are NOT
+/// rejected here — the caller is responsible for its own typo gate so it can
+/// use a subcommand-specific usage banner.
 fn parse_cache_dir_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
     let mut cache_dir: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::with_capacity(args.len());

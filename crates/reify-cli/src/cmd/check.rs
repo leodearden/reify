@@ -23,9 +23,10 @@ use crate::parse_and_compile_with_cfg;
 ///
 /// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
 /// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
-/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// check()`.  Neither path calls
+/// [`configured_eval_engine`](crate::configured_eval_engine) nor registers the
 /// FEA/buckling/modal compute trampolines
-/// ([`register_compute_trampolines`]).
+/// ([`register_compute_trampolines`](crate::register_compute_trampolines)).
 ///
 /// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
 /// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
@@ -400,7 +401,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
 
         let checker = SimpleConstraintChecker;
         // D1 item 2 (task 5748): a geometry-bearing module goes through
-        // `build()` here, exactly as `cmd_eval` already does (main.rs, its
+        // `build()` here, exactly as `cmd_eval` already does (cmd/eval.rs, its
         // `module_has_geometry`-gated branch). Without it this branch realizes
         // nothing, so `compile_geometry_op` diagnostics are never even PRODUCED
         // and geometry-query value cells stay `undef`.
