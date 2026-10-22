@@ -478,6 +478,9 @@ fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
         // MEASURED case `lower_unit_expr`'s own comment cites as motivating.
         ("5(m)/*c*/*(s)", "5(m)*(s)"),
         ("5W/*c*/*(m/K)", "5W*(m/K)"),
+        // A comment INSIDE the left paren group: the one shape whose comment
+        // attaches below the outer `unit_expr` rather than beside its operator.
+        ("5(m/*c*/)*s", "5(m)*s"),
     ] {
         assert_eq!(
             unit_of(commented),
@@ -486,6 +489,20 @@ fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
              same UnitExpr as `{plain}` — a comment is an `extra`, not an operator"
         );
     }
+}
+
+/// The task's done-when witnesses, pinned to EXPLICIT trees: a twin equality alone
+/// stays green if both twins regress the same way.
+#[test]
+fn done_when_witnesses_lower_to_their_explicit_trees() {
+    assert_eq!(unit_of("5(m)/*c*/*(s)"), mul(bare("m"), bare("s")));
+    assert_eq!(unit_of("5(m)/*c*/*(s)"), unit_of("5(m)*(s)"));
+    assert_eq!(
+        unit_of("5N·m/rad"),
+        div(mul(bare("N"), bare("m")), bare("rad"))
+    );
+    assert_eq!(unit_of("5kg*m"), mul(bare("kg"), bare("m")));
+    assert_eq!(unit_of("5m/s"), div(bare("m"), bare("s")));
 }
 
 #[test]
@@ -498,6 +515,7 @@ fn comment_between_unit_operands_keeps_the_member_and_stays_diagnostic_free() {
         "structure def S { let x = 5N/*c*/*m }",
         "structure def S { let x = 5N/*c*/·m }",
         "structure def S { let x = 5N/*a*//*b*/*m }",
+        "structure def S { let q = 5(m)/*c*/*(s) }",
     ] {
         let (decls, members, errors) = parse_shape(source);
         assert!(
