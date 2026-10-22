@@ -841,20 +841,27 @@ scripts/reify_verify/queries.py    tests/infra/test_verify_policy.sh
 tests/infra/test_verify_policy.py    tests/infra/test_verify_policy.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh
 
-# S18 β (#9097, PRD verify-structured-plan-and-role-table D5/D6/D14): the scope decision record.
-# Selection dedups by glob token, not by the files a glob expands to, so the scope-record
-# member is named only for artifacts no tests/infra/test_verify_*.sh row already selects
-# (every package module, occt-scope-lib.sh, affected-crates-lib.sh). The test_verify_policy.sh
-# rows stay although that glob covers them too: test_verify_policy.py's TestInfraMapRegistration
-# requires both rows for every package module.
+# S18 β (#9097, PRD verify-structured-plan-and-role-table D5/D6/D14): the scope decision record,
+# read by two members: test_verify_scope_record.sh (the scope section: the CLI, the scope
+# decision, the D6 fixture coupling) and test_verify_narrowing_selection.sh (the narrowing and
+# infra_selection sections). Each artifact names the member(s) that read it. Selection dedups by
+# glob token, not by the files a glob expands to, so a member is named only for artifacts no
+# tests/infra/test_verify_*.sh row already selects (every package module, occt-scope-lib.sh,
+# affected-crates-lib.sh). The test_verify_policy.sh rows stay although that glob covers them
+# too: test_verify_policy.py's TestInfraMapRegistration requires both rows for every package module.
 tests/infra/test_verify_scope_record.py    tests/infra/test_verify_scope_record.sh
+tests/infra/test_verify_narrowing_selection.py    tests/infra/test_verify_narrowing_selection.sh
+tests/infra/scope_record_harness.py    tests/infra/test_verify_scope_record.sh
+tests/infra/scope_record_harness.py    tests/infra/test_verify_narrowing_selection.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_scope_record.sh
-tests/infra/reify_audit_inputs.py    tests/infra/test_verify_scope_record.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_narrowing_selection.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_scope_record.sh
-crates/reify-audit/src/ptodo.rs    tests/infra/test_verify_scope_record.sh
-crates/reify-audit/src/pdiag.rs    tests/infra/test_verify_scope_record.sh
-crates/reify-audit/src/pdoccover.rs    tests/infra/test_verify_scope_record.sh
-crates/reify-audit/src/pdoccover_baseline.rs    tests/infra/test_verify_scope_record.sh
+tests/infra/verify_ledger_env.py    tests/infra/test_verify_narrowing_selection.sh
+tests/infra/reify_audit_inputs.py    tests/infra/test_verify_narrowing_selection.sh
+crates/reify-audit/src/ptodo.rs    tests/infra/test_verify_narrowing_selection.sh
+crates/reify-audit/src/pdiag.rs    tests/infra/test_verify_narrowing_selection.sh
+crates/reify-audit/src/pdoccover.rs    tests/infra/test_verify_narrowing_selection.sh
+crates/reify-audit/src/pdoccover_baseline.rs    tests/infra/test_verify_narrowing_selection.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_*.sh
@@ -865,5 +872,5 @@ scripts/reify_verify/selection.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/selection.py    tests/infra/test_verify_policy.sh
 gui/src/__tests__/reifyGrammarCorpus.expected-clean.json    tests/infra/test_verify_scope_record.sh
 scripts/occt-touching-crates.txt    tests/infra/test_verify_scope_record.sh
-tests/infra/harness-layout-lib.sh    tests/infra/test_verify_scope_record.sh
-scripts/verify-pipeline-infra-tests.txt    tests/infra/test_verify_scope_record.sh
+tests/infra/harness-layout-lib.sh    tests/infra/test_verify_narrowing_selection.sh
+scripts/verify-pipeline-infra-tests.txt    tests/infra/test_verify_narrowing_selection.sh

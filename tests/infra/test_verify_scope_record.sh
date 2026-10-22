@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 9097 (S18 β): the Python verify package's scope
-# decision, narrowing and infra selection, read through `--print-scope`
-# (PRD docs/prds/v0_6/verify-structured-plan-and-role-table.md D5, D6, D11, B7).
+# Infrastructure test for task 9097 (S18 β): the scope section of the Python
+# verify package's `--print-scope` record — the CLI surface, the scope decision
+# and the D6 fixture coupling (PRD
+# docs/prds/v0_6/verify-structured-plan-and-role-table.md D5, D6, D11, B7).
+# The narrowing and infra_selection sections are test_verify_narrowing_selection.sh's.
 #
 # This wrapper is the member run_all.sh actually discovers (it globs
 # `test_*.sh` only); the assertions live in the sibling .py, which drives
