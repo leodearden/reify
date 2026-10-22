@@ -121,8 +121,9 @@ std::unique_ptr<OpenVdbGridHandle> dense_sdf_to_level_set_ffi(
     ensure_initialized_cpp_side();
 
     // Backstops: the Rust DenseSdfGrid / ImplicitOptions constructors already
-    // enforce all of these; a violation here would otherwise be an
-    // out-of-bounds read or an unbounded allocation.
+    // enforce all of these except the voxel budget, which they leave to the
+    // caller; a violation here would otherwise be an out-of-bounds read or an
+    // unbounded allocation.
     const int64_t nx = dims[0];
     const int64_t ny = dims[1];
     const int64_t nz = dims[2];

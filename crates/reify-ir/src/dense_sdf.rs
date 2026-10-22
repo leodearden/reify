@@ -66,18 +66,23 @@ pub struct DenseSdfGrid {
 }
 
 impl DenseSdfGrid {
-    /// Samples `f` at every voxel centre. Every argument is validated before
-    /// anything is allocated or sampled, and a sample that is not finite once
-    /// stored as f32 is refused, naming its voxel. The fill is sequential, so
-    /// the result is deterministic for a deterministic `f`.
+    /// Samples `f` at every voxel centre. The shape, spacing and centre are
+    /// validated before anything is allocated or sampled, and a sample that is
+    /// not finite once stored as f32 is refused, naming its voxel. The fill is
+    /// sequential, so the result is deterministic for a deterministic `f`.
+    ///
+    /// The voxel count is checked only for `usize` overflow, not against a
+    /// memory budget: sizing the grid within the D-7 budget is the caller's
+    /// job, and the kernel's over-budget refusal at ingest comes after this
+    /// buffer has been allocated and filled.
     pub fn from_fn(
         dims: [u32; 3],
         centre: [f64; 3],
         h: f64,
         mut f: impl FnMut([f64; 3]) -> f64,
     ) -> Result<Self, ImplicitGridError> {
-        if let Some(axis) = dims.iter().position(|&n| n == 0) {
-            return Err(ImplicitGridError::EmptyAxis { axis, dims });
+        if let Some(axis) = dims.iter().position(|&n| n < MIN_VOXELS_PER_AXIS) {
+            return Err(ImplicitGridError::DegenerateAxis { axis, dims });
         }
         if !is_valid_voxel_size(h) {
             return Err(ImplicitGridError::InvalidVoxelSize { value: h });
@@ -161,6 +166,10 @@ impl fmt::Debug for DenseSdfGrid {
     }
 }
 
+/// `densify_grid_to_sampled` reads a grid back through a sampled field that
+/// needs two nodes per axis, so a thinner grid could be ingested but not read.
+const MIN_VOXELS_PER_AXIS: u32 = 2;
+
 fn is_valid_voxel_size(h: f64) -> bool {
     h.is_finite() && h > 0.0
 }
@@ -177,7 +186,7 @@ pub enum ImplicitGridError {
         value: f64,
     },
     ZeroBand,
-    EmptyAxis {
+    DegenerateAxis {
         axis: usize,
         dims: [u32; 3],
     },
@@ -204,12 +213,12 @@ impl fmt::Display for ImplicitGridError {
                 write!(f, "voxel size must be finite and > 0 m; got {value}")
             }
             Self::ZeroBand => write!(f, "band_voxels must be at least 1; got 0"),
-            Self::EmptyAxis { axis, dims } => {
-                write!(
-                    f,
-                    "every grid axis needs at least one voxel; axis {axis} of dims {dims:?} is empty"
-                )
-            }
+            Self::DegenerateAxis { axis, dims } => write!(
+                f,
+                "every grid axis needs at least {MIN_VOXELS_PER_AXIS} voxels; axis {axis} of \
+                 dims {dims:?} has {}",
+                dims[*axis]
+            ),
             Self::VoxelCountOverflow { dims } => {
                 write!(f, "voxel count of dims {dims:?} overflows usize")
             }
@@ -324,20 +333,27 @@ mod tests {
         (result, calls)
     }
 
+    /// A single-voxel axis could be ingested but never densified back
+    /// (`densify_grid_to_sampled` needs two nodes per axis), so it is refused
+    /// alongside an empty one.
     #[test]
-    fn from_fn_refuses_an_empty_axis_before_sampling() {
-        let (result, calls) = from_fn_counting([3, 0, 2], [0.0; 3], 1e-3);
-        assert!(
-            matches!(
+    fn from_fn_refuses_an_axis_under_two_voxels_before_sampling() {
+        for dims in [[3, 0, 2], [3, 1, 2]] {
+            let (result, calls) = from_fn_counting(dims, [0.0; 3], 1e-3);
+            assert_eq!(
                 result,
-                Err(ImplicitGridError::EmptyAxis {
-                    axis: 1,
-                    dims: [3, 0, 2]
-                })
-            ),
-            "got {result:?}",
-        );
-        assert_eq!(calls, 0, "refusal must precede the fill");
+                Err(ImplicitGridError::DegenerateAxis { axis: 1, dims }),
+                "dims {dims:?}",
+            );
+            assert_eq!(calls, 0, "refusal must precede the fill");
+        }
+    }
+
+    #[test]
+    fn from_fn_accepts_two_voxels_per_axis() {
+        let (result, calls) = from_fn_counting([2, 2, 2], [0.0; 3], 1e-3);
+        assert!(result.is_ok(), "got {result:?}");
+        assert_eq!(calls, 8);
     }
 
     #[test]
