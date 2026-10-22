@@ -4356,7 +4356,7 @@ build_plan() {
     # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
     # nested background spawn, mirroring Section B's merge spawn).
     if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
-        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
+        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (60m).
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
@@ -4460,6 +4460,9 @@ build_plan() {
         # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
         # tipping a suite already near its budget over the wall (exit 124). 30m
         # restores headroom for the full --scope all / merge gate.
+        # task #9450 (Leo 2026-10-22 stopgap): bumped 30m -> 60m. run_all.sh has no
+        # per-member timeout, so one slow member consumed the whole 30m and wedged
+        # the merge gate; the per-member fix is task #9441.
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
@@ -4517,7 +4520,7 @@ build_plan() {
         # trip the ledger drift guard and drag in a per-var hostile-ambient
         # sub-case. Both known bites of the leak (esc-4581-87, task 5321) were
         # infra tests reached through this line.
-        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
+        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 60m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra

@@ -1208,7 +1208,7 @@ _ra_partial_failed_names() {
 #
 # TERM-signal handler: installed immediately below (before ANY phase work),
 # so it covers both the pool and legacy-serial paths alike. The merge-tier
-# envelope wraps run_all.sh in `timeout --kill-after=60 30m` (verify.sh) --
+# envelope wraps run_all.sh in `timeout --kill-after=60 60m` (verify.sh) --
 # timeout sends SIGTERM first (SIGKILL only after the kill-after grace
 # period), so this handler gets a real window to reclassify a mid-run kill
 # BEFORE dark-factory's classifier falls through to a tree_sitter_generate_error
