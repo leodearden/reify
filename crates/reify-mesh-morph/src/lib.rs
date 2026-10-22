@@ -85,16 +85,9 @@
 //! upstream ordering ever changes, and has no behaviour test for the same
 //! reason: no constructible input reaches it.
 //!
-//! It also records no diagnostic counter, unlike the sibling Ineligible /
-//! Panicked / HardFail / SoftFail arms — there is no `MorphOutcome` bucket
-//! for a branch that cannot fire today, and the failure still reaches the
-//! caller via the structured `Err`, so this is silent-from-diagnostics, not
-//! silent-from-the-API. [`record_quality_remesh`]'s own `Unsupported` arm
-//! mirrors this with a `debug_assert!` instead of a counter, since this
-//! intercept always fires first. If the upstream guards are ever relaxed and
-//! this path becomes reachable, add a dedicated `MorphOutcome` bucket (or
-//! reuse an existing failure bucket) so it is observable in release
-//! diagnostics rather than silent.
+//! Like every other non-panic `SolverError` exit, the intercept records the
+//! `remeshed_solver_error` diagnostic bucket, so it stays observable if it
+//! ever becomes reachable.
 pub mod boundary;
 pub mod diagnostics;
 pub mod elasticity;
@@ -202,9 +195,11 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// handle yields `None`, degrading the next tick to an honest remesh rather
 /// than a silent misprojection.
 ///
-/// The eligibility-reject and quality-reject arms each record one diagnostic
-/// bucket ([`record_ineligible`] / [`record_quality_remesh`]) before returning
-/// their structured [`MorphFailure`].
+/// Every failure arm records exactly one diagnostic bucket before returning its
+/// structured [`MorphFailure`]: ineligible (`record_ineligible`), quality remesh
+/// (`record_quality_remesh`), solver error (`record_solver_error`, for a
+/// projection failure, a solver `Err` or an unsupported mesh) or panicked
+/// (`record_panicked`).
 pub fn compose_morph(
     source_mesh: &reify_ir::VolumeMesh,
     boundary: &BoundaryAssociation,
@@ -229,7 +224,7 @@ pub fn compose_morph(
     let projector = boundary::KernelProjector(kernel);
     let prescribed = compute_dirichlet_bcs(source_mesh, boundary, &correspondence, &projector)
         .map_err(|failure| {
-            MorphFailure::SolverError(SolverErrorPayload::new(format!(
+            solver_failure(SolverErrorPayload::new(format!(
                 "boundary-node projection failed: {failure:?}"
             )))
         })?;
@@ -249,7 +244,7 @@ pub fn compose_morph(
     });
     let mut morphed = match std::panic::catch_unwind(solve) {
         Ok(Ok(mesh)) => mesh,
-        Ok(Err(payload)) => return Err(MorphFailure::SolverError(payload)),
+        Ok(Err(payload)) => return Err(solver_failure(payload)),
         Err(panic) => {
             let detail = panic_detail(panic.as_ref());
             record_panicked(&detail);
@@ -281,7 +276,7 @@ pub fn compose_morph(
     // caller as `MorphFailure::SolverError`. Full rationale: module docs
     // above (`Task #5007`).
     if matches!(verdict, QualityVerdict::Unsupported) {
-        return Err(MorphFailure::SolverError(SolverErrorPayload::new(
+        return Err(solver_failure(SolverErrorPayload::new(
             "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
         )));
     }
@@ -331,6 +326,14 @@ fn bbox_diagonal(mesh: &reify_ir::VolumeMesh) -> f64 {
     let dy = (max[1] - min[1]) as f64;
     let dz = (max[2] - min[2]) as f64;
     (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Record a non-panic solver failure's diagnostic bucket and wrap it as a
+/// [`MorphFailure::SolverError`]. The panic arm records `panicked` instead and
+/// builds its failure directly, so no exit is counted twice.
+fn solver_failure(payload: SolverErrorPayload) -> MorphFailure {
+    diagnostics::record_solver_error(payload.message());
+    MorphFailure::SolverError(payload)
 }
 
 /// Best-effort extraction of a panic message from a caught panic payload.
