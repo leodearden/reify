@@ -19,6 +19,7 @@
 import type { EditorView } from '@codemirror/view';
 import { askFresh, versionsDisagree, type VersionSkewGuard } from './versionSkew';
 import type { Location, LspClient } from './lspClient';
+import { isSameFile } from '../utils/pathUtils';
 
 /**
  * A single reference occurrence, in native LSP (0-based) coordinates.
@@ -137,7 +138,7 @@ export function findUsesCommand(
       .then((locations) => {
         // Checked after the LAST await, guard or not: Editor forgets the old
         // URI's version on a switch, which leaves the version comparison blind.
-        if (!locations || uriGetter() !== uri) return;
+        if (!locations || !isSameFile(uriGetter(), uri)) return;
         onResults(locations.map((location) => toReferenceResult(view, location)));
       })
       .catch((err) => console.warn('findUses: failed to collect references', err));

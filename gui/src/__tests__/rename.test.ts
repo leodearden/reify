@@ -170,6 +170,8 @@ describe('applyTextEditsToString', () => {
 const ACTIVE_URI = 'file:///proj/main.ri';
 const OPEN_URI = 'file:///proj/lib.ri';
 const CLOSED_URI = 'file:///proj/other.ri';
+const SPACED_ACTIVE_URI = 'file:///proj/hello world.ri';
+const SPACED_ACTIVE_URI_ENCODED = 'file:///proj/hello%20world.ri';
 
 const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
 const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
@@ -262,6 +264,16 @@ describe('applyWorkspaceEditAcrossFiles', () => {
     expect(deps.isOpen).not.toHaveBeenCalledWith(ACTIVE_URI);
   });
 
+  it('routes the percent-encoded spelling of the active URI to applyActive', () => {
+    const edit: WorkspaceEdit = { changes: { [SPACED_ACTIVE_URI_ENCODED]: EDIT_A } };
+    const deps = makeDeps([SPACED_ACTIVE_URI_ENCODED]);
+    applyWorkspaceEditAcrossFiles(edit, SPACED_ACTIVE_URI, deps);
+    expect(deps.applyActive).toHaveBeenCalledOnce();
+    expect(deps.applyActive).toHaveBeenCalledWith(SPACED_ACTIVE_URI_ENCODED, EDIT_A);
+    expect(deps.applyOpenInactive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).not.toHaveBeenCalled();
+  });
+
   // Task 7118: once the client declares the documentChanges capability the
   // server stops sending `changes` entirely. An applier that only reads
   // `changes` would become a silent no-op — rename reporting success while
@@ -332,6 +344,30 @@ describe('applyWorkspaceEdit', () => {
     const view = makeMockView({ dispatch });
 
     const result = applyWorkspaceEdit(view, edit, URI);
+
+    expect(result).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 43, to: 48, insert: 'girth' }],
+      userEvent: 'rename',
+    });
+  });
+
+  it('finds the edits for uri when the server spells it percent-encoded', () => {
+    const edit: WorkspaceEdit = {
+      changes: {
+        [SPACED_ACTIVE_URI_ENCODED]: [
+          {
+            range: { start: { line: 2, character: 3 }, end: { line: 2, character: 8 } },
+            newText: 'girth',
+          },
+        ],
+      },
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    const result = applyWorkspaceEdit(view, edit, SPACED_ACTIVE_URI);
 
     expect(result).toBe(true);
     expect(dispatch).toHaveBeenCalledTimes(1);
