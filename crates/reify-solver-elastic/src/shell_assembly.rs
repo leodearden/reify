@@ -269,6 +269,16 @@ fn condense_bubble(k: &[[f64; NU_ELEM]; NU_ELEM]) -> [[f64; NDOF_ELEM]; NDOF_ELE
     k_loc
 }
 
+/// Pack an 18×18 element matrix into an [`ElementStiffness`], row-major
+/// (`data[i * 18 + j] = k[i][j]`). A bit-exact copy: no arithmetic touches the
+/// entries, so signed zeros survive.
+fn pack_element_stiffness(k: &[[f64; NDOF_ELEM]; NDOF_ELEM]) -> ElementStiffness {
+    ElementStiffness {
+        n_dofs: NDOF_ELEM,
+        data: k.iter().flatten().copied().collect(),
+    }
+}
+
 /// Rotate a local-frame 18×18 shell element matrix into the global frame:
 /// `K_glob[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R`.
 ///
@@ -415,15 +425,7 @@ pub fn shell_element_stiffness(
     // minimises residual asymmetry before the Rᵀ·K·R block rotation.
     symmetrize_in_place(&mut k_loc);
     let k_glob = rotate_local_to_global(&k_loc, &r);
-
-    // Pack into ElementStiffness
-    let mut k_e = ElementStiffness::zeros(NDOF);
-    for i in 0..NDOF {
-        for j in 0..NDOF {
-            k_e.data[i * NDOF + j] = k_glob[i][j];
-        }
-    }
-    k_e
+    pack_element_stiffness(&k_glob)
 }
 
 /// Compute the 18×18 element stiffness for the genuine flat-facet **MITC3+**
@@ -607,14 +609,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     // the bare path — only the transverse-shear treatment differs) ----
     symmetrize_in_place(&mut k_loc);
     let k_glob = rotate_local_to_global(&k_loc, &r);
-
-    let mut k_e = ElementStiffness::zeros(NDOF);
-    for i in 0..NDOF {
-        for j in 0..NDOF {
-            k_e.data[i * NDOF + j] = k_glob[i][j];
-        }
-    }
-    k_e
+    pack_element_stiffness(&k_glob)
 }
 
 /// Compute the 18×18 element stiffness for the **degenerated (continuum-based)
@@ -914,14 +909,7 @@ fn degenerate_stiffness_core(
     // flat-facet siblings). Each Bᵀ·D·B contribution is symmetric in form;
     // averaging the triangles minimises residual asymmetry before packing.
     symmetrize_in_place(&mut k_loc);
-
-    let mut k_e = ElementStiffness::zeros(NDOF);
-    for i in 0..NDOF {
-        for j in 0..NDOF {
-            k_e.data[i * NDOF + j] = k_loc[i][j];
-        }
-    }
-    k_e
+    pack_element_stiffness(&k_loc)
 }
 
 /// Degenerated (continuum-based) shell element stiffness with the
