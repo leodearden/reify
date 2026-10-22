@@ -88,20 +88,20 @@ fn infos_claiming<'a>(state: &'a GuiState, c: &ConstraintData) -> Vec<&'a str> {
         .collect()
 }
 
-/// A geometric Conforms reads Indeterminate and the panel says why.
-#[test]
-fn gui_viewport_attributes_an_unmeasured_geometric_conforms() {
-    let state = load(GDT_SOURCE, "gdt_viewport");
-    let callout = state
+fn probe_callout(state: &GuiState) -> &ConstraintData {
+    state
         .constraints
         .iter()
         .find(|c| c.node_id.contains("Probe#constraint["))
-        .unwrap_or_else(|| panic!("no Probe callout in {:#?}", state.constraints));
-    assert_eq!(
-        callout.status,
-        satisfaction_token(Satisfaction::Indeterminate),
-        "{callout:?}"
-    );
+        .unwrap_or_else(|| panic!("no Probe callout in {:#?}", state.constraints))
+}
+
+/// The viewport Info stream says why a geometric Conforms is unmeasured. The
+/// panel status is `Engine::check`'s, so only the Info is under test here.
+#[test]
+fn gui_viewport_attributes_an_unmeasured_geometric_conforms() {
+    let state = load(GDT_SOURCE, "gdt_viewport");
+    let callout = probe_callout(&state);
 
     let claiming = infos_claiming(&state, callout);
     assert_eq!(claiming.len(), 1, "{:#?}", state.tessellation_diagnostics);
@@ -126,4 +126,39 @@ fn gui_viewport_attributes_an_unmeasured_dfm_rule() {
         assert!(message.contains(token), "lacks {token:?}: {message}");
     }
     assert_names_a_terminal_remedy(message);
+}
+
+/// The panel's verdict (`Engine::check`'s) and the viewport's Info must not
+/// contradict each other: a recheck or reload that runs no build has no live
+/// handle to measure with, so the panel stays Indeterminate beside the Info.
+#[test]
+fn gui_panel_verdict_and_viewport_info_agree_across_a_recheck_and_a_reload() {
+    let mut session = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+    let loaded = session
+        .load_from_source(GDT_SOURCE, "gdt_viewport")
+        .expect("gdt_viewport must load");
+    session.recheck_for_test();
+    let rechecked = session.build_gui_state().expect("rechecked state");
+    let reloaded = session
+        .update_source("gdt_viewport.ri", GDT_SOURCE)
+        .expect("reload of the same source");
+
+    for (surface, state) in [
+        ("load", &loaded),
+        ("recheck", &rechecked),
+        ("reload", &reloaded),
+    ] {
+        let callout = probe_callout(state);
+        assert_eq!(
+            callout.status,
+            satisfaction_token(Satisfaction::Indeterminate),
+            "{surface}: {callout:?}"
+        );
+        assert_eq!(
+            infos_claiming(state, callout).len(),
+            1,
+            "{surface}: {:#?}",
+            state.tessellation_diagnostics
+        );
+    }
 }
