@@ -39,59 +39,42 @@
 //! `Failed` with EMPTY diagnostics so `build()` proceeds and the geometry-handle
 //! redispatch re-invokes it post-hydration.
 //!
-//! For each `LoadCase` in `cases`:
-//!   1. Extracts `name` (String), `loads` (Value), `supports` (Value).
-//!   2. Resolves effective options: `LoadCase.options == Option(Some(X))` → `X`;
-//!      otherwise inherits `value_inputs[5]` (mirrors `resolve_load_case_options`
-//!      in `crates/reify-expr/src/lib.rs`).
-//!   3. Calls `elastic_static::solve_elastic_static_trampoline` directly with
-//!      `[material, length, width, height, loads, supports, effective_options]`.
-//!   4. Collects `Completed.result` (a real Sampled-field `ElasticResult`
-//!      `Value::StructureInstance`) into an inner `BTreeMap<String→Value>`.
+//! # Per-case dispatch
 //!
-//! Returns `ComputeOutcome::Completed` with:
-//! - `result`         — `Value::Map{"cases" -> Value::Map<String, ElasticResult>}`
-//!   matching the shape expected by `detect_multi_case_result`,
-//!   `extract_cases_map`, `multi_case_result_value`, and all existing consumers.
-//! - `new_warm_state` — `None` (cross-case warm-state reuse re-homed to task 4152,
-//!   esc-4088-231 decision A).
-//! - `cost_per_byte`  — `None`.
-//!
-//! # Per-case warm state
-//!
-//! Each sub-solve is cold (`prior_warm_state = None`). Cross-case warm-state
-//! and realization-cache reuse (the B9 intent) are explicitly deferred to task
-//! 4152 (gated on 4088 + 4091).  In v1 every case invokes the `elastic_static`
-//! trampoline fresh.
-//!
-//! # Error propagation
-//!
-//! - Empty `cases` list → `Failed` with a descriptive diagnostic (best-effort
-//!   parity with `eval_solve_load_cases`).
-//! - A case is not a `Value::StructureInstance` → `Failed`.
-//! - `LoadCase.name` is not a `Value::String` → `Failed`.
-//! - `LoadCase.loads` or `LoadCase.supports` absent → `Failed`.
-//! - Sub-`Cancelled` → propagate `Cancelled` immediately.
-//! - Sub-`Failed` → propagate `Failed` immediately (no partial results).
+//! `load_cases::run_load_cases` sweeps the cases through
+//! `elastic_static::solve_elastic_static_trampoline` and owns the shared
+//! contract: LoadCase extraction, error propagation and the
+//! `Value::Map{"cases" -> Value::Map<String, ElasticResult>}` result. On the dims
+//! path each case is dispatched as
+//! `[material, length, width, height, loads, supports, effective_options]`.
+//! `effective_options` is `X` when `LoadCase.options == Option(Some(X))` and the
+//! shared `options` otherwise (mirrors `resolve_load_case_options` in
+//! `crates/reify-expr/src/lib.rs`). An empty `cases` list fails with the
+//! `eval_solve_load_cases` parity message.
 //!
 //! # Placement rationale
 //!
 //! See `compute_targets/mod.rs` for why trampolines live in `reify-eval` rather
 //! than `reify-stdlib` (cycle-free dependency graph).
 
-use std::collections::BTreeMap;
-
 use reify_core::Diagnostic;
 use reify_ir::{OpaqueState, Value};
 
+use super::load_cases::{LoadCaseSweep, run_load_cases};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
+
+const SWEEP: LoadCaseSweep = LoadCaseSweep {
+    label: "solve_load_cases (solver::multi_case)",
+    empty_cases_message: "Multi-load case analysis requires at least one LoadCase. \
+                          Use solve_elastic_static for single-case analysis.",
+    solve_case: super::elastic_static::solve_elastic_static_trampoline,
+};
 
 /// Trampoline for `solver::multi_case`.
 ///
-/// Iterates the runtime `List<LoadCase>` in `value_inputs[4]`, dispatches
-/// the `elastic_static` trampoline per case, and collects the per-case
-/// `Completed.result` into a `Value::Map{"cases"→Map}` matching the
-/// `MultiCaseResult` runtime shape.
+/// Sweeps the runtime `List<LoadCase>` through the `elastic_static` trampoline
+/// and collects the per-case `Completed.result` into a `Value::Map{"cases"→Map}`
+/// matching the `MultiCaseResult` runtime shape.
 ///
 /// See module-level docs for the full contract.
 pub fn solve_multi_case_trampoline(
@@ -135,8 +118,9 @@ pub fn solve_multi_case_trampoline(
     if value_inputs.len() < min_arity {
         return ComputeOutcome::Failed {
             diagnostics: vec![Diagnostic::error(format!(
-                "solve_load_cases (solver::multi_case): expected {} value_inputs \
-                 ({} layout), got {} — possible arity mismatch at dispatch site",
+                "{}: expected {} value_inputs ({} layout), got {} — possible arity \
+                 mismatch at dispatch site",
+                SWEEP.label,
                 min_arity,
                 if body_path { "body" } else { "dims" },
                 value_inputs.len()
@@ -159,208 +143,32 @@ pub fn solve_multi_case_trampoline(
         return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
     }
 
+    // The body layout carries the body at [1]; the dims layout carries
+    // length/width/height at [1..4]. Each case is dispatched as
+    // [material, <these>, loads, supports, effective_options].
     let material = &value_inputs[0];
-    // cases/options ride at different indices per layout (the body layout drops the
-    // three scalar dims). length/width/height are read directly from value_inputs
-    // in the dims branch of per_case_inputs below (unused on the body path).
-    let (cases_val, shared_options) = if body_path {
-        (&value_inputs[2], &value_inputs[3])
+    let (geometry_args, cases_val, shared_options) = if body_path {
+        (&value_inputs[1..2], &value_inputs[2], &value_inputs[3])
     } else {
-        (&value_inputs[4], &value_inputs[5])
+        (&value_inputs[1..4], &value_inputs[4], &value_inputs[5])
     };
 
-    // ── (2) Unwrap cases list ─────────────────────────────────────────────────
-    let cases = match cases_val {
-        Value::List(v) => v,
-        other => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "solve_load_cases (solver::multi_case): cases argument must be \
-                     Value::List, got {:?}",
-                    std::mem::discriminant(other)
-                ))],
-                structured_detail: vec![],
-            };
-        }
-    };
-
-    if cases.is_empty() {
-        return ComputeOutcome::Failed {
-            diagnostics: vec![Diagnostic::error(
-                "Multi-load case analysis requires at least one LoadCase. \
-                 Use solve_elastic_static for single-case analysis.",
-            )],
-            structured_detail: vec![],
-        };
-    }
-
-    // ── (3) Iterate cases, dispatch elastic_static per case ──────────────────
-    let mut inner: BTreeMap<Value, Value> = BTreeMap::new();
-    let mut accumulated_diagnostics: Vec<Diagnostic> = Vec::new();
-
-    for case_val in cases.iter() {
-        // Cooperative cancellation: allow long batches to be interrupted between
-        // sub-solves.  `solve_elastic_static_trampoline` ignores its own
-        // cancellation handle, so this loop is the only place a multi-case
-        // solve can be interrupted before completion.
-        if cancellation.is_cancelled() {
-            return ComputeOutcome::Cancelled;
-        }
-
-        // ── Extract LoadCase fields ───────────────────────────────────────────
-        let data = match case_val {
-            Value::StructureInstance(d) => d,
-            other => {
-                return ComputeOutcome::Failed {
-                    diagnostics: vec![Diagnostic::error(format!(
-                        "solve_load_cases (solver::multi_case): each case must be a \
-                         LoadCase Value::StructureInstance, got {:?}",
-                        std::mem::discriminant(other)
-                    ))],
-                    structured_detail: vec![],
-                };
-            }
-        };
-
-        let name = match data.fields.get(&"name".to_string()) {
-            Some(Value::String(s)) => s.clone(),
-            other => {
-                return ComputeOutcome::Failed {
-                    diagnostics: vec![Diagnostic::error(format!(
-                        "solve_load_cases (solver::multi_case): LoadCase.name must be \
-                         Value::String, got {:?}",
-                        other.map(std::mem::discriminant)
-                    ))],
-                    structured_detail: vec![],
-                };
-            }
-        };
-
-        let loads = match data.fields.get(&"loads".to_string()) {
-            Some(v) => v.clone(),
-            None => {
-                return ComputeOutcome::Failed {
-                    diagnostics: vec![Diagnostic::error(format!(
-                        "solve_load_cases (solver::multi_case): LoadCase \"{name}\" \
-                         is missing the \"loads\" field"
-                    ))],
-                    structured_detail: vec![],
-                };
-            }
-        };
-
-        let supports = match data.fields.get(&"supports".to_string()) {
-            Some(v) => v.clone(),
-            None => {
-                return ComputeOutcome::Failed {
-                    diagnostics: vec![Diagnostic::error(format!(
-                        "solve_load_cases (solver::multi_case): LoadCase \"{name}\" \
-                         is missing the \"supports\" field"
-                    ))],
-                    structured_detail: vec![],
-                };
-            }
-        };
-
-        // ── Resolve effective options (mirrors resolve_load_case_options in
-        //    crates/reify-expr/src/lib.rs) ─────────────────────────────────────
-        // Option(Some(x)) → per-case override; anything else → shared default.
-        let effective_options = match data.fields.get(&"options".to_string()) {
-            Some(Value::Option(Some(per_case_opts))) => (**per_case_opts).clone(),
-            _ => shared_options.clone(),
-        };
-
-        // ── Dispatch elastic_static for this case ─────────────────────────────
-        // Each case is cold (prior_warm_state = None).  Cross-case warm-state
-        // and realization-cache reuse are re-homed to task 4152.
-        //
-        // On the body path (task 4870) each sub-solve receives the elastic BODY
-        // layout [material, body(GeometryHandle), loads, supports, options]: the
-        // shared body handle rides at [1] so solve_elastic_static_trampoline
-        // detects its own body path and consumes the forwarded realized VolumeMesh.
-        // `realization_inputs` is passed UNCHANGED (below), so every case shares
-        // ONE realized mesh. On the dims path the layout is byte-identical to the
-        // pre-4870 [material, length, width, height, loads, supports, options].
-        let per_case_inputs: Vec<Value> = if body_path {
-            vec![
-                material.clone(),
-                value_inputs[1].clone(), // body (GeometryHandle)
-                loads,
-                supports,
-                effective_options,
-            ]
-        } else {
-            vec![
-                material.clone(),
-                value_inputs[1].clone(), // length
-                value_inputs[2].clone(), // width
-                value_inputs[3].clone(), // height
-                loads,
-                supports,
-                effective_options,
-            ]
-        };
-
-        let outcome = super::elastic_static::solve_elastic_static_trampoline(
-            &per_case_inputs,
-            realization_inputs,
-            &Value::Undef,
-            None, // cold — cross-case warm-state reuse re-homed to task 4152
-            cancellation,
-        );
-
-        match outcome {
-            ComputeOutcome::Completed {
-                result,
-                diagnostics: case_diags,
-                ..
-            } => {
-                accumulated_diagnostics.extend(case_diags);
-                let key = Value::String(name.clone());
-                if inner.contains_key(&key) {
-                    // Duplicate case name: emit a warning so the user can
-                    // correct it; we overwrite the earlier result (matching
-                    // BTreeMap::insert semantics) rather than silently losing it.
-                    accumulated_diagnostics.push(Diagnostic::warning(format!(
-                        "solve_load_cases (solver::multi_case): duplicate LoadCase \
-                         name \"{name}\" — the earlier result for this case is \
-                         overwritten; this is almost certainly a user error"
-                    )));
-                }
-                inner.insert(key, result);
-            }
-            ComputeOutcome::Cancelled => return ComputeOutcome::Cancelled,
-            ComputeOutcome::Failed {
-                diagnostics: fail_diags,
-                ..
-            } => {
-                // Prepend any warnings collected from earlier completed cases so
-                // they are not silently discarded along with the failure.
-                let mut all_diags = accumulated_diagnostics;
-                all_diags.extend(fail_diags);
-                return ComputeOutcome::Failed {
-                    diagnostics: all_diags,
-                    structured_detail: vec![],
-                };
-            }
-        }
-    }
-
-    // ── (4) Wrap as MultiCaseResult shape ─────────────────────────────────────
-    //
-    // Emits Value::Map{"cases" -> Map<String, ElasticResult>} — the de-facto
-    // runtime MultiCaseResult contract consumed by detect_multi_case_result,
-    // extract_cases_map, multi_case_result_value, and all existing consumers.
-    let mut outer: BTreeMap<Value, Value> = BTreeMap::new();
-    outer.insert(Value::String("cases".to_string()), Value::Map(inner));
-
-    ComputeOutcome::Completed {
-        result: Value::Map(outer),
-        new_warm_state: None, // cross-case warm-state donation re-homed to task 4152
-        cost_per_byte: None,
-        diagnostics: accumulated_diagnostics,
-        structured_detail: vec![],
-    }
+    // ── (2) Sweep the cases (load_cases.rs) ───────────────────────────────────
+    run_load_cases(
+        &SWEEP,
+        cases_val,
+        |parts| {
+            let effective_options = parts
+                .options_override
+                .unwrap_or_else(|| shared_options.clone());
+            let mut inputs = vec![material.clone()];
+            inputs.extend_from_slice(geometry_args);
+            inputs.extend([parts.loads, parts.supports, effective_options]);
+            inputs
+        },
+        realization_inputs,
+        cancellation,
+    )
 }
 
 #[cfg(test)]
@@ -502,14 +310,16 @@ mod tests {
 
     /// A one-`PointLoad{force}` loads list.
     fn point_loads(force_n: f64) -> Value {
+        point_load_list(Value::Real(force_n))
+    }
+
+    fn point_load_list(force: Value) -> Value {
         Value::List(vec![Value::StructureInstance(Box::new(
             StructureInstanceData {
                 type_id: StructureTypeId(u32::MAX),
                 type_name: "PointLoad".to_string(),
                 version: 1,
-                fields: [("force".to_string(), Value::Real(force_n))]
-                    .into_iter()
-                    .collect(),
+                fields: [("force".to_string(), force)].into_iter().collect(),
             },
         ))])
     }
@@ -820,6 +630,15 @@ mod tests {
         vm
     }
 
+    /// Loads whose `PointLoad.force` is a Length: a List, so elastic_static
+    /// still reads the body layout, rejected by its loads gate with no detail.
+    fn length_force_loads() -> Value {
+        point_load_list(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        })
+    }
+
     fn unconstrained_detail() -> StructuredComputeDetail {
         StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
             rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
@@ -907,7 +726,7 @@ mod tests {
         let outcome = solve_body_cases(
             vec![
                 make_unsupported_load_case("free", 1000.0),
-                load_case_value("broken", Value::Real(1.0), fixed_supports()),
+                load_case_value("broken", length_force_loads(), fixed_supports()),
             ],
             healthy_box_mesh(),
         );
@@ -926,10 +745,9 @@ mod tests {
             "the free case's under-constrained warning must survive, got {diagnostics:?}"
         );
         assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.severity == Severity::Error && d.message.contains("loads")),
-            "the broken case's loads error must be reported, got {diagnostics:?}"
+            diagnostics.iter().any(|d| d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::DimensionedArgRejected)),
+            "the broken case's rejected PointLoad.force must be reported, got {diagnostics:?}"
         );
     }
 }

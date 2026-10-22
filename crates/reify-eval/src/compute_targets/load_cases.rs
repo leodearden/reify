@@ -1,3 +1,198 @@
+//! Runs a single-case trampoline over a `List<LoadCase>` and gathers the
+//! per-case outcomes into one multi-case outcome.
+//!
+//! `CaseResults::completed` is the one site that builds the
+//! `Value::Map{"cases" -> Map}` result; S15 τ (#9291) replaces it there.
+
+use std::collections::BTreeMap;
+
+use reify_core::Diagnostic;
+use reify_ir::Value;
+
+use crate::{
+    CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle, StructuredComputeDetail,
+};
+
+/// What distinguishes one multi-case target: the prefix of its diagnostics,
+/// its empty-cases message and the single-case trampoline it sweeps.
+pub(super) struct LoadCaseSweep {
+    pub(super) label: &'static str,
+    pub(super) empty_cases_message: &'static str,
+    pub(super) solve_case: ComputeFn,
+}
+
+/// The fields of one `LoadCase` that its single-case inputs are built from.
+pub(super) struct LoadCaseParts {
+    pub(super) loads: Value,
+    pub(super) supports: Value,
+    /// `Some(x)` iff the case's `options` field is `Option(Some(x))`.
+    pub(super) options_override: Option<Value>,
+}
+
+/// Solves every case of `cases_val` with `sweep.solve_case`, in order, each on
+/// the inputs `per_case_inputs` builds from it and on the shared
+/// `realization_inputs`. Every sub-solve is cold: cross-case warm-state reuse
+/// is task 4152.
+///
+/// Returns `Completed` with every case's result keyed by its name (a
+/// duplicate name keeps the later result and warns), or `Cancelled` as soon as
+/// cancellation is observed. Any other outcome is `Failed`, and a `Failed`
+/// reached after the first case carries the diagnostics and structured detail
+/// of every case solved before it.
+pub(super) fn run_load_cases(
+    sweep: &LoadCaseSweep,
+    cases_val: &Value,
+    per_case_inputs: impl Fn(LoadCaseParts) -> Vec<Value>,
+    realization_inputs: &[RealizationReadHandle],
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let cases = match non_empty_cases(sweep, cases_val) {
+        Ok(cases) => cases,
+        Err(diagnostic) => return CaseResults::default().failed(vec![diagnostic], vec![]),
+    };
+    let mut results = CaseResults::default();
+    for case_val in cases {
+        if cancellation.is_cancelled() {
+            return ComputeOutcome::Cancelled;
+        }
+        let (name, parts) = match parse_load_case(sweep.label, case_val) {
+            Ok(parsed) => parsed,
+            Err(diagnostic) => return results.failed(vec![diagnostic], vec![]),
+        };
+        let inputs = per_case_inputs(parts);
+        match (sweep.solve_case)(
+            &inputs,
+            realization_inputs,
+            &Value::Undef,
+            None,
+            cancellation,
+        ) {
+            ComputeOutcome::Completed {
+                result,
+                new_warm_state: _,
+                cost_per_byte: _,
+                diagnostics,
+                structured_detail,
+            } => results.record(sweep.label, name, result, diagnostics, structured_detail),
+            ComputeOutcome::Cancelled => return ComputeOutcome::Cancelled,
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => {
+                return results.failed(diagnostics, structured_detail);
+            }
+        }
+    }
+    results.completed()
+}
+
+fn non_empty_cases<'a>(
+    sweep: &LoadCaseSweep,
+    cases_val: &'a Value,
+) -> Result<&'a [Value], Diagnostic> {
+    match cases_val {
+        Value::List(cases) if cases.is_empty() => Err(Diagnostic::error(sweep.empty_cases_message)),
+        Value::List(cases) => Ok(cases),
+        other => Err(Diagnostic::error(format!(
+            "{}: cases argument must be Value::List, got {:?}",
+            sweep.label,
+            std::mem::discriminant(other)
+        ))),
+    }
+}
+
+/// The `name` and [`LoadCaseParts`] of one `LoadCase` value.
+fn parse_load_case(label: &str, case_val: &Value) -> Result<(String, LoadCaseParts), Diagnostic> {
+    let Value::StructureInstance(data) = case_val else {
+        return Err(Diagnostic::error(format!(
+            "{label}: each case must be a LoadCase Value::StructureInstance, got {:?}",
+            std::mem::discriminant(case_val)
+        )));
+    };
+    let field = |field_name: &str| data.fields.get(&field_name.to_string());
+    let name = match field("name") {
+        Some(Value::String(name)) => name.clone(),
+        other => {
+            return Err(Diagnostic::error(format!(
+                "{label}: LoadCase.name must be Value::String, got {:?}",
+                other.map(std::mem::discriminant)
+            )));
+        }
+    };
+    let required = |field_name: &str| {
+        field(field_name).cloned().ok_or_else(|| {
+            Diagnostic::error(format!(
+                "{label}: LoadCase \"{name}\" is missing the \"{field_name}\" field"
+            ))
+        })
+    };
+    let parts = LoadCaseParts {
+        loads: required("loads")?,
+        supports: required("supports")?,
+        options_override: match field("options") {
+            Some(Value::Option(Some(options))) => Some((**options).clone()),
+            _ => None,
+        },
+    };
+    Ok((name, parts))
+}
+
+/// What the cases solved so far have produced.
+#[derive(Default)]
+struct CaseResults {
+    cases: BTreeMap<Value, Value>,
+    diagnostics: Vec<Diagnostic>,
+    structured_detail: Vec<StructuredComputeDetail>,
+}
+
+impl CaseResults {
+    fn record(
+        &mut self,
+        label: &str,
+        name: String,
+        result: Value,
+        diagnostics: Vec<Diagnostic>,
+        structured_detail: Vec<StructuredComputeDetail>,
+    ) {
+        self.diagnostics.extend(diagnostics);
+        self.structured_detail.extend(structured_detail);
+        if self
+            .cases
+            .insert(Value::String(name.clone()), result)
+            .is_some()
+        {
+            self.diagnostics.push(Diagnostic::warning(format!(
+                "{label}: duplicate LoadCase name \"{name}\" — the earlier result for this case \
+                 is overwritten; this is almost certainly a user error"
+            )));
+        }
+    }
+
+    fn failed(
+        mut self,
+        diagnostics: Vec<Diagnostic>,
+        structured_detail: Vec<StructuredComputeDetail>,
+    ) -> ComputeOutcome {
+        self.diagnostics.extend(diagnostics);
+        self.structured_detail.extend(structured_detail);
+        ComputeOutcome::Failed {
+            diagnostics: self.diagnostics,
+            structured_detail: self.structured_detail,
+        }
+    }
+
+    fn completed(self) -> ComputeOutcome {
+        let cases = BTreeMap::from([(Value::String("cases".to_string()), Value::Map(self.cases))]);
+        ComputeOutcome::Completed {
+            result: Value::Map(cases),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: self.diagnostics,
+            structured_detail: self.structured_detail,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
