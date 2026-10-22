@@ -1534,43 +1534,6 @@ fn configured_eval_engine(
     engine
 }
 
-/// `reify eval <file>` — parse, compile, evaluate, and print every
-/// top-level value cell as `entity.member = value`.
-///
-/// This is the SIR-α user-observable signal (task 3540): structure
-/// constructors evaluate to inspectable `Value::StructureInstance` values
-/// (`TypeName { field: value, ... }` via `Value`'s `Display`) instead of
-/// opaque `undef`. Cells are sorted for deterministic output.
-///
-/// The default [`reify_constraints::DimensionalSolver`] is wired so `auto`
-/// params resolve: given box constraints and a `minimize`/`maximize` objective
-/// the solver runs Nelder-Mead and prints the resulting numeric SI value
-/// rather than `undef` (task 4132).
-///
-/// ## Geometry modules
-///
-/// When [`module_has_geometry`] detects geometry (realization ops or
-/// `Geometry`-typed value cells), the engine is constructed with
-/// [`reify_eval::Engine::with_registered_kernel`] and evaluation is routed
-/// through [`Engine::build`] so that
-/// `run_post_processes`/`post_process_geometry_queries` fires and lands
-/// geometry-query value cells (e.g. `mass`, `centroid`) into `BuildResult.values`
-/// (task 4145).  `geometry_output` from `BuildResult` is discarded — `reify eval`
-/// is a value-cell inspector, not an exporter.
-///
-/// When the OCCT kernel is absent (`cfg(has_occt)` unset), the registered kernel
-/// inventory is empty; `with_registered_kernel` returns a None-kernel engine and
-/// `build()` skips the geometry pipeline — geometry-query cells stay `undef` and
-/// exit code remains 0, matching `cmd_build`'s existing degradation in stub mode.
-///
-/// When OCCT is present but geometry realization fails at runtime (e.g. all ops
-/// fail in the kernel), `build()` emits an `Error`-severity diagnostic and those
-/// errors **do** propagate to `cmd_eval`'s exit code.  This widening is
-/// intentional: a file whose geometry is fundamentally broken should not silently
-/// exit 0 with all geometry-query cells reported as `undef`.
-///
-/// Non-geometry modules use the existing
-/// `Engine::new(None) + eval()` path unchanged.
 /// `reify report --bom <file>` — roll up and render a BOM / cost / waste /
 /// provenance report (io-lifecycle-bom-cost #4292, boundary α).
 ///
@@ -1677,6 +1640,45 @@ fn cmd_report(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `reify eval <file>` — parse, compile, evaluate, and print every
+/// top-level value cell as `entity.member = value`.
+///
+/// This is the SIR-α user-observable signal (task 3540): structure
+/// constructors evaluate to inspectable `Value::StructureInstance` values
+/// (`TypeName { field: value, ... }` via `Value`'s `Display`) instead of
+/// opaque `undef`. Cells are sorted for deterministic output.
+///
+/// The default [`reify_constraints::DimensionalSolver`] is wired so `auto`
+/// params resolve: given box constraints and a `minimize`/`maximize` objective
+/// the solver runs Nelder-Mead and prints the resulting numeric SI value
+/// rather than `undef` (task 4132).
+///
+/// ## Geometry modules
+///
+/// When [`module_has_geometry`] detects geometry (realization ops or
+/// `Geometry`-typed value cells), the engine is constructed with
+/// [`reify_eval::Engine::with_registered_kernel`] and evaluation is routed
+/// through [`reify_eval::Engine::realize_for_check`] (realization without the
+/// Phase-B product-export walk) so that
+/// `run_post_processes`/`post_process_geometry_queries` fires and lands
+/// geometry-query value cells (e.g. `mass`, `centroid`) into `BuildResult.values`
+/// (task 4145).  No product export is run — `reify eval` is a value-cell
+/// inspector, not an exporter.
+///
+/// When the OCCT kernel is absent (`cfg(has_occt)` unset), the registered kernel
+/// inventory is empty; `with_registered_kernel` returns a None-kernel engine and
+/// `realize_for_check` skips the geometry pipeline — geometry-query cells stay
+/// `undef` and exit code remains 0, matching `cmd_build`'s existing degradation
+/// in stub mode.
+///
+/// When OCCT is present but geometry realization fails at runtime (e.g. all ops
+/// fail in the kernel), `realize_for_check` emits an `Error`-severity diagnostic
+/// and those errors **do** propagate to `cmd_eval`'s exit code.  This widening is
+/// intentional: a file whose geometry is fundamentally broken should not silently
+/// exit 0 with all geometry-query cells reported as `undef`.
+///
+/// Non-geometry modules use the existing
+/// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
     // Parse args: walk the list to extract --explain-undef, --verbose,
     // --cache-dir <path>, and the file path.
