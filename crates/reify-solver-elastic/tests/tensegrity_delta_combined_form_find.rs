@@ -21,6 +21,7 @@ use reify_solver_elastic::{
     ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, MemberKind,
     form_find_free_surfaces,
 };
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Fixture — the complete triplex (same as T1b golden)
@@ -430,8 +431,8 @@ fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
 // ---------------------------------------------------------------------------
 // Certification of the combined fixed point (task 7801): a model that is not
 // ONE connected structure is never a converged free-standing form. Every
-// fixture starts from the δ golden's own converged state, where today's
-// kernel otherwise reports Ok(converged) on it.
+// fixture starts from the δ golden's own converged state, where a
+// residual-only stop test would report Ok(converged) on it.
 // ---------------------------------------------------------------------------
 
 const DELTA_SIGMA: f64 = 0.2;
@@ -444,19 +445,24 @@ fn delta_group_ratios_spec() -> ForceDensitySpec {
     }
 }
 
-/// The δ GroupRatios golden's converged `(x*, q*)`.
+/// The δ GroupRatios golden's converged `(x*, q*)`, solved once per test binary.
 fn delta_fixed_point() -> (Vec<[f64; 3]>, Vec<f64>) {
-    let (members, kinds) = triplex_topology();
-    let golden = form_find_free_surfaces(
-        &perturbed_prism_guess(),
-        &members,
-        &kinds,
-        &prism_surfaces(),
-        &[DELTA_SIGMA; 2],
-        &delta_group_ratios_spec(),
-    )
-    .expect("δ GroupRatios golden must form-find");
-    (golden.nodes, golden.force_densities)
+    static FIXED_POINT: OnceLock<(Vec<[f64; 3]>, Vec<f64>)> = OnceLock::new();
+    FIXED_POINT
+        .get_or_init(|| {
+            let (members, kinds) = triplex_topology();
+            let golden = form_find_free_surfaces(
+                &perturbed_prism_guess(),
+                &members,
+                &kinds,
+                &prism_surfaces(),
+                &[DELTA_SIGMA; 2],
+                &delta_group_ratios_spec(),
+            )
+            .expect("δ GroupRatios golden must form-find");
+            (golden.nodes, golden.force_densities)
+        })
+        .clone()
 }
 
 fn assert_two_piece_non_convergence(result: &Result<FreeFormResult, FreeFormError>) {
@@ -535,16 +541,15 @@ fn combined_explicit_disconnected_twin_is_not_certified() {
         &[DELTA_SIGMA; 4],
         &ForceDensitySpec::Explicit(q),
     );
-    // Two exact copies of a nullity-4 form, converged at iteration 0: the
-    // nullity is structural, so it is pinned along with the piece count.
+    // Two exact copies of a nullity-4 form, converged at iteration 0, so the
+    // equilibrium it reached is not a form. The nullity is structural, so it
+    // is pinned along with the piece count.
     assert_eq!(
         result.unwrap_err(),
-        FreeFormError::SearchDidNotConverge {
-            defect: Some(FormDefect {
-                nullity: 8,
-                components: 2,
-            }),
-        },
+        FreeFormError::NotAForm(FormDefect {
+            nullity: 8,
+            components: 2,
+        }),
     );
 }
 

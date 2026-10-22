@@ -105,12 +105,14 @@ pub enum FreeFormError {
     Input(ForceDensityInputError),
     /// A [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
     MalformedGroupSpec(GroupSpecDefect),
-    /// The explicit `q`'s force-density matrix `D` is not a free-standing form.
+    /// The `D` the solve settled on is not a free-standing form: the explicit
+    /// `q`'s, or the combined fixed point's at the equilibrium it reached.
     NotAForm(FormDefect),
     /// The adaptive [`ForceDensitySpec::GroupRatios`] search, or the combined
-    /// fixed point, ended without a free-standing form. `defect` is `Some` when
-    /// it ended on a `D` that is not a form, and `None` when its budget or
-    /// stall guard ended a valid-form iterate short of equilibrium.
+    /// fixed point, stopped short of a free-standing form. `defect` is `Some`
+    /// when it stopped on a `D` that is not a form, and `None` when the
+    /// combined fixed point's budget or stall guard ended a valid-form iterate
+    /// short of equilibrium.
     SearchDidNotConverge {
         /// What the final iterate's `D` was observed to be, if not a form.
         defect: Option<FormDefect>,
@@ -282,12 +284,15 @@ fn seed_densities(
 /// - [`FreeFormError::MalformedGroupSpec`] — a `GroupRatios` spec cannot seed
 ///   the search ([`GroupSpecDefect`]).
 /// - [`FreeFormError::DegenerateTriangle`] — a triangle degenerated at an iterate.
+/// - [`FreeFormError::NotAForm`] — the fixed point reached equilibrium, but the
+///   combined `D` there is not a form ([`FormDefect`]): a disconnected piece,
+///   or a nullity other than 4.
 /// - [`FreeFormError::SearchDidNotConverge`] — the GroupRatios search or the
-///   combined fixed point ended without a free-standing form. `defect` names
-///   the final iterate's [`FormDefect`] when its combined `D` is not a form: an
-///   isolated node, a disconnected piece, or a nullity other than 4 — a
-///   wrong-nullity `Explicit` spec (with `σ > 0`) included, see the negative
-///   guard `combined_explicit_line_only_q_is_not_a_combined_self_stress` in
+///   combined fixed point stopped short of equilibrium. `defect` names the
+///   final iterate's [`FormDefect`] when its combined `D` is not a form — an
+///   isolated node (whose zero row never settles), or a wrong-nullity
+///   `Explicit` spec (with `σ > 0`), see the negative guard
+///   `combined_explicit_line_only_q_is_not_a_combined_self_stress` in
 ///   `tests/tensegrity_delta_combined_form_find.rs`. `defect` is `None` when
 ///   the budget or stall guard ended a valid form short of equilibrium.
 /// - [`FreeFormError::SingularRecovery`] — null-space basis is not 3-D.
@@ -405,19 +410,13 @@ pub fn form_find_free_surfaces(
             }
         };
 
-        // (2) Combined equilibrium residual ‖D_combined(q, x)·x‖∞/(1+scale) at the
-        // current geometry — the honest free-standing fixed-point signal. `q` is fixed
-        // for the rest of this iteration (only the surface term below varies with
-        // geometry), so hoist the line-only CᵀQC matrix once and clone it at each
-        // additive use site this iteration instead of rebuilding it from scratch every
-        // time — the (2b) trial-residual check further down reuses this same `d_line`.
+        // (2) Combined equilibrium residual at the current geometry — the
+        // free-standing fixed point's stop test. `q` is fixed for the rest of this
+        // iteration (only the surface term varies with geometry), so the line-only
+        // CᵀQC matrix is hoisted once and each surface term is added to it — the
+        // (2b) trial-residual check further down reuses this same `d_line`.
         let d_line = assemble_force_density_matrix(n, members, &q);
-        let mut d_at_current = d_line.clone();
-        for i in 0..n {
-            for j in 0..n {
-                d_at_current[(i, j)] += surface_mat[(i, j)];
-            }
-        }
+        let d_at_current = &d_line + &surface_mat;
         let resid = all_node_equilibrium_residual_relative(&d_at_current, &current);
 
         if resid <= FREE_SURFACE_EQUILIBRIUM_REL_TOL {
@@ -470,12 +469,7 @@ pub fn form_find_free_surfaces(
             && let Ok(trial_surface_mat) =
                 assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
         {
-            let mut d_trial = d_line.clone();
-            for i in 0..n {
-                for j in 0..n {
-                    d_trial[(i, j)] += trial_surface_mat[(i, j)];
-                }
-            }
+            let d_trial = &d_line + &trial_surface_mat;
             let trial_resid = all_node_equilibrium_residual_relative(&d_trial, &trial_nodes);
             if trial_resid <= resid {
                 current = trial_nodes;
@@ -546,19 +540,12 @@ pub fn form_find_free_surfaces(
     // that is not one connected nullity-4 form names its defect even when its
     // residual never settled (an isolated node's zero row keeps it unsettled).
     let mut result = last_result.expect("every loop exit follows a stored iterate");
-    let surface_mat_final =
-        assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
-    let mut d_final = assemble_force_density_matrix(n, members, &result.force_densities);
-    for i in 0..n {
-        for j in 0..n {
-            d_final[(i, j)] += surface_mat_final[(i, j)];
-        }
-    }
-    let form = FreeStandingForm::certify(&d_final).map_err(|defect| {
-        FreeFormError::SearchDidNotConverge {
-            defect: Some(defect),
-        }
-    })?;
+    let surface_mat_final = assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
+    let certified = FreeStandingForm::certify(&combined_force_density_matrix(
+        members,
+        &result.force_densities,
+        &surface_mat_final,
+    ));
 
     // Non-convergence: match the line-only `form_find_free` contract — return
     // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
@@ -566,8 +553,13 @@ pub fn form_find_free_surfaces(
     // downstream consumers that only inspect the result value (not `.converged`)
     // silently treat a failed combined solve as a valid equilibrium.
     if !converged {
-        return Err(FreeFormError::SearchDidNotConverge { defect: None });
+        return Err(FreeFormError::SearchDidNotConverge {
+            defect: certified.err(),
+        });
     }
+    // Converged: the equilibrium was reached, so a `D` that fails certification
+    // is not a form, whatever spec produced it.
+    let form = certified.map_err(FreeFormError::NotAForm)?;
 
     result.converged = true;
     result.nullity = form.spectrum().nullity;
@@ -613,6 +605,16 @@ fn assemble_surface_matrix(
     Ok(s)
 }
 
+/// The combined force-density matrix `D = CᵀQC + Σ_T σ_T·L_T`: the line `D` at
+/// `q` plus an already-assembled surface term ([`assemble_surface_matrix`]).
+fn combined_force_density_matrix(
+    members: &[(usize, usize)],
+    q: &[f64],
+    surface_mat: &Mat<f64>,
+) -> Mat<f64> {
+    assemble_force_density_matrix(surface_mat.nrows(), members, q) + surface_mat
+}
+
 /// ALL-node equilibrium residual — the free-standing fixed point's stop test:
 /// the anchored kernel's per-row criterion with every row free, since every
 /// node is free here. One definition carries the per-row normalisation (exactly
@@ -639,16 +641,7 @@ fn form_find_explicit_combined_relaxed(
     nodes_guess: &[[f64; 3]],
     surface_mat: &Mat<f64>,
 ) -> Result<Vec<[f64; 3]>, FreeFormError> {
-    let n = nodes_guess.len();
-
-    // Build combined D = CᵀQC + surface_mat.
-    let mut d = assemble_force_density_matrix(n, problem.members(), problem.q());
-    for i in 0..n {
-        for j in 0..n {
-            d[(i, j)] += surface_mat[(i, j)];
-        }
-    }
-
+    let d = combined_force_density_matrix(problem.members(), problem.q(), surface_mat);
     let spectrum = SpectrumClassification::forced_nullity(&d, FREE_FORM_NULLITY);
     recover_coordinates(nodes_guess, &spectrum)
 }
@@ -679,7 +672,6 @@ fn form_find_group_ratios_combined(
 ) -> Result<Vec<f64>, FreeFormError> {
     let members = problem.members();
     let n_groups = seed_ratios.len();
-    let n = nodes_guess.len();
 
     let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
     // Warm-start: use the provided initial magnitudes (e.g. from the line-only
@@ -705,12 +697,7 @@ fn form_find_group_ratios_combined(
     // path needs (task 6413 design decision).
     let objective = |group_mag: &[f64]| -> f64 {
         let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
-        let mut d = assemble_force_density_matrix(n, members, &q);
-        for i in 0..n {
-            for j in 0..n {
-                d[(i, j)] += surface_mat[(i, j)];
-            }
-        }
+        let d = combined_force_density_matrix(members, &q, surface_mat);
         let spec = classify_spectrum(&d, NULLITY_REL_TOL);
         spec.eigenvalues
             .iter()
@@ -815,12 +802,7 @@ fn combined_eig_gap_objective(
 ) -> f64 {
     match assemble_surface_matrix(n, surfaces, surface_stresses, x) {
         Ok(surface_mat) => {
-            let mut d = assemble_force_density_matrix(n, members, q);
-            for i in 0..n {
-                for j in 0..n {
-                    d[(i, j)] += surface_mat[(i, j)];
-                }
-            }
+            let d = combined_force_density_matrix(members, q, &surface_mat);
             normalised_eig_gap(&classify_spectrum(&d, NULLITY_REL_TOL))
         }
         Err(_) => f64::INFINITY,
@@ -1344,31 +1326,22 @@ fn force_graph_components(d: &Mat<f64>) -> usize {
     components
 }
 
-/// A `D` certified as a free-standing form by [`FreeStandingForm::certify`],
-/// carrying the spectrum the certification classified so coordinate recovery
-/// reuses that one dense EVD.
+/// A `D` certified as a 3-D free-standing form, carrying the spectrum its
+/// certification classified so coordinate recovery reuses that one dense EVD.
 #[derive(Debug)]
-struct Nullity4(SpectrumClassification);
-
-impl Nullity4 {
-    fn spectrum(&self) -> &SpectrumClassification {
-        &self.0
-    }
-}
-
-/// The single validity rule for a free-standing form.
-enum FreeStandingForm {}
+struct FreeStandingForm(SpectrumClassification);
 
 impl FreeStandingForm {
-    /// Certify `d` as a 3-D free-standing form: ONE connected force graph,
-    /// rank-deficient by exactly [`FREE_FORM_NULLITY`]. Otherwise the observed
-    /// [`FormDefect`]. Both conditions are needed: every connected piece carries
-    /// its own translation mode, so a disconnected `D` can still show nullity 4.
-    fn certify(d: &Mat<f64>) -> Result<Nullity4, FormDefect> {
+    /// The single validity rule: `d` is a free-standing form when its force
+    /// graph is ONE connected piece and it is rank-deficient by exactly
+    /// [`FREE_FORM_NULLITY`]; otherwise the observed [`FormDefect`]. Both
+    /// conditions are needed: every connected piece carries its own translation
+    /// mode, so a disconnected `D` can still show nullity 4.
+    fn certify(d: &Mat<f64>) -> Result<FreeStandingForm, FormDefect> {
         let spectrum = classify_spectrum(d, NULLITY_REL_TOL);
         let components = force_graph_components(d);
         if components == 1 && spectrum.nullity == FREE_FORM_NULLITY {
-            Ok(Nullity4(spectrum))
+            Ok(FreeStandingForm(spectrum))
         } else {
             Err(FormDefect {
                 nullity: spectrum.nullity,
@@ -1376,11 +1349,15 @@ impl FreeStandingForm {
             })
         }
     }
+
+    fn spectrum(&self) -> &SpectrumClassification {
+        &self.0
+    }
 }
 
 /// Assemble a validated problem's `D` and certify it as a free-standing form
 /// ([`FreeFormError::NotAForm`] otherwise).
-fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<Nullity4, FreeFormError> {
+fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<FreeStandingForm, FreeFormError> {
     let d = assemble_force_density_matrix(problem.nodes().len(), problem.members(), problem.q());
     FreeStandingForm::certify(&d).map_err(FreeFormError::NotAForm)
 }
@@ -1650,16 +1627,21 @@ mod tests {
         );
     }
 
+    /// `d` with one isolated node appended: a zero last row and column.
+    fn with_isolated_node(d: &Mat<f64>) -> Mat<f64> {
+        let n = d.nrows();
+        Mat::from_fn(
+            n + 1,
+            n + 1,
+            |i, j| if i < n && j < n { d[(i, j)] } else { 0.0 },
+        )
+    }
+
     #[test]
     fn certify_counts_an_isolated_node_as_a_component() {
         let (members, _kinds) = triplex_topology();
         let prism_d = assemble_force_density_matrix(6, &members, &closed_form_q());
-        let mut d = Mat::<f64>::zeros(7, 7);
-        for i in 0..6 {
-            for j in 0..6 {
-                d[(i, j)] = prism_d[(i, j)];
-            }
-        }
+        let d = with_isolated_node(&prism_d);
 
         assert_eq!(
             FreeStandingForm::certify(&d).unwrap_err(),
@@ -2670,15 +2652,9 @@ mod tests {
         let surfaces = prism_surfaces();
         let sigmas = vec![sigma * lambda; surfaces.len()];
         let nodes = canonical_prism();
-        let mut d = assemble_force_density_matrix(6, &members, &q);
         let s = assemble_surface_matrix(6, &surfaces, &sigmas, &nodes)
             .expect("canonical prism triangles are non-degenerate");
-        for i in 0..6 {
-            for j in 0..6 {
-                d[(i, j)] += s[(i, j)];
-            }
-        }
-        d
+        combined_force_density_matrix(&members, &q, &s)
     }
 
     #[test]
@@ -2743,13 +2719,7 @@ mod tests {
 
     #[test]
     fn all_node_equilibrium_residual_rejects_a_zero_row_beside_healthy_rows() {
-        let prism_d = combined_d_at_canonical_prism(0.2, 1.0);
-        let mut d = Mat::<f64>::zeros(7, 7);
-        for i in 0..6 {
-            for j in 0..6 {
-                d[(i, j)] = prism_d[(i, j)];
-            }
-        }
+        let d = with_isolated_node(&combined_d_at_canonical_prism(0.2, 1.0));
         let mut nodes = canonical_prism();
         nodes.push([0.3, 0.2, 0.4]);
 
