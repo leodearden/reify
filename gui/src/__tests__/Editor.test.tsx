@@ -31,6 +31,15 @@ const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure B
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
 const file3: FileData = { path: '/project/src/plate.ri', content: 'structure Plate {}' };
 
+// A path with a space reaches the editor under TWO spellings: pathToUri leaves
+// the store path decoded, while every URI the backend mints comes back
+// percent-encoded from the `url` crate. They must resolve to ONE version
+// counter — an ASCII-only fixture cannot tell the two apart.
+const SPACED_PATH = '/project/src/hello world.ri';
+const SPACED_URI = 'file:///project/src/hello world.ri';
+const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
+const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
@@ -837,6 +846,26 @@ describe('Editor diagnostics URI filtering', () => {
     });
 
     // Diagnostics SHOULD have been applied
+    expect(diagnosticCount(view.state)).toBe(1);
+  });
+
+  it('diagnostics published under the percent-encoded spelling of the active file ARE applied', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([fileSpaced]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    handler!({
+      payload: {
+        uri: SPACED_URI_ENCODED,
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
     expect(diagnosticCount(view.state)).toBe(1);
   });
 });
@@ -2274,15 +2303,6 @@ describe('PRIMARY-selection guard integration (task #5361)', () => {
 
 const FILE1_URI = 'file:///project/src/bracket.ri';
 const FILE2_URI = 'file:///project/src/mount.ri';
-
-// A path with a space reaches the editor under TWO spellings: pathToUri leaves
-// the store path decoded, while every URI the backend mints comes back
-// percent-encoded from the `url` crate. They must resolve to ONE version
-// counter — an ASCII-only fixture cannot tell the two apart.
-const SPACED_PATH = '/project/src/hello world.ri';
-const SPACED_URI = 'file:///project/src/hello world.ri';
-const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
-const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
 
 type LspVersionCall = { method: string; uri?: string; version?: number; text?: string };
 
