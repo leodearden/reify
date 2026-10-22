@@ -154,7 +154,10 @@ impl ShellSection {
     const SHEAR_CORRECTION: f64 = 5.0 / 6.0;
 
     pub(crate) const fn new(thickness: f64, material: IsotropicElastic) -> Self {
-        Self { thickness, material }
+        Self {
+            thickness,
+            material,
+        }
     }
 
     /// Membrane modulus block `t · D_pl`.

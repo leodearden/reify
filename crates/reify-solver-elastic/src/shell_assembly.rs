@@ -612,6 +612,27 @@ pub fn shell_element_stiffness_mitc3_plus(
     pack_element_stiffness(&k_glob)
 }
 
+/// Which membrane strain–displacement operator the degenerate shell integrates.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MembraneStrain {
+    Displacement,
+    Assumed,
+}
+
+/// Whether the cubic rotation bubble couples to the nodal DOFs on a curved element.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RotationBubble {
+    Off,
+    On,
+}
+
+/// The degenerate shell's two independent formulation choices.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct DegenerateFormulation {
+    membrane: MembraneStrain,
+    bubble: RotationBubble,
+}
+
 /// Compute the 18×18 element stiffness for the **degenerated (continuum-based)
 /// shell** element (task 4068): per-node directors + a varying element Jacobian,
 /// carrying the MITC3+ assumed transverse-shear field (task 3392).
@@ -671,29 +692,29 @@ pub fn shell_element_stiffness_mitc3_plus(
 /// So the closed-form condensation is a no-op and `K* = K_NN`, structurally
 /// identical to the flat MITC3+ path.
 ///
-/// # Shared core for the displacement-membrane and ANS-membrane variants
+/// # Shared core over two orthogonal formulation axes
 ///
-/// `use_ans_membrane` selects the membrane strain–displacement operator: `false`
-/// is the displacement-based membrane (the task 4068 substrate, exposed verbatim
-/// as [`shell_element_stiffness_degenerate`]); `true` swaps ONLY the membrane
-/// (`ζ=0`) part of `B_mb` for the assumed-natural-strain membrane field
+/// `formulation.membrane` selects the membrane strain–displacement operator:
+/// [`MembraneStrain::Displacement`] is the displacement-based membrane (the task
+/// 4068 substrate, exposed verbatim as [`shell_element_stiffness_degenerate`]);
+/// [`MembraneStrain::Assumed`] swaps ONLY the membrane (`ζ=0`) part of `B_mb` for
+/// the assumed-natural-strain membrane field
 /// ([`shell_element_stiffness_degenerate_ans`], task 4069).
 ///
-/// `use_rotation_bubble` activates the nodal↔bubble coupling K_NB/K_BN on
-/// **curved** (non-parallel-director) elements (task 4065). When all three
-/// directors are parallel (flat facet), the function short-circuits and leaves
-/// K_NB bit-zero (flat-inertness), so existing flat benchmarks are unaffected.
-/// On a curved element, `degenerate_bubble_bending_b` contributes a non-zero
-/// K_NB, and the closed-form Schur condensation `K* = K_NN − K_NB·K_BB⁻¹·K_BN`
-/// then does real work (K* ≼ K_NN strictly).
+/// `formulation.bubble` = [`RotationBubble::On`] activates the nodal↔bubble
+/// coupling K_NB/K_BN on **curved** (non-parallel-director) elements (task
+/// 4065). When all three directors are parallel (flat facet), the function
+/// short-circuits and leaves K_NB bit-zero (flat-inertness), so existing flat
+/// benchmarks are unaffected. On a curved element, `degenerate_bubble_bending_b`
+/// contributes a non-zero K_NB, and the closed-form Schur condensation
+/// `K* = K_NN − K_NB·K_BB⁻¹·K_BN` then does real work (K* ≼ K_NN strictly).
 #[allow(clippy::needless_range_loop)]
 fn degenerate_stiffness_core(
     nodes: &[[f64; 3]; 3],
     directors: &[crate::elements::degenerate_shell::Director; 3],
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
-    use_ans_membrane: bool,
-    use_rotation_bubble: bool,
+    formulation: DegenerateFormulation,
 ) -> ElementStiffness {
     use crate::elements::degenerate_shell::{
         ShellRefCoord3, degenerate_assumed_membrane_b, degenerate_bubble_bending_b,
@@ -719,7 +740,7 @@ fn degenerate_stiffness_core(
     // Detecting parallel directors with |V₀ × Vᵢ|² < 1e-28 (unit vectors:
     // |cross|² = sin²θ < 1e-28 iff θ < 1e-14 rad) guarantees bit-exact K_NB=0
     // on every flat benchmark without relying on numerical cancellation.
-    let bubble_active = use_rotation_bubble && {
+    let bubble_active = formulation.bubble == RotationBubble::On && {
         let v0 = directors[0];
         !directors[1..].iter().all(|v| {
             let cx = v0[1] * v[2] - v0[2] * v[1];
@@ -750,39 +771,43 @@ fn degenerate_stiffness_core(
         // expensive term (a covariant tying-point evaluation + a Jacobian inverse +
         // lamina frame), and the ζ loop runs twice, so this halves the per-`ip` ANS
         // overhead. The non-ANS path never evaluates these (no extra cost).
-        let (b_mem_ans, b_mem_disp) = if use_ans_membrane {
-            let mid = ShellRefCoord3::new(ip.xi, ip.eta, 0.0);
-            (
-                degenerate_assumed_membrane_b(nodes, directors, thicknesses, mid),
-                degenerate_membrane_bending_b(nodes, directors, thicknesses, mid),
-            )
-        } else {
-            ([[0.0_f64; NDOF]; 3], [[0.0_f64; NDOF]; 3])
+        let (b_mem_ans, b_mem_disp) = match formulation.membrane {
+            MembraneStrain::Assumed => {
+                let mid = ShellRefCoord3::new(ip.xi, ip.eta, 0.0);
+                (
+                    degenerate_assumed_membrane_b(nodes, directors, thicknesses, mid),
+                    degenerate_membrane_bending_b(nodes, directors, thicknesses, mid),
+                )
+            }
+            MembraneStrain::Displacement => ([[0.0_f64; NDOF]; 3], [[0.0_f64; NDOF]; 3]),
         };
         for &zeta in zeta_gauss.iter() {
             let c3 = ShellRefCoord3::new(ip.xi, ip.eta, zeta);
             // jm is reused by degenerate_bubble_bending_b on the bubble-active path
             // to avoid a redundant Jacobian evaluation.
             let (jm, det) = degenerate_jacobian(nodes, directors, thicknesses, c3);
-            let b_mb = if use_ans_membrane {
-                // ANS membrane + displacement bending remainder: swap ONLY the
-                // membrane (ζ=0) part of B_mb for the assumed-natural-strain
-                // field, keeping the displacement bending and transverse shear
-                // exactly as the 4068 substrate built them:
-                //   B_ans(ζ) = B_mem_ANS + B_full(ζ) − B_mem_disp(ζ=0)
-                // On a flat facet B_mem_ANS = B_mem_disp(ζ=0), so B_ans = B_full
-                // (zero change to the flat element). B_mem_ANS and B_mem_disp are
-                // ζ-independent (hoisted above); only B_full(ζ) varies with ζ.
-                let b_full = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
-                let mut b = [[0.0_f64; NDOF]; 3];
-                for r in 0..3 {
-                    for col in 0..NDOF {
-                        b[r][col] = b_mem_ans[r][col] + b_full[r][col] - b_mem_disp[r][col];
+            let b_mb = match formulation.membrane {
+                MembraneStrain::Assumed => {
+                    // ANS membrane + displacement bending remainder: swap ONLY the
+                    // membrane (ζ=0) part of B_mb for the assumed-natural-strain
+                    // field, keeping the displacement bending and transverse shear
+                    // exactly as the 4068 substrate built them:
+                    //   B_ans(ζ) = B_mem_ANS + B_full(ζ) − B_mem_disp(ζ=0)
+                    // On a flat facet B_mem_ANS = B_mem_disp(ζ=0), so B_ans = B_full
+                    // (zero change to the flat element). B_mem_ANS and B_mem_disp are
+                    // ζ-independent (hoisted above); only B_full(ζ) varies with ζ.
+                    let b_full = degenerate_membrane_bending_b(nodes, directors, thicknesses, c3);
+                    let mut b = [[0.0_f64; NDOF]; 3];
+                    for r in 0..3 {
+                        for col in 0..NDOF {
+                            b[r][col] = b_mem_ans[r][col] + b_full[r][col] - b_mem_disp[r][col];
+                        }
                     }
+                    b
                 }
-                b
-            } else {
-                degenerate_membrane_bending_b(nodes, directors, thicknesses, c3)
+                MembraneStrain::Displacement => {
+                    degenerate_membrane_bending_b(nodes, directors, thicknesses, c3)
+                }
             };
             let b_s = degenerate_transverse_shear_b(nodes, directors, thicknesses, c3);
             // The physical volume element is dV = |det J| dξ dη dζ, so the
@@ -891,7 +916,7 @@ fn degenerate_stiffness_core(
     // bit-zero (the coupling block was never written), so the correction vanishes
     // and K* = K_NN exactly.  The debug_assert below enforces this invariant on
     // the inert path.
-    // When bubble_active=true (curved element with use_rotation_bubble): K_NB ≠ 0
+    // When bubble_active=true (curved element with RotationBubble::On): K_NB ≠ 0
     // and the condensation does real work (K* ≼ K_NN by the Schur/Loewner argument).
     // K_BB is structurally SPD there — a Gram matrix B_bubᵀ·D·B_bub assembled from
     // the same degenerate kinematics as K_NB — so `condense_bubble`'s near-singular
@@ -925,7 +950,16 @@ pub fn shell_element_stiffness_degenerate(
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    degenerate_stiffness_core(nodes, directors, thicknesses, material, false, false)
+    degenerate_stiffness_core(
+        nodes,
+        directors,
+        thicknesses,
+        material,
+        DegenerateFormulation {
+            membrane: MembraneStrain::Displacement,
+            bubble: RotationBubble::Off,
+        },
+    )
 }
 
 /// Degenerated shell element stiffness with the assumed-natural-strain
@@ -946,7 +980,16 @@ pub fn shell_element_stiffness_degenerate_ans(
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    degenerate_stiffness_core(nodes, directors, thicknesses, material, true, false)
+    degenerate_stiffness_core(
+        nodes,
+        directors,
+        thicknesses,
+        material,
+        DegenerateFormulation {
+            membrane: MembraneStrain::Assumed,
+            bubble: RotationBubble::Off,
+        },
+    )
 }
 
 /// Degenerated shell element stiffness with the assumed-natural-strain **membrane**
@@ -971,7 +1014,16 @@ pub fn shell_element_stiffness_degenerate_ans_bubble(
     thicknesses: &[f64; 3],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    degenerate_stiffness_core(nodes, directors, thicknesses, material, true, true)
+    degenerate_stiffness_core(
+        nodes,
+        directors,
+        thicknesses,
+        material,
+        DegenerateFormulation {
+            membrane: MembraneStrain::Assumed,
+            bubble: RotationBubble::On,
+        },
+    )
 }
 
 #[cfg(test)]
