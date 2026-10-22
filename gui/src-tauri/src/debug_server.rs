@@ -3648,11 +3648,12 @@ mod tests {
 
     #[tokio::test]
     async fn handle_mesh_morph_stats_reset_true_zeros_counters() {
+        use reify_mesh_morph::diagnostics::{MorphOutcome, seed_for_test};
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        // --- (a) reset:true path: counter recorded, then handler zeros it ---
+        // --- (a) reset:true path: counter seeded, then handler zeros it ---
         reify_mesh_morph::diagnostics::reset_for_test();
-        reify_mesh_morph::diagnostics::record_morphed();
+        seed_for_test(MorphOutcome::Morphed);
         // Pre-condition: morphed == 1 before the call.
         assert_eq!(reify_mesh_morph::diagnostics::snapshot().morphed, 1);
 
@@ -3692,7 +3693,7 @@ mod tests {
 
         // --- (b) control: no reset flag — counter must survive ---
         reify_mesh_morph::diagnostics::reset_for_test();
-        reify_mesh_morph::diagnostics::record_morphed();
+        seed_for_test(MorphOutcome::Morphed);
 
         let result_no_reset = super::handle_mesh_morph_stats(serde_json::json!({}))
             .await
@@ -3742,7 +3743,7 @@ mod tests {
     async fn handle_mesh_morph_stats_returns_counters_and_session_start() {
         // Acquire process-global lock so no concurrent test races on counters.
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Reset all 7 diagnostic counters to zero for a clean baseline.
+        // Reset all 8 diagnostic counters to zero for a clean baseline.
         reify_mesh_morph::diagnostics::reset_for_test();
 
         let result = super::handle_mesh_morph_stats(serde_json::json!({}))
@@ -3751,11 +3752,12 @@ mod tests {
 
         assert!(result.is_object(), "response must be a JSON object");
 
-        // All seven named buckets must be present and zero after reset.
+        // All eight named buckets must be present and zero after reset.
         let buckets = [
             "morphed",
             "remeshed_quality_hard_fail",
             "remeshed_quality_soft_fail",
+            "remeshed_solver_error",
             "ineligible_structural_change",
             "ineligible_bijection_failure",
             "ineligible_naming_error",
@@ -3777,6 +3779,29 @@ mod tests {
         assert!(
             session_start > 0,
             "session_start_unix_ms must be > 0; got {session_start}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mesh_morph_stats_reports_seeded_remeshed_solver_error() {
+        use reify_mesh_morph::diagnostics::{MorphOutcome, seed_for_test};
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reify_mesh_morph::diagnostics::reset_for_test();
+        seed_for_test(MorphOutcome::RemeshedSolverError);
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        assert_eq!(
+            result["remeshed_solver_error"].as_u64(),
+            Some(1),
+            "an injected solver failure must surface as remeshed_solver_error"
+        );
+        assert_eq!(
+            result["morphed"].as_u64(),
+            Some(0),
+            "seeding the solver-error bucket must not touch morphed"
         );
     }
 

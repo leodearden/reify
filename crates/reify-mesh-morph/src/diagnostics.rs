@@ -659,6 +659,22 @@ mod tests {
         });
     }
 
+    #[test]
+    fn seed_for_test_increments_only_the_named_buckets() {
+        with_locked_state(|| {
+            seed_for_test(MorphOutcome::Morphed);
+            seed_for_test(MorphOutcome::RemeshedSolverError);
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    morphed: 1,
+                    remeshed_solver_error: 1,
+                    ..Default::default()
+                }
+            );
+        });
+    }
+
     // ── Step-5: logging policy ────────────────────────────────────────────────
     //
     // Each recorder emits exactly one tracing event at its policy level,
