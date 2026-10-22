@@ -40,7 +40,7 @@ tasks:
       kind: grep
       pattern: 'cause unrecorded'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: silent-baseline-real
     binding: 'signal premise — probe 2026-07-24 (fixture committed): eval prints P.holes = [undef ×4], no note, exit 0; check prints All constraints satisfied., exit 0'

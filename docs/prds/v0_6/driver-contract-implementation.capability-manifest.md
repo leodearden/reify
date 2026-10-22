@@ -74,7 +74,7 @@ the warning would let a leaf "fix" explain into gating and still pass.
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| `measurement-seam-is-upstream` | **DAG-direction** — `Engine::run_measurement_pass` does not exist on main (zero hits). It is created by gui-on-demand-measurement's leaf α, **upstream** by a real edge, whose D1 forbids a second copy of the arm sequence. γ calls it. | PASS |
+| `measurement-seam-is-upstream` | **DAG-direction** — `Engine::run_measurement_pass` does not exist on main (zero hits). It is created by gui-on-demand-measurement's leaf α, **upstream** by a real edge, whose D1 forbids a second copy of the arm sequence. γ calls it. **[Amended 2026-10-22, υ #8775 BLK-1]** delivered check `measurement-seam-is-upstream` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is `cmd_eval`, which moved to `crates/reify-cli/src/cmd/eval.rs`. | PASS |
 | `openvdb-attach-api-exists` | capability→producer, **wired on main** — `Engine::ensure_openvdb_kernel` is idempotent, registry-driven, and returns false when the adapter is absent. Two production callers today: `cmd_check` and `cmd_build`. | PASS |
 | `eval-never-attaches-openvdb` | **observed by execution** — `reify eval` on an isosurface module emits `no openvdb kernel registered (call ensure_openvdb_kernel()); leaving the BRep/Mesh fallback`, which `reify build` does not. | PASS |
 | `dfm-arm-is-check-only` | **observed by execution** — `driver_contract_dfm_measurement_arm.ri`: `check` exit 1 with `E_DFM_MIN_WALL` + `E_DFM_MIN_FEATURE`; `eval` exit 0 with neither. | PASS |

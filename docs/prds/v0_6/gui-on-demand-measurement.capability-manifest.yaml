@@ -21,7 +21,7 @@ tasks:
       kind: grep
       pattern: let has_geometric_conforms = module_has_geometric_conforms
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: absent
   - name: kind-detectors-are-private-to-the-reify-cli-binary
     binding: 'PASS-WITH-AMENDMENT (A1). FALSIFIES the PRD §4/§8 implication that the
