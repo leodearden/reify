@@ -60,14 +60,8 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::shell_frame::{
-    build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
+    ShellSection, build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
 };
-
-/// Shear-correction factor κ = 5/6 (Reissner standard for rectangular cross-section).
-///
-/// Baked in as a private constant — it is a property of the through-thickness
-/// shape function, not of the material.
-const KAPPA: f64 = 5.0 / 6.0;
 
 // --- Element-size constants (full-path initializers; no `use`, so the shared
 // helpers below can size their array signatures without a redundant import). ---
@@ -228,6 +222,7 @@ pub fn shell_element_stiffness(
         thickness > 0.0,
         "shell_element_stiffness: thickness must be positive, got {thickness}"
     );
+    let section = ShellSection::new(thickness, *material);
     // Element-size constant — avoid hard-coding 18 throughout. (Per-node and
     // node counts now live in the shared assembly helpers.)
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 total DOFs
@@ -236,11 +231,9 @@ pub fn shell_element_stiffness(
     let r = frame.r; // rotation matrix: row i = local basis eᵢ in global coords
     let area = frame.area;
     let t = thickness;
-    let d_pl = plane_stress_d(material);
 
-    // Shear modulus G and transverse-shear D scalar: κ·G
-    let g = material.shear_modulus();
-    let kappa_g = KAPPA * g;
+    // Transverse-shear D scalar: κ·G
+    let kappa_g = section.shear_kappa_g();
 
     // Shared kinematics: local 2D coords, shape gradients, B_cov, J2⁻ᵀ, det2.
     let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
@@ -253,32 +246,13 @@ pub fn shell_element_stiffness(
     // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; per-node 2-col blocks map (u_x, u_y) →
     // local DOFs 6i+{0,1}). Assembled by the shared helper, so it is structurally
     // bit-identical to the MITC3+ membrane block.
-    let t_dpl = {
-        let mut td = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                td[i][j] = t * d_pl[i][j];
-            }
-        }
-        td
-    };
-    accumulate_membrane_k(&mut k_loc, &dn, &t_dpl, area);
+    accumulate_membrane_k(&mut k_loc, &dn, &section.membrane_d(), area);
 
     // ---- Bending K (nodal) ----
     // B_b is 3×9 (rows: κ_xx, κ_yy, 2κ_xy; per-node 2-col blocks map (θ_x, θ_y) →
     // local DOFs 6i+{3,4}). Assembled by the shared helper, so it is structurally
     // bit-identical to the MITC3+ nodal bending block.
-    let t3_12_dpl = {
-        let factor = t * t * t / 12.0;
-        let mut td = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                td[i][j] = factor * d_pl[i][j];
-            }
-        }
-        td
-    };
-    accumulate_bending_k_nodal(&mut k_loc, &dn, &t3_12_dpl, area);
+    accumulate_bending_k_nodal(&mut k_loc, &dn, &section.bending_d(), area);
 
     // ---- Transverse-shear K (step 10, implemented here) ----
     // MITC3 assumed-strain interpolation.
@@ -418,6 +392,7 @@ pub fn shell_element_stiffness_mitc3_plus(
         thickness > 0.0,
         "shell_element_stiffness_mitc3_plus: thickness must be positive, got {thickness}"
     );
+    let section = ShellSection::new(thickness, *material);
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
     const NU: usize = Mitc3Plus::N_DOFS_UNCONDENSED; // 20 = 18 + 2 bubble DOFs
     const BX: usize = NDOF; // 18 = Δβ_x bubble column
@@ -428,10 +403,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     let r = frame.r;
     let area = frame.area;
     let t = thickness;
-    let d_pl = plane_stress_d(material);
-
-    let g = material.shear_modulus();
-    let kappa_g = KAPPA * g;
+    let kappa_g = section.shear_kappa_g();
 
     let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
     let dn = kin.dn;
@@ -443,28 +415,10 @@ pub fn shell_element_stiffness_mitc3_plus(
 
     // ---- Membrane K (nodal only; the bubble does not enter membrane) ----
     // Shared helper → bit-identical to bare MITC3's membrane block by construction.
-    let t_dpl = {
-        let mut td = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                td[i][j] = t * d_pl[i][j];
-            }
-        }
-        td
-    };
-    accumulate_membrane_k(&mut k, &dn, &t_dpl, area);
+    accumulate_membrane_k(&mut k, &dn, &section.membrane_d(), area);
 
     // ---- Bending K ----
-    let t3_dpl = {
-        let factor = t * t * t / 12.0;
-        let mut td = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                td[i][j] = factor * d_pl[i][j];
-            }
-        }
-        td
-    };
+    let t3_dpl = section.bending_d();
     // Nodal bending K_NN — shared helper → bit-identical to bare MITC3.
     accumulate_bending_k_nodal(&mut k, &dn, &t3_dpl, area);
 
@@ -715,9 +669,10 @@ fn degenerate_stiffness_core(
     const BX: usize = NDOF; // 18 = Δβ_x bubble column
     const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
 
+    let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
+    let section = ShellSection::new(t_avg, *material);
     let d_pl = plane_stress_d(material);
-    let g = material.shear_modulus();
-    let kappa_g = KAPPA * g;
+    let kappa_g = section.shear_kappa_g();
 
     // Parallel-director short-circuit for the rotation bubble: on a flat facet
     // (all directors parallel) K_NB integrates to zero and the bubble is inert.
@@ -889,17 +844,7 @@ fn degenerate_stiffness_core(
         let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
         let inv_t = kin.jac2_inv_t;
         let det2 = kin.det2;
-        let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
-        let t3_dpl = {
-            let factor = t_avg * t_avg * t_avg / 12.0;
-            let mut td = [[0.0_f64; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
-                    td[i][j] = factor * d_pl[i][j];
-                }
-            }
-            td
-        };
+        let t3_dpl = section.bending_d();
         let w_ref = 0.5 / (interior.len() as f64);
         for tp in interior.iter() {
             let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);

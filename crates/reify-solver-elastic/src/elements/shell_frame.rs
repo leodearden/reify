@@ -1,7 +1,7 @@
 //! Element-level shell primitives shared by every shell element, shell
 //! assembly and shell stress recovery: the local mid-surface frame, the
-//! plane-stress constitutive matrix, the CST membrane node-pair block and the
-//! block-diagonal frame rotation.
+//! plane-stress constitutive matrix, the shell section, the CST membrane
+//! node-pair block and the block-diagonal frame rotation.
 //!
 //! It imports nothing above `constitutive`, so the shell modules import
 //! downward from here (PRD `docs/prds/v0_6/solver-crates-layering.md` D4).
@@ -131,6 +131,47 @@ pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
         [nu * factor, factor, 0.0],
         [0.0, 0.0, factor * (1.0 - nu) / 2.0],
     ]
+}
+
+/// The 3×3 matrix `s · d`, entry by entry.
+pub(crate) fn scaled(d: &[[f64; 3]; 3], s: f64) -> [[f64; 3]; 3] {
+    std::array::from_fn(|i| std::array::from_fn(|j| s * d[i][j]))
+}
+
+/// A constant-thickness isotropic shell section: the through-thickness
+/// integrated membrane, bending and transverse-shear moduli that the shell
+/// stiffness and stress-recovery kernels share.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ShellSection {
+    thickness: f64,
+    material: IsotropicElastic,
+}
+
+impl ShellSection {
+    /// Shear-correction factor κ = 5/6: the Reissner value for a rectangular
+    /// cross-section, matching the parabolic through-thickness shear-stress
+    /// profile's energy. A property of the section shape, not of the material.
+    const SHEAR_CORRECTION: f64 = 5.0 / 6.0;
+
+    pub(crate) const fn new(thickness: f64, material: IsotropicElastic) -> Self {
+        Self { thickness, material }
+    }
+
+    /// Membrane modulus block `t · D_pl`.
+    pub(crate) fn membrane_d(&self) -> [[f64; 3]; 3] {
+        scaled(&plane_stress_d(&self.material), self.thickness)
+    }
+
+    /// Bending modulus block `t³/12 · D_pl`.
+    pub(crate) fn bending_d(&self) -> [[f64; 3]; 3] {
+        let t = self.thickness;
+        scaled(&plane_stress_d(&self.material), t * t * t / 12.0)
+    }
+
+    /// Transverse-shear modulus `κ · G` (per unit thickness).
+    pub(crate) fn shear_kappa_g(&self) -> f64 {
+        Self::SHEAR_CORRECTION * self.material.shear_modulus()
+    }
 }
 
 /// Inline 3×3 matrix multiply: C = A · B.

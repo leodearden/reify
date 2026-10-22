@@ -7,7 +7,7 @@
 // `ShellStress` structure (std/solver/elastic).
 
 use crate::constitutive::IsotropicElastic;
-use crate::elements::shell_frame::{ShellFrame, build_shell_frame, plane_stress_d};
+use crate::elements::shell_frame::{ShellFrame, ShellSection, build_shell_frame, plane_stress_d};
 
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
 /// MITC3 shell element.
@@ -166,10 +166,9 @@ pub fn shell_element_stress(
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
 
     // Shear stresses: σ_xz = κ·G·γ_xz_phys, σ_yz = κ·G·γ_yz_phys (κ = 5/6)
-    let g_mod = material.shear_modulus();
-    const KAPPA: f64 = 5.0 / 6.0;
-    let s_xz = KAPPA * g_mod * g_phys_xz;
-    let s_yz = KAPPA * g_mod * g_phys_yz;
+    let kappa_g = ShellSection::new(thickness, *material).shear_kappa_g();
+    let s_xz = kappa_g * g_phys_xz;
+    let s_yz = kappa_g * g_phys_yz;
 
     // --- Assemble per-layer 3×3 stress tensors ---
     // In-plane: σ_voigt(z) = sv_mem + z·sv_bend; transverse-shear uniform.
