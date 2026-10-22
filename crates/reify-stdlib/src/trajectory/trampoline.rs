@@ -2364,6 +2364,65 @@ mod tests {
         );
     }
 
+    /// (impulse arm) A ramp whose waypoints start at t = 2 s shapes into the
+    /// exact time translation of the shaped origin ramp: the shaped profile
+    /// keeps the input's time origin, and it shapes the real command
+    /// `f(τ) = τ − 2` on `[2, 3]`, not its first segment extrapolated over
+    /// `[0, 1]`.
+    #[test]
+    fn input_shape_value_impulse_arm_non_zero_origin_profile_is_time_translated_twin() {
+        let origin = ramp_profile();
+        let twin = natural_cubic_profile_from(2.0, [0.0, 0.5, 1.0]);
+        let zv = shaper(10.0); // ZVShaper(10 Hz, ζ=0)
+        let delta = build_train_for_shaper(&zv)
+            .expect("ZVShaper → train")
+            .trailing_time();
+
+        let shaped_twin = input_shape_value(&twin, &zv);
+        let origin_out = read_waypoints(&input_shape_value(&origin, &zv));
+        let twin_out = read_waypoints(&shaped_twin);
+
+        assert_eq!(twin_out.len(), origin_out.len(), "same shaped waypoint count");
+        let (first_t, first_vals) = twin_out.first().unwrap();
+        let (last_t, last_vals) = twin_out.last().unwrap();
+        assert!((first_t - 2.0).abs() < 1e-9, "shaped twin starts at 2 s, got {first_t}");
+        assert!(
+            (last_t - (3.0 + delta)).abs() < 1e-9,
+            "shaped twin ends at 3 s + Δ ({delta}), got {last_t}"
+        );
+        for (i, ((tw_t, tw_v), (or_t, or_v))) in twin_out.iter().zip(&origin_out).enumerate() {
+            assert!(
+                (tw_t - or_t - 2.0).abs() < 1e-9,
+                "twin t[{i}] = {tw_t} must be origin t[{i}] = {or_t} shifted by 2 s"
+            );
+            assert!(
+                (tw_v[0] - or_v[0]).abs() < 1e-9,
+                "shaped command[{i}]: twin {} must equal origin {}",
+                tw_v[0],
+                or_v[0]
+            );
+        }
+
+        assert!(
+            first_vals[0].abs() < 1e-9,
+            "shaped twin start value is the first waypoint's (0), got {}",
+            first_vals[0]
+        );
+        assert!(
+            (last_vals[0] - 1.0).abs() < 1e-9,
+            "shaped twin final value preserved (Σ Aᵢ = 1), got {}",
+            last_vals[0]
+        );
+
+        let reparsed =
+            value_to_multijoint_spline(&shaped_twin).expect("the shaped twin re-marshals");
+        assert!(
+            (reparsed.domain().start() - 2.0).abs() < 1e-9,
+            "the re-marshalled shaped twin's domain starts at 2 s, got {}",
+            reparsed.domain().start()
+        );
+    }
+
     /// An unrecognised shaper — and non-`StructureInstance` args — yield
     /// `Value::Undef` (the bad-args convention; the impulse arm requires a
     /// resolvable train).
