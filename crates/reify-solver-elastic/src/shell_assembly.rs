@@ -72,6 +72,12 @@ const NDOF_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_DOFS;
 const NDP_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_DOFS_PER_NODE;
 /// Lagrangian nodes per element (3).
 const NN_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_NODES;
+/// Uncondensed DOFs (20): the 18 nodal DOFs plus the two bubble rotations.
+const NU_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_DOFS_UNCONDENSED;
+/// Uncondensed column of the Δβ_x bubble rotation (18).
+const BX: usize = NDOF_ELEM;
+/// Uncondensed column of the Δβ_y bubble rotation (19).
+const BY: usize = NDOF_ELEM + 1;
 
 /// Accumulate the membrane block `Bₘᵀ·(t·D)·Bₘ·A` into the nodal DOFs of `k`.
 ///
@@ -164,6 +170,103 @@ fn symmetrize_in_place(k_loc: &mut [[f64; NDOF_ELEM]; NDOF_ELEM]) {
             k_loc[b][a] = m;
         }
     }
+}
+
+/// Accumulate the flat-facet bubble bending self-stiffness
+/// `K_BB = Σ B_bubᵀ·(t³/12·D_pl)·B_bub·w·det2` into the `(BX, BY)` block of `k`,
+/// summed over the six MITC3+ interior tying points (weights sum to the
+/// reference-triangle area 1/2; `× det2` maps to physical area).
+///
+/// `inv_t` / `det2` are the flat mid-surface J2⁻ᵀ and Jacobian determinant and
+/// `t3_dpl` is the pre-scaled `t³/12 · D_pl`. The six-point sum preserves positive
+/// definiteness but is NOT an exact rule for the degree-4 integrand
+/// `∇f_b·D_b·∇f_b`. Its value reaches `K*` only through [`condense_bubble`], and
+/// only where `K_NB ≡ 0`, so the correction is zero whatever it is; the curved
+/// bubble-active degenerate path accumulates its own consistent `K_BB`.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+fn accumulate_bubble_k_bb(
+    k: &mut [[f64; NU_ELEM]; NU_ELEM],
+    inv_t: &[[f64; 2]; 2],
+    det2: f64,
+    t3_dpl: &[[f64; 3]; 3],
+) {
+    use crate::elements::mitc3_plus::Mitc3Plus;
+    let interior = Mitc3Plus.interior_tying_points();
+    let w_ref = 0.5 / (interior.len() as f64);
+    for tp in interior.iter() {
+        let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
+        // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
+        let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
+        let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
+        // bubble bending B columns (Δβ_x, Δβ_y), same κ convention as nodal θ_x/θ_y
+        let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
+        for a in 0..2 {
+            for b in 0..2 {
+                let mut v = 0.0;
+                for rr in 0..3 {
+                    for s in 0..3 {
+                        v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
+                    }
+                }
+                let ca = if a == 0 { BX } else { BY };
+                let cb = if b == 0 { BX } else { BY };
+                k[ca][cb] += v * w_ref * det2;
+            }
+        }
+    }
+}
+
+/// Whether the nodal↔bubble coupling blocks `K_NB` / `K_BN` of `k` are all
+/// `+0.0` bit patterns, i.e. never written.
+fn bubble_coupling_is_bit_zero(k: &[[f64; NU_ELEM]; NU_ELEM]) -> bool {
+    (0..NDOF_ELEM).all(|i| {
+        k[i][BX].to_bits() == 0
+            && k[i][BY].to_bits() == 0
+            && k[BX][i].to_bits() == 0
+            && k[BY][i].to_bits() == 0
+    })
+}
+
+/// Statically condense the two bubble DOFs out of a 20×20 uncondensed matrix:
+/// `K* = K_NN − K_NB · K_BB⁻¹ · K_BN` (18×18), with the closed-form 2×2 inverse.
+///
+/// Guard: when `K_BB` is singular or near-singular — `k00·k11 ≤ 0`, or
+/// `det(K_BB) ≤ 1e-14·k00·k11` (about seven orders of safety margin) — the
+/// inverse is replaced by zero, so the correction vanishes and `K* = K_NN`. That
+/// fallback is conservative (no softening, the same as the inert flat path) and
+/// keeps a near-zero determinant from producing a huge or non-finite Schur
+/// correction. It arises where `K_BB` itself degenerates — e.g. a bending scale
+/// `t³/12` that underflows to zero — or on a nearly-flat element that narrowly
+/// passed the parallel-director test, with `K_NB ≈ 0` and `det(K_BB) ≈ 0` at once.
+#[allow(clippy::needless_range_loop)]
+fn condense_bubble(k: &[[f64; NU_ELEM]; NU_ELEM]) -> [[f64; NDOF_ELEM]; NDOF_ELEM] {
+    let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
+    let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
+    let k_bb_diag_prod = k_bb[0][0] * k_bb[1][1];
+    let inv_bb = if k_bb_diag_prod > 0.0 && det_bb > 1e-14 * k_bb_diag_prod {
+        [
+            [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
+            [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
+        ]
+    } else {
+        [[0.0_f64; 2]; 2]
+    };
+    let mut k_loc = [[0.0_f64; NDOF_ELEM]; NDOF_ELEM];
+    for i in 0..NDOF_ELEM {
+        let nb_i = [k[i][BX], k[i][BY]]; // K_NB row i
+        for j in 0..NDOF_ELEM {
+            let bn_j = [k[BX][j], k[BY][j]]; // K_BN col j
+            let mut corr = 0.0;
+            for p in 0..2 {
+                for q in 0..2 {
+                    corr += nb_i[p] * inv_bb[p][q] * bn_j[q];
+                }
+            }
+            k_loc[i][j] = k[i][j] - corr;
+        }
+    }
+    k_loc
 }
 
 /// Rotate a local-frame 18×18 shell element matrix into the global frame:
@@ -394,10 +497,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     );
     let section = ShellSection::new(thickness, *material);
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
-    const NU: usize = Mitc3Plus::N_DOFS_UNCONDENSED; // 20 = 18 + 2 bubble DOFs
-    const BX: usize = NDOF; // 18 = Δβ_x bubble column
-    const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
-    // (Per-node / node counts live in the shared assembly helpers.)
+    // (Per-node / node counts and the bubble columns live with the shared helpers.)
 
     let frame = build_shell_frame(nodes);
     let r = frame.r;
@@ -411,7 +511,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     let inv_t = kin.jac2_inv_t;
 
     // --- 20×20 uncondensed local matrix ---
-    let mut k = [[0.0_f64; NU]; NU];
+    let mut k = [[0.0_f64; NU_ELEM]; NU_ELEM];
 
     // ---- Membrane K (nodal only; the bubble does not enter membrane) ----
     // Shared helper → bit-identical to bare MITC3's membrane block by construction.
@@ -422,44 +522,20 @@ pub fn shell_element_stiffness_mitc3_plus(
     // Nodal bending K_NN — shared helper → bit-identical to bare MITC3.
     accumulate_bending_k_nodal(&mut k, &dn, &t3_dpl, area);
 
-    // Interior tying points + their reference quadrature weight (weights sum to
-    // the reference-triangle area 1/2; `× det2` maps to physical area).
-    let interior = Mitc3Plus.interior_tying_points();
-    let w_ref = 0.5 / (interior.len() as f64);
-
     // Bubble bending self-term K_BB^bend. The nodal↔bubble bending coupling is
     // identically zero on a flat facet (divergence theorem; see doc above), so
     // it is intentionally not assembled.
     //
     // INTENTIONALLY UNUSED NUMERIC VALUE: because K_NB ≡ 0 here (see the
     // condensation site below), the static condensation is a no-op and K* = K_NN
-    // — so K_BB's only consumer is the `det_bb > 0` SPD `debug_assert`. The
-    // six-interior-point sum below is therefore NOT an exact quadrature rule for
-    // the degree-4 integrand ∇f_b·D_b·∇f_b; it only needs to preserve positive
-    // definiteness (sign), which it does. Task 4068 — where the curved/director
-    // substrate makes K_NB ≠ 0 and K_BB's value actually feeds K* — must replace
-    // this with an exact rule before trusting the numeric block.
-    for tp in interior.iter() {
-        let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
-        // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
-        let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
-        let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
-        // bubble bending B columns (Δβ_x, Δβ_y), same κ convention as nodal θ_x/θ_y
-        let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
-        for a in 0..2 {
-            for b in 0..2 {
-                let mut v = 0.0;
-                for rr in 0..3 {
-                    for s in 0..3 {
-                        v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
-                    }
-                }
-                let ca = if a == 0 { BX } else { BY };
-                let cb = if b == 0 { BX } else { BY };
-                k[ca][cb] += v * w_ref * det2;
-            }
-        }
-    }
+    // whatever K_BB is — a singular K_BB (e.g. t³/12 underflowing to zero) only
+    // trips the condensation guard, which falls back to the same zero correction.
+    // The six-interior-point sum is therefore NOT an exact quadrature rule for the
+    // degree-4 integrand ∇f_b·D_b·∇f_b; see [`accumulate_bubble_k_bb`].
+    accumulate_bubble_k_bb(&mut k, &inv_t, det2, &t3_dpl);
+
+    // Interior tying points of the MITC3+ assumed transverse-shear field.
+    let interior = Mitc3Plus.interior_tying_points();
 
     // ---- MITC3+ transverse-shear K (Lee, Lee & Bathe 2014, Eq. 9) ----
     // On a flat facet the cubic bubble is INERT in transverse shear
@@ -522,38 +598,10 @@ pub fn shell_element_stiffness_mitc3_plus(
     // condensation is retained as faithful scaffolding for task 4068, where the
     // curved/director substrate makes K_NB ≠ 0 and the bubble does work.
     debug_assert!(
-        (0..NDOF).all(|i| {
-            k[i][BX].to_bits() == 0
-                && k[i][BY].to_bits() == 0
-                && k[BX][i].to_bits() == 0
-                && k[BY][i].to_bits() == 0
-        }),
+        bubble_coupling_is_bit_zero(&k),
         "MITC3+ flat-facet invariant: K_NB/K_BN must be bit-zero so condensation is a no-op (K* = K_NN)"
     );
-    let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
-    let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
-    debug_assert!(
-        det_bb > 0.0,
-        "MITC3+ bubble block K_BB must be SPD (det = {det_bb})"
-    );
-    let inv_bb = [
-        [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
-        [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
-    ];
-    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
-    for i in 0..NDOF {
-        let nb_i = [k[i][BX], k[i][BY]]; // K_NB row i
-        for j in 0..NDOF {
-            let bn_j = [k[BX][j], k[BY][j]]; // K_BN col j
-            let mut corr = 0.0;
-            for p in 0..2 {
-                for q in 0..2 {
-                    corr += nb_i[p] * inv_bb[p][q] * bn_j[q];
-                }
-            }
-            k_loc[i][j] = k[i][j] - corr;
-        }
-    }
+    let mut k_loc = condense_bubble(&k);
 
     // ---- Symmetrize, then rotate local → global (shared helpers, identical to
     // the bare path — only the transverse-shear treatment differs) ----
@@ -665,9 +713,6 @@ fn degenerate_stiffness_core(
         );
     }
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
-    const NU: usize = Mitc3Plus::N_DOFS_UNCONDENSED; // 20 = 18 + 2 bubble DOFs
-    const BX: usize = NDOF; // 18 = Δβ_x bubble column
-    const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
 
     let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
     let section = ShellSection::new(t_avg, *material);
@@ -690,7 +735,7 @@ fn degenerate_stiffness_core(
     };
 
     // --- 20×20 uncondensed local matrix (nodal 18 + 2 bubble) ---
-    let mut k = [[0.0_f64; NU]; NU];
+    let mut k = [[0.0_f64; NU_ELEM]; NU_ELEM];
 
     // ---- Nodal K_NN: numerically integrate membrane+bending + transverse shear
     // over the reference triangle × [-1, 1]. In-plane: the 3-point interior-tying
@@ -842,30 +887,7 @@ fn degenerate_stiffness_core(
     if !bubble_active {
         let frame = build_shell_frame(nodes);
         let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
-        let inv_t = kin.jac2_inv_t;
-        let det2 = kin.det2;
-        let t3_dpl = section.bending_d();
-        let w_ref = 0.5 / (interior.len() as f64);
-        for tp in interior.iter() {
-            let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
-            // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
-            let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
-            let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
-            let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
-            for a in 0..2 {
-                for b in 0..2 {
-                    let mut v = 0.0;
-                    for rr in 0..3 {
-                        for s in 0..3 {
-                            v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
-                        }
-                    }
-                    let ca = if a == 0 { BX } else { BY };
-                    let cb = if b == 0 { BX } else { BY };
-                    k[ca][cb] += v * w_ref * det2;
-                }
-            }
-        }
+        accumulate_bubble_k_bb(&mut k, &kin.jac2_inv_t, kin.det2, &section.bending_d());
     }
 
     // ---- Static condensation of the 2 bubble DOFs ----
@@ -876,55 +898,15 @@ fn degenerate_stiffness_core(
     // the inert path.
     // When bubble_active=true (curved element with use_rotation_bubble): K_NB ≠ 0
     // and the condensation does real work (K* ≼ K_NN by the Schur/Loewner argument).
+    // K_BB is structurally SPD there — a Gram matrix B_bubᵀ·D·B_bub assembled from
+    // the same degenerate kinematics as K_NB — so `condense_bubble`'s near-singular
+    // guard only falls back for a nearly-flat element that narrowly passed the
+    // parallel-director threshold.
     debug_assert!(
-        bubble_active
-            || (0..NDOF).all(|i| {
-                k[i][BX].to_bits() == 0
-                    && k[i][BY].to_bits() == 0
-                    && k[BX][i].to_bits() == 0
-                    && k[BY][i].to_bits() == 0
-            }),
+        bubble_active || bubble_coupling_is_bit_zero(&k),
         "degenerate flat-skeleton invariant: K_NB/K_BN must be bit-zero on the inert/flat path (K* = K_NN)"
     );
-    let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
-    let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
-    debug_assert!(
-        det_bb > 0.0,
-        "degenerate bubble block K_BB must be SPD (det = {det_bb})"
-    );
-    // Release-time guard: if K_BB is near-singular, skip condensation (K* = K_NN).
-    // K_BB is structurally SPD on the bubble-active path — it is a Gram matrix
-    // B_bub^T·D·B_bub assembled from the same degenerate kinematics as K_NB, so
-    // det(K_BB) > 0 whenever K_NB ≠ 0. Near-singularity can only arise from a
-    // nearly-flat element that narrowly passed the |cross|²<1e-28 director-parallel
-    // threshold, producing both K_NB ≈ 0 and det_bb ≈ 0 simultaneously.  Falling
-    // back to K* = K_NN is conservative (no softening, same as the inert path) and
-    // prevents a near-zero det_bb from producing a huge/indefinite Schur correction.
-    // Threshold: det_bb / (k00·k11) < 1e-14 covers ~7 orders of safety margin.
-    let k_bb_diag_prod = k_bb[0][0] * k_bb[1][1];
-    let inv_bb = if k_bb_diag_prod > 0.0 && det_bb > 1e-14 * k_bb_diag_prod {
-        [
-            [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
-            [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
-        ]
-    } else {
-        // Near-singular K_BB: treat element as inert (K* = K_NN, zero correction).
-        [[0.0_f64; 2]; 2]
-    };
-    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
-    for i in 0..NDOF {
-        let nb_i = [k[i][BX], k[i][BY]]; // K_NB row i
-        for j in 0..NDOF {
-            let bn_j = [k[BX][j], k[BY][j]]; // K_BN col j
-            let mut corr = 0.0;
-            for p in 0..2 {
-                for q in 0..2 {
-                    corr += nb_i[p] * inv_bb[p][q] * bn_j[q];
-                }
-            }
-            k_loc[i][j] = k[i][j] - corr;
-        }
-    }
+    let mut k_loc = condense_bubble(&k);
 
     // ---- Symmetrize and pack ----
     // The degenerate B-matrices map global DOFs to lamina-frame strains, so K is
