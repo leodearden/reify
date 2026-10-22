@@ -21,11 +21,11 @@
 //! string comparison.  All sources are wrapped in `structure S { let x = <expr> }` so
 //! the grammar sees them in a valid declaration context.
 //!
-//! Note on the `op` field: `unit_expr`'s operator is `choice($._unit_mul_op,
-//! $._unit_div_op)` — both HIDDEN external tokens, so `child_by_field_name("op")`
-//! never resolves.  The operator is therefore read as the source slice between the
-//! `left` and `right` byte ranges, which is exactly how `reify-syntax`'s
-//! `lower_unit_expr` recovers it.
+//! The `op` field contract: a mul/div `unit_expr` exposes its operator as an
+//! ANONYMOUS node in the `op` field, of kind `*` or `/`.  `grammar.js` aliases the
+//! scanner's hidden `_unit_mul_op` / `_unit_div_op` tokens to those kinds, so `·` is
+//! a scanner spelling of `*`: kind `*`, text `·`.  A comment between the operands is
+//! an `extra`, a sibling of the op node, never inside it.
 
 use tree_sitter_reify::language;
 
@@ -138,22 +138,43 @@ fn field_text<'a>(node: tree_sitter::Node<'a>, field: &str, src: &'a [u8]) -> St
         .to_string()
 }
 
-/// The operator token between a `unit_expr`'s `left` and `right` operands, read as
-/// the source slice between their byte ranges (the `op` field is hidden — see the
-/// module header).
-fn op_slice<'a>(node: tree_sitter::Node<'a>, src: &'a [u8]) -> String {
-    let left = node
-        .child_by_field_name("left")
-        .expect("mul/div unit_expr has a `left` field");
-    let right = node
-        .child_by_field_name("right")
-        .expect("mul/div unit_expr has a `right` field");
-    std::str::from_utf8(&src[left.end_byte()..right.start_byte()])
-        .expect("operator slice is valid UTF-8")
-        .to_string()
+/// The operator node of a mul/div `unit_expr` — its `op` field.
+fn op_node(node: tree_sitter::Node) -> tree_sitter::Node {
+    node.child_by_field_name("op").unwrap_or_else(|| {
+        panic!(
+            "mul/div unit_expr must expose its operator as an `op` field; got kinds: {:?}",
+            collect_kinds(node)
+        )
+    })
 }
 
-/// Assert the `left`/`right` operand texts and the operator slice of a `unit_expr`.
+/// The node kind the `op` field must carry for an operator spelled `op_text`:
+/// `·` is a scanner spelling of `*`.
+fn expected_op_kind(op_text: &str) -> &'static str {
+    match op_text {
+        "*" | "·" => "*",
+        "/" => "/",
+        other => panic!("no unit operator is spelled `{other}`"),
+    }
+}
+
+/// Assert `node`'s `op` field is an anonymous node of `kind` whose text is `text`.
+fn assert_op(node: tree_sitter::Node, src: &[u8], kind: &str, text: &str) {
+    let op = op_node(node);
+    assert_eq!(
+        op.utf8_text(src).expect("op text is valid UTF-8"),
+        text,
+        "unexpected operator text"
+    );
+    assert!(
+        !op.is_named(),
+        "the `op` field must be an anonymous node; got named `{}`",
+        op.kind()
+    );
+    assert_eq!(op.kind(), kind, "unexpected operator kind for `{text}`");
+}
+
+/// Assert the `left`/`right` operand texts and the `op` field of a `unit_expr`.
 fn assert_binary(
     node: tree_sitter::Node,
     src: &[u8],
@@ -171,7 +192,7 @@ fn assert_binary(
         expect_right,
         "unexpected `right` operand"
     );
-    assert_eq!(op_slice(node, src), expect_op, "unexpected operator token");
+    assert_op(node, src, expected_op_kind(expect_op), expect_op);
 }
 
 // ── ACCEPT: `·` binds adjacent units exactly as `*` does ──────────────────────
@@ -195,7 +216,7 @@ fn accept_newton_middot_metre() {
 }
 
 /// `5N·m/rad` — mixed `·` and `/`.  `/` is the outermost operator (left-assoc), so
-/// the top-level slice is `/` and its `left` is the `N·m` mul.
+/// the top-level op is `/` and its `left` is the `N·m` mul.
 #[test]
 fn accept_newton_middot_metre_per_radian() {
     let source = "structure S { let x = 5N·m/rad }";
@@ -251,10 +272,9 @@ fn accept_four_factor_left_associative_chain() {
 
 /// `5W·(m/K)` and `5W/(m·K)` — `·` adjacent to a PAREN GROUP on either side.
 ///
-/// `is_unit_start` accepts `(`, so this is a live accepted path.  It is pinned at
-/// the CST layer because the operator is NOT a field on the node: every consumer,
-/// including `lower_unit_expr`, recovers it from the source slice between the
-/// operands (`op_slice` here does the same), and a paren moves those boundaries.
+/// `is_unit_start` accepts `(`, so this is a live accepted path.  A paren group on
+/// either side must still leave the `·` as the outer node's `op` field: kind `*`,
+/// text `·`.
 #[test]
 fn accept_middot_adjacent_to_paren_group() {
     let source = "structure S { let x = 5W·(m/K) }";
@@ -361,10 +381,45 @@ fn boundary_adjacent_lets_parse_independently() {
     );
 }
 
+// ── The `op` field contract ──────────────────────────────────────────────────
+
+/// Every scanner spelling of a unit operator surfaces as an anonymous `*` or `/`
+/// node in the `op` field, carrying its own source text.
+#[test]
+fn op_field_is_an_anonymous_star_or_slash_node() {
+    for (quantity, kind, text) in [("5kg*m", "*", "*"), ("5N·m", "*", "·"), ("5m/s", "/", "/")] {
+        let source = format!("structure S {{ let x = {quantity} }}");
+        let (tree, _) = parse_clean_unit_expr(&source);
+        let unit = find_node_by_kind(tree.root_node(), "unit_expr").unwrap();
+        assert_op(unit, source.as_bytes(), kind, text);
+    }
+}
+
+/// A comment between the operands is an `extra` beside the op node, never part of
+/// it: the op text is exactly the operator.
+#[test]
+fn op_field_excludes_a_comment_between_the_operands() {
+    for (quantity, kind) in [
+        ("5(m)/*c*/*(s)", "*"),
+        ("5N/*a*//*b*/*m", "*"),
+        ("5N/*c*//m", "/"),
+    ] {
+        let source = format!("structure S {{ let x = {quantity} }}");
+        let (tree, _) = parse_clean_unit_expr(&source);
+        assert!(
+            find_node_by_kind(tree.root_node(), "block_comment").is_some(),
+            "`{source}` must carry a block_comment; got kinds: {:?}",
+            collect_kinds(tree.root_node())
+        );
+        let unit = find_node_by_kind(tree.root_node(), "unit_expr").unwrap();
+        assert_op(unit, source.as_bytes(), kind, kind);
+    }
+}
+
 // ── `*`/`·` equivalence at the CST level ─────────────────────────────────────
 
 /// The two spellings must produce structurally identical trees — same node kinds in
-/// the same depth-first order — differing only in the operator slice.  This is the
+/// the same depth-first order — differing only in the operator text.  This is the
 /// CST-level half of the task's "`5N·m` evaluates identically to `5N*m`" signal.
 #[test]
 fn middot_and_star_produce_identical_cst_shapes() {
