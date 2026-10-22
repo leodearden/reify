@@ -11,11 +11,12 @@
 //! OpenVDB ingestion (file read, sample buffer, lowering to `sampled`).
 
 use reify_kernel_openvdb::ingest::{
-    IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
-    lower_to_sampled, read_vdb_file,
+    IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
+    OpenVdbInterpolation, lower_to_sampled, read_vdb_file,
 };
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
-use reify_ir::{InterpolationKind, SampledGridKind};
+use reify_expr::{EvalContext, sampled};
+use reify_ir::{InterpolationKind, SampledGridKind, Value, ValueMap};
 
 /// Step-1 happy path: a 1D `Length` grid lowered with linear interpolation
 /// produces a `SampledField` whose semantic content (kind, bounds, spacing,
@@ -805,6 +806,133 @@ fn lower_to_sampled_real_codomain_with_meter_grid_returns_unit_mismatch() {
         }
         other => panic!("expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unit scaling: lowered values are SI; the voxel transform is metres
+// ---------------------------------------------------------------------------
+
+/// The 1D [0, 3] / spacing-1 shape of [`unit_test_grid`], carrying `data`.
+fn unit_scaling_grid(units: Option<&str>, data: Vec<f64>) -> OpenVdbGridSource {
+    OpenVdbGridSource {
+        data,
+        ..unit_test_grid(units)
+    }
+}
+
+#[test]
+fn lower_to_sampled_scales_mpa_values_to_pascals() {
+    let grid = unit_scaling_grid(Some("MPa"), vec![1.0; 4]);
+    let outcome = lower_to_sampled(&grid, "p", &pressure_type()).unwrap();
+    assert_eq!(outcome.field.data, vec![1e6; 4]);
+
+    let empty_values = ValueMap::new();
+    let sampled_value = sampled::sample_at_point(
+        &outcome.field,
+        &Value::Real(1.5),
+        &pressure_type(),
+        &EvalContext::simple(&empty_values),
+    );
+    match sampled_value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::PRESSURE);
+            assert!(
+                (si_value - 1e6).abs() <= 1e-6,
+                "an MPa grid holding 1.0 must sample to 1e6 Pa, got {si_value}"
+            );
+        }
+        other => panic!("expected Value::Scalar for a Pressure codomain, got {other:?}"),
+    }
+}
+
+#[test]
+fn lower_to_sampled_scales_kpa_values_to_pascals() {
+    let grid = unit_scaling_grid(Some("kPa"), vec![0.0, 1.0, 2.5, 4.0]);
+    let outcome = lower_to_sampled(&grid, "p", &pressure_type()).unwrap();
+    assert_eq!(outcome.field.data, vec![0.0, 1e3, 2.5e3, 4e3]);
+}
+
+#[test]
+fn lower_to_sampled_scales_cm_values_to_metres_but_keeps_voxel_transform_in_metres() {
+    let grid = unit_scaling_grid(Some("cm"), vec![0.0, 100.0, 200.0, 300.0]);
+    let outcome = lower_to_sampled(&grid, "d", &Type::length()).unwrap();
+    let field = &outcome.field;
+
+    let expected_metres = [0.0, 1.0, 2.0, 3.0];
+    assert_eq!(field.data.len(), expected_metres.len());
+    for (i, (actual, expected)) in field.data.iter().zip(expected_metres).enumerate() {
+        assert!(
+            (actual - expected).abs() <= 1e-12,
+            "data[{i}]: a cm value must lower to metres; expected {expected}, got {actual}"
+        );
+    }
+
+    assert_eq!(field.bounds_min, vec![0.0]);
+    assert_eq!(field.bounds_max, vec![3.0]);
+    assert_eq!(field.spacing, vec![1.0]);
+    assert_eq!(field.axis_grids, vec![vec![0.0, 1.0, 2.0, 3.0]]);
+}
+
+#[test]
+fn every_known_unit_row_scales_lowered_values_by_its_si_scale() {
+    for row in KNOWN_UNITS {
+        let grid = unit_scaling_grid(Some(row.symbol), vec![1.0; 4]);
+        let codomain = Type::Scalar {
+            dimension: row.dimension,
+        };
+        let outcome = lower_to_sampled(&grid, "f", &codomain).unwrap_or_else(|e| {
+            panic!("unit '{}' must lower on its own dimension: {e}", row.symbol)
+        });
+        assert_eq!(
+            outcome.field.data,
+            vec![row.si_scale; 4],
+            "unit '{}' must scale lowered values by its si_scale {}",
+            row.symbol,
+            row.si_scale
+        );
+    }
+}
+
+#[test]
+fn known_units_table_is_well_formed_and_agrees_with_reify_core_builtin_units() {
+    let mut seen_symbols = std::collections::HashSet::new();
+    let mut rows_shared_with_reify_core = 0;
+    for row in KNOWN_UNITS {
+        assert!(
+            seen_symbols.insert(row.symbol),
+            "duplicate KNOWN_UNITS symbol '{}' (the linear lookup shadows it)",
+            row.symbol
+        );
+        assert!(
+            row.si_scale.is_finite() && row.si_scale > 0.0,
+            "unit '{}' has non-positive or non-finite si_scale {}",
+            row.symbol,
+            row.si_scale
+        );
+        if let Some((factor, dimension)) = reify_core::units::unit_symbol_to_si(row.symbol) {
+            rows_shared_with_reify_core += 1;
+            assert_eq!(
+                row.si_scale.to_bits(),
+                factor.to_bits(),
+                "unit '{}': si_scale {} disagrees with reify_core BUILTIN_UNITS factor {}",
+                row.symbol,
+                row.si_scale,
+                factor
+            );
+            assert_eq!(
+                row.dimension, dimension,
+                "unit '{}': dimension disagrees with reify_core BUILTIN_UNITS",
+                row.symbol
+            );
+        }
+    }
+    assert!(
+        rows_shared_with_reify_core > 0,
+        "no KNOWN_UNITS row is shared with reify_core BUILTIN_UNITS; the drift guard is vacuous"
+    );
 }
 
 // ---------------------------------------------------------------------------
