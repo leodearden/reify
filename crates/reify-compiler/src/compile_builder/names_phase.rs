@@ -13,7 +13,7 @@
 //!
 //! Lifting the construction into this tiny pre-step (run before
 //! `enums_phase::resolve_enum_variant_payloads` +
-//! `enums_phase::build_resolution_enums_from_cache`, and before
+//! `enums_phase::bind_resolution_enums`, and before
 //! `functions_phase::phase_functions`) stores the result on
 //! `CompilationCtx.resolution_trait_names` / `CompilationCtx.resolution_structure_names`.
 //! Both `phase_functions` and `phase_traits` then read the cached ctx fields
