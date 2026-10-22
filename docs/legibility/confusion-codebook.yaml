@@ -3928,6 +3928,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Bounded-wait timeout (exit 124) recurring across turns 174 and 189
+  - date: '2026-10-21'
+    project: reify
+    session: 6505a49f-715f-422f-a2c3-15c18e8b9c2a
+    origin_phase: ops
+    manifested_phase: ops
+    note: The bounded-wait watcher's exit 124 ceiling recurs as a tool_error-class result across the repeated re-arm attempts in this session.
+  - date: '2026-10-21'
+    project: reify
+    session: bbecb54d-ba2b-4224-855d-9402b73ed68c
+    origin_phase: ops
+    manifested_phase: ops
+    note: The bounded-wait watcher returned exit 124 with CEILING outcome at turn 114, which the digest records as a designed outcome. The digest's error neighborhood also shows an exit 137 death at turn 176. Both fall under the bounded-wait timeout pattern this entry covers.
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4368,6 +4380,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: After the bounded watcher-rearm hit its own CEILING (exit 124, turn 58), the agent re-issued a near-identical watcher-rearm.sh call at turn 67 with the same --timeout 3600 and only an added echo/date wrapper, rather than changing the wait strategy.
+  - date: '2026-10-21'
+    project: reify
+    session: 6505a49f-715f-422f-a2c3-15c18e8b9c2a
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh returned CEILING exit=124 with WATCHER_REARM_OUTCOME, and the agent re-issued the identical bounded-wait Bash command four times (retry loop with the same command and timeout).
+  - date: '2026-10-21'
+    project: reify
+    session: bbecb54d-ba2b-4224-855d-9402b73ed68c
+    origin_phase: ops
+    manifested_phase: ops
+    note: The identical `watcher-rearm.sh --timeout 3600` command was re-issued three times after the bounded wait hit its own CEILING (exit 124), matching the codebook entry's description of re-issuing an identical bounded rearm after its ceiling.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -6208,6 +6232,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Interactive agent calls non-existent generic tool names (read_file, git_log) in place of available MCP tools. Occurs in non-dark-factory project (/home/leo/src/reify) during task completion verification.
+  - date: '2026-10-21'
+    project: reify
+    session: cba45997-b2f8-4c66-bc4b-28aa58b1c67d
+    origin_phase: unknown
+    manifested_phase: merge
+    note: Autonomous orchestrated-task session repeatedly called Bash and mcp__escalation__merge_status / get_task_escalation_history assuming tool access; the session runs in don't-ask mode and each call was denied (turns 38, 50, 51), leaving merge-status inspection blocked. Matches the 'assumes unrestricted default toolset' confusion.
 - id: entry-cand-20260727-5
   title: Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work
   severity: medium
@@ -9093,6 +9123,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: mcp__fused-memory__get_task was called three times with identical arguments (id 7890, project_root /home/leo/src/reify) in an /unblock session. This fits the fused-memory get_task failure and identical-retry pattern. The digest does not show the error text, so a timeout is inferred and not confirmed.
+  - date: '2026-10-21'
+    project: reify
+    session: 6505a49f-715f-422f-a2c3-15c18e8b9c2a
+    origin_phase: ops
+    manifested_phase: ops
+    note: Escalation MCP queries (get_pending_escalations, get_task_escalations, promote_to_l2) repeatedly return 'The operation timed out' with no diagnostic detail and are re-issued. This is a different MCP server than the fused-memory get_task in the entry, so the match is by cause class, not server.
 - id: entry-cand-20260823-13
   title: Redundant duplicate full-suite test invocation to extract two derived metrics
   severity: medium
@@ -9161,6 +9197,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: '"error": "Tool call rejected: it carries raw MCP envelope markup in ''rationale'', which means the caller serialized part of its own tool-call envelope into the payload.", "matched_pattern": "</invoke>" ... (turn 281) "matched_pattern": "</rationale>"'
+  - date: '2026-10-21'
+    project: reify
+    session: 0c27d83a-d276-4965-9476-d57d19efc93c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: add_design_decision rationale field carried leaked MCP envelope closing tags (</rationale>), rejected by the mcp_markup_detected guard at turn 1322 and recurring at turn 1331 in the same session. Matches the recurrence-within-session pattern.
 - id: entry-cand-20260818-22
   title: readlink /proc/self/fd/1 probe is self-referential inside command substitution, unconditionally reads back pipe:*
   severity: medium
@@ -9260,6 +9302,12 @@ entries:
     origin_phase: unknown
     manifested_phase: architect
     note: submit_task MCP call times out at turns 262 and 267 with identical agent_id and description; retried without intermediate root-cause diagnosis, creating risk of duplicate task submission when filing escalation follow-up
+  - date: '2026-10-21'
+    project: reify
+    session: dd2e0bf7-c471-420d-8650-654b4b79d97e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Same mechanism as the entry: an MCP write call (here mcp__fused-memory__submit_task, not add_memory) times out at turn 442 and is retried at turn 452 with a description that matches the first call up to the truncation point, so the retry risks a duplicate task submission. The phase is not stated in the digest, so both phases are unknown.'
 - id: entry-cand-20260901-15
   title: add_memory content rejected because the model's own tool-call envelope markup leaked into the payload string
   severity: medium
@@ -9591,6 +9639,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: '"error": "Tool call rejected: it carries raw MCP envelope markup in ''rationale'', which means the caller serialized part of its own tool-call envelope into the payload.", "matched_pattern": "</invoke>", "misclose": "</rationale>"'
+  - date: '2026-10-21'
+    project: reify
+    session: 0c27d83a-d276-4965-9476-d57d19efc93c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: add_design_decision rationale polluted with self-serialized MCP envelope markup; the same tool and field are affected in both rejected calls.
 - id: entry-cand-20260913-2
   title: Ad-hoc plan.json step-inspection script crashes on None field for an incomplete step
   severity: medium
@@ -9873,6 +9927,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The User Corrections section records the escalation notification (esc-7420-14, 'Steward re-escalated to human') as a user turn, which is the digest mislabel this entry describes.
+  - date: '2026-10-21'
+    project: reify
+    session: 6505a49f-715f-422f-a2c3-15c18e8b9c2a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The digest's User Corrections section lists the supervisor-injected watcher briefing (turn 3, rotation limits and re-arm instructions) as a user correction, the same mislabeling of injected operator content as a User Correction.
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -10147,6 +10207,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Turn 23 chains `git merge-base --is-ancestor e4322607e0 main && echo ON_MAIN`. The predicate exits 1 (not an ancestor), and the digest records it as a tool_error with exit code 1. This matches the codebook entry's boolean-predicate-exit-code-via-&& misreading. The digest does not show whether the agent misread it, so phases are unknown.
+  - date: '2026-10-21'
+    project: reify
+    session: 87c85728-9ecf-4a2e-afcc-59da474897a6
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 71: a while-loop of `grep -c` over verify logs exits 1 on the last file because grep -c returns 1 for a zero count. The digest records this as tool_error even though the loop ran to completion. This is the same pattern as a boolean-predicate exit code misread as a failure, here via grep rather than git.'
 - id: entry-cand-20260916-19
   title: get_memories_by_metadata re-issued identically 3x on the same topic filter instead of adapting retrieval strategy
   severity: medium
@@ -27246,3 +27312,57 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'RUN (unmapped): test_warm_lane_lock_guard.sh'
+- id: cand-20261021-1
+  title: Post-merge verify failure reported as unknown_test_failure with test output truncated, hiding which test failed
+  cause: The verify harness's test-failure payload is truncated before the failing test is named, so the block reason records category unknown_test_failure. The agent cannot identify the failing test from the digest and must dig into archived logs that the session's own tool permissions then block.
+  area: verify-harness
+  first_seen: '2026-10-21'
+  disposition: pending
+  sightings:
+  - date: '2026-10-21'
+    project: reify
+    session: 71b9f943-3b84-48c6-b75c-66664cabc8b9
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '--- Section I: the baseline-independent vacuity floor ... P... [item truncated: 10594 of 12592 bytes dropped]'
+- id: cand-20261021-2
+  title: Dependent sed rename issued on a file whose preceding Edit was interrupted with unknown outcome
+  cause: After an Edit call on a source file was interrupted with its outcome unrecorded, the agent immediately ran a dependent sed rename on the same file without first reading the file to check whether the edit had landed. The rename can double-apply or conflict with a partial edit, and the next change inherits an unverified file state.
+  area: agent-tooling
+  first_seen: '2026-10-21'
+  disposition: pending
+  sightings:
+  - date: '2026-10-21'
+    project: reify
+    session: 0f1b8e4c-9bce-4987-8674-5fadaadef960
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: '[Tool call interrupted: the session ended before this call''s result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]'
+- id: cand-20261021-3
+  title: Verify pool outer timeout reports FAILED (partial) with an empty failure list, hiding which test hung
+  cause: When run_all.sh hits the outer 30m timeout with one worker still running (191/192 complete), the summary reports INTERRUPTED and FAILED (partial) with no named failing or straggling test, so the next agent cannot attribute the failure to a change or to a hung test.
+  area: verify harness / test pool reporting
+  first_seen: '2026-10-21'
+  disposition: pending
+  sightings:
+  - date: '2026-10-21'
+    project: reify
+    session: 2af8e361-be74-4aee-87ec-19e47d16b97d
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: '=== Summary: INTERRUPTED (outer timeout; partial results) ===
+
+      === FAILED:  (partial) ==='
+- id: cand-20261021-4
+  title: Escalation attributes a pool-phase stall to the wrong member by mapping the progress counter to the last-started member
+  cause: The escalation cited the member at the pool's progress position (182, a serial-phase member that ran 54s) as the source of a >600s stall. The stall was actually member 130, which ran 905s. The agent mapped the '191/192' progress count to the wrong member and built a work item on that premise, so the architect found it unactionable.
+  area: verify-pipeline
+  first_seen: '2026-10-21'
+  disposition: pending
+  sightings:
+  - date: '2026-10-21'
+    project: reify
+    session: 5c75eb4a-3a0b-41fd-a965-d3dd854da095
+    origin_phase: verify
+    manifested_phase: architect
+    evidence_quote: The >600s "191/192" pool stall was member 130, test_sandbox_cache_writability_seam.sh (905s).
