@@ -691,26 +691,39 @@ mod tests {
     }
 
     /// Names a registry row deliberately shares with a family slice, as
-    /// `(name, family, the argc the family's call shape takes)`. Family slices
-    /// carry no arity, so the argc each one claims is declared here, and the
-    /// sharing is harmless only while no registry row answers that argc.
+    /// `(name, family slice, the argc the family's call shape takes)`. Family
+    /// slices carry no arity, so the argc each one claims is declared here, and
+    /// the sharing is harmless only while no registry row answers that argc.
+    ///
+    /// Keyed on the slice itself rather than its label, so a share cannot name
+    /// a family that does not exist. Slices compare by content, which
+    /// identifies a family because families are pairwise disjoint.
     ///
     /// * `offset` — the arity-2 construction datum `offset(Plane, Length)`
     ///   vs the arity-3 relation row.
     /// * `angle` / `distance` — the arity-2 geometry-query DERIVE forms vs the
     ///   arity-3 relation DRIVE rows.
-    const REGISTRY_ROW_FAMILY_SHARES: &[(&str, &str, usize)] = &[
-        ("offset", "DATUM_CONSTRUCTOR_NAMES", 2),
-        ("angle", "GEOMETRY_QUERY_NAMES", 2),
-        ("distance", "GEOMETRY_QUERY_NAMES", 2),
+    const REGISTRY_ROW_FAMILY_SHARES: &[(&str, &[&str], usize)] = &[
+        ("offset", DATUM_CONSTRUCTOR_NAMES, 2),
+        ("angle", GEOMETRY_QUERY_NAMES, 2),
+        ("distance", GEOMETRY_QUERY_NAMES, 2),
     ];
 
     /// The argc `family` takes for `name`, if the pair is a declared share.
-    fn registry_row_family_share_argc(name: &str, family: &str) -> Option<usize> {
+    fn registry_row_family_share_argc(name: &str, family: &[&str]) -> Option<usize> {
         REGISTRY_ROW_FAMILY_SHARES
             .iter()
             .find(|&&(n, f, _)| n == name && f == family)
             .map(|&(_, _, argc)| argc)
+    }
+
+    /// The [`BUILTIN_NAME_FAMILIES`] label of `family`.
+    fn family_label(family: &[&str]) -> &'static str {
+        BUILTIN_NAME_FAMILIES
+            .iter()
+            .find(|&&(_, slice)| slice == family)
+            .map(|&(label, _)| label)
+            .expect("every family slice is a BUILTIN_NAME_FAMILIES row")
     }
 
     /// The two vocabularies that are not slices — the builtin-signature
@@ -732,10 +745,10 @@ mod tests {
             !reify_builtins::rows().is_empty(),
             "premise guard: the registry holds no rows, so the sweep asserts nothing"
         );
-        for (family, slice) in BUILTIN_NAME_FAMILIES {
-            for name in *slice {
-                if *family != "RELATION_FN_NAMES" && !reify_builtins::name_group(name).is_empty() {
-                    let argc = registry_row_family_share_argc(name, family).unwrap_or_else(|| {
+        for &(family, slice) in BUILTIN_NAME_FAMILIES {
+            for name in slice {
+                if slice != RELATION_FN_NAMES && !reify_builtins::name_group(name).is_empty() {
+                    let argc = registry_row_family_share_argc(name, slice).unwrap_or_else(|| {
                         panic!(
                             "{name:?} in {family} is also a builtin-signature-registry \
                              row name, and the pair is not a declared \
@@ -749,7 +762,7 @@ mod tests {
                     );
                 }
                 assert!(
-                    *family == "GEOMETRY_QUERY_NAMES" || !is_relation_shared_verb(name),
+                    slice == GEOMETRY_QUERY_NAMES || !is_relation_shared_verb(name),
                     "{name:?} in {family} is also an arity-gated relation shared verb"
                 );
             }
@@ -760,12 +773,8 @@ mod tests {
     /// would silently excuse a future genuine collision.
     #[test]
     fn registry_row_family_shares_are_still_real() {
-        for &(name, family, argc) in REGISTRY_ROW_FAMILY_SHARES {
-            let slice = BUILTIN_NAME_FAMILIES
-                .iter()
-                .find(|(n, _)| *n == family)
-                .unwrap_or_else(|| panic!("{family} is not a BUILTIN_NAME_FAMILIES row"))
-                .1;
+        for &(name, slice, argc) in REGISTRY_ROW_FAMILY_SHARES {
+            let family = family_label(slice);
             assert!(
                 slice.contains(&name) && !reify_builtins::name_group(name).is_empty(),
                 "({name:?}, {family}, {argc}) is no longer both a {family} member and a \
