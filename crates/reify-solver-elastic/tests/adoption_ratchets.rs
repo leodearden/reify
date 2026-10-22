@@ -41,7 +41,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "bubble-condensation-copies",
         home: "the one guarded bubble-condensation fn (solver-crates-layering D6, leaf γ)",
-        baseline: 2,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "let det_bb =",
             SRC,

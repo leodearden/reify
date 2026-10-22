@@ -1339,6 +1339,67 @@ mod tests {
     }
 
     #[test]
+    fn mitc3_plus_singular_bubble_block_gets_zero_correction_and_finite_k() {
+        // At t = 1e-110 the bending scale t³/12 underflows to 0.0, so the bubble
+        // self-stiffness K_BB — pure bending — is the zero 2×2 block and
+        // det(K_BB) = 0. The condensation must fall back to a zero correction
+        // (K* = K_NN) instead of dividing by det(K_BB), leaving a finite,
+        // symmetric K that still carries the exact membrane and shear energies.
+        let mat = steel_like();
+        let t = 1e-110_f64;
+        assert_eq!(t * t * t, 0.0, "precondition: t³ must underflow to 0.0");
+        let k = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+
+        const N: usize = Mitc3Plus::N_DOFS;
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        for i in 0..N {
+            for j in 0..N {
+                let (kij, kji) = (k.get(i, j), k.get(j, i));
+                assert!(kij.is_finite(), "K[{i}][{j}] = {kij} is not finite");
+                assert!(
+                    (kij - kji).abs() <= 1e-12 * kij.abs().max(kji.abs()),
+                    "asymmetry at ({i},{j}): {kij} vs {kji}",
+                );
+            }
+        }
+
+        // The energies are ~1e-100, so both comparisons are relative: an absolute
+        // `max(1.0)` scale would make them vacuous.
+        let area = 0.5_f64;
+        let energy = |u: &[f64; N]| -> f64 {
+            let ku = matvec(&k, u);
+            0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>()
+        };
+
+        let (a, b) = (0.01_f64, -0.005_f64);
+        let mut u_mem = [0.0_f64; N];
+        u_mem[NDP * 1] = a; // node1 at x=1 → u_x = a
+        u_mem[NDP * 2 + 1] = b; // node2 at y=1 → u_y = b
+        let d = plane_stress_d(&mat);
+        let u_mem_analytical =
+            0.5 * (a * (d[0][0] * a + d[0][1] * b) + b * (d[1][0] * a + d[1][1] * b)) * t * area;
+        let u_mem_k = energy(&u_mem);
+        assert!(
+            (u_mem_k - u_mem_analytical).abs() <= 1e-9 * u_mem_analytical.abs(),
+            "singular-K_BB membrane patch: U_K={u_mem_k}, U_analytical={u_mem_analytical}",
+        );
+
+        let alpha = 0.003_f64;
+        let mut u_shear = [0.0_f64; N];
+        for node in 0..Mitc3Plus::N_NODES {
+            u_shear[NDP * node + 4] = alpha; // θ_y
+        }
+        let gmod = mat.shear_modulus();
+        let kappa = 5.0_f64 / 6.0;
+        let u_shear_analytical = 0.5 * alpha * alpha * kappa * gmod * t * area;
+        let u_shear_k = energy(&u_shear);
+        assert!(
+            (u_shear_k - u_shear_analytical).abs() <= 1e-9 * u_shear_analytical.abs(),
+            "singular-K_BB shear patch: U_K={u_shear_k}, U_analytical={u_shear_analytical}",
+        );
+    }
+
+    #[test]
     fn mitc3_plus_strain_energy_invariant_under_global_rigid_rotation() {
         // Frame covariance / isotropy: ½uᵀKu invariant under a global rotation Q
         // of nodes + DOFs (MITC3+ is built in the local frame and block-rotated,
