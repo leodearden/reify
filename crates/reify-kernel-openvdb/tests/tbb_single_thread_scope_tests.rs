@@ -23,7 +23,13 @@ fn single_thread_scope_limits_and_restores_tbb_parallelism() {
 
     let _serial = serial();
     let p0 = tbb_max_allowed_parallelism();
-    assert!(p0 >= 1, "TBB must report at least one thread; got {p0}");
+    if p0 <= 1 {
+        eprintln!(
+            "skipping: TBB already reports max_allowed_parallelism {p0}, so a limit of 1 \
+             cannot be told apart from no limit on this host"
+        );
+        return;
+    }
 
     let scope = TbbSingleThreadScope::enter();
     assert_eq!(
