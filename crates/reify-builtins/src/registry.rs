@@ -187,8 +187,7 @@ crate::macros::registry! {
     // curved surface. Compiler typing of these names stays in
     // relation_signatures until S9 λ #8741 rewires it onto these rows, and the
     // owning exhaustive binding of `RelationKind` (I-REG-2) is S6 γ #8830's.
-    // `arg_slots` is one `Any` per slot up to the arity's upper bound; operand
-    // policy is not encoded in the row.
+    // Every arg slot is `Any`: operand policy is not encoded in the row.
     //
     // tangent is ARTIFACT: the design doc rules only the 2-operand
     // `<HasAxis & HasRadius>` surface form (#5588, pending). This row encodes
@@ -495,8 +494,8 @@ mod tests {
         );
     }
 
-    /// Each Relation row declares its arity, its kind and family, a
-    /// `Type::Relation` result, and one arg slot per accepted operand.
+    /// Each Relation row declares its arity, its kind and family, and a
+    /// `Type::Relation` result.
     #[test]
     fn relation_rows_declare_their_arity_and_type_to_relation() {
         for (name, arity) in RELATION_ROWS {
@@ -505,15 +504,6 @@ mod tests {
             assert_eq!(r.binding, BindingKind::Relation, "{name}");
             assert_eq!(r.family, Family::Relation, "{name}");
             assert_eq!(r.result.const_type(), Some(&Type::Relation), "{name}");
-            let upper = match arity {
-                Arity::Exact(n) | Arity::Range(_, n) => n,
-                Arity::Variadic => panic!("{name}: no relation row is variadic"),
-            };
-            assert_eq!(
-                r.arg_slots.len(),
-                upper,
-                "{name}: one arg slot per slot up to the arity's upper bound"
-            );
         }
     }
 

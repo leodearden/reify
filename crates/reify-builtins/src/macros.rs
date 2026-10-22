@@ -65,6 +65,9 @@
 //! - `rows()` / `row_for(id)` — the row table.
 //! - `lookup(name, argc)` / `name_group(name)` — the ONLY string→builtin
 //!   resolution in the workspace (I-REG-1).
+//! - One compile-time assertion per row that its `arg_slots` count matches its
+//!   arity ([`Arity::slot_count_matches`](crate::row::Arity::slot_count_matches)),
+//!   so no row of any group can drift.
 
 /// Expand a kind-grouped row list into the full registry surface.
 ///
@@ -143,6 +146,18 @@ macro_rules! registry {
                 }
             }
         )*
+
+        $( $(
+            const _: () = ::core::assert!(
+                $crate::row::Arity::$arity_v $(( $($arity_a),* ))?.slot_count_matches(
+                    <[$crate::row::ArgSlot]>::len(&[ $( $crate::row::ArgSlot::$slot ),* ]),
+                ),
+                concat!(
+                    "registry row `", $name, "` (", stringify!($variant),
+                    ") must declare one arg slot per argument its arity admits"
+                ),
+            );
+        )* )*
 
         /// Every registered row, in declaration order.
         ///
@@ -349,7 +364,7 @@ mod tests {
                     name: "baz",
                     family: Analysis,
                     arity: Range(1, 2),
-                    arg_slots: [Any],
+                    arg_slots: [Any, Any],
                     result: Const(Type::Bool),
                     basis: Doc("docs/prds/v0_6/builtin-signature-registry.md")
                 },

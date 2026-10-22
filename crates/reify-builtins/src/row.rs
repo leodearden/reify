@@ -99,6 +99,19 @@ impl Arity {
             Arity::Variadic => true,
         }
     }
+
+    /// Does a row declaring `slot_count` arg slots give every argument this
+    /// arity admits a slot of its own? A bounded arity needs exactly one slot
+    /// per argument up to its upper bound, optional trailing arguments
+    /// included; `Variadic` has no upper bound, so it constrains no count.
+    ///
+    /// `registry!` asserts this for every row at compile time.
+    pub const fn slot_count_matches(&self, slot_count: usize) -> bool {
+        match *self {
+            Arity::Exact(n) | Arity::Range(_, n) => slot_count == n,
+            Arity::Variadic => true,
+        }
+    }
 }
 
 /// A per-argument-slot constraint.
@@ -253,7 +266,8 @@ pub struct BuiltinRow<Id: Copy + 'static = crate::BuiltinId> {
     pub binding: BindingKind,
     /// How many arguments this row accepts.
     pub arity: Arity,
-    /// Per-slot argument constraints, one entry per declared slot.
+    /// Per-slot argument constraints, one entry per argument [`Self::arity`]
+    /// admits ([`Arity::slot_count_matches`]).
     pub arg_slots: &'static [ArgSlot],
     /// How this row's result type is computed.
     pub result: ResultSpec,
@@ -338,6 +352,23 @@ mod tests {
     fn arity_variadic_matches_any_argc() {
         assert!(Arity::Variadic.matches(0), "Variadic must match argc 0");
         assert!(Arity::Variadic.matches(7), "Variadic must match argc 7");
+    }
+
+    /// A bounded arity's slot count is its upper bound, optional trailing
+    /// arguments included; `Variadic` constrains no slot count.
+    #[test]
+    fn arity_slot_count_matches_its_upper_bound() {
+        assert!(Arity::Exact(2).slot_count_matches(2));
+        assert!(!Arity::Exact(2).slot_count_matches(1));
+        assert!(!Arity::Exact(2).slot_count_matches(3));
+        assert!(Arity::Exact(0).slot_count_matches(0));
+        assert!(Arity::Range(3, 4).slot_count_matches(4));
+        assert!(
+            !Arity::Range(3, 4).slot_count_matches(3),
+            "a Range row needs a slot for its optional trailing argument too"
+        );
+        assert!(Arity::Variadic.slot_count_matches(0));
+        assert!(Arity::Variadic.slot_count_matches(3));
     }
 
     // ── ArgSlot ──────────────────────────────────────────────────────────────
