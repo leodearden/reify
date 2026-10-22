@@ -1,7 +1,7 @@
 //! Mesh morphing classifier and engine for Reify.
 //!
-//! This crate provides the combined eligibility predicate for mesh morphing
-//! (PRD `docs/prds/v0_3/mesh-morphing.md`, tasks #3 and #10).
+//! This crate is the mesh-morph pipeline (PRD `docs/prds/v0_3/mesh-morphing.md`),
+//! entered through [`compose_morph`].
 //!
 //! ## PRD task #5 — boundary-node correspondence + closest-point projection — boundary module
 //!
@@ -121,24 +121,6 @@ pub use reify_eval::{
 /// Re-exported so consumers of [`elasticity_morph_with_cg_opts`] can construct
 /// `CgSolverOptions` without depending on `reify-solver-elastic` directly.
 pub use reify_solver_elastic::CgSolverOptions;
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/// Bool-only wrapper around [`morph_eligible`] per PRD task #4.
-///
-/// Returns `true` if both Stage A and Stage B pass (the edit is morphable),
-/// `false` otherwise. The structured rejection [`Reason`] is discarded;
-/// callers that need it for failure-mode visibility counters (PRD task #11)
-/// should call [`morph_eligible`] directly.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer task #4744 (done) — the §8 task β morph arm landed via `morph_eligible` directly, not this bool-only `eligible` wrapper; remains an in-scope orphan BY DESIGN (convenience wrapper with no current caller — see PINS in engine_seam_orphans_g_allow.rs); re-homed from cancelled #3429/#2947
-pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
-    // `BRep` is `Copy` (alias for `MorphSnapshot<'a>`); pass by value matches
-    // `morph_eligible`'s signature directly.
-    matches!(
-        eligibility::morph_eligible(old_brep, new_brep),
-        Eligibility::Eligible(_)
-    )
-}
 
 // ── compose_morph: the real morph pipeline (task 4744 β) ───────────────────────
 

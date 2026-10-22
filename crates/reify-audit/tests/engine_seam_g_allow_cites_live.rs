@@ -316,7 +316,11 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
         "crates/reify-mesh-morph/src/laplacian.rs",
         "laplacian_smooth",
     );
-    assert_pub_fn_present(&ws_root, "crates/reify-mesh-morph/src/lib.rs", "compose_morph");
+    assert_pub_fn_present(
+        &ws_root,
+        "crates/reify-mesh-morph/src/lib.rs",
+        "compose_morph",
+    );
     assert_pub_fn_present(
         &ws_root,
         "crates/reify-mesh-morph/src/quality.rs",
