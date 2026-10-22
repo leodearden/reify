@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from reify_verify import bashcall, scope
+from reify_verify import bashcall, gitcall
 from reify_verify.bashcall import BashCall, DataFile
 from reify_verify.invocation import Scope
 from reify_verify.scope import ScopeDecision
@@ -135,17 +135,17 @@ def _harness_kloc(
     decision: ScopeDecision, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """select_harness_kloc_guard: a branch adds or edits a consolidatable crate's test unit."""
-    records = scope.merge_base_diff(decision, repo_root, env, "--name-status", "--diff-filter=AM")
+    records = _merge_base_diff(decision, repo_root, env, "--name-status", "--diff-filter=AM")
     crates = None
     warnings: tuple[str, ...] = ()
-    for record in records or ():
+    for record in records:
         status, _, path = record.partition("\t")
         crate = _kloc_candidate_crate(status, path.rstrip("\t"))
         if crate is None:
             continue
         if crates is None:
             result = bashcall.run(KLOC_CRATES, (), repo_root, env)
-            crates = frozenset(line for line in result.stdout.split("\n") if line)
+            crates = frozenset(result.lines)
             warnings = result.stderr_lines
         if crate in crates:
             return (KLOC_LEAF,), warnings
@@ -184,10 +184,21 @@ def _branch_ratchet(
     *filters: str,
 ) -> tuple[str, ...]:
     """select_branch_ratchet_leaf: a branch diff path the ratchet reads."""
-    paths = scope.merge_base_diff(decision, repo_root, env, "--name-only", "--no-renames", *filters)
-    if any(path and is_input(path) for path in paths or ()):
+    paths = _merge_base_diff(decision, repo_root, env, "--name-only", "--no-renames", *filters)
+    if any(is_input(path) for path in paths):
         return (leaf,)
     return ()
+
+
+def _merge_base_diff(
+    decision: ScopeDecision, repo_root: Path, env: Mapping[str, str], *args: str
+) -> tuple[str, ...]:
+    """`git diff <args> <merge base>` lines under --scope branch; none outside branch, or when
+    git fails, its stderr dropped (the selectors' `2>/dev/null || return 0`)."""
+    if decision.mode is not Scope.BRANCH or not decision.merge_base:
+        return ()
+    found = gitcall.run(repo_root, env, "diff", *args, decision.merge_base)
+    return found.lines if found.returncode == 0 else ()
 
 
 def _pdiag_input_path(path: str) -> bool:

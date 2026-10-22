@@ -864,6 +864,8 @@ crates/reify-audit/src/pdoccover.rs    tests/infra/test_verify_narrowing_selecti
 crates/reify-audit/src/pdoccover_baseline.rs    tests/infra/test_verify_narrowing_selection.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/gitcall.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/gitcall.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/narrowing.py    tests/infra/test_verify_*.sh

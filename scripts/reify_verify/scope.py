@@ -7,13 +7,13 @@ those facts to check families. decide runs the stages and returns the
 ScopeDecision and the scope stage's stderr lines, in the order bash prints
 them.
 
-Every git call goes through _git, under the caller's env unmodified: the
-hook's GIT_* env is never scrubbed (consumer C18).
+A changed-path git call that fails returns git's own stderr with its warning,
+as bash leaves it on the terminal; resolve_scope drops it, as bash's
+`2>/dev/null` does.
 """
 
 import json
 import re
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -22,8 +22,8 @@ from functools import reduce
 from pathlib import Path
 
 from reify_path_attribution import PathFacts, Tree, attribute
-from reify_verify import bashcall
-from reify_verify.bashcall import BashCall, DataFile
+from reify_verify import bashcall, gitcall
+from reify_verify.bashcall import BashCall, CallResult, DataFile
 from reify_verify.invocation import Invocation, Scope
 from reify_verify.policy import ROLE_TABLE
 
@@ -43,29 +43,6 @@ MERGE_BASE_WARNING = (
     "(detached HEAD / missing local main ref / merge-base failure) — failing WIDE to "
     "--scope all (contract C5)"
 )
-
-
-@dataclass(frozen=True)
-class GitOutput:
-    returncode: int
-    text: str
-
-    @property
-    def lines(self) -> tuple[str, ...]:
-        """stdout's lines verbatim (core.quotePath quoting included)."""
-        return tuple(self.text.removesuffix("\n").split("\n")) if self.text else ()
-
-
-def _git(repo_root: Path, env: Mapping[str, str], *args: str) -> GitOutput:
-    """`git -C repo_root args`, stderr dropped."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        env=dict(env),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    return GitOutput(proc.returncode, proc.stdout.decode("utf-8", "surrogateescape"))
 
 
 class Widening(Enum):
@@ -103,8 +80,8 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
         mode, widened = Scope.ALL, Widening.ROLE_FORCES_ALL
     merge_base = None
     if mode is Scope.BRANCH:
-        found = _git(repo_root, env, "merge-base", "main", "HEAD")
-        if found.returncode == 0 and found.lines and found.lines[0]:
+        found = gitcall.run(repo_root, env, "merge-base", "main", "HEAD")
+        if found.returncode == 0 and found.lines:
             merge_base = found.lines[0]
         else:
             notices.append(MERGE_BASE_WARNING)
@@ -114,8 +91,8 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
 
 def _merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
     """A MERGE_HEAD file exists; a relative git path is resolved against repo_root, never the cwd."""
-    found = _git(repo_root, env, "rev-parse", "--git-path", "MERGE_HEAD")
-    if found.returncode != 0 or not found.lines or not found.lines[0]:
+    found = gitcall.run(repo_root, env, "rev-parse", "--git-path", "MERGE_HEAD")
+    if found.returncode != 0 or not found.lines:
         return False
     return (repo_root / found.lines[0]).is_file()
 
@@ -199,7 +176,9 @@ class ChangedSet:
 
 @dataclass(frozen=True)
 class GatherFailure:
-    warning: str
+    """git's own stderr lines, then the fail-wide warning: bash's order."""
+
+    warnings: tuple[str, ...]
 
 
 def gather_changed(
@@ -215,23 +194,28 @@ def gather_changed(
         before, after = ("--cached",), ()
     else:
         before, after = (), (resolved.merge_base,)
-    primary = _git(repo_root, env, "diff", *before, "--name-only", "--diff-filter=ACMRD", *after)
+    primary = gitcall.run(repo_root, env, "diff", *before, "--name-only", "--diff-filter=ACMRD", *after)
     if primary.returncode != 0:
-        return GatherFailure(_fail_wide(mode, "git diff"))
-    renames = _git(repo_root, env, "diff", *before, "--name-status", "--diff-filter=R", "-M", *after)
+        return _fail_wide(mode, "git diff", primary)
+    renames = gitcall.run(
+        repo_root, env, "diff", *before, "--name-status", "--diff-filter=R", "-M", *after
+    )
     if renames.returncode != 0:
-        return GatherFailure(_fail_wide(mode, "rename-source diff"))
-    files = tuple(path for path in primary.lines if path and not path.startswith(TASK_DIR))
+        return _fail_wide(mode, "rename-source diff", renames)
+    files = tuple(path for path in primary.lines if not path.startswith(TASK_DIR))
     sources = tuple(
         source for source in map(_second_field, renames.lines) if RENAME_SOURCE.fullmatch(source)
     )
     return ChangedSet(files, sources)
 
 
-def _fail_wide(mode: Scope, what: str) -> str:
-    return (
-        f"verify.sh: WARNING — --scope {mode.value} {what} failed — failing WIDE to "
-        "--scope all (contract C5)"
+def _fail_wide(mode: Scope, what: str, found: CallResult) -> GatherFailure:
+    return GatherFailure(
+        (
+            *found.stderr_lines,
+            f"verify.sh: WARNING — --scope {mode.value} {what} failed — failing WIDE to "
+            "--scope all (contract C5)",
+        )
     )
 
 
@@ -276,13 +260,15 @@ def _rust_coupled(
 ) -> tuple[CoupledSet, tuple[str, ...]]:
     """PG-DRIFT's predicate: fixtures named on tracked *.rs lines not carrying the reviewed marker."""
     source = ("--cached",) if mode is Scope.STAGED else ()
-    found = _git(repo_root, env, "grep", *source, "-h", "-E", FIXTURE_REFERENCE.pattern, "--", "*.rs")
+    found = gitcall.run(
+        repo_root, env, "grep", *source, "-h", "-E", FIXTURE_REFERENCE.pattern, "--", "*.rs"
+    )
     if found.returncode == 1:
         return CoupledSet(frozenset()), ()
     if found.returncode != 0:
         command = " ".join(("git grep", *source, f"-E '{FIXTURE_REFERENCE.pattern}' -- '*.rs'"))
         return CoupledSet(frozenset(), everything=True), (
-            f"verify.sh: WARNING — {command} exited {found.returncode} — every prd-gate fixture "
+            f"verify.sh: WARNING — {found.exit_summary(command)} — every prd-gate fixture "
             "counts as Rust-coupled (fail wide, contract C5)",
         )
     return CoupledSet(
@@ -315,10 +301,10 @@ def _gui_pinned(
 def _pins_text(mode: Scope, repo_root: Path, env: Mapping[str, str]) -> str:
     if mode is not Scope.STAGED:
         return GUI_PINS.read_text(repo_root)
-    found = _git(repo_root, env, "cat-file", "blob", f":{GUI_PINS.path}")
+    found = gitcall.run(repo_root, env, "cat-file", "blob", f":{GUI_PINS.path}")
     if found.returncode != 0:
-        raise OSError(f"git cat-file blob :{GUI_PINS.path} exited {found.returncode}")
-    return found.text
+        raise OSError(found.exit_summary(f"git cat-file blob :{GUI_PINS.path}"))
+    return found.stdout
 
 
 def _is_path_list(value: object) -> bool:
@@ -350,7 +336,7 @@ def gather_facts(
     warnings: list[str] = []
     if any(facts.tree is Tree.CRATES and facts.seed_crates for facts in paths.values()):
         result = bashcall.run(OCCT_DECLARED_SET, (), repo_root, env)
-        occt_declared = frozenset(line for line in result.stdout.split("\n") if line)
+        occt_declared = frozenset(result.lines)
         warnings.extend(result.stderr_lines)
     if any(fnmatchcase(path, FIXTURE_GLOB) for path in paths):
         coupling, coupling_warnings = derive_fixture_coupling(mode, repo_root, env)
@@ -433,17 +419,6 @@ def _seeds_an_occt_crate(path: str, path_facts: PathFacts, facts: ScopeFacts) ->
     return bool(path_facts.seed_crates & facts.occt_declared)
 
 
-def merge_base_diff(
-    decision: ScopeDecision, repo_root: Path, env: Mapping[str, str], *args: str
-) -> tuple[str, ...] | None:
-    """`git diff <args> <merge base>` lines under --scope branch; None outside branch, or when
-    git fails (the selectors' `|| return 0`)."""
-    if decision.mode is not Scope.BRANCH or not decision.merge_base:
-        return None
-    found = _git(repo_root, env, "diff", *args, decision.merge_base)
-    return found.lines if found.returncode == 0 else None
-
-
 def decide(
     invocation: Invocation, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[ScopeDecision, tuple[str, ...]]:
@@ -454,7 +429,7 @@ def decide(
     if isinstance(changed, GatherFailure):
         return ScopeDecision.wide(resolved, Widening.CHANGED_PATHS_UNREAD), (
             *resolved.notices,
-            changed.warning,
+            *changed.warnings,
         )
     facts, warnings = gather_facts(resolved.mode, changed, repo_root, env)
     return decide_scope(resolved, changed, facts), (*resolved.notices, *warnings)

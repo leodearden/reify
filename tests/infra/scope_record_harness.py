@@ -278,19 +278,15 @@ class InClone(unittest.TestCase):
 
 @dataclass(frozen=True)
 class FailingGit:
-    """One git argv shape that exits 128; every other git call runs the real git.
-
-    bash_parity: bash fails wide on it too, so bash's plan is an oracle for it.
-    Where python deliberately diverges, only python's side is asserted, so the
-    case stays green when bash converges.
-    """
+    """One git argv shape that prints `reason` to stderr and exits 128; every other git call runs the real git."""
 
     label: str
-    scope: str
     match: str
-    unless: str | None
-    warning: str
-    bash_parity: bool
+    unless: str | None = None
+
+    @property
+    def reason(self) -> str:
+        return f"fatal: scope-record probe: {self.label}"
 
     def farm(self, dest: Path) -> Path:
         real = shutil.which("git", path=base_env()["PATH"])
@@ -301,7 +297,7 @@ class FailingGit:
             "#!/usr/bin/env bash\n"
             'case " $* " in\n'
             f"{spared}"
-            f'    *" {self.match} "*) exit 128 ;;\n'
+            f'    *" {self.match} "*) echo {shlex.quote(self.reason)} >&2; exit 128 ;;\n'
             "esac\n"
             f'exec {shlex.quote(real)} "$@"\n',
             encoding="utf-8",
@@ -315,25 +311,40 @@ class FailingGit:
         return base_env(PATH=f"{farm}{os.pathsep}{base_env()['PATH']}")
 
 
+@dataclass(frozen=True)
+class FailWideCase:
+    """A changed-path git call that fails, so a `scope` request goes wide with `warning`.
+
+    bash_parity: bash fails wide on it too, so bash's plan is an oracle for it.
+    Where python deliberately diverges, only python's side is asserted, so the
+    case stays green when bash converges.
+    """
+
+    git: FailingGit
+    scope: str
+    warning: str
+    bash_parity: bool
+
+
 def _c5(scope, what):
     return f"verify.sh: WARNING — --scope {scope} {what} failed — failing WIDE to --scope all (contract C5)"
 
 
-FAILING_GIT = (
-    FailingGit(
-        "staged primary", "staged", "diff --cached --name-only", None,
+GATHER_FAILURES = (
+    FailWideCase(
+        FailingGit("staged primary", "diff --cached --name-only"), "staged",
         _c5("staged", "git diff"), bash_parity=False,
     ),
-    FailingGit(
-        "staged rename source", "staged", "diff --cached --name-status", None,
+    FailWideCase(
+        FailingGit("staged rename source", "diff --cached --name-status"), "staged",
         _c5("staged", "rename-source diff"), bash_parity=True,
     ),
-    FailingGit(
-        "branch primary", "branch", "--name-only --diff-filter=ACMRD", "--cached",
+    FailWideCase(
+        FailingGit("branch primary", "--name-only --diff-filter=ACMRD", "--cached"), "branch",
         _c5("branch", "git diff"), bash_parity=True,
     ),
-    FailingGit(
-        "branch rename source", "branch", "--name-status --diff-filter=R", "--cached",
+    FailWideCase(
+        FailingGit("branch rename source", "--name-status --diff-filter=R", "--cached"), "branch",
         _c5("branch", "rename-source diff"), bash_parity=True,
     ),
 )

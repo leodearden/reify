@@ -33,7 +33,7 @@ from scope_record_harness import (  # noqa: E402
     BRANCH_SCOPE,
     CLOSURE_WITHOUT_GUI,
     DOCS_PATH,
-    FAILING_GIT,
+    GATHER_FAILURES,
     STAGED_SCOPE,
     InClone,
     base_env,
@@ -173,9 +173,9 @@ class TestNarrowingMatchesBash(InClone):
         self.assertEqual(narrowing["run_gui_vitest"], 1)
 
     def test_a_fail_wide_scope_never_reads_a_closure(self):
-        rename_failure = next(case for case in FAILING_GIT if case.label == "staged rename source")
+        rename_failure = next(case for case in GATHER_FAILURES if case.git.label == "staged rename source")
         with tempfile.TemporaryDirectory() as scratch:
-            env = rename_failure.env(Path(scratch))
+            env = rename_failure.git.env(Path(scratch))
             narrowing, _, _ = self.assert_narrowing(
                 "staged", lambda c: c.stage(CLOSURE_WITHOUT_GUI), env=env
             )

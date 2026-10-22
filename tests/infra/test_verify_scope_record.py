@@ -33,7 +33,7 @@ from scope_record_harness import (  # noqa: E402
     CLOSURE_WITHOUT_GUI,
     DOCS_PATH,
     ERROR_PREFIX,
-    FAILING_GIT,
+    GATHER_FAILURES,
     STAGED_SCOPE,
     FailingGit,
     InClone,
@@ -309,17 +309,22 @@ class TestScopeDecisionMatchesBash(InClone):
                 self.assert_stderr_within_bash(py, bash, label)
 
 
+def directly_before(lines, first, second):
+    """`first` is immediately followed by `second` somewhere in `lines`."""
+    return any(lines[i:i + 2] == [first, second] for i in range(len(lines) - 1))
+
+
 class TestGatherFailsWide(InClone):
     """Every changed-path git failure fails wide under one policy (C5; D5 amended 2026-10-15)."""
 
     def test_each_failing_git_call(self):
         with tempfile.TemporaryDirectory() as scratch:
-            for case in FAILING_GIT:
-                with self.subTest(case=case.label):
+            for case in GATHER_FAILURES:
+                with self.subTest(case=case.git.label):
                     self.clone.reset()
                     self.clone.start_branch()
                     self.clone.stage(DOCS_PATH)
-                    record, py, bash = self.side_by_side(case.scope, case.env(Path(scratch)))
+                    record, py, bash = self.side_by_side(case.scope, case.git.env(Path(scratch)))
                     scope = record["scope"]
                     self.assertEqual(
                         (scope["mode"], scope["widened"]),
@@ -331,10 +336,18 @@ class TestGatherFailsWide(InClone):
                     self.assertEqual(scope["changed_paths"], [])
                     py_wide = [l for l in py.stderr.splitlines() if FAIL_WIDE_MARK in l]
                     self.assertEqual(py_wide, [case.warning])
+                    self.assertTrue(
+                        directly_before(py.stderr.splitlines(), case.git.reason, case.warning),
+                        f"git's own stderr precedes the warning, as bash leaves it: {py.stderr!r}",
+                    )
                     if case.bash_parity:
-                        self.assert_flags_match_bash(record, bash, case.label)
+                        self.assert_flags_match_bash(record, bash, case.git.label)
                         bash_wide = [l for l in bash.stderr.splitlines() if FAIL_WIDE_MARK in l]
                         self.assertEqual(py_wide, bash_wide)
+                        self.assertTrue(
+                            directly_before(bash.stderr.splitlines(), case.git.reason, case.warning),
+                            f"premise: bash keeps git's stderr: {bash.stderr!r}",
+                        )
 
 
 def derived_rust_set(clone):
@@ -484,17 +497,27 @@ class TestDerivedFixtureCoupling(InClone):
         self.assertEqual((scope["run_rust"], scope["run_gui"]), (0, 0))
 
     def test_a_failing_reference_grep_fails_wide(self):
-        grep = FailingGit(
-            "reference grep", "staged", "grep --cached -h -E", None,
+        grep = FailingGit("reference grep", "grep --cached -h -E")
+        warning = (
             f"verify.sh: WARNING — git grep --cached -E '{FIXTURE_REFERENCE}' -- '*.rs' exited 128 "
-            "— every prd-gate fixture counts as Rust-coupled (fail wide, contract C5)",
-            bash_parity=False,
+            f"({grep.reason}) — every prd-gate fixture counts as Rust-coupled (fail wide, contract C5)"
         )
         self.clone.stage(fixture(self.UNREFERENCED))
         with tempfile.TemporaryDirectory() as scratch:
             py = self.clone.py(STAGED_SCOPE, grep.env(Path(scratch)))
         self.assertEqual(flags(scope_record(py)["scope"]), (1, 1, 1))
-        self.assertIn(grep.warning, py.stderr.splitlines())
+        self.assertIn(warning, py.stderr.splitlines())
+
+    def test_a_failing_staged_pins_read_fails_wide(self):
+        read = FailingGit("pins read", "cat-file blob")
+        self.clone.stage(fixture(self.UNREFERENCED))
+        with tempfile.TemporaryDirectory() as scratch:
+            py = self.clone.py(STAGED_SCOPE, read.env(Path(scratch)))
+        self.assertEqual(scope_record(py)["scope"]["run_gui"], 1, "an unreadable pins blob fails wide")
+        self.assertIn(
+            f"{GUI_PINS} is unreadable (git cat-file blob :{GUI_PINS} exited 128 ({read.reason}))",
+            py.stderr,
+        )
 
     def test_the_derivation_is_lazy_and_fails_wide(self):
         (self.clone.root / GUI_PINS).write_text("{ not json\n", encoding="utf-8")

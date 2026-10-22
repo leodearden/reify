@@ -38,15 +38,34 @@ class DataFile:
 
 @dataclass(frozen=True)
 class CallResult:
+    """A finished child process: its exit status, its stdout, and its stderr as lines."""
+
     returncode: int
     stdout: str
     stderr_lines: tuple[str, ...]
 
+    @classmethod
+    def of(cls, proc: subprocess.CompletedProcess) -> "CallResult":
+        return cls(
+            proc.returncode,
+            proc.stdout.decode("utf-8", "surrogateescape"),
+            tuple(proc.stderr.decode("utf-8", "surrogateescape").splitlines()),
+        )
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        """stdout's non-empty lines, verbatim."""
+        return tuple(line for line in self.stdout.split("\n") if line)
+
+    def exit_summary(self, command: str) -> str:
+        """`command exited N (stderr lines)`: why a failed call failed, on one line."""
+        stderr = "; ".join(self.stderr_lines) or "no stderr"
+        return f"{command} exited {self.returncode} ({stderr})"
+
 
 class BashCallError(Exception):
     def __init__(self, call: BashCall, result: CallResult):
-        stderr = "; ".join(result.stderr_lines) or "no stderr"
-        super().__init__(f"{call} exited {result.returncode} ({stderr})")
+        super().__init__(result.exit_summary(str(call)))
         self.call = call
         self.result = result
 
@@ -57,17 +76,14 @@ def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, 
     cwd is repo_root, as under verify.sh's `cd "$REPO_ROOT"`, and stderr is
     captured so the caller returns it in bash's stderr order.
     """
-    proc = subprocess.run(
-        ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
-        cwd=repo_root,
-        env={name: value for name, value in env.items() if name not in _DROPPED_ENV},
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-    )
-    result = CallResult(
-        proc.returncode,
-        proc.stdout.decode("utf-8", "surrogateescape"),
-        tuple(proc.stderr.decode("utf-8", "surrogateescape").splitlines()),
+    result = CallResult.of(
+        subprocess.run(
+            ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
+            cwd=repo_root,
+            env={name: value for name, value in env.items() if name not in _DROPPED_ENV},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+        )
     )
     if result.returncode != 0:
         raise BashCallError(call, result)
