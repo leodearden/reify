@@ -94,7 +94,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "element-stiffness-data-indexing",
         home: "the ElementStiffness accessors (solver-crates-layering D8, leaf ε)",
-        baseline: 74,
+        baseline: 71,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/mod.rs", "src/resample.rs"],
             ..Pattern::whole_file(".data[", SRC_AND_TESTS, "let v = k_e.data[0];")
