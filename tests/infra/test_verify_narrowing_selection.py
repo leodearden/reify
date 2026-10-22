@@ -8,10 +8,10 @@ docs/prds/v0_6/verify-structured-plan-and-role-table.md D5, D6, D13, D14).
 Every check drives a public seam as a subprocess: `python3 -I -B
 scripts/verify.py ... --print-scope` and `bash scripts/verify.sh ...
 --print-plan`. This module never imports reify_verify. Bash is the oracle: the
-closure, the narrowing, the vitest lane and the selective-infra leaves are
-expected to be what bash plans in the same tree. The reify-audit predicate
-copies are probed against corpora tests/infra/reify_audit_inputs.py derives
-from the Rust source, and the kloc crate set against harness-layout-lib.sh.
+closure, the narrowing, the vitest lane and the selective-infra leaves,
+degraded inputs included, are expected to be what bash plans in the same
+tree. The kloc crate set is probed against harness-layout-lib.sh. The
+reify-audit predicate copies are tests/infra/test_verify_selector_copies.py's.
 
 The shared clone, the hermetic env and the side-by-side runner live in
 tests/infra/scope_record_harness.py.
@@ -28,13 +28,14 @@ from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
-import reify_audit_inputs  # noqa: E402
 from scope_record_harness import (  # noqa: E402
     BRANCH_SCOPE,
     CLOSURE_WITHOUT_GUI,
     DOCS_PATH,
+    ERROR_PREFIX,
     GATHER_FAILURES,
     STAGED_SCOPE,
+    FailingGit,
     InClone,
     base_env,
     discard_clone,
@@ -53,10 +54,10 @@ SELECTED_LEAF = re.compile(
     r"((?:[A-Za-z_][A-Za-z0-9_]*=\S* )*)timeout "
 )
 KLOC_LEAF = "tests/infra/test_harness_kloc_cap.sh"
-PTODO_LEAF = "tests/infra/test_reify_audit_ptodo.sh"
-PDIAG_LEAF = "tests/infra/test_reify_audit_pdiag.sh"
-PDOCCOVER_LEAF = "tests/infra/test_reify_audit_pdoccover.sh"
 KLOC_LIB = "tests/infra/harness-layout-lib.sh"
+KLOC_ELIGIBLE_TEST = "crates/reify-eval/tests/zz_probe.rs"
+INFRA_MAP = "scripts/verify-pipeline-infra-tests.txt"
+MAPPED_ARTIFACT = "scripts/verify-pipeline-guard.sh"
 CLOSURE_WITH_GUI = "crates/reify-eval/src/lib.rs"
 
 
@@ -211,7 +212,7 @@ SELECTION_SCENARIOS = {
     "staged upper-case extension": ("staged", staged("docs/Probe.TS")),
     "staged deletion": ("staged", lambda c: c.git("rm", "-q", "--", "crates/reify-doc/src/util.rs")),
     "staged .task/ only": ("staged", lambda c: c.stage_ignored(".task/zz-scope-record")),
-    "branch added top-level test": ("branch", branch_commit("crates/reify-eval/tests/zz_probe.rs")),
+    "branch added top-level test": ("branch", branch_commit(KLOC_ELIGIBLE_TEST)),
     "branch modified harness root": ("branch", branch_commit("crates/reify-eval/tests/harness_cache.rs")),
     "branch modified standalone": ("branch", branch_commit("crates/reify-eval/tests/achieved_repr_tol.rs")),
     "branch added nested non-harness": ("branch", branch_commit("crates/reify-eval/tests/common/zz.rs")),
@@ -253,69 +254,32 @@ class TestInfraSelectionMatchesBash(InClone):
         _, _, bash = self.side_by_side("branch")
         self.assertGreaterEqual(len(bash_leaves(bash.stdout)), 2, "the leaf reader reads bash's plan")
 
-
-class TestSelectorCopiesMatchReifyAudit(InClone):
-    """selection.py's copies of reify-audit's predicates select what the Rust source reads.
-
-    The corpora are derived as test_verify_scope.sh's PT-DRIFT, PDIAG-DRIFT
-    and PDOCCOVER-DRIFT derive them for bash's copies, so neither copy can
-    drift from ptodo.rs, pdiag.rs or pdoccover.rs alone. Each path that must
-    select a leaf runs alone; the paths that must not run together, since any
-    one of them selecting it is the failure.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.clone.reset()
-        cls.extensions = reify_audit_inputs.ptodo_swept_extensions(cls.clone.root)
-        cls.pdiag = reify_audit_inputs.pdiag_corpus(cls.clone.root)
-        cls.pdoccover = reify_audit_inputs.pdoccover_inputs(cls.clone.root)
-
-    def test_premise_the_corpora_are_not_vacuous(self):
-        self.assertTrue(self.extensions, "is_swept_ext yielded no extension")
-        self.assertTrue(self.pdiag.swept and self.pdiag.not_swept, self.pdiag)
-        self.assertEqual(self.pdiag.read_calls, self.pdiag.test_calls, "an is_swept_path test the scrape cannot read")
-        self.assertTrue(self.pdiag.excluded_prefixes, self.pdiag)
-        self.assertTrue(self.pdoccover.roots, self.pdoccover)
-        self.assertEqual(len(self.pdoccover.exact), 2, self.pdoccover)
-        self.assertEqual(
-            self.pdoccover.oracle_pairs, self.pdoccover.oracle_starts, "an in_oracle_scope root the scrape cannot read"
+    def test_a_failing_selector_diff_selects_no_leaf(self):
+        branch_commit(KLOC_ELIGIBLE_TEST)(self.clone)
+        self.assertIn(
+            KLOC_LEAF,
+            leaf_globs(scope_record(self.clone.py(BRANCH_SCOPE, base_env()))),
+            "premise: the branch selects the kloc guard",
         )
+        diff = FailingGit("kloc selector diff", "diff --name-status --diff-filter=AM")
+        with tempfile.TemporaryDirectory() as scratch:
+            record, py, bash = self.side_by_side("branch", diff.env(Path(scratch)))
+        self.assertNotIn(KLOC_LEAF, leaf_globs(record))
+        self.assertEqual(python_leaves(record), bash_leaves(bash.stdout))
+        self.assertNotIn(diff.reason, py.stderr, "the selectors drop git's stderr, as bash's 2>/dev/null does")
+        self.assert_stderr_within_bash(py, bash)
 
-    def test_every_swept_extension_selects_the_ptodo_gate(self):
-        paths = [f"docs/pt_probe.{extension}" for extension in self.extensions]
-        for path, outcome in self.clone.read_each_staged_alone(paths, STAGED_SCOPE).items():
-            with self.subTest(path=path):
-                self.assertIn(PTODO_LEAF, leaf_globs(scope_record(outcome)))
-
-    def test_is_swept_path_corpus_selects_the_pdiag_ratchet(self):
-        for path in self.pdiag.swept:
-            with self.subTest(swept=path):
-                self.assertIn(PDIAG_LEAF, self.clone.branch_leaves([path]))
-        refused = [
-            *self.pdiag.not_swept,
-            *(f"{prefix}src/pdiag_drift_probe.rs" for prefix in self.pdiag.excluded_prefixes),
-        ]
-        self.assertNotIn(
-            PDIAG_LEAF, self.clone.branch_leaves(refused), f"one of {refused} selected the PDIAG ratchet"
-        )
-
-    def test_every_pdoccover_input_selects_the_pdoccover_ratchet(self):
-        inputs = [
-            *(f"{prefix}pdoccover_drift/probe{suffix}" for _, prefix, suffix in self.pdoccover.roots),
-            *(path for _, path in self.pdoccover.exact),
-        ]
-        for path in inputs:
-            with self.subTest(input=path):
-                self.assertIn(PDOCCOVER_LEAF, self.clone.branch_leaves([path]))
-        refused = [
-            *(f"{prefix}pdoccover_drift_probe{suffix}.orig" for _, prefix, suffix in self.pdoccover.roots),
-            *(f"{path}.orig" for _, path in self.pdoccover.exact),
-        ]
-        self.assertNotIn(
-            PDOCCOVER_LEAF, self.clone.branch_leaves(refused), f"one of {refused} selected the PDOCCOVER ratchet"
-        )
+    def test_a_missing_infra_map_selects_no_mapped_leaf(self):
+        self.clone.stage(MAPPED_ARTIFACT)
+        mapped = set(leaf_globs(scope_record(self.clone.py(STAGED_SCOPE, base_env()))))
+        self.clone.reset()
+        self.clone.git("rm", "-q", "--", INFRA_MAP)
+        self.clone.commit("scope-record probe: no infra map")
+        self.clone.stage(MAPPED_ARTIFACT)
+        record, py, bash = self.side_by_side("staged")
+        self.assertLess(set(leaf_globs(record)), mapped, "premise: the map's rows selected a leaf")
+        self.assertEqual(python_leaves(record), bash_leaves(bash.stdout))
+        self.assert_stderr_within_bash(py, bash)
 
 
 class TestHarnessKlocSetIsTheLibs(InClone):
@@ -342,6 +306,20 @@ class TestHarnessKlocSetIsTheLibs(InClone):
             python_leaves(record),
             "python reads the crate set from harness_layout_consolidatable_crates (D6, §2.3)",
         )
+
+    def test_a_failing_crate_set_call_ends_the_query(self):
+        self.clone.git("rm", "-q", "--", KLOC_LIB)
+        self.clone.commit("scope-record probe: no harness-layout lib")
+        branch_commit(self.PROBE)(self.clone)
+        py = self.clone.py(BRANCH_SCOPE, base_env())
+        self.assertEqual((py.returncode, py.stdout), (1, ""), py.stderr)
+        lines = py.stderr.splitlines()
+        self.assertEqual(len(lines), 1, py.stderr)
+        self.assertTrue(
+            lines[0].startswith(f"{ERROR_PREFIX}{KLOC_LIB}::harness_layout_consolidatable_crates exited 1 ("),
+            lines[0],
+        )
+        self.assertIn("No such file or directory", lines[0])
 
 
 if __name__ == "__main__":

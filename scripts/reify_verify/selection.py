@@ -16,7 +16,7 @@ SCOPE_EXCLUDE_PREFIXES, pdoccover.rs::is_chunk_path and in_oracle_scope,
 pdoccover_baseline.rs::BASELINE_PATH), as bash's are. Both copies are probed
 against that Rust source with corpora derived from it: bash's by
 test_verify_scope.sh's PT-DRIFT, PDIAG-DRIFT and PDOCCOVER-DRIFT, this
-module's by tests/infra/test_verify_narrowing_selection.py through
+module's by tests/infra/test_verify_selector_copies.py through
 tests/infra/reify_audit_inputs.py (PRD §2.3, §8).
 """
 

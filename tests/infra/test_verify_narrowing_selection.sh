@@ -2,8 +2,9 @@
 # Infrastructure test for task 9097 (S18 β): the narrowing and infra_selection
 # sections of the Python verify package's `--print-scope` record — the
 # affected-crate closure, narrowing, the vitest lane, the selective-infra
-# leaves, selection.py's reify-audit predicate copies and the kloc crate set
-# (PRD docs/prds/v0_6/verify-structured-plan-and-role-table.md D5, D6, D13, D14).
+# leaves (degraded inputs included) and the kloc crate set (PRD
+# docs/prds/v0_6/verify-structured-plan-and-role-table.md D5, D6, D13, D14).
+# selection.py's reify-audit predicate copies are test_verify_selector_copies.sh's.
 #
 # This wrapper is the member run_all.sh actually discovers (it globs
 # `test_*.sh` only); the assertions live in the sibling .py, which drives
