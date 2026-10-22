@@ -366,7 +366,9 @@ pub fn solve_multi_case_trampoline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::{ContentHash, DimensionVector, RealizationNodeId};
+    use crate::StructuredComputeDetail;
+    use crate::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
+    use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity};
     use reify_ir::{
         ElementOrderTag, FieldSourceKind, PersistentMap, StructureInstanceData, StructureTypeId,
         VolumeMesh,
@@ -480,26 +482,13 @@ mod tests {
         }))
     }
 
-    /// A `LoadCase` StructureInstance with one `PointLoad{force}` +
-    /// one `FixedSupport` (the fields the multi_case trampoline reads: name,
-    /// loads, supports).
-    fn make_load_case(name: &str, force_n: f64) -> Value {
-        let load = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "PointLoad".to_string(),
-            version: 1,
-            fields: [("force".to_string(), Value::Real(force_n))].into_iter().collect(),
-        }));
-        let support = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "FixedSupport".to_string(),
-            version: 1,
-            fields: [].into_iter().collect(),
-        }));
+    /// A `LoadCase` StructureInstance carrying the fields the multi_case
+    /// trampoline reads: name, loads, supports.
+    fn load_case_value(name: &str, loads: Value, supports: Value) -> Value {
         let fields: PersistentMap<String, Value> = [
             ("name".to_string(), Value::String(name.to_string())),
-            ("loads".to_string(), Value::List(vec![load])),
-            ("supports".to_string(), Value::List(vec![support])),
+            ("loads".to_string(), loads),
+            ("supports".to_string(), supports),
         ]
         .into_iter()
         .collect();
@@ -509,6 +498,42 @@ mod tests {
             version: 1,
             fields,
         }))
+    }
+
+    /// A one-`PointLoad{force}` loads list.
+    fn point_loads(force_n: f64) -> Value {
+        Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "PointLoad".to_string(),
+                version: 1,
+                fields: [("force".to_string(), Value::Real(force_n))]
+                    .into_iter()
+                    .collect(),
+            },
+        ))])
+    }
+
+    /// A one-`FixedSupport` supports list.
+    fn fixed_supports() -> Value {
+        Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "FixedSupport".to_string(),
+                version: 1,
+                fields: [].into_iter().collect(),
+            },
+        ))])
+    }
+
+    /// A `LoadCase` with one `PointLoad{force}` + one `FixedSupport`.
+    fn make_load_case(name: &str, force_n: f64) -> Value {
+        load_case_value(name, point_loads(force_n), fixed_supports())
+    }
+
+    /// A `LoadCase` with one `PointLoad{force}` and NO supports.
+    fn make_unsupported_load_case(name: &str, force_n: f64) -> Value {
+        load_case_value(name, point_loads(force_n), Value::List(vec![]))
     }
 
     /// A shared-default `ElasticOptions(shell_force: Off)`.
@@ -763,5 +788,148 @@ mod tests {
                  ComputeOutcome::Failed with empty diagnostics, got {other:?}"
             ),
         }
+    }
+
+    // ── task 9219: per-case structured_detail forwarding ─────────────────────
+
+    /// The BODY layout `[material, body(GeometryHandle), cases, options]`.
+    fn body_layout_inputs(cases: Vec<Value>) -> [Value; 4] {
+        [
+            make_isotropic_material(200e9, 0.3),
+            make_body_handle(),
+            Value::List(cases),
+            make_options(),
+        ]
+    }
+
+    fn healthy_box_mesh() -> VolumeMesh {
+        make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1])
+    }
+
+    fn tet_indices_mut(vm: &mut VolumeMesh) -> &mut Vec<u32> {
+        match &mut vm.connectivity {
+            reify_ir::VolumeConnectivity::Tet { indices, .. } => indices,
+            other => panic!("expected tet connectivity, got {other:?}"),
+        }
+    }
+
+    /// The healthy box with tet 5 (buffer positions 20..24) inverted.
+    fn inverted_tet_box_mesh() -> VolumeMesh {
+        let mut vm = healthy_box_mesh();
+        tet_indices_mut(&mut vm).swap(20, 21);
+        vm
+    }
+
+    fn unconstrained_detail() -> StructuredComputeDetail {
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+            rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+        })
+    }
+
+    fn solve_body_cases(cases: Vec<Value>, mesh: VolumeMesh) -> ComputeOutcome {
+        solve_multi_case_trampoline(
+            &body_layout_inputs(cases),
+            &[vm_read_handle(mesh)],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    #[test]
+    fn multi_case_completed_forwards_the_unconstrained_detail_of_an_unsupported_case() {
+        let outcome = solve_body_cases(
+            vec![
+                make_load_case("fixed", 1000.0),
+                make_unsupported_load_case("free", 1000.0),
+            ],
+            healthy_box_mesh(),
+        );
+
+        match outcome {
+            ComputeOutcome::Completed {
+                structured_detail, ..
+            } => {
+                assert_eq!(structured_detail, vec![unconstrained_detail()]);
+            }
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_case_failed_forwards_the_failing_case_detail() {
+        let single_case = super::super::elastic_static::solve_elastic_static_trampoline(
+            &[
+                make_isotropic_material(200e9, 0.3),
+                make_body_handle(),
+                point_loads(1000.0),
+                fixed_supports(),
+                make_options(),
+            ],
+            &[vm_read_handle(inverted_tet_box_mesh())],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let expected_detail = match single_case {
+            ComputeOutcome::Failed {
+                structured_detail, ..
+            } => structured_detail,
+            other => panic!("non-vacuity: the inverted-tet case must fail alone, got {other:?}"),
+        };
+        assert!(
+            matches!(
+                expected_detail.as_slice(),
+                [StructuredComputeDetail::Fea(
+                    FeaDiagnosticDetail::ProblemElements { .. }
+                )]
+            ),
+            "non-vacuity: the inverted-tet case must carry ProblemElements, got {expected_detail:?}"
+        );
+
+        let outcome = solve_body_cases(
+            vec![make_load_case("inverted", 1000.0)],
+            inverted_tet_box_mesh(),
+        );
+
+        match outcome {
+            ComputeOutcome::Failed {
+                structured_detail, ..
+            } => {
+                assert_eq!(structured_detail, expected_detail);
+            }
+            other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_case_failed_keeps_the_detail_of_cases_completed_before_it() {
+        let outcome = solve_body_cases(
+            vec![
+                make_unsupported_load_case("free", 1000.0),
+                load_case_value("broken", Value::Real(1.0), fixed_supports()),
+            ],
+            healthy_box_mesh(),
+        );
+
+        let (diagnostics, structured_detail) = match outcome {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => (diagnostics, structured_detail),
+            other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+        };
+        assert_eq!(structured_detail, vec![unconstrained_detail()]);
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FeaUnderConstrained)),
+            "the free case's under-constrained warning must survive, got {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains("loads")),
+            "the broken case's loads error must be reported, got {diagnostics:?}"
+        );
     }
 }
