@@ -346,7 +346,7 @@ pub fn shell_element_stiffness(
     let t = thickness;
 
     // Transverse-shear D scalar: κ·G
-    let kappa_g = section.shear_kappa_g();
+    let kappa_g = ShellSection::shear_kappa_g(material);
 
     // Shared kinematics: local 2D coords, shape gradients, B_cov, J2⁻ᵀ, det2.
     let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
@@ -505,7 +505,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     let r = frame.r;
     let area = frame.area;
     let t = thickness;
-    let kappa_g = section.shear_kappa_g();
+    let kappa_g = ShellSection::shear_kappa_g(material);
 
     let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
     let dn = kin.dn;
@@ -524,16 +524,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     // Nodal bending K_NN — shared helper → bit-identical to bare MITC3.
     accumulate_bending_k_nodal(&mut k, &dn, &t3_dpl, area);
 
-    // Bubble bending self-term K_BB^bend. The nodal↔bubble bending coupling is
-    // identically zero on a flat facet (divergence theorem; see doc above), so
-    // it is intentionally not assembled.
-    //
-    // INTENTIONALLY UNUSED NUMERIC VALUE: because K_NB ≡ 0 here (see the
-    // condensation site below), the static condensation is a no-op and K* = K_NN
-    // whatever K_BB is — a singular K_BB (e.g. t³/12 underflowing to zero) only
-    // trips the condensation guard, which falls back to the same zero correction.
-    // The six-interior-point sum is therefore NOT an exact quadrature rule for the
-    // degree-4 integrand ∇f_b·D_b·∇f_b; see [`accumulate_bubble_k_bb`].
+    // K_BB is inert here (K_NB ≡ 0); see accumulate_bubble_k_bb / condense_bubble.
     accumulate_bubble_k_bb(&mut k, &inv_t, det2, &t3_dpl);
 
     // Interior tying points of the MITC3+ assumed transverse-shear field.
@@ -730,10 +721,8 @@ fn degenerate_stiffness_core(
     }
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
 
-    let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
-    let section = ShellSection::new(t_avg, *material);
     let d_pl = plane_stress_d(material);
-    let kappa_g = section.shear_kappa_g();
+    let kappa_g = ShellSection::shear_kappa_g(material);
 
     // Parallel-director short-circuit for the rotation bubble: on a flat facet
     // (all directors parallel) K_NB integrates to zero and the bubble is inert.
@@ -896,18 +885,22 @@ fn degenerate_stiffness_core(
     }
 
     // ---- Bubble bending self-term K_BB (flat mid-surface kinematics, inert path) ----
-    // Used ONLY on the inert path (bubble_active=false): flat-facet Jacobian from
-    // build_shell_frame makes this equal to the MITC3+ K_BB exactly.  K_NB ≡ 0
-    // there (the coupling loop above is never entered), so K_BB is condensed away —
-    // its only role is an SPD denominator for a well-posed condensation expression.
-    //
-    // On the bubble-active (curved) path K_BB was accumulated from the degenerate
-    // (curved) kinematics inside the quadrature loop above so that [K_NN K_NB;
-    // K_BN K_BB] is a proper B^T·D·B Gram matrix and K* is guaranteed PSD.
+    // The bubble-active (curved) path accumulated its K_BB from the degenerate
+    // kinematics in the quadrature loop above. The inert path takes the MITC3+
+    // flat-facet K_BB instead, at a constant-thickness surrogate section of the
+    // mean nodal thickness; K_NB ≡ 0 there, so K_BB is inert (see
+    // accumulate_bubble_k_bb / condense_bubble).
     if !bubble_active {
+        let t_avg = (thicknesses[0] + thicknesses[1] + thicknesses[2]) / 3.0;
+        let flat_surrogate = ShellSection::new(t_avg, *material);
         let frame = build_shell_frame(nodes);
         let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
-        accumulate_bubble_k_bb(&mut k, &kin.jac2_inv_t, kin.det2, &section.bending_d());
+        accumulate_bubble_k_bb(
+            &mut k,
+            &kin.jac2_inv_t,
+            kin.det2,
+            &flat_surrogate.bending_d(),
+        );
     }
 
     // ---- Static condensation of the 2 bubble DOFs ----

@@ -153,7 +153,11 @@ impl ShellSection {
     /// profile's energy. A property of the section shape, not of the material.
     const SHEAR_CORRECTION: f64 = 5.0 / 6.0;
 
-    pub(crate) const fn new(thickness: f64, material: IsotropicElastic) -> Self {
+    pub(crate) fn new(thickness: f64, material: IsotropicElastic) -> Self {
+        debug_assert!(
+            thickness.is_finite() && thickness > 0.0,
+            "ShellSection: thickness must be positive and finite, got {thickness}"
+        );
         Self {
             thickness,
             material,
@@ -171,9 +175,11 @@ impl ShellSection {
         scaled(&plane_stress_d(&self.material), t * t * t / 12.0)
     }
 
-    /// Transverse-shear modulus `κ · G` (per unit thickness).
-    pub(crate) fn shear_kappa_g(&self) -> f64 {
-        Self::SHEAR_CORRECTION * self.material.shear_modulus()
+    /// Transverse-shear modulus `κ · G` per unit thickness. It depends on the
+    /// section shape (through κ) and the material, but not on the thickness, so
+    /// it needs no section value.
+    pub(crate) fn shear_kappa_g(material: &IsotropicElastic) -> f64 {
+        Self::SHEAR_CORRECTION * material.shear_modulus()
     }
 }
 
@@ -506,12 +512,34 @@ mod tests {
         }
 
         // κ·G = (5/6)·80e9, written independently as E/3 for E = 200e9, ν = 0.25.
-        let kappa_g = section.shear_kappa_g();
+        let kappa_g = ShellSection::shear_kappa_g(&mat);
         let expected = 200.0e9 / 3.0;
         assert!(
             close(kappa_g, expected),
-            "shear_kappa_g() = {kappa_g}, expected {expected}",
+            "shear_kappa_g = {kappa_g}, expected {expected}",
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ShellSection: thickness must be positive and finite")]
+    fn shell_section_rejects_non_positive_thickness() {
+        let mat = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        ShellSection::new(0.0, mat);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ShellSection: thickness must be positive and finite")]
+    fn shell_section_rejects_non_finite_thickness() {
+        let mat = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        ShellSection::new(f64::NAN, mat);
     }
 
     #[cfg(debug_assertions)]
