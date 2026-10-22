@@ -96,6 +96,28 @@ scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 # refusal path (Block I). The row above maps the artifact only to the pool
 # suite, so that assertion would not be selected on a branch-scope verify.
 scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base.sh
+# Task 9246: the fingerprint-consult liveness trim, shared by refresh-warm-base.sh
+# and the leo-laptop _merge-verify trim timer, pinned by its own .py suite and,
+# through the refresh that calls it, by test_refresh_warm_base.sh Block LIVE.
+scripts/prune-unconsulted-target.sh  tests/infra/test_prune_unconsulted_target.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_refresh_warm_base.sh
+tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted_target.sh
+# ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
+# 3b to that sibling (no second inline copy, no silent skip when it is missing).
+scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
+# respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape.
+scripts/gc-worktree-targets.sh       tests/infra/test_gc_worktree_targets.sh
+tests/infra/test_gc_worktree_targets.py  tests/infra/test_gc_worktree_targets.sh
+# Task 9246: leo-laptop's _merge-verify trim units, the deploy contract
+# dark_factory's install_laptop_merge_verify_trim.sh checks (it reads the prune
+# and gc scripts too), and the service's ExecStart run against a fixture.
+deploy/systemd/reify-merge-verify-trim.service    tests/infra/test_merge_verify_trim_units.sh
+deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_trim_units.sh
+tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
+scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh

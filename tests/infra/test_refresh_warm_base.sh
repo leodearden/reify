@@ -138,10 +138,11 @@ chmod +x "$STUB_DIR/xfs_bmap"
 
 # rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY the prune
 # stage's own `xargs -0 rm -f -- <files>` (first args "-f" "--") while every other
-# invocation — the EXIT trap's `rm -rf "$_p"` and `rm -f "$_PRUNE_SUMMARY_FILE"`,
-# GC's `rm -f lock` — execs the real rm. This isolates "the prune's own unlink
-# failed" from "the trap's cleanup afterward also failed": a filesystem-permission
-# fault cannot make that distinction, since it defeats `rm -rf` identically.
+# invocation — the EXIT trap's `rm -rf "$_p"`, prune-unconsulted-target.sh's
+# summary-file `rm -f <file>`, GC's `rm -f lock` — execs the real rm. This
+# isolates "the prune's own unlink failed" from "the trap's cleanup afterward
+# also failed": a filesystem-permission fault cannot make that distinction,
+# since it defeats `rm -rf` identically.
 # Real rm path embedded at stub-creation time (mirrors the cp stub).
 _REAL_RM="$(command -v rm)"
 cat > "$STUB_DIR/rm" << STUB_EOF

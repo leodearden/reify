@@ -109,6 +109,7 @@ test_find_uses_smoke_runner.sh pool
 test_flake_density_report.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_gc_worktree_targets.sh pool
 test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
 test_graph_task_conflation_census.sh pool
@@ -147,6 +148,7 @@ test_lock_charter_lifecycle.sh pool
 test_main_gate_worktree_config.sh pool
 test_merge_role_lint_first_seam.sh pool
 test_merge_verify_cold_outer_timeout.sh pool
+test_merge_verify_trim_units.sh pool
 test_mesh_count_parity_smoke_runner.sh pool
 test_nan_safe_ordering_guard_wired.sh pool
 test_nextest_absent_lib.sh pool
@@ -178,6 +180,7 @@ test_pre_commit_ts_guard.sh pool
 test_proc_reaper.sh pool
 test_project_checks_typecheck.sh pool
 test_provision_warm_lane_fs.sh pool
+test_prune_unconsulted_target.sh pool
 test_pycache_gitignored.sh pool
 test_queue_db_gitignored.sh pool
 test_reconciliation_db_gitignored.sh pool
