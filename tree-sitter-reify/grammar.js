@@ -1941,6 +1941,8 @@ module.exports = grammar({
     // character ahead and only fire when the operator is immediately adjacent AND the
     // next character is a valid unit-start ([A-Za-z_(]).  This prevents `25USD/1kg`
     // from greedily attempting the div arm when `/` is followed by a digit.
+    // Both external tokens are aliased to anonymous `*` / `/`, so
+    // `child_by_field_name("op")` exposes the operator; U+00B7 lexes as `*`.
     // ^ uses token.immediate to disambiguate from the value-level binary `^` operator in
     // binary_expression (prec.right 8): unit_expr pow fires only when ^ is adjacent (no
     // whitespace), while value-level ^ fires in the normal whitespace-permitted context.
@@ -1948,7 +1950,7 @@ module.exports = grammar({
     unit_expr: $ => choice(
       prec.left(1, seq(
         field('left', $.unit_expr),
-        field('op', choice($._unit_mul_op, $._unit_div_op)),
+        field('op', choice(alias($._unit_mul_op, '*'), alias($._unit_div_op, '/'))),
         field('right', $.unit_expr),
       )),
       // NOTE: `field('base', $.unit_expr)` technically allows another pow expression
