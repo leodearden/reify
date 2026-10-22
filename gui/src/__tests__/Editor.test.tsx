@@ -2508,6 +2508,61 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     expect(view.state.doc.toString()).not.toContain('Howdy');
   });
 
+  it('a fresh rename on the active spaced-path file lands on the live buffer, keeping unsaved typing', async () => {
+    const store = setupStore([fileSpaced]);
+    store.setActiveFile(SPACED_PATH);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    const calls = captureLspVersionCalls({
+      // Line 1: the typed '// edit\n' pushes 'structure Hello {}' down a line.
+      'textDocument/prepareRename': {
+        range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+        placeholder: 'Hello',
+      },
+      // Stamped against version 2 — the didChange the typing sends — so the
+      // version-skew guard judges it fresh. Encoded, as the backend mints it.
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: SPACED_URI_ENCODED, version: 2 },
+            edits: [
+              {
+                range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+                newText: 'Howdy',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', SPACED_URI)).toBeDefined();
+    });
+
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', SPACED_URI)!.version).toBe(2);
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Howdy';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe('// edit\nstructure Howdy {}');
+    });
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(store.state.dirtyFiles).toContain(SPACED_PATH);
+  });
+
   it("a rename into a spaced-path buffer shares that file's own didOpen counter", async () => {
     const store = setupStore([file1, fileSpaced]);
     store.setActiveFile(file1.path);
