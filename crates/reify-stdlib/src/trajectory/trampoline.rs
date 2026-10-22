@@ -681,8 +681,9 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 /// ([`build_train_for_shaper`]), marshal the profile command to a
 /// [`MultiJointSpline`] ([`value_to_multijoint_spline`]), then resample the
 /// convolved command `f_shaped(t) = Σ Aᵢ·command(t − tᵢ)` ([`convolve_at`]) on a
-/// uniform grid over the Δ-extended domain `[0, duration + trailing_time]`. The
-/// result is a fresh `PiecewisePolynomialProfile` whose `waypoints` carry the
+/// uniform grid over the Δ-extended domain `[start, end + trailing_time]` of the
+/// input's own time axis, so the shaped profile keeps the input's time origin.
+/// The result is a fresh `PiecewisePolynomialProfile` whose `waypoints` carry the
 /// shaped command while **every other field** (`mechanism` / `boundary` /
 /// `spline_kind`) is preserved verbatim — real shaping changes ONLY the
 /// waypoints, so the landed echo-era assertions (which check those three fields
@@ -754,10 +755,12 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
         return Value::Undef;
     };
 
+    let domain = spline.domain();
+    let t_start = *domain.start();
     let t_domain = spline.duration();
     let delta = train.trailing_time();
     let span = t_domain + delta;
-    let n_joints = spline.eval(0.0).len();
+    let n_joints = spline.eval(t_start).len();
 
     // Uniform resample spacing fine enough to resolve BOTH the command curvature
     // (oversample the input knot intervals) and the shaper steps (oversample Δ).
@@ -793,13 +796,13 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
 
     let mut new_waypoints = Vec::with_capacity(n_out);
     for i in 0..n_out {
-        let t = (i as f64) * step;
+        let t = t_start + (i as f64) * step;
         let values: Vec<Value> = (0..n_joints)
             .map(|j| {
                 Value::Real(convolve_at(
                     &train,
                     &|tau: f64| spline.eval(tau)[j],
-                    t_domain,
+                    &domain,
                     t,
                 ))
             })
@@ -2274,7 +2277,7 @@ mod tests {
     ///   change);
     /// - the total duration is extended by the shaper delay Δ = `trailing_time`;
     /// - every output waypoint's command equals the convolved reconstruction
-    ///   `convolve_at(train, ramp_command, t_domain, t)` at that waypoint's time;
+    ///   `convolve_at(train, ramp_command, domain, t)` at that waypoint's time;
     /// - start (`ramp(0)=0`) and final (`ramp(1)=1`) values are preserved
     ///   (`Σ Aᵢ = 1`);
     /// - at least one interior command departs from the unshaped ramp.
@@ -2335,7 +2338,7 @@ mod tests {
         let mut max_dev_from_ramp = 0.0_f64;
         for (t, vals) in &out {
             assert_eq!(vals.len(), 1, "one joint");
-            let want = convolve_at(&train, &|tau: f64| spline.eval(tau)[0], t_domain, *t);
+            let want = convolve_at(&train, &|tau: f64| spline.eval(tau)[0], &spline.domain(), *t);
             assert!(
                 (vals[0] - want).abs() < 1e-9,
                 "shaped command at t={t:.5} must equal the convolve_at reconstruction: \

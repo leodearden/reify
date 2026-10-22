@@ -24,6 +24,8 @@
 //! (gcode_import.rs:35) submodules.
 #![allow(dead_code)]
 
+use std::ops::RangeInclusive;
+
 /// A single timed impulse: a scalar amplitude applied at a specific time offset.
 #[derive(Debug, Clone, PartialEq)]
 struct Impulse {
@@ -331,28 +333,30 @@ impl ImpulseTrain {
     }
 }
 
-/// Evaluate the shaped command at time `t` by convolving `train` against `f`
-/// clamped to the domain `[0, t_domain]`.
+/// Evaluate the shaped command at time `t` by convolving `train` against the
+/// command `f`, which is defined on `domain = [start, end]`.
 ///
 /// ```text
 /// shaped(t) = Σ  A_i · f_clamped(t − t_i)
 /// ```
 ///
-/// where `f_clamped(τ) = f(τ.clamp(0, t_domain))`.
+/// where `f_clamped(τ) = f(τ.clamp(start, end))`.
 ///
 /// # Shaped duration
 ///
-/// The output remains valid for `t ∈ [0, t_domain + train.trailing_time()]`.
-/// After that the final value is frozen (all samples beyond `t_domain` clamp to
-/// `f(t_domain)` and `Σ A_i = 1`).
+/// The output remains valid for `t ∈ [start, end + train.trailing_time()]`.
+/// Both end values are preserved because `Σ A_i = 1`: at `t = start` every
+/// argument clamps to `start` (impulse times are ≥ 0), so the output is
+/// `f(start)`; from `end + train.trailing_time()` on every argument clamps to
+/// `end`, so the output is frozen at `f(end)`.
 pub fn convolve_at<F: Fn(f64) -> f64>(
     train: &ImpulseTrain,
     f: &F,
-    t_domain: f64,
+    domain: &RangeInclusive<f64>,
     t: f64,
 ) -> f64 {
     train.impulses.iter().map(|imp| {
-        let tau = (t - imp.time).clamp(0.0, t_domain);
+        let tau = (t - imp.time).clamp(*domain.start(), *domain.end());
         imp.amplitude * f(tau)
     }).sum()
 }
@@ -390,13 +394,13 @@ mod tests {
         // (a) endpoint clamping: at t < t₁ (= 0), f_clamped(t-t_i) = f(0).
         //     For t=0: both impulses contribute f_clamped(0-0)=0 and f_clamped(0-delta)<0→clamped to 0.
         //     shaped(0) = A₀·f(0) + A₁·f(clamp(0-delta)) = A₀·0 + A₁·0 = 0 = f(0).
-        let shaped_at_0 = convolve_at(&train, &ramp, t_domain, 0.0);
+        let shaped_at_0 = convolve_at(&train, &ramp, &(0.0..=t_domain), 0.0);
         assert_close(shaped_at_0, ramp(0.0), 1e-12, "start preservation");
 
         // (b) final-value preservation: shaped(t_domain+Δ) = f(t_domain) because Σ Aᵢ=1
         //     and all arguments t - t_i ≥ t_domain → clamp to t_domain.
         let t_final = t_domain + delta;
-        let shaped_at_final = convolve_at(&train, &ramp, t_domain, t_final);
+        let shaped_at_final = convolve_at(&train, &ramp, &(0.0..=t_domain), t_final);
         assert_close(shaped_at_final, ramp(t_domain), 1e-12, "final-value preservation");
 
         // (c) shaped_duration = t_domain + trailing_time().
@@ -414,7 +418,7 @@ mod tests {
         };
         let t_mid = t_domain * 0.6;
         assert_close(
-            convolve_at(&identity, &ramp, t_domain, t_mid),
+            convolve_at(&identity, &ramp, &(0.0..=t_domain), t_mid),
             ramp(t_mid),
             1e-12,
             "identity convolve equals f",
@@ -426,7 +430,7 @@ mod tests {
             imp.amplitude * ramp((t_eval - imp.time).clamp(0.0, t_domain))
         }).sum::<f64>();
         assert_close(
-            convolve_at(&train, &ramp, t_domain, t_eval),
+            convolve_at(&train, &ramp, &(0.0..=t_domain), t_eval),
             expected_manual,
             1e-14,
             "ZV interior sample",
