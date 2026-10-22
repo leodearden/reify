@@ -285,6 +285,11 @@ impl GeometryKernel for SingleKernelHolder {
         }
     }
 
+    /// The `None` arm deliberately answers as the trait default does ("…
+    /// SingleKernelHolder does not ingest dense SDF grids"), by calling that
+    /// default's own message constructor, per this impl's INVARIANT. Like
+    /// `no_mesh_kernel_error`, it reports the holder as the kernel lacking the
+    /// capability rather than naming the missing registration.
     fn ingest_dense_sdf(
         &mut self,
         grid: &DenseSdfGrid,
