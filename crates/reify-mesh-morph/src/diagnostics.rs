@@ -29,7 +29,7 @@ use crate::quality::QualityVerdict;
 /// logging policy mandates "Morph panics → error + diagnostic, plus counter").
 /// Field names match the counter names exactly (no
 /// `#[serde(rename_all)]`) so the downstream debug-RPC consumer (task #2949)
-/// can deserialize this DTO by name. Derives mirror `stats::MorphStats`.
+/// can deserialize this DTO by name.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiagnosticSnapshot {
     /// Successful morphs (existing mesh deformed in place).
@@ -56,7 +56,7 @@ pub struct DiagnosticSnapshot {
 /// Process-global lock-free counters, one per [`MorphOutcome`] bucket.
 ///
 /// `AtomicU64::new(0)` is `const`, so a plain `static COUNTERS` suffices — no
-/// `OnceLock`/`Mutex` wrapper (simpler and lock-free, unlike `stats.rs`). The
+/// `OnceLock`/`Mutex` wrapper. The
 /// counters are mutually independent with no cross-counter invariant, so
 /// `Ordering::Relaxed` is sufficient for both `fetch_add` and `load`.
 struct Counters {
@@ -83,9 +83,8 @@ static COUNTERS: Counters = Counters {
 
 /// Return a point-in-time snapshot of the process-global diagnostic counters.
 ///
-/// Reached via the `diagnostics::` module path; deliberately NOT bare-re-exported
-/// from the crate root, to avoid colliding with the existing `stats::snapshot`
-/// re-export.
+/// Reached via the `diagnostics::` module path; not re-exported from the crate
+/// root.
 pub fn snapshot() -> DiagnosticSnapshot {
     DiagnosticSnapshot {
         morphed: COUNTERS.morphed.load(Ordering::Relaxed),
@@ -330,8 +329,7 @@ pub fn reset() {
 ///
 /// Available in same-crate `#[cfg(test)]` context, and also when the crate is
 /// compiled with `features = ["testing"]` — enabling cross-crate test isolation
-/// (e.g. from task #2949's debug-RPC tests). Mirrors `stats::reset_for_test`.
-/// Delegates to the ungated [`reset()`] so the body stays DRY.
+/// (e.g. from task #2949's debug-RPC tests). Delegates to the ungated [`reset()`] so the body stays DRY.
 #[cfg(any(test, feature = "testing"))]
 // G-allow: test-isolation hook compiled only under cfg(test) / feature "testing"; its cross-crate callers are crates/reify-eval/tests/morph_arm_e2e.rs (a tests/ file this audit excludes) and the gui/src-tauri/src/debug_server.rs tests (outside this audit's crates/reify-*/src scope)
 pub fn reset_for_test() {
@@ -413,7 +411,7 @@ mod tests {
     /// counters. Each test acquires this before resetting state so tests
     /// don't interfere with each other regardless of execution order —
     /// including `lib.rs`'s `compose_morph` tests, which acquire the same
-    /// lock directly. Mirrors the `TEST_LOCK` discipline in `stats.rs`.
+    /// lock directly.
     fn with_locked_state<F: FnOnce()>(f: F) {
         let _guard = super::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();

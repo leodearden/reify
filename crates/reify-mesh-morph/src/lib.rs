@@ -95,15 +95,11 @@ pub mod eligibility;
 pub mod laplacian;
 pub mod options;
 pub mod quality;
-pub mod stats;
 pub mod types;
 
-pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
 // Bare diagnostics re-exports: the read side only. The recorders are
-// crate-private (`compose_morph` is their sole caller), `snapshot` stays
-// reachable as `diagnostics::snapshot()` to avoid colliding with the
-// `stats::snapshot` re-export above, and `MorphOutcome` stays under
-// `diagnostics::` as the test-seeding vocabulary.
+// crate-private (`compose_morph` is their sole caller), while `snapshot`,
+// `reset` and the test-seeding `MorphOutcome` stay under `diagnostics::`.
 pub use diagnostics::{DiagnosticSnapshot, format_summary};
 use diagnostics::{record_ineligible, record_morphed, record_panicked, record_quality_remesh};
 pub use boundary::{

@@ -39,7 +39,7 @@
 //!
 //! Graceful skip: if `python3`, `git`, or the script are absent from PATH/disk,
 //! the shared helper prints a note to stderr and returns `None`; the test then
-//! returns early. Mirrors `crates/reify-mesh-morph/tests/stats_g_allow.rs`.
+//! returns early. Mirrors `crates/reify-audit/tests/g_allow.rs`.
 //! The shared helper is in `reify_test_support::run_orphan_audit`.
 
 use reify_test_support::run_orphan_audit;
