@@ -110,12 +110,10 @@ pub fn snapshot() -> DiagnosticSnapshot {
 /// inside the recorders from the existing `&QualityVerdict` / `&Reason` the
 /// engine already holds.
 ///
-/// Crate-internal: this type carries no external behaviour — its only consumer
-/// is the private bucket-routing [`counter`] — so it is deliberately neither
-/// `pub` nor re-exported from the crate root. The public diagnostic surface is
-/// the recorders, [`snapshot`], and [`DiagnosticSnapshot`].
+/// The bucket vocabulary `seed_for_test` takes; not re-exported from the crate
+/// root, and replaced by reify-eval's `MorphOutcome` in β (#9092).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MorphOutcome {
+pub enum MorphOutcome {
     /// Existing mesh deformed in place.
     Morphed,
     /// Remeshed after a quality hard-fail (element inversion).
@@ -175,7 +173,7 @@ fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
 // this module path (`reify_mesh_morph::diagnostics`).
 
 /// Record a successful morph.
-pub fn record_morphed() {
+pub(crate) fn record_morphed() {
     tracing::trace!("mesh morph: morphed");
     counter(MorphOutcome::Morphed).fetch_add(1, Ordering::Relaxed);
 }
@@ -185,7 +183,7 @@ pub fn record_morphed() {
 /// [`QualityVerdict::Pass`] is not a remesh trigger — the engine only calls this
 /// on a fail verdict — so it is a no-op here. The `debug_assert!` makes that
 /// contract loud in debug builds at no release-build cost.
-pub fn record_quality_remesh(verdict: &QualityVerdict) {
+pub(crate) fn record_quality_remesh(verdict: &QualityVerdict) {
     let outcome = match verdict {
         QualityVerdict::HardFail(details) => {
             tracing::info!(
@@ -222,7 +220,7 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
 }
 
 /// Record an ineligible edit, bucketed by reject category.
-pub fn record_ineligible(reason: &Reason) {
+pub(crate) fn record_ineligible(reason: &Reason) {
     tracing::trace!(reason = ?reason, "mesh morph: ineligible edit");
     let outcome = match reason {
         Reason::StructuralChange => MorphOutcome::IneligibleStructuralChange,
@@ -240,7 +238,7 @@ pub(crate) fn record_solver_error(detail: &str) {
 }
 
 /// Record a caught morph panic; `detail` is surfaced in the ERROR log message.
-pub fn record_panicked(detail: &str) {
+pub(crate) fn record_panicked(detail: &str) {
     tracing::error!("mesh morph panicked: {detail}");
     counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
 }
@@ -307,7 +305,7 @@ pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
 ///
 // Only caller is the cross-crate debug RPC (gui/src-tauri/src/debug_server.rs
 // handle_mesh_morph_stats), invisible to the crate-scoped orphan audit; the
-// diagnostics_g_allow.rs test pins the 4 recorders and does not assert orphan_count==0.
+// diagnostics_g_allow.rs test pins the recorders and does not assert orphan_count==0.
 // G-allow: cross-crate debug RPC caller (debug_server.rs handle_mesh_morph_stats), invisible to crate-scoped audit
 pub fn reset() {
     COUNTERS.morphed.store(0, Ordering::Relaxed);
@@ -340,9 +338,19 @@ pub fn reset_for_test() {
     reset();
 }
 
+/// Increment exactly one bucket, without the matching recorder's policy log.
+///
+/// Exists so cross-crate tests can seed the counters while the recorders stay
+/// crate-private. Compiled under the same gate as [`reset_for_test`].
+#[cfg(any(test, feature = "testing"))]
+// G-allow: test-seeding hook compiled only under cfg(test) / feature "testing"; its cross-crate caller is the gui/src-tauri/src/debug_server.rs mesh_morph_stats handler tests (outside this audit's crates/reify-*/src scope)
+pub fn seed_for_test(outcome: MorphOutcome) {
+    counter(outcome).fetch_add(1, Ordering::Relaxed);
+}
+
 /// Serializes test access to the process-global diagnostic counters across
 /// BOTH this module's own test suite and `lib.rs`'s `compose_morph` tests,
-/// which mutate the same [`COUNTERS`] statics via the public recorders and
+/// which mutate the same [`COUNTERS`] statics via the recorders and
 /// [`reset_for_test`]. `pub(crate)` so `lib.rs`'s `#[cfg(test)]` tests can
 /// acquire this exact lock — a lock private to this module's `tests`
 /// submodule would only serialize this module's own tests against each

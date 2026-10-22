@@ -431,8 +431,9 @@ fn tool_defs() -> Vec<ToolDef> {
             name: "mesh_morph_stats",
             description: "Session diagnostic counter snapshot from the mesh-morph engine \
                           (morphed, remeshed_quality_hard_fail, remeshed_quality_soft_fail, \
-                          ineligible_structural_change, ineligible_bijection_failure, \
-                          ineligible_naming_error, panicked) plus session_start_unix_ms \
+                          remeshed_solver_error, ineligible_structural_change, \
+                          ineligible_bijection_failure, ineligible_naming_error, panicked) \
+                          plus session_start_unix_ms \
                           (debug-server spawn time, or the last reset time). Pass reset:true \
                           to zero all counters and restart the measurement clock before \
                           returning the post-reset snapshot — useful for benchmark sequences. \
@@ -1678,10 +1679,11 @@ fn reset_session_start() {
 
 /// `mesh_morph_stats` debug-MCP RPC handler.
 ///
-/// Returns a flat JSON object containing all seven diagnostic counters from
+/// Returns a flat JSON object containing all eight diagnostic counters from
 /// `reify_mesh_morph::diagnostics::snapshot()` (morphed,
 /// remeshed_quality_hard_fail, remeshed_quality_soft_fail,
-/// ineligible_structural_change, ineligible_bijection_failure,
+/// remeshed_solver_error, ineligible_structural_change,
+/// ineligible_bijection_failure,
 /// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field
 /// (debug-server spawn time, or the last reset time).
 ///

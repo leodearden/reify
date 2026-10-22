@@ -74,7 +74,7 @@
 //!
 //! [`quality::QualityVerdict::Unsupported`] means `morphed`/`source` is a
 //! non-tet (hex/wedge) mesh; [`quality_check`] returns it instead of
-//! panicking. `compose_morph` intercepts it before [`record_quality_remesh`]
+//! panicking. `compose_morph` intercepts it before `record_quality_remesh`
 //! and returns a structured [`MorphFailure::SolverError`].
 //!
 //! The intercept is unreachable through any constructible `compose_morph`
@@ -99,16 +99,13 @@ pub mod stats;
 pub mod types;
 
 pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
-// Bare diagnostics re-exports. Two symbols are deliberately omitted:
-//   - `snapshot` stays reachable as `diagnostics::snapshot()` to avoid
-//     colliding with the `stats::snapshot` re-export above; and
-//   - `MorphOutcome` is kept crate-internal — it carries no external behaviour
-//     (its only consumer is the private bucket-routing `fn counter`), so it is
-//     not part of the public API surface.
-pub use diagnostics::{
-    DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
-    record_quality_remesh,
-};
+// Bare diagnostics re-exports: the read side only. The recorders are
+// crate-private (`compose_morph` is their sole caller), `snapshot` stays
+// reachable as `diagnostics::snapshot()` to avoid colliding with the
+// `stats::snapshot` re-export above, and `MorphOutcome` stays under
+// `diagnostics::` as the test-seeding vocabulary.
+pub use diagnostics::{DiagnosticSnapshot, format_summary};
+use diagnostics::{record_ineligible, record_morphed, record_panicked, record_quality_remesh};
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
     compute_dirichlet_bcs, rekey_boundary_association,
@@ -172,11 +169,11 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// 3. Displacement-magnitude rule → [`laplacian_smooth`] (small) or
 ///    [`elasticity_morph`] (large). The solve is wrapped in
 ///    [`std::panic::catch_unwind`] so a solver panic is recorded
-///    ([`record_panicked`]) and degraded to a structured failure rather than
+///    (`record_panicked`) and degraded to a structured failure rather than
 ///    unwinding through the engine dispatch.
 /// 4. [`quality_check`] — on [`QualityVerdict::Pass`], attach the source's
 ///    [`BoundaryAssociation`] re-keyed onto the NEW BRep
-///    ([`rekey_boundary_association`]), then [`record_morphed`] and return the
+///    ([`rekey_boundary_association`]), then `record_morphed` and return the
 ///    deformed mesh.
 ///
 /// Connectivity is preserved by construction (both solvers deform vertices in
@@ -687,26 +684,15 @@ mod tests {
 
     // ── task 2948: lib re-export fence for the diagnostics surface ───────────
 
-    // Compile fence: verifies the diagnostics surface is re-exported from the
-    // crate root. Two symbols are intentionally absent from the bare re-export
-    // (and therefore from this fence): `snapshot`, reached via the
-    // `diagnostics::` module path to avoid colliding with the existing
-    // `stats::snapshot` re-export; and `MorphOutcome`, kept crate-internal
-    // (internal bucket-routing only). Dropping any bare re-export breaks
-    // compilation immediately.
+    // Compile fence: pins the public diagnostics surface — the crate-root
+    // `DiagnosticSnapshot` / `format_summary` re-exports plus the module-path
+    // `diagnostics::snapshot` / `diagnostics::reset`. Dropping any of them, or
+    // drifting a signature, breaks compilation immediately.
     const _: fn() = || {
-        use crate::{
-            DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
-            record_quality_remesh,
-        };
-        let _: fn() = record_morphed;
-        let _: fn(&crate::QualityVerdict) = record_quality_remesh;
-        let _: fn(&crate::Reason) = record_ineligible;
-        let _: fn(&str) = record_panicked;
+        use crate::{DiagnosticSnapshot, format_summary};
         let _: fn(&DiagnosticSnapshot) -> String = format_summary;
-        // `snapshot` via the module path, not a bare re-export (avoids the
-        // collision with `stats::snapshot`).
         let _: fn() -> DiagnosticSnapshot = crate::diagnostics::snapshot;
+        let _: fn() = crate::diagnostics::reset;
     };
 
     // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
