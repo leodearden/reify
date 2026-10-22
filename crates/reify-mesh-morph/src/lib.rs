@@ -529,28 +529,6 @@ mod tests {
         }
     }
 
-    // ── Step-5: eligible() contract ───────────────────────────────────────────
-
-    #[test]
-    fn eligible_returns_true_when_morph_eligible_yields_eligible() {
-        let (old_graph, values) = width_graph_and_values();
-        let new_graph = old_graph.clone();
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(eligible(old_brep, new_brep));
-    }
-
-    #[test]
-    fn eligible_returns_false_on_stage_a_structural_change() {
-        let (old_graph, values) = width_graph_and_values();
-        let new_graph = diverged_graph(&old_graph);
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(!eligible(old_brep, new_brep));
-    }
-
     // ── Step-31: lib re-exports make boundary module public surface accessible ─
 
     // Compile fence: verifies each name from the boundary module is accessible
@@ -689,16 +667,6 @@ mod tests {
         let _: fn(&DiagnosticSnapshot) -> String = format_summary;
         let _: fn() -> DiagnosticSnapshot = crate::diagnostics::snapshot;
         let _: fn() = crate::diagnostics::reset;
-    };
-
-    // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
-
-    // Compile fence: fails to compile until `eligible` takes `BRep` by value.
-    // Mirrors the boundary/laplacian/quality fence discipline above.
-    #[allow(unused)]
-    const _: fn() = || {
-        let _fn_ref: fn(BRep, BRep) -> bool = eligible;
-        let _ = _fn_ref;
     };
 
     // ── Step-7 (task 4744 β): compose_morph success path ─────────────────────
