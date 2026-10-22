@@ -30,11 +30,9 @@
 //!   restated list) across `crates/*/src/`, and the residue no leaf has
 //!   re-homed yet is COUNTED in that file's `SEED_STRING_DISPATCH_LEDGER`, one
 //!   entry per (file, name) pair with its exact site count and the leaf that
-//!   owns retiring it — α's `reify-expr` intercepts and re-entrant calls, and
-//!   S8-ψ's relation-name dispatch, which waits on its consumers' migration.
-//!   An UNLEDGERED site fails, and so does a count that no longer matches. The
-//!   **workspace-wide** grep gate — every builtin name, not just the registered
-//!   ones — arrives at task ω.
+//!   owns retiring it. An UNLEDGERED site fails, and so does a count that no
+//!   longer matches. The **workspace-wide** grep gate — every builtin name,
+//!   not just the registered ones — arrives at task ω.
 //! - **I-REG-2**: every `BuiltinId` is bound exactly once in its
 //!   [`BindingKind`]'s owning dispatcher, via an exhaustive match with no `_`
 //!   arm. The per-kind sub-enums this crate generates (`EvalBuiltinId`,

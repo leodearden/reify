@@ -7,13 +7,13 @@
 //!
 //! # Scope: registry-scoped with a ledger, not workspace-wide
 //!
-//! This gate sweeps the REGISTERED names only — α's seeds and every row added
-//! since — not every builtin name. The residue it finds is REAL string
-//! dispatch on registered names, outside the charter of the leaf that
-//! registered them — so it is COUNTED in [`SEED_STRING_DISPATCH_LEDGER`], one
-//! entry per (file, name) pair with its exact site count and a one-sentence
-//! WHY naming the leaf that owns re-homing it, rather than hidden by narrowing
-//! the scan or "fixed" by editing a crate the registering task does not own.
+//! This gate sweeps the REGISTERED names only, not every builtin name. The
+//! residue it finds is REAL string dispatch on registered names, outside the
+//! charter of the leaf that registered them — so it is COUNTED in
+//! [`SEED_STRING_DISPATCH_LEDGER`], one entry per (file, name) pair with its
+//! exact site count and a one-sentence WHY naming the leaf that owns
+//! re-homing it, rather than hidden by narrowing the scan or "fixed" by
+//! editing a crate the registering task does not own.
 //! An UNLEDGERED site fails, naming the file, line and name. The
 //! workspace-wide grep gate (every builtin name, not just the registered ones)
 //! arrives at task ω.
@@ -22,13 +22,11 @@
 //! mirroring `reify-compiler`'s `units.rs` disjointness list — so a row added
 //! by a later τ migration is swept automatically instead of silently escaping.
 //!
-//! S8-ψ's Relation rows were registered BEFORE their consumers migrate, so the
-//! string dispatch on the relation names is ledgered too, per owning leaf: the
-//! compiler's relation vocabulary (S9 λ #8741), the relate-solve residual and
-//! demand dispatch (S6 γ #8830), and the same-name arity-2 builtins that are
-//! not relation rows at all (#6944). Each entry carries the exact number of
-//! occurrences its (file, name) pair has, so a leaf that retires sites must
-//! shrink the count, and a pair that grows a site reds.
+//! A row may be registered before its consumers migrate. Their string
+//! dispatch on its name is then ledgered under the leaf that migrates them,
+//! as is dispatch on a same-name builtin that is not that row at all. A leaf
+//! that retires sites must shrink its entry's count, and a pair that grows a
+//! site reds.
 //!
 //! # What counts as a violation
 //!

@@ -1,9 +1,12 @@
-//! The registry: α's seed rows (parse + analysis) and S8-ψ's relation rows.
+//! The registry: one `registry!` group per [`BindingKind`](crate::BindingKind)
+//! that holds rows — EvalBuiltin (parse + analysis) and Relation. Each group's
+//! comment states the basis its rows share; migration history is in
+//! `docs/prds/v0_6/builtin-signature-registry.md` and
+//! `docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md`.
 //!
-//! The rest of this module doc concerns α's EvalBuiltin group; the Relation
-//! group's provenance is stated in its own group comment.
+//! # EvalBuiltin rows and their legacy anchors
 //!
-//! Every α result type below reproduces today's legacy value VERBATIM. α makes
+//! Every EvalBuiltin result type reproduces the legacy value VERBATIM. α makes
 //! zero corrections (PRD §7.3(6)) — the seed migration's job is to move the
 //! source of truth, not to change any answer. Each row's `//` comment names
 //! where its type came from, with a `file.rs:LINE` anchor and the originating
@@ -176,7 +179,7 @@ crate::macros::registry! {
         },
     }
 
-    // ── Relation group (S8-ψ) ───────────────────────────────────────────────
+    // ── Relation group ──────────────────────────────────────────────────────
     //
     // The geometric-relation vocabulary. Every row types to `Type::Relation`,
     // a DOF-removal directive. The arities are the ones reify-compiler's
@@ -303,14 +306,13 @@ crate::macros::registry! {
 /// and PRD §7.3(7) requires each τ task text to enumerate its Artifact rows
 /// with one sentence each on why they were left unresolved.
 ///
-/// The ledger holds FOUR rows. α's three — `von_mises`, `max_shear`,
-/// `principal_stresses` (ratified 2026-08-17, Leo, unblock of #6001) — each
-/// reproduce the legacy arg-aware reduction rather than the constrained-input,
-/// Pressure-fixed signature #2884 actually rules; see the per-row comments for
-/// why each was left unresolved. The other four seed rows trace to a Ruling or a
-/// Physics derivation. S8-ψ adds `tangent`, whose trailing-radius 3|4 arity no
-/// document or ruling decides (see the Relation group comment); the other
-/// eleven relation rows cite the design doc.
+/// The analysis reductions `von_mises`, `max_shear` and `principal_stresses`
+/// (ratified 2026-08-17, Leo, unblock of #6001) reproduce the legacy arg-aware
+/// reduction rather than the constrained-input, Pressure-fixed signature #2884
+/// actually rules, and no document or ruling decides `tangent`'s
+/// trailing-radius 3|4 arity. The per-row and group comments say why each was
+/// left unresolved; every other row cites a Ruling, a Physics derivation or a
+/// design doc.
 pub fn artifact_basis_rows() -> Vec<&'static str> {
     rows()
         .iter()
@@ -475,7 +477,7 @@ mod tests {
         );
     }
 
-    // ── the Relation group (S8-ψ) ────────────────────────────────────────────
+    // ── the Relation group ───────────────────────────────────────────────────
 
     /// The Relation group mints `RelationKind` with one variant per row, and
     /// its rows are exactly [`RELATION_ROWS`], in order.
@@ -790,19 +792,19 @@ mod lint {
     /// τ that adds one sees the number move rather than a silent pass.
     #[test]
     fn artifact_basis_ledger_matches_the_reviewed_set() {
-        /// α's reviewed ledger, in `rows()` order. The three analysis
+        /// The reviewed ledger, in `rows()` order. The three analysis
         /// reductions reproduce the legacy arg-aware form instead of the
         /// constrained-input, Pressure-fixed signature #2884 rules; ratified as
         /// Artifact 2026-08-17 (Leo, unblock of #6001) so the gap is COUNTED
         /// rather than hidden behind a Ruling cite the rows do not honour.
-        /// Zeroing this ledger is the analysis family's end-state migration —
+        /// Retiring those three is the analysis family's end-state migration —
         /// it needs τ-numeric's ArgSlot vocabulary + `E_BuiltinArgShape` wiring
         /// and leaf θ's corpus migration, and must land as one diff.
-        /// Per PRD §7.3(7) this set is a claim, not an omission: parse's two
-        /// rows and analysis's other two assert an independent basis.
-        /// `tangent` (S8-ψ) encodes #5540's trailing-radius 3|4 arity, which no
+        /// `tangent` encodes #5540's trailing-radius 3|4 arity, which no
         /// document or ruling decides — the design doc rules only the
         /// 2-operand surface form, pending #5588.
+        /// Per PRD §7.3(7) this set is a claim, not an omission: every other
+        /// row asserts an independent basis.
         const EXPECTED_ARTIFACT_ROWS: &[&str] =
             &["von_mises", "max_shear", "principal_stresses", "tangent"];
 

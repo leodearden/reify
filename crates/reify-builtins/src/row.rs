@@ -19,7 +19,7 @@ use reify_core::Type;
 /// which is what lets an owning crate bind its rows exhaustively without
 /// re-deriving membership from a name list.
 ///
-/// α seeds two families; each later τ migration adds its own variant.
+/// Each τ migration adds its own variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     /// Fallible string→quantity parse builtins (task #4535).
@@ -40,10 +40,8 @@ pub enum Family {
 /// eventual variants — including ones it has no business knowing — just to stay
 /// `_`-free.
 ///
-/// All six variants are declared now even though only [`BindingKind::EvalBuiltin`]
-/// and [`BindingKind::Relation`] hold rows, so a later τ adds rows rather than
-/// widening the vocabulary. The first five are PRD decision 4's; `Relation` was
-/// added by R6 / S8-ψ.
+/// Every variant is declared whether or not it holds rows yet, so a later τ
+/// adds rows rather than widening the vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BindingKind {
     /// Dispatched by `reify_stdlib::eval_builtin`.
@@ -304,10 +302,9 @@ mod tests {
 
     // ── BindingKind ──────────────────────────────────────────────────────────
 
-    /// All six binding kinds are declared: PRD decision 4's five plus R6's
-    /// `Relation`. The kind column must cover the full ~358-name surface — a
-    /// later τ adding `GeometryOp` rows must not also have to widen the
-    /// vocabulary.
+    /// All six binding kinds are declared. The kind column must cover the full
+    /// ~358-name surface — a later τ adding `GeometryOp` rows must not also
+    /// have to widen the vocabulary.
     #[test]
     fn binding_kind_declares_all_six_variants() {
         let all = [

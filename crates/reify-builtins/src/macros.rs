@@ -123,9 +123,7 @@ macro_rules! registry {
                      is bound by a different kind."
                 )]
                 // Unreachable in a single-group invocation, where every row
-                // belongs to this one group. The crate's registry has two
-                // groups, so there the arm is live; the allow stays for
-                // single-group invocations such as test fakes.
+                // belongs to this one group.
                 #[allow(unreachable_patterns)]
                 pub fn $accessor(self) -> Option<$kind_id> {
                     match self {
