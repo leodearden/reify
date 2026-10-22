@@ -391,29 +391,11 @@ mod tests {
     #[test]
     fn snapshot_returns_all_zeros_after_reset() {
         with_locked_state(|| {
-            let s = snapshot();
-            assert_eq!(s.morphed, 0, "morphed should be 0 after reset");
             assert_eq!(
-                s.remeshed_quality_hard_fail, 0,
-                "remeshed_quality_hard_fail should be 0 after reset"
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "every bucket should be 0 after reset"
             );
-            assert_eq!(
-                s.remeshed_quality_soft_fail, 0,
-                "remeshed_quality_soft_fail should be 0 after reset"
-            );
-            assert_eq!(
-                s.ineligible_structural_change, 0,
-                "ineligible_structural_change should be 0 after reset"
-            );
-            assert_eq!(
-                s.ineligible_bijection_failure, 0,
-                "ineligible_bijection_failure should be 0 after reset"
-            );
-            assert_eq!(
-                s.ineligible_naming_error, 0,
-                "ineligible_naming_error should be 0 after reset"
-            );
-            assert_eq!(s.panicked, 0, "panicked should be 0 after reset");
         });
     }
 
@@ -426,6 +408,7 @@ mod tests {
             record_morphed();
             record_quality_remesh(&hard_fail());
             record_ineligible(&Reason::StructuralChange);
+            record_solver_error("x");
             assert_ne!(snapshot().morphed, 0, "morphed must be non-zero before reset");
             assert_ne!(
                 snapshot().remeshed_quality_hard_fail, 0,
@@ -434,6 +417,10 @@ mod tests {
             assert_ne!(
                 snapshot().ineligible_structural_change, 0,
                 "ineligible_structural_change must be non-zero before reset"
+            );
+            assert_ne!(
+                snapshot().remeshed_solver_error, 0,
+                "remeshed_solver_error must be non-zero before reset"
             );
             // Call the NEW production reset() and assert all counters return to zero.
             super::reset();
@@ -625,6 +612,26 @@ mod tests {
         });
     }
 
+    #[test]
+    fn record_solver_error_increments_only_solver_error_bucket() {
+        with_locked_state(|| {
+            record_solver_error("x");
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    remeshed_solver_error: 1,
+                    ..Default::default()
+                }
+            );
+            record_solver_error("y");
+            assert_eq!(
+                snapshot().remeshed_solver_error,
+                2,
+                "repeated calls must accumulate"
+            );
+        });
+    }
+
     // ── Step-5: logging policy ────────────────────────────────────────────────
     //
     // Each recorder emits exactly one tracing event at its policy level,
@@ -718,6 +725,30 @@ mod tests {
         });
     }
 
+    #[test]
+    fn record_solver_error_logs_at_warn_with_detail() {
+        with_locked_state(|| {
+            prime_tracing_callsite_cache();
+            let (subscriber, capture) = CapturingSubscriberBuilder::new(Level::WARN)
+                .target_prefix(TARGET)
+                .build();
+            tracing::subscriber::with_default(subscriber, || {
+                record_solver_error("solver-detail");
+            });
+            assert_eq!(
+                capture.count(),
+                1,
+                "record_solver_error must emit exactly one WARN event"
+            );
+            let msgs = capture.messages();
+            assert!(
+                msgs[0].contains("solver-detail"),
+                "WARN message must contain the passed detail, got: {:?}",
+                msgs[0]
+            );
+        });
+    }
+
     // ── Step-7: format_summary ────────────────────────────────────────────────
     //
     // Pure function over a `DiagnosticSnapshot` — no globals, no lock needed.
@@ -792,6 +823,26 @@ mod tests {
             summary,
             "mesh updates: 47 morphed, 4 remeshed, 2 ineligible \
              (1 structural, 1 bijection), 5 panicked"
+        );
+    }
+
+    #[test]
+    fn format_summary_folds_solver_errors_into_remeshed_with_parenthetical() {
+        // remeshed aggregates every remesh bucket (3+1+2=6); the solver-error
+        // share is called out so it stays distinguishable from quality rejects.
+        let snap = DiagnosticSnapshot {
+            morphed: 47,
+            remeshed_quality_hard_fail: 3,
+            remeshed_quality_soft_fail: 1,
+            remeshed_solver_error: 2,
+            ineligible_structural_change: 1,
+            ineligible_bijection_failure: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            format_summary(&snap),
+            "mesh updates: 47 morphed, 6 remeshed (2 solver error), 2 ineligible \
+             (1 structural, 1 bijection)"
         );
     }
 }

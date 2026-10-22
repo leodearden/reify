@@ -957,6 +957,19 @@ mod tests {
         );
     }
 
+    /// A non-panic solver failure records exactly the `remeshed_solver_error`
+    /// bucket — no morph, no quality remesh, no panic.
+    fn assert_only_solver_error_recorded() {
+        assert_eq!(
+            diagnostics::snapshot(),
+            DiagnosticSnapshot {
+                remeshed_solver_error: 1,
+                ..Default::default()
+            },
+            "a non-panic solver failure must record only the solver-error bucket"
+        );
+    }
+
     #[test]
     fn compose_morph_stage_a_structural_change_returns_ineligible_and_records_structural_bucket() {
         with_diag_lock(|| {
@@ -1089,6 +1102,62 @@ mod tests {
                 "compose_morph must record the soft-fail remesh bucket"
             );
             assert_no_morph_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_projection_failure_returns_solver_error_and_records_only_solver_error_bucket()
+    {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::cap_face();
+            // Node 5 is out of range for the 4-node tet, so boundary projection
+            // fails with `ProjectionFailure::InvalidNodeIndex(5)`.
+            let mut boundary = BoundaryAssociation::default();
+            boundary.associate(5, NodeAttachment::OnFace(h(10)));
+
+            let result = compose_morph(
+                &single_tet_mesh(),
+                &boundary,
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &MorphOptions::default(),
+            );
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "a boundary-projection failure must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_solver_err_returns_solver_error_and_records_only_solver_error_bucket() {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::cap_face();
+            // A P2-tagged source: `laplacian_smooth` rejects non-P1 at entry, so
+            // the tiny ShiftingKernel displacement's Laplacian solve returns Err.
+            let mut source = single_tet_mesh();
+            source.connectivity = reify_ir::VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3],
+                order: reify_ir::ElementOrderTag::P2,
+            };
+
+            let result = compose_morph(
+                &source,
+                &all_nodes_on_cap_face(),
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &MorphOptions::default(),
+            );
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "a solver Err must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
         });
     }
 
