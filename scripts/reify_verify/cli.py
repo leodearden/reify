@@ -10,6 +10,8 @@ missing or empty option value exits 64 where bash's ${2:?} exits 1.
 import os
 import re
 import sys
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from reify_verify import bashcall, knobs, queries
@@ -34,14 +36,33 @@ SWITCHES = {
 }
 HELP_TOKENS = ("-h", "--help")
 _QUERY_FLAGS = frozenset(query.value for query in Query)
-REPORTS = {
-    Query.KNOBS: queries.knob_report,
-    Query.ROLE_POLICY: queries.role_policy_report,
-}
-ACTION_REPORTS = {Query.SCOPE: queries.scope_report}
-ACTION_QUERIES = frozenset(ACTION_REPORTS)
 ACTION_QUERY_CONFLICTS = ("--print-plan", "--confirm-failed")
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
+
+
+@dataclass(frozen=True)
+class ActionFreeReport:
+    """A query that stands alone: no action, and nothing read but the env."""
+
+    report: Callable[[Mapping[str, str]], queries.QueryOutput]
+
+
+@dataclass(frozen=True)
+class ActionReport:
+    """A query that reads a gate invocation and runs nothing; it may call a bash library."""
+
+    report: Callable[[Invocation, Mapping[str, str], Path], queries.QueryOutput]
+
+
+REPORTS = {
+    Query.KNOBS: ActionFreeReport(queries.knob_report),
+    Query.ROLE_POLICY: ActionFreeReport(queries.role_policy_report),
+    Query.SCOPE: ActionReport(queries.scope_report),
+}
+
+
+def _takes_action(query: Query | None) -> bool:
+    return isinstance(REPORTS.get(query), ActionReport)
 
 
 def _choices(members) -> str:
@@ -57,11 +78,11 @@ USAGE = (
     "",
     "Usage:",
     f"  verify.sh <{_choices(GATE_ACTIONS)}> [options]",
-    *(f"  verify.sh {query.value}" for query in Query if query not in ACTION_QUERIES),
+    *(f"  verify.sh {query.value}" for query in Query if not _takes_action(query)),
     *(
         f"  verify.sh <{_choices(GATE_ACTIONS)}> {query.value} [options]"
         for query in Query
-        if query in ACTION_QUERIES
+        if _takes_action(query)
     ),
     "",
     "Options:",
@@ -176,9 +197,9 @@ def _set_query(raw: dict, query: Query) -> None:
 def _validate(raw: dict, env: dict[str, str]) -> Invocation:
     action = raw.get("action")
     query = raw.get("query")
-    if action is None and (query is None or query in ACTION_QUERIES):
+    if action is None and (query is None or _takes_action(query)):
         raise CliError((f"{ERROR}missing action ({_choices(GATE_ACTIONS)})", *USAGE))
-    if query in ACTION_QUERIES:
+    if _takes_action(query):
         _check_action_query(query, action, raw)
     elif action is not None and query is not None:
         raise CliError(
@@ -278,15 +299,16 @@ def main(argv: list[str]) -> int:
 
 
 def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
-    if invocation.query in ACTION_REPORTS:
-        try:
-            output = ACTION_REPORTS[invocation.query](invocation, env, REPO_ROOT)
-        except bashcall.BashCallError as err:
-            _diagnose((f"{ERROR}{err}",))
-            return 1
-        return _emit(output)
-    if invocation.query is not None:
-        return _emit(REPORTS[invocation.query](env))
+    match REPORTS.get(invocation.query):
+        case ActionReport(report=report):
+            try:
+                output = report(invocation, env, REPO_ROOT)
+            except bashcall.BashCallError as err:
+                _diagnose((f"{ERROR}{err}",))
+                return 1
+            return _emit(output)
+        case ActionFreeReport(report=report):
+            return _emit(report(env))
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
