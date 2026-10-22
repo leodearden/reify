@@ -2154,8 +2154,8 @@ assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member pass
     test "$t24_rc" -eq 0
 
 # -- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM (task #5147) --
-# The merge-tier envelope wraps run_all.sh in `timeout --kill-after=60 60m`
-# (verify.sh). timeout sends SIGTERM first (SIGKILL only after the kill-after
+# The merge-tier outer envelope (verify.sh's run_all.sh add_tool line) wraps
+# run_all.sh in `timeout --kill-after=...`. timeout sends SIGTERM first (SIGKILL only after the kill-after
 # grace period), so a TERM trap gets a real window to emit a reclassification
 # marker before death. Without one, a mid-run SIGTERM leaves no Summary/FAILED
 # line and dark-factory's classifier falls through to a tree_sitter_generate_error

@@ -24,7 +24,7 @@
 # lane passes --include-infra. Gating the wholesale run_all.sh line on
 # INCLUDE_INFRA (not on role) meant the full 103-test suite ran on every task
 # lane and NEVER at merge — M-way concurrent pool contention that starved the
-# shared 16-slot semaphore (30m timeout -> exit 124 -> BLOCKED).
+# shared 16-slot semaphore (outer-envelope timeout -> exit 124 -> BLOCKED).
 #
 # Oracle: verify.sh --print-plan (hermetic, never runs cargo/npm) inside an
 # isolated mktemp git fixture. make_branch_fixture mirrors

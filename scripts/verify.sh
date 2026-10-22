@@ -2316,7 +2316,7 @@ select_harness_kloc_guard
 # no-op against a stamped target/ keeps that state reachable there. Whether
 # the merge tier should also require the ratchet is a decision about
 # REIFY_AUDIT_NO_COLD_BUILD=1 on that pool leaf — a budget question about its
-# 30m wall — which this selector cannot answer and does not claim to; it is
+# outer envelope — which this selector cannot answer and does not claim to; it is
 # filed separately.
 # ---------------------------------------------------------------------------
 select_cheap_ptodo_gate() {
@@ -4303,7 +4303,7 @@ build_plan() {
     # --include-infra, while EVERY per-task lane passes --include-infra — so gating
     # run_all.sh on INCLUDE_INFRA (as before) ran the full 103-test suite on every
     # task lane and NEVER at merge, starving the shared 16-slot pool (M-way
-    # contention -> 30m timeout -> exit 124 -> BLOCKED). Gating on role instead
+    # contention -> outer-envelope timeout -> exit 124 -> BLOCKED). Gating on role instead
     # makes DF_VERIFY_ROLE=merge (stamped by both merge seams: hooks/pre-merge-commit
     # and the dark-factory merge-verify command) the single source of truth: the
     # full pool runs exactly once, at merge; per-task lanes get the cheap selective
@@ -4345,7 +4345,7 @@ build_plan() {
     # Section B, which proves the merge-role semaphore bypass — would re-satisfy
     # this role==merge gate and re-emit run_all.sh, recursing unboundedly
     # (run_all -> semaphore-e2e -> merge-role verify -> run_all -> ...) until the
-    # 30m wall SIGKILLs it. The gate keys on the INHERITED env var
+    # outer-envelope wall SIGKILLs it. The gate keys on the INHERITED env var
     # DF_VERIFY_ROLE, so the break is also an inherited env var. It is set
     # NARROWLY, at the single recursion source (that Section-B spawn), NOT
     # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
@@ -4356,7 +4356,7 @@ build_plan() {
     # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
     # nested background spawn, mirroring Section B's merge spawn).
     if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
-        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (60m).
+        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh outer envelope.
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
@@ -4455,14 +4455,8 @@ build_plan() {
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-        # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
-        # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
-        # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
-        # tipping a suite already near its budget over the wall (exit 124). 30m
-        # restores headroom for the full --scope all / merge gate.
-        # task #9450 (Leo 2026-10-22 stopgap): bumped 30m -> 60m. run_all.sh has no
-        # per-member timeout, so one slow member consumed the whole 30m and wedged
-        # the merge gate; the per-member fix is task #9441.
+        # Envelope sized for the full infra suite; per-member timeout tracked by
+        # #9441 (stopgap history: git log -L on this line).
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
