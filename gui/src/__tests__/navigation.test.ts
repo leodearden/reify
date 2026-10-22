@@ -11,8 +11,10 @@ import {
   navigateToSource,
   navigateToEntity,
   navigateFromConstraint,
+  navigateToLocation,
 } from '../navigation';
 import { createSelectionStore } from '../stores/selectionStore';
+import { createEditorStore } from '../stores/editorStore';
 
 describe('navigation', () => {
   beforeEach(() => {
@@ -268,6 +270,149 @@ describe('navigation', () => {
         // selectedEntity is null (no match found), but the highlight must survive
         expect(store.state.selectedEntity).toBeNull();
         expect(store.state.highlightedParams).toEqual(['c1', 'c2']);
+
+        dispose();
+      });
+    });
+  });
+
+  describe('navigateToLocation', () => {
+    type EditorStore = ReturnType<typeof createEditorStore>;
+
+    function makeDeps(store: EditorStore) {
+      return {
+        store,
+        openFile: vi.fn(),
+        setScrollToLocation: vi.fn(),
+        reportOpenFailure: vi.fn(),
+      };
+    }
+
+    it('same-file → scrolls once with the span; opens and activates nothing', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+        const deps = makeDeps(store);
+        const loc = { file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9 };
+
+        await navigateToLocation(loc, deps);
+
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
+        expect(deps.openFile).not.toHaveBeenCalled();
+        expect(setActiveFileSpy).not.toHaveBeenCalled();
+
+        dispose();
+      });
+    });
+
+    it('cross-file, already open → activates the tab and scrolls; opens nothing', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        store.openFile({ path: 'helper.ri', content: '' });
+        store.setActiveFile('main.ri');
+        const deps = makeDeps(store);
+        const loc = { file_path: 'helper.ri', line: 10, column: 3, end_line: 10, end_column: 8 };
+
+        await navigateToLocation(loc, deps);
+
+        expect(store.state.activeFile).toBe('helper.ri');
+        expect(deps.openFile).not.toHaveBeenCalled();
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
+
+        dispose();
+      });
+    });
+
+    it('cross-file, not open → opens from disk, loads it active, then scrolls', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        let activeAtScroll: string | null = null;
+        deps.openFile.mockResolvedValue({ path: 'helper.ri', content: 'structure Helper {}' });
+        deps.setScrollToLocation.mockImplementation(() => {
+          activeAtScroll = store.state.activeFile;
+        });
+        const loc = { file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15 };
+
+        await navigateToLocation(loc, deps);
+
+        expect(deps.openFile).toHaveBeenCalledTimes(1);
+        expect(deps.openFile).toHaveBeenCalledWith('helper.ri');
+        expect(store.state.openFiles.some((f) => f.path === 'helper.ri')).toBe(true);
+        expect(store.state.activeFile).toBe('helper.ri');
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
+        expect(activeAtScroll).toBe('helper.ri');
+
+        dispose();
+      });
+    });
+
+    it('open rejects → reports the failure naming the path; no scroll; active tab unchanged; resolves', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        deps.openFile.mockRejectedValue(new Error('disk read error'));
+        const loc = { file_path: 'missing.ri', line: 5, column: 2, end_line: 5, end_column: 10 };
+
+        await expect(navigateToLocation(loc, deps)).resolves.toBeUndefined();
+
+        expect(deps.reportOpenFailure).toHaveBeenCalledTimes(1);
+        expect(deps.reportOpenFailure).toHaveBeenCalledWith(expect.stringContaining('missing.ri'));
+        expect(deps.setScrollToLocation).not.toHaveBeenCalled();
+        expect(store.state.activeFile).toBe('main.ri');
+
+        dispose();
+      });
+    });
+
+    it('a spelling that opens to an already-open tab activates it without reloading the dirty buffer', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: '/proj/parts.ri', content: 'edited' });
+        store.markDirty('/proj/parts.ri');
+        store.openFile({ path: '/proj/main.ri', content: '' });
+        const deps = makeDeps(store);
+        deps.openFile.mockResolvedValue({ path: '/proj/parts.ri', content: 'disk' });
+
+        await navigateToLocation(
+          { file_path: 'parts.ri', line: 3, column: 5, end_line: 3, end_column: 10 },
+          deps,
+        );
+
+        expect(store.state.activeFile).toBe('/proj/parts.ri');
+        expect(store.state.openFiles.find((f) => f.path === '/proj/parts.ri')?.content).toBe('edited');
+        expect(store.state.externallyChanged).not.toContain('/proj/parts.ri');
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith({
+          file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+        });
+
+        dispose();
+      });
+    });
+
+    it('scrolls with the store key the file opened under, not the producer spelling', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: '/real/proj/main.ri', content: '' });
+        const deps = makeDeps(store);
+        deps.openFile.mockResolvedValue({ path: '/real/proj/helper.ri', content: '' });
+
+        await navigateToLocation(
+          { file_path: '/link/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2 },
+          deps,
+        );
+
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith({
+          file_path: '/real/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2,
+        });
 
         dispose();
       });
