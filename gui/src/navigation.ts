@@ -3,7 +3,74 @@
  * Pure functions that coordinate cross-panel navigation flows
  * with dependency-injected callbacks for testability.
  */
-import type { SourceLocation, ConstraintData, ValueData } from './types';
+import type { SourceLocation, ConstraintData, ValueData, FileData } from './types';
+import { isSameFile } from './utils/pathUtils';
+import { errorMessage } from './utils/errorClassifier';
+
+// ── Location → Editor navigation ────────────────────────────────────
+
+/** The slice of the editor store that location navigation reads and drives. */
+export interface NavigationEditorStore {
+  state: {
+    activeFile: string | null;
+    openFiles: Pick<FileData, 'path'>[];
+  };
+  setActiveFile: (path: string) => void;
+  openFile: (file: FileData) => void;
+}
+
+export interface NavigateToLocationDeps {
+  store: NavigationEditorStore;
+  openFile: (path: string) => Promise<FileData>;
+  setScrollToLocation: (location: SourceLocation) => void;
+  reportOpenFailure: (message: string) => void;
+}
+
+/**
+ * Reveal a source location in the editor: activate its tab — opening the file
+ * from disk when no tab holds it — then scroll. The scroll names the store key
+ * the tab is active under, so the Editor's same-file guard accepts it whatever
+ * spelling the producer used. When the file cannot be opened the failure goes
+ * to `reportOpenFailure` and nothing scrolls.
+ */
+export async function navigateToLocation(
+  location: SourceLocation,
+  deps: NavigateToLocationDeps,
+): Promise<void> {
+  const key = await activateFile(location.file_path, deps);
+  if (key) deps.setScrollToLocation({ ...location, file_path: key });
+}
+
+/** Make `path` the active tab; returns the active store key, or null if it could not be opened. */
+async function activateFile(path: string, deps: NavigateToLocationDeps): Promise<string | null> {
+  const { store } = deps;
+  const active = store.state.activeFile;
+  if (active && isSameFile(path, active)) return active;
+
+  const open = findOpenFile(store, path);
+  if (open) {
+    store.setActiveFile(open.path);
+    return store.state.activeFile;
+  }
+
+  let fileData: FileData;
+  try {
+    fileData = await deps.openFile(path);
+  } catch (err) {
+    deps.reportOpenFailure(`Could not open ${path}: ${errorMessage(err)}`);
+    return null;
+  }
+  // The producer's spelling may resolve to a tab that is already open; reopening
+  // it would reload a clean buffer or flag a dirty one as externally changed.
+  const reopened = findOpenFile(store, fileData.path);
+  if (reopened) store.setActiveFile(reopened.path);
+  else store.openFile(fileData);
+  return store.state.activeFile;
+}
+
+function findOpenFile(store: NavigationEditorStore, path: string): Pick<FileData, 'path'> | undefined {
+  return store.state.openFiles.find((f) => isSameFile(f.path, path));
+}
 
 // ── Viewport → Source navigation ────────────────────────────────────
 
