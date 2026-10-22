@@ -2124,6 +2124,96 @@ mod tests {
         );
     }
 
+    /// A 1-joint natural-cubic profile through `values` at `t0 + [0, 0.5, 1]`.
+    /// Dyadic knots keep the knot differences exact for any dyadic `t0`.
+    fn natural_cubic_profile_from(t0: f64, values: [f64; 3]) -> Value {
+        pp_profile(
+            vec![
+                waypoint(t0, &[values[0]], None, None),
+                waypoint(t0 + 0.5, &[values[1]], None, None),
+                waypoint(t0 + 1.0, &[values[2]], None, None),
+            ],
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        )
+    }
+
+    /// Read an `EndEffectorTrack`'s `t_samples` and its first location's
+    /// `vibration_offset` series.
+    fn read_track_vibration(v: &Value) -> (Vec<f64>, Vec<f64>) {
+        let Value::StructureInstance(data) = v else {
+            panic!("expected an EndEffectorTrack StructureInstance, got {v:?}");
+        };
+        assert_eq!(data.type_name, "EndEffectorTrack");
+        let Some(Value::List(ts)) = data.fields.get(&"t_samples".to_string()) else {
+            panic!("t_samples must be a List");
+        };
+        let times = ts
+            .iter()
+            .map(|t| match t {
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("t_samples element must be a Scalar, got {other:?}"),
+            })
+            .collect();
+        let Some(Value::List(outer)) = data.fields.get(&"vibration_offset".to_string()) else {
+            panic!("vibration_offset must be a List");
+        };
+        let Value::List(series) = &outer[0] else {
+            panic!("vibration_offset[0] must be a List");
+        };
+        (times, series.iter().map(as_real).collect())
+    }
+
+    /// A profile whose waypoints start at t = 2 s simulates as the exact time
+    /// translation of the same profile starting at t = 0: its samples sit on
+    /// its own `[2, 3]` axis and its vibration series is the origin's.
+    ///
+    /// The natural cubic's q̈ is piecewise (0 → 3.6 → 0), so sampling `[0, 1]`
+    /// of the twin's extrapolated first segment would see q̈ ∈ [−14.4, −7.2]
+    /// and a different response.
+    #[test]
+    fn simulate_trajectory_value_non_zero_origin_profile_is_time_translated_twin() {
+        let values = [0.0, 0.2, 1.0];
+        let origin = natural_cubic_profile_from(0.0, values);
+        let twin = natural_cubic_profile_from(2.0, values);
+
+        let (origin_t, origin_vib) = read_track_vibration(&simulate_trajectory_value(
+            &origin,
+            &Value::Real(1.0),
+            &single_mode_modal(),
+        ));
+        let (twin_t, twin_vib) = read_track_vibration(&simulate_trajectory_value(
+            &twin,
+            &Value::Real(1.0),
+            &single_mode_modal(),
+        ));
+
+        assert!(!origin_t.is_empty(), "the origin profile produces samples");
+        assert_eq!(twin_t.len(), origin_t.len(), "same sample count");
+        assert!((twin_t[0] - 2.0).abs() < 1e-9, "twin starts at 2 s, got {}", twin_t[0]);
+        assert!(
+            (twin_t.last().unwrap() - 3.0).abs() < 1e-9,
+            "twin ends at 3 s, got {}",
+            twin_t.last().unwrap()
+        );
+        for (i, (tw, or)) in twin_t.iter().zip(&origin_t).enumerate() {
+            assert!(
+                (tw - or - 2.0).abs() < 1e-9,
+                "twin t[{i}] = {tw} must be origin t[{i}] = {or} shifted by 2 s"
+            );
+        }
+
+        assert_eq!(twin_vib.len(), origin_vib.len(), "one vibration sample per time");
+        for (i, (tw, or)) in twin_vib.iter().zip(&origin_vib).enumerate() {
+            assert!(
+                (tw - or).abs() < 1e-9,
+                "vibration[{i}]: twin {tw:.6e} must equal origin {or:.6e}"
+            );
+        }
+        let peak = origin_vib.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        assert!(peak > 1e-4, "the response must be a genuine vibration, peak={peak:.3e}");
+    }
+
     // ── steps 15/16: input_shape_value (impulse arm) ─────────────────────────────
 
     use super::super::impulse_shaper::convolve_at;

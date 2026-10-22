@@ -297,6 +297,50 @@ mod tests {
         }
     }
 
+    // ─── non-zero-origin profile: samples its own absolute domain ─────────────
+
+    /// A profile whose first knot is at t = 2 s is sampled over its own
+    /// `[2, 3]` time axis, not over `[0, duration]`: the first sample is the
+    /// first waypoint, and every sample carries the real motion there.
+    ///
+    /// The fixture is a clamped cubic through `p(t)` with the exact end slopes,
+    /// which reproduces `p` on `[2, 3]` exactly, so each sample is checked
+    /// against the closed form.
+    #[test]
+    fn samples_span_absolute_domain_for_non_zero_origin_profile() {
+        let knot_times = vec![2.0, 2.5, 3.0];
+        let values: Vec<f64> = knot_times.iter().map(|&t| cubic_p(t)).collect();
+        let bc = BoundaryCondition::Clamped {
+            start_vel: cubic_dp(2.0),
+            end_vel: cubic_dp(3.0),
+        };
+        let s = CubicSpline::fit(&knot_times, &values, &bc).expect("cubic fit");
+        let spline = MultiJointSpline::new_cubic(vec![s]).expect("multi-joint");
+
+        let dt = 0.25_f64;
+        let traj = to_trajectory_samples(&spline, dt).expect("samples");
+        let times = traj.times();
+
+        assert_eq!(traj.samples.len(), 5, "[2, 3] at dt = 0.25 → 5 samples");
+        assert_close(times[0], 2.0, 1e-12, "first sample t is the first knot");
+        assert_close(*times.last().unwrap(), 3.0, 1e-12, "last sample t is the last knot");
+        for w in times.windows(2) {
+            assert_close(w[1] - w[0], dt, 1e-12, "consecutive dt");
+        }
+
+        assert_close(
+            traj.samples[0].values[0],
+            cubic_p(2.0),
+            1e-12,
+            "first sample is the first waypoint's value",
+        );
+        for s in &traj.samples {
+            assert_close(s.values[0], cubic_p(s.t), 1e-12, "sample.values matches p");
+            assert_close(s.vels[0], cubic_dp(s.t), 1e-12, "sample.vels matches p'");
+            assert_close(s.accels[0], cubic_ddp(s.t), 1e-12, "sample.accels matches p''");
+        }
+    }
+
     // ─── step-5: RED — invalid dt rejection ────────────────────────────────────
 
     #[test]
