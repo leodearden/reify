@@ -966,8 +966,9 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 # Scenario PT-DRIFT: the bash extension list in verify.sh's
 # select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
-# set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
-# re-derives the set from that function's SOURCE on every infra run and
+# set (crates/reify-audit/src/ptodo.rs::SWEPT_EXTENSIONS, the table
+# is_swept_ext looks paths up in). This scenario
+# re-derives the set from that table's SOURCE on every infra run and
 # asserts every derived member fires the gate (same derive-from-source idiom
 # as PG-DRIFT / PG-DRIFT-GUI above). This is ONE-DIRECTIONAL: it goes RED if
 # is_swept_ext gains an extension verify.sh's list lacks, but nothing here
@@ -982,10 +983,12 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* ---"
-_PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
-    | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
-# Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
-# fail loudly here rather than vacuously pass an empty loop.
+_PT_EXTS="$(sed -n '/^const SWEPT_EXTENSIONS/,/^];/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
+    | grep -o '("\.[a-z]*",' | sed 's/("\.\([a-z]*\)",/\1/' | sort -u)" || true
+# Non-empty FIRST: a renamed/reshaped SWEPT_EXTENSIONS or a broken sed range
+# must fail loudly here rather than vacuously pass an empty loop (`|| true`
+# above keeps an empty scrape from aborting the run under pipefail before
+# this assert can name it).
 assert "PT-DRIFT: derived swept-extension set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PT_EXTS"
 while IFS= read -r _pt_ext; do
