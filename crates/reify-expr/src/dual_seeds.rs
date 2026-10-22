@@ -105,7 +105,7 @@ impl Seeds {
     ///
     /// # Why `collect_value_refs` and not `expr.walk`
     ///
-    /// `walk` is allocation-free and sits right here in [`subtree_has_kink`],
+    /// `walk` is allocation-free and sits right here in [`Self::subtree_has_kink`],
     /// so reaching for it is the obvious optimisation — and it answers a
     /// DIFFERENT question.  On a `Lambda`, `collect_value_refs` reports the
     /// CAPTURES and does not descend into the body, while `walk` descends into
@@ -136,7 +136,7 @@ impl Seeds {
     /// subtree is sound for *tangents*, but it would also skip any kink inside
     /// it — and then "the record is empty" would mean "we did not look" rather
     /// than "there is no kink here", which is precisely the guarantee λ (#6679)
-    /// builds on.  [`node_is_kink`] therefore also claims the two node kinds
+    /// builds on.  `node_is_kink` therefore also claims the two node kinds
     /// whose interior is not in the tree at all (a user-function call's body, an
     /// arity-1 call a `__field__` cell may shadow with a lambda), so the fast
     /// path can never be the thing that swallowed a branch.

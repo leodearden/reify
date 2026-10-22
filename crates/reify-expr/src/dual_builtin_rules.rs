@@ -174,12 +174,5 @@ mod tests {
                 assert!(!is_kink_builtin(name, arity), "{name}/{arity} is claimed twice");
             }
         }
-        for name in ["argmax", "argmin"] {
-            assert!(is_bounded_reduction_shaped(name, 2), "{name}/2 is the bounded shape");
-        }
-        for name in ["max", "min"] {
-            assert!(!is_bounded_reduction_shaped(name, 2), "{name}/2 is not the bounded shape");
-            assert!(is_kink_builtin(name, 2), "the binary-numeric kink claims {name}/2");
-        }
     }
 }

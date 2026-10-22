@@ -28,7 +28,7 @@ use crate::non_differentiable::NonDifferentiable;
 /// skipped zero rebind would leave the shadowed binding's tangent live and
 /// fabricate a non-zero derivative.  "Is this cell bound?" is therefore a
 /// weaker question than "does it carry a tangent?", and only the former gates
-/// the [`DualEnv::carries_tangent`] fast path — erring towards descending.
+/// the `DualEnv::carries_tangent` fast path — erring towards descending.
 #[derive(Default)]
 pub struct DualEnv {
     bindings: HashMap<ValueCellId, Tangent>,
