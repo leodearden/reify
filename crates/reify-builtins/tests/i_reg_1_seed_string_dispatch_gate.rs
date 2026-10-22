@@ -148,18 +148,21 @@ use std::sync::OnceLock;
 
 // ── the ledger ──────────────────────────────────────────────────────────────
 
-/// A known, accepted string-dispatch site on a registered seed name.
+/// A known, accepted string-dispatch (file, name) pair on a registered name.
 struct LedgerEntry {
     /// Workspace-relative path, `/`-separated.
     file: &'static str,
-    /// The seed name dispatched on.
+    /// The registered name dispatched on.
     name: &'static str,
     /// The exact number of occurrences the scan finds for this (file, name).
     sites: usize,
-    /// Which leaf OWNS re-homing this site, and why α cannot.
+    /// Which leaf OWNS re-homing these sites, and why the registering leaf
+    /// cannot.
     why: &'static str,
 }
 
+const EXPR_LIB: &str = "crates/reify-expr/src/lib.rs";
+const EXPR_ANALYSIS: &str = "crates/reify-expr/src/analysis.rs";
 const RELATION_SIGNATURES: &str = "crates/reify-compiler/src/relation_signatures.rs";
 const CONSTRAINTS_RELATE_SOLVE: &str = "crates/reify-constraints/src/relate_solve.rs";
 const EVAL_RELATE_SOLVE: &str = "crates/reify-eval/src/relate_solve.rs";
@@ -169,6 +172,10 @@ const EVAL_GEOMETRY_OPS: &str = "crates/reify-eval/src/geometry_ops.rs";
 const EVAL_GEOMETRY_OPS_TESTS: &str = "crates/reify-eval/src/geometry_ops/tests.rs";
 const EVAL_REGISTRY_DRIFT_TESTS: &str = "crates/reify-eval/src/registry_drift_tests.rs";
 
+const WHY_FIELD_ARG_INTERCEPT: &str =
+    "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)";
+const WHY_REENTRANT_EVAL_CALL: &str =
+    "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)";
 const WHY_RELATION_VOCABULARY: &str =
     "relation vocabulary dispatch — S9 λ #8741 (RelationSig as a total fn over RelationKind)";
 const WHY_RESIDUAL_DISPATCH: &str =
@@ -184,7 +191,7 @@ const WHY_TOPOLOGY_SELECTOR_HELPER: &str =
 const WHY_OUT_OF_LINE_TEST_MODULE: &str = "out-of-line `#[cfg(test)]` module, not dispatch — the \
      scanner's cfg(test) mask is in-file only (ticket tkt_0RW1M0N2PGJKPYWNSHA35CJ5T5)";
 
-/// A ledger entry in the compact one-line form the S8-ψ residue uses.
+/// One [`SEED_STRING_DISPATCH_LEDGER`] entry, written as a single line.
 const fn ledgered(
     file: &'static str,
     name: &'static str,
@@ -214,7 +221,8 @@ const fn ledgered(
 /// churn. The cost is that moving a site WITHIN its file does not re-trigger
 /// review; the ledger is small enough to read in full whenever it changes.
 ///
-/// Skipped by rustfmt so each `ledgered(..)` entry stays one line per pair.
+/// Skipped by rustfmt so each `ledgered(..)` entry stays one line per pair;
+/// rustfmt's call-width heuristic would otherwise break most of them over five.
 #[rustfmt::skip]
 const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     // ── reify-expr's Field-valued interception arms ─────────────────────────
@@ -227,67 +235,27 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     // binding kind and its generated sub-enum, which is τ-fea/analysis work,
     // not α's. Deleting the arms to make this gate pass is NOT an option: it
     // would change Field-valued analysis behaviour outright.
-    LedgerEntry {
-        file: "crates/reify-expr/src/lib.rs",
-        name: "von_mises",
-        sites: 1,
-        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
-    },
-    LedgerEntry {
-        file: "crates/reify-expr/src/lib.rs",
-        name: "principal_stresses",
-        sites: 1,
-        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
-    },
-    LedgerEntry {
-        file: "crates/reify-expr/src/lib.rs",
-        name: "max_shear",
-        sites: 1,
-        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
-    },
-    LedgerEntry {
-        file: "crates/reify-expr/src/lib.rs",
-        name: "safety_factor",
-        sites: 1,
-        why: "Field-arg intercept — needs BindingKind::ExprIntercept (τ-fea/analysis)",
-    },
+    ledgered(EXPR_LIB, "von_mises", 1, WHY_FIELD_ARG_INTERCEPT),
+    ledgered(EXPR_LIB, "principal_stresses", 1, WHY_FIELD_ARG_INTERCEPT),
+    ledgered(EXPR_LIB, "max_shear", 1, WHY_FIELD_ARG_INTERCEPT),
+    ledgered(EXPR_LIB, "safety_factor", 1, WHY_FIELD_ARG_INTERCEPT),
     // ── reify-expr's re-entrant call back into eval ─────────────────────────
     //
     // `compute_safety_factor` evaluates the field's inner lambda down to a
     // concrete tensor and then re-enters `eval_builtin` BY NAME. The string
     // cannot go until `CompiledExpr` carries a `BuiltinId` instead of a `&str`,
     // which is explicitly leaf β (PRD §9).
-    LedgerEntry {
-        file: "crates/reify-expr/src/analysis.rs",
-        name: "safety_factor",
-        sites: 1,
-        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
-    },
+    ledgered(EXPR_ANALYSIS, "safety_factor", 1, WHY_REENTRANT_EVAL_CALL),
     // The other three arrive at `eval_builtin` ONE HOP LATER, through
     // `sample_unary_analysis_at_point(…, builtin_name: &str)`, which passes
     // the name straight through. Same root cause, same fix, same owning leaf:
     // once `CompiledExpr` carries a `BuiltinId`, the forwarder takes an id and
     // all four go together. Splitting them across leaves would misdirect the
     // leaf that has to do the work.
-    LedgerEntry {
-        file: "crates/reify-expr/src/analysis.rs",
-        name: "von_mises",
-        sites: 1,
-        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
-    },
-    LedgerEntry {
-        file: "crates/reify-expr/src/analysis.rs",
-        name: "principal_stresses",
-        sites: 1,
-        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
-    },
-    LedgerEntry {
-        file: "crates/reify-expr/src/analysis.rs",
-        name: "max_shear",
-        sites: 1,
-        why: "re-entrant eval_builtin call — needs CompiledExpr to carry BuiltinId (leaf β)",
-    },
-    // ── S8-ψ's Relation rows, registered before their consumers migrate ────
+    ledgered(EXPR_ANALYSIS, "von_mises", 1, WHY_REENTRANT_EVAL_CALL),
+    ledgered(EXPR_ANALYSIS, "principal_stresses", 1, WHY_REENTRANT_EVAL_CALL),
+    ledgered(EXPR_ANALYSIS, "max_shear", 1, WHY_REENTRANT_EVAL_CALL),
+    // ── the Relation rows' consumers, not yet migrated ──────────────────────
     //
     // The compiler's relation vocabulary: the name slice, the arity-gated resolver and
     // the per-name operand and ΔDOF tables. S9 λ retires them by reading every relation
@@ -370,10 +338,10 @@ fn registered_names() -> BTreeSet<String> {
 
 /// The workspace sweep, run ONCE per test binary.
 ///
-/// The three gate tests below all need the same sweep, and [`scan`] makes two
-/// full passes over every `crates/*/src/**/*.rs` (forwarder discovery, then
-/// classification), re-reading and re-lexing each file — so a per-test call
-/// meant six full-workspace sweeps per binary.
+/// The gate tests below that read the tree share one sweep, and [`scan`] makes
+/// two full passes over every `crates/*/src/**/*.rs` (forwarder discovery,
+/// then classification), re-reading and re-lexing each file — so a per-test
+/// call would cost two more full-workspace passes per test.
 ///
 /// Memoising is sound because BOTH of `scan`'s inputs are fixed for the whole
 /// binary: [`workspace_root`] is a constant path, and [`registered_names`] is derived
@@ -424,78 +392,48 @@ fn no_unledgered_seed_name_string_dispatch_outside_reify_builtins() {
     );
 }
 
-/// The ledger is a RATCHET, not a suppression list: every entry must name a
-/// site that still exists. A stale entry means the site was retired and the
-/// ledger should SHRINK — which is the whole point of counting the residue
-/// rather than hiding it.
+/// Each (file, name) pair has exactly ONE ledger entry, and every entry
+/// counts at least one site. Two entries for one pair would each be compared
+/// against the pair's total occurrence count, so the count check below would
+/// red on both or, with offsetting `sites`, on neither.
 #[test]
-fn every_ledger_entry_names_a_site_that_still_exists() {
-    let sites = workspace_sites();
-
-    let stale: Vec<String> = SEED_STRING_DISPATCH_LEDGER
-        .iter()
-        .filter(|e| !sites.iter().any(|s| s.file == e.file && s.name == e.name))
-        .map(|e| format!("  {} \u{2014} {:?} ({})", e.file, e.name, e.why))
-        .collect();
-
-    assert!(
-        stale.is_empty(),
-        "SEED_STRING_DISPATCH_LEDGER has {} stale entry/entries \u{2014} the \
-         site is gone, so the entry must go too:\n{}",
-        stale.len(),
-        stale.join("\n")
-    );
+fn every_ledger_entry_is_the_only_entry_for_its_pair_and_counts_a_site() {
+    let mut seen = BTreeSet::new();
+    for e in SEED_STRING_DISPATCH_LEDGER {
+        assert!(
+            seen.insert((e.file, e.name)),
+            "SEED_STRING_DISPATCH_LEDGER has two entries for ({}, {:?}) \u{2014} \
+             merge them into one entry whose `sites` is the pair's total",
+            e.file,
+            e.name
+        );
+        assert!(
+            e.sites > 0,
+            "SEED_STRING_DISPATCH_LEDGER entry ({}, {:?}) counts zero sites \u{2014} \
+             a retired pair is deleted, not zeroed",
+            e.file,
+            e.name
+        );
+    }
 }
 
-/// The scan itself must keep its teeth: if it silently stopped SEEING the
-/// sites the ledger accepts, it would report a clean workspace while the
-/// residue sat untouched.
+/// The ledger is a RATCHET, not a suppression list: each entry's `sites` must
+/// EQUAL the number of occurrences the scan finds for its (file, name) pair.
 ///
-/// # Two granularities, two assertions
+/// The primary gate above is keyed on the pair, so it accepts any number of
+/// occurrences of a ledgered pair. This check is the only place an added or
+/// removed occurrence surfaces, and the two directions are different defects
+/// with different fixes:
 ///
-/// The ledger models `(file, name)` PAIRS — deliberately de-lined, and
-/// [`is_ledgered`] keys on exactly that pair — each carrying the exact
-/// occurrence count `sites`. [`scan`] returns per-OCCURRENCE sites. A
-/// `sites.len() == LEDGER.len()` comparison would CONFLATE the ways the two
-/// can diverge, which are different defects with different fixes:
-///
-/// - a pair the scan no longer sees is a SCANNER regression — the gate goes
-///   quietly vacuous;
-/// - a pair that grew an occurrence is NEW RESIDUE, which the primary gate
-///   accepts silently precisely because `is_ledgered` is pair-keyed;
-/// - a pair that lost an occurrence is RETIRED residue, so its `sites` count
-///   must shrink.
-///
-/// So each is asserted on its own, with a message naming its own cause.
+/// - MORE occurrences than `sites` is NEW RESIDUE on an already-ledgered pair;
+/// - FEWER is either RETIRED residue, so the ledger must shrink, or a SCANNER
+///   regression that stopped seeing a site still in the tree, which would let
+///   the gate report a clean workspace over untouched residue. A pair found
+///   zero times is the limiting case of either.
 #[test]
-fn the_scan_still_finds_every_ledgered_site() {
-    let sites = workspace_sites();
-
-    // (a) Pair-level agreement — the granularity the ledger actually models.
-    let found: BTreeSet<(&str, &str)> = sites
-        .iter()
-        .map(|s| (s.file.as_str(), s.name.as_str()))
-        .collect();
-    let ledgered: BTreeSet<(&str, &str)> = SEED_STRING_DISPATCH_LEDGER
-        .iter()
-        .map(|e| (e.file, e.name))
-        .collect();
-    assert_eq!(
-        found, ledgered,
-        "the scan's (file, name) set must equal the ledger's. A pair MISSING \
-         from the scan is a scanner regression — the gate would report a clean \
-         workspace over untouched residue. An EXTRA pair is an unledgered \
-         site, reported with file/line/kind by \
-         no_unledgered_seed_name_string_dispatch_outside_reify_builtins.\n\n\
-         Sites found:\n{sites:#?}"
-    );
-
-    // (b) Occurrence-level: each ledgered pair's occurrence count must EQUAL
-    //     its `sites`. Nothing else in this file would notice a change — the
-    //     primary gate is pair-keyed by design, so this is the only place an
-    //     added or retired occurrence surfaces.
+fn every_ledger_entry_counts_its_pairs_occurrences_exactly() {
     let mut by_pair: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
-    for site in sites {
+    for site in workspace_sites() {
         by_pair
             .entry((site.file.as_str(), site.name.as_str()))
             .or_default()
@@ -506,11 +444,12 @@ fn the_scan_still_finds_every_ledgered_site() {
     for e in SEED_STRING_DISPATCH_LEDGER {
         let lines = by_pair.get(&(e.file, e.name)).cloned().unwrap_or_default();
         let line = format!(
-            "  {} \u{2014} {:?}: expected {}, found {} at lines {lines:?}",
+            "  {} \u{2014} {:?}: expected {}, found {} at lines {lines:?} ({})",
             e.file,
             e.name,
             e.sites,
-            lines.len()
+            lines.len(),
+            e.why
         );
         if lines.len() > e.sites {
             grew.push(line);
@@ -521,19 +460,20 @@ fn the_scan_still_finds_every_ledgered_site() {
     assert!(
         grew.is_empty(),
         "{} already-ledgered (file, name) pair(s) grew an ADDITIONAL dispatch \
-         site \u{2014} new residue, not a scanner regression. The primary gate \
-         accepts these silently because the ledger is keyed on (file, name), \
-         so they are named here instead: re-home them onto `BuiltinId`, or \
-         raise the entry's `sites` and widen its WHY so the addition is \
-         reviewed.\n{}",
+         site \u{2014} new residue. The primary gate accepts these silently \
+         because the ledger is keyed on (file, name), so they are named here \
+         instead: re-home them onto `BuiltinId`, or raise the entry's `sites` \
+         and widen its WHY so the addition is reviewed.\n{}",
         grew.len(),
         grew.join("\n")
     );
     assert!(
         shrank.is_empty(),
         "{} ledgered (file, name) pair(s) have FEWER occurrences than their \
-         `sites` count \u{2014} residue was retired, so the ledger must shrink: \
-         lower `sites`, or delete the entry once it reaches zero.\n{}",
+         `sites` count. If the residue was retired, the ledger must shrink: \
+         lower `sites`, or delete the entry once nothing is left. If the sites \
+         are still in the file, the scanner has stopped seeing them, and that \
+         regression is what must be fixed.\n{}",
         shrank.len(),
         shrank.join("\n")
     );
