@@ -317,10 +317,11 @@ pub fn compute_diagnostics_with_state(
         // Observability: if the hash *did* match but the engine was uninitialized,
         // that is the specific invariant violation the engine-init guard (above) was
         // added to catch — last_content_hash was set without a preceding eval().
-        // Log a warning in debug builds so the decoupling is not silent. We cannot
-        // use debug_assert! here because the graceful-handling test intentionally
-        // constructs this state to verify the cold-start branch is taken; the right
-        // response is to handle it correctly (which we do below) and warn.
+        // Log a warning in debug builds so the decoupling is not silent. Not a
+        // debug_assert!: the state is reachable, if only through a panic inside
+        // eval after the engine replacement below followed by the server's Mutex
+        // poison recovery, and the right response is to handle it correctly
+        // (which we do below) and warn.
         #[cfg(debug_assertions)]
         if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
         {
@@ -460,7 +461,12 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    diagnostics.extend(fea_not_evaluated_hints(&state.engine, &compiled, &check_result, source));
+    diagnostics.extend(fea_not_evaluated_hints(
+        &state.engine,
+        &compiled,
+        &check_result,
+        source,
+    ));
     diagnostics.extend(freshness_diagnostics(&state.engine, &compiled, source));
 
     // Record the content hash so the next call can choose incremental vs cold-start.
@@ -1342,44 +1348,11 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             );
 
             // --- Stateful surface: compute_diagnostics_with_state (live server) ---
-            //
-            // Snapshot `EvalState` first: the guard's placement BEFORE the state
-            // mutations is load-bearing, and nothing else pins it. If a refactor
-            // moved `state.version_counter += 1` or the `last_content_hash`
-            // assignment above the guard, this test would still be green on
-            // `result.diagnostics` alone while the SECOND request on the same
-            // unchanged document took the `content_unchanged` branch into
-            // `eval_cached` — which returns empty diagnostics by construction —
-            // and silently reported no eval diagnostics for a module that was
-            // never evaluated at all.
-            let mut state = EvalState::new();
-            let hash_before = state.last_content_hash;
-            let version_before = state.version_counter;
-            let initialized_before = state.is_engine_initialized();
-
-            let result = compute_diagnostics_with_state(&mut state, src, &test_uri());
-
-            assert_eq!(
-                state.last_content_hash, hash_before,
-                "containment ({shape}): a guard-suppressed request must leave \
-                 `last_content_hash` UNADVANCED, so the next request on the same \
-                 document takes the cold-start branch rather than `eval_cached` \
-                 (which returns empty diagnostics by construction). Advancing it \
-                 here is the stale-cache bug the guard's placement prevents."
-            );
-            assert_eq!(
-                state.version_counter, version_before,
-                "containment ({shape}): a guard-suppressed request evaluated nothing, so \
-                 it must not burn a version. A bumped counter means the guard drifted \
-                 BELOW `state.version_counter += 1`."
-            );
-            assert_eq!(
-                state.is_engine_initialized(),
-                initialized_before,
-                "containment ({shape}): a guard-suppressed request must leave the engine \
-                 UNINITIALIZED — it never fed it a snapshot. An initialized engine \
-                 here means the guard drifted below the eval call it exists to \
-                 skip, i.e. the panic it contains is reachable again."
+            let result = compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri());
+            assert!(
+                result.check_result.is_none(),
+                "containment ({shape}): a guard-suppressed request evaluated nothing, \
+                 so it must carry no CheckResult"
             );
 
             assert!(
@@ -1610,12 +1583,6 @@ structure S {
     // --- compute_diagnostics_with_state unit tests (step-25) ---
 
     #[test]
-    fn eval_state_new_starts_with_version_counter_zero() {
-        let state = EvalState::new();
-        assert_eq!(state.version_counter, 0);
-    }
-
-    #[test]
     fn stateful_diagnostics_three_phase_lifecycle() {
         let mut state = EvalState::new();
         let uri = test_uri();
@@ -1665,11 +1632,110 @@ structure S {
             errors3.is_empty(),
             "Phase 3: valid source should clear violations, got: {errors3:?}"
         );
+    }
 
-        // Verify version_counter persistence: 3 calls = version_counter 3
+    /// The constraint-violation ERRORs of one result, as sorted
+    /// `(start, end, message)` triples, so two results can be compared
+    /// independently of emission order.
+    fn violation_errors(
+        result: &DiagnosticsResult,
+    ) -> Vec<(lsp_types::Position, lsp_types::Position, String)> {
+        let mut errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .map(|d| (d.range.start, d.range.end, d.message.clone()))
+            .collect();
+        errors.sort();
+        errors
+    }
+
+    /// The constraint outcomes of one evaluated result, as
+    /// `(constraint id, satisfaction)` pairs sorted by id.
+    fn constraint_outcomes(result: &DiagnosticsResult) -> Vec<(String, Satisfaction)> {
+        let mut outcomes: Vec<_> = result
+            .check_result
+            .as_ref()
+            .expect("an evaluated document must carry its CheckResult")
+            .constraint_results
+            .iter()
+            .map(|e| (e.id.to_string(), e.satisfaction))
+            .collect();
+        outcomes.sort_by(|a, b| a.0.cmp(&b.0));
+        outcomes
+    }
+
+    /// One `EvalState` serves a sequence of edits, and each call reports the
+    /// results of the content it was given: the first call on a fresh state,
+    /// an unchanged repeat (the warm leg), and a changed edit after a warm
+    /// call all agree with what that content reports on its own.
+    ///
+    /// Replaces the bookkeeping pins on `EvalState`'s private counters (the
+    /// version counter starting at zero and counting calls, the content hash
+    /// changing on an edit, the cache entry's basis version on a repeat) with
+    /// the behaviour they stood in for, observed on `DiagnosticsResult` only.
+    #[test]
+    fn one_state_serves_each_edit_its_own_results() {
+        let uri = test_uri();
+        let violating = reify_test_support::bracket_source_violating();
+        let valid = reify_test_support::bracket_source();
+
+        let mut state = EvalState::new();
+        let results: Vec<DiagnosticsResult> = [
+            violating.as_str(),
+            violating.as_str(),
+            valid,
+            valid,
+            violating.as_str(),
+        ]
+        .into_iter()
+        .map(|source| compute_diagnostics_with_state(&mut state, source, &uri))
+        .collect();
+        let violations: Vec<_> = results.iter().map(violation_errors).collect();
+        let outcomes: Vec<_> = results.iter().map(constraint_outcomes).collect();
+        let violated_count = |i: usize| {
+            outcomes[i]
+                .iter()
+                .filter(|(_, s)| *s == Satisfaction::Violated)
+                .count()
+        };
+
+        assert!(
+            !violations[0].is_empty() && violated_count(0) >= 1,
+            "call 1 (violating, fresh state) must report a violation; got \
+             diagnostics: {:#?}",
+            results[0].diagnostics
+        );
         assert_eq!(
-            state.version_counter, 3,
-            "version_counter should be 3 after three calls"
+            (&violations[1], &outcomes[1]),
+            (&violations[0], &outcomes[0]),
+            "call 2 (violating, unchanged) must report what call 1 reported"
+        );
+        let errors_on_valid: Vec<_> = results[2]
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors_on_valid.is_empty() && violated_count(2) == 0,
+            "call 3 (valid, changed) must report no ERROR and no Violated \
+             outcome; got errors: {errors_on_valid:#?}, outcomes: {:#?}",
+            outcomes[2]
+        );
+        assert_eq!(
+            (&violations[3], &outcomes[3]),
+            (&violations[2], &outcomes[2]),
+            "call 4 (valid, unchanged) must report what call 3 reported"
+        );
+        assert_eq!(
+            (&violations[4], &outcomes[4]),
+            (&violations[0], &outcomes[0]),
+            "call 5 (violating, changed after a warm call) must report the \
+             violating content's own results, not the previous version's"
         );
     }
 
@@ -1800,9 +1866,11 @@ structure S {
         let stateful =
             compute_diagnostics_with_state(&mut EvalState::new(), &violating, &uri).diagnostics;
         assert!(
-            stateful.iter().any(|d| d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("violated")
-                && d.range != lsp_types::Range::default()),
+            stateful
+                .iter()
+                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("violated")
+                    && d.range != lsp_types::Range::default()),
             "anti-vacuity: the violating fixture must carry a span-aware violation; \
              got: {stateful:#?}"
         );
@@ -1852,7 +1920,8 @@ structure S {
 
     #[test]
     fn check_result_is_none_when_parse_errors_stop_the_pipeline() {
-        let result = compute_diagnostics_with_state(&mut EvalState::new(), "structure {", &test_uri());
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), "structure {", &test_uri());
         assert!(
             !result.diagnostics.is_empty(),
             "anti-vacuity: the source must still fail to parse"
@@ -1946,56 +2015,6 @@ structure S {
         );
     }
 
-    // --- step-5: cold-start fallback regression lock ---
-
-    #[test]
-    fn structural_change_detects_violations_and_updates_content_hash() {
-        let uri = test_uri();
-
-        // (1) First call with valid source — no ERROR diagnostics
-        let mut state = EvalState::new();
-        let source_valid = reify_test_support::bracket_source();
-        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
-        let errors1: Vec<_> = result1
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors1.is_empty(),
-            "Phase 1: valid source should produce no errors, got: {errors1:?}"
-        );
-        let hash_after_valid = state.last_content_hash();
-
-        // (2) Second call with violating source (different content_hash) — at least one ERROR
-        let source_violating = reify_test_support::bracket_source_violating();
-        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
-        let errors2: Vec<_> = result2
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.to_lowercase().contains("constraint")
-                    && d.message.to_lowercase().contains("violated")
-            })
-            .collect();
-        assert!(
-            !errors2.is_empty(),
-            "Phase 2: violating source should produce at least one constraint violation ERROR"
-        );
-
-        // (3) The content hash in state must have changed — an LSP-layer invariant.
-        //     Whether cold-start or eval_cached was used internally is an engine-level
-        //     detail; diagnostic correctness (assertions 1 and 2) is the behavioral
-        //     contract. This assertion locks the state-management invariant that
-        //     last_content_hash() always reflects the most recently evaluated source.
-        assert_ne!(
-            hash_after_valid,
-            state.last_content_hash(),
-            "last_content_hash must update when source changes"
-        );
-    }
-
     // --- step-1 (task-2236): eval_diagnostics_surfaced_in_stateful_pipeline ---
 
     /// Eval-time diagnostics (e.g. circular let-binding) must appear in the LSP result.
@@ -2030,47 +2049,13 @@ structure S {
         );
     }
 
-    /// Invariant: an uninitialized engine must take the cold-start eval() branch,
-    /// even when `last_content_hash` already matches the compiled module's hash.
-    ///
-    /// This guards against a future decoupling of EvalState's `last_content_hash`
-    /// and engine-initialization state: if `last_content_hash` is set without
-    /// initializing the engine (e.g. by a new code path), `eval_cached()` would
-    /// silently return empty diagnostics — dropping eval-time errors. The
-    /// `content_unchanged` predicate must AND in `is_engine_initialized()` to
-    /// guarantee the cold-start branch runs whenever the engine is not ready.
-    #[test]
-    fn cold_start_branch_taken_when_engine_uninitialized_with_matching_hash() {
-        let mut state = EvalState::new();
-        let uri = test_uri();
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+    /// Cyclic let-bindings: `a` depends on `b` and `b` depends on `a`, which
+    /// only the engine detects, so every report of it is an eval diagnostic.
+    const CIRCULAR_LET_SRC: &str = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
 
-        // Pre-compile to obtain the content_hash for this exact source.
-        // Must use compile_like_production + ModulePath::single("test") to
-        // match what compute_diagnostics_with_state derives from
-        // "file:///test.ri" — compile_like_production is what production
-        // actually calls.
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-
-        // Inject a matching hash while leaving the engine uninitialized.
-        // (private-field write from child mod — same pattern as the
-        //  state.version_counter assertion at line 330)
-        state.last_content_hash = Some(compiled.content_hash);
-
-        // Sanity: engine must not be initialized — this is the precondition
-        // for the bug we are guarding against.
-        assert!(
-            !state.is_engine_initialized(),
-            "engine must be uninitialized after EvalState::new() + hash injection"
-        );
-
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-
-        // The cold-start eval() branch must run and surface the circular error.
-        // On buggy code (before the fix): content_unchanged=true → eval_cached()
-        // → empty diagnostics → this assertion fails.
-        let circular_errors: Vec<_> = result
+    /// The sorted messages of one result's circular let-binding ERRORs.
+    fn circular_let_errors(result: &DiagnosticsResult) -> Vec<String> {
+        let mut errors: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
@@ -2078,160 +2063,160 @@ structure S {
                     && d.message.contains("circular let-binding dependency")
                     && d.message.contains("in template S")
             })
+            .map(|d| d.message.clone())
             .collect();
-        assert!(
-            !circular_errors.is_empty(),
-            "cold-start branch must be taken when engine is uninitialized, \
-             surfacing the circular let-binding diagnostic; \
-             got diagnostics: {:?}",
-            result.diagnostics
-        );
+        errors.sort();
+        errors
     }
 
-    /// The pipeline REPORTS its server-log lines by RETURNING them, so it
-    /// stays a pure function of its inputs and one module (`server.rs`)
-    /// owns the transport (task #6329).
+    /// A version the eval guard skips leaves the versions around it alone:
+    /// an evaluated document after a skip, before a skip, or after a skip of a
+    /// previously evaluated state still reports its own eval diagnostics and
+    /// constraint outcomes, and a repeated skip is still a skip.
     ///
-    /// Reuses `cold_start_branch_taken_when_engine_uninitialized_with_matching_hash`'s
-    /// trigger exactly — inject `last_content_hash` while the engine is
-    /// still uninitialized — so the engine-init guard fires deterministically
-    /// from a state the suite already knows how to build, and so a future
-    /// change to the guard's precondition breaks both tests together rather
-    /// than silently making this one vacuous.
-    ///
-    /// `#[cfg(debug_assertions)]`-GATED, matching the guard itself. Tests
-    /// run in debug by default so it is live in the merge gate; under a
-    /// release-profile run the whole test disappears, and that absence is a
-    /// gate on the guard's own gating, not a silent hole.
-    #[cfg(debug_assertions)]
+    /// Replaces the pin that snapshotted `EvalState`'s private hash, version
+    /// counter and initialized flag around one skipped call, with the
+    /// behaviour that snapshot stood in for, observed on `DiagnosticsResult`
+    /// only. Each skip fixture runs behind its own anti-vacuity guard.
     #[test]
-    fn engine_init_guard_warning_is_returned_not_written_to_stderr() {
-        let mut state = EvalState::new();
+    fn skipped_version_does_not_disturb_neighbouring_versions() {
         let uri = test_uri();
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+        let fixtures: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
 
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-        state.last_content_hash = Some(compiled.content_hash);
-        assert!(
-            !state.is_engine_initialized(),
-            "engine must be uninitialized after EvalState::new() + hash injection"
-        );
+        for (shape, skip_src, assert_fixture_is_newly_reachable) in fixtures {
+            assert_fixture_is_newly_reachable();
 
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+            let assert_skipped = |step: &str, result: &DiagnosticsResult| {
+                assert!(
+                    result.check_result.is_none(),
+                    "({shape}, {step}): a skipped version must carry no CheckResult"
+                );
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.code == no_candidate_code),
+                    "({shape}, {step}): a skipped version must still report its \
+                     compile-stage AutoTypeParamNoCandidate error; got: {:#?}",
+                    result.diagnostics
+                );
+            };
+            let assert_evaluated = |step: &str, result: &DiagnosticsResult| {
+                let errors = circular_let_errors(result);
+                assert!(
+                    !errors.is_empty(),
+                    "({shape}, {step}): the evaluated version must report its \
+                     circular let-binding ERROR; got: {:#?}",
+                    result.diagnostics
+                );
+                assert!(
+                    result.check_result.is_some(),
+                    "({shape}, {step}): the evaluated version must carry its CheckResult"
+                );
+                errors
+            };
 
-        let guard_lines: Vec<_> = result
-            .log_messages
-            .iter()
-            .filter(|line| line.message.contains("engine-init guard"))
-            .collect();
-        assert_eq!(
-            guard_lines.len(),
-            1,
-            "expected the engine-init guard's warning to be RETURNED in \
-             DiagnosticsResult.log_messages for the caller to route, rather than written to \
-             stderr by the pipeline itself; got log_messages: {:?}",
-            result
-                .log_messages
-                .iter()
-                .map(|line| (line.typ, line.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            guard_lines[0].typ,
-            lsp_types::MessageType::WARNING,
-            "the engine-init guard reports a recoverable internal inconsistency (cold-start is \
-             forced, no diagnostics are lost), so WARNING — not ERROR"
-        );
+            let mut state = EvalState::new();
+            assert_skipped(
+                "skip on a fresh state",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+            assert_evaluated(
+                "eval after a skip",
+                &compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri),
+            );
+
+            let mut state = EvalState::new();
+            let before = assert_evaluated(
+                "eval before a skip",
+                &compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri),
+            );
+            assert_skipped(
+                "skip after an eval",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+            let after = assert_evaluated(
+                "the same eval after the skip",
+                &compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri),
+            );
+            assert_eq!(
+                after, before,
+                "({shape}): the same content must report the same eval diagnostics \
+                 on either side of a skipped version"
+            );
+
+            let mut state = EvalState::new();
+            assert_skipped(
+                "skip on a fresh state",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+            assert_skipped(
+                "the same skip again",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+        }
     }
 
-    /// Canary: `eval_cached()` currently returns empty diagnostics by construction
-    /// (engine_eval.rs:1183 — `let diagnostics = Vec::new()` is never appended to).
+    /// Eval-time diagnostics are reported on the first call on a fresh state
+    /// and again on an unchanged repeat: both calls report the circular
+    /// let-binding ERROR and a CheckResult, report the same set of those
+    /// ERRORs, and return no log line.
     ///
-    /// This test asserts *current* behavior so it fails loudly the moment
-    /// `eval_cached` starts emitting diagnostics — that failure is the expected
-    /// signal to update the assertion (flip `is_empty()` → `!is_empty()`).
-    /// An `#[ignore]`'d future-state test would bitrot silently; a canary that
-    /// asserts today's behavior forces maintainer attention at the right time.
+    /// Replaces two pins that wrote a matching `last_content_hash` into a
+    /// fresh `EvalState` to force the engine-init guard's precondition (hash
+    /// matches, engine uninitialized), then asserted that the cold-start
+    /// branch ran and that the guard's warning came back in `log_messages`.
+    /// Recorded limitation: that precondition is not constructible through
+    /// the public API. It arises only from a panic inside eval after the
+    /// cold-start engine replacement, followed by the server's Mutex poison
+    /// recovery. So the guard's `&& is_engine_initialized()` conjunct and its
+    /// log line are pinned here on their reachable arms only: on every
+    /// publicly reachable call sequence the guard stays quiet.
     #[test]
-    fn eval_cached_path_surfaces_circular_let_binding_when_fixed() {
-        let mut state = EvalState::new();
+    fn eval_diagnostics_reported_on_first_and_repeat_calls() {
         let uri = test_uri();
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
-
-        // First call: cold-start eval() — must surface the circular let-binding diagnostic.
-        let result1 = compute_diagnostics_with_state(&mut state, source, &uri);
-        let has_circular_on_cold_start = result1.diagnostics.iter().any(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("circular let-binding dependency")
-                && d.message.contains("in template S")
-        });
-        assert!(
-            has_circular_on_cold_start,
-            "cold-start call must surface circular let-binding diagnostic; got: {:?}",
-            result1.diagnostics
-        );
-
-        // Second call: same source → content_unchanged=true → eval_cached path.
-        // eval_cached() now emits cycle diagnostics (task 2259 fixed the immutable
-        // `let diagnostics = Vec::new()` and inserted per-template cycle detection).
-        let result2 = compute_diagnostics_with_state(&mut state, source, &uri);
-        let circular_on_cached_path: Vec<_> = result2
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-            .collect();
-        assert!(
-            !circular_on_cached_path.is_empty(),
-            "eval_cached() must surface the circular let-binding diagnostic on cached path; \
-             got: {:?}",
-            result2.diagnostics,
-        );
-    }
-
-    // --- step-3: eval_cached path via basis_version ---
-
-    #[test]
-    fn incremental_path_uses_eval_cached_when_content_unchanged() {
-        use reify_eval::cache::NodeId;
-        use reify_core::ValueCellId;
-
-        let uri = test_uri();
-        let source = reify_test_support::bracket_source();
-
-        // (1) First call: cold-start
         let mut state = EvalState::new();
-        compute_diagnostics_with_state(&mut state, source, &uri);
-        assert_eq!(
-            state.version_counter, 1,
-            "version_counter should be 1 after first call"
-        );
+        let first = compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri);
+        let repeat = compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri);
 
-        // (2) Second call with identical source: should use eval_cached path
-        compute_diagnostics_with_state(&mut state, source, &uri);
+        for (call, result) in [("first", &first), ("repeat", &repeat)] {
+            assert!(
+                !circular_let_errors(result).is_empty(),
+                "{call} call must report the circular let-binding ERROR; got: {:#?}",
+                result.diagnostics
+            );
+            assert!(
+                result.check_result.is_some(),
+                "{call} call evaluated the document, so it must carry its CheckResult"
+            );
+            assert!(
+                result.log_messages.is_empty(),
+                "{call} call must return no log line; got: {:?}",
+                result
+                    .log_messages
+                    .iter()
+                    .map(|line| (line.typ, line.message.as_str()))
+                    .collect::<Vec<_>>()
+            );
+        }
         assert_eq!(
-            state.version_counter, 2,
-            "version_counter should be 2 after second call"
-        );
-
-        // (3) Inspect cache: basis_version of Bracket.width should be > 0
-        //     eval_cached passes VersionId(state.version_counter) which is VersionId(2) at call time
-        //     (counter is incremented to 2 before eval_cached is called).
-        //     A cold-start would reset the engine to a fresh state with basis_version=0.
-        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
-        let entry = state
-            .engine
-            .cache_store()
-            .get(&node)
-            .expect("Bracket.width cache entry must exist after eval");
-        assert!(
-            entry.basis_version.0 > 0,
-            "eval_cached path should bump basis_version > 0; cold-start path would reset to 0, got {}",
-            entry.basis_version.0
+            circular_let_errors(&repeat),
+            circular_let_errors(&first),
+            "an unchanged repeat must report the same eval diagnostics as the first call"
         );
     }
 
@@ -3829,8 +3814,7 @@ structure S {
             }
         }
 
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
         let mut engine = reify_eval::Engine::new(
             reify_eval::SolverPosture::SolverFree,
@@ -3842,9 +3826,9 @@ structure S {
         // Positive control: the same engine and module, target still
         // unregistered, DO produce hints — so the empty result below is the
         // registration's doing, not a fixture that never hints.
-        let unregistered_check_result = engine.check_snapshot(&compiled).expect(
-            "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval",
-        );
+        let unregistered_check_result = engine
+            .check_snapshot(&compiled)
+            .expect("the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval");
         assert!(
             !fea_not_evaluated_hints(
                 &engine,
