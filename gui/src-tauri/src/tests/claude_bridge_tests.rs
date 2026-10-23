@@ -532,7 +532,7 @@ async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
 
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
-    let _handle = SidecarHandle::from_parts_with_mcp(
+    let _handle = SidecarHandle::from_parts_with_events(
         stdin_writer,
         reader,
         state,
@@ -613,7 +613,7 @@ async fn reify_debug_mcp_tool_call_round_trips_through_bridge() {
 
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
-    let _handle = SidecarHandle::from_parts_with_mcp(
+    let _handle = SidecarHandle::from_parts_with_events(
         stdin_writer,
         reader,
         state,
@@ -745,7 +745,7 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
 
     // Poll under timeout: the spawned reader task must notice EOF and set Crashed.
     // A fixed yield count is flaky on loaded CI runners — same race as the wiring
-    // test (`from_parts_with_mcp_emits_sidecar_crashed_on_eof`) below.
+    // test (`from_parts_with_events_emits_sidecar_crashed_on_eof`) below.
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
@@ -758,14 +758,14 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
     .expect("Timed out waiting for SidecarState::Crashed after EOF");
 }
 
-// Wiring test: from_parts_with_mcp → EOF → on_sidecar_exit → emitter
+// Wiring test: from_parts_with_events → EOF → on_sidecar_exit → emitter
 //
 // The three on_sidecar_exit_* unit tests verify the helper in isolation.
 // This test pins the production wiring so that a future refactor that forgets
 // to clone one of the three Arcs (state_for_crash, notify_for_crash,
 // event_emitter_for_exit) into the on_exit closure would be caught here.
 #[tokio::test]
-async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
+async fn from_parts_with_events_emits_sidecar_crashed_on_eof() {
     use std::sync::Arc;
     use tokio::io::BufReader;
 
@@ -778,7 +778,7 @@ async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
     let reader = BufReader::new(data_reader);
     let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
 
-    let handle = SidecarHandle::from_parts_with_mcp(
+    let handle = SidecarHandle::from_parts_with_events(
         stdin_writer,
         reader,
         state,
