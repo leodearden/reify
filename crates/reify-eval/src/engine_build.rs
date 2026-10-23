@@ -11619,13 +11619,12 @@ impl Engine {
     /// material.density`) — but a geometry-query leaf can't resolve without a
     /// kernel there, so the cell folds to `Value::Undef`.
     ///
-    /// This pass re-attempts that fold with kernel access. For each
-    /// non-collection sub-component, for each of the child template's OWN
-    /// value cells that is still `Undef` at its scoped id, this takes the
-    /// child cell's `default_expr` and rescopes every `ValueRef` (via
-    /// [`reify_ir::CompiledExpr::map_value_refs`]) whose entity is the child
-    /// template's own name to the sub-instance's scoped entity, then
-    /// dispatches the rescoped expression exactly like the per-DEF fold
+    /// This pass re-attempts that fold with kernel access. For each direct
+    /// sub instance ([`crate::sub_instance_scope`] owns the enumeration and
+    /// the rescoping rule), for each of the child template's OWN value cells
+    /// that is still `Undef` at its scoped id, this rescopes the child cell's
+    /// `default_expr` onto the instance, then dispatches the rescoped
+    /// expression exactly like the per-DEF fold
     /// ([`crate::geometry_ops::try_eval_geometry_query`]):
     ///
     ///   - A rescoped geometry-query leaf's arg (e.g.
@@ -11663,42 +11662,18 @@ impl Engine {
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for sub in &template.sub_components {
-            // Collection subs have no single scoped entity to fold into (each
-            // element would need its own indexed scope); out of scope here,
-            // mirroring `seed_cross_sub_named_steps`'s no-collection-subs
-            // contract.
-            if sub.is_collection {
-                continue;
-            }
-            let Some(child_template) =
-                reify_compiler::find_template(templates, &sub.structure_name)
-            else {
-                continue;
-            };
-            let scoped_entity = format!("{}.{}", template.name, sub.name);
-            let child_entity = child_template.name.as_str();
-
-            for child_cell in &child_template.value_cells {
+        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+            for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
                 };
-                let scoped_id = reify_core::ValueCellId::new(
-                    scoped_entity.clone(),
-                    child_cell.id.member.as_str(),
-                );
+                let scoped_id = instance.scoped_id(&child_cell.id.member);
                 if values.get(&scoped_id).is_some_and(|v| !v.is_undef()) {
                     // Already folded (e.g. a Param cell populated by
                     // `elaborate_child_params_only`) — nothing to do.
                     continue;
                 }
-                let rescoped = default_expr.clone().map_value_refs(&mut |id| {
-                    if id.entity == child_entity {
-                        reify_core::ValueCellId::new(scoped_entity.clone(), id.member)
-                    } else {
-                        id
-                    }
-                });
+                let rescoped = instance.rescope(default_expr);
                 // Skip CrossSubGeometryRef expressions — same guard as
                 // `post_process_derived_lets`; that variant `unreachable!()`s in
                 // `reify_expr::eval_expr` outside a bare-let top level.

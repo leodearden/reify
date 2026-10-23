@@ -1,3 +1,64 @@
+//! Template → sub-instance rescoping for the build-phase post-processes. A
+//! template's direct, non-collection `sub` declarations are each seen as the
+//! instance entity `"<parent>.<sub>"` that their scoped value cells live
+//! under, and a child template's own `ValueRef`s are rewritten onto it. The
+//! scope is one level deep. Collection subs are excluded because they have
+//! no single scoped entity.
+
+use reify_compiler::TopologyTemplate;
+use reify_core::ValueCellId;
+use reify_ir::CompiledExpr;
+
+/// One direct, non-collection sub-component of a parent template, paired with
+/// the child template it instantiates.
+pub(crate) struct SubInstance<'t> {
+    scoped_entity: String,
+    child_template: &'t TopologyTemplate,
+}
+
+/// The direct non-collection subs of `template` whose child template is in
+/// `templates`, in declaration order.
+pub(crate) fn direct_sub_instances<'t>(
+    template: &'t TopologyTemplate,
+    templates: &'t [TopologyTemplate],
+) -> impl Iterator<Item = SubInstance<'t>> {
+    template
+        .sub_components
+        .iter()
+        .filter(|sub| !sub.is_collection)
+        .filter_map(move |sub| {
+            let child_template = reify_compiler::find_template(templates, &sub.structure_name)?;
+            Some(SubInstance {
+                scoped_entity: format!("{}.{}", template.name, sub.name),
+                child_template,
+            })
+        })
+}
+
+impl<'t> SubInstance<'t> {
+    pub(crate) fn child_template(&self) -> &'t TopologyTemplate {
+        self.child_template
+    }
+
+    /// The id of this instance's copy of the child cell `member`.
+    pub(crate) fn scoped_id(&self, member: &str) -> ValueCellId {
+        ValueCellId::new(self.scoped_entity.as_str(), member)
+    }
+
+    /// `expr` with every `ValueRef` into the child template moved onto this
+    /// instance's scoped entity. Refs into any other entity are unchanged.
+    pub(crate) fn rescope(&self, expr: &CompiledExpr) -> CompiledExpr {
+        let child_entity = self.child_template.name.as_str();
+        expr.clone().map_value_refs(&mut |id| {
+            if id.entity == child_entity {
+                ValueCellId::new(self.scoped_entity.as_str(), id.member)
+            } else {
+                id
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
