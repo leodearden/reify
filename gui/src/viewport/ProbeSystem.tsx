@@ -12,7 +12,7 @@
  *   refreshMarkers() — reconcile markers with the store: restyle, move live ones onto the current surface
  *   dispose() — tear down all markers and resources
  *
- * <ProbePopup store={store} onRemove={fn} onRepin={fn} /> — thin SolidJS panel.
+ * <ProbePopup store={store} onRemove={fn} onRepin?={fn} /> — thin SolidJS panel.
  */
 import { For, Show } from 'solid-js';
 import { Raycaster, SphereGeometry, MeshBasicMaterial, Mesh, Vector2 } from 'three';
@@ -250,7 +250,8 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
 export interface ProbePopupProps {
   store: ProbeStore;
   onRemove: (id: string) => void;
-  onRepin: (id: string) => void;
+  /** Re-anchors a stale probe; without it a stale row offers only removal. */
+  onRepin?: (id: string) => void;
 }
 
 function formatVec(v: [number, number, number]): string {
@@ -289,14 +290,16 @@ export function ProbePopup(props: ProbePopupProps) {
                 </span>
               </Show>
             </Show>
-            <Show when={probe.stale}>
-              <button
-                class="probe-repin-btn"
-                data-testid="probe-repin"
-                onClick={() => props.onRepin(probe.id)}
-              >
-                Re-pin
-              </button>
+            <Show when={probe.stale && props.onRepin}>
+              {(onRepin) => (
+                <button
+                  class="probe-repin-btn"
+                  data-testid="probe-repin"
+                  onClick={() => onRepin()(probe.id)}
+                >
+                  Re-pin
+                </button>
+              )}
             </Show>
             <button
               class="probe-remove-btn"

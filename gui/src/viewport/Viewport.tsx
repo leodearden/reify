@@ -651,11 +651,7 @@ export function Viewport(props: ViewportProps) {
                 'font-size': '12px',
               }}
             >
-              <ProbePopup
-                store={session().store}
-                onRemove={(id) => session().system.removeProbe(id)}
-                onRepin={(id) => session().system.removeProbe(id)}
-              />
+              <ProbePopup store={session().store} onRemove={(id) => session().system.removeProbe(id)} />
             </div>
           </Show>
         )}

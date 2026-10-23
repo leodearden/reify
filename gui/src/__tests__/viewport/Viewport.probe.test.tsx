@@ -322,7 +322,7 @@ describe('probes follow re-evaluation', () => {
     expect(text).not.toMatch(VALUE_300);
   });
 
-  it('(b) losing the entity marks the probe stale; Re-pin drops it', () => {
+  it('(b) losing the entity marks the probe stale; with no re-anchor wired it offers only removal', () => {
     const setMeshes = renderWithMeshSignal();
     const marker = placeProbe();
 
@@ -331,8 +331,9 @@ describe('probes follow re-evaluation', () => {
     const row = screen.getByTestId('probe-row');
     expect(row.classList.contains('probe-stale')).toBe(true);
     expect(row.textContent).toMatch(VALUE_300);
+    expect(screen.queryByTestId('probe-repin')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('probe-repin'));
+    fireEvent.click(screen.getByTestId('probe-remove'));
 
     expect(screen.queryByTestId('probe-popup')).toBeNull();
     expect(marker.parent).toBeNull();
