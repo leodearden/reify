@@ -323,3 +323,18 @@ describe('probes follow re-evaluation', () => {
     expect(marker.parent).toBeNull();
   });
 });
+
+describe('probe picking tracks the canvas position', () => {
+  it('a probe click after the pane moves still probes the picked point', () => {
+    renderViewport({ feaModeStore: createFeaModeStore() });
+    click(50, 50);
+    expect(screen.getAllByTestId('probe-row')).toHaveLength(1);
+
+    stubCanvasRect(300);
+    click(350, 50);
+
+    const rows = screen.getAllByTestId('probe-row');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row.textContent).toMatch(VALUE_300);
+  });
+});
