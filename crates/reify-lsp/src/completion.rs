@@ -1653,6 +1653,58 @@ mod tests {
         }
     }
 
+    /// The editor names box's parameters the way a diagnostic names them, in
+    /// the same order.
+    ///
+    /// `served` is the parameter list completion advertises; `compiler` is the
+    /// slot each `ArgTypeMismatch` blames for a bare `<name>(1, 2, 3)`, in
+    /// emission order. An author told "box: size_y argument expects Length"
+    /// must find `size_y` at that position in the signature popup.
+    #[test]
+    fn box_signatures_name_the_compiler_slots_in_order() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        for name in ["box", "box_centered"] {
+            let signature = served_signature(&items, name);
+            let params = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .map(|(params, _)| params)
+                .unwrap_or_else(|| panic!("{name}: signature has no parameter list: {signature}"));
+            let served: Vec<&str> = params
+                .split(',')
+                .map(|param| param.split(':').next().unwrap_or(param).trim())
+                .collect();
+
+            let compiled = reify_test_support::compile_source(&format!(
+                "structure def S {{\n    let b = {name}(1, 2, 3)\n}}\n"
+            ));
+            let compiler: Vec<&str> = compiled
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+                .filter_map(|d| {
+                    let (prefix, _) = d.message.split_once(" argument expects Length")?;
+                    prefix.split_whitespace().next_back()
+                })
+                .collect();
+
+            assert_eq!(
+                compiler.len(),
+                3,
+                "{name}: a bare {name}(1, 2, 3) should blame three LENGTH slots; \
+                 diagnostics: {:#?}",
+                compiled.diagnostics
+            );
+            assert_eq!(
+                served, compiler,
+                "{name}: the served signature `{signature}` must name the slots \
+                 the compiler's diagnostics name, in order"
+            );
+        }
+    }
+
     #[test]
     fn re_im_not_in_builtin_completions() {
         // re, im, real, imag are method-only accessors, not standalone builtins.
