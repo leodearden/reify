@@ -101,7 +101,9 @@ pub mod types;
 // crate-private (`compose_morph` is their sole caller), while `snapshot`,
 // `reset` and the test-seeding `MorphOutcome` stay under `diagnostics::`.
 pub use diagnostics::{DiagnosticSnapshot, format_summary};
-use diagnostics::{record_ineligible, record_morphed, record_panicked, record_quality_remesh};
+use diagnostics::{
+    record_ineligible, record_morphed, record_panicked, record_quality_remesh, record_solver_error,
+};
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
     compute_dirichlet_bcs, rekey_boundary_association,
@@ -307,7 +309,7 @@ fn bbox_diagonal(mesh: &reify_ir::VolumeMesh) -> f64 {
 /// [`MorphFailure::SolverError`]. The panic arm records `panicked` instead and
 /// builds its failure directly, so no exit is counted twice.
 fn solver_failure(payload: SolverErrorPayload) -> MorphFailure {
-    diagnostics::record_solver_error(payload.message());
+    record_solver_error(payload.message());
     MorphFailure::SolverError(payload)
 }
 
@@ -1067,30 +1069,75 @@ mod tests {
         });
     }
 
+    /// [`single_tet_mesh`] re-tagged P2: both `laplacian_smooth` and
+    /// `elasticity_morph` reject a non-P1 mesh at entry, so whichever solver
+    /// arm the displacement rule picks returns `Err`.
+    fn p2_tagged_single_tet_mesh() -> reify_ir::VolumeMesh {
+        let mut mesh = single_tet_mesh();
+        mesh.connectivity = reify_ir::VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: reify_ir::ElementOrderTag::P2,
+        };
+        mesh
+    }
+
+    /// The position [`ShiftingKernel`] prescribes for node 0, which sits at the
+    /// origin in every [`single_tet_mesh`]-derived fixture: lets a test assert
+    /// which solver arm [`displacement_is_small`] routes its source to.
+    const SHIFTED_ORIGIN_NODE: [(u32, [f64; 3]); 1] = [(0, [SHIFT_EPS as f64, 0.0, 0.0])];
+
+    /// Run [`compose_morph`] on `source` over the eligible cap-face fixture with
+    /// every node prescribed by [`ShiftingKernel`] and default options.
+    fn compose_cap_face_shift(
+        source: &reify_ir::VolumeMesh,
+    ) -> Result<reify_ir::VolumeMesh, MorphFailure> {
+        let fixture = BijectionFixture::cap_face();
+        compose_morph(
+            source,
+            &all_nodes_on_cap_face(),
+            fixture.old_brep(),
+            fixture.new_brep(),
+            &ShiftingKernel,
+            &MorphOptions::default(),
+        )
+    }
+
     #[test]
     fn compose_morph_solver_err_returns_solver_error_and_records_only_solver_error_bucket() {
         with_diag_lock(|| {
-            let fixture = BijectionFixture::cap_face();
-            // A P2-tagged source: `laplacian_smooth` rejects non-P1 at entry, so
-            // the tiny ShiftingKernel displacement's Laplacian solve returns Err.
-            let mut source = single_tet_mesh();
-            source.connectivity = reify_ir::VolumeConnectivity::Tet {
-                indices: vec![0, 1, 2, 3],
-                order: reify_ir::ElementOrderTag::P2,
-            };
-
-            let result = compose_morph(
-                &source,
-                &all_nodes_on_cap_face(),
-                fixture.old_brep(),
-                fixture.new_brep(),
-                &ShiftingKernel,
-                &MorphOptions::default(),
+            let source = p2_tagged_single_tet_mesh();
+            assert!(
+                displacement_is_small(&source, &SHIFTED_ORIGIN_NODE),
+                "fixture precondition: the unit tet must route the Laplacian arm"
             );
+
+            let result = compose_cap_face_shift(&source);
 
             assert!(
                 matches!(result, Err(MorphFailure::SolverError(_))),
-                "a solver Err must surface as SolverError, got: {result:?}"
+                "a Laplacian solver Err must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_elasticity_err_returns_solver_error_and_records_only_solver_error_bucket() {
+        with_diag_lock(|| {
+            // Shrink the tet until ShiftingKernel's fixed SHIFT_EPS is a large
+            // displacement relative to its bbox diagonal.
+            let mut source = p2_tagged_single_tet_mesh();
+            source.vertices.iter_mut().for_each(|c| *c *= 1.0e-4);
+            assert!(
+                !displacement_is_small(&source, &SHIFTED_ORIGIN_NODE),
+                "fixture precondition: the shrunken tet must route the elasticity arm"
+            );
+
+            let result = compose_cap_face_shift(&source);
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "an elasticity solver Err must surface as SolverError, got: {result:?}"
             );
             assert_only_solver_error_recorded();
         });
