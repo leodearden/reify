@@ -67,8 +67,11 @@ pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
 pub mod jcodemunch_seam;
+/// Crate-internal: the git seam; its public surface is re-exported below.
 mod git_ops;
+/// Crate-internal: the jcodemunch seam; its public surface is re-exported below.
 mod jcodemunch_ops;
+/// Crate-internal: the finding and input shapes; re-exported below.
 mod model;
 
 pub use git_ops::{GitCommit, GitOps, RealGitOps, LOG_GREP_FORMAT};
