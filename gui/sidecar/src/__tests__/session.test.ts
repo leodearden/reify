@@ -801,6 +801,50 @@ describe('SidecarSession multi-turn streaming', () => {
   });
 });
 
+describe('SidecarSession in-flight invocation', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it("clear_session during an in-flight invocation keeps naming that invocation's tool_result blocks", async () => {
+    // clear_session does not abort the claude child, which keeps streaming; its later
+    // tool_result blocks must still be named after the tool_use they answer.
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_cs', name: 'reify_x', input: {} },
+    ]);
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+    const msgPromise = session.handleMessage({ type: 'send_message', id: 'msg-cs', text: 'Hi' });
+    await toolCallWait;
+
+    await session.handleMessage({ type: 'clear_session' });
+
+    const toolResultWait = waitForOutput(session, (m) => m.type === 'tool_result');
+    stdout.push(
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_cs', content: 'ok' }] },
+      }) + '\n',
+    );
+    expect(await toolResultWait).toEqual({ type: 'tool_result', id: 'msg-cs', tool_name: 'reify_x', result: 'ok' });
+
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-cs' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
+
 describe('SidecarSession stream failures surface as error', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
