@@ -990,7 +990,8 @@ mod tests {
     #[test]
     fn valid_bracket_source_no_errors() {
         let source = reify_test_support::bracket_source();
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
@@ -1002,7 +1003,7 @@ mod tests {
     }
 
     /// BT8 forward (task #6798, PRD `driver-contract-implementation.md` leaf
-    /// pi): the two production compile sites in this file must agree with
+    /// pi): the LSP's diagnostics pipeline must agree with
     /// `reify check`'s real-checker verdict on a CONSTANT `auto:`
     /// constraint, not the compile-time stub's.
     ///
@@ -1019,25 +1020,12 @@ mod tests {
         // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
         assert_bt8_fixture_still_diverges();
 
-        // --- Stateless surface: compute_diagnostics ---
-        let diags = compute_diagnostics(BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
         let no_candidate_code = Some(lsp_types::NumberOrString::String(
             "AutoTypeParamNoCandidate".to_string(),
         ));
         let ambiguous_code = Some(lsp_types::NumberOrString::String(
             "AutoTypeParamAmbiguous".to_string(),
         ));
-        assert!(
-            diags.iter().any(|d| d.code == no_candidate_code)
-                && !diags.iter().any(|d| d.code == ambiguous_code),
-            "BT8 forward (compute_diagnostics): must agree with `reify \
-             check`'s real-checker AutoTypeParamNoCandidate verdict on a \
-             constant constraint, not the compile-time stub's \
-             AutoTypeParamAmbiguous; got diagnostics: {:#?}",
-            diags
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
         let mut state = EvalState::new();
         let result =
             compute_diagnostics_with_state(&mut state, BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
@@ -1085,7 +1073,8 @@ mod tests {
     /// Anti-vacuity guard: assert the stub does NOT emit
     /// `AutoTypeParamConstraintUnevaluated` on this fixture (gated off by
     /// `CompileTimeIndeterminateChecker::is_compile_time_stub() == true`)
-    /// before asserting that the real checker — and both LSP entry points —
+    /// before asserting that the real checker — and the LSP's diagnostics
+    /// pipeline —
     /// do.
     #[test]
     fn lsp_surfaces_auto_type_param_constraint_unevaluated_warning() {
@@ -1131,17 +1120,6 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             real.diagnostics
         );
 
-        // --- Stateless surface: compute_diagnostics ---
-        let diags = compute_diagnostics(GAP_C_SRC, &test_uri());
-        assert!(
-            diags.iter().any(|d| d.code == unevaluated_code),
-            "BT8 amendment (compute_diagnostics): must surface \
-             AutoTypeParamConstraintUnevaluated now that the real checker \
-             is injected, matching `reify check`; got diagnostics: {:#?}",
-            diags
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, GAP_C_SRC, &test_uri());
         assert!(
@@ -1153,13 +1131,13 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         );
     }
 
-    /// The containment guard's NARROWNESS, pinned at the PRODUCTION ENTRY
-    /// POINTS rather than only on the predicate.
+    /// The containment guard's NARROWNESS, pinned at the diagnostics
+    /// pipeline rather than only on the predicate.
     ///
     /// The predicate-level test above proves
     /// `eval_guard::compiled_graph_has_unrepresentable_cell` answers `false` for a
-    /// non-`auto:` compile error. It cannot prove the CALL SITES ask it: a
-    /// future edit widening either site to `reify check`'s blanket
+    /// non-`auto:` compile error. It cannot prove the CALL SITE asks it: a
+    /// future edit widening that site to `reify check`'s blanket
     /// `compiled.diagnostics.iter().any(|d| d.severity == Severity::Error)`
     /// gate would leave that test green and silently stop every eval-time
     /// diagnostic on any document carrying a compile error. This test is the
@@ -1186,19 +1164,6 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             })
         };
 
-        // --- Stateless surface: compute_diagnostics ---
-        let diags = compute_diagnostics(NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC, &test_uri());
-        assert!(
-            has_compile_error(&diags) && has_eval_diag(&diags),
-            "narrowness (compute_diagnostics): an Error-severity compile \
-             diagnostic that is NOT an `auto:` failure must not suppress the \
-             eval pass — the LSP evaluates through non-fatal compile errors on \
-             purpose. Missing the eval diagnostic means a call site has drifted \
-             into `reify check`'s blanket error gate. got: {:#?}",
-            diags
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(
             &mut state,
@@ -1234,48 +1199,35 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         let no_candidate_code = Some(lsp_types::NumberOrString::String(
             "AutoTypeParamNoCandidate".to_string(),
         ));
-        let check = |label: &str, diags: &[lsp_types::Diagnostic]| {
-            assert!(
-                diags.iter().any(|d| d.code == no_candidate_code),
-                "anti-vacuity ({label}): the fixture must still FAIL `auto:` \
-                 resolution, or this test no longer exercises the guard at \
-                 all. got: {diags:#?}"
-            );
-            for needle in [
-                "circular let-binding dependency in template Other",
-                "constraint Other#constraint[0] violated",
-                "constraint Bearing#constraint[0] violated",
-            ] {
-                assert!(
-                    diags.iter().any(|d| d.message.contains(needle)),
-                    "over-fire ({label}): a failed `auto:` resolution with an \
-                     UNUSED type parameter is safe to evaluate, so `{needle}` \
-                     must still reach the editor. Its absence means the \
-                     containment guard has regressed to a diagnostic-code \
-                     proxy and one `auto:` clause is blanking eval for the \
-                     whole document. got: {diags:#?}"
-                );
-            }
-        };
-
-        // --- Stateless surface: compute_diagnostics ---
-        check(
-            "compute_diagnostics",
-            &compute_diagnostics(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri()),
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(
-            &mut state,
+        let diags = compute_diagnostics_with_state(
+            &mut EvalState::new(),
             UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
             &test_uri(),
+        )
+        .diagnostics;
+        assert!(
+            diags.iter().any(|d| d.code == no_candidate_code),
+            "anti-vacuity: the fixture must still FAIL `auto:` resolution, or \
+             this test no longer exercises the guard at all. got: {diags:#?}"
         );
-        check("compute_diagnostics_with_state", &result.diagnostics);
+        for needle in [
+            "circular let-binding dependency in template Other",
+            "constraint Other#constraint[0] violated",
+            "constraint Bearing#constraint[0] violated",
+        ] {
+            assert!(
+                diags.iter().any(|d| d.message.contains(needle)),
+                "over-fire: a failed `auto:` resolution with an UNUSED type \
+                 parameter is safe to evaluate, so `{needle}` must still reach \
+                 the editor. Its absence means the containment guard has \
+                 regressed to a diagnostic-code proxy and one `auto:` clause is \
+                 blanking eval for the whole document. got: {diags:#?}"
+            );
+        }
     }
 
-    /// Containment regression lock for the two entry points in this file
-    /// (root cause owned by task **#6851**).
+    /// Containment regression lock for the diagnostics pipeline (root cause
+    /// owned by task **#6851**).
     ///
     /// A failed `auto:` type-parameter resolution leaves a `param seal : T`
     /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
@@ -1290,8 +1242,8 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// still reports the compile-stage error.
     ///
     /// **Reaching the assertions AT ALL is half the contract.** Without the
-    /// guard these two calls PANIC before they can return, so "the test ran to
-    /// completion" IS the no-panic assertion. Wrapping either call in
+    /// guard the pipeline call PANICS before it can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Wrapping the call in
     /// `#[should_panic]` or `catch_unwind` would invert the contract this test
     /// exists to state — do not.
     ///
@@ -1332,22 +1284,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                 "AutoTypeParamNoCandidate".to_string(),
             ));
 
-            // --- Stateless surface: compute_diagnostics ---
             // Panics at engine_eval.rs without the containment guard (measured).
-            let diags = compute_diagnostics(src, &test_uri());
-            assert!(
-                diags.iter().any(|d| d.code == no_candidate_code),
-                "containment (compute_diagnostics, {shape}): a failed `auto:` resolution \
-                 must still surface the compile-stage AutoTypeParamNoCandidate \
-                 error — reaching this assertion at all means the eval pass was \
-                 correctly skipped rather than panicking on the unsubstituted \
-                 TypeParam cell (task #6851). A panic here means the containment \
-                 guard has regressed; an empty/miscoded result means the guard \
-                 fires too early and swallows the compile diagnostics. got: {:#?}",
-                diags
-            );
-
-            // --- Stateful surface: compute_diagnostics_with_state (live server) ---
             let result = compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri());
             assert!(
                 result.check_result.is_none(),
@@ -1360,11 +1297,12 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                     .diagnostics
                     .iter()
                     .any(|d| d.code == no_candidate_code),
-                "containment (compute_diagnostics_with_state, {shape}): the live \
-                 server's keystroke path must still surface the compile-stage \
-                 AutoTypeParamNoCandidate error without feeding the unsubstituted \
-                 TypeParam graph to the engine (task #6851). A panic here means \
-                 the containment guard has regressed. got: {:#?}",
+                "containment ({shape}): a failed `auto:` resolution must still \
+                 surface the compile-stage AutoTypeParamNoCandidate error without \
+                 feeding the unsubstituted TypeParam graph to the engine (task \
+                 #6851). A panic here means the containment guard has regressed; \
+                 an empty/miscoded result means the guard fires too early and \
+                 swallows the compile diagnostics. got: {:#?}",
                 result.diagnostics
             );
         }
@@ -1385,7 +1323,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// (via the same guard in `AnalysisContext::from_parsed`) every
     /// hover/completion computed value for the whole document.
     ///
-    /// So this test pins three things per entry point: no panic (reaching the
+    /// So this test pins three things: no panic (reaching the
     /// assertions IS that half of the contract — do not add `#[should_panic]`
     /// or `catch_unwind`), no Error-severity diagnostic to explain the loss,
     /// and consequently the file-level `EvalSkippedUnrepresentableCell`
@@ -1409,62 +1347,60 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                 EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
             ),
         ] {
-            for (entry_point, diags) in [
-                ("compute_diagnostics", compute_diagnostics(src, &test_uri())),
-                (
-                    "compute_diagnostics_with_state",
-                    compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri())
-                        .diagnostics,
-                ),
-            ] {
-                let errors: Vec<_> = diags
-                    .iter()
-                    .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-                    .collect();
-                assert!(
-                    errors.is_empty(),
-                    "({entry_point}, {shape}): this fixture is valid `.ri` the \
-                     compiler accepts, which is the whole point — an Error here \
-                     means the fixture drifted and the report assertion below \
-                     could pass by riding on someone else's diagnostic. \
-                     errors: {errors:#?}"
-                );
+            let result = compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri());
+            assert!(
+                result.check_result.is_none(),
+                "({shape}): a guard-suppressed document evaluated nothing, so it \
+                 must carry no CheckResult"
+            );
+            let diags = &result.diagnostics;
+            let errors: Vec<_> = diags
+                .iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "({shape}): this fixture is valid `.ri` the \
+                 compiler accepts, which is the whole point — an Error here \
+                 means the fixture drifted and the report assertion below \
+                 could pass by riding on someone else's diagnostic. \
+                 errors: {errors:#?}"
+            );
 
-                let reported: Vec<_> = diags.iter().filter(|d| d.code == skip_code).collect();
-                assert_eq!(
-                    reported.len(),
-                    1,
-                    "({entry_point}, {shape}): a guard-suppressed compile-clean \
-                     document must carry exactly ONE editor-visible \
-                     EvalSkippedUnrepresentableCell Warning. Zero means the \
-                     document silently lost its whole eval pass — every \
-                     constraint result and every computed value — with nothing \
-                     but a line on the server's stderr to show for it. \
-                     Reaching this assertion at all also means the eval pass \
-                     was skipped rather than panicking on the unrepresentable \
-                     cell (task #6851). got: {diags:#?}"
-                );
-                let reported = reported[0];
-                assert_eq!(
-                    reported.severity,
-                    Some(DiagnosticSeverity::WARNING),
-                    "({entry_point}, {shape}): the skip report is the LSP \
-                     describing its own reduced service over a file the \
-                     compiler accepted, not a defect in that file — Warning, \
-                     not Error."
-                );
-                assert!(
-                    reported.message.contains("seal"),
-                    "({entry_point}, {shape}): the skip report must NAME the \
-                     offending cell, or it tells the user only that something \
-                     was lost. got: {}",
-                    reported.message
-                );
-            }
+            let reported: Vec<_> = diags.iter().filter(|d| d.code == skip_code).collect();
+            assert_eq!(
+                reported.len(),
+                1,
+                "({shape}): a guard-suppressed compile-clean \
+                 document must carry exactly ONE editor-visible \
+                 EvalSkippedUnrepresentableCell Warning. Zero means the \
+                 document silently lost its whole eval pass — every \
+                 constraint result and every computed value — with nothing \
+                 but a line on the server's stderr to show for it. \
+                 Reaching this assertion at all also means the eval pass \
+                 was skipped rather than panicking on the unrepresentable \
+                 cell (task #6851). got: {diags:#?}"
+            );
+            let reported = reported[0];
+            assert_eq!(
+                reported.severity,
+                Some(DiagnosticSeverity::WARNING),
+                "({shape}): the skip report is the LSP \
+                 describing its own reduced service over a file the \
+                 compiler accepted, not a defect in that file — Warning, \
+                 not Error."
+            );
+            assert!(
+                reported.message.contains("seal"),
+                "({shape}): the skip report must NAME the \
+                 offending cell, or it tells the user only that something \
+                 was lost. got: {}",
+                reported.message
+            );
         }
     }
 
-    /// Regression guard for task 2525: `compute_diagnostics` must accept sources
+    /// Regression guard for task 2525: the diagnostics pipeline must accept sources
     /// that reference stdlib enums (e.g. `CorrosionClass.C5`) WITHOUT inline
     /// redeclarations.
     ///
@@ -1473,9 +1409,10 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// instead of `EnumAccess` and the downstream `compile_with_stdlib` emitted
     /// an unresolved-name error diagnostic for `CorrosionClass`.
     #[test]
-    fn compute_diagnostics_resolves_stdlib_enum_access_without_inline_redecl() {
+    fn stateful_diagnostics_resolve_stdlib_enum_access_without_inline_redecl() {
         let source = "structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
@@ -1489,7 +1426,8 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     #[test]
     fn syntax_error_produces_diagnostic() {
         let source = "structure {";
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         assert!(!diags.is_empty(), "syntax error should produce diagnostics");
         assert!(
             diags
@@ -1503,22 +1441,16 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     fn unknown_identifier_produces_diagnostic() {
         // Reference a non-existent type/name
         let source = "structure Foo {\n  param x: Length = unknown_name;\n}";
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         assert!(
             !diags.is_empty(),
             "unknown identifier should produce diagnostics"
         );
     }
 
-    #[test]
-    fn empty_source_no_crash() {
-        let diags = compute_diagnostics("", &test_uri());
-        // Should not panic; may or may not produce diagnostics
-        let _ = diags;
-    }
-
     /// End-to-end regression lock: a deep dot-chain in a `let` value flows
-    /// through `compute_diagnostics` as an LSP Warning whose source is `reify`,
+    /// through the diagnostics pipeline as an LSP Warning whose source is `reify`,
     /// whose message contains the rendered chain text, and whose range is
     /// non-zero (anchored to the chain's source span via the diagnostic label).
     ///
@@ -1529,7 +1461,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// lsp_types::Diagnostic.code" — so we assert on severity, source,
     /// message text, and a non-zero range only.
     #[test]
-    fn lsp_compute_diagnostics_surfaces_deep_dot_chain_warning() {
+    fn lsp_diagnostics_surface_deep_dot_chain_warning() {
         // 6-segment chain `a.b.c.d.e.f` (length 6 > 4) inside a `let` value
         // forces exactly one DeepDotChain warning from the compiler pre-pass.
         let source = r#"
@@ -1538,7 +1470,8 @@ structure S {
     let x = a.b.c.d.e.f
 }
 "#;
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
 
         let deep_dot_chain_diags: Vec<_> = diags
             .iter()
@@ -1983,35 +1916,6 @@ structure S {
         assert!(
             errors.is_empty(),
             "stateful pipeline: stdlib source should compile without unexpected errors; got: {errors:?}"
-        );
-    }
-
-    // --- task-2176 step-3: stateless diagnostics resolve stdlib types ---
-
-    #[test]
-    fn compute_diagnostics_resolves_stdlib_material_and_rigid() {
-        // Drives the stateless compute_diagnostics() path.
-        // A known-good stdlib source must produce zero UNEXPECTED error-severity diagnostics.
-        //
-        // The `Rigid` trait (via `Physical`) injects `let centroid = centroid(geometry)` and
-        // similar geometry-consumer builtins into conforming structures.  Since task #4651
-        // (R1a), those cells correctly emit EvalUnresolved at Error severity on the kernel-less
-        // eval() surface — they require a realized geometry kernel that is not present here.
-        // Filter those out; any remaining Error-severity diagnostic is unexpected.
-        let diags = compute_diagnostics(STDLIB_PROBE_SRC, &test_uri());
-        let errors: Vec<_> = diags
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.code
-                        != Some(lsp_types::NumberOrString::String(
-                            "EvalUnresolved".to_string(),
-                        ))
-            })
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "stdlib source should compile without unexpected errors; got: {errors:?}"
         );
     }
 
@@ -3205,118 +3109,46 @@ structure S {
         );
     }
 
-    /// Every compute target registered by
-    /// `reify_eval::compute_targets::register_compute_fns` — that function's
-    /// own doc comment calls it "the single place that registers the full
-    /// production set of compute trampolines". Exhaustive, not a sample:
-    /// used below to probe that the LSP's engine ([`EvalState::new`], which
-    /// never calls `register_compute_fns`) carries none of them registered.
-    /// If `register_compute_fns` gains or loses a target, update this list
-    /// to match — a stale list would silently narrow the probe back to a
-    /// sample.
-    ///
-    /// That instruction is HALF-ENFORCED, deliberately so. A rename or a
-    /// removal upstream is caught immediately by
-    /// [`assert_all_production_compute_targets_are_registrable`], the positive
-    /// counter-probe: without it every `compute_dispatch(target).is_none()`
-    /// assertion on a stale name passes trivially and the whole posture lock
-    /// goes vacuous without going red. An ADDITION upstream is NOT caught —
-    /// closing that half needs a public enumerator over `Engine`'s
-    /// `compute_registry.fns` in reify-eval (so the const can be asserted
-    /// set-equal to the registry), which is outside this leaf's
-    /// "Modules: `reify-lsp`" scope.
-    const ALL_PRODUCTION_COMPUTE_TARGETS: &[&str] = &[
-        "solver::elastic_static",
-        "solver::buckling",
-        "solver::form_find",
-        "solver::form_find_free",
-        "solver::tensegrity_load",
-        "solver::membrane_load",
-        "solver::multi_case",
-        "solver::buckling_multi_case",
-        "fdm::as_printed_material_r_fast",
-        "fdm::as_printed_material_r0",
-        "fdm::slice",
-        "modal::free_vibration",
-        "modal::transient_response",
-        "modal::displacement_at",
-        "modal::mechanism_modal",
-        "dynamics::inverse_dynamics",
-        "trajectory::simulate",
-        "trajectory::input_shape",
-    ];
-
-    /// Positive counter-probe for [`ALL_PRODUCTION_COMPUTE_TARGETS`]: every
-    /// name in the const must actually be registered by
-    /// `reify_eval::compute_targets::register_compute_fns`.
-    ///
-    /// The const is a hand-maintained mirror of that function, and the posture
-    /// lock that consumes it only ever asserts `compute_dispatch(t).is_none()`.
-    /// Those assertions pass TRIVIALLY on a name that no longer exists, so an
-    /// upstream rename or removal would hollow the lock out silently — it
-    /// would keep proving that an engine carries no trampoline for eighteen
-    /// strings, none of which name a real compute target any more. Asserting
-    /// the same names ARE dispatchable on a throwaway registered engine makes
-    /// exactly that drift red, at the cost of one extra `Engine`.
-    ///
-    /// Does NOT catch an upstream ADDITION — see the const's own doc for why
-    /// that half is out of this leaf's scope.
-    fn assert_all_production_compute_targets_are_registrable() {
-        let mut registered_probe = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
-        reify_eval::compute_targets::register_compute_fns(&mut registered_probe);
-        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
-            assert!(
-                registered_probe.compute_dispatch(target).is_some(),
-                "ALL_PRODUCTION_COMPUTE_TARGETS is STALE: '{target}' is not \
-                 registered by reify_eval::compute_targets::register_compute_fns \
-                 any more. Every `compute_dispatch('{target}').is_none()` \
-                 assertion in the trampoline-free posture lock is therefore \
-                 passing trivially. Re-sync this const with \
-                 `register_compute_fns`."
-            );
-        }
-    }
-
     /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1) for
     /// the trampoline-free posture — see [`compute_diagnostics_with_state`]'s
     /// doc comment for the authoritative posture writeup; this test is its
     /// executable contract. Over the FEA-bearing [`FEA_BEARING_SRC`] fixture,
-    /// on both LSP entry points, locks that the resulting `Indeterminate`
-    /// FEA constraint produces neither a false violation nor a false pass
-    /// (see [`assert_no_false_violation_or_pass`]) — the LSP-side analog of
-    /// the CLI's `check_fea_violated_constraint_is_not_gated`
-    /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before and after:
-    /// this locks pre-existing gate behaviour, not new runtime behaviour.
+    /// locks that the resulting `Indeterminate` FEA constraint produces
+    /// neither a false violation nor a false pass (see
+    /// [`assert_no_false_violation_or_pass`]) — the LSP-side analog of the
+    /// CLI's `check_fea_violated_constraint_is_not_gated`
+    /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before
+    /// and after: this locks pre-existing gate behaviour, not new runtime
+    /// behaviour.
+    ///
+    /// The posture itself is read off the pipeline's own result. The engine
+    /// reports a missing compute trampoline
+    /// (`DiagnosticCode::NoRegisteredComputeTrampoline`) at Warning if and
+    /// only if its compute registry is entirely empty, and at Error otherwise
+    /// (`reify_eval::Engine::soft_no_trampoline_diagnostic`; the rule is
+    /// pinned upstream by the Warning/Error pair in
+    /// `crates/reify-eval/tests/compute_dispatch_registry.rs`). So at least
+    /// one such diagnostic, every one at Warning, proves that the engine the
+    /// pipeline actually used can dispatch no compute target at all: every
+    /// target the production bundle registers today, and any it adds later.
     ///
     /// **Also the BT8 REVERSE lock** (task #6798, PRD
     /// `driver-contract-implementation.md` leaf pi / §5 BT8 / §12 matrix
-    /// ruling 2): the compute-trampoline probe below enumerates
-    /// [`ALL_PRODUCTION_COMPUTE_TARGETS`] — every target
-    /// `register_compute_fns` registers, not a sample — so it doubles as
-    /// the lock that injecting the real `SimpleConstraintChecker` at
-    /// compile time (this leaf's change) does not disturb the
-    /// Leo-ratified trampoline-free posture. Matrix ruling 2 retires the
-    /// CLI-side FEA lock but explicitly KEEPS this LSP-side subtraction.
-    /// `FEA_BEARING_SRC` has no `auto:` type parameter, so the injected
-    /// compile-time checker is never even consulted on it — the checker
-    /// swap is a no-op here by construction (see
+    /// ruling 2): because that registry-empty observation covers every
+    /// target, it doubles as the lock that injecting the real
+    /// `SimpleConstraintChecker` at compile time (that leaf's change) does
+    /// not disturb the Leo-ratified trampoline-free posture. Matrix ruling 2
+    /// retires the CLI-side FEA lock but explicitly KEEPS this LSP-side
+    /// subtraction. `FEA_BEARING_SRC` has no `auto:` type parameter, so the
+    /// injected compile-time checker is never even consulted on it — the
+    /// checker swap is a no-op here by construction (see
     /// [`compute_diagnostics_with_state`]'s "## Compile-time checker" doc
-    /// section), which is exactly why this stays a posture lock rather
-    /// than a BT8-forward-style divergence test, and why it is GREEN
-    /// before and after task #6798's impl steps: the compile-time checker
-    /// change never touches the eval-time Engine built by
-    /// [`EvalState::new`].
+    /// section), which is exactly why this stays a posture lock rather than
+    /// a BT8-forward-style divergence test: the compile-time checker change
+    /// never touches the eval-time Engine built by [`EvalState::new`].
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
-        // Anti-vacuity for the probe's own vocabulary: the negative
-        // `is_none()` assertions below are only meaningful if every name in
-        // ALL_PRODUCTION_COMPUTE_TARGETS still names a real, registrable
-        // compute target.
-        assert_all_production_compute_targets_are_registrable();
-
-        let uri = test_uri();
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         // Guard: the fixture must compile with zero errors, so the
@@ -3334,72 +3166,48 @@ structure S {
             "FEA_BEARING_SRC must compile without errors; got: {compile_errors:#?}"
         );
 
-        // --- Stateless surface: compute_diagnostics ---
-        //
-        // No persistent engine survives the call, so we probe an
-        // independently constructed Engine sharing its exact, documented
-        // posture (Engine::new(SimpleConstraintChecker, None), no
-        // trampoline registration) rather than compute_diagnostics's own
-        // internal engine — a redundant belt-and-suspenders check, not the
-        // authoritative lock (see `assert_no_false_violation_or_pass`'s doc
-        // comment for the full rationale; the stateful surface below is
-        // authoritative).
-        let stateless_diags = compute_diagnostics(FEA_BEARING_SRC, &uri);
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), FEA_BEARING_SRC, &test_uri());
 
-        let checker = SimpleConstraintChecker;
-        let mut stateless_probe = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
-            assert!(
-                stateless_probe.compute_dispatch(target).is_none(),
-                "sanity: Engine::new(SimpleConstraintChecker, None) — the \
-                 exact construction compute_diagnostics uses internally — \
-                 must carry no pre-registered '{target}' compute trampoline"
-            );
-        }
-        let stateless_check_result = stateless_probe.check(&compiled);
-        assert_no_false_violation_or_pass(
-            &stateless_diags,
-            &stateless_check_result,
-            "compute_diagnostics",
+        let no_trampoline_code = Some(lsp_types::NumberOrString::String(
+            "NoRegisteredComputeTrampoline".to_string(),
+        ));
+        let no_trampoline: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == no_trampoline_code)
+            .collect();
+        assert!(
+            !no_trampoline.is_empty(),
+            "the FEA-bearing fixture calls an @optimized solver, so the engine \
+             must report that no compute trampoline is registered for it; got \
+             diagnostics: {:#?}",
+            result.diagnostics
+        );
+        assert!(
+            no_trampoline
+                .iter()
+                .all(|d| d.severity == Some(DiagnosticSeverity::WARNING)),
+            "every missing-trampoline diagnostic must be a WARNING: the engine \
+             picks Warning only when its compute registry is empty, so an \
+             ERROR means the engine the pipeline used has a compute \
+             trampoline registered, breaking the trampoline-free posture (and, \
+             since task #6798, the compile-time checker injection must not \
+             disturb it); got: {no_trampoline:#?}"
         );
 
-        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
-        //
-        // Unlike the stateless surface, EvalState carries the actual
-        // persistent Engine the production call used — read its posture and
-        // constraint satisfactions directly off `state.engine` (a private
-        // field; child-module test access to it is already established
-        // elsewhere in this file, e.g. `build_eval_state_with_failed_cell`)
-        // rather than a hand-rebuilt one.
-        let mut state = EvalState::new();
-        let stateful_result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
-            assert!(
-                state.engine.compute_dispatch(target).is_none(),
-                "the actual persistent Engine used by \
-                 compute_diagnostics_with_state must carry no registered \
-                 '{target}' compute trampoline — this is the \
-                 trampoline-free posture documented on that function, and \
-                 (task #6798) the compile-time checker injection must not \
-                 disturb it"
-            );
-        }
-        let stateful_check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content \
-             hash immediately after compute_diagnostics_with_state evaluated it",
-        );
-        assert_no_false_violation_or_pass(
-            &stateful_result.diagnostics,
-            &stateful_check_result,
-            "compute_diagnostics_with_state",
-        );
+        let check_result = result
+            .check_result
+            .as_ref()
+            .expect("the pipeline evaluated FEA_BEARING_SRC, so it must carry its CheckResult");
+        assert_no_false_violation_or_pass(&result.diagnostics, check_result);
     }
 
     /// Shared assertion for
     /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`]
-    /// (see that test's doc for the full rationale). Given one LSP entry
-    /// point's diagnostics and the `CheckResult` for the same content,
-    /// assert: (a) no diagnostic message equals the exact text
+    /// (see that test's doc for the full rationale). Given the pipeline's
+    /// diagnostics and its `CheckResult` for the same content, assert: (a)
+    /// no diagnostic message equals the exact text
     /// [`constraint_violated_message`] would produce for any constraint (no
     /// false violation, matched via the same formatter production uses, not
     /// a drift-prone substring); (b) zero `Violated` and zero `Satisfied`
@@ -3408,18 +3216,9 @@ structure S {
     /// The three counts are tallied via an exhaustive `match` (no wildcard
     /// arm) on `Satisfaction`, so this fn fails to *compile* — rather than
     /// silently passing — the moment `Satisfaction` grows a fourth variant.
-    ///
-    /// Belt-and-suspenders note (applies to both call sites below): the
-    /// stateless (`compute_diagnostics`) call site passes a `check_result`
-    /// from an independently constructed probe engine, not the exact
-    /// internal engine `compute_diagnostics` builds and drops — a redundant
-    /// check, not the authoritative lock. The stateful
-    /// (`compute_diagnostics_with_state`) call site, which reads
-    /// `state.engine` directly, is the authoritative lock for this contract.
     fn assert_no_false_violation_or_pass(
         diagnostics: &[lsp_types::Diagnostic],
         check_result: &reify_eval::CheckResult,
-        surface: &str,
     ) {
         let would_be_violated_msgs: Vec<String> = check_result
             .constraint_results
@@ -3432,8 +3231,8 @@ structure S {
             .collect();
         assert!(
             false_violations.is_empty(),
-            "{surface} must not report a false violation for an Indeterminate \
-             FEA constraint; got: {false_violations:#?}"
+            "the pipeline must not report a false violation for an \
+             Indeterminate FEA constraint; got: {false_violations:#?}"
         );
 
         // Exhaustive `match` (no wildcard arm) — see this fn's doc comment
@@ -3450,24 +3249,24 @@ structure S {
 
         assert_eq!(
             violated_count, 0,
-            "{surface}: FEA-only fixture must have zero Violated constraints; \
-             got constraint_results: {:#?}",
+            "FEA-only fixture must have zero Violated constraints; got \
+             constraint_results: {:#?}",
             check_result.constraint_results
         );
         assert_eq!(
             satisfied_count, 0,
-            "{surface}: every FEA-result constraint must be Indeterminate \
-             under the trampoline-free posture, never Satisfied — otherwise \
-             a per-constraint false pass on a subset of the fixture's \
+            "every FEA-result constraint must be Indeterminate under the \
+             trampoline-free posture, never Satisfied — otherwise a \
+             per-constraint false pass on a subset of the fixture's \
              constraints would slip through; got constraint_results: {:#?}",
             check_result.constraint_results
         );
         assert!(
             indeterminate_count >= 1,
-            "{surface}: expected >= 1 Indeterminate constraint (FEA-result \
-             constraint under the trampoline-free posture); got 0 — the \
-             constraint may be silently Satisfied (false pass) or missing \
-             entirely. constraint_results: {:#?}",
+            "expected >= 1 Indeterminate constraint (FEA-result constraint \
+             under the trampoline-free posture); got 0 — the constraint may be \
+             silently Satisfied (false pass) or missing entirely. \
+             constraint_results: {:#?}",
             check_result.constraint_results
         );
     }
@@ -3496,13 +3295,8 @@ structure S {
     /// `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`.
     #[test]
     fn fea_indeterminate_constraint_emits_info_hint() {
-        let uri = test_uri();
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), FEA_BEARING_SRC, &test_uri());
 
         let hints: Vec<_> = result
             .diagnostics
@@ -3534,14 +3328,12 @@ structure S {
         }
 
         // Compute the expected count dynamically (not a hardcoded magic
-        // number): read the persistent engine's snapshot for the content it
-        // just evaluated and count Indeterminate constraints (mirrors the
-        // stateful surface in
-        // `fea_bearing_constraint_produces_no_false_violation_or_false_pass`).
-        let check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
-             immediately after compute_diagnostics_with_state evaluated it",
-        );
+        // number): count the Indeterminate constraints in the CheckResult the
+        // pipeline returned for this content.
+        let check_result = result
+            .check_result
+            .as_ref()
+            .expect("the pipeline evaluated FEA_BEARING_SRC, so it must carry its CheckResult");
         let indeterminate_count = check_result
             .constraint_results
             .iter()
@@ -3647,8 +3439,7 @@ structure S {
             "fixture sanity: SRC must compile without errors; got: {compile_errors:#?}"
         );
 
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, SRC, &uri);
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), SRC, &uri);
 
         let hints: Vec<_> = result
             .diagnostics
@@ -3667,10 +3458,10 @@ structure S {
         // below on `hints.len() == 1` is a genuine discrimination check,
         // not a vacuous pass because only one constraint was Indeterminate
         // to begin with.
-        let check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for SRC's content hash \
-             immediately after compute_diagnostics_with_state evaluated it",
-        );
+        let check_result = result
+            .check_result
+            .as_ref()
+            .expect("the pipeline evaluated SRC, so it must carry its CheckResult");
         let indeterminate_count = check_result
             .constraint_results
             .iter()

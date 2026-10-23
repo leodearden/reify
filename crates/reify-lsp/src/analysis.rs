@@ -740,19 +740,24 @@ mod tests {
                 ctx.check_result.diagnostics
             );
 
-            // The user-facing consequence is not silent: `compute_diagnostics`
-            // over the SAME document — which the server runs on open and on
-            // every change — carries the file-level Warning naming the
-            // offending cell. Asserted in full by the sibling test named
-            // above; probed here so the two halves of the degradation stay
-            // wired together at this entry point too.
+            // The user-facing consequence is not silent:
+            // `compute_diagnostics_with_state` over the SAME document — which
+            // the server runs on open and on every change — carries the
+            // file-level Warning naming the offending cell. Asserted in full
+            // by the sibling test named above; probed here so the two halves
+            // of the degradation stay wired together at this entry point too.
             assert!(
-                crate::diagnostics::compute_diagnostics(src, &test_uri())
-                    .iter()
-                    .any(|d| d.code
-                        == Some(tower_lsp::lsp_types::NumberOrString::String(
-                            "EvalSkippedUnrepresentableCell".to_string()
-                        ))),
+                crate::diagnostics::compute_diagnostics_with_state(
+                    &mut crate::diagnostics::EvalState::new(),
+                    src,
+                    &test_uri()
+                )
+                .diagnostics
+                .iter()
+                .any(|d| d.code
+                    == Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "EvalSkippedUnrepresentableCell".to_string()
+                    ))),
                 "containment (AnalysisContext::from_parsed, {shape}): hover and \
                  completion show no computed values for this document, so the \
                  diagnostics path over the same document must tell the user \
