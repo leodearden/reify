@@ -494,8 +494,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     // --- 01-geometry: solid geometry primitives ---
     BuiltinFunctionInfo {
         name: "box",
-        signature: "box(width: Length, height: Length, depth: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -512,8 +512,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "box_centered",
-        signature: "box_centered(width: Length, depth: Length, height: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box_centered(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
