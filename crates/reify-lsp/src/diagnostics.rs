@@ -1804,6 +1804,127 @@ structure S {
         }
     }
 
+    /// `compute_diagnostics` is the server's own pipeline run once on a fresh
+    /// `EvalState`, not a second pipeline with stages of its own. Checked on
+    /// the two shapes a separate pipeline got wrong: a parse error, which it
+    /// reported twice (once from the parser, once re-emitted by the compiler's
+    /// pre-pass over the partial AST), and a constraint violation, which it
+    /// reported without the span-aware ERROR the server publishes.
+    #[test]
+    fn compute_diagnostics_is_the_stateful_pipeline_on_a_fresh_state() {
+        let uri = test_uri();
+
+        let broken = "structure {";
+        let parse_error_count =
+            reify_compiler::parse_with_stdlib(broken, ModulePath::single("test"))
+                .errors
+                .len();
+        assert!(
+            parse_error_count > 0,
+            "anti-vacuity: {broken:?} must still fail to parse"
+        );
+        let wrapped = compute_diagnostics(broken, &uri);
+        assert_eq!(
+            wrapped,
+            compute_diagnostics_with_state(&mut EvalState::new(), broken, &uri).diagnostics,
+            "compute_diagnostics must equal the stateful pipeline on a fresh state"
+        );
+        assert_eq!(
+            wrapped.len(),
+            parse_error_count,
+            "each parse error must be reported exactly once; got: {wrapped:#?}"
+        );
+
+        let violating = reify_test_support::bracket_source_violating();
+        let stateful =
+            compute_diagnostics_with_state(&mut EvalState::new(), &violating, &uri).diagnostics;
+        assert!(
+            stateful.iter().any(|d| d.severity == Some(DiagnosticSeverity::ERROR)
+                && d.message.contains("violated")
+                && d.range != lsp_types::Range::default()),
+            "anti-vacuity: the violating fixture must carry a span-aware violation; \
+             got: {stateful:#?}"
+        );
+        assert_eq!(
+            compute_diagnostics(&violating, &uri),
+            stateful,
+            "compute_diagnostics must equal the stateful pipeline on a fresh state"
+        );
+    }
+
+    #[test]
+    fn check_result_carries_constraint_outcomes_after_eval() {
+        let uri = test_uri();
+
+        let violating = reify_test_support::bracket_source_violating();
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), &violating, &uri);
+        let check_result = result
+            .check_result
+            .expect("an evaluated document must carry its CheckResult");
+        assert!(
+            check_result
+                .constraint_results
+                .iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
+            "the violating fixture must report a Violated constraint; got: {:#?}",
+            check_result.constraint_results
+        );
+
+        let valid = reify_test_support::bracket_source();
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), valid, &uri);
+        let check_result = result
+            .check_result
+            .expect("an evaluated document must carry its CheckResult");
+        assert!(
+            !check_result.constraint_results.is_empty(),
+            "the valid fixture declares constraints, so its outcomes must be present"
+        );
+        assert!(
+            !check_result
+                .constraint_results
+                .iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
+            "the valid fixture must report no Violated constraint; got: {:#?}",
+            check_result.constraint_results
+        );
+    }
+
+    #[test]
+    fn check_result_is_none_when_parse_errors_stop_the_pipeline() {
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), "structure {", &test_uri());
+        assert!(
+            !result.diagnostics.is_empty(),
+            "anti-vacuity: the source must still fail to parse"
+        );
+        assert!(
+            result.check_result.is_none(),
+            "a document that never reached eval must carry no CheckResult"
+        );
+    }
+
+    #[test]
+    fn check_result_is_none_when_the_eval_guard_skips() {
+        assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        let result = compute_diagnostics_with_state(
+            &mut EvalState::new(),
+            DECLARED_ONLY_GENERIC_TYPEPARAM_SRC,
+            &test_uri(),
+        );
+        let skip_code = Some(lsp_types::NumberOrString::String(
+            "EvalSkippedUnrepresentableCell".to_string(),
+        ));
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == skip_code),
+            "anti-vacuity: the eval guard must still skip this fixture; got: {:#?}",
+            result.diagnostics
+        );
+        assert!(
+            result.check_result.is_none(),
+            "a document the eval guard skipped must carry no CheckResult"
+        );
+    }
+
     // --- task-2176 step-5: stateful diagnostics resolve stdlib types ---
 
     #[test]
