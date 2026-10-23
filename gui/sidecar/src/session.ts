@@ -9,7 +9,6 @@ import { wrapClaudeArgs } from './sandbox.js';
 import { sidecarMcpServers } from './tool-surface.js';
 import { buildClaudeArgs } from './claudeArgs.js';
 import {
-  claimToolUse,
   forgetToolUses,
   initialStreamState,
   mapStreamEvent,
@@ -212,9 +211,6 @@ export class SidecarSession {
       case 'clear_session':
         this.handleClearSession();
         break;
-      case 'tool_result':
-        this.handleToolResult(msg.tool_name, msg.result, msg.id, msg.tool_use_id);
-        break;
       case 'permission_decision':
         this.handlePermissionDecision(msg.request_id, msg.behavior, msg.message, msg.updated_input, msg.remember);
         break;
@@ -347,8 +343,7 @@ export class SidecarSession {
       }
     );
 
-    // Register the in-flight stdin and a fresh stream state so handleToolResult can
-    // claim this invocation's tool_uses and write their results.
+    // Register the in-flight stdin and a fresh stream state for this invocation.
     this.currentStdin = proc.stdin ?? null;
     this.stream = initialStreamState(id);
 
@@ -505,39 +500,6 @@ export class SidecarSession {
     } else {
       this.onOutput({ type: 'done', id });
     }
-  }
-
-  /**
-   * Forward a tool_result inbound from the host to the in-flight claude CLI's stdin,
-   * claiming the tool_use it answers (streamEvents.ts::claimToolUse). Emits an error
-   * outbound when no invocation is in flight or no announced tool_use matches.
-   */
-  private handleToolResult(toolName: string, result: unknown, id: string, inboundToolUseId?: string): void {
-    if (this.currentStdin === null || this.stream === null) {
-      this.onOutput({ type: 'error', id, message: 'no in-flight claude CLI process' });
-      return;
-    }
-    const claim = claimToolUse(this.stream, toolName, inboundToolUseId);
-    if (!claim.ok) {
-      this.onOutput({ type: 'error', id, message: claim.error });
-      return;
-    }
-    // The tool_use is consumed whether or not the write below succeeds: on a write error
-    // the host retries the whole send_message, and re-sending this tool_result would
-    // hit the unknown tool_use_id error.
-    this.stream = claim.state;
-    this.currentStdin.write(
-      JSON.stringify({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: claim.toolUseId, content: result }],
-        },
-      }) + '\n',
-      (err) => {
-        if (err) this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
-      }
-    );
   }
 
   /**
