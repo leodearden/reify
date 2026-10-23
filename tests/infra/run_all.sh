@@ -988,21 +988,28 @@ _ra_emit_run_finish() {
 # _ra_on_exit -- the one EXIT handler: stops the pool's progress printer,
 # removes the pool and serial scratch workdirs, and releases the H9 Lane-X
 # lock if this run holds it. Each branch's explicit stop/release stays the
-# primary path; this is the backstop for an early or signal-driven exit. A
-# SIGKILL bypasses every trap; that residue is the orphaned-test-binary
-# reaper's (docs/notes/orphaned-test-binary-reaper.md).
+# primary path; this is the backstop for an early or signal-driven exit.
+# _ra_on_term calls it too, so it is idempotent: each action clears the state
+# it acted on, and a second call does nothing. A SIGKILL bypasses every trap:
+# the progress printer then stops on its own once run_all's main pid is gone,
+# and the remaining residue is the orphaned-test-binary reaper's
+# (docs/notes/orphaned-test-binary-reaper.md).
 _ra_on_exit() {
     if [ -n "${_h2_progress_pid:-}" ]; then
         kill "$_h2_progress_pid" 2>/dev/null || true
+        _h2_progress_pid=""
     fi
     if [ -n "${_H2_WORKDIR:-}" ]; then
         rm -rf "$_H2_WORKDIR" || true
+        _H2_WORKDIR=""
     fi
     if [ -n "${_RA_SERIAL_WORKDIR:-}" ]; then
         rm -rf "$_RA_SERIAL_WORKDIR" || true
+        _RA_SERIAL_WORKDIR=""
     fi
     if [ "${_RA_LANE_X_HELD:-0}" = "1" ]; then
         lane_x_flock_release || true
+        _RA_LANE_X_HELD=0
     fi
     return 0
 }
@@ -1316,11 +1323,11 @@ _ra_partial_failed_names() {
 # a bare interrupt as a failure is the accepted tradeoff over risking a
 # silent fall-through back to the tree_sitter_generate_error mislabel.
 #
-# Re-raises via `trap - TERM; kill -TERM $$` (rather than `exit`) so the
-# process's recorded exit status reflects signal death (143), and so the
-# _ra_on_exit cleanup still runs AFTER this handler returns -- this
-# handler's `.rc` scan above therefore sees the workdir before that cleanup
-# removes it.
+# Then runs the _ra_on_exit cleanup itself, after the `.rc` scan above has
+# read the workdir it removes. The EXIT trap cannot be relied on for this:
+# the re-raise below does not run it. Re-raises via `trap - TERM; kill -TERM
+# $$` (rather than `exit`) so the process's recorded exit status reflects
+# signal death (143).
 # ---------------------------------------------------------------------------
 _ra_on_term() {
     set +e
@@ -1345,6 +1352,7 @@ _ra_on_term() {
         _ra_emit_run_finish true "${#_names[@]}" "${_names[@]+"${_names[@]}"}"
     } >&"$_RA_RUN_STDOUT_FD" 2>&"$_RA_RUN_STDERR_FD"
 
+    _ra_on_exit >&"$_RA_RUN_STDOUT_FD" 2>&"$_RA_RUN_STDERR_FD"
     trap - TERM
     kill -TERM $$
 }
@@ -2306,8 +2314,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # configured, instead of hanging the caller for the whole
             # interval (e.g. up to 3600s at the ceiling exercised by
             # Test 22's fast-pool fixture).
+            # Also stops once run_all's main shell ($$, here as in the
+            # parent) is gone: a SIGKILL'd run_all runs no cleanup, so its
+            # workdir outlives it.
             _h2_slept=0
-            while [ -d "$_H2_WORKDIR" ]; do
+            while [ -d "$_H2_WORKDIR" ] && kill -0 "$$" 2>/dev/null; do
                 sleep 1
                 _h2_slept=$((_h2_slept + 1))
                 if [ "$_h2_slept" -ge "$_h2_progress_secs" ]; then
