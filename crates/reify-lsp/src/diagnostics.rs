@@ -11,7 +11,7 @@ use tower_lsp::lsp_types::{self, Url};
 use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
 
-/// The eval/check-pass containment guard shared by all three LSP production
+/// The eval/check-pass containment guard shared by both LSP production
 /// entry points — see [`eval_guard`] for the hazard it contains and why it is
 /// its own module.
 pub(crate) mod eval_guard;
@@ -152,12 +152,13 @@ pub struct DiagnosticsResult {
 /// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
 /// in debug builds (root cause owned by task **#6851**; mechanism in
 /// `eval_guard::first_unrepresentable_cell`'s doc — private, so cited by name
-/// rather than as an intra-doc link from this public item). All three LSP
-/// production entry points therefore ask `eval_guard::skip_reason` after
-/// collecting the compile-stage diagnostics, skip the eval/check pass when it
-/// answers `Some`, and report which cell forced the skip — to the server log
-/// at every site, and additionally as an editor-visible Warning at the two
-/// that own a diagnostics list. The user still gets the `E_AUTO_TYPE_PARAM_*`
+/// rather than as an intra-doc link from this public item). Both LSP
+/// production entry points — this function and
+/// `AnalysisContext::from_parsed` — therefore ask `eval_guard::skip_reason`
+/// after collecting the compile-stage diagnostics, skip the eval/check pass
+/// when it answers `Some`, and report which cell forced the skip — to the
+/// server log at both, and additionally as an editor-visible Warning at the
+/// one that owns a diagnostics list, this function. The user still gets the `E_AUTO_TYPE_PARAM_*`
 /// error this section is about where there is one, and the server stays
 /// alive. The guard tests the graph for an unrepresentable cell,
 /// NOT the diagnostics for an error: a compile error that leaves the graph
@@ -208,9 +209,10 @@ pub struct DiagnosticsResult {
 /// LSP-side analog of `cmd_check`'s `check_fea_violated_constraint_is_not_gated`
 /// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`), and also the
 /// lock that task #6798's compile-time checker injection (see the section
-/// above) does not disturb this posture, via an exhaustive probe over every
-/// target `reify_eval::compute_targets::register_compute_fns` registers —
-/// changing this posture requires updating that test intentionally.
+/// above) does not disturb this posture, by observing that every
+/// missing-trampoline diagnostic the engine reports is a Warning, which the
+/// engine picks only when its compute registry is empty — changing this
+/// posture requires updating that test intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
     source: &str,
@@ -917,16 +919,15 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Compile `parsed` exactly the way the LSP's three production compile
+    /// Compile `parsed` exactly the way the LSP's two production compile
     /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
     /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
     /// the compile-time `CompileTimeIndeterminateChecker` stub.
     ///
     /// Any test below that independently reproduces what
-    /// `compute_diagnostics` / `compute_diagnostics_with_state` compute
-    /// internally (e.g. to precompute a `content_hash` or a `CompiledModule`
-    /// for a follow-up `check`/`check_snapshot` call) MUST route through
-    /// this helper rather than calling `compile_with_stdlib` directly — a
+    /// `compute_diagnostics_with_state` computes internally (e.g. a
+    /// `CompiledModule` for a hand-built engine or a span lookup) MUST route
+    /// through this helper rather than calling `compile_with_stdlib` directly — a
     /// stub-compiled mirror agrees with production only by coincidence
     /// today (no fixture below carries an `auto:` clause), and would
     /// silently drift the moment one does.
@@ -2807,8 +2808,8 @@ structure S {
     // Each test builds a ParsedModule with a specialization scope
     // (`MemberDecl::Sub { body: Some(_) }`), drives it through
     // `reify_compiler::compile_with_stdlib`, converts every compiler diagnostic
-    // through `convert::convert_diagnostic` (mirroring the post-parse half of
-    // `compute_diagnostics`), then filters to
+    // through `convert::convert_diagnostic` (mirroring the compile stage of
+    // `compute_diagnostics_with_state`), then filters to
     // `code == "SpecializationForbiddenDecl"` before asserting.
     //
     // AST-builder helpers are imported from

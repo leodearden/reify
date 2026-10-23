@@ -512,10 +512,9 @@ impl LanguageServer for ReifyLanguageServer {
             //
             // ONE DELIBERATE RESIDUAL: diagnostics/eval_guard.rs's
             // `SkippedEval::report_to_log` still writes to stderr. Out of
-            // scope for #6329 because `skip_reason` has three production
-            // entry points and two of them (the stateless
-            // `compute_diagnostics`, and `AnalysisContext::from_parsed`)
-            // have no channel to route to — deciding how a sinkless pure
+            // scope for #6329 because `skip_reason` has two production
+            // entry points and one of them (`AnalysisContext::from_parsed`)
+            // has no channel to route to — deciding how a sinkless pure
             // entry point reports is a separate design question. The hazard
             // class above is already absent there regardless: that site is
             // throttled by `LAST_REPORTED_SKIP` to one line per distinct
