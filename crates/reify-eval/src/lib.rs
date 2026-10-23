@@ -112,6 +112,8 @@ pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
+mod engine_viewport_attribution;
+mod unmeasured_attribution;
 mod geometry_ops;
 pub(crate) mod kernel_owner;
 pub(crate) mod volume_mesh_sources;

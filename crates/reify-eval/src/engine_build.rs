@@ -12396,8 +12396,15 @@ impl Engine {
         );
 
         // Check constraints (guard-aware)
-        let (constraint_results, mut diagnostics) =
+        let (mut constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
+        // The measurements this surface never takes (engine_viewport_attribution.rs).
+        self.attribute_viewport_unmeasured(
+            module,
+            &values,
+            &mut constraint_results,
+            &mut diagnostics,
+        );
 
         // Task 2874 (amendment): emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)

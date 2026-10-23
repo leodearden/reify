@@ -162,3 +162,7 @@ mod indeterminate_reason_carrier_e2e;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/solver_posture_construction.rs"]
 mod solver_posture_construction;
+// Task #6667's viewport-attribution pins land here for the same anti-re-accretion
+// reason as #5196's and #5360's above.
+#[path = "harness_engine/viewport_unmeasured_attribution.rs"]
+mod viewport_unmeasured_attribution;
