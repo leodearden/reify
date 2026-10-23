@@ -61,10 +61,12 @@ impl<'t> SubInstance<'t> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
 
     use reify_core::{Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+    use reify_ir::{
+        BinOp, CompiledExpr, CompiledExprKind, GeometryHandleId, KernelHandle, KernelId,
+    };
     use reify_test_support::parse_and_compile_with_stdlib;
 
     use super::direct_sub_instances;
@@ -159,5 +161,38 @@ structure def MiniParent {
         .into_iter()
         .collect();
         assert_eq!(value_ref_ids(&rescoped), expected);
+    }
+
+    fn occt_handle(id: u64) -> KernelHandle {
+        KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(id),
+        }
+    }
+
+    #[test]
+    fn named_steps_view_strips_only_this_subs_prefix() {
+        let compiled = compile_mini();
+        let parent = mini_parent(&compiled);
+        let instance = direct_sub_instances(parent, &compiled.templates)
+            .next()
+            .expect("MiniParent has one direct instance");
+
+        let parent_steps: HashMap<String, KernelHandle> = [
+            ("body", 1),
+            ("c.body", 2),
+            ("c.inner.body", 3),
+            ("c2.body", 4),
+            ("cs.body", 5),
+        ]
+        .into_iter()
+        .map(|(name, id)| (name.to_string(), occt_handle(id)))
+        .collect();
+
+        let expected: HashMap<String, KernelHandle> = [("body", 2), ("inner.body", 3)]
+            .into_iter()
+            .map(|(name, id)| (name.to_string(), occt_handle(id)))
+            .collect();
+        assert_eq!(instance.named_steps_view(&parent_steps), expected);
     }
 }
