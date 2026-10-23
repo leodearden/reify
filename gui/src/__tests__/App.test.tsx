@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
 import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
+import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
   SAVE_CONFLICT_RELOAD_LABEL,
@@ -69,12 +70,13 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, and liveContentRef for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, liveContentRef, and onShowReferences for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
 let capturedEditorCompileDiagnostics: any = undefined;
 let capturedEditorLiveContentRef: ((getter: () => string | null) => void) | undefined = undefined;
+let capturedEditorOnShowReferences: ((results: ReferenceResult[]) => void) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
@@ -82,6 +84,7 @@ vi.mock('../editor/Editor', () => ({
     capturedEditorScrollToLocation = props.scrollToLocation;
     capturedEditorCompileDiagnostics = props.compileDiagnostics;
     capturedEditorLiveContentRef = props.liveContentRef;
+    capturedEditorOnShowReferences = props.onShowReferences;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -223,6 +226,7 @@ beforeEach(() => {
   capturedEditorScrollToLocation = undefined;
   capturedEditorCompileDiagnostics = undefined;
   capturedEditorLiveContentRef = undefined;
+  capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
@@ -1021,6 +1025,75 @@ describe('App navigation wiring', () => {
         end_column: 9,
       });
     });
+  });
+});
+
+describe('Find-uses panel navigation (task 9203)', () => {
+  const mainOnlyState: GuiState = {
+    ...emptyState,
+    files: [{ path: '/proj/main.ri', content: 'structure Main {}' }],
+  };
+
+  function reference(uri: string): ReferenceResult {
+    return { uri, line: 2, character: 4, endLine: 2, endCharacter: 9 };
+  }
+
+  /** Renders App with main.ri active; the returned function shows `results` and clicks the first row. */
+  async function renderWithReferences(results: ReferenceResult[]): Promise<() => Promise<void>> {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(mainOnlyState));
+    render(() => <App />);
+    await waitFor(() => expect(capturedEditorOnShowReferences).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore?.state.activeFile).toBe('/proj/main.ri'));
+    return async () => {
+      capturedEditorOnShowReferences!(results);
+      fireEvent.click(await waitFor(() => screen.getByTestId('find-use-row')));
+    };
+  }
+
+  it('cross-file, not open: opens the PATH (not the URI), activates it, and scrolls under its key', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/parts.ri')]);
+    vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '/proj/parts.ri', content: 'structure Part {}' });
+
+    await clickReference();
+
+    await waitFor(() => expect(bridge.openFile).toHaveBeenCalledWith('/proj/parts.ri'));
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/parts.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('find-uses-panel')).toBeNull());
+  });
+
+  it('cross-file, already open: activates the existing tab without opening it again', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/parts.ri')]);
+    capturedEditorStore.openFile({ path: '/proj/parts.ri', content: 'structure Part {}' });
+    capturedEditorStore.setActiveFile('/proj/main.ri');
+
+    await clickReference();
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/parts.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('same-file: scrolls under the path spelling without opening anything', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/main.ri')]);
+
+    await clickReference();
+
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/main.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(capturedEditorStore.state.activeFile).toBe('/proj/main.ri');
   });
 });
 
