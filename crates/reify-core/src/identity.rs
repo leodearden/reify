@@ -233,6 +233,142 @@ impl std::str::FromStr for ValueCellId {
     }
 }
 
+/// The four index-addressed node kinds, which share ONE rendered grammar,
+/// `"<entity>#<marker>[<index>]"`, and differ only in their marker word.
+///
+/// Every indexed id's [`Display`](fmt::Display) renders through
+/// [`marker`](Self::marker) and every indexed id's
+/// [`FromStr`](std::str::FromStr) parses through the same grammar, so the two
+/// directions cannot disagree about a marker. That grammar:
+///
+/// * anchors on the LAST `"#<marker>["`, so an entity may itself contain `'#'`
+///   (and `'.'`, `':'`, `'@'`, hyphens — no identifier charset is imposed);
+/// * forbids the structural delimiters `'/'`, `'['` and `']'` in the entity,
+///   which keeps the mapping unambiguous (`'/'` also introduces a
+///   `FeatureId`'s sub-feature suffix in reify-ir);
+/// * requires the index to be all ASCII digits fitting a `u32`, followed by
+///   the closing `']'` and nothing else.
+///
+/// Parsing is therefore the exact inverse of Display over every entity the
+/// grammar admits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IndexedNodeKind {
+    Constraint,
+    Realization,
+    Resolution,
+    Compute,
+}
+
+impl IndexedNodeKind {
+    pub const ALL: [IndexedNodeKind; 4] = [
+        IndexedNodeKind::Constraint,
+        IndexedNodeKind::Realization,
+        IndexedNodeKind::Resolution,
+        IndexedNodeKind::Compute,
+    ];
+
+    /// The word between `'#'` and `'['` in this kind's rendered ids.
+    pub const fn marker(self) -> &'static str {
+        match self {
+            IndexedNodeKind::Constraint => "constraint",
+            IndexedNodeKind::Realization => "realization",
+            IndexedNodeKind::Resolution => "resolution",
+            IndexedNodeKind::Compute => "computation",
+        }
+    }
+
+    /// The kind whose marker a rendered id names: the text after the LAST
+    /// `'#'`, up to the first `'['` (or to the end), must equal a marker
+    /// exactly. `None` when there is no `'#'` or the segment names no marker.
+    ///
+    /// This only classifies; the id may still be malformed for that kind's
+    /// grammar, which its `FromStr` reports.
+    pub fn of_rendered_id(s: &str) -> Option<Self> {
+        let (_, tail) = s.rsplit_once('#')?;
+        let segment = tail.split_once('[').map_or(tail, |(head, _)| head);
+        Self::ALL.into_iter().find(|kind| kind.marker() == segment)
+    }
+
+    fn write_rendered(self, f: &mut fmt::Formatter<'_>, entity: &str, index: u32) -> fmt::Result {
+        write!(f, "{entity}#{}[{index}]", self.marker())
+    }
+
+    fn parse_rendered(self, s: &str) -> Result<(&str, u32), IndexedNodeIdParseError> {
+        let fail = |fault| IndexedNodeIdParseError { kind: self, fault };
+        let opener = format!("#{}[", self.marker());
+        let (entity, rest) = s
+            .rsplit_once(opener.as_str())
+            .ok_or_else(|| fail(IndexedNodeIdFault::MissingMarker))?;
+        if entity.is_empty() {
+            return Err(fail(IndexedNodeIdFault::EmptyEntity));
+        }
+        if entity.contains(['/', '[', ']']) {
+            return Err(fail(IndexedNodeIdFault::InvalidEntity));
+        }
+        let index_str = rest
+            .strip_suffix(']')
+            .ok_or_else(|| fail(IndexedNodeIdFault::MissingTerminator))?;
+        if index_str.is_empty() || !index_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(fail(IndexedNodeIdFault::InvalidIndex));
+        }
+        let index: u32 = index_str
+            .parse()
+            .map_err(|_| fail(IndexedNodeIdFault::InvalidIndex))?;
+        Ok((entity, index))
+    }
+}
+
+/// Which rule of the [`IndexedNodeKind`] grammar an input broke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexedNodeIdFault {
+    /// The `"#<marker>["` opener was not present.
+    MissingMarker,
+    /// The entity segment (before `"#<marker>["`) was empty.
+    EmptyEntity,
+    /// The entity segment contained a structural delimiter (`'/'`, `'['`, or
+    /// `']'`), which would make the Display↔FromStr mapping ambiguous.
+    InvalidEntity,
+    /// The input did not end with the `"]"` terminator.
+    MissingTerminator,
+    /// The index between the brackets was empty, contained a non-digit, or
+    /// overflowed `u32`.
+    InvalidIndex,
+}
+
+/// Error returned by every indexed id's [`FromStr`](std::str::FromStr) impl:
+/// the `kind` whose grammar was applied and the `fault` it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedNodeIdParseError {
+    pub kind: IndexedNodeKind,
+    pub fault: IndexedNodeIdFault,
+}
+
+impl fmt::Display for IndexedNodeIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let marker = self.kind.marker();
+        match self.fault {
+            IndexedNodeIdFault::MissingMarker => {
+                write!(f, "expected '<entity>#{marker}[<index>]'")
+            }
+            IndexedNodeIdFault::EmptyEntity => {
+                write!(f, "{marker} node id has an empty entity segment")
+            }
+            IndexedNodeIdFault::InvalidEntity => write!(
+                f,
+                "{marker} node id entity must not contain '/', '[', or ']'"
+            ),
+            IndexedNodeIdFault::MissingTerminator => {
+                write!(f, "{marker} node id must end with ']'")
+            }
+            IndexedNodeIdFault::InvalidIndex => {
+                write!(f, "{marker} node id index must be a u32")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IndexedNodeIdParseError {}
+
 /// Identifies a constraint node in the topology graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstraintNodeId {
@@ -251,7 +387,18 @@ impl ConstraintNodeId {
 
 impl fmt::Display for ConstraintNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#constraint[{}]", self.entity, self.index)
+        IndexedNodeKind::Constraint.write_rendered(f, &self.entity, self.index)
+    }
+}
+
+impl std::str::FromStr for ConstraintNodeId {
+    type Err = IndexedNodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, index) = IndexedNodeKind::Constraint.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -273,83 +420,18 @@ impl RealizationNodeId {
 
 impl fmt::Display for RealizationNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#realization[{}]", self.entity, self.index)
+        IndexedNodeKind::Realization.write_rendered(f, &self.entity, self.index)
     }
 }
-
-/// Error returned by [`RealizationNodeId`]'s [`FromStr`](std::str::FromStr) impl
-/// when the input does not match the `"<entity>#realization[<index>]"` Display
-/// grammar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RealizationNodeIdParseError {
-    /// The `"#realization["` marker was not present.
-    MissingMarker,
-    /// The entity segment (before `"#realization["`) was empty.
-    EmptyEntity,
-    /// The entity segment contained a structural delimiter (`'/'`, `'['`, or
-    /// `']'`), which would make the Display↔FromStr mapping ambiguous.
-    InvalidEntity,
-    /// The input did not end with the `"]"` terminator.
-    MissingTerminator,
-    /// The index between the brackets was empty, contained a non-digit, or
-    /// overflowed `u32`.
-    InvalidIndex,
-}
-
-impl fmt::Display for RealizationNodeIdParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RealizationNodeIdParseError::MissingMarker => {
-                write!(f, "expected '<entity>#realization[<index>]'")
-            }
-            RealizationNodeIdParseError::EmptyEntity => {
-                write!(f, "realization node id has an empty entity segment")
-            }
-            RealizationNodeIdParseError::InvalidEntity => write!(
-                f,
-                "realization node id entity must not contain '/', '[', or ']'"
-            ),
-            RealizationNodeIdParseError::MissingTerminator => {
-                write!(f, "realization node id must end with ']'")
-            }
-            RealizationNodeIdParseError::InvalidIndex => {
-                write!(f, "realization node id index must be a u32")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RealizationNodeIdParseError {}
 
 impl std::str::FromStr for RealizationNodeId {
-    type Err = RealizationNodeIdParseError;
+    type Err = IndexedNodeIdParseError;
 
-    /// Parse the `"<entity>#realization[<index>]"` Display grammar back into a
-    /// [`RealizationNodeId`]. This is the exact inverse of [`fmt::Display`] and
-    /// round-trips any Display output, including hyphenated entities — no strict
-    /// identifier charset is imposed (only the structural delimiters `'/'`,
-    /// `'['`, `']'` are forbidden in the entity). Anchors on the *last*
-    /// `"#realization["` marker so the mapping stays unambiguous.
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (entity, rest) = s
-            .rsplit_once("#realization[")
-            .ok_or(RealizationNodeIdParseError::MissingMarker)?;
-        if entity.is_empty() {
-            return Err(RealizationNodeIdParseError::EmptyEntity);
-        }
-        if entity.contains(['/', '[', ']']) {
-            return Err(RealizationNodeIdParseError::InvalidEntity);
-        }
-        let index_str = rest
-            .strip_suffix(']')
-            .ok_or(RealizationNodeIdParseError::MissingTerminator)?;
-        if index_str.is_empty() || !index_str.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(RealizationNodeIdParseError::InvalidIndex);
-        }
-        let index: u32 = index_str
-            .parse()
-            .map_err(|_| RealizationNodeIdParseError::InvalidIndex)?;
-        Ok(RealizationNodeId::new(entity, index))
+        let (entity, index) = IndexedNodeKind::Realization.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -371,7 +453,18 @@ impl ResolutionNodeId {
 
 impl fmt::Display for ResolutionNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#resolution[{}]", self.entity, self.index)
+        IndexedNodeKind::Resolution.write_rendered(f, &self.entity, self.index)
+    }
+}
+
+impl std::str::FromStr for ResolutionNodeId {
+    type Err = IndexedNodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, index) = IndexedNodeKind::Resolution.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -393,7 +486,18 @@ impl ComputeNodeId {
 
 impl fmt::Display for ComputeNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#computation[{}]", self.entity, self.index)
+        IndexedNodeKind::Compute.write_rendered(f, &self.entity, self.index)
+    }
+}
+
+impl std::str::FromStr for ComputeNodeId {
+    type Err = IndexedNodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] over every entity the
+    /// [`IndexedNodeKind`] grammar admits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, index) = IndexedNodeKind::Compute.parse_rendered(s)?;
+        Ok(Self::new(entity, index))
     }
 }
 
@@ -731,7 +835,7 @@ mod tests {
     fn realization_node_id_from_str_rejects_overflowing_index() {
         // All-ascii-digit, so it passes the pre-parse digit guard, but the value
         // exceeds u32::MAX — only the `index_str.parse::<u32>()` step rejects it.
-        // Pins the overflow branch promised by RealizationNodeIdParseError::
+        // Pins the overflow branch promised by IndexedNodeIdFault::
         // InvalidIndex's doc comment so a future refactor that drops `.parse()`
         // (e.g. building the u32 from digit bytes by hand) can't silently regress.
         assert!("Foo#realization[99999999999]"
@@ -807,11 +911,17 @@ mod tests {
             (format!("a[b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
             (format!("a]b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
             (format!("Foo#{m}[0"), IndexedNodeIdFault::MissingTerminator),
-            (format!("Foo#{m}[0]junk"), IndexedNodeIdFault::MissingTerminator),
+            (
+                format!("Foo#{m}[0]junk"),
+                IndexedNodeIdFault::MissingTerminator,
+            ),
             (format!("Foo#{m}[]"), IndexedNodeIdFault::InvalidIndex),
             (format!("Foo#{m}[x]"), IndexedNodeIdFault::InvalidIndex),
             (format!("Foo#{m}[-1]"), IndexedNodeIdFault::InvalidIndex),
-            (format!("Foo#{m}[99999999999]"), IndexedNodeIdFault::InvalidIndex),
+            (
+                format!("Foo#{m}[99999999999]"),
+                IndexedNodeIdFault::InvalidIndex,
+            ),
         ];
         for (input, fault) in rejections {
             assert_eq!(
@@ -840,8 +950,14 @@ mod tests {
     fn indexed_node_kind_of_rendered_id_reads_the_last_marker() {
         for k in IndexedNodeKind::ALL {
             let m = k.marker();
-            assert_eq!(IndexedNodeKind::of_rendered_id(&format!("Foo#{m}[0]")), Some(k));
-            assert_eq!(IndexedNodeKind::of_rendered_id(&format!("Foo#{m}")), Some(k));
+            assert_eq!(
+                IndexedNodeKind::of_rendered_id(&format!("Foo#{m}[0]")),
+                Some(k)
+            );
+            assert_eq!(
+                IndexedNodeKind::of_rendered_id(&format!("Foo#{m}")),
+                Some(k)
+            );
         }
         assert_eq!(
             IndexedNodeKind::of_rendered_id("a#b#realization[1]"),
@@ -855,7 +971,11 @@ mod tests {
             "Foo#constraintx[0]",
             r#"Widget.vents["x#y"]"#,
         ] {
-            assert_eq!(IndexedNodeKind::of_rendered_id(s), None, "{s:?} names no marker");
+            assert_eq!(
+                IndexedNodeKind::of_rendered_id(s),
+                None,
+                "{s:?} names no marker"
+            );
         }
     }
 
