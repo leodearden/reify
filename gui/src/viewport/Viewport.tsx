@@ -414,6 +414,8 @@ export function Viewport(props: ViewportProps) {
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
+      // Untracked: resampleAll reads the probe store, which must not re-run this sync.
+      untrack(() => probeSession()?.system.resampleAll());
 
       // Refresh selection wireframe to reflect updated geometry
       selection.refreshSelected();
