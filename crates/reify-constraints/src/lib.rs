@@ -12,6 +12,7 @@ mod discrete_fallback;
 mod dual_jacobian;
 pub mod relate_solve;
 mod registry;
+pub mod scaling;
 pub mod sketch;
 mod slvs_sys;
 mod solver;
