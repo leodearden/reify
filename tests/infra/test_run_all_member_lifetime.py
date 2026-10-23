@@ -2,18 +2,18 @@
 """
 test_run_all_member_lifetime.py — run_all.sh bounds how long a member lives.
 
-EXECUTES the real tests/infra/run_all.sh on tempdir fixture INFRA_DIRs (the
-recipe of test_run_all_timing.py: fixture classification manifest, private
-pool lock, PSI disabled, flaky ledger isolated, plus a private TMPDIR) and
-checks that:
+EXECUTES the real tests/infra/run_all.sh on tempdir fixture INFRA_DIRs, in
+run_all_fixture.run_all_env's environment plus a private TMPDIR, and checks
+that:
   - a member that outlives REIFY_RUN_ALL_MEMBER_TIMEOUT is killed together
     with its process group, recorded as FAILED with a MEMBER_TIMEOUT line that
     names it, and not retried;
   - a member that ignores SIGTERM is KILLed after
     REIFY_RUN_ALL_MEMBER_KILL_GRACE;
-  - a group SIGTERM to run_all (the merge envelope's shape) still reaches a
-    member that ignores it;
-  - a malformed budget knob is a usage error (exit 64) before any member runs;
+  - a group SIGTERM, SIGINT or SIGHUP to run_all (the merge envelope's shape,
+    a Ctrl-C, a closed terminal) still reaches a member that ignores it;
+  - a malformed seconds knob is a usage error (exit 64) before any member
+    runs, and a leading zero is read as decimal, as GNU timeout reads it;
   - a SIGTERM to run_all's main pid alone removes its pool workdir before
     run_all dies, and neither that nor a SIGKILL leaves its progress printer
     running.
@@ -36,7 +36,6 @@ import os
 import re
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -46,7 +45,7 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
+from run_all_fixture import run_all_env, write_executable  # noqa: E402  (imported after sys.path manipulation)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_ALL = REPO_ROOT / "tests" / "infra" / "run_all.sh"
@@ -68,7 +67,7 @@ bash -c 'exec -a @TOKEN@ sleep 300' &
 bash -c 'exec -a @TOKEN@ sleep 300'
 """,
     "test_swallow.sh": r"""#!/usr/bin/env bash
-trap '' TERM
+trap '' TERM INT HUP
 printf 'attempt\n' >> "$FIXTURE_STATE/$(basename "$0").attempts"
 for _ in $(seq 300); do sleep 1; done
 """,
@@ -93,11 +92,6 @@ TIMEOUT_LINE_RE = re.compile(
 )
 
 
-def write_executable(path, text):
-    path.write_text(text)
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-
 def _strays(*needles):
     """(pid, cmdline) of every live process but this one whose cmdline holds a needle."""
     own = os.getpid()
@@ -113,6 +107,11 @@ def _strays(*needles):
         if any(n in cmdline for n in wanted):
             found.append((int(entry), cmdline.replace(b"\0", b" ").decode(errors="replace").strip()))
     return found
+
+
+def _default_fatal_signals():
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
 
 
 def timeout_lines(text, member):
@@ -152,17 +151,7 @@ class Fixture:
         self.manifest.write_text("".join(f"{name} pool\n" for name in members))
 
     def env(self, knobs):
-        env = {k: v for k, v in hermetic_env().items() if not k.startswith("REIFY_RUN_ALL_")}
-        env.update(
-            RUN_ALL_CLASSIFICATION_MANIFEST=str(self.manifest),
-            REIFY_RUN_ALL_POOL_LOCK=str(self.root / "pool.lock"),
-            REIFY_RUN_ALL_POOL_PSI_DISABLE="1",
-            REIFY_RUN_ALL_FLAKY_LEDGER=str(self.root / "flaky-ledger.jsonl"),
-            TMPDIR=str(self.tmp),
-            FIXTURE_STATE=str(self.state),
-        )
-        env.update(knobs)
-        return env
+        return run_all_env(self.root, self.manifest, TMPDIR=str(self.tmp), FIXTURE_STATE=str(self.state), **knobs)
 
     def argv(self):
         return ["bash", str(RUN_ALL), str(self.infra)]
@@ -178,10 +167,16 @@ class Fixture:
         )
 
     def spawn(self, **knobs):
-        """run_all in a new session (its own process group), stdout+stderr merged."""
+        """run_all in a new session (its own process group), stdout+stderr merged.
+
+        TERM, INT and HUP start at their default disposition: a shell cannot
+        trap a signal it inherits ignored, and this suite may itself run where
+        INT is (a non-interactive shell's background job).
+        """
         proc = subprocess.Popen(
             self.argv(), env=self.env(knobs), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="surrogateescape", start_new_session=True,
+            preexec_fn=_default_fatal_signals,
         )
 
         def stop():
@@ -332,23 +327,30 @@ class StreamPathBudgetTests(unittest.TestCase):
         self.assertEqual(self.strays_after_settle, [])
 
 
-class OuterGroupTermTests(unittest.TestCase):
-    """The merge envelope TERMs run_all's whole process group."""
+class OuterGroupSignalTests(unittest.TestCase):
+    """A signal to run_all's whole process group: the merge envelope's TERM, a Ctrl-C's INT, a closed terminal's HUP.
 
-    def test_group_term_reaches_a_member_that_ignores_it(self):
-        fixture = Fixture(self.addCleanup, ["test_swallow.sh"])
-        proc = fixture.spawn(
-            REIFY_RUN_ALL_POOL_CONCURRENCY="1",
-            REIFY_RUN_ALL_MEMBER_TIMEOUT="600",
-            REIFY_RUN_ALL_MEMBER_KILL_GRACE=str(GRACE_S),
-        )
-        if not fixture.wait_for_attempt("test_swallow.sh", proc):
-            out = proc.communicate(timeout=RUN_TIMEOUT_S)[0] if proc.poll() is not None else ""
-            self.fail(f"test_swallow.sh never started\n{out}")
-        os.killpg(proc.pid, signal.SIGTERM)
-        out, _ = proc.communicate(timeout=RUN_TIMEOUT_S)
-        self.assertIn("INTERRUPTED", out)
-        self.assertEqual(fixture.settle(), [], out)
+    The member runs in a process group of its own, which none of them reach
+    directly.
+    """
+
+    def test_group_signal_reaches_a_member_that_ignores_it(self):
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            with self.subTest(signal=sig.name):
+                fixture = Fixture(self.addCleanup, ["test_swallow.sh"])
+                proc = fixture.spawn(
+                    REIFY_RUN_ALL_POOL_CONCURRENCY="1",
+                    REIFY_RUN_ALL_MEMBER_TIMEOUT="600",
+                    REIFY_RUN_ALL_MEMBER_KILL_GRACE=str(GRACE_S),
+                )
+                if not fixture.wait_for_attempt("test_swallow.sh", proc):
+                    out = proc.communicate(timeout=RUN_TIMEOUT_S)[0] if proc.poll() is not None else ""
+                    self.fail(f"test_swallow.sh never started\n{out}")
+                os.killpg(proc.pid, sig)
+                out, _ = proc.communicate(timeout=RUN_TIMEOUT_S)
+                if sig == signal.SIGTERM:
+                    self.assertIn("INTERRUPTED", out)
+                self.assertEqual(fixture.settle(), [], out)
 
 
 class SignalToRunAllPidTests(unittest.TestCase):
@@ -391,16 +393,28 @@ class SignalToRunAllPidTests(unittest.TestCase):
 
 
 class KnobValidationTests(unittest.TestCase):
-    def test_malformed_budget_knob_exits_64_before_any_member(self):
+    def test_malformed_seconds_knob_exits_64_before_any_member(self):
         fixture = Fixture(self.addCleanup, ["test_ok.sh"])
-        for knob in ("REIFY_RUN_ALL_MEMBER_TIMEOUT", "REIFY_RUN_ALL_MEMBER_KILL_GRACE"):
-            for value in ("abc", "0", "-5", "unlimited"):
+        for knob in ("REIFY_RUN_ALL_MEMBER_TIMEOUT", "REIFY_RUN_ALL_MEMBER_KILL_GRACE", "REIFY_RUN_ALL_POOL_WAIT"):
+            for value in ("abc", "0", "00", "-5", "unlimited"):
                 with self.subTest(knob=knob, value=value):
                     fixture.reset_attempts()
                     run = fixture.run(**{knob: value})
                     self.assertEqual(run.returncode, 64, run.stdout + run.stderr)
                     self.assertIn(knob, run.stderr)
                     self.assertEqual(fixture.attempts("test_ok.sh"), 0)
+
+    def test_a_leading_zero_budget_is_decimal_seconds(self):
+        # 09 is not an octal number, so bash arithmetic rejects it while GNU
+        # timeout reads it as 9.
+        fixture = Fixture(self.addCleanup, ["test_hang.sh"])
+        run = fixture.run(REIFY_RUN_ALL_MEMBER_TIMEOUT="09", REIFY_RUN_ALL_MEMBER_KILL_GRACE="02")
+        output = run.stdout + run.stderr
+        self.assertEqual(run.returncode, 1, output)
+        self.assertEqual(bare_failed_names(run.stdout), [["test_hang.sh"]], output)
+        lines = timeout_lines(failed_detail(run.stdout, "test_hang.sh") or "", "test_hang.sh")
+        self.assertEqual([(line["budget"], line["rc"]) for line in lines], [("9", "124")], output)
+        self.assertEqual(fixture.settle(), [], output)
 
 
 if __name__ == "__main__":

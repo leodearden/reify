@@ -106,17 +106,30 @@
 #                                   <name> exceeded ...` line on stderr, and is
 #                                   never retried. Mechanism:
 #                                   run-all-member-budget-lib.sh.
-#                                   Sized so that POOL_WAIT + budget + grace
-#                                   (1800 + 1200 + 30) stays inside verify.sh's
-#                                   60m merge envelope. Must be a positive
-#                                   integer (exit 64 otherwise); there is no
-#                                   "unlimited".
+#                                   Bounds ONE member, not the run: sized so
+#                                   that one member's POOL_WAIT + budget +
+#                                   grace (1800 + 1200 + 30) stays inside
+#                                   verify.sh's 60m merge envelope, so a single
+#                                   stuck member ends as a named FAILED rather
+#                                   than the envelope's anonymous INTERRUPTED.
+#                                   The serial phases run members one after
+#                                   another, so two slow members there (or a
+#                                   slow pool member and a slow serial one) can
+#                                   still reach the envelope.
+#                                   Must be a positive integer (exit 64
+#                                   otherwise; a leading zero is decimal);
+#                                   there is no "unlimited".
 #   REIFY_RUN_ALL_MEMBER_KILL_GRACE seconds between that TERM and a KILL of
 #                                   whatever in the member's group survived it
 #                                   (default 30). Must be a positive integer
-#                                   (exit 64 otherwise), and must stay below
-#                                   the merge envelope's own --kill-after (60),
-#                                   so a member's KILL lands before run_all's.
+#                                   (exit 64 otherwise). The member's own
+#                                   timeout process counts the grace and sends
+#                                   the KILL, so it lands even when run_all is
+#                                   gone by then. With the default it lands
+#                                   before the merge envelope's --kill-after
+#                                   (60) KILLs run_all; a larger grace works,
+#                                   but a member that ignores TERM then
+#                                   outlives run_all by the difference.
 #   REIFY_RUN_ALL_POOL_PSI_PROC_PATH   PSI source (default /proc/pressure/cpu)
 #   REIFY_RUN_ALL_POOL_PSI_THRESHOLD   avg10 ceiling (default 85; soft)
 #   REIFY_RUN_ALL_POOL_PSI_ATTEMPTS    load_tolerant_attempts base (default 3)
@@ -1887,23 +1900,27 @@ fi
 # here, after the count-only probe (which runs no member) and before the
 # branch chain, so every path runs its members under them. Shell-local, never
 # exported: no member inherits them. Load-bearing, so a malformed value exits
-# 64 like REIFY_RUN_ALL_POOL_WAIT's.
+# 64.
 # ---------------------------------------------------------------------------
-# _ra_require_positive_seconds <knob> <value> -- exit 64 unless <value> is a
-# positive integer.
-_ra_require_positive_seconds() {
-    case "$2" in
+# _ra_resolve_seconds_knob <var> <knob> <default> [<hint>]
+#   The one validation of a seconds knob. Sets <var> to the value of the
+#   variable named <knob> (<default> when unset or empty), written as a plain
+#   decimal: bash arithmetic would read a leading zero as octal, while GNU
+#   timeout reads it as decimal. Exits 64 unless the value is a positive
+#   integer; <hint>, when given, ends the malformed-value message.
+_ra_resolve_seconds_knob() {
+    local _raw="${!2:-$3}"
+    case "$_raw" in
         ''|*[!0-9]*)
-            echo "ERROR: run_all.sh: $1 must be a positive integer number of seconds (got '$2')" >&2
+            echo "ERROR: run_all.sh: $2 must be a positive integer number of seconds (got '$_raw')${4:+; $4}" >&2
             exit 64
             ;;
     esac
-    [ "$2" -ge 1 ] 2>/dev/null || { echo "ERROR: run_all.sh: $1 must be >= 1 (got '$2')" >&2; exit 64; }
+    [ "$_raw" -ge 1 ] 2>/dev/null || { echo "ERROR: run_all.sh: $2 must be >= 1 (got '$_raw')" >&2; exit 64; }
+    printf -v "$1" '%d' "$((10#$_raw))"
 }
-_RA_MEMBER_TIMEOUT="${REIFY_RUN_ALL_MEMBER_TIMEOUT:-1200}"
-_RA_MEMBER_KILL_GRACE="${REIFY_RUN_ALL_MEMBER_KILL_GRACE:-30}"
-_ra_require_positive_seconds REIFY_RUN_ALL_MEMBER_TIMEOUT "$_RA_MEMBER_TIMEOUT"
-_ra_require_positive_seconds REIFY_RUN_ALL_MEMBER_KILL_GRACE "$_RA_MEMBER_KILL_GRACE"
+_ra_resolve_seconds_knob _RA_MEMBER_TIMEOUT REIFY_RUN_ALL_MEMBER_TIMEOUT 1200
+_ra_resolve_seconds_knob _RA_MEMBER_KILL_GRACE REIFY_RUN_ALL_MEMBER_KILL_GRACE 30
 command -v timeout >/dev/null 2>&1 || {
     echo "ERROR: run_all.sh: the per-member budget needs GNU timeout (coreutils) on PATH" >&2
     exit 1
@@ -2042,7 +2059,6 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # identical policy. Keep both host-global lock defaults in sync if either
     # changes.
     _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-/tmp/reify-run-all-pool-$(id -u).lock}"
-    _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
 
     # Reject non-integer values -- notably slot_acquire's own "unlimited"
     # sentinel (lib_slot_acquire.sh), which it would otherwise honor verbatim
@@ -2050,15 +2066,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # SOFT admission that never hangs (admits unslotted on deadline); letting
     # "unlimited" through would silently defeat that guarantee on a
     # wedged/over-subscribed host-global semaphore. Fail fast instead, before
-    # any discovery/execution work, mirroring the REIFY_RUN_ALL_POOL_CONCURRENCY
-    # validation style below.
-    case "$_H2_POOL_WAIT" in
-        ''|*[!0-9]*)
-            echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be a positive integer number of seconds (got '${_H2_POOL_WAIT}'); the slot_acquire 'unlimited' sentinel is not supported here -- it would defeat the pool's never-hang soft-admission guarantee" >&2
-            exit 64
-            ;;
-    esac
-    [ "$_H2_POOL_WAIT" -ge 1 ] || { echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be >= 1 (got '${_H2_POOL_WAIT}')" >&2; exit 64; }
+    # any discovery/execution work.
+    _ra_resolve_seconds_knob _H2_POOL_WAIT REIFY_RUN_ALL_POOL_WAIT 1800 \
+        "the slot_acquire 'unlimited' sentinel is not supported here -- it would defeat the pool's never-hang soft-admission guarantee"
 
     # Clock-stop reason token for the pool worker's slot_acquire wait (task
     # #5147). Passed as slot_acquire's optional 4th REASON arg so a REAL

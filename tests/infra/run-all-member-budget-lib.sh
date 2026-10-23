@@ -56,12 +56,12 @@ member_budget_run() (
     while :; do
         _mb_relayed=0 _mb_rc=0
         wait "$_mb_pid" 2>/dev/null || _mb_rc=$?
-        # A forwarded signal ends the wait early, with 128+n, while timeout is
-        # still tearing the group down. Wait again for timeout's own status.
-        if [ "$_mb_relayed" = 1 ] && kill -0 "$_mb_pid" 2>/dev/null; then
-            continue
-        fi
-        break
+        # A forwarded signal can end the wait early, with 128+n, before
+        # timeout's own status is in. Wait again: bash keeps a child's status
+        # after reaping it, and after a wait has returned it, so this wait
+        # returns timeout's status whether timeout is still tearing its group
+        # down, has finished since, or had finished before the signal arrived.
+        [ "$_mb_relayed" = 1 ] || break
     done
     exit "$_mb_rc"
 )
@@ -71,7 +71,8 @@ member_budget_run() (
 #   is a timeout status (124 TERMed, 137 KILLed), AND the run lasted at least
 #   the budget. A command that exits 124 or 137 on its own, before its budget,
 #   is an ordinary failure. An elapsed time that is not an integer number of
-#   milliseconds never counts as a budget expiry.
+#   milliseconds never counts as a budget expiry. Both numbers are decimal,
+#   leading zeros included, as GNU timeout reads the budget.
 member_budget_exceeded() {
     case "$1" in
         124|137) ;;
@@ -79,5 +80,5 @@ member_budget_exceeded() {
     esac
     [[ "$2" =~ ^[0-9]+$ ]] || return 1
     [[ "$3" =~ ^[0-9]+$ ]] || return 1
-    [ "$2" -ge $(( $3 * 1000 )) ]
+    [ "$2" -ge $(( 10#$3 * 1000 )) ]
 }
