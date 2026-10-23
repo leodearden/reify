@@ -24,7 +24,7 @@ import {
   FeaDiagnosticsPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
-import type { ReferenceResult } from './editor/references';
+import { referenceSourceLocation, type ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
@@ -86,7 +86,10 @@ import {
   navigateToSource,
   navigateToEntity,
   navigateFromConstraint,
+  createLocationNavigator,
+  type OpenFailureReporter,
 } from './navigation';
+import { diagnosticSourceLocation } from './panels/diagnosticsView';
 import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DisplayDirective, MeshData, AppearanceDirective, DisplayStyleData } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
@@ -108,77 +111,6 @@ import styles from './App.module.css';
 
 export const NEW_FILE_TEMPLATE = '// New design\n';
 
-/** Minimal structural interface required by {@link navigateToDiagnostic}.
- *  Using a structural interface keeps the function testable without depending
- *  on the concrete createEditorStore return type. */
-export interface NavigateToDiagnosticStore {
-  state: {
-    activeFile: string | null;
-    openFiles: Pick<FileData, 'path'>[];
-  };
-  setActiveFile: (path: string) => void;
-  openFile: (file: FileData) => void;
-}
-
-/**
- * Navigate the editor to a diagnostic location.
- *
- * Extracted from handleNavigateToDiagnostic so it is dependency-injected and
- * unit-testable without rendering App. Follows the precedent of
- * gotoDefinitionCommand / resolveAndNavigate (task 4206).
- *
- * Logic (implemented incrementally across γ steps):
- *  (1) Refuse span-less diagnostics (has_location === false) — strict === false
- *      so absent/undefined or true keep navigating (α's default-true contract).
- *  (2) Same-file: call setScrollToLocation only.
- *  (3) Already-open cross-file: setActiveFile then setScrollToLocation (step-4).
- *  (4) Not-open cross-file: openFile from disk then setScrollToLocation (step-6).
- *  (5) Open failure: error toast; no scroll (step-8).
- */
-export async function navigateToDiagnostic(
-  d: DiagnosticEntry,
-  deps: {
-    store: NavigateToDiagnosticStore;
-    openFile: (path: string) => Promise<FileData>;
-    setScrollToLocation: (loc: SourceLocation) => void;
-    showToast: (message: string, type: ToastMessage['type']) => void;
-  },
-): Promise<void> {
-  // (1) Refuse synthetic span-less diagnostics.
-  if (d.has_location === false) return;
-
-  const loc: SourceLocation = {
-    file_path: d.file_path,
-    line: d.line,
-    column: d.column,
-    end_line: d.end_line,
-    end_column: d.end_column,
-  };
-
-  const active = deps.store.state.activeFile;
-  if (!(active && isSameFile(d.file_path, active))) {
-    // (3) Cross-file: file is already open in a tab → switch to it.
-    const open = deps.store.state.openFiles.find((f) => isSameFile(f.path, d.file_path));
-    if (open) {
-      // (3) Already-open cross-file: just activate.
-      deps.store.setActiveFile(open.path);
-    } else {
-      // (4) Not yet open: read from disk and load into the store.
-      try {
-        const fileData = await deps.openFile(d.file_path);
-        deps.store.openFile(fileData);
-      } catch (err) {
-        deps.showToast(`Could not open ${d.file_path}: ${errorMessage(err)}`, 'error');
-        return;
-      }
-    }
-  }
-
-  // All non-error paths fall through here so the scroll fires AFTER any
-  // file-switch, guaranteeing the Editor sees the swapped doc first.
-  deps.setScrollToLocation(loc);
-}
-
 /** Type alias for a single pane's computed group (pane index + its realized meshes). */
 export interface PaneGroup {
   pane: number;
@@ -198,7 +130,7 @@ export interface PaneGroup {
  * Pane 0 is design-main; pane ≥ 1 are model panes (Open-Q 3: no phantom panes
  * materialized for dropped directives).
  *
- * Extracted for unit-testability without rendering App (DI pattern, cf. navigateToDiagnostic).
+ * Extracted for unit-testability without rendering App (DI pattern, cf. navigation.ts createLocationNavigator).
  */
 export function computePaneGroups(
   displayPanes: DisplayDirective[],
@@ -982,8 +914,8 @@ const App: Component = () => {
 
   // Diagnostics panel state lives in layoutStore (problemsCollapsed / problemsHeight).
   // Find-uses panel state (Shift+F12 references provider, task 4202 β). Results
-  // are held in native LSP (0-based) coordinates; onNavigate converts to the
-  // 1-based SourceLocation when driving setScrollToLocation.
+  // are held in native LSP (0-based) coordinates; onNavigate converts a row with
+  // referenceSourceLocation and reveals it through revealInEditor.
   const [findUsesOpen, setFindUsesOpen] = createSignal(false);
   const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
@@ -1027,6 +959,29 @@ const App: Component = () => {
 
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
+
+  const navigateToLocation = createLocationNavigator({
+    store: editorStore,
+    openFile: bridgeOpenFile,
+    setScrollToLocation,
+  });
+
+  // A producer's policy for a target file that cannot be opened: explicit
+  // navigations (diagnostics, find-uses, palette, MCP) toast; the best-effort
+  // source reveal of a viewport click only logs.
+  const toastOpenFailure: OpenFailureReporter = (message) => showToast(message, 'error');
+  const logOpenFailure: OpenFailureReporter = (message) =>
+    console.warn('Source reveal skipped:', message);
+
+  // The one door from a source location to the editor: every producer reveals
+  // through here so the target file is opened or activated before the scroll,
+  // and the latest reveal wins. The .catch covers throws outside the
+  // navigator's own disk-read guard.
+  function revealInEditor(loc: SourceLocation, reportOpenFailure: OpenFailureReporter): void {
+    void navigateToLocation(loc, reportOpenFailure).catch((err: unknown) => {
+      showToast(`Navigation error: ${errorMessage(err)}`, 'error');
+    });
+  }
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
   let fitToViewFn: (() => void) | undefined;
   // Live-buffer getter: Editor hands App a closure over the active CM view so
@@ -1040,19 +995,10 @@ const App: Component = () => {
     layoutStore.setProblemsCollapsed((c) => !c);
   }
 
+  // The panel stays open after navigation (docked design — no modal to dismiss).
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
-    // Delegate to the exported, dependency-injected function (γ task-4403).
-    // Panel stays open after navigation (docked design — no modal to dismiss).
-    // .catch handles unexpected synchronous throws from store/signal calls that
-    // bypass the internal try/catch (which only wraps the disk-read path).
-    void navigateToDiagnostic(d, {
-      store: editorStore,
-      openFile: bridgeOpenFile,
-      setScrollToLocation,
-      showToast,
-    }).catch((err: unknown) => {
-      showToast(`Navigation error: ${errorMessage(err)}`, 'error');
-    });
+    const loc = diagnosticSourceLocation(d);
+    if (loc) revealInEditor(loc, toastOpenFailure);
   }
 
   // Refs for splitter max-width clamping
@@ -1490,7 +1436,7 @@ const App: Component = () => {
     {
       subscribe: () =>
         onNavigateToSource(({ file, line, column, end_line, end_column }) => {
-          setScrollToLocation({ file_path: file, line, column, end_line, end_column });
+          revealInEditor({ file_path: file, line, column, end_line, end_column }, toastOpenFailure);
         }),
       onFailure: (err) => console.warn('Failed to subscribe to navigate-to-source events:', err),
     },
@@ -1912,13 +1858,13 @@ const App: Component = () => {
       return;
     }
     // Plain click or shift+click: selection is applied unconditionally inside
-    // navigateToSource (mirrors the Ctrl+click toggleSelect path). Editor
-    // source-scroll is best-effort — silently skipped for realized/derived
-    // geometry (boolean results, patterns, auto-generated sub-entities) that
-    // has no 1:1 source span.
+    // navigateToSource (mirrors the Ctrl+click toggleSelect path). The source
+    // reveal is best-effort — skipped for realized/derived geometry (boolean
+    // results, patterns, auto-generated sub-entities) that has no 1:1 source
+    // span, and a file that cannot be opened is logged rather than toasted.
     navigateToSource(entityPath, {
       getSourceLocation: bridgeGetSourceLocation,
-      scrollEditor: (loc) => setScrollToLocation(loc),
+      revealLocation: (loc) => revealInEditor(loc, logOpenFailure),
       selectEntity: (ep) => selectionStore.selectEntity(ep),
     });
   }
@@ -2102,7 +2048,7 @@ const App: Component = () => {
           runCommand={(id) => runCommand(id, shortcutCallbacks)}
           fetchSymbols={fetchPaletteSymbols}
           filePath={editorStore.state.activeFile ?? ''}
-          onJumpToLocation={(loc) => setScrollToLocation(loc)}
+          onJumpToLocation={(loc) => revealInEditor(loc, toastOpenFailure)}
           onClose={() => setShowPalette(false)}
           initialMode={paletteMode()}
         />
@@ -2236,17 +2182,7 @@ const App: Component = () => {
             results={findUsesResults()}
             onClose={() => setFindUsesOpen(false)}
             onNavigate={(r) => {
-              // LSP positions are 0-based; SourceLocation/cursor is 1-based (+1).
-              // Reuses the diagnostics setScrollToLocation path, which moves the
-              // cursor AND records the ζ same-file nav-history entry (Editor.tsx
-              // scrollToLocation effect) — so nav-history needs zero new plumbing.
-              setScrollToLocation({
-                file_path: r.uri,
-                line: r.line + 1,
-                column: r.character + 1,
-                end_line: r.endLine + 1,
-                end_column: r.endCharacter + 1,
-              });
+              revealInEditor(referenceSourceLocation(r), toastOpenFailure);
               setFindUsesOpen(false);
             }}
           />

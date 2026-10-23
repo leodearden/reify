@@ -78,9 +78,8 @@ export interface EditorProps {
   /**
    * Called when Shift+F12 (Find uses) resolves references for the symbol under
    * the cursor.  App opens the Find-uses panel with these results.  Results are
-   * in native LSP (0-based) coordinates; the +1 conversion to the editor's
-   * 1-based SourceLocation happens at App's onNavigate click handler, mirroring
-   * the diagnostics setScrollToLocation path.
+   * in native LSP (0-based) coordinates; a navigated row is converted by
+   * referenceSourceLocation and revealed through App's revealInEditor.
    */
   onShowReferences?: (results: ReferenceResult[]) => void;
 }
