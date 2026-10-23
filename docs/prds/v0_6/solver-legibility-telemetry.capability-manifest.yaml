@@ -421,7 +421,7 @@ tasks:
       kind: grep
       pattern: fn cmd_explain
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: term-contributions-already-computed
     binding: capability→producer — TermContribution carries sense, weight, realized_value
@@ -442,7 +442,7 @@ tasks:
       kind: grep
       pattern: No objective provenance recorded
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: stale-anchor-is-repaired-here
     binding: code-anchor hygiene — cmd_explain's own rustdoc cites engine_eval.rs:3884 for
@@ -453,7 +453,7 @@ tasks:
       kind: grep
       pattern: engine_eval.rs:3884
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: absent
   - name: completeness-field-owner-is-p3-zeta
     binding: 'G7 co-tenancy ruling — canonical text is PRD section 8.2 items 1-3 (written by
