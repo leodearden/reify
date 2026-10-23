@@ -41,7 +41,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "bubble-condensation-copies",
         home: "the one guarded bubble-condensation fn (solver-crates-layering D6, leaf γ)",
-        baseline: 2,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "let det_bb =",
             SRC,
@@ -51,7 +51,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "shear-correction-literal",
         home: "ShellSection::SHEAR_CORRECTION (solver-crates-layering D5, leaf γ)",
-        baseline: 2,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "5.0 / 6.0",
             SRC,
@@ -61,7 +61,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "inline-shear-modulus",
         home: "IsotropicElastic::shear_modulus (solver-crates-layering D5, leaf γ)",
-        baseline: 16,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::whole_file(
             "/ (2.0 * (1.0 + nu))",
             SRC,
@@ -71,7 +71,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "thickness-scaled-d-blocks",
         home: "the shared scaled(d, s) helper (solver-crates-layering D6, leaf γ)",
-        baseline: 5,
+        baseline: 0,
         measure: Measure::Occurrences(Pattern::production(
             "td[i][j] = ",
             SRC,
@@ -94,7 +94,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "element-stiffness-data-indexing",
         home: "the ElementStiffness accessors (solver-crates-layering D8, leaf ε)",
-        baseline: 74,
+        baseline: 71,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/mod.rs", "src/resample.rs"],
             ..Pattern::whole_file(".data[", SRC_AND_TESTS, "let v = k_e.data[0];")

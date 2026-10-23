@@ -1,7 +1,7 @@
 //! Element-level shell primitives shared by every shell element, shell
 //! assembly and shell stress recovery: the local mid-surface frame, the
-//! plane-stress constitutive matrix, the CST membrane node-pair block and the
-//! block-diagonal frame rotation.
+//! plane-stress constitutive matrix, the shell section, the CST membrane
+//! node-pair block and the block-diagonal frame rotation.
 //!
 //! It imports nothing above `constitutive`, so the shell modules import
 //! downward from here (PRD `docs/prds/v0_6/solver-crates-layering.md` D4).
@@ -131,6 +131,56 @@ pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
         [nu * factor, factor, 0.0],
         [0.0, 0.0, factor * (1.0 - nu) / 2.0],
     ]
+}
+
+/// The 3×3 matrix `s · d`, entry by entry.
+pub(crate) fn scaled(d: &[[f64; 3]; 3], s: f64) -> [[f64; 3]; 3] {
+    std::array::from_fn(|i| std::array::from_fn(|j| s * d[i][j]))
+}
+
+/// A constant-thickness isotropic shell section: the through-thickness
+/// integrated membrane, bending and transverse-shear moduli that the shell
+/// stiffness and stress-recovery kernels share.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ShellSection {
+    thickness: f64,
+    material: IsotropicElastic,
+}
+
+impl ShellSection {
+    /// Shear-correction factor κ = 5/6: the Reissner value for a rectangular
+    /// cross-section, matching the parabolic through-thickness shear-stress
+    /// profile's energy. A property of the section shape, not of the material.
+    const SHEAR_CORRECTION: f64 = 5.0 / 6.0;
+
+    pub(crate) fn new(thickness: f64, material: IsotropicElastic) -> Self {
+        debug_assert!(
+            thickness.is_finite() && thickness > 0.0,
+            "ShellSection: thickness must be positive and finite, got {thickness}"
+        );
+        Self {
+            thickness,
+            material,
+        }
+    }
+
+    /// Membrane modulus block `t · D_pl`.
+    pub(crate) fn membrane_d(&self) -> [[f64; 3]; 3] {
+        scaled(&plane_stress_d(&self.material), self.thickness)
+    }
+
+    /// Bending modulus block `t³/12 · D_pl`.
+    pub(crate) fn bending_d(&self) -> [[f64; 3]; 3] {
+        let t = self.thickness;
+        scaled(&plane_stress_d(&self.material), t * t * t / 12.0)
+    }
+
+    /// Transverse-shear modulus `κ · G` per unit thickness. It depends on the
+    /// section shape (through κ) and the material, but not on the thickness, so
+    /// it needs no section value.
+    pub(crate) fn shear_kappa_g(material: &IsotropicElastic) -> f64 {
+        Self::SHEAR_CORRECTION * material.shear_modulus()
+    }
 }
 
 /// Inline 3×3 matrix multiply: C = A · B.
@@ -338,7 +388,7 @@ mod tests {
         assert!((d[0][1] - nu * factor).abs() < tol, "d[0][1] = {}", d[0][1]);
         assert!((d[1][0] - nu * factor).abs() < tol, "d[1][0] = {}", d[1][0]);
         // d[2][2] = E/(2(1+ν))
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         assert!((d[2][2] - g).abs() < tol, "d[2][2] = {}", d[2][2]);
         // Off-diagonal block entries are zero
         for (i, j) in [(0, 2), (1, 2), (2, 0), (2, 1)] {
@@ -418,7 +468,7 @@ mod tests {
 
         // Closed-form entries.
         let factor = e / (1.0 - nu * nu);
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let tol = 1e-9 * factor.abs().max(1.0);
         assert!((d[0][0] - factor).abs() < tol, "D[0][0] = {}", d[0][0]);
         assert!((d[1][1] - factor).abs() < tol, "D[1][1] = {}", d[1][1]);
@@ -426,6 +476,70 @@ mod tests {
         assert!((d[1][0] - nu * factor).abs() < tol, "D[1][0] = {}", d[1][0]);
         assert!((d[2][2] - g).abs() < tol, "D[2][2] = {} (expected G = {g})", d[2][2]);
         assert!(d[2][2] > 0.0, "shear term D[2][2] = {} should be positive", d[2][2]);
+    }
+
+    // --- ShellSection tests ---
+
+    #[test]
+    fn shell_section_scales_plane_stress_d_and_carries_five_sixths_shear() {
+        let mat = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        let t = 0.05_f64;
+        let section = ShellSection::new(t, mat);
+        let d = plane_stress_d(&mat);
+        let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs();
+
+        let membrane = section.membrane_d();
+        let bending = section.bending_d();
+        let bending_scale = t * t * t / 12.0;
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    close(membrane[i][j], t * d[i][j]),
+                    "membrane_d[{i}][{j}] = {}, expected t·D = {}",
+                    membrane[i][j],
+                    t * d[i][j],
+                );
+                assert!(
+                    close(bending[i][j], bending_scale * d[i][j]),
+                    "bending_d[{i}][{j}] = {}, expected t³/12·D = {}",
+                    bending[i][j],
+                    bending_scale * d[i][j],
+                );
+            }
+        }
+
+        // κ·G = (5/6)·80e9, written independently as E/3 for E = 200e9, ν = 0.25.
+        let kappa_g = ShellSection::shear_kappa_g(&mat);
+        let expected = 200.0e9 / 3.0;
+        assert!(
+            close(kappa_g, expected),
+            "shear_kappa_g = {kappa_g}, expected {expected}",
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ShellSection: thickness must be positive and finite")]
+    fn shell_section_rejects_non_positive_thickness() {
+        let mat = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        ShellSection::new(0.0, mat);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ShellSection: thickness must be positive and finite")]
+    fn shell_section_rejects_non_finite_thickness() {
+        let mat = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        ShellSection::new(f64::NAN, mat);
     }
 
     #[cfg(debug_assertions)]
