@@ -488,20 +488,21 @@ unsafe impl Sync for OpenVdbKernel {}
 // GeometryKernel trait implementation
 // ---------------------------------------------------------------------------
 
-// Planning vs execution contract note (cross-referenced from register.rs docstring):
+// Planning vs execution contract (cross-referenced from register.rs docstring).
+// Each row of `openvdb_capability_descriptor()` (register.rs) is executed here:
 //
-// The `(Convert{from:Mesh}, Voxel)` entry in `openvdb_capability_descriptor()` (register.rs)
-// is a PLANNING declaration that lets the dispatcher BFS route BRep→Mesh→Voxel two-stage
-// chains. The executable Mesh→Voxel primitive is `realize_voxel_from_mesh_with_options`
-// (defined above). Trait-`execute()` of a terminal Voxel op intentionally returns
-// `GeometryError::OperationFailed` — graceful degradation, pinned by
-// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`.
-// Full execute()-trait routing requires a GeometryOp Mesh-input variant and is task ε scope.
-const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxel handles on both operands. \
-     Direct-call voxelization via realize_voxel_from_mesh_with_options is available; \
-     the descriptor now declares (Convert{from:Mesh}, Voxel) so BRep→Mesh→Voxel chains \
-     are dispatchable. Full execute()-trait routing (GeometryOp Mesh-input variant) \
-     remains future work (task ε).";
+// - `(Convert{from:Mesh}, Voxel)`: the conversion executor (engine_build.rs)
+//   calls `ingest_mesh` / `ingest_mesh_at_resolution`.
+// - `(Convert{from:Voxel}, Mesh)`: the conversion executor calls
+//   `realize_mesh_from_voxel`.
+// - `(BooleanUnion | BooleanDifference | BooleanIntersection, Voxel)`:
+//   `execute()`'s level-set CSG arms (`voxel_boolean`) on two registered grids,
+//   the right operand resampled onto the left's transform when they differ.
+// - `(Surface, Mesh)`: `execute_surface`, a thin finalize over the mesh the
+//   marching-cubes conversion stage already produced.
+//
+// `execute()` also accepts `ApplyTransform` for placement, and rejects every
+// other op naming its kind. `query()` refuses every query.
 
 /// The shape of the three level-set CSG entry points in [`openvdb_ffi`], so
 /// [`OpenVdbKernel::voxel_boolean`] takes the Boolean as a parameter.
@@ -567,8 +568,8 @@ impl OpenVdbKernel {
             )));
         }
         // Task 5033 review fix-forward: a placed isosurface handle (mesh
-        // OR voxel-grid) previously fell through to the
-        // `VOXEL_BOOL_STUB_MSG` `Err` below, so `walk_placed_realizations`
+        // OR voxel-grid) previously fell through to `execute()`'s
+        // catch-all `Err`, so `walk_placed_realizations`
         // (geometry_ops.rs) pushed a "transform application error"
         // diagnostic and silently dropped the realization for any
         // non-identity `at` pose. An `Err` here does NOT satisfy that
@@ -672,7 +673,10 @@ impl GeometryKernel for OpenVdbKernel {
                 *left,
                 *right,
             ),
-            _ => Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into())),
+            other => Err(GeometryError::OperationFailed(format!(
+                "unsupported op {} on openvdb kernel",
+                other.kind_name()
+            ))),
         }
     }
 
@@ -817,8 +821,11 @@ impl GeometryKernel for OpenVdbKernel {
         Ok(GeometryHandle { id, repr: None })
     }
 
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Err(QueryError::QueryFailed(VOXEL_BOOL_STUB_MSG.into()))
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(format!(
+            "unsupported query {} on openvdb kernel",
+            query.kind_name()
+        )))
     }
 
     fn export(
