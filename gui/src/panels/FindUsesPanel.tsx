@@ -6,11 +6,10 @@ import styles from './FindUsesPanel.module.css';
  * Find-uses panel — a focused clone of DiagnosticsPanel for the
  * textDocument/references provider (task 4202 β).
  *
- * Lists every in-scope reference (declaration ∪ uses) returned for the symbol
- * under the cursor when the user presses Shift+F12. Clicking a row navigates to
- * that occurrence via the App-level onNavigate handler (which reuses the
- * diagnostics setScrollToLocation path, so the cursor moves and a nav-history
- * entry is recorded — no new plumbing).
+ * Lists every reference (declaration ∪ uses) returned for the symbol under the
+ * cursor when the user presses Shift+F12; rows may be in other files. Clicking a
+ * row navigates to that occurrence via the App-level onNavigate handler, which
+ * opens or activates the row's file before scrolling (navigateToLocation).
  */
 export interface FindUsesPanelProps {
   open: boolean;

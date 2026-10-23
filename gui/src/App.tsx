@@ -24,7 +24,7 @@ import {
   FeaDiagnosticsPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
-import type { ReferenceResult } from './editor/references';
+import { referenceSourceLocation, type ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
@@ -913,8 +913,8 @@ const App: Component = () => {
 
   // Diagnostics panel state lives in layoutStore (problemsCollapsed / problemsHeight).
   // Find-uses panel state (Shift+F12 references provider, task 4202 β). Results
-  // are held in native LSP (0-based) coordinates; onNavigate converts to the
-  // 1-based SourceLocation when driving setScrollToLocation.
+  // are held in native LSP (0-based) coordinates; onNavigate converts a row with
+  // referenceSourceLocation and reveals it through revealInEditor.
   const [findUsesOpen, setFindUsesOpen] = createSignal(false);
   const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
@@ -2175,17 +2175,7 @@ const App: Component = () => {
             results={findUsesResults()}
             onClose={() => setFindUsesOpen(false)}
             onNavigate={(r) => {
-              // LSP positions are 0-based; SourceLocation/cursor is 1-based (+1).
-              // Reuses the diagnostics setScrollToLocation path, which moves the
-              // cursor AND records the ζ same-file nav-history entry (Editor.tsx
-              // scrollToLocation effect) — so nav-history needs zero new plumbing.
-              setScrollToLocation({
-                file_path: r.uri,
-                line: r.line + 1,
-                column: r.character + 1,
-                end_line: r.endLine + 1,
-                end_column: r.endCharacter + 1,
-              });
+              revealInEditor(referenceSourceLocation(r));
               setFindUsesOpen(false);
             }}
           />
