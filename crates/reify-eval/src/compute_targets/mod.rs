@@ -872,7 +872,7 @@ mod tests {
     /// so `demands_volume_mesh("solver::elastic_static")` is `false` (step-12 wires it).
     #[test]
     fn register_compute_fns_marks_elastic_static_volume_mesh_demand() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         super::register_compute_fns(&mut engine);
 
         assert!(
@@ -914,7 +914,7 @@ mod tests {
     /// `demands_volume_mesh("solver::multi_case")` is `false` (step-6a wires it).
     #[test]
     fn register_compute_fns_marks_multi_case_volume_mesh_demand() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         super::register_compute_fns(&mut engine);
 
         assert!(
@@ -971,7 +971,7 @@ mod tests {
     /// exist yet — this `mod tests` fails to compile until step-2 defines them.
     #[test]
     fn register_production_compute_fns_enabled_invokes_f() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_production_compute_fns(super::MorphRegistration::Enabled(
             install_test_producer,
         ));
@@ -996,7 +996,7 @@ mod tests {
     /// exist yet.
     #[test]
     fn register_production_compute_fns_unavailable_does_not_install_morph() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
             reason: "test-runner: reify-mesh-morph is dev-dep-only",
         });
@@ -1026,7 +1026,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate target")]
     fn register_production_compute_fns_twice_panics() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
             reason: "test",
         });

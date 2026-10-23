@@ -8,13 +8,16 @@ import { createWireManager } from './wireManager';
 import { createSurfaceManager } from './surfaceManager';
 import { createDiagnosticOverlay } from './feaDiagnosticOverlay';
 import { createSelection } from './selection';
+import { createProbeSystem, ProbePopup } from './ProbeSystem';
+import type { ProbeSystemContext } from './ProbeSystem';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
 import { channelUnit } from './channelTags';
 import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import { feaToolbarChannels } from './feaToolbarChannels';
-import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
+import { createProbeStore } from '../stores';
+import type { ViewportStore, CameraState, FeaModeStore, ProbeStore } from '../stores';
 import { subscribeFeaCaseToStore, setActiveFeaCase } from '../bridge';
 
 export interface ViewportProps {
@@ -54,7 +57,8 @@ export interface ViewportProps {
   /**
    * Optional FEA-mode store. When provided, renders a `<FeaModeToolbar>`
    * overlay and bridges store state changes into the meshManager colorize
-   * pipeline. When absent, no FEA UI is rendered (existing behaviour).
+   * pipeline; while FEA mode is on, a click on the body also pins a probe.
+   * When absent, no FEA UI is rendered (existing behaviour).
    *
    * **Any pane may be handed one** (#5670). The store is no longer a
    * design-main singleton: App owns a viewportId-keyed registry and gives
@@ -101,12 +105,19 @@ export interface ViewportProps {
   feaConvergence?: { converged: boolean; reason?: string | null } | null;
 }
 
+/** The probe controller and its store, alive exactly as long as one FEA-mode activation. */
+interface ProbeSession {
+  system: ProbeSystemContext;
+  store: ProbeStore;
+}
+
 export function Viewport(props: ViewportProps) {
   let canvasRef!: HTMLCanvasElement;
   let containerRef!: HTMLDivElement;
   let doFitToView: (() => void) | undefined;
   const [showGrid, setShowGrid] = createSignal(true);
   const [pointerPos, setPointerPos] = createSignal({ x: 8, y: 8 });
+  const [probeSession, setProbeSession] = createSignal<ProbeSession | null>(null);
 
   // Compute the active scalar channel's data range across all current meshes.
   // Placed at component-body scope (outside onMount) so both the auto-range
@@ -149,6 +160,7 @@ export function Viewport(props: ViewportProps) {
       getMeshes: () => meshManager.getSceneMeshes(),
       onHover: (path) => props.onHover?.(path),
       onSelect: (path, modifiers) => props.onSelect?.(path, modifiers),
+      onClickGesture: (event) => probeSession()?.system.pickAndAddProbe(event),
       controls: controls.controls,
     });
 
@@ -276,6 +288,8 @@ export function Viewport(props: ViewportProps) {
         } else {
           meshManager.setDeformation(null);
         }
+        // Untracked: refreshMarkers reads the probe store, which must not re-run this effect.
+        untrack(() => probeSession()?.system.refreshMarkers());
         requestRender();
       });
 
@@ -303,6 +317,33 @@ export function Viewport(props: ViewportProps) {
         const cur = untrack(() => feaStore.state.range);
         if (cur.min === r.min && cur.max === r.max) return;
         feaStore.setRange({ mode: 'auto', min: r.min, max: r.max });
+      });
+
+      // One probe session per FEA-mode activation. Tracks only `enabled`; the
+      // cleanup runs before a re-run (mode exit) and on owner disposal (unmount).
+      createEffect(() => {
+        if (!feaStore.state.enabled) return;
+        const store = createProbeStore();
+        const system = createProbeSystem({
+          scene,
+          camera,
+          domElement: renderer.domElement,
+          getMeshes: () => meshManager.getSceneMeshes(),
+          meshManager,
+          store,
+        });
+        setProbeSession({ system, store });
+        onCleanup(() => {
+          system.dispose();
+          setProbeSession(null);
+        });
+      });
+
+      // Probe markers live in the scene: every probe change and the session
+      // teardown needs a frame under render-on-demand.
+      createEffect(() => {
+        void probeSession()?.store.state.probes;
+        requestRender();
       });
 
       // Outbound case-selection effect (task 3026 step-14): watches activeCaseId
@@ -375,6 +416,8 @@ export function Viewport(props: ViewportProps) {
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
+      // Untracked: resampleAll reads the probe store, which must not re-run this sync.
+      untrack(() => probeSession()?.system.resampleAll());
 
       // Refresh selection wireframe to reflect updated geometry
       selection.refreshSelected();
@@ -589,6 +632,29 @@ export function Viewport(props: ViewportProps) {
           }
           convergence={props.feaConvergence ?? undefined}
         />
+      </Show>
+
+      {/* Probe readout — top-left overlay, while FEA mode has at least one pinned probe */}
+      <Show when={probeSession()}>
+        {(session) => (
+          <Show when={session().store.state.probes.length > 0}>
+            <div
+              style={{
+                position: 'absolute',
+                top: '12px',
+                left: '12px',
+                'z-index': '10',
+                padding: '6px 8px',
+                'background-color': 'var(--reify-surface, #2a2a3a)',
+                color: 'var(--reify-text, #cdd6f4)',
+                'border-radius': '4px',
+                'font-size': '12px',
+              }}
+            >
+              <ProbePopup store={session().store} onRemove={(id) => session().system.removeProbe(id)} />
+            </div>
+          </Show>
+        )}
       </Show>
 
       {/* Grid toggle button */}

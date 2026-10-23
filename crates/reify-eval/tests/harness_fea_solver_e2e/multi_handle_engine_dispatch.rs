@@ -42,7 +42,7 @@ use reify_test_support::{MockConstraintChecker, manufacturing_purpose, mm, step_
 #[test]
 fn with_registered_kernels_loads_one_kernel_per_inventory_registration() {
     let checker = SimpleConstraintChecker;
-    let engine = Engine::with_registered_kernels(Box::new(checker));
+    let engine = Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(checker));
 
     let names: Vec<String> = engine.registered_kernel_names().map(String::from).collect();
 
@@ -97,7 +97,7 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
 
     let checker = SimpleConstraintChecker;
     let mock = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(mock)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(mock)));
 
     // Step-2 contract: a single user-supplied kernel is wrapped under the
     // synthetic DEFAULT_KERNEL_NAME — kernel_count() must report exactly 1.
@@ -223,7 +223,7 @@ fn executor_writes_produced_repr_brep_on_build_snapshot() {
 
     let checker = SimpleConstraintChecker;
     let mock = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(mock)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(mock)));
 
     // Step (1): seed the snapshot via build (which calls eval internally).
     let _ = engine.build(&compiled, ExportFormat::Stl);
@@ -353,7 +353,7 @@ fn last_dispatch_count_zero_on_cache_hit_second_build() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let _eval = engine.eval(&module);
     engine.activate_purpose("manufacturing", "MyDesign");
@@ -478,7 +478,7 @@ fn with_registered_kernels_end_to_end_two_boxes_plus_union() {
     );
 
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::with_registered_kernels(Box::new(checker));
+    let mut engine = Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(checker));
 
     // STEP rather than STL: STEP is OCCT's BRep-native export format, so it is
     // what this round-trip pin should go through.

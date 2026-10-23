@@ -134,7 +134,7 @@ leaf's own deliverable; "producer:task-N" an upstream filed task wired as a depe
 | capability | evidence | verdict | delivered check |
 |---|---|---|---|
 | orientation-arg-spellings-today | 63 lines match `(Orientation\|Frame\|Transform3?)<[0-9N]>`: 48 in the stdlib reference, the spec and the chunks, 15 in `reify-lsp` completion signatures, `geometry_ops.rs` runtime strings and comments, and a `geometry.rs` diagnostic; no `.ri` code | PASS | — |
-| orientation-arg-spellings-gone | producer-self (R9) | PASS | grep `(Orientation\|Frame\|Transform3?)<[0-9N]>` absent in those six paths (63 now) |
+| orientation-arg-spellings-gone | producer-self (R9); paths widened 2026-10-20 (retro-critic R9 M6) to include `crates/reify-eval/src/geometry_ops/`, because S13 δ #8750 moves `transform_rotate`/`transform_apply`/`pattern_arbitrary` into `geometry_ops/compile/*` | PASS | grep `(Orientation\|Frame\|Transform3?)<[0-9N]>` absent in those six paths plus `crates/reify-eval/src/geometry_ops/` (63 now) |
 | chunks-state-behaviour | behavioural | PASS | manual: `harness_doc_chunks` plus a smoke `.ri` per documented signature |
 
 ## ω — PRD close

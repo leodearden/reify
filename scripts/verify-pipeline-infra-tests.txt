@@ -96,6 +96,28 @@ scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 # refusal path (Block I). The row above maps the artifact only to the pool
 # suite, so that assertion would not be selected on a branch-scope verify.
 scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base.sh
+# Task 9246: the fingerprint-consult liveness trim, shared by refresh-warm-base.sh
+# and the leo-laptop _merge-verify trim timer, pinned by its own .py suite and,
+# through the refresh that calls it, by test_refresh_warm_base.sh Block LIVE.
+scripts/prune-unconsulted-target.sh  tests/infra/test_prune_unconsulted_target.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_refresh_warm_base.sh
+tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted_target.sh
+# ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
+# 3b to that sibling (no second inline copy, no silent skip when it is missing).
+scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
+# respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape.
+scripts/gc-worktree-targets.sh       tests/infra/test_gc_worktree_targets.sh
+tests/infra/test_gc_worktree_targets.py  tests/infra/test_gc_worktree_targets.sh
+# Task 9246: leo-laptop's _merge-verify trim units, the deploy contract
+# dark_factory's install_laptop_merge_verify_trim.sh checks (it reads the prune
+# and gc scripts too), and the service's ExecStart run against a fixture.
+deploy/systemd/reify-merge-verify-trim.service    tests/infra/test_merge_verify_trim_units.sh
+deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_trim_units.sh
+tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
+scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
@@ -257,6 +279,7 @@ scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
 # (see that manifest's TRADEOFF BREADCRUMB). The pole fires only for tasks
 # touching that exact doc, bounded by the map's existing per-test timeout.
 docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_compile_gate.sh
+docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_policy.sh
 docs/notes/verify-scope-throughput.md                        tests/infra/test_verify_throughput.sh
 docs/notes/linker-rustlld-vs-mold-bench.md                   tests/infra/test_linker_config.sh
 docs/notes/lean-debuginfo-bench.md                           tests/infra/test_lean_debuginfo_profile.sh
@@ -811,3 +834,22 @@ tests/infra/test_verify_ledger_lane_seed.py    tests/infra/test_verify_ledger_la
 tests/infra/test_run_all_timing.py    tests/infra/test_run_all_timing.sh
 scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
 scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
+
+# S18 α (#9095, PRD verify-structured-plan-and-role-table D14): the Python verify package.
+# The glob rows keep task-tier selection from narrowing as logic moves out of verify.sh; leaf τ replaces this map.
+scripts/verify.py    tests/infra/test_verify_*.sh
+scripts/verify.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_policy.sh
+tests/infra/test_verify_policy.py    tests/infra/test_verify_policy.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh

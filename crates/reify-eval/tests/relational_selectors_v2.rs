@@ -214,7 +214,7 @@ fn relational_selectors_v2_face_chain_resolves_end_to_end() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Stl);
 
     let sides_id = ValueCellId::new("RelationalSelectorsV2", "sides");
@@ -281,7 +281,7 @@ fn relational_selectors_v2_edge_chain_resolves_end_to_end() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Stl);
 
     // ── an_edge must be a single hydrated GeometryHandle ──────────────────────

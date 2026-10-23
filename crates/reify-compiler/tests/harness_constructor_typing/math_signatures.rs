@@ -89,7 +89,7 @@ fn compile_and_eval() -> (CompiledModule, EvalResult) {
         "boundary source must produce no Error-severity diagnostics; got: {errs:?}"
     );
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
     let eval_errs: Vec<_> = result
         .diagnostics

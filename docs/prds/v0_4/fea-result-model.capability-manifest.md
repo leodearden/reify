@@ -1,5 +1,17 @@
 # Capability Manifest — fea-result-model.md
 
+> **AS-AUTHORED GATE ARTIFACT (2026-05-30; R3b rows added 2026-06-24, R1 rows and the REVOKED
+> grammar rows amended 2026-08) — do not refresh.** This manifest records the
+> **pre-decomposition** evidence check that cleared this PRD's leaves to queue; its ✅ / ⏳ / ⛔
+> verdicts are statements about *binding quality at author time*, not about landed state. All 17
+> leaves have since landed (α #4084 … κ #2968, the bracket #2930, and #4163) — see the parent PRD's
+> SHIPPED header. Consequently its "today" phrasings, its "⏳ X delivers" bindings and its hard
+> `file:line` anchors are author-time provenance and have drifted; for example, the R3b row's
+> `classify_degenerate` was replaced by `find_degenerate_tet` in #8254. Rewriting them would
+> destroy the record of what was actually gated. The two REVOKED grammar rows (η, 2930) defer to
+> the parent PRD's §6 decision 5, which is LIVE and names the current owner. Parent:
+> `docs/prds/v0_4/fea-result-model.md`.
+
 Mechanizes G3 + G6 per leaf (overlay → *Capability Manifest — reify evidence forms*). Each task's user-observable/RED signal is decomposed into asserted capabilities, each bound to evidence ∈ `{grep:file:line-wired | producer:task-upstream | grammar-fixture:parses | floor:bound>X | field-population}`. A binding resolving to `{declared-only | test-only | producer-absent | producer-downstream | fixture-ERROR | bound≤floor}` **blocks** queueing until resolved.
 
 Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, `scalar_channels: HashMap::new()`, `displaced_positions: None`). Evidence current as of 2026-05-30; G3 fixtures `/tmp/prd-gate-fixtures/fea-result-model-{1,2}.ri` parse with 0 ERROR nodes.

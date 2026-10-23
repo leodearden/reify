@@ -53,7 +53,7 @@
 //!
 //! # Observability note
 //!
-//! `ffi::ffi::shape_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
+//! `ffi::ffi::body_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
 //! integration test cannot read the raw `TopAbs` name. The reachable
 //! equivalents, via `OcctKernel::repr_of` and `GeometryQuery::IsWatertight`:
 //!
@@ -119,7 +119,7 @@ fn real_query(kernel: &OcctKernel, q: GeometryQuery) -> f64 {
 }
 
 /// Assert that `id` is a genuinely closed single body: `BRepKind::Solid` (which
-/// only `shape_type_name == "Solid"` maps to) plus `IsWatertight` and
+/// only a `body_type_name` of `"Solid"` maps to) plus `IsWatertight` and
 /// `IsClosed`, both of which reject a bare COMPOUND at their
 /// `SOLID|COMPSOLID|SHELL` type guard.
 fn assert_watertight_solid(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {

@@ -87,7 +87,7 @@ structure StrictCostFalling {
 }
 
 fn engine() -> Engine {
-    Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver))
+    Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver))
 }
 
 fn compiled_fixture() -> reify_compiler::CompiledModule {

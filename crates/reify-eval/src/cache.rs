@@ -2760,7 +2760,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
         let result = engine.eval_cached(&module, VersionId(1));
 
         // All values computed (no cache hits on first run)
@@ -2809,7 +2809,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First call: populates cache
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -2870,7 +2870,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: populate cache
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -2950,7 +2950,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         assert_eq!(
             engine.cache_stats().realization_entries,
@@ -3045,7 +3045,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: all computed
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3134,7 +3134,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: all computed. a=5, x=1, y=5+1=6
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3226,7 +3226,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: a=5, b=100, x=1, y=5+100+1=106
         let result1 = engine.eval_cached(&module, VersionId(1));

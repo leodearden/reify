@@ -560,6 +560,22 @@ pub enum DiagnosticCode {
     /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
     /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
     Shadowing,
+    /// Origin: `crates/reify-compiler/src/compile_builder/stdlib_shadow_lint.rs`.
+    /// Emitted once per `(kind, name)` when a module's own definition wins a
+    /// name that a std module also defines in the same kind (enum, structure or
+    /// occurrence, trait, function signature, type alias, constraint def,
+    /// purpose). The local definition binds; this reports the shadowing.
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' in module '<local module>' shadows '<name>' from std module '<std module>'; the local definition wins"`.
+    ///
+    /// Two labels: the local declaration (primary) and the prelude sentinel
+    /// span (`"defined in std module '<std module>'"`).
+    ///
+    /// Severity is `Warning` in the N0 interim; stdlib-namespace κ #5503
+    /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
+    /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
+    StdlibNameShadowed,
     /// Origin: `crates/reify-compiler/src/entity.rs` (trait_bound iteration).
     /// Canonical message form:
     /// `"geometry trait '<TraitName>' on '<EntityName>' is treated as a user assertion; runtime conformance check is suppressed"`.

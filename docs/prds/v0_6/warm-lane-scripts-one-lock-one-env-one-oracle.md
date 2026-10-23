@@ -75,7 +75,7 @@ This PRD therefore *extends* the existing library, per the ruling. It does not c
 |---|---|
 | `lane_lock_path <lane_dir>` | Prints `${lane_dir%/}.lock`. The only reify-side derivation. It matches dark-factory `lane_lock_path` byte for byte. |
 | `lane_lock_acquire <lane_dir> <wait>` | `<wait>` is `0` (non-blocking refuse), `N` (`flock -w N`) or `unlimited` (blocking). This covers seed's three wait modes. It opens `LANE_LOCK_FD` with `>` (creating the file, as every acquirer does today) and takes `flock -x`. Return values: **0** acquired; **75** refused (contended or deadline); **64** bad wait value; **1** open failure or missing flock. On a refusal it writes the existing `LANE_LOCK_CONTENDED: …` stderr line once, so the dark-factory-grepped marker has one home. Each caller maps the return code onto its own exit contract: seed keeps 75/77, thin 75, gc "preserve". |
-| `lane_lock_release` | Runs an explicit `flock -u` on `LANE_LOCK_FD`, then closes it. A no-op when the lock is not held. The seed EXIT trap calls it, preserving the task #5705 LANE-LOCK RELEASE CONTRACT. That block moves into the lib unchanged in substance, and seed keeps a one-line pointer. |
+| `lane_lock_release` | **[Amended 2026-10-20, retro-critic R7]** Keys **only** on a lib-private flag meaning "acquired by `lane_lock_acquire` in this shell", never on the FD or on lock state. With the flag set it runs an explicit `flock -u` on `LANE_LOCK_FD`, closes it and clears the flag; without it, it is a no-op. Reason: under `--assume-lane-lock-held` seed inherits the caller's lock open-file description, which after D2 is FD 8 for thin and gc alike, so a release decided from the FD or the lock state would `flock -u 8` the caller's lock mid-reset (inv.2). Seed's EXIT trap is installed **only on the acquire path**, never under `--assume-lane-lock-held`, and the lib header says so. The trap preserves the task #5705 LANE-LOCK RELEASE CONTRACT. That block moves into the lib unchanged in substance, and seed keeps a one-line pointer. |
 | `lane_lock_assert_held <lane_dir>` | Runs `lane_lock_probe` on the derived path and returns 0 **only for BUSY**. IDLE (including an absent lock file) and UNMEASURABLE both fail closed, with `LANE_LOCK_ASSERT_DETAIL` set. It never creates the file (A1 carries over). |
 
 "Mode" in the ruling's `lane_lock_acquire(mode, wait)` is read as the wait mode. The only lock mode any caller takes is exclusive, and the shared mode is `lane_lock_probe`. A shared-acquire entry point with no caller is not built (h6). Ruled (Q1 a): mode = wait mode.
@@ -102,15 +102,17 @@ The audit's detached-HEAD `--contains` resolution stays in the audit, because it
 
 | Kind | Output on success |
 |---|---|
-| `lane-state` | one line `state\ttask_id` |
-| `plan` | one line `task_id\tanchor_id\tanchor_commit` |
+| `lane-state` | field 1 `state`, field 2 `task_id` |
+| `plan` | field 1 `task_id`, field 2 `anchor_id`, field 3 `anchor_commit` |
+
+**[Amended 2026-10-20, retro-critic R7]** The reader emits **one field per line** (read in bash with `mapfile -t`), or one record joined by the non-whitespace separator `\x1f`. The contract is stated by field position, and an empty field is an empty line (or an empty `\x1f`-delimited slot), never a dropped one. ~~one TAB-separated line~~: TAB is IFS-whitespace in bash, so `IFS=$'\t' read` collapses runs and an empty field anywhere but last shifts the others (a plan with no `task_id` but a done anchor would read `task_id=<anchor_id>`). The TAB line was declined by the ruling.
 
 The anchor is the last entry, iterating `prerequisites` then `steps` *by key*, whose `status == "done"` and whose `commit` is a non-empty string. It is independent of key order, indent and array order.
 
 | Exit | Meaning | Audit maps it to |
 |---|---|---|
 | 0 | parsed | the parsed fields |
-| 3 | unparseable: invalid JSON, a top level that is not an object, or a field of the wrong type | existing `unparseable-record` |
+| 3 | unparseable: invalid JSON, a top level that is not an object, or a field of the wrong type. **[Amended 2026-10-20, retro-critic R7]** `null` is permitted for `task_id` (read as empty) and for a non-done entry's `commit`; "wrong type" means a non-null non-string in those fields, or a non-string `state`. Every RELEASED `LaneRecord` carries `task_id: null`, and the golden plan's pending step carries `commit: null`. | existing `unparseable-record` |
 | 4 | unreadable | existing `no-readable-record` / `-` paths |
 | 127, or python3 missing | reader unavailable | new UNKNOWN cause `reader-unavailable` |
 
@@ -131,13 +133,13 @@ The audit never aborts (A3), and a missing interpreter is an attributed UNKNOWN,
 
 Residual, stated honestly: a leftover bound token, for example from a commit aborted at the editor, still sanctions one raw fast-forward *from the same origin* until main next moves. Binding narrows the window from "until any later move" to "until main moves". No hook fires on an editor abort, so nothing narrower is reachable from a hook. A concurrent-marker race on the single shared file predates this PRD and is out of scope (§9).
 
-**D10 — Seed capabilities are data.** `seed-warm-lane.sh --capabilities` prints the optional flags its parser accepts, one per line, exact spelling (`--assume-lane-lock-held`, `--distinct-lock-refusal-rc`), from one array that the parser arms are tested against. It exits 0 and ignores other arguments. The "must stay a LITERAL" notes (3 at main) go. Companion dark-factory task D8 switches `_seed_script_supports` to exact-line membership in `--capabilities` output, cached by (path, mtime_ns, size) as today. It falls back to the legacy substring probe *only* when `--capabilities` exits non-zero, which happens on a lane checked out at a vintage before L8. The fallback has a retirement condition, named in D8.
+**D10 — Seed capabilities are data.** **[Amended 2026-10-20, retro-critic R7]** `seed-warm-lane.sh --capabilities` prints the **capability-gated flags**, the flags a caller must probe per lane vintage, one per line, exact spelling (`--assume-lane-lock-held`, `--distinct-lock-refusal-rc`). They are held in one `CAPABILITIES` array. The base flags the parser also accepts (`-h|--help`, `--fresh-checkout`, `--reset-in-place`, `--lane-lock`, `--base-commit`, `--touch`, `--record-base`) are not capabilities and are not printed. ~~prints the optional flags its parser accepts … from one array that the parser arms are tested against~~ (contradicted B9: the parser accepts seven more optional flags). It exits 0 and ignores other arguments. The "must stay a LITERAL" notes (3 at main) go. Companion dark-factory task D8 switches `_seed_script_supports` to exact-line membership in `--capabilities` output (membership covers the capability-gated flags only), cached by (path, mtime_ns, size) as today. It falls back to the legacy substring probe *only* when `--capabilities` exits non-zero, which happens on a lane checked out at a vintage before L8. The fallback has a retirement condition, named in D8.
 
 **D11 — Approach: bare B with two-way boundary tests on the two cross-repo seams.** The lock handshake gets L1 plus D1. The sentinel format gets L9's test matrix plus D9's dark-factory yaml wiring. The PRD meets none of the overlay's G5 high-stakes seams (FEA, ComputeNode, persistent-naming, multi-kernel, grammar), so a full B+H contract section is not warranted.
 
-**D12 — New tests are Python; existing bash members are extended in place.** The one new member is `tests/infra/test_lib_task_status.py` with its `.sh` wrapper and a `pool` row in `tests/infra/run-all-classification.manifest`, in the same diff (overlay drift-guard rule). All other coverage extends existing members: `test_lane_lock_probe.py`, `test_seed_warm_lane.sh`, `test_thin_warm_lane.sh`, `test_warm_lane_gc.sh`, `test_warm_lane_gc_sweep.sh`, `test_warm_lane_lock_guard.sh`, `test_warm_lane_audit.sh`, `test_warm_lane_preflight.sh`, `test_warm_lane_degenerate_ref.sh`, `test_reference_transaction_gate.sh` and `test_land_script.sh`. Each new or changed source path gets a `scripts/verify-pipeline-infra-tests.txt` row in the same diff. No new wall-clock upper bound is asserted in any Python member (reify CLAUDE.md, #7445).
+**D12 — New tests are Python; existing bash members are extended in place.** The one new member is `tests/infra/test_lib_task_status.py` with its `.sh` wrapper. **[Amended 2026-10-20, retro-critic R7]** It registers through whichever mechanism is live at implementation: the `# run-all-bucket: pool` pragma if S19 υ #9303 has landed, else a `pool` row in `tests/infra/run-all-classification.manifest`, in the same diff. ~~and a `pool` row in `tests/infra/run-all-classification.manifest`, in the same diff (overlay drift-guard rule)~~ (superseded by R7: gap-fill D-K8-4 deletes the manifest). All other coverage extends existing members: `test_lane_lock_probe.py`, `test_seed_warm_lane.sh`, `test_thin_warm_lane.sh`, `test_warm_lane_gc.sh`, `test_warm_lane_gc_sweep.sh`, `test_warm_lane_lock_guard.sh`, `test_warm_lane_audit.sh`, `test_warm_lane_preflight.sh`, `test_warm_lane_degenerate_ref.sh`, `test_reference_transaction_gate.sh` and `test_land_script.sh`. **[Amended 2026-10-20, retro-critic R7]** Each new or changed source path is registered through whichever mechanism is live: a `# guards:` header if S18 τ #9312 has landed, else a `scripts/verify-pipeline-infra-tests.txt` row in the same diff (τ migrates rows added before it lands). ~~Each new or changed source path gets a `scripts/verify-pipeline-infra-tests.txt` row in the same diff.~~ (superseded by R7: gap-fill D-K8-5 deletes the txt). No new wall-clock upper bound is asserted in any Python member (reify CLAUDE.md, #7445).
 
-**Invariant candidate 5 (extract-with-ratchet) applies to L1 and L3.** Each names its ratchet member below.
+**Invariant candidate 5 (extract-with-ratchet) applies to L1 and L3.** **[Amended 2026-10-20, retro-critic R7]** Each ratchet is a set of named rows in S19 D9's shared engine (`tests/infra/adoption_ratchet.py` over `tests/infra/adoption-ratchet.manifest`, rows `pattern-id | ERE | path | ceiling | owner leaf`), at ceiling 0. No bespoke counter lives in either leaf's Python member. ~~Each names its ratchet member below.~~
 
 ## 5. Contract and boundary-test sketch (the two cross-repo seams)
 
@@ -151,7 +153,7 @@ Residual, stated honestly: a leftover bound token, for example from a commit abo
 | B6 | sentinel: gate passed, commit aborted | mark at X; no commit; main moves X→Y by a sanctioned path; then raw `update-ref` Y→Z | the raw move is `UNSANCTIONED` (aborts under ENFORCE); stale token discarded |
 | B7 | land.sh interrupted mid-gate | land.sh marks, gate killed by SIGINT/SIGTERM | no token remains; a token minted by another marker during the gate survives |
 | B8 | dark-factory face (yaml) | `scripts/main-gate-mark.sh mark` then a CAS `update-ref` from that tip | `sanctioned`; `unmark` after a failed CAS removes only its own token |
-| B9 | capabilities | `--capabilities` output | each listed flag is accepted by the parser (no `Unknown flag`), and every optional flag the parser accepts is listed |
+| B9 | capabilities | `--capabilities` output | **[Amended 2026-10-20, retro-critic R7]** every `CAPABILITIES` array entry parses without `Unknown flag`, and the parser's capability arms equal the array, checked against a named exclusion list of base flags (D10). ~~every optional flag the parser accepts is listed~~ |
 
 ## 6. Cross-PRD relationship and seam owners (G4)
 
@@ -160,7 +162,7 @@ Residual, stated honestly: a leftover bound token, for example from a commit abo
 | `scripts/lib_lane_lock.sh` (probe, path, acquire) | **S20** | edits (L1) |
 | dark-factory `git_ops.py::_seed_script_supports` / `_seed_warm_lane` | **S20** | dark-factory companions D1, D8 |
 | dark-factory `orchestrator/lane_lifecycle.py` and `mcp/plan_tools.py` serialisers (golden-record owner) | **S20** | dark-factory companion D5 (reads the serialisers, never edits them) |
-| `tests/infra/run-all-classification.manifest` rows for a new wrapper | **S19** | consumes: L3 adds one `pool` row in the existing format (ruled Q3 a: S19 owns the format, not the rows) |
+| `tests/infra/run-all-classification.manifest` rows for a new wrapper | **S19** | **[Amended 2026-10-20, retro-critic R7]** consumes S19 υ #9303 (`# run-all-bucket:` pragma, gap-fill D-K8-4) and S18 τ #9312 (`# guards:` header, D-K8-5): a new member registers through whichever mechanism is live at implementation (D12). ~~consumes: L3 adds one `pool` row in the existing format (ruled Q3 a: S19 owns the format, not the rows)~~ (superseded by R7) |
 | `scripts/verify-pipeline-paths.txt` | **S18** | not edited. None of this PRD's paths require the full gate (`verify-pipeline-guard.sh requires-full-gate` exits 1 for every one). `scripts/verify-pipeline-infra-tests.txt` rows are added, and that file is not in the G4 table. |
 | `hooks/main-gate-lib.sh`, `hooks/reference-transaction`, `scripts/land.sh`, `dark-factory-orchestrator.yaml` `git.main_gate_*` | not listed (S20 by its finding) | edits (L9, L10) |
 | Comment prose (Greek aliases outside `_usage`, line cites in these scripts) | **S23** (wave 4) | not touched beyond what each leaf's edit necessarily rewrites |
@@ -186,10 +188,12 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 - **Work:**
   - D1–D3. Seed and thin source the lib from `$SCRIPT_DIR`. A missing lib exits 2 with a directed message, mirroring gc's `lib_live_refs.sh` check.
   - Fixtures that pass `--assume-lane-lock-held` without holding the lock (32 in `test_seed_warm_lane.sh`, 3 each in thin and gc) now hold one, or become the B2/B3 negatives.
-  - `test_seed_lane_lock_release_soak.sh`'s release-contract pointer follows the moved block.
-  - Ruled (Q6): `thin-warm-lane.sh --reseed` propagates seed's exit 70 unchanged. A not-held refusal is a distinct outcome and is never mapped to thin's generic-fault code; thin's `--help` exit-code list gains 70.
+  - `test_seed_lane_lock_release_soak.sh`'s release-contract pointer follows the moved block. **[Amended 2026-10-20, retro-critic R7]** The moved block cites `_close_inherited_fds` by symbol: #9320 (gap-fill D-K8-10(6)) moves it into `scripts/lib_fd_hygiene.sh` after S19 μ₂ #8719.
+  - **[Amended 2026-10-20, retro-critic R7]** Release keys on the lib-private acquired flag (D1), and seed's EXIT trap is installed only on the acquire path. Q7b and the Block-V FD checks in `test_seed_warm_lane.sh` are retargeted from FD 9 to `LANE_LOCK_FD=8`, with a mutation note proving Q7b reds when release is unconditional. This lands in L1, before μ₂ #8719 moves Block V.
+  - **[Amended 2026-10-20, retro-critic R7]** Seed rc 70 is the **one exception** to thin's best-effort exit-0 rule for `--reseed`. Thin maps no other seed failure to a fault code: a failed re-seed is logged, the clone discarded, and thin exits 0. On seed rc 70 thin exits 70 after the (no-op) discard, with empty stdout. Thin's header and its `--help` exit-code table change. The test uses a stub seed that exits 70, because the real path is unreachable while thin holds the lock. ~~Ruled (Q6): `thin-warm-lane.sh --reseed` propagates seed's exit 70 unchanged. A not-held refusal is a distinct outcome and is never mapped to thin's generic-fault code; thin's `--help` exit-code list gains 70.~~ (superseded by R7; the premise that thin maps seed failures to a fault code was false.)
+  - **[Amended 2026-10-20, retro-critic R7]** The new members register through whichever mechanism is live at implementation (D12).
 - **Signal:** B1–B3 pass in `test_seed_warm_lane.sh`. Seed run by hand with the flag on an unheld lane prints `LANE_LOCK_NOT_HELD:` and exits 70 with `target/` untouched. `test_lane_lock_probe.py` gains acquire/release/assert cases and stays green. All five scripts' suites stay green.
-- **Ratchet (INV candidate 5):** `test_lane_lock_probe.py` counts, over seed/thin/gc/lock-guard/audit, (a) lane-lock path constructions outside the lib (`\.lock"` built from a lane dir or name, excluding the `.gen.N.lock` sites in refresh and gc) and (b) `exec <n>>…lane…lock` opens outside the lib. Both must be **0**.
+- **Ratchet (INV candidate 5):** **[Amended 2026-10-20, retro-critic R7]** rows in `tests/infra/adoption-ratchet.manifest` at ceiling **0**: `lane-lock-path-construction` and `lane-lock-exec-open`, over seed/thin/gc/lock-guard/audit. Their EREs exclude the `.gen` and `.seed-stamp.json` siblings and comment lines. The done-criteria name both rows. They are what makes the one-spelling `seed-acquires-through-the-lib` check acceptable. ~~`test_lane_lock_probe.py` counts, over seed/thin/gc/lock-guard/audit, (a) lane-lock path constructions outside the lib (`\.lock"` built from a lane dir or name, excluding the `.gen.N.lock` sites in refresh and gc) and (b) `exec <n>>…lane…lock` opens outside the lib. Both must be **0**.~~
 - **Prereqs:** none.
 
 **L2 — `REIFY_WARM_LANE_WORKTREES` names the worktrees dir; retire four aliases** · medium · keys [fk-05e33a09a266] · **#8635**
@@ -199,6 +203,7 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
   - D4 and the D5 looks-like-mount warning.
   - Correct the lock-guard "dark-factory exports REIFY_WARM_LANE_MOUNT ambiently" comment.
   - lock-guard and audit derive the path via `lane_lock_path "$WORKTREES/$LANE"`.
+  - **[Amended 2026-10-20, retro-critic R7]** gc reclaim, which is destructive, gains an ambient default derived from `REIFY_WARM_LANE_MOUNT`: in an operator shell with the mount exported, `warm-lane-gc.sh reclaim` without `--mount` reclaims the live pool instead of exiting 2. gc's header and `--help` state this.
 - **Signal:** with only `REIFY_WARM_LANE_MOUNT=<xfs mount>` exported, as provision instructs, `warm-lane-lock-guard.sh check` on a held `_merge-verify` reports **BUSY (exit 3)**. Today it reports IDLE. `warm-lane-audit.sh` reports the real resident count, not 0. `warm-lane-gc.sh` started with `REIFY_WARM_LANE_GC_MOUNT=x` exits 2 naming `REIFY_WARM_LANE_WORKTREES`. These are new cases in `test_warm_lane_lock_guard.sh` / `test_warm_lane_audit.sh` / `test_warm_lane_gc.sh`.
 - **Prereqs:** L1 (shared files; lock-guard and audit call `lane_lock_path`).
 
@@ -206,15 +211,19 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 
 - **Modules:** new `scripts/lib_task_status.sh` and `scripts/lib_lane_entry.sh`; audit, preflight, degenerate-ref-check, gc, `lane-task-status.sh` (header only); new `tests/infra/test_lib_task_status.py` and `.sh`; one manifest row; infra-tests rows.
 - **Work:** D6. Delete the three inline copies, the two duplicated helper pairs, and the stale gc-consumer citations.
+  - **[Amended 2026-10-20, retro-critic R7]** Drift: task 9181 added a new `_is_git_worktree "$_stash_repo"` call site in the audit; L3 migrates it too.
+  - **[Amended 2026-10-20, retro-critic R7]** Pending #8780 rewrites `scripts/lane-task-status.sh` off direct `tasks.db` reads (possibly to a `.py`). There is no dependency edge, only file-lock serialisation; L3's header note follows wherever #8780 puts the contract.
+  - **[Amended 2026-10-20, retro-critic R7]** The new member registers through whichever mechanism is live at implementation (D12).
 - **Signal:** an oracle stub that prints `superseded` is classified identically by audit (`pin`/bucket), preflight Check 6 and degenerate-ref-check `--audit`. A three-consumer agreement case lives in `test_lib_task_status.py`, which drives all three CLIs. Each script's own suite stays green.
-- **Ratchet (INV candidate 5):** `test_lib_task_status.py` counts, over `scripts/warm-lane-*.sh`, (a) status-oracle invocations `"$<var>" "$<id>" 2>/dev/null | tr -d '[:space:]'` outside the lib, (b) `done|cancelled)` case arms outside the lib, and (c) definitions of `_matches_glob() {` / `_is_git_worktree() {`. All must be **0**.
+- **Ratchet (INV candidate 5):** **[Amended 2026-10-20, retro-critic R7]** rows in `tests/infra/adoption-ratchet.manifest` at ceiling **0** over `scripts/warm-lane-*.sh`: `status-oracle-invocation`, `done-cancelled-arm` and `entry-helper-def`, with EREs that exclude comment lines. The done-criteria name the rows. ~~`test_lib_task_status.py` counts, over `scripts/warm-lane-*.sh`, (a) status-oracle invocations `"$<var>" "$<id>" 2>/dev/null | tr -d '[:space:]'` outside the lib, (b) `done|cancelled)` case arms outside the lib, and (c) definitions of `_matches_glob() {` / `_is_git_worktree() {`. All must be **0**.~~
 - **Prereqs:** L2 (both edit preflight Check 6 and the audit's arg block).
 
 **L4 — Audit reads dark-factory records with `python3 -I` json; HEADROOM from one field list** · medium · keys [fk-26e1e3d2eb67] · **#8647**
 
 - **Modules:** new `scripts/warm_lane_records.py`; `scripts/warm-lane-audit.sh`; `test_warm_lane_audit.sh`; the runbook's UNKNOWN-cause table (`reader-unavailable`); infra-tests row for the `.py` → `test_warm_lane_audit.sh`.
-- **Work:** D7 and D8.
+- **Work:** D7 and D8. **[Amended 2026-10-20, retro-critic R7]** D8's single field list now has 19 entries: task 9181 added `stash_entries`, `stash_unknown` and the JSON `stash_stack`, and the parity case covers them. A new member registers through whichever mechanism is live at implementation (D12).
 - **Signal:**
+  - **[Amended 2026-10-20, retro-critic R7]** A plan with no `task_id` and a done anchor gives `plan_task` `-` and the correct anchor (the field-position contract, D7).
   - A `plan.json` whose done step has `"commit"` *before* `"status"` reports its real `plan_sync` (OK/STRANDED). Today it reports `-` and drops out of `plan_stranded`.
   - With `python3` removed from the audit's PATH, a lane with a plan reports `UNKNOWN` with cause `reader-unavailable` and exit 0.
   - `--format json` `headroom` keys equal the table `HEADROOM` keys in order. That is a parity case. The existing suite stays green byte for byte.
@@ -222,11 +231,12 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 
 **L5 — Golden dark-factory records drive the audit; compact and reordered plan cases** · medium · keys [fk-4b80fe8f7de1] · **#8709**
 
-- **Modules:** new `tests/infra/fixtures/warm_lane_golden/{plan.json,lane-state.json,PROVENANCE.md}`; `test_warm_lane_audit.sh` (`make_plan`, `make_lane_state`, the `L_CASES` enum literals).
+- **Modules:** **[Amended 2026-10-20, retro-critic R7]** new `tests/infra/fixtures/warm_lane_golden/{lane-state.json,lane-state-released.json,lane-states.json,plan.json,PROVENANCE.md}`, all five files D5 shipped; `test_warm_lane_audit.sh` (`make_plan`, `make_lane_state`, the `L_CASES` enum literals).
 - **Work:**
-  - Fixtures are derived from the golden records: field values substituted, not byte layout hand-copied. The `LaneState` literal list is read from the golden `lane-state.json` companion list that D5 emits.
+  - Fixtures are derived from the golden records: field values substituted, not byte layout hand-copied. **[Amended 2026-10-20, retro-critic R7]** `L_CASES` (the `LaneState` literal list) is read from the golden `lane-states.json`, a separate D5 file. ~~The `LaneState` literal list is read from the golden `lane-state.json` companion list that D5 emits.~~
+  - **[Amended 2026-10-20, retro-critic R7]** Add the released case: the unmodified `lane-state-released.json` (null optional fields) reports RELEASED with an empty task.
   - Add plan cases: compact (no indent), key-reordered entries, and `steps` emitted before `prerequisites`.
-- **Signal:** `test_warm_lane_audit.sh` runs the audit over the unmodified golden records and asserts the stranded/OK verdicts. The three new shape cases pass. A grep finds no comment in the suite stating a producer byte-layout fact (indent, key order, `prerequisites` precedes `steps`).
+- **Signal:** **[Amended 2026-10-20, retro-critic R7]** `test_warm_lane_audit.sh` runs the audit over the unmodified golden records and asserts: `plan.json` gives `plan_sync=UNKNOWN` with cause `anchor-object-absent:b2…` and anchor `step-1`, which proves the reader skipped the pending step (`commit: null`) and took the last done entry; `lane-state.json` gives `ASSIGNED`/`4242`; `lane-state-released.json` gives `RELEASED` with an empty task. OK/STRANDED verdicts come only from golden-derived fixtures whose commit values are substituted with real fixture shas (the golden records synthetic shas `a1`×20 / `b2`×20 that no fixture repo contains, and `PROVENANCE.md` forbids hand-editing them). ~~`test_warm_lane_audit.sh` runs the audit over the unmodified golden records and asserts the stranded/OK verdicts.~~ The three new shape cases pass. A grep finds no comment in the suite stating a producer byte-layout fact (indent, key order, `prerequisites` precedes `steps`).
 - **Prereqs:** L4 (the layout-independent reader is what makes the shape cases pass), D5 (golden content).
 - **Companion D5 (dark_factory:6853):** a dark-factory test serialises a fixed `LaneRecord` per `LaneState` member, and a fixed plan through `plan_tools`' writer. It asserts byte equality with dark-factory's canonical copy at `orchestrator/tests/fixtures/warm_lane_golden/`, and emits the `LaneState` value list. Its docstring names reify's vendored path as the refresh target. Signal: changing `LaneRecord.to_json`'s indent turns that dark-factory test red. Ruled (Q4 a): the canonical copy lives in dark-factory; reify vendors a byte copy with `PROVENANCE.md`.
 
@@ -235,10 +245,10 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 - **Modules:** `scripts/warm-lane-gc.sh`, `test_warm_lane_gc.sh`.
 - **Work:**
   - `_reset_lane <lane>` and `_remove_orphan <entry>` each print exactly one outcome token: `reset`, `reset_cold`, `removed`, `preserved`, `preserved_live_ref` or `skipped`.
-  - `_with_entry_gate <entry> <fn>` holds `lane_lock_acquire <entry> 0` and the `live_ref_present` check, in today's order per pass. Pass 2 keeps `_is_reclaimable` before the live-ref walk, inside `_remove_orphan`'s gate callback.
+  - **[Amended 2026-10-20, retro-critic R7]** `_with_entry_gate <entry> <precheck_fn> <act_fn>` runs lock → precheck → live-ref → act: `lane_lock_acquire <entry> 0`, then `<precheck_fn>`, then `live_ref_present`, then `<act_fn>`. Pass 1 passes precheck=`true`; Pass 2 passes precheck=`_is_reclaimable`, which keeps the measured cost order (~16 ms `git status` before the ~1.9 s `/proc` walk). ~~`_with_entry_gate <entry> <fn>` holds `lane_lock_acquire <entry> 0` and the `live_ref_present` check, in today's order per pass. Pass 2 keeps `_is_reclaimable` before the live-ref walk, inside `_remove_orphan`'s gate callback.~~ (self-contradictory: a callback runs after the gate.)
   - One tally `case` per loop.
   - The summary line `reclaim: reset=… removed=… preserved=… preserved_live_ref=… reset_cold=…` stays byte-identical.
-- **Signal:** a fixture pool that exercises every outcome path prints the expected summary line, and the existing `test_warm_lane_gc.sh` blocks stay green unchanged. The counter is incremented at exactly one site per outcome, checked by a count case in `test_warm_lane_gc.sh`.
+- **Signal:** a fixture pool that exercises every outcome path prints the expected summary line, and the existing `test_warm_lane_gc.sh` blocks stay green unchanged. The counter is incremented at exactly one site per outcome, checked by a count case in `test_warm_lane_gc.sh`. **[Amended 2026-10-20, retro-critic R7]** A dirty+live orphan fixture asserts `preserved=1`, `preserved_live_ref=0`.
 - **Prereqs:** L1 (uses `lane_lock_acquire`), L2 (same file).
 
 **L7 — Plain names in gc and sweep `--help`** · low · keys [fk-7dba1d7f3f47] · **#8541 (adopted, not re-filed)**
@@ -250,10 +260,10 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 
 - **Modules:** `scripts/seed-warm-lane.sh` (parser, `_usage`), `test_seed_warm_lane.sh` (`Q11_FLAG` note).
 - **Work:** D10. Delete the 3 literal notes.
-- **Signal:** `seed-warm-lane.sh --capabilities` prints exactly the two flag lines and exits 0. Boundary case B9 is green.
+- **Signal:** `seed-warm-lane.sh --capabilities` prints exactly the two flag lines and exits 0. Boundary case B9 is green. **[Amended 2026-10-20, retro-critic R7]** B9 checks the `CAPABILITIES` array against the parser's capability arms, with a named base-flag exclusion (D10).
 - **Prereqs:** L1 (same parser region).
 - **Companion D8 (dark_factory:6855):**
-  - `_seed_script_supports` uses `--capabilities` output with exact-line membership, with the legacy substring fallback only on a non-zero exit.
+  - `_seed_script_supports` uses `--capabilities` output with exact-line membership, with the legacy substring fallback only on a non-zero exit. **[Amended 2026-10-20, retro-critic R7]** Membership covers the capability-gated flags only (D10).
   - A dark-factory test proves the old failure mode is closed: a stub script whose parser lacks the flag but whose comments mention it now answers False.
   - Signal: that test is green.
   - Retirement condition for the fallback: no lane's checked-out vintage lacks `--capabilities`. It is recorded in the code's docstring with the reify commit that introduced L8.
@@ -274,13 +284,13 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 **L10 — Delete the legacy unbound-sentinel arm (Phase B)** · low · keys [] (completes fk-638f0a64b948) · **#8713**
 
 - **Work:** the empty-sentinel case becomes "no sentinel"; the B-matrix legacy case flips to UNSANCTIONED.
-- **Gate to start:** `reify-main-gate.log` shows ≥ 20 consecutive `sanctioned main move` lines *after* the orchestrator restart that loaded L9's yaml, and **zero** `legacy unbound sentinel` lines since that restart. The implementer measures this as the leaf's first step and stops with a blocker if it does not hold.
+- **Gate to start:** `reify-main-gate.log` shows ≥ 20 consecutive `sanctioned main move` lines *after* the orchestrator restart that loaded L9's yaml, and **zero** `legacy unbound sentinel` lines since that restart. The implementer measures this as the leaf's first step and stops with a blocker if it does not hold. **[Amended 2026-10-20, retro-critic R7]** The gate also takes the per-worktree hooks vintage: `core.hooksPath=hooks` is relative, so each worktree runs its own hooks, and a pool lane whose `hooks/main-gate-lib.sh` predates L9 (`grep -L main_gate_token <pool>/*/hooks/main-gate-lib.sh`) still writes the empty sentinel. The census is part of the measurement.
 - **Signal:** the legacy case in `test_reference_transaction_gate.sh` asserts UNSANCTIONED, and live merge-queue landings keep logging `sanctioned`.
 - **Prereqs:** L9.
 
 **L11 — PRD close** · low · keys [] · **#8715**
 
-- **Work:** the decompose-close leaf from the overlay. Depends on L1–L10 (and #8541). Stamps `SHIPPED` with the landed ids, the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, on this PRD and its capability manifest.
+- **Work:** the decompose-close leaf from the overlay. Depends on L1–L10 (and #8541). Stamps `SHIPPED` with the landed ids, the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, on this PRD and its capability manifest. **[Amended 2026-10-20, retro-critic R7]** The map records L9's measured Q5(c) outcome: `hooks/pre-merge-commit` marks immediately before every land.sh move, so land.sh is not a mark site and has no EXIT trap (D9's land.sh trap text and B7 are AS-AUTHORED only).
 - **Signal:** the committed header.
 
 **Companion D1 (dark_factory:6854) — handshake face of the boundary test**
@@ -317,7 +327,20 @@ No waivers.
 
 1. `lane_lock_acquire(mode, wait)` → (a): mode is the wait mode (`0` / `N` / `unlimited`). The lock is always exclusive; the shared mode stays `lane_lock_probe`.
 2. CLI `--mount` → (a): the flags keep their worktrees-dir meaning, plus the looks-like-mount warning. No dark-factory flag-day.
-3. Manifest row → (a): L3 adds its own row in today's format. S19 owns the format, not the rows.
+3. ~~Manifest row → (a): L3 adds its own row in today's format. S19 owns the format, not the rows.~~ (superseded by R7 M8: a new member registers through whichever mechanism is live at implementation, `# run-all-bucket:` pragma or a manifest row, `# guards:` header or a txt row; D12 and the §6 G4 row point at S19 υ #9303 / S18 τ #9312.)
 4. Golden-record home → (a): the canonical copy is in dark-factory, regenerated by D5. reify vendors a byte copy with `PROVENANCE.md`.
 5. f133 premise → (a): two-phase L9/L10. L9 also measures (c) and deletes land.sh's pre-mark if `pre-merge-commit` already marks immediately before the `--no-ff` move.
-6. thin on seed exit 70 → propagate 70 unchanged.
+6. ~~thin on seed exit 70 → propagate 70 unchanged.~~ (superseded by R7 M6, restated: seed rc 70 is the one exception to thin's best-effort exit 0 for `--reseed`; thin exits 70 after the no-op discard with empty stdout; header and `--help` exit table change; the test uses a stub seed. See L1.)
+
+## Retro-critic sitting amendments (2026-10-20)
+
+- **B1 + M4 + M5** (#8709 L5, #8647 L4): L5's signal is rewritten (unmodified goldens give UNKNOWN `anchor-object-absent:b2…` with anchor step-1, ASSIGNED/4242, RELEASED with an empty task; OK/STRANDED only from golden-derived fixtures with real shas); L5 vendors all five D5 files and reads `L_CASES` from `lane-states.json`; its path check gains `lane-state-released.json` and `lane-states.json`. D7: `null` permitted for `task_id` and a non-done entry's `commit`; the reader emits one field per line or `\x1f`-separated, contract by field position; a no-task_id + done-anchor case. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **M1** (#8624 L1): `lane_lock_release` keys on a lib-private acquired flag; seed's EXIT trap only on the acquire path; Q7b and Block-V FD checks retargeted to `LANE_LOCK_FD=8` with a mutation note (lands before S19 μ₂ #8719). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **M2** (#8668 L6): `_with_entry_gate <entry> <precheck_fn> <act_fn>` (lock → precheck → live-ref → act); dirty+live orphan fixture (preserved=1, preserved_live_ref=0); helper check widened to `^_with_entry_gate\(\) [{(]`. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **M3** (#8670 L8, dark_factory:6855 D8): `--capabilities` prints the capability-gated flags from one `CAPABILITIES` array; B9 checks the array against the parser's capability arms with a named base-flag exclusion; "exactly two lines" stands; D8 membership covers capability flags only. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **M6** (#8624 L1): supersedes pass-1 Q6 as worded; seed rc 70 is the one exception to thin's best-effort exit 0 (exit 70 after the no-op discard, empty stdout; header and `--help` table; stub-seed test). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **M7** (#8624 L1, #8641 L3): ratchets are rows in `tests/infra/adoption-ratchet.manifest` at ceiling 0 (`lane-lock-path-construction`, `lane-lock-exec-open`; `status-oracle-invocation`, `done-cancelled-arm`, `entry-helper-def`), EREs excluding `.gen`/`.seed-stamp.json` siblings and comment lines; no bespoke counters. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **M8** (#8624, #8641, #8647): supersedes pass-1 Q3; new members register through whichever mechanism is live (`# run-all-bucket:` pragma or manifest row; `# guards:` header or txt row); D12 and the §6 G4 row point at S19 υ #9303 / S18 τ #9312. Cross-PRD: #9303 and #9312 carry the matching S20 notes (not edited here). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **Polarity** (twins): L2 #8635's five-path present check split into one check per script anchored on `\$\{REIFY_WARM_LANE_WORKTREES`; L1's `probe-substrate-exists` relabelled as the deliverable; L6's helper check widened. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **Minors**: L10 #8713's start gate adds the per-worktree hooks vintage; L2 #8635's destructive gc ambient default stated; L11 #8715's close stamp records the measured Q5(c) outcome (land.sh is not a mark site); L3 #8641's `lane-task-status.sh` overlap with #8780 noted. Drift: 19 HEADROOM fields and the new `_is_git_worktree` call site (task 9181); #9320 moves `_close_inherited_fds` (cite by symbol). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.
+- **Released**: L1 #8624 and L10 #8713 (held under R0) are released by R7. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R7.

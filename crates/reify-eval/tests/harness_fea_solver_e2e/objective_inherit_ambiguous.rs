@@ -28,7 +28,7 @@ use reify_test_support::{
 // Helper: build a no-solver engine (mirrors `reify check` entry point).
 // ---------------------------------------------------------------------------
 fn no_solver_engine() -> Engine {
-    Engine::new(Box::new(MockConstraintChecker::new()), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
 }
 
 // ---------------------------------------------------------------------------

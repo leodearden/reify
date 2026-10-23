@@ -215,6 +215,7 @@
             Arc::new(Mutex::new(Vec::new()));
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -292,6 +293,7 @@
             let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
+                crate::SolverPosture::SolverFree,
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
             );
@@ -379,6 +381,7 @@ structure def D {
                 ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
+                crate::SolverPosture::SolverFree,
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
             );
@@ -438,6 +441,7 @@ structure def D {
                     .with_warnings(vec![reify_ir::ExportWarning::ThreeMfNoMaterials]);
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
+                crate::SolverPosture::SolverFree,
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
             );
@@ -514,6 +518,7 @@ structure Assembly {
         let exported_options = kernel.recorded_options();
 
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -575,6 +580,7 @@ structure Assembly {
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported))
             .with_warnings(vec![reify_ir::ExportWarning::StepAp242Fallback]);
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -650,6 +656,7 @@ structure Assembly {
             Arc::new(Mutex::new(Vec::new()));
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -733,6 +740,7 @@ structure Assembly {
             Arc::new(Mutex::new(Vec::new()));
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -891,6 +899,7 @@ structure Assembly {
             export_calls: std::sync::Mutex::new(0),
         };
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -6364,7 +6373,7 @@ structure Assembly {
             recorded_tolerances: Arc::clone(&recorded),
         };
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
         let _ = engine.tessellate_realizations(&module);
 
@@ -7421,7 +7430,7 @@ structure Assembly {
         let checker = MockConstraintChecker::new();
         // `mut` required for the positive-path sub-scenario where we seed
         // `active_tolerance_scope` directly (crate-internal field).
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         let template_a = TopologyTemplateBuilder::new("EntityA")
             .realization("EntityA", 0, vec![])
@@ -8195,7 +8204,7 @@ structure Assembly {
         // `mut` required for sub-scenario (b) where we seed
         // `active_tolerance_scope` directly (crate-private field, accessible
         // from `mod tests` within the same crate).
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         let template_a = TopologyTemplateBuilder::new("EntityA")
             .realization("EntityA", 0, vec![])
@@ -8275,7 +8284,7 @@ structure Assembly {
         use reify_test_support::MockConstraintChecker;
 
         let checker = MockConstraintChecker::new();
-        let engine = crate::Engine::new(Box::new(checker), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         let occt = CapabilityDescriptor {
             supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
@@ -8330,7 +8339,7 @@ structure Assembly {
             recorded_tolerances: Arc::clone(&recorded),
         };
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
         let _ = engine.tessellate_realizations(&module);
 
@@ -10275,6 +10284,7 @@ structure Assembly {
         );
 
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -10350,6 +10360,7 @@ structure Assembly {
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let recorded_options = kernel.recorded_options();
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

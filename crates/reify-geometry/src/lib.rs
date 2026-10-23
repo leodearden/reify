@@ -1,5 +1,5 @@
 use reify_core::hash::ContentHash;
-use reify_ir::{AttributeHistory, ElementOrderTag, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VolumeMesh, VoxelResolution};
+use reify_ir::{AttributeHistory, DenseSdfGrid, ElementOrderTag, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VolumeMesh, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -282,6 +282,22 @@ impl GeometryKernel for SingleKernelHolder {
         match self.kernel.as_mut() {
             Some(k) => k.register_mesh_handle(mesh),
             None => Err(Self::no_mesh_kernel_error()),
+        }
+    }
+
+    /// The `None` arm deliberately answers as the trait default does ("…
+    /// SingleKernelHolder does not ingest dense SDF grids"), by calling that
+    /// default's own message constructor, per this impl's INVARIANT. Like
+    /// `no_mesh_kernel_error`, it reports the holder as the kernel lacking the
+    /// capability rather than naming the missing registration.
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.ingest_dense_sdf(grid, opts),
+            None => Err(reify_ir::unsupported_dense_sdf_ingest::<Self>()),
         }
     }
 

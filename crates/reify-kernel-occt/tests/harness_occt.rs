@@ -60,6 +60,8 @@ mod boolean_single_build_guard;
 mod conformance_integration;
 #[path = "harness_occt/contains.rs"]
 mod contains;
+#[path = "harness_occt/curated_selection_membership.rs"]
+mod curated_selection_membership;
 #[path = "harness_occt/curve_constructors_integration.rs"]
 mod curve_constructors_integration;
 #[path = "harness_occt/curve_curvature_integration.rs"]
@@ -116,6 +118,8 @@ mod point_on_shape_integration;
 mod projection_trait_delegation;
 #[path = "harness_occt/projector_impl.rs"]
 mod projector_impl;
+#[path = "harness_occt/repr_policy_table.rs"]
+mod repr_policy_table;
 #[path = "harness_occt/revolve_with_history_integration.rs"]
 mod revolve_with_history_integration;
 #[path = "harness_occt/shell_shape_oob_face_index_integration.rs"]

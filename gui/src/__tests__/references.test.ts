@@ -21,7 +21,7 @@ vi.mock('@codemirror/state', () => ({
   // Minimal mock
 }));
 
-import { findUsesCommand } from '../editor/references';
+import { findUsesCommand, referenceSourceLocation } from '../editor/references';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -435,5 +435,31 @@ describe('findUsesCommand version-skew guard', () => {
 
     expect(references).toHaveBeenCalledTimes(1);
     expect(onResults).not.toHaveBeenCalled();
+  });
+});
+
+describe('referenceSourceLocation', () => {
+  it('shifts all four coordinates to 1-based, keys the file by path, and drops the preview', () => {
+    expect(
+      referenceSourceLocation({
+        uri: 'file:///proj/parts.ri',
+        line: 2,
+        character: 4,
+        endLine: 2,
+        endCharacter: 9,
+        preview: 'x',
+      }),
+    ).toEqual({ file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10 });
+  });
+
+  it('decodes a percent-encoded URI into the path spelling', () => {
+    const loc = referenceSourceLocation({
+      uri: 'file:///proj/hello%20world/parts.ri',
+      line: 0,
+      character: 0,
+      endLine: 0,
+      endCharacter: 1,
+    });
+    expect(loc.file_path).toBe('/proj/hello world/parts.ri');
   });
 });

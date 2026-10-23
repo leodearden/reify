@@ -79,7 +79,9 @@ requires a census row in the same change.**
 | intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
-| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
+| verify knob registry and role/profile policy fields | `tests/infra/test_verify_policy.py` — every RolePolicy/ProfilePolicy field appears in `--print-role-policy`; every knob is documented in `docs/notes/verify-pipeline-knobs.md`; consumption itself is convention-only (`verify-structured-plan-and-role-table.md` D14) | shipped |
+| prose task-promises naming an owner (`owned by #N`, `deferred to task N`, `#N will …`, `until #N lands`) | PTODO lane δ-C → `orphaned` via the §19(b) cadenced liveness sweep (`reify-audit-ptodo-detector.md` §8.1, §21) | shipped |
+| prose task-promises outside δ-C's grammar (uncited "in a later task"; trailing `(task N)` on a future clause; promise split across lines) | convention-only — measured and declined (`reify-audit-ptodo-detector.md` §21) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`
@@ -444,7 +446,7 @@ status:
 | inverse trig / `phase` / `arg` | return type | `math_signatures.rs` + eval Angle tag | shipped |
 | `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
 | geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
-| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
+| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | shipped (α, #6179) |
 | `ElasticResult.rotation` = curl/2 | named channel | #6164 | shipped |
 | `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | shipped (σ, #6183) |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |

@@ -154,6 +154,16 @@ plan_for() {
     for f in "$@"; do rm -f "$FIX/$f"; done
 }
 
+# plan_for_staged_role <role> <file...> — plan_for staged with DF_VERIFY_ROLE
+# set to <role> for that one call. It delegates, so plan_for stays the only
+# copy of the stage/capture/unstage steps; the fixture check is repeated
+# because _require_fixture names the helper it was called from.
+plan_for_staged_role() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    local role="$1"; shift
+    DF_VERIFY_ROLE="$role" plan_for staged "$@"
+}
+
 # Convenience predicates over PLAN_OUT.
 # Fork-free: delegate to plan_match ([[ =~ ]]) — eliminates the pipe-to-grep
 # EINTR surface that caused B9-default spurious failures under load (task #4708,
@@ -571,22 +581,25 @@ make_fixture FIX
 # Scenario 1: docs/markdown/yaml only -> nothing heavy
 #
 # "Nothing heavy" is about CLASSIFICATION (RUN_RUST/RUN_GUI/RUN_OCCT_GATE), and
-# that is what this scenario owns. Since task #7785 the staged docs case is no
-# longer a ZERO-command plan: select_cited_test_path_gate emits one cheap
-# selective-infra leaf for any staged change whatever its extension, which is
-# the whole point of that gate (see the CT-* family below, which owns that
-# signal). The count is pinned at exactly one so a future re-escalation of the
-# docs arm still reds here.
+# that is what this scenario owns. Since task #7831 the staged docs case is no
+# longer a ZERO-command plan: select_cited_test_path_gate and, since task #7797,
+# select_canonical_config_path_gate each emit one cheap selective-infra leaf for
+# any staged change whatever its extension, which is the whole point of those
+# gates (see the CT-* and CANON-* families below, which own those signals). The
+# count is pinned at exactly two so a future re-escalation of the docs arm still
+# reds here.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario 1: docs/*.md + *.yaml only -> no Rust, no GUI ---"
 plan_for staged docs/note.md config/thing.yaml
 assert "docs/yaml-only: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "docs/yaml-only: exactly one command leaf — the cited-test-path gate (task #7785), nothing heavy" \
-    test "$(plan_cmdcount)" -eq 1
-assert "docs/yaml-only: that one leaf IS tests/infra/test_cited_test_paths_resolve.sh" \
+assert "docs/yaml-only: exactly two command leaves — the cited-test-path and canonical-config-path gates (tasks #7831, #7797), nothing heavy" \
+    test "$(plan_cmdcount)" -eq 2
+assert "docs/yaml-only: one leaf IS tests/infra/test_cited_test_paths_resolve.sh" \
     plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'
+assert "docs/yaml-only: the other leaf IS tests/infra/test_orchestrator_config_canonical_path.sh" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
 
 # ---------------------------------------------------------------------------
 # Scenario PG-*: PRD-gate .ri fixture classification (task 5536).
@@ -601,10 +614,11 @@ assert "docs/yaml-only: that one leaf IS tests/infra/test_cited_test_paths_resol
 # 16 command leaves) — which is why both 2026-07-25 PRD sessions split their
 # fixtures out into implementation tasks instead.
 #
-# PG-1's staged case is now TWO cheap leaves, not a zero-command plan — the
-# PT-* family below (task 6817) owns the PTODO one (PT-1) and the CT-* family
-# (task #7785) owns the cited-test-path one (CT-1). Neither is a
-# re-escalation: both are seconds-long hermetic bash, and the assertion that
+# PG-1's staged case is now THREE cheap leaves, not a zero-command plan — the
+# PT-* family below (task 6817) owns the PTODO one (PT-1), the CT-* family
+# (task #7831) owns the cited-test-path one (CT-1) and the CANON-* family
+# (task #7797) owns the canonical-config-path one (CANON-1). None is a
+# re-escalation: all are seconds-long hermetic bash, and the assertion that
 # no cargo workspace pass appears is what pins that.
 # PG-1b's branch case stays zero: task 5125's merge-tier-only PTODO stands
 # for --scope branch, which PT-CTRL-BRANCH (beside PG-1b) pins. PG-2..PG-5
@@ -614,13 +628,13 @@ assert "docs/yaml-only: that one leaf IS tests/infra/test_cited_test_paths_resol
 # family below (its FIX_B fixture is not built until then).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, TWO cheap leaves (tasks 6817, #7785) ---"
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, THREE cheap leaves (tasks 6817, #7831, #7797) ---"
 plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
     tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "PG-1/docs+fixture: exactly two command leaves — the cheap PTODO and cited-test-path gates, not a re-escalation" \
-    test "$(plan_cmdcount)" -eq 2
+assert "PG-1/docs+fixture: exactly three command leaves — the cheap PTODO, cited-test-path and canonical-config-path gates, not a re-escalation" \
+    test "$(plan_cmdcount)" -eq 3
 assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest --workspace" \
     plan_lacks 'cargo (test|nextest run) --workspace'
 
@@ -886,25 +900,36 @@ assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf (Rust or TS) and a 
 
 echo ""
 echo "--- Scenario PG-DRIFT-GUI: every EXPECTED_CLEAN-pinned prd-gate fixture classifies RUN_GUI=1 ---"
-# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpus.test.ts)
-# asserts that each pinned path still parses with zero ERROR nodes. Editing a
-# pinned fixture into an unparseable state regresses a committed signal, but the
-# prd-gate arm leaves gui=0 for a fixture that is not RUST-coupled — so under
+# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpusLedger.test.ts)
+# asserts that each path pinned in its JSON pin set
+# (gui/src/__tests__/reifyGrammarCorpus.expected-clean.json) still parses with
+# zero ERROR nodes. Editing a pinned fixture into an unparseable state
+# regresses a committed signal, but the prd-gate arm leaves gui=0 for a
+# fixture that is not RUST-coupled — so under
 # --scope staged/branch the suite that reads it would never run, and on the
 # hook-gated docs commit on `main` there is no later gate. verify.sh's
 # _GUI_COUPLED_RI_FIXTURES closes that; this scenario is what keeps the list
 # honest, exactly as PG-DRIFT does for the Rust side (task 6435).
-_PG_GUI_PINS="$(sed -n '/^const EXPECTED_CLEAN = \[/,/^\];/p' \
-    "$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.test.ts" \
-    | grep -o 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]*\.ri' | sort -u || true)"
-# Non-empty FIRST: a renamed ledger file, a changed EXPECTED_CLEAN spelling or a
-# broken sed range must fail loudly here rather than pass an empty loop.
-assert "PG-DRIFT-GUI: derived EXPECTED_CLEAN pin set is NON-EMPTY (guard is not vacuous)" \
+_PG_GUI_JSON="$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"
+_PG_GUI_PINS="$(python3 -I -c '
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    pins = json.load(f)
+if not isinstance(pins, list) or not all(isinstance(p, str) for p in pins):
+    sys.exit(f"{path}: expected a JSON array of repo-relative path strings")
+for p in pins:
+    if p.startswith("tests/prd-gate/fixtures/") and p.endswith(".ri"):
+        print(p)
+' "$_PG_GUI_JSON" | sort -u || true)"
+# Non-empty FIRST: a moved/renamed pin file or malformed JSON (python3 names it
+# on stderr) must fail loudly here rather than pass an empty loop.
+assert "PG-DRIFT-GUI: derived pin set from reifyGrammarCorpus.expected-clean.json is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PG_GUI_PINS"
 while IFS= read -r _pg_gui_path; do
     [ -n "$_pg_gui_path" ] || continue
     plan_for staged "$_pg_gui_path"
-    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
+    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.expected-clean.json; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
         plan_has 'RUN_GUI=1'
 done <<< "$_PG_GUI_PINS"
 
@@ -955,8 +980,9 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 # Scenario PT-DRIFT: the bash extension list in verify.sh's
 # select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
-# set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
-# re-derives the set from that function's SOURCE on every infra run and
+# set (crates/reify-audit/src/ptodo.rs::SWEPT_EXTENSIONS, the table
+# is_swept_ext looks paths up in). This scenario
+# re-derives the set from that table's SOURCE on every infra run and
 # asserts every derived member fires the gate (same derive-from-source idiom
 # as PG-DRIFT / PG-DRIFT-GUI above). This is ONE-DIRECTIONAL: it goes RED if
 # is_swept_ext gains an extension verify.sh's list lacks, but nothing here
@@ -971,10 +997,12 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* ---"
-_PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
-    | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
-# Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
-# fail loudly here rather than vacuously pass an empty loop.
+_PT_EXTS="$(sed -n '/^const SWEPT_EXTENSIONS/,/^];/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
+    | grep -o '("\.[a-z]*",' | sed 's/("\.\([a-z]*\)",/\1/' | sort -u)" || true
+# Non-empty FIRST: a renamed/reshaped SWEPT_EXTENSIONS or a broken sed range
+# must fail loudly here rather than vacuously pass an empty loop (`|| true`
+# above keeps an empty scrape from aborting the run under pipefail before
+# this assert can name it).
 assert "PT-DRIFT: derived swept-extension set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PT_EXTS"
 while IFS= read -r _pt_ext; do
@@ -1000,20 +1028,23 @@ assert "PT-CASE: plan contains tests/infra/test_reify_audit_ptodo.sh (case-insen
 # rule — a genuinely non-swept docs landing must not gain the PTODO leaf.
 # Control for the PTODO half.
 #
-# The COUNT half moved with task #7785: select_cited_test_path_gate fires on
-# any staged change, so this plan now carries exactly one leaf — and pinning
-# it as the cited-test-path one is what keeps this a control for the PTODO
-# extension rule rather than a bare count that any future leaf would satisfy.
+# The COUNT half moved with tasks #7831 and #7797: select_cited_test_path_gate
+# and select_canonical_config_path_gate fire on any staged change, so this plan
+# now carries exactly two leaves — and pinning them as those two is what keeps
+# this a control for the PTODO extension rule rather than a bare count that any
+# future leaf would satisfy.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-CTRL-DOCS: non-swept docs/*.md + *.yaml gains NO PTODO leaf (control, green before AND after) ---"
 plan_for staged docs/note.md config/thing.yaml
 assert "PT-CTRL-DOCS: plan lacks the cheap PTODO gate leaf (neither extension is reify-audit-swept)" \
     plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
-assert "PT-CTRL-DOCS: exactly one command leaf, and it is the cited-test-path gate (5536's no-heavy-checks win is preserved)" \
-    test "$(plan_cmdcount)" -eq 1
-assert "PT-CTRL-DOCS: that leaf is tests/infra/test_cited_test_paths_resolve.sh, not a re-escalation" \
+assert "PT-CTRL-DOCS: exactly two command leaves, the cited-test-path and canonical-config-path gates (5536's no-heavy-checks win is preserved)" \
+    test "$(plan_cmdcount)" -eq 2
+assert "PT-CTRL-DOCS: one leaf is tests/infra/test_cited_test_paths_resolve.sh, not a re-escalation" \
     plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'
+assert "PT-CTRL-DOCS: the other leaf is tests/infra/test_orchestrator_config_canonical_path.sh, not a re-escalation" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
 
 # ---------------------------------------------------------------------------
 # Scenarios PT-RATCHET-*: the EMITTER half of REIFY_PTODO_RATCHET_REQUIRED
@@ -1095,7 +1126,7 @@ assert "PT-RATCHET-DRIFT: tests/infra/test_reify_audit_ptodo.sh READS the emitte
 
 # ---------------------------------------------------------------------------
 # Scenarios CT-*: the cited-test-path gate on the hook-gated --scope staged
-# path (task #7785).
+# path (task #7831).
 #
 # tests/infra/test_cited_test_paths_resolve.sh — prose naming a
 # `crates/<crate>/tests/**/*.rs` file must name a path that still resolves —
@@ -1152,11 +1183,13 @@ assert "CT-EXTLESS: extension-less staged path still emits the cited-test-path g
 # Scenario CT-CORPUS-DRIFT: the ANTI-ALLOWLIST ratchet — the analogue of
 # PT-DRIFT, for a selector that deliberately has NO set to mirror.
 #
-# select_cheap_ptodo_gate sits directly above select_cited_test_path_gate in
-# verify.sh and DOES filter by extension, so the standing hazard is a reader
-# who "helpfully" mirrors that filter here. It would be a coverage hole, not
-# an optimisation: the scan is extension-agnostic by construction, and says so
-# — cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited by
+# select_cheap_ptodo_gate sits earlier in verify.sh and DOES filter by
+# extension, so the standing hazard is a reader who "helpfully" mirrors that
+# filter into the trigger the staged gates share — most likely
+# select_staged_whole_tree_gate, where CT-EXTLESS and CANON-EXTLESS both catch
+# it. It would be a coverage hole, not an optimisation: the scan is
+# extension-agnostic by construction, and says so —
+# cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited by
 # FUNCTION NAME, not line, since a line cite into another file re-rots on
 # every edit to it), "NO EXTENSION FILTER. Extension-agnosticism is the
 # ABSENCE of a filter, not an allowlist".
@@ -1190,7 +1223,7 @@ while IFS= read -r _ct_ext; do
     # docs/* is a no-heavy-checks path arm for EVERY extension (Scenario 1),
     # which isolates the extension rule from path classification exactly as
     # PT-DRIFT's docs/pt_probe.<ext> does: a gate leaf seen here can only come
-    # from select_cited_test_path_gate's own (absent) extension test.
+    # from select_staged_whole_tree_gate's own (absent) extension test.
     plan_for staged "docs/ct_probe.$_ct_ext"
     assert "CT-CORPUS-DRIFT: docs/ct_probe.$_ct_ext -> cited-test-path gate leaf emitted (corpus-derived extension)" \
         plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'
@@ -1207,16 +1240,70 @@ done <<< "$_CT_EXTS"
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario CT-MERGE-SUPPRESSED: DF_VERIFY_ROLE=merge emits NO selective cited-test-path leaf ---"
-mkdir -p "$FIX/docs"
-printf 'x\n' > "$FIX/docs/ct_merge_probe.md"
-git -C "$FIX" add docs/ct_merge_probe.md
-_CT_MERGE_PLAN="$(cd "$FIX" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
-git -C "$FIX" reset -q -- . 2>/dev/null || true
-rm -f "$FIX/docs/ct_merge_probe.md"
+plan_for_staged_role merge docs/ct_merge_probe.md
 assert "CT-MERGE-SUPPRESSED-vacuity: the merge-role plan was captured (the negative pin below is not vacuous)" \
-    test -n "$_CT_MERGE_PLAN"
+    test -n "$PLAN_OUT"
 assert "CT-MERGE-SUPPRESSED: no selective tests/infra/test_cited_test_paths_resolve.sh leaf (run_all.sh owns it wholesale there)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "test_cited_test_paths_resolve"' _ "$_CT_MERGE_PLAN"
+    plan_lacks 'test_cited_test_paths_resolve'
+
+# ---------------------------------------------------------------------------
+# Scenarios CANON-*: the canonical-config-path gate on the hook-gated --scope
+# staged path (task #7797), the sibling of CT-* above.
+#
+# tests/infra/test_orchestrator_config_canonical_path.sh (task 5242) part (B)
+# is a repo-wide absence invariant with no grandfather baseline: any tracked
+# line naming the legacy top-level orchestrator config reds it. Everything
+# still in charter gets landing-path parity (landing-contract §3 R3,
+# docs/legibility/landing-contract.md), so a hook-gated commit on `main` must
+# run it; CT-1 owns the shared rationale, and these scenarios pin only that
+# this leaf rides the same trigger.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario CANON-1: staged plans/*.md + docs/legibility/*.yaml (the census-commit shape) -> canonical-config-path gate leaf emitted ---"
+plan_for staged plans/canon_census_probe.md docs/legibility/canon_probe.yaml
+assert "CANON-1: plan contains the tests/infra/test_orchestrator_config_canonical_path.sh selective leaf" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+assert "CANON-1: leaf runs through the selective-infra timeout+bash loop shape" \
+    plan_has 'test_orchestrator_config_canonical_path.*timeout.*bash'
+for canon_field in RUN_RUST RUN_GUI RUN_OCCT_GATE; do
+    assert "CANON-1: scope decision keeps $canon_field at 0 (gate ADDED, not a re-escalation)" \
+        test "$(plan_header_field "$PLAN_OUT" scope "$canon_field")" = 0
+done
+assert "CANON-1: no cargo test/nextest workspace pass (the gate is hermetic bash — no cargo, no npm)" \
+    plan_lacks 'cargo (test|nextest run) --workspace'
+assert "CANON-1: no cargo clippy" plan_lacks 'cargo clippy'
+
+echo ""
+echo "--- Scenario CANON-1-vacuity: the selected gate path resolves in the repo (mirrors CT-1-vacuity) ---"
+assert "CANON-1-vacuity: tests/infra/test_orchestrator_config_canonical_path.sh exists (the emitted loop's [ -f ] guard would otherwise silently no-op)" \
+    test -f "$REPO_ROOT/tests/infra/test_orchestrator_config_canonical_path.sh"
+
+# CANON-CONFIG: dark-factory-orchestrator.yaml is classified inert (RUN_RUST=0)
+# and its one infra-map row (knob parity) reads the verify_env block with awk,
+# so on a hook-gated commit nothing parses it as YAML; part (A) of the gate does.
+echo ""
+echo "--- Scenario CANON-CONFIG: staged dark-factory-orchestrator.yaml alone (the part (A) subject) -> gate leaf emitted ---"
+plan_for staged dark-factory-orchestrator.yaml
+assert "CANON-CONFIG: staging the canonical config itself emits the canonical-config-path gate leaf" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+
+# CANON-EXTLESS: same single-probe kill of the extension-filter class as
+# CT-EXTLESS — no `case` allowlist can match an extension-less path.
+echo ""
+echo "--- Scenario CANON-EXTLESS: a staged EXTENSION-LESS file still fires the gate ---"
+plan_for staged hooks/canon-probe-hook
+assert "CANON-EXTLESS: extension-less staged path still emits the canonical-config-path gate leaf (no allowlist can match it)" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+
+# CANON-MERGE-SUPPRESSED: exactly-once (INV-5), CT-MERGE-SUPPRESSED's twin —
+# under DF_VERIFY_ROLE=merge run_all.sh runs this file wholesale.
+echo ""
+echo "--- Scenario CANON-MERGE-SUPPRESSED: DF_VERIFY_ROLE=merge emits NO selective canonical-config-path leaf ---"
+plan_for_staged_role merge docs/canon_merge_probe.md
+assert "CANON-MERGE-SUPPRESSED-vacuity: the merge-role plan was captured (the negative pin below is not vacuous)" \
+    test -n "$PLAN_OUT"
+assert "CANON-MERGE-SUPPRESSED: no selective tests/infra/test_orchestrator_config_canonical_path.sh leaf (run_all.sh owns it wholesale there)" \
+    plan_lacks 'test_orchestrator_config_canonical_path'
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
@@ -1411,9 +1498,9 @@ assert "PT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched b
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
-# Scenario CT-CTRL-BRANCH: the staged->branch twin of CT-1. task #7785's
+# Scenario CT-CTRL-BRANCH: the staged->branch twin of CT-1. task #7831's
 # selector is keyed on SCOPE=staged only, and that narrowness is the POINT,
-# not an oversight: what #7785 closes is a PATH ASYMMETRY, and a --scope
+# not an oversight: what #7831 closes is a PATH ASYMMETRY, and a --scope
 # branch lane has no asymmetry to close — a task branch reaches `main` through
 # the merge tier, where run_all.sh runs this gate wholesale, so a stale
 # citation introduced on a branch already fails at that branch's OWN merge.
@@ -1426,7 +1513,22 @@ echo "--- Scenario CT-CTRL-BRANCH: staged->branch twin of CT-1 -> NO cited-test-
 plan_for_branch docs/ct_branch_probe.md
 assert "CT-CTRL-BRANCH: plan lacks the cited-test-path gate leaf (--scope branch keeps the merge tier as the authority)" \
     plan_lacks 'tests/infra/test_cited_test_paths_resolve\.sh'
-assert "CT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task #7785)" \
+assert "CT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task #7831)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario CANON-CTRL-BRANCH: the staged->branch twin of CANON-1. A task branch
+# reaches `main` through the merge tier, where run_all.sh runs this file
+# wholesale, so --scope branch has no path asymmetry to close (CT-CTRL-BRANCH
+# above argues it in full). Lives here because plan_for_branch is not defined
+# until this section.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario CANON-CTRL-BRANCH: staged->branch twin of CANON-1 -> NO canonical-config-path gate leaf (control) ---"
+plan_for_branch docs/canon_branch_probe.md
+assert "CANON-CTRL-BRANCH: plan lacks the canonical-config-path gate leaf (--scope branch keeps the merge tier as the authority)" \
+    plan_lacks 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+assert "CANON-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task #7797)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
@@ -2994,7 +3096,7 @@ assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename 
 # The examples/ tree gains a crate MAPPING on the affected_crates side (ALL ->
 # the declared reader closure), but decide_scope's answer must not move: the
 # corpus gates are compiled Rust tests (rust), gui/src/__tests__/
-# reifyGrammarCorpus.test.ts walks examples/ recursively (gui), and both
+# reifyGrammarCorpusLedger.test.ts walks examples/ recursively (gui), and both
 # reify-eval and reify-cli are declared OCCT-touching (gate). A control that
 # pins the mapping as never-SUBTRACTING heavy checks.
 # ---------------------------------------------------------------------------
@@ -3162,7 +3264,7 @@ assert "GV-6: gui lane carries the vitest runner" \
 #
 # The headline is a NEGATIVE (plan_lacks), so it gets an anti-vacuity control
 # FIRST, the same discipline b11/b13/b15 keep in
-# test_compute_trampoline_registration_wired.sh. plan_for_branch_env captures
+# test_verify_gui_feature_test_pass.sh. plan_for_branch_env captures
 # with `|| true` and asserts nothing itself, so on retry exhaustion PLAN_OUT can
 # be a partial dump that still carries the preamble both the scope-header check
 # and the vitest-lane grep live in — and then the one assertion pinning the

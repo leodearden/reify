@@ -351,7 +351,7 @@ fn degenerate_pose_error_carries_every_fact_the_author_needs() {
 // --- the honest BRepKind stamp on both plain-sweep entry points (#5713) ---
 //
 // A plain sweep does not always produce a Solid. Sweeping a WIRE profile
-// yields an un-capped SHELL — measured via `shape_type_name`. Its single
+// yields an un-capped SHELL — measured via `body_type_name`. Its single
 // 20mm x 200mm face carries area 0.004 m² and volume 0, which is what an
 // area-only measurement mistook for a bare FACE. Yet both entry points
 // stamped `BRepKind::Solid` unconditionally, one by falling through to
@@ -430,10 +430,8 @@ fn sweep_with_history_of_a_wire_profile_is_stamped_shell() {
 ///
 /// Spelled with a CURATED edge selection — the designer-facing
 /// `fillet(body, edges_at_height(..), r)` idiom the gate's own REACH note
-/// names. The 2-arg back-compat spelling (`edges: vec![]`) is deliberately
-/// NOT used here: that arm calls `ffi::fillet_all_edges` directly and
-/// reaches no gate at all, which is a pre-existing gap of its own (#7742)
-/// rather than anything the `BRepKind` stamp can fix.
+/// names. The 2-arg back-compat spelling (`edges: vec![]`) now reaches the
+/// same gate (#7742); `repr_policy_table.rs` pins it there.
 #[test]
 fn filleting_a_shell_swept_result_is_rejected_by_the_local_feature_gate() {
     if !OCCT_AVAILABLE {

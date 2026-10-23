@@ -690,31 +690,129 @@ mod tests {
         }
     }
 
+    /// Names a registry row deliberately shares with a family slice, as
+    /// `(name, family slice, the argc the family's call shape takes)`. Family
+    /// slices carry no arity, so the argc each one claims is declared here, and
+    /// the sharing is harmless only while no registry row answers that argc.
+    ///
+    /// Keyed on the slice itself rather than its label, so a share cannot name
+    /// a family that does not exist. Slices compare by content, which
+    /// identifies a family because families are pairwise disjoint.
+    ///
+    /// * `offset` — the arity-2 construction datum `offset(Plane, Length)`
+    ///   vs the arity-3 relation row.
+    /// * `angle` / `distance` — the arity-2 geometry-query DERIVE forms vs the
+    ///   arity-3 relation DRIVE rows.
+    const REGISTRY_ROW_FAMILY_SHARES: &[(&str, &[&str], usize)] = &[
+        ("offset", DATUM_CONSTRUCTOR_NAMES, 2),
+        ("angle", GEOMETRY_QUERY_NAMES, 2),
+        ("distance", GEOMETRY_QUERY_NAMES, 2),
+    ];
+
+    /// The argc `family` takes for `name`, if the pair is a declared share.
+    fn registry_row_family_share_argc(name: &str, family: &[&str]) -> Option<usize> {
+        REGISTRY_ROW_FAMILY_SHARES
+            .iter()
+            .find(|&&(n, f, _)| n == name && f == family)
+            .map(|&(_, _, argc)| argc)
+    }
+
+    /// The [`BUILTIN_NAME_FAMILIES`] label of `family`.
+    fn family_label(family: &[&str]) -> &'static str {
+        BUILTIN_NAME_FAMILIES
+            .iter()
+            .find(|&&(_, slice)| slice == family)
+            .map(|&(label, _)| label)
+            .expect("every family slice is a BUILTIN_NAME_FAMILIES row")
+    }
+
     /// The two vocabularies that are not slices — the builtin-signature
-    /// registry rows and the arity-gated relation shared verbs — claim no name
-    /// any family claims. The registry list is derived from
-    /// `reify_builtins::rows()`, so every later τ migration is covered the
-    /// moment its rows land. The shared verbs `angle`/`distance` live in
-    /// `GEOMETRY_QUERY_NAMES` by design (their arity-3 forms are relations),
-    /// so that one family is exempt from the shared-verb leg.
+    /// registry rows and the arity-gated relation shared verbs — claim no
+    /// CALL any family claims. The registry leg is (name, argc)-keyed: a family
+    /// name with a registry row must be a declared
+    /// [`REGISTRY_ROW_FAMILY_SHARES`] entry, and no row may answer the argc
+    /// that family takes. `RELATION_FN_NAMES` is skipped because it is the
+    /// Relation rows' own transitional mirror, pinned both ways by
+    /// `relation_rows_are_exactly_the_compiler_relation_vocabulary`. The
+    /// registry list is derived from `reify_builtins::rows()`, so every later
+    /// τ migration is covered the moment its rows land. The shared verbs
+    /// `angle`/`distance` live in `GEOMETRY_QUERY_NAMES` by design (their
+    /// arity-3 forms are relations), so that one family is exempt from the
+    /// shared-verb leg.
     #[test]
     fn registry_rows_and_shared_verbs_are_disjoint_from_every_family() {
         assert!(
             !reify_builtins::rows().is_empty(),
             "premise guard: the registry holds no rows, so the sweep asserts nothing"
         );
-        for (family, slice) in BUILTIN_NAME_FAMILIES {
-            for name in *slice {
+        for &(family, slice) in BUILTIN_NAME_FAMILIES {
+            for name in slice {
+                if slice != RELATION_FN_NAMES && !reify_builtins::name_group(name).is_empty() {
+                    let argc = registry_row_family_share_argc(name, slice).unwrap_or_else(|| {
+                        panic!(
+                            "{name:?} in {family} is also a builtin-signature-registry \
+                             row name, and the pair is not a declared \
+                             REGISTRY_ROW_FAMILY_SHARES entry"
+                        )
+                    });
+                    assert!(
+                        reify_builtins::lookup(name, argc).is_none(),
+                        "{name:?} in {family} takes argc {argc}, but a registry row also \
+                         answers lookup({name:?}, {argc}) — both would claim the same call"
+                    );
+                }
                 assert!(
-                    reify_builtins::name_group(name).is_empty(),
-                    "{name:?} in {family} is also a builtin-signature-registry row name"
-                );
-                assert!(
-                    *family == "GEOMETRY_QUERY_NAMES" || !is_relation_shared_verb(name),
+                    slice == GEOMETRY_QUERY_NAMES || !is_relation_shared_verb(name),
                     "{name:?} in {family} is also an arity-gated relation shared verb"
                 );
             }
         }
+    }
+
+    /// A declared share that stopped being real is a stale exemption that
+    /// would silently excuse a future genuine collision.
+    #[test]
+    fn registry_row_family_shares_are_still_real() {
+        for &(name, slice, argc) in REGISTRY_ROW_FAMILY_SHARES {
+            let family = family_label(slice);
+            assert!(
+                slice.contains(&name) && !reify_builtins::name_group(name).is_empty(),
+                "({name:?}, {family}, {argc}) is no longer both a {family} member and a \
+                 registry row name — drop it from REGISTRY_ROW_FAMILY_SHARES"
+            );
+        }
+    }
+
+    /// The Relation rows are exactly the compiler's relation vocabulary:
+    /// `RELATION_FN_NAMES` plus the arity-gated shared verbs, both ways.
+    ///
+    /// Transitional: S9 λ #8741 derives `RELATION_FN_NAMES` from the rows and
+    /// deletes this test together with the slice.
+    #[test]
+    fn relation_rows_are_exactly_the_compiler_relation_vocabulary() {
+        use std::collections::BTreeSet;
+
+        for name in ["angle", "distance"] {
+            assert!(
+                is_relation_shared_verb(name),
+                "premise guard: {name:?} is no longer a relation shared verb"
+            );
+        }
+        let rows: BTreeSet<&str> = reify_builtins::rows()
+            .iter()
+            .filter(|r| r.binding == reify_builtins::BindingKind::Relation)
+            .map(|r| r.name)
+            .collect();
+        let vocabulary: BTreeSet<&str> = RELATION_FN_NAMES
+            .iter()
+            .copied()
+            .chain(["angle", "distance"])
+            .collect();
+        assert_eq!(
+            rows, vocabulary,
+            "the Relation-bound registry rows must be exactly RELATION_FN_NAMES \
+             plus the shared verbs angle/distance"
+        );
     }
 
     /// `is_known_builtin` must accept EVERY member of EVERY classification

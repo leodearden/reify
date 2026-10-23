@@ -10,8 +10,18 @@
 use crate::dimension::DimensionVector;
 
 const RELATIVE_TOLERANCE: f64 = 1e-9;
-const LENGTH_FLOOR_M: f64 = 1e-6;
-const ANGULAR_REFERENCE_RADIUS_M: f64 = 1.0;
+
+/// The `==` verdict's absolute length floor, in metres.
+pub const LENGTH_FLOOR_M: f64 = 1e-6;
+
+/// The radius, in metres, at which an angle is read as a length.
+pub const ANGULAR_REFERENCE_RADIUS_M: f64 = 1.0;
+
+/// The solver's metre-row tolerance floor, in metres. Distinct from
+/// [`LENGTH_FLOOR_M`]: it only keeps a scale-relative solver bar off zero for
+/// sub-millimetre clusters (PRD `docs/prds/v0_6/geometry-algebra-solver-unification.md`
+/// §7.3).
+pub const SOLVER_LENGTH_FLOOR_M: f64 = 1e-9;
 
 /// Absolute floor for every dimension without a curated resolution, and the
 /// minimum floor of every dimension.

@@ -131,9 +131,7 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// conformance violation IS the fixture's content. Each listed fixture's header
 /// records its post-δ state. The `dcr_*` files record, SHA-stamped, that they
 /// evaluated clean at decompose, then a POST-δ block names THIS chokepoint as
-/// the source of their current exit 1. `curvature_rad_literal.ri` differs: it
-/// was already red at decompose on its own `ParamDefaultTypeMismatch`, and its
-/// POST-δ block records THIS chokepoint as a second Error on the same mismatch.
+/// the source of their current exit 1.
 /// How each owning leaf reads its signal instead is recorded once, in
 /// `docs/notes/ctor-conformance-flip-leaf-signals.md`.
 /// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
@@ -149,8 +147,8 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 ///
 /// PRD §4 D9 assigns the per-case judgment — call-site bug, or wrong declared
 /// field type — to γ. γ ruled: two sites were the call site's fault and are
-/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); these eleven
-/// are owned elsewhere and are deferred, per the shape
+/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); the sites this
+/// table lists are owned elsewhere and are deferred, per the shape
 /// `CTOR_CONFORMANCE_GATE_REMEDY` remedy 3 already mandates on main — *"Add a
 /// per-SITE entry naming the file, the param and the LIVE task that owns
 /// retiring it. Per-site, never per-file, and never without an owner."*
@@ -184,14 +182,6 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// and a ctor-conformance diagnostic at a different param in the same file is
 /// an unexplained site.
 pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
-    (
-        "tests/prd-gate/fixtures/curvature_rad_literal.ri",
-        "kc",
-        "#6179",
-        "angle-completion leaf α, boundary row B1: CURVATURE is m^-1 pre-α, so the \
-         rad·m^-1 initializer mismatches; the fixture's own header calls that \
-         check-time flip α's signal",
-    ),
     (
         "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
         "force",
@@ -586,13 +576,14 @@ impl Disposition {
 ///
 /// [`Owner::UnresolvedDef`] means "the anchor named something that is not a
 /// declared `structure def`", which is exactly the non-ctor call shape, and it
-/// does catch the first two. It is not sufficient, and the difference is
+/// does catch the first two. It is not sufficient, and the difference was
 /// MEASURED rather than argued: `raw_lambda`'s site recovers no def at all
-/// ([`Owner::Unknown`]) — and so does a genuine, waived ctor site,
-/// `curvature_rad_literal.ri :: param 'kc'`, whose label anchors at an
-/// initializer rather than at a `Def(` call. Scoping on the owner column would
-/// therefore stale a live [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry, so the
-/// ctor/non-ctor split has to be read off the DIAGNOSTIC, not off the anchor.
+/// ([`Owner::Unknown`]) — and so did a genuine ctor site, then waived,
+/// `curvature_rad_literal.ri :: param 'kc'` (retired by #6179), whose label
+/// anchored at an initializer rather than at a `Def(` call. Scoping on the owner
+/// column would therefore have staled a live [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`]
+/// entry, so the ctor/non-ctor split has to be read off the DIAGNOSTIC, not off
+/// the anchor.
 ///
 /// Stating the scope HERE rather than as a filter at each consumer is what keeps
 /// the artifact's `disposition` column and
@@ -1519,7 +1510,7 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # Cost
 ///
-/// The entries name SEVEN distinct files, so this compiles seven `.ri` members
+/// The entries name SIX distinct files, so this compiles six `.ri` members
 /// plus the cached stdlib prelude — the same order as
 /// [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`], and nowhere near
 /// the 689-member corpus walk that keeps the generator `#[ignore]`d per
@@ -1529,8 +1520,8 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # `partial` is tolerated here, unlike the clean pin
 ///
-/// These files are RED before-images, and `curvature_rad_literal.ri` carries
-/// Error-severity diagnostics TODAY (its own header says so) — a partially
+/// These files are RED before-images, and since δ (#5306) the `dcr_*` files carry
+/// Error-severity diagnostics TODAY (their POST-δ headers say so) — a partially
 /// compiled member still contributes its ctor sites. No vacuity follows: this
 /// assertion needs the sites to be PRESENT, so a file that stops contributing them
 /// turns its entries stale and reds this test BY NAME. `not_surveyed` is still

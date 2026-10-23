@@ -852,13 +852,14 @@ pub fn find_template<'a>(
 /// prelude templates they point at. They are separate because the tables are
 /// phase-locals in `phase_entities` while the templates outlive it.
 pub(crate) struct PreludeRegistries<'r, 't> {
-    /// Prelude templates for CONSTRUCTOR lowering — `EntityKind::Structure`-
-    /// FILTERED, because only `structure def`s are constructible via `Foo()`
-    /// (task 3540 / esc-3540-177 RULING 1).
+    /// Prelude templates for CONSTRUCTOR lowering — the `EntityKind::Structure`-
+    /// FILTERED view of `sub_target`, because only `structure def`s are
+    /// constructible via `Foo()` (task 3540 / esc-3540-177 RULING 1).
     pub(crate) ctor: &'r HashMap<String, &'t TopologyTemplate>,
-    /// Prelude templates for SUB-TARGET resolution — UNFILTERED by
-    /// `EntityKind`, because a sub target may be an occurrence
-    /// (`sub o = STLOutput(…)`). Read only via [`find_template_with_prelude`].
+    /// Prelude templates for SUB-TARGET resolution, each name bound by
+    /// [`crate::name_env`] (NS-P1) — UNFILTERED by `EntityKind`, because a sub
+    /// target may be an occurrence (`sub o = STLOutput(…)`). Read only via
+    /// [`find_template_with_prelude`].
     pub(crate) sub_target: &'r HashMap<String, &'t TopologyTemplate>,
     /// Entity names THIS module declares itself (local only — never seeded
     /// from the prelude). Suppresses the prelude fallback for a name the

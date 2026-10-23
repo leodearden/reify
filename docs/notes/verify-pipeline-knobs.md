@@ -53,6 +53,53 @@ The verify pipeline is governed by three admission controls that layer in order:
 
 **`DF_VERIFY_ROLE=merge` exemption:** all three admission controls (`compile_gate`, `psi_gate`, `test_semaphore_acquire`) skip acquisition when `DF_VERIFY_ROLE=merge`. The merge gate **never waits behind a task slot**. This exemption fires on both paths: the orchestrator queue merge path (orchestrator injects `DF_VERIFY_ROLE=merge`) and the local `land.sh`/`pre-merge-commit` path.
 
+## verify.sh knob registry (`scripts/reify_verify/knobs.py`)
+
+The authoritative list of every knob `scripts/verify.sh` itself reads is `python3 -I -B scripts/verify.py --print-knobs` (pre-cutover: `verify.sh` is still the gate, and the registry mirrors its read forms). Each knob's parser is its bash read form: `duration` is `_resolve_timeout_knob` (`^[0-9]+[smhd]?$`, invalid → default plus a warning), `text` is `${X:-d}`, `text-unset-only` is `${X-d}` (an explicit empty value is kept), `flag-one` is true only for exactly `1`, and `flag-set` is true when non-empty. A derived default is computed where the knob is used. The admission knobs above and `REIFY_GUI_RETRY_SPECS` below are documented in their own sections; the rest are:
+
+| Knob | Parser | Default | Meaning |
+|---|---|---|---|
+| **Timeouts** | | | |
+| `REIFY_VERIFY_TEST_TIMEOUT` | duration | `60m` | outer wall of the debug (--workspace) cargo nextest pass |
+| `REIFY_VERIFY_TEST_TIMEOUT_RELEASE` | duration | `90m` | outer wall of the release cargo nextest pass; a role's release_wall_default replaces this default |
+| `REIFY_VERIFY_PREBUILD_TIMEOUT` | duration | `45m` | outer wall of each merge-path release pre-build (cargo build --release -p reify-audit / -p reify-cli) |
+| `REIFY_VERIFY_CLIPPY_TIMEOUT` | duration | `45m` | outer wall of cargo clippy and of the gui-feature cargo check pass |
+| `REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT` | duration | `45m` | outer wall of the gui-feature test pass (-p reify-gui --features gui), build plus execution |
+| `REIFY_VERIFY_CHECK_TIMEOUT` | duration | `30m` | outer wall of cargo check --workspace --tests |
+| **Heavy filter and release delta** | | | |
+| `REIFY_GATE_EXCLUDE_HEAVY` | flag-one | empty | exactly 1: task and merge nextest passes exclude the heavy filterset |
+| `REIFY_RELEASE_DELTA_SKIP` | flag-one | `0` | exactly 1: a merge may skip its release pass when the delta cannot change release behaviour |
+| **Jobserver and nextest probe** | | | |
+| `REIFY_JOBSERVER_TASK_FIFO` | text | `/tmp/reify-jobserver-task` | jobserver FIFO for the task pool (task and background roles) |
+| `REIFY_JOBSERVER_MERGE_FIFO` | text | `/tmp/reify-jobserver-merge` | jobserver FIFO for the merge pool |
+| `REIFY_JOBSERVER_SKIP_LIVENESS_PROBE` | flag-one | empty | exactly 1: adopt an existing FIFO without probing its owner (break-glass) |
+| `REIFY_NEXTEST_PROBE_RETRY_SLEEP` | text | `2` | seconds between cargo nextest --version availability probe retries |
+| **Merge retry** | | | |
+| `REIFY_VERIFY_RETRY_SCOPE` | text | empty | failed_only narrows a merge retry to the did-not-pass tests; anything else runs everything |
+| `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE` | text | empty | newline-delimited exact nextest test ids a failed_only retry runs |
+| `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG` | text | derived: `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE` | the debug pass's own retry filter file |
+| `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE` | text | derived: `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE` | the release pass's own retry filter file |
+| `REIFY_VERIFY_RETRY_TREE_OID` | text | empty | the tree a retry targets; must equal the attempt-0 sidecar's tree_oid |
+| `REIFY_VERIFY_RETRY_MAX_SUBSET` | text | `5000` | largest retry subset accepted; a larger one is refused as a construction bug |
+| `REIFY_VERIFY_ATTEMPT_SIDECAR` | text | `target/reify-verify-attempt.json` | attempt-0 sidecar recording the tree a merge built from |
+| **--confirm-failed** | | | |
+| `REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG` | text | `target/reify-confirm-failed-debug.txt` | failing debug test ids a recording run wrote, for --confirm-failed |
+| `REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE` | text | `target/reify-confirm-failed-release.txt` | failing release test ids a recording run wrote, for --confirm-failed |
+| `REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG` | text | `target/reify-confirm-failed-debug.json` | tree OID the debug manifest was recorded against |
+| `REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE` | text | `target/reify-confirm-failed-release.json` | tree OID the release manifest was recorded against |
+| `REIFY_VERIFY_CONFIRM_JUNIT` | text | `target/nextest/default/reify-confirm.xml` | JUnit report nextest writes for the recording and confirm passes |
+| `REIFY_VERIFY_CONFIRM_LOG` | text | derived: `<repo root>/target/reify-confirm-failed.log` | private log that takes every --confirm-failed diagnostic |
+| `REIFY_VERIFY_NEXTEST_CONFIG` | text | empty | nextest config file to use instead of generating one |
+| **Scope and infra** | | | |
+| `REIFY_AFFECTED_CRATES_OVERRIDE` | text | empty | crate list used verbatim as the staged/branch affected-crate closure |
+| `REIFY_INFRA_SUITE_ACTIVE` | flag-set | empty | non-empty when verify runs nested in an infra suite; the plan then omits the infra pool steps |
+| `REIFY_RUN_ALL_MEMBER_SUBSET` | text | empty | run_all.sh members a retry re-runs |
+| **Ledgers** | | | |
+| `REIFY_BACKGROUND_SWEEP_LEDGER` | text | derived: `<main checkout>/data/orchestrator/verify-background-sweeps.jsonl` | where a completed background run appends its verdict record |
+| `REIFY_VERIFY_LEDGER_DIR` | text | derived: `<main checkout>/data/verify-logs, refused beneath an infra suite` | where a top-level executed run appends its instrumentation record |
+| `REIFY_VERIFY_LEDGER_LANE_DIR` | text | derived: `<repo root>` | the lane whose seed stamp the instrumentation record reads |
+| `REIFY_VERIFY_RUN_ID` | text | empty | a recording run's id; a run that inherits one is nested and records nothing |
+
 ## Exit-75 premise correction & clock-stop seam
 
 **Premise correction — DF does NOT requeue verify exit-75 (PRD verify-admission-wait-clock-stop §2):** the earlier claim that "the orchestrator treats exit 75 as retry-capped transient infra and requeues the task" is **FALSE**. Verified in DF source: `verify.py _classify_failure` falls exit-75 through to `unknown_test_failure` → debugfix loop → **BLOCKED**. This is the true mechanism behind task 4800 and the esc-3891-45/esc-4673-31/esc-4552 cluster. `docs/prds/test-run-concurrency-semaphore.md` §4/§6/§7 which stated the requeue premise are superseded by `docs/prds/verify-admission-wait-clock-stop.md`.
@@ -107,6 +154,7 @@ A **third marker family**, emitted by the gui block rather than by an admission 
 - **Knob — `REIFY_GUI_RPC_FLAKE_RETRY`** (`scripts/gui-vitest-run.sh`): `1` (default) arms the one bounded retry; `0` disables it. It gates the retry only — classification and both markers are unconditional.
 - **One definition of the invocation:** `verify.sh`'s gui block and `scripts/gui-test.sh` both run the suites through `scripts/gui-vitest-run.sh`; neither calls `npm test` directly, so gate and frontend checkpoint cannot drift. The block's `wrap_subshell gui 15` (minutes) budget is unchanged; see the artifact bullet above for what a retry re-runs and the measured basis for keeping 15. The runner is a verify-pipeline artifact (`scripts/verify-pipeline-paths.txt`), so editing it routes to the full `--scope all` gate.
 - **`DF_VERIFY_ROLE` is now `export`ed at its defaulting site** in `verify.sh`, not merely assigned. Before task 7630 an invocation that did not pre-export it (`hooks/project-checks`, every manual and agent run) left the defaulted `task` invisible to children, so `gui/vitest.config.ts`'s role-gated `maxForks` cap and `teardownTimeout` (task 4856) silently did not apply and vitest spawned nCPU-1 forks. The merge-exemption semantics above are unchanged; only reachability was.
+- **Fork workers are reused since #7642** (root `isolate: false`, split into `shared-modules` / `fresh-modules` projects), so under the verify lane's `maxForks: 4` cap about 4 warm workers replace one cold fork per file. That shrinks the starvation exposure window but does **not** remove the 60 s birpc bound, and worker→host fetch-RPC volume falls only modestly (why: `docs/notes/gui-vitest-shared-workers.md` → "Residual risk").
 - **Column-0 and first-token on its own line**, the same convention as the families above, so a log grep anchors it. **No consumer today** — unlike `@@REIFY_SLOT_TIMEOUT@@`, nothing dark-factory-side parses it; it exists so a recurrence is self-identifying. Guards: `tests/infra/test_gui_vitest_rpc_hardening.sh`, `gui/src/__tests__/workerRpcFlakeReporter.test.ts`.
 
 ## Agent-spawn CPU axis (orthogonal to the verify pipeline)

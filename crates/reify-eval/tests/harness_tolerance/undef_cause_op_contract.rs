@@ -48,7 +48,7 @@ fn op_contract_module() -> reify_compiler::CompiledModule {
 fn bt5_x_has_op_contract_failed_in_side_map_and_both_causes_in_tracer() {
     let module = op_contract_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -118,7 +118,7 @@ fn bt5_x_has_op_contract_failed_in_side_map_and_both_causes_in_tracer() {
 fn bt6_y_has_no_false_op_contract_failed() {
     let module = op_contract_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -163,7 +163,7 @@ fn bt6_y_has_no_false_op_contract_failed() {
 fn determined_control_ok_has_no_cause() {
     let module = op_contract_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -189,13 +189,13 @@ fn g3_transparency_capture_off_is_byte_identical() {
     let module = op_contract_module();
 
     // Engine with capture ON.
-    let mut engine_on = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_on = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine_on.set_capture_undef_causes(true);
     engine_on.eval(&module);
     let snap_on = engine_on.snapshot().expect("snapshot present after eval");
 
     // Engine with capture OFF.
-    let mut engine_off = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_off = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine_off.eval(&module);
     let snap_off = engine_off.snapshot().expect("snapshot present after eval");
 
@@ -319,7 +319,7 @@ fn layer1_module() -> reify_compiler::CompiledModule {
 fn classified_cause_is_never_relabelled_op_contract_failed() {
     let module = op_contract_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -376,7 +376,7 @@ fn classified_cause_is_never_relabelled_op_contract_failed() {
 fn user_undef_and_awaiting_solve_survive_the_op_contract_pass() {
     let module = layer1_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -439,7 +439,7 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
         "MpDim must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
@@ -534,7 +534,7 @@ fn a_mass_plane_offset_records_the_dimensioned_arg_cause() {
         "PlaneDim must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 

@@ -86,7 +86,7 @@ fn eval_guard_true_includes_members() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // The guard cell should be evaluated to true
@@ -143,7 +143,7 @@ fn eval_guard_false_includes_else() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Guard cell should be false
@@ -198,7 +198,7 @@ fn eval_guard_undef_members_indeterminate() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Guard cell should be Undef (since flag is Auto/Undef)
@@ -276,7 +276,7 @@ fn guard_change_triggers_re_elaboration() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Initial eval with guard=true
     let initial_result = engine.eval(&module);
@@ -385,7 +385,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
 
     let checker_true =
         MockConstraintChecker::new().with_result(constraint_id.clone(), Satisfaction::Violated);
-    let mut engine_true = Engine::new(Box::new(checker_true), None);
+    let mut engine_true = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker_true), None);
     let check_result_true = engine_true.check(&module_true);
 
     // When guard=true, the constraint should be in results
@@ -437,7 +437,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
 
     let checker_false =
         MockConstraintChecker::new().with_result(constraint_id.clone(), Satisfaction::Violated);
-    let mut engine_false = Engine::new(Box::new(checker_false), None);
+    let mut engine_false = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker_false), None);
     let check_result_false = engine_false.check(&module_false);
 
     // When guard=false, the guarded constraint should NOT be in results
@@ -518,7 +518,7 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval with guard=true; solver resolves thickness
     let initial_result = engine.eval(&module);
@@ -622,7 +622,7 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval with guard=false; solver resolves thickness
     let initial_result = engine.eval(&module);
@@ -701,7 +701,7 @@ fn edit_param_guard_false_still_deactivates_regular_params() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Initial eval with guard=true; width should be 10mm = 0.01
     let initial_result = engine.eval(&module);
@@ -794,7 +794,7 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Step 1: eval() with guard=true — solver resolves thickness to 5mm
     let initial_result = engine.eval(&module);
@@ -922,7 +922,7 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Step 1: eval() with guard=false — else branch active, solver resolves thickness to 5mm
     let initial_result = engine.eval(&module);
@@ -1028,7 +1028,7 @@ fn eval_guard_false_auto_param_gets_auto_determinacy() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // eval() with guard=false: thickness is in deactivated members
     let _result = engine.eval(&module);
@@ -1098,7 +1098,7 @@ fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // eval() with guard=true: thickness is in deactivated else_members
     let _result = engine.eval(&module);
@@ -1157,7 +1157,7 @@ fn eval_guard_false_regular_param_still_undetermined() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // eval() with guard=false: width is in deactivated members
     let _result = engine.eval(&module);
@@ -1235,7 +1235,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let result = engine.eval(&module);
 
@@ -1319,7 +1319,7 @@ fn edit_param_guard_fingerprint_round_trips() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Phase 1: initial eval with guard=true
     let result1 = engine.eval(&module);
@@ -1454,7 +1454,7 @@ fn eval_edit_param_guard_fingerprint_cross_path_consistency() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // F1: initial eval with guard=true
     engine.eval(&module);
@@ -1549,7 +1549,7 @@ fn multi_guard_fingerprint_disambiguates_by_guard_identity() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // F_tt: initial eval with both guards true (active_a=T, active_b=T)
     engine.eval(&module);
@@ -1636,7 +1636,7 @@ fn edit_param_guard_false_to_true_still_deactivates_regular_params_in_else_membe
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Initial eval with guard=false; width (in else_members) should be 10mm = 0.01
     let initial_result = engine.eval(&module);
@@ -1700,7 +1700,7 @@ fn eval_guard_true_else_member_regular_param_still_undetermined() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // eval() with guard=true: width is in deactivated else_members
     let _result = engine.eval(&module);
@@ -1821,7 +1821,7 @@ fn edit_param_guard_group_mixed_members_via_edit_param() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // ── Phase 1: initial eval (guard=true) ──────────────────────────────────
     let result1 = engine.eval(&module);
@@ -2048,7 +2048,7 @@ fn edit_param_block_a_only_preserves_auto_when_guard_value_unchanged() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval with guard=true (count=150mm > 100mm); thickness is the active member.
     // Post-solver re-eval leaves active-branch Auto cells untouched → thickness=5mm.
@@ -2125,7 +2125,7 @@ fn edit_param_phase1_and_3_skip_unchanged_guarded_groups() {
     let module = parse_and_compile(&module_src);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Initial eval: all u0..u9 = true → all guards true → all x0..x9 = 1mm.
     let initial = engine.eval(&module);
@@ -2223,7 +2223,7 @@ fn edit_param_phase1_fires_but_skips_when_same_value_edit_on_structure_controlli
     let module = parse_and_compile(&module_src);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Initial eval: all u0..u9 = true → all guards true → all x0..x9 = 1mm.
     let initial = engine.eval(&module);
@@ -2370,7 +2370,7 @@ fn edit_param_phase3_fires_for_auto_driven_guard_change() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval: depth = 5mm (solver), guard = true (5mm > 3mm), m = 1mm.
     let initial = engine.eval(&module);
@@ -2539,7 +2539,7 @@ fn edit_param_phase3_reelaborates_multiple_auto_driven_guard_groups() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval: depth_a = depth_b = 5mm, both guards true, m_a = m_b = 1mm.
     let initial = engine.eval(&module);
@@ -2623,7 +2623,7 @@ fn edit_param_wave2_does_not_corrupt_inactive_members() {
     let fixture = wave2_flip_fixture();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(fixture.solver);
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(fixture.solver);
 
     // Initial eval: x=10mm, guard=true, solver→depth=10mm, m=depth=10mm.
     let initial = engine.eval(&fixture.module_initial);
@@ -2795,7 +2795,7 @@ fn edit_param_wave2_guard_flip_activates_else_members() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval: x=-1mm, guard=false, solver→depth=8mm.
     // m=Undef (members inactive), n=42mm (else_members active).
@@ -2858,7 +2858,7 @@ fn edit_param_wave2_guard_flip_activates_else_members() {
     }]);
     let cold_checker = MockConstraintChecker::new();
     let mut cold_engine =
-        Engine::new(Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(cold_checker), None).with_solver(Box::new(cold_solver));
     // Cold eval of the same module with x=-1mm default (guard=false → n=42mm, m=Undef).
     // Note: x default is -1mm, which gives guard=false regardless of depth.
     let cold = cold_engine.eval(&module);
@@ -3011,7 +3011,7 @@ fn edit_param_wave2_does_not_corrupt_unchanged_guard_group() {
     ]);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval: x=10mm (guard_a=true), y=3mm (guard_b=false).
     // Expected: a=1mm (active branch), m=Undef (inactive branch), depth=10mm.
@@ -3190,7 +3190,7 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
 
     // ── Path A: direct eval with guard=true (else_members inactive at start) ──
     let checker_a = MockConstraintChecker::new();
-    let mut engine_a = Engine::new(Box::new(checker_a), None).with_solver(Box::new(solver_a));
+    let mut engine_a = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker_a), None).with_solver(Box::new(solver_a));
     engine_a.eval(&module_a);
     let snap_a = engine_a
         .snapshot()
@@ -3198,7 +3198,7 @@ fn eval_and_edit_param_paths_produce_same_inactive_auto_state() {
 
     // ── Path B: eval with guard=false (else_members active), then flip to true ──
     let checker_b = MockConstraintChecker::new();
-    let mut engine_b = Engine::new(Box::new(checker_b), None).with_solver(Box::new(solver_b));
+    let mut engine_b = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker_b), None).with_solver(Box::new(solver_b));
     engine_b.eval(&module_b);
     engine_b
         .edit_param(active_id.clone(), Value::Bool(true))
@@ -3376,7 +3376,7 @@ fn post_solver_active_branch_dispatches_param_let_and_skips_auto() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -3550,7 +3550,7 @@ fn cold_eval_guard_member_downstream_cone_re_propagates() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // thickness SI value: 5mm = 0.005 m
@@ -3686,7 +3686,7 @@ fn cold_eval_guard_true_shared_valuecellid_member_wins() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // thickness SI value: 5mm = 0.005 m
@@ -3822,7 +3822,7 @@ fn cold_eval_cone_cache_coherence_survives_unrelated_edit() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Step 1: cold eval — use_thick=false → else branch → effective=5mm.
     // The downstream-cone pass sets derived=15mm, derived2=20mm (task #4707 step-2).
@@ -3979,7 +3979,7 @@ fn edit_param_chained_guarded_groups_excluded_member_not_corrupted() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Step 1: cold eval — use_a=true, use_b=true
     // a_eff = a_base*2.0 = 10mm, b_eff = a_eff = 10mm
@@ -4137,7 +4137,7 @@ fn cold_eval_cone_cache_coherence_with_solver_records_at_snapshot_version() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(solver));
 
     // Cold eval: use_thick=false → else branch → effective = thickness = 5mm.
     // Solver resolves thickness, advancing snapshot to res_version_id.

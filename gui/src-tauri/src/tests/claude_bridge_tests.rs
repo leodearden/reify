@@ -691,7 +691,7 @@ fn app_state_has_sidecar_field() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // AppState should be constructible with the new sidecar field
     let _state = AppState {

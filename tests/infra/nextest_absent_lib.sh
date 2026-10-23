@@ -236,8 +236,9 @@ _nextest_absent_trap_dispatch() {
 # _nextest_absent_arm_traps — stash-and-compose on all four signals.
 #
 # INT/TERM/HUP as well as EXIT: verify.sh wraps each selected infra test in
-# `timeout --kill-after=60 <n>m` and run_all.sh applies a 30m cap, so an outer
-# timeout kill would otherwise leak the whole temp tree.
+# `timeout --kill-after=60 <n>m` and runs run_all.sh under the merge-tier outer
+# envelope (its run_all.sh add_tool line), so an outer timeout kill would
+# otherwise leak the whole temp tree.
 _nextest_absent_arm_traps() {
     local sig prev
     for sig in EXIT INT TERM HUP; do

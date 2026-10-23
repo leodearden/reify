@@ -1,6 +1,6 @@
 # PRD: Builtin registry migration and one interception classifier — typed builtin outcomes, one call classifier, geometry calls typed Geometry
 
-Status: **active (decomposed 2026-10-13)**. Leaves: S8-α1 #8888, S8-α2 #8889, S8-β1 #8890, S8-β2 #8891, S8-β3 #8892, S8-γ #8893, S8-δ1 #8894, S8-δ2 #8895, S8-ε #8896, S8-ζ #8897, S8-η #8898, S8-μ #8899, S8-ν1 #8900, S8-ν2 #8901, S8-ξ #8902, S8-ο #8903, S8-π #8904, S8-ρ #8905, S8-θ #8906, S8-ι #8907, S8-κ #8908, S8-λ #8909, S8-σ #8910, S8-τ #8911, S8-υ #8912, S8-φ #8913, S8-ω #8914; gap-fill 2026-10-16: S8-χ #9289, S8-α2 #8889 widened. Adopted registry legs: β #6002, #6943, #6944, #6945, τ2 #6004, τ4 #6006, τ5 #6007, π #6012, ω #6014, λ #6015, ρ #6016. Authored 2026-10-13 by the S8 `/prd` session of program
+Status: **active (decomposed 2026-10-13)**. Leaves: S8-α1 #8888, S8-α2 #8889, S8-β1 #8890, S8-β2 #8891, S8-β3 #8892, S8-γ #8893, S8-δ1 #8894, S8-δ2 #8895, S8-ε #8896, S8-ζ #8897, S8-η #8898, S8-μ #8899, S8-ν1 #8900, S8-ν2 #8901, S8-ξ #8902, S8-ο #8903, S8-π #8904, S8-ρ #8905, S8-θ #8906, S8-ι #8907, S8-κ #8908, S8-λ #8909, S8-σ #8910, S8-τ #8911, S8-υ #8912, S8-φ #8913, S8-ω #8914; gap-fill 2026-10-16: S8-χ #9289, S8-α2 #8889 widened; retro-critic 2026-10-20 (R6): S8-ψ #9418. Adopted registry legs: β #6002, #6943, #6944, #6945, τ2 #6004, τ4 #6006, τ5 #6007, π #6012, ω #6014, λ #6015, ρ #6016. Authored 2026-10-13 by the S8 `/prd` session of program
 `review-all-reify-20261010` (program doc `plans/review-all-program-reify-20261012.md`, stream
 **S8 Builtin registry migration and one interception classifier**, wave 2, mode spawn, size L,
 risk medium). Shape: **B + H** (contracts §4, boundary-test sketch §5). Milestone: v0_6.
@@ -46,8 +46,11 @@ stdlib `geometry.rs` (3).
 Rulings that bind this PRD, by name in the program doc: *S8*, *Contradictions* (datum projection
 in reify-ir under S8), *Invariant candidates* (candidate 5 extract-with-ratchet is repo-wide),
 *Weakened findings* (fk-a494d2285710 and fk-07c78c4ca710 re-read with their skeptic notes; both
-stand at weakened weight), *Filing stance*, and the pass-1 rulings *S9 Q3* (S6 mints
-`RelationKind`, S9 λ owns `RelationSig`, S8 reads it) and *S13 Q1* (fk-07c78c4ca710 is S8's;
+stand at weakened weight), *Filing stance*, the pass-1 ruling ~~*S9 Q3* (S6 mints
+`RelationKind`, S9 λ owns `RelationSig`, S8 reads it)~~ (superseded by R6) — **[Amended
+2026-10-20, retro-critic R6]** S8 mints `RelationKind` as the registry's generated `Relation`
+binding-kind sub-enum (S8-ψ); S9 λ owns the compiler-side `RelationSig` (operand policy, metric
+slot) as a total fn over it; S6 γ binds it (I-REG-2); #6669 keys the LoweringTable on it — and *S13 Q1* (fk-07c78c4ca710 is S8's;
 the selector helper map moves with the registry τ8 leg). Lead amendment: S6 χ #8851, held on
 this stream's typed diagnose-hook contract, is released by the lead once S8-α1 is filed.
 
@@ -591,8 +594,8 @@ Row 17 is part of every leaf's done-criteria.
 | `core-ast-ir-layering.md` §3 B3 + `scripts/assert-crate-dag.sh` | amended | reify-ir may depend on reify-builtins (D2) | core-ast-ir-layering; amended by registry β #6002's diff | #6002 details note |
 | S7 compiler-module-namespace | consumes | `builtin_families.rs` (ε #8622; S8 owns later edits), explicit imports in `expr.rs`/`entity.rs` (θ #8627), five-of-six `expr.rs` partition (ι #8631), `operator_typing.rs` (δ #8620), `type_resolution` imports + `ResolutionCtx` (η #8625, μ #8643), `geometry_*` and `datum_projection.rs` imports (γ #8617, ζ #8623) | S7 produces | per leaf in §8 |
 | S3 dependency-invalidation-stratum | consumes | `expr_classify.rs` name-set predicates and `FEATURE_DATUM_PROJECTION_MEMBERS` (β #8687) | S3 moves, S8 derives | S8-θ ← #8687; #6944 ← #8687 |
-| S9 compiler-declaration-passes | consumes | `RelationSig` rows (λ #8741, held on S6) | S9 | #6944 ← #8741 |
-| S6 kinematics | both | consumes `JointKind` (β #8829), `JointPosition` + `bind` contract (η #8834), sweep through `Joint` (ο #8843), dynamics on `MechanismTree` (ρ #8845), CoM group move (σ₀ #8846); produces S8-α1 for S6 χ #8851 | S6 / S8 | #6945 ← #8829; #6007 ← #8834; S8-δ2 ← #8843; S8-γ ← #8845; S8-α2 ← #8846; χ #8851 ← S8-α1 (lead releases) |
+| S9 compiler-declaration-passes | produces | **[Amended 2026-10-20, retro-critic R6]** S9 consumes S8-ψ (`reify_builtins::RelationKind` + relation rows); λ #8741's `RelationSig` is a total fn over `RelationKind` reading arity and result type from the rows ~~consumes `RelationSig` rows (λ #8741, held on S6); #6944 ← #8741~~ (superseded by R6) | S8 | #8741 ← S8-ψ; #6944 ← S8-ψ |
+| S6 kinematics | both | consumes `JointKind` (β #8829), `JointPosition` + `bind` contract (η #8834), sweep through `Joint` (ο #8843), dynamics on `MechanismTree` (ρ #8845), CoM group move (σ₀ #8846); produces S8-α1 for S6 χ #8851; **[Amended 2026-10-20, retro-critic R6]** produces S8-ψ's `reify_builtins::RelationKind` for S6 γ #8830 (exhaustive dispatch over it) | S6 / S8 | #8830 ← S8-ψ; #6945 ← #8829; #6007 ← #8834; S8-δ2 ← #8843; S8-γ ← #8845; S8-α2 ← #8846; χ #8851 ← S8-α1 (lead releases) |
 | S15 trampoline-decode | consumes | κ #8705's `analysis` hook and ξ #8717's `fea/` move become rejections; `SampledField::same_grid` in `value.rs`; `ArgRejection` converts into `Rejection` (C1) | S15 produces | S8-γ ← #8705, #8717; S8-ι ← #8717; S8-κ ← #8705; S8-λ ← #8717 |
 | S13 selector-resolution-factoring | consumes | `geometry_ops/compile/` (δ #8750), `selector_eval/` (γ #8749) | S13 | S8-ξ ← #8750; #6944 ← #8749 |
 | S12 check surface | produces | S8-α1's coded rejections; registry β #6002's `BuiltinId`; INV-SF-6 row is S12's | S8 | cross-reference |
@@ -640,6 +643,19 @@ rule). Prereqs use the `←` convention.
   dispatch stage of `eval_builtin`). Consumer: S8-α2, β1, β2, γ, δ1, δ2,
   κ; S6 χ #8851; S12. Prereqs: none. Priority medium. Keys: none (foundation of
   fk-76e1dc7c434e).
+- **S8-ψ #9418 — Relation binding kind: the 12 relation rows mint `RelationKind` (no behaviour
+  change)** *(added 2026-10-20, retro-critic R6; carved out of #6944's τ9 relation half)*.
+  Modules: reify-builtins `row.rs` (`BindingKind::Relation`, owning dispatcher reify-constraints
+  `relate_solve`; the `CompileOnly` doc corrected to "markers — no runtime binding", since
+  relations have a runtime binding in `residual_dispatch`), `registry.rs` (one `Relation =>
+  RelationKind` group with the 12 relation rows, result type `Relation`, arities as
+  `relation_signatures.rs` states them — `angle`/`distance`/`offset` at 3, `tangent` a range),
+  `macros.rs` (the widening `From<RelationKind> for BuiltinId`; the overload-ident convention
+  documented), `lib.rs`; reify-compiler `unresolved_function.rs`
+  (`registry_rows_and_shared_verbs_are_disjoint_from_every_family` becomes `(name, argc)`-keyed).
+  No consumer changes here. Signal: `RelationKind::iter().count() == 12`; `reify check` on the
+  relate fixtures byte-identical. Consumer: S9 λ #8741, S6 γ #8830, #6944, #6669. Prereqs ←
+  registry α #6001 (landed). Priority medium. Keys: none.
 - **S8-α2 #8889 — Success-path advisories: dfm, flexure, snapshot.** Modules: reify-stdlib `dfm.rs`
   (a pure verdict function the builtin and the constraint path both call), `flexures/`,
   `snapshot.rs`/`dynamics/com.rs` (CoM fallback), reify-expr `lib.rs`
@@ -860,7 +876,7 @@ rule). Prereqs use the `←` convention.
 |---|---|---|
 | #6002 | β: `BuiltinId` in `CompiledExpr` | details note: D2 (inline; reify-ir and reify-expr gain reify-builtins; `assert-crate-dag.sh` B3 + `core-ast-ir-layering.md` §3 amended in the same diff); prereq of S8-ε, ζ |
 | #6943 | τ1+τ6 numeric + complex | details note: `max`/`min`/`argmax`/`argmin` rows are S8-ε's, #6943 upgrades their slots; #6943 ← S8-ε |
-| #6944 | τ7+τ8+τ9 | stamp **fk-ffa4ba4c2d0b** (done adds: `builtin_arg_slots` deleted, its rationale in row `basis`), **fk-07c78c4ca710** and **fk-c02915c1952e** (done adds: one `TopologySelectorHelper` dispatch keyed by `BuiltinId`, arity from the row); details note: field-op intercept rows are S8-ε's, `filter`/`cost` rows are S8-ζ's, GeometryOp rows carry S8-η's result types (§4 exclusion struck), the descriptor keys names by `BuiltinId` and `GeometryBuiltin::from_name` goes; #6944 ← S8-ε, ζ, η, ν2, #6943, #8687, #8741, #8749 |
+| #6944 | τ7+τ8+τ9 | stamp **fk-ffa4ba4c2d0b** (done adds: `builtin_arg_slots` deleted, its rationale in row `basis`), **fk-07c78c4ca710** and **fk-c02915c1952e** (done adds: one `TopologySelectorHelper` dispatch keyed by `BuiltinId`, arity from the row); details note: field-op intercept rows are S8-ε's, `filter`/`cost` rows are S8-ζ's, GeometryOp rows carry S8-η's result types (§4 exclusion struck), the descriptor keys names by `BuiltinId` and `GeometryBuiltin::from_name` goes; **[Amended 2026-10-20, retro-critic R6]** the τ9 relation half (relation fns → `Type::Relation` with arity-3 `angle`/`distance`/`offset`, the relation arg-slot vocabularies, "relation arg-checks preserved") moves to S8-ψ + S9 λ — #6944 keeps markers and GeometryOp; #6944 ← S8-ε, ζ, η, ν2, S8-ψ, #6943, #8687, #8749 (~~#8741~~ removed by R6) |
 | #6945 | τ3 joints | #6945 ← #8829 (`JointKind::from_ctor_name`) |
 | #6007 | τ5 mechanism/snapshot/sweep | details note: absorbs S8-η's `is_kinematic_sweep` typing; the `bind` row follows S6 C4; #6007 ← S8-η, #8834 |
 | #6012 | π LSP | stamp **fk-419ebb996480**; details note: hover renders builtin-call signatures from rows too |
@@ -959,3 +975,7 @@ Rulings from `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16). 
 - **§K9-D4** — new leaf S8-χ #9289 (smoothness column; §8, after S8-ζ) after S8-ε #8896 and #8480 (fk-819257c68b82). Registry λ #6015 is amended to delete `__registry_result_type_for_test`, `__registry_owns_for_test` and the `pub use units::{...}` widening; a standalone low task #9290 drives the `validate_annotations` / `infer_mul_div_result` parity tests through `compile_source` and deletes those two shims and reify-syntax `visit_structure_member_root_exprs` (fk-400e69bbca2c).
 - **§K6-D7** — standalone medium task #9286 after S8-δ1 #8894 and τ2 #6004 (file contention on `orientation.rs`): typed `EulerConvention` and one generic Euler derivation (fk-e348f06cce2e).
 - **§K1-D1** — S8-ο #8903 and S8-ζ #8897 gain cross-reference notes for the new generic-instantiation-and-call-binding stream (its α/δ held behind #8903, γ behind #8897); no scope change.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+- **S9 B1 / R6 (C1)** — `RelationKind` is the registry's generated `Relation` binding-kind sub-enum, minted by `registry!` from the relation rows; supersedes pass-1 *S9 Q3(a)* (§0 restated). New leaf **S8-ψ #9418** (§8, after S8-α1): `BindingKind::Relation`, the 12 relation rows, `From<RelationKind> for BuiltinId`, the `(name, argc)`-keyed family-disjointness test, row.rs `CompileOnly` doc corrected to markers only; depends on registry α #6001 only. Carved out of #6944: the τ9 relation half moves to S8-ψ + S9 λ #8741; #6944 keeps markers and GeometryOp (§8 adopted row). Edges: `#6944 ← #8741` removed; `#8741 ← S8-ψ`, `#6944 ← S8-ψ`, `#8830 ← S8-ψ` added. §6 S9 row reversed (S9 consumes S8-ψ); §6 S6 row gains S8-ψ → S6 γ #8830. D2 (reify-builtins stays a leaf) stands. Cross-PRD: `builtin-signature-registry.md` §3 decision 4 now lists `CompileOnly` (markers) and a `Relation` (reify-constraints `relate_solve`) binding. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`.

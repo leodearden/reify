@@ -120,7 +120,7 @@ fn engine_routes_overlapping_box_union_to_manifold_mesh() {
     // (OCCT via cfg(has_occt); Manifold unconditionally).  The singular
     // with_registered_kernel picks only OCCT (BRep-preferring lex-min picker),
     // so the PLURAL form is required to load Manifold.
-    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+    let mut engine = reify_eval::Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker));
 
     // eval() → activate_purpose → build() — the canonical pattern.
     // build()→eval() clears active_purpose_bindings, so activate_purpose MUST
@@ -496,7 +496,7 @@ fn build_mixed_kernel_attribute_selectors_fixture() -> (
         .push(manufacturing_purpose("manufacturing", 1e-6));
 
     // ── Build with real OCCT + Manifold ──────────────────────────────────
-    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+    let mut engine = reify_eval::Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker));
 
     // eval() → activate_purpose → build() — the canonical pattern (build()'s
     // internal eval() clears active_purpose_bindings, so activate_purpose
@@ -770,7 +770,7 @@ fn build_stl_exports_the_manifold_union_body() {
     let compiled = parse_and_compile_with_stdlib(include_str!(
         "../../../examples/multi_kernel/manifold_boolean.ri"
     ));
-    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+    let mut engine = reify_eval::Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker));
     let build = engine.build(&compiled, ExportFormat::Stl);
 
     let errors: Vec<_> = build

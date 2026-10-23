@@ -13,7 +13,7 @@
 //! phase with `resolved_type: None`, and that is not a failure: structures,
 //! traits and enums are not compiled yet when this phase runs (the resolution
 //! name sets are built *after* it, by `build_resolution_names` and
-//! `enums_phase::build_resolution_enums_from_cache`), so their names cannot be
+//! `enums_phase::bind_resolution_enums`), so their names cannot be
 //! resolved here even in principle.
 //!
 //! Such an alias is instead resolved at each USE SITE, by the deferred arm of
@@ -49,14 +49,10 @@
 //! type args at compile time.  This is PRELUDE-ONLY: general user-module →
 //! user-module alias import is the deferred bookmark (#4687 out-of-scope).
 //!
-//! **Cross-phase note:** cross-prelude alias collisions (two prelude modules
-//! declaring the same pub alias name) are resolved by `PreludeContext::new`
-//! *before* this phase is called — the `prelude_aliases` slice passed to
-//! `phase_aliases` is already deduplicated (first-wins).  The seed loop below
-//! is therefore idempotent with respect to prelude-vs-prelude duplicates.
-//! See `prelude_context` § "Cross-prelude collision policy" for the full
-//! cross-phase comparison (units = last-wins/warns; aliases =
-//! first-wins/warns; functions = first-wins/silent).
+//! Prelude-vs-prelude alias collisions are bound by [`crate::name_env`] when
+//! the `PreludeContext` is built, so the `prelude_aliases` slice holds one
+//! alias per name and the seed loop below never meets a prelude duplicate
+//! (`prelude_context` § "Cross-prelude collision policy").
 
 use std::collections::{HashMap, HashSet};
 
@@ -65,12 +61,11 @@ use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
+use crate::name_env;
 use crate::type_resolution::{
     TypeAliasEntry, resolve_alias_dfs, validate_pub_parametric_alias_def_site,
 };
-use crate::types::{
-    CompiledModule, CompiledTrait, CompiledTypeAlias, EntityKind, TopologyTemplate,
-};
+use crate::types::{CompiledModule, CompiledTrait, CompiledTypeAlias, TopologyTemplate};
 
 /// Run phase-5 (type aliases).
 ///
@@ -111,8 +106,8 @@ pub(crate) fn phase_aliases(
         let entry = TypeAliasEntry::from_compiled_for_prelude(pa);
         // Use register_as_prelude_seed so the entry is excluded from
         // into_compiled() and iter() (which feed the module's exported
-        // type_aliases and content hash).  Silently ignore Err — duplicates
-        // are already deduplicated by PreludeContext::new (first-wins).
+        // type_aliases and content hash).  Err cannot arise from a prelude
+        // duplicate: PreludeContext::new binds one alias per name.
         let _ = ctx.alias_registry.register_as_prelude_seed(entry);
     }
 
@@ -169,10 +164,10 @@ pub(crate) fn phase_aliases(
 /// already-built `trait_registry` (prelude + local), which contains the same
 /// complete set of names.
 ///
-/// **Note on enums:** `ctx.resolution_enums`, the prelude ++ local
-/// `Vec<EnumDef>` that `enums_phase::build_resolution_enums_from_cache`
-/// populates well before this phase's `lib.rs` call site, is passed to the
-/// guard directly.  Without this fourth namespace the guard rejects
+/// **Note on enums:** `ctx.resolution_enums`, the local-plus-prelude
+/// `Vec<EnumDef>` that `enums_phase::bind_resolution_enums` populates well
+/// before this phase's `lib.rs` call site, is passed to the guard directly.
+/// Without this fourth namespace the guard rejects
 /// `pub type G<T> = Option<SomeEnum>` at its own definition site for a plainly
 /// declared name (#6477).
 ///
@@ -204,14 +199,8 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
         return;
     }
 
-    // Build template registry (prelude structures first, then local override).
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude_refs
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude_refs);
 
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry: HashMap<String, &CompiledTrait> =

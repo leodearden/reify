@@ -115,7 +115,7 @@ fn match_block_decl_fixture_elaborates_and_evaluates_cleanly() {
 
     // (e) Engine eval adds no Error-severity diagnostics.
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let eval_result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = eval_result

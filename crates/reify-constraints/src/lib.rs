@@ -12,6 +12,7 @@ mod discrete_fallback;
 mod dual_jacobian;
 pub mod relate_solve;
 mod registry;
+pub mod scaling;
 pub mod sketch;
 mod slvs_sys;
 mod solver;
@@ -20,26 +21,7 @@ mod solvespace;
 pub use classifier::ConstraintClassifier;
 pub use cpsat::{CpSatSolver, SolveAllResult};
 pub use decompose::{SubProblem, decompose_into_components};
-// Loop-closure Newton solver was relocated to reify-stdlib (task 2678) to
-// resolve a would-be cycle: `reify_stdlib::snapshot` needs to invoke the
-// solver on closed-chain mechanisms, but `reify-stdlib` cannot depend on
-// `reify-constraints` (the latter already depends on the former for FK
-// primitives).  These re-exports preserve the original
-// `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
-// (reify-eval tests, reify-constraints integration tests) compile unchanged.
 pub use registry::{ObjectiveConsumption, SolverRegistry, objective_consumption};
-pub use reify_stdlib::loop_closure_solver::{
-    LoopClosureChain, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
-    mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
-    solve_loop_closure_with_diagnostics,
-};
-// γ-widening re-export: callers that need to construct `vals_a` / `vals_b_initial`
-// for `solve_loop_closure(...)` or `solve_loop_closure_with_diagnostics(...)`
-// require `JointValue` to wrap scalar / planar / spherical / cylindrical
-// per-joint storage.  Re-exported here so downstream crates (e.g. `reify-eval`
-// integration tests) don't need a direct `reify-stdlib` dev-dep to use the
-// loop-closure API.  See `JointValue` in `crates/reify-stdlib/src/loop_closure_value.rs`.
-pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
 // Constrained-2D-sketch solver substrate (docs/prds/v0_6/constrained-2d-sketch.md
 // §7 C5).  The typed data model is re-exported at the crate root so consumers
 // name `reify_constraints::SketchSystem` rather than reaching into the module;

@@ -46,7 +46,7 @@ fn build_plate(source: &str) -> (reify_compiler::CompiledModule, BuildResult) {
     let compiled = compile_source(source);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
     (compiled, result)
 }

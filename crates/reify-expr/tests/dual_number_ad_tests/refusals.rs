@@ -230,6 +230,105 @@ fn every_non_differentiable_variant_display_names_the_offending_construct() {
 }
 
 // ---------------------------------------------------------------------------
+// (7) prefixed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prefixed_re_roots_a_sited_refusal_and_leaves_a_siteless_one_unchanged() {
+    // The solver's dependent-cell fold reports a refusal raised inside a
+    // SUBSIDIARY expression against the residual that read it, so the prefix
+    // must come first: it names the path down to where that expression hangs.
+    use reify_expr::KinkSite;
+
+    assert_eq!(
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![1, 2]) }.prefixed(&[9, 0]),
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![9, 0, 1, 2]) },
+    );
+
+    match (NonDifferentiable::UnsupportedKind { kind: "probe", site: KinkSite::new(vec![3]) })
+        .prefixed(&[5])
+    {
+        NonDifferentiable::UnsupportedKind { kind, site } => {
+            assert_eq!(kind, "probe", "re-rooting must not rename the construct");
+            assert_eq!(site, KinkSite::new(vec![5, 3]));
+        }
+        other => panic!("prefixed changed the variant: {other:?}"),
+    }
+
+    assert_eq!(
+        NonDifferentiable::UndefPrimal { site: KinkSite::root() }.prefixed(&[4]),
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![4]) },
+        "a root-sited refusal lands exactly at the prefix",
+    );
+
+    let sited = NonDifferentiable::UnsupportedKind { kind: "probe", site: KinkSite::new(vec![6, 1]) };
+    assert_eq!(sited.prefixed(&[]), sited, "an empty prefix is the identity");
+
+    for siteless in [
+        NonDifferentiable::NonScalarResult { got: "Point" },
+        NonDifferentiable::NonFiniteTangent { column: 2 },
+    ] {
+        assert_eq!(siteless.prefixed(&[8, 8]), siteless, "{siteless:?} carries no site to move");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (8) a refused overlay cell
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_refused_overlay_cell_names_its_cause_only_in_rows_that_read_it() {
+    // A solver-derived cell the binder could not differentiate is bound with
+    // its cause.  The cause is raised at the READ: a row that reads the cell
+    // names the cell's own construct rather than the generic fallback, a row
+    // that never reads it is not condemned, and a real rebind retires it.
+    use reify_expr::{BranchRecord, DualEnv, KinkSite, Seeds, Tangent, jacobian_row_with_env};
+
+    const CAUSE: &str = "probe: the derived cell's own construct";
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Real(2.0));
+    values.insert(cell("d"), Value::Real(3.0));
+    let ctx = EvalContext::simple(&values);
+    let seed_cells = [cell("x")];
+    let row_with = |expr: &CompiledExpr, env: &DualEnv| {
+        jacobian_row_with_env(expr, &ctx, &Seeds::new(&seed_cells), env, &mut BranchRecord::new())
+    };
+
+    let mut env = DualEnv::new();
+    env.bind_refused(cell("d"), NonDifferentiable::UnsupportedKind {
+        kind: CAUSE,
+        site: KinkSite::new(vec![7]),
+    });
+    let reads_d = binop(BinOp::Add, pref("x"), pref("d"));
+
+    match row_with(&reads_d, &env) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
+            assert_eq!(kind, CAUSE, "the binder's cause, not the generic bound-cell fallback");
+        }
+        other => panic!("expected the recorded cause, got {other:?}"),
+    }
+
+    let ignores_d = binop(BinOp::Mul, pref("x"), literal(Value::Real(2.0)));
+    let (_, row) = row_with(&ignores_d, &env).expect("a row that never reads d is not condemned");
+    assert_eq!(row, vec![2.0]);
+
+    env.bind(cell("d"), Tangent::from_row(vec![1.0]));
+    let (_, row) = row_with(&reads_d, &env).expect("a real rebind makes the read differentiable");
+    assert_eq!(row, vec![2.0], "d/dx (x + d) with d' = 1");
+
+    // The retirement is only visible once a later binder that knows no cause
+    // makes the cell non-differentiable again: the read must not resurrect
+    // the cause of a binding that has since been displaced.
+    env.bind(cell("d"), Tangent::None);
+    match row_with(&reads_d, &env) {
+        Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
+            assert_ne!(kind, CAUSE, "a rebind retires the stale cause");
+        }
+        other => panic!("expected a refusal for a cell bound with no tangent, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // A `match` whose discriminant refused a tangent must not answer confidently.
 // ---------------------------------------------------------------------------
 

@@ -117,6 +117,7 @@ fn dsl_millimetre_literals_round_trip_to_millimetre_step_coordinates() {
 
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -226,6 +227,7 @@ fn dsl_millimetre_literals_round_trip_to_millimetre_stl_coordinates() {
 
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
