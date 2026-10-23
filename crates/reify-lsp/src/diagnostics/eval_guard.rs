@@ -5,8 +5,7 @@
 //! One predicate, asked by both LSP production entry points —
 //! [`crate::diagnostics::compute_diagnostics_with_state`] and
 //! `crate::analysis::AnalysisContext::from_parsed` — immediately before they
-//! would hand a compiled module to the engine
-//! ([`crate::diagnostics::compute_diagnostics`] delegates to the former). It
+//! would hand a compiled module to the engine. It
 //! is a `reify-eval` graph-safety question, not diagnostics logic, so it lives
 //! in its own file rather than in `diagnostics.rs`: `analysis.rs` gets an import that names
 //! what it is asking, and the predicate's ~250 lines of derivation stay

@@ -48,8 +48,7 @@ use crate::type_resolution::convert_type_params;
 /// rather than assume one: `analysis.rs::AnalysisContext::from_parsed` compiles ungated and IS
 /// live — hover (`server.rs:283`) and completion (`server.rs:379`) both build a context
 /// through it. It is invisible today only because those providers read `compiled.templates` /
-/// `type_aliases` and never `compiled.diagnostics`. (`diagnostics.rs::compute_diagnostics`
-/// delegates to the gated `compute_diagnostics_with_state`.)
+/// `type_aliases` and never `compiled.diagnostics`.
 pub(crate) fn forward_parse_errors(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
     for err in &parsed.errors {
         ctx.diagnostics.push(

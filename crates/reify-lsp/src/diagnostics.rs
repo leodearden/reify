@@ -880,12 +880,6 @@ fn constraint_depends_on_unregistered_optimized_compute(
     false
 }
 
-/// The server's pipeline, [`compute_diagnostics_with_state`], run once on a
-/// fresh [`EvalState`], returning only its diagnostics.
-pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
-    compute_diagnostics_with_state(&mut EvalState::new(), source, uri).diagnostics
-}
-
 /// Shared `auto:` test fixtures and anti-vacuity guards — see
 /// [`auto_type_param_fixtures`] for why they live outside this module.
 #[cfg(test)]
@@ -1154,16 +1148,6 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         ));
         let has_compile_error =
             |diags: &[lsp_types::Diagnostic]| diags.iter().any(|d| d.code == unresolved_code);
-        // The engine's exact message: "circular let-binding dependency in
-        // template S: [a, b]" — matched the same way
-        // `eval_diagnostics_surfaced_in_stateful_pipeline` matches it.
-        let has_eval_diag = |diags: &[lsp_types::Diagnostic]| {
-            diags.iter().any(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-        };
 
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(
@@ -1172,7 +1156,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             &test_uri(),
         );
         assert!(
-            has_compile_error(&result.diagnostics) && has_eval_diag(&result.diagnostics),
+            has_compile_error(&result.diagnostics) && !circular_let_errors(&result).is_empty(),
             "narrowness (compute_diagnostics_with_state): the live server's \
              keystroke path must keep surfacing eval-time diagnostics on a \
              document that also carries a non-`auto:` compile error. got: {:#?}",
@@ -1516,58 +1500,6 @@ structure S {
 
     // --- compute_diagnostics_with_state unit tests (step-25) ---
 
-    #[test]
-    fn stateful_diagnostics_three_phase_lifecycle() {
-        let mut state = EvalState::new();
-        let uri = test_uri();
-
-        // Phase 1: valid source — no ERROR diagnostics
-        let source_valid = reify_test_support::bracket_source();
-        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
-        let errors1: Vec<_> = result1
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors1.is_empty(),
-            "Phase 1: valid source should produce no errors, got: {errors1:?}"
-        );
-
-        // Phase 2: violating source — at least one constraint violation ERROR
-        let source_violating = reify_test_support::bracket_source_violating();
-        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
-        let errors2: Vec<_> = result2
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            !errors2.is_empty(),
-            "Phase 2: violating source should produce at least one ERROR"
-        );
-        let has_constraint_violation = errors2.iter().any(|d| {
-            let msg = d.message.to_lowercase();
-            msg.contains("constraint") && msg.contains("violated")
-        });
-        assert!(
-            has_constraint_violation,
-            "Phase 2: should have a 'constraint violated' diagnostic, got: {errors2:?}"
-        );
-
-        // Phase 3: back to valid source — violations should clear
-        let result3 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
-        let errors3: Vec<_> = result3
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors3.is_empty(),
-            "Phase 3: valid source should clear violations, got: {errors3:?}"
-        );
-    }
-
     /// The constraint-violation ERRORs of one result, as sorted
     /// `(start, end, message)` triples, so two results can be compared
     /// independently of emission order.
@@ -1620,6 +1552,7 @@ structure S {
 
         let mut state = EvalState::new();
         let results: Vec<DiagnosticsResult> = [
+            valid,
             violating.as_str(),
             violating.as_str(),
             valid,
@@ -1637,38 +1570,48 @@ structure S {
                 .filter(|(_, s)| *s == Satisfaction::Violated)
                 .count()
         };
+        let assert_valid_is_clean = |i: usize, call: &str| {
+            let errors: Vec<_> = results[i]
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(
+                errors.is_empty() && violated_count(i) == 0,
+                "{call} must report no ERROR and no Violated outcome; got errors: \
+                 {errors:#?}, outcomes: {:#?}",
+                outcomes[i]
+            );
+        };
 
+        assert_valid_is_clean(0, "call 1 (valid, fresh state)");
         assert!(
-            !violations[0].is_empty() && violated_count(0) >= 1,
-            "call 1 (violating, fresh state) must report a violation; got \
+            !violations[1].is_empty() && violated_count(1) >= 1,
+            "call 2 (violating, changed) must report a violation; got \
              diagnostics: {:#?}",
-            results[0].diagnostics
+            results[1].diagnostics
         );
         assert_eq!(
+            (&violations[2], &outcomes[2]),
             (&violations[1], &outcomes[1]),
-            (&violations[0], &outcomes[0]),
-            "call 2 (violating, unchanged) must report what call 1 reported"
+            "call 3 (violating, unchanged) must report what call 2 reported"
         );
-        let errors_on_valid: Vec<_> = results[2]
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors_on_valid.is_empty() && violated_count(2) == 0,
-            "call 3 (valid, changed) must report no ERROR and no Violated \
-             outcome; got errors: {errors_on_valid:#?}, outcomes: {:#?}",
-            outcomes[2]
-        );
+        assert_valid_is_clean(3, "call 4 (valid, changed after a warm call)");
         assert_eq!(
             (&violations[3], &outcomes[3]),
-            (&violations[2], &outcomes[2]),
-            "call 4 (valid, unchanged) must report what call 3 reported"
+            (&violations[0], &outcomes[0]),
+            "call 4 (valid, changed after a warm call) must report what call 1 \
+             reported on a fresh state"
         );
         assert_eq!(
             (&violations[4], &outcomes[4]),
-            (&violations[0], &outcomes[0]),
-            "call 5 (violating, changed after a warm call) must report the \
+            (&violations[3], &outcomes[3]),
+            "call 5 (valid, unchanged) must report what call 4 reported"
+        );
+        assert_eq!(
+            (&violations[5], &outcomes[5]),
+            (&violations[1], &outcomes[1]),
+            "call 6 (violating, changed after a warm call) must report the \
              violating content's own results, not the previous version's"
         );
     }
@@ -1725,31 +1668,32 @@ structure S {
     // --- parse error early return tests (step-6 / Task 497) ---
 
     /// When there are parse errors, compile/eval may produce misleading secondary
-    /// diagnostics on a broken AST. After the early return added in step-7, the
-    /// result should contain exactly the parse error diagnostics — no more.
+    /// diagnostics on a broken AST. The result contains exactly the parse error
+    /// diagnostics, each reported once: compiling the partial AST would report
+    /// every one a second time, re-emitted by the compiler's pre-pass as
+    /// `parse error: …`.
     #[test]
     fn parse_error_skips_compile_and_eval() {
         let source = "structure {";
         let uri = test_uri();
 
-        // Count parse errors directly using reify_syntax
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let parse_error_count = parsed.errors.len();
+        let parse_error_count =
+            reify_compiler::parse_with_stdlib(source, ModulePath::single("test"))
+                .errors
+                .len();
         assert!(
             parse_error_count > 0,
             "test source must produce at least one parse error"
         );
 
-        // compute_diagnostics_with_state should return only parse-error diagnostics
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, source, &uri);
         assert_eq!(
             result.diagnostics.len(),
             parse_error_count,
-            "on parse error, diagnostics count ({}) should equal parse error count ({}); \
-             secondary compile/eval diagnostics must not be included",
-            result.diagnostics.len(),
-            parse_error_count
+            "on parse error, each parse error must be reported exactly once and \
+             secondary compile/eval diagnostics must not be included; got: {:#?}",
+            result.diagnostics
         );
         assert!(
             result.geometry_output.is_none(),
@@ -1763,56 +1707,6 @@ structure S {
                 diag.severity
             );
         }
-    }
-
-    /// `compute_diagnostics` is the server's own pipeline run once on a fresh
-    /// `EvalState`, not a second pipeline with stages of its own. Checked on
-    /// the two shapes a separate pipeline got wrong: a parse error, which it
-    /// reported twice (once from the parser, once re-emitted by the compiler's
-    /// pre-pass over the partial AST), and a constraint violation, which it
-    /// reported without the span-aware ERROR the server publishes.
-    #[test]
-    fn compute_diagnostics_is_the_stateful_pipeline_on_a_fresh_state() {
-        let uri = test_uri();
-
-        let broken = "structure {";
-        let parse_error_count =
-            reify_compiler::parse_with_stdlib(broken, ModulePath::single("test"))
-                .errors
-                .len();
-        assert!(
-            parse_error_count > 0,
-            "anti-vacuity: {broken:?} must still fail to parse"
-        );
-        let wrapped = compute_diagnostics(broken, &uri);
-        assert_eq!(
-            wrapped,
-            compute_diagnostics_with_state(&mut EvalState::new(), broken, &uri).diagnostics,
-            "compute_diagnostics must equal the stateful pipeline on a fresh state"
-        );
-        assert_eq!(
-            wrapped.len(),
-            parse_error_count,
-            "each parse error must be reported exactly once; got: {wrapped:#?}"
-        );
-
-        let violating = reify_test_support::bracket_source_violating();
-        let stateful =
-            compute_diagnostics_with_state(&mut EvalState::new(), &violating, &uri).diagnostics;
-        assert!(
-            stateful
-                .iter()
-                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.contains("violated")
-                    && d.range != lsp_types::Range::default()),
-            "anti-vacuity: the violating fixture must carry a span-aware violation; \
-             got: {stateful:#?}"
-        );
-        assert_eq!(
-            compute_diagnostics(&violating, &uri),
-            stateful,
-            "compute_diagnostics must equal the stateful pipeline on a fresh state"
-        );
     }
 
     #[test]
@@ -1920,42 +1814,9 @@ structure S {
         );
     }
 
-    // --- step-1 (task-2236): eval_diagnostics_surfaced_in_stateful_pipeline ---
-
-    /// Eval-time diagnostics (e.g. circular let-binding) must appear in the LSP result.
-    ///
-    /// `structure S { let a = b + 1; let b = a + 1 }` has a cyclic let-binding
-    /// dependency that is NOT detected at compile time (only geometry-let cycles
-    /// are caught in the compiler). The engine catches it inside
-    /// `evaluate_let_bindings` (engine_eval.rs:1529) and records it in
-    /// `EvalResult::diagnostics` as "circular let-binding dependency in template S: [a, b]".
-    #[test]
-    fn eval_diagnostics_surfaced_in_stateful_pipeline() {
-        let mut state = EvalState::new();
-        let uri = test_uri();
-        // Cyclic let-bindings: `a` depends on `b` and `b` depends on `a`.
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-        let circular_errors: Vec<_> = result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    // Matches the exact engine message: "circular let-binding dependency in template S: [a, b]"
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-            .collect();
-        assert!(
-            !circular_errors.is_empty(),
-            "eval-time circular let-binding diagnostic must be surfaced as an LSP ERROR; \
-             got diagnostics: {:?}",
-            result.diagnostics
-        );
-    }
-
     /// Cyclic let-bindings: `a` depends on `b` and `b` depends on `a`, which
-    /// only the engine detects, so every report of it is an eval diagnostic.
+    /// only the engine detects (the compiler catches geometry-let cycles
+    /// only), so every report of it is an eval diagnostic.
     const CIRCULAR_LET_SRC: &str = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
 
     /// The sorted messages of one result's circular let-binding ERRORs.
@@ -1972,6 +1833,18 @@ structure S {
             .collect();
         errors.sort();
         errors
+    }
+
+    #[test]
+    fn eval_diagnostics_surfaced_in_stateful_pipeline() {
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), CIRCULAR_LET_SRC, &test_uri());
+        assert!(
+            !circular_let_errors(&result).is_empty(),
+            "eval-time circular let-binding diagnostic must be surfaced as an LSP ERROR; \
+             got diagnostics: {:#?}",
+            result.diagnostics
+        );
     }
 
     /// A version the eval guard skips leaves the versions around it alone:
@@ -2287,8 +2160,7 @@ structure S {
     fn eval_diagnostics_never_use_constraint_violation_format() {
         // Use circular-let-binding source: a known eval-time diagnostic emitter
         // (the unfold.rs / engine_eval.rs circular let-binding paths).
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let parsed = reify_syntax::parse(CIRCULAR_LET_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
