@@ -67,10 +67,11 @@
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    ForceDensityInputError, ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError,
-    GroupSpecDefect, MemberKind, form_find_anchored_surfaces, form_find_free,
+    ForceDensityInputError, ForceDensitySpec, FormDefect, FormFindError, FormFindSolve,
+    FreeFormError, GroupSpecDefect, MemberKind, form_find_anchored_surfaces, form_find_free,
     form_find_free_surfaces,
 };
+use std::borrow::Cow;
 
 use super::tensegrity_crack::{
     check_index, crack_dimensionless_list, crack_index_pairs, crack_index_triples, crack_nodes,
@@ -526,58 +527,96 @@ fn build_result_free(
 
 /// Human-readable cause for a kernel [`FreeFormError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
-fn describe_free(e: FreeFormError) -> &'static str {
+fn describe_free(e: FreeFormError) -> Cow<'static, str> {
     match e {
         FreeFormError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — cable groups require positive seed ratios (q > 0) \
              and strut groups require negative seed ratios (q < 0)"
+                .into()
         }
-        FreeFormError::NullityMismatch { .. } => {
-            "nullity mismatch — the force-density matrix D must be rank-deficient by \
-             exactly d+1 = 4 for a valid 3-D free-standing form; the supplied q does not \
-             achieve this"
-        }
+        FreeFormError::NotAForm(defect) => format!(
+            "not a free-standing form — the solve settled on a {}; a disconnected \
+             piece adds a translation mode of its own",
+            describe_defect(defect)
+        )
+        .into(),
         FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
-            "dimension mismatch — the members and their kinds disagree in length"
+            "dimension mismatch — the members and their kinds disagree in length".into()
         }
         FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember) => {
             "dimension mismatch — group_ids length does not match the member count \
              (struts + cables)"
+                .into()
         }
         FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { .. }) => {
             "dimension mismatch — a group_ids entry names a group past the end of \
              seed_ratios; every group id needs a seed ratio"
+                .into()
         }
         FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup) => {
-            "dimension mismatch — reference_group names a group past the end of seed_ratios"
+            "dimension mismatch — reference_group names a group past the end of seed_ratios".into()
         }
         FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { .. }) => {
             "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
              strut groups < 0), so it cannot be zero"
+                .into()
         }
-        FreeFormError::SearchDidNotConverge => {
-            "search did not converge — the adaptive GroupRatios search exhausted its \
-             iteration budget without reaching a nullity-4 configuration; verify that \
-             the seed signs are consistent (struts compressive, cables tensile)"
+        FreeFormError::SearchDidNotConverge {
+            defect: Some(defect),
+        } => format!(
+            "search did not converge — the adaptive GroupRatios search or the combined \
+             fixed point stopped on a {}; verify that the seed signs are consistent \
+             (struts compressive, cables tensile) and that no node or piece is \
+             disconnected from the rest",
+            describe_defect(defect)
+        )
+        .into(),
+        FreeFormError::SearchDidNotConverge { defect: None } => {
+            "search did not converge — the combined fixed point's force-density matrix \
+             is a valid free-standing form, but its geometry did not reach equilibrium \
+             before the iteration budget or stall guard ended the search; try an \
+             initial node placement closer to the expected form"
+                .into()
         }
         FreeFormError::SingularRecovery => {
             "singular recovery — null-space coordinate recovery failed to produce a \
              3-D realisation; try a less degenerate initial node placement"
+                .into()
         }
-        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
+        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
+            INDEX_OUT_OF_RANGE.into()
+        }
         FreeFormError::DegenerateTriangle
         | FreeFormError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
+                .into()
         }
         FreeFormError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+                .into()
         }
         FreeFormError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
+                .into()
         }
     }
+}
+
+/// The observed shape of a force-density matrix that is not a free-standing
+/// form, against what a form needs.
+fn describe_defect(defect: FormDefect) -> String {
+    let FormDefect {
+        nullity,
+        components,
+    } = defect;
+    let pieces = if components == 1 { "piece" } else { "pieces" };
+    format!(
+        "force-density matrix D with nullity {nullity} over {components} connected \
+         {pieces}, where a 3-D free-standing form needs nullity d+1 = 4 on ONE \
+         connected structure"
+    )
 }

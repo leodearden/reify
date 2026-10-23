@@ -846,7 +846,7 @@ pub use form_find::{
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
 // wiring in this task, per plan.json design_decisions).
 pub use form_find_free::{
-    ForceDensitySpec, FreeFormError, FreeFormResult, GroupSpecDefect, form_find_free,
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, GroupSpecDefect, form_find_free,
     form_find_free_surfaces,
 };
 // Task 3796: Tensegrity T2 — self-stress & prestress-stability analysis kernel.
