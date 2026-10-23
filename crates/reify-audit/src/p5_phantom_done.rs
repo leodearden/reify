@@ -1664,9 +1664,9 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         }
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
         // (#[allow(dead_code)], #[cfg(test)]), and non-blank G-allow marker.
-        // Delegated to crate::is_symbol_suppressed so that P1 and P5 H2 share
+        // Delegated to crate::jcodemunch_ops::is_symbol_suppressed so that P1 and P5 H2 share
         // the same opt-out semantics and cannot drift independently.
-        if crate::is_symbol_suppressed(&symbol) {
+        if crate::jcodemunch_ops::is_symbol_suppressed(&symbol) {
             continue;
         }
         let has_non_test_caller = ctx
@@ -1762,7 +1762,7 @@ pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Find
 /// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
 ///   range really does introduce no symbol.
 /// - Symbols arrived but not one declaration was locatable
-///   ([`crate::wholly_unlocatable_count`]), so the guard below skipped every
+///   ([`crate::jcodemunch_ops::wholly_unlocatable_count`]), so the guard below skipped every
 ///   row. This one is the quiet failure: the jcodemunch grammar drift that
 ///   produces it used to announce itself as a false-positive storm.
 ///
@@ -1781,7 +1781,7 @@ fn h2_vacuous_breadcrumb(
              (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
         )
     } else {
-        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        let unlocatable = crate::jcodemunch_ops::wholly_unlocatable_count(symbols)?;
         format!(
             "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
              unlocatable declaration and were skipped unexamined (jcodemunch \

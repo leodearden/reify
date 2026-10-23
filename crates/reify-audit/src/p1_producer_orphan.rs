@@ -273,7 +273,7 @@ pub fn run_unexamined(reason: &str) -> Finding {
 /// introduced no public symbol has always been an ordinary no-op here, and P1
 /// visits every done task, so annotating that would be one line per task on
 /// the (common) unwired-jcodemunch path. The vacuity rule itself lives in
-/// [`crate::wholly_unlocatable_count`], shared with P5 H2's breadcrumb.
+/// [`crate::jcodemunch_ops::wholly_unlocatable_count`], shared with P5 H2's breadcrumb.
 ///
 /// Mirrors `p5_phantom_done::h2_vacuous_breadcrumb`'s "return the diagnostic,
 /// let the caller `eprintln!` it" idiom — an in-process test cannot read its
@@ -285,7 +285,7 @@ fn unexamined_sweep_breadcrumb(
     since_sha: &str,
     until_sha: &str,
 ) -> Option<String> {
-    let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+    let unlocatable = crate::jcodemunch_ops::wholly_unlocatable_count(symbols)?;
     Some(format!(
         "reify-audit: P1 (producer-orphan) vacuous for task {task_id}: all \
          {unlocatable} symbol(s) from {since_sha}..{until_sha} had an unlocatable \
