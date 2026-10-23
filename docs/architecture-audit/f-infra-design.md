@@ -96,12 +96,15 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
 - explicit `Value::Undef` arms with comment containing `pending|stub|placeholder`
 - `// stub`, `// placeholder`, `// fixme` (line-comment form)
 
-**Detector:** `git diff main..task-branch` filtered to `metadata.files`; grep for stub patterns on **added** lines (`^+` in diff); report each match with file:line + matched pattern.
+**Detector:** `git diff main..task-branch` filtered to `metadata.files`; grep for stub patterns on **added** lines (`^+` in diff); report each match with file:line + matched pattern. A task whose branch is reaped is read from its merge commit's first-parent diff instead; because that diff is historical, its markers are reported only while the (trimmed) line is still present in the file on `main` — a marker since removed or reworded is gone, not debt.
 
 **False-positive guards:**
 - Test files (`*/tests/*`, `*_test.rs`, `__tests__/`) excluded.
 - Stub-pattern matches that were present in pre-task `main` (i.e. moved code) are excluded — diff-based detection handles this.
 - Tasks whose description explicitly names "stub" or "placeholder" in the title (e.g. "Add stub for X") are flagged but with severity downgraded to low.
+- The audit crate's own source (`crates/reify-audit/src/`) is excluded: its stub-pattern string literals and detector code self-match.
+- A line carrying PTODO's inline escape `ptodo:allow` is excluded: it is a reviewed, intentional marker.
+- A marker citing (`#NNNN`) a non-terminal task other than the task that introduced it is suppressed: the stub already has a live owner, which PTODO's liveness lane tracks, so a P2 follow-up would duplicate it. Cites of done/cancelled tasks, of tasks absent from the corpus, and of the introducing task itself stay reported.
 
 **Severity:** medium → file follow-up task (carries `audit_cluster=P2`, `audit_origin=2026-05-12+`, `parent_task=<id>`). The follow-up task's title template: `Wire <symbol> consumer (P2 stub introduced in task <id>)`.
 
