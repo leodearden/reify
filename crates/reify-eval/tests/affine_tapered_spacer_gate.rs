@@ -15,6 +15,9 @@
 //! Modeled on `sub_placement_assembly_gate.rs` (task 3908) and
 //! `affine_apply_e2e.rs` (task 3963).
 
+#[path = "common/strict_routing.rs"]
+mod strict_routing;
+
 use reify_core::Severity;
 use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel};
 
@@ -28,8 +31,8 @@ const EXAMPLE_SRC: &str = concat!(
 );
 
 /// Read and compile the committed example, panicking with a helpful message
-/// if the file is missing. Shared by all three gate tests below to avoid
-/// repeating the read+compile boilerplate.
+/// if the file is missing. Shared by the gate tests below to avoid repeating
+/// the read+compile boilerplate.
 fn compiled_example() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_SRC)
         .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
@@ -227,4 +230,18 @@ fn body_z_stretch_aabb_occt() {
             extents[axis]
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Strict multi-kernel routing reaches OCCT for affine_apply (#8989)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// In-process form of `reify build examples/affine_tapered_spacer.ri -o x.step`
+/// rc 0: `TransformAffineApply` must be declared by the kernel that executes it.
+#[test]
+fn example_builds_step_under_registered_kernels() {
+    strict_routing::assert_step_builds_under_registered_kernels(
+        &compiled_example(),
+        reify_ir::Operation::TransformAffineApply,
+    );
 }
