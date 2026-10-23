@@ -827,7 +827,7 @@ fn required_angle_args<const N: usize>(
 /// the `N == 1` special case of it, not a second minting site.
 ///
 /// ALL FAILURES AT ONCE, restated here because it is the reason this exists
-/// (reviewer amendment, task 5743): a primitive's `width`/`height`/`depth` and
+/// (reviewer amendment, task 5743): a box's `size_x`/`size_y`/`size_z` and
 /// a profile's `semi_major`/`semi_minor` are written as ONE gesture, exactly
 /// like a `translate` triple, so a bare primitive is usually bare in EVERY
 /// dimension. Reading them through per-field `?`-chained

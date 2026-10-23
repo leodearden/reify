@@ -14,8 +14,9 @@
 //! gated on `reify_kernel_occt::OCCT_AVAILABLE` and skip cleanly otherwise
 //! (mirrors `kernel_queries_distance_smoke.rs`).
 //!
-//! **Placement convention:** Reify's `box(w,h,d)` is CENTERED at the origin
-//! (`occt_wrapper.cpp` `make_box` uses corner `(-w/2,-h/2,-d/2)`), so
+//! **Placement convention:** Reify's `box(width, depth, height)` is CENTERED
+//! at the origin (`occt_wrapper.cpp` `make_box` uses corner
+//! `(-size_x/2, -size_y/2, -size_z/2)`), so
 //! `box(10mm,20mm,30mm)` has centroid `(0,0,0)` and bounding box
 //! `min(-5,-10,-15)mm` / `max(5,10,15)mm`. Volume and surface area are
 //! placement-invariant. (The plan's corner-at-origin premise was a documented
@@ -510,8 +511,9 @@ structure def CentroidBox {
 
 /// `centroid(handle)` dispatches to OCCT and yields a `Point3<Length>`.
 ///
-/// Reify's `box(w,h,d)` is CENTERED at the origin (`occt_wrapper.cpp`
-/// `make_box` corner `(-w/2,-h/2,-d/2)`), so the centroid of
+/// Reify's `box(width, depth, height)` is CENTERED at the origin
+/// (`occt_wrapper.cpp` `make_box` corner `(-size_x/2, -size_y/2, -size_z/2)`),
+/// so the centroid of
 /// `box(10,20,30)mm` is `(0,0,0)` — NOT `(5,10,15)mm`. (The plan's
 /// corner-at-origin premise was an assumption to confirm; the centered
 /// convention is authoritative and matches `distance_box_point.ri`.)
@@ -541,8 +543,9 @@ structure def BBoxBox {
 /// `bounding_box(handle)` dispatches to OCCT and yields a `Value::BoundingBox`
 /// of two `Point3<Length>` corners.
 ///
-/// Reify's `box(w,h,d)` is CENTERED at the origin (`occt_wrapper.cpp`
-/// `make_box` corner `(-w/2,-h/2,-d/2)`), so `box(10,20,30)mm` spans
+/// Reify's `box(width, depth, height)` is CENTERED at the origin
+/// (`occt_wrapper.cpp` `make_box` corner `(-size_x/2, -size_y/2, -size_z/2)`),
+/// so `box(10,20,30)mm` spans
 /// `min(-5,-10,-15)mm` / `max(5,10,15)mm` — NOT `min(0,0,0)`. (Corrects the
 /// plan's corner-at-origin premise; consistent with the centroid pin and
 /// `distance_box_point.ri`.)

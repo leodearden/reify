@@ -547,7 +547,7 @@ convention changes:
 
 | Primitive | Anchor | Notes |
 |---|---|---|
-| `box` | centred at origin, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally |
+| `box` | centred at origin, all 3 axes | corner at `(-width/2, -depth/2, -height/2)` — width/depth/height are the X/Y/Z extents |
 | `box_centered` | centred at origin, all 3 axes | op-identical alias of `box`, for symmetry with `cylinder_centered` |
 | `sphere` | centred at origin | |
 | `torus` | centred at origin; axis is +Z | |

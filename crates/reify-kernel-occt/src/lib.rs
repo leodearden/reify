@@ -11740,11 +11740,11 @@ mod tests {
     #[test]
     fn inertia_tensor_rotated_non_cubic_box_offdiagonals_symmetric() {
         let mut kernel = OcctKernel::new();
-        // Non-cubic box: width=1000, height=2000, depth=500, density=1.
+        // Non-cubic box: size_x=1000, size_y=2000, size_z=500, density=1.
         // Volume = 1e9, mass m = 1e9.
         // Centroidal moments in local frame (box axes):
-        //   I_xx_local = m/12·(h²+d²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
-        //   I_yy_local = m/12·(w²+d²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
+        //   I_xx_local = m/12·(size_y²+size_z²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
+        //   I_yy_local = m/12·(size_x²+size_z²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
         // After 30° rotation around Z:
         //   I_xy_world = (I_xx_local - I_yy_local)·sin30°·cos30° ≈ 1.08e14
         // (I_xz and I_yz remain zero because Z-rotation doesn't mix Z cross-products.)

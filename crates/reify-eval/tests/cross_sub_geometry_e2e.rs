@@ -1370,7 +1370,7 @@ pub structure Outer {
 ///
 /// Assertions:
 /// * (a) No Error-severity diagnostics.
-/// * (b) A Box op with width/height/depth = 70mm (per-instance box) exists.
+/// * (b) A Box op with size_x/size_y/size_z = 70mm (per-instance box) exists.
 /// * (c) A Translate op with x = 5mm (Inner's internal translate) whose
 ///   target is the per-instance Box handle (H_box) exists.
 /// * (d) A Translate op with x = 200mm (Outer's placed) whose target equals
