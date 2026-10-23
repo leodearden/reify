@@ -34,7 +34,9 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P2.
 
 use crate::ptodo;
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::task_rows::is_terminal_status;
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
+use std::collections::HashMap;
 
 /// Returns `Some(label)` if the line matches any canonical stub-pattern family,
 /// or `None` if the line is clean.
@@ -250,6 +252,17 @@ fn scan_file_added_lines(added: &[(usize, String)]) -> Vec<(usize, String, &'sta
     result
 }
 
+/// `true` when `line` cites a non-terminal task other than `introducer`: the
+/// stub already has a live owner, so a P2 follow-up would duplicate it.
+/// PTODO's liveness lane reads the same cite grammar against the same
+/// terminal set.
+fn cites_live_owner(line: &str, introducer: &str, tasks: &HashMap<String, TaskMetadata>) -> bool {
+    ptodo::canonical_cite_occurrences(line).any(|(_, id)| {
+        let id = id.to_string();
+        id != introducer && tasks.get(&id).is_some_and(|t| !is_terminal_status(&t.status))
+    })
+}
+
 /// Returns `true` when the task title itself signals that the task is
 /// intentionally a stub or placeholder (case-insensitive substring match).
 /// Used to downgrade finding severity from Medium to Low.
@@ -444,7 +457,10 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
                 //     → original branch diff. Preserves all existing behaviour.
                 (None, None) => ctx.git.diff_added_lines("main", &task_branch, path),
             };
-            for (line_no, content, label) in scan_file_added_lines(&added) {
+            let unowned = scan_file_added_lines(&added)
+                .into_iter()
+                .filter(|(_, content, _)| !cites_live_owner(content, &meta.task_id, &ctx.task_metadata));
+            for (line_no, content, label) in unowned {
                 raw.push(RawEntry {
                     path: path.clone(),
                     line_no,
