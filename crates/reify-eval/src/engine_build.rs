@@ -11395,6 +11395,17 @@ impl Engine {
             diagnostics,
             templates,
         );
+        // Sub-instance copies of kinematic-query cells. Must run BEFORE
+        // `post_process_derived_lets` so a parent let over
+        // `self.<sub>.<kinematic-cell>` folds in the same fixpoint.
+        Engine::post_process_cross_sub_kinematic_queries(
+            template,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            templates,
+        );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
         // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
@@ -11695,6 +11706,45 @@ impl Engine {
                 diagnostics,
             ) {
                 values.insert(scoped_id, value);
+            }
+        }
+    }
+
+    /// Dispatch the kinematic-query helpers for each direct sub instance's
+    /// copies of its child template's cells, writing at the instance-scoped id
+    /// `ValueCellId("<parent>.<sub>", member)`. The pure eval pass leaves those
+    /// copies `Undef` because kernel values only exist in the build phase. Each
+    /// instance resolves against its own handles, so a param override is
+    /// honoured. One level deep, collection subs excluded; the rescoping rule
+    /// lives in [`crate::sub_instance_scope`].
+    fn post_process_cross_sub_kinematic_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+        templates: &[reify_compiler::TopologyTemplate],
+    ) {
+        let mut pose_cache: HashMap<
+            (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
+            reify_ir::GeometryHandleId,
+        > = HashMap::new();
+        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+            let steps = instance.named_steps_view(named_steps);
+            for cell in &instance.child_template().value_cells {
+                let Some(default_expr) = &cell.default_expr else {
+                    continue;
+                };
+                if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
+                    &instance.rescope(default_expr),
+                    &steps,
+                    values,
+                    kernel,
+                    diagnostics,
+                    &mut pose_cache,
+                ) {
+                    values.insert(instance.scoped_id(&cell.id.member), value);
+                }
             }
         }
     }

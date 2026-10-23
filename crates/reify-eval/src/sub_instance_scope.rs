@@ -5,14 +5,17 @@
 //! scope is one level deep. Collection subs are excluded because they have
 //! no single scoped entity.
 
+use std::collections::HashMap;
+
 use reify_compiler::TopologyTemplate;
 use reify_core::ValueCellId;
-use reify_ir::CompiledExpr;
+use reify_ir::{CompiledExpr, KernelHandle};
 
 /// One direct, non-collection sub-component of a parent template, paired with
 /// the child template it instantiates.
 pub(crate) struct SubInstance<'t> {
     scoped_entity: String,
+    sub_name: &'t str,
     child_template: &'t TopologyTemplate,
 }
 
@@ -30,6 +33,7 @@ pub(crate) fn direct_sub_instances<'t>(
             let child_template = reify_compiler::find_template(templates, &sub.structure_name)?;
             Some(SubInstance {
                 scoped_entity: format!("{}.{}", template.name, sub.name),
+                sub_name: &sub.name,
                 child_template,
             })
         })
@@ -56,6 +60,23 @@ impl<'t> SubInstance<'t> {
                 id
             }
         })
+    }
+
+    /// This instance's own step-name → handle map, read back out of the
+    /// parent's `"<sub>.<member>"` keys that `seed_cross_sub_named_steps`
+    /// (engine_build.rs) seeds.
+    pub(crate) fn named_steps_view(
+        &self,
+        parent_named_steps: &HashMap<String, KernelHandle>,
+    ) -> HashMap<String, KernelHandle> {
+        let prefix = format!("{}.", self.sub_name);
+        parent_named_steps
+            .iter()
+            .filter_map(|(key, handle)| {
+                key.strip_prefix(prefix.as_str())
+                    .map(|member| (member.to_string(), *handle))
+            })
+            .collect()
     }
 }
 
