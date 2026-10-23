@@ -116,14 +116,29 @@ beforeEach(() => {
 
 const VALUE_300 = /\b300(?:\.0+)?\b/;
 
-function bracketMesh(vonMises: [number, number, number] = [200, 200, 400]): MeshData {
+type Vec3 = [number, number, number];
+
+/** The fixture triangle, optionally shifted by `translate` and carrying a uniform FEA `displacement`. */
+function bracketMesh(
+  opts: { vonMises?: Vec3; translate?: Vec3; displacement?: Vec3 } = {},
+): MeshData {
+  const { vonMises = [200, 200, 400], translate = [0, 0, 0], displacement } = opts;
+  const corners: Vec3[] = [[-1, -1, 0], [1, -1, 0], [0, 1, 0]];
+  const offsetBy = (d: Vec3) => new Float32Array(corners.flatMap((c) => c.map((x, i) => x + translate[i] + d[i])));
   return {
     entity_path: 'bracket',
-    vertices: new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0]),
+    vertices: offsetBy([0, 0, 0]),
     indices: new Uint32Array([0, 1, 2]),
     normals: null,
     scalar_channels: { vonMises: new Float32Array(vonMises) },
+    ...(displacement ? { displaced_positions: offsetBy(displacement) } : {}),
   };
+}
+
+function expectAt(marker: Object3D, [x, y, z]: Vec3): void {
+  expect(marker.position.x).toBeCloseTo(x);
+  expect(marker.position.y).toBeCloseTo(y);
+  expect(marker.position.z).toBeCloseTo(z);
 }
 
 function stubCanvasRect(left: number): void {
@@ -288,19 +303,19 @@ describe('Viewport probe wiring', () => {
   });
 });
 
-describe('probes follow re-evaluation', () => {
-  function renderWithMeshSignal() {
-    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({ bracket: bracketMesh() });
-    renderViewport({ feaModeStore: createFeaModeStore(), meshes });
-    return setMeshes;
-  }
+function renderWithMeshSignal(initial: MeshData = bracketMesh(), feaModeStore = createFeaModeStore()) {
+  const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({ bracket: initial });
+  renderViewport({ feaModeStore, meshes });
+  return setMeshes;
+}
 
+describe('probes follow re-evaluation', () => {
   it('(a) a re-solve updates the probe readout to the new field', () => {
     const setMeshes = renderWithMeshSignal();
     placeProbe();
     expect(screen.getByTestId('probe-row').textContent).toMatch(VALUE_300);
 
-    setMeshes({ bracket: bracketMesh([400, 400, 800]) });
+    setMeshes({ bracket: bracketMesh({ vonMises: [400, 400, 800] }) });
 
     const text = screen.getByTestId('probe-row').textContent;
     expect(text).toMatch(/\b600(?:\.0+)?\b/);
@@ -321,6 +336,44 @@ describe('probes follow re-evaluation', () => {
 
     expect(screen.queryByTestId('probe-popup')).toBeNull();
     expect(marker.parent).toBeNull();
+  });
+});
+
+describe('probe markers follow the displayed surface', () => {
+  it('(a) a re-solve that moves the surface carries the marker with it', () => {
+    const setMeshes = renderWithMeshSignal();
+    const marker = placeProbe();
+    expectAt(marker, [0, 0, 0]);
+
+    setMeshes({ bracket: bracketMesh({ translate: [1, 0, 0] }) });
+
+    expectAt(marker, [1, 0, 0]);
+  });
+
+  it('(b) the deformed view carries the marker onto the warped surface and back', () => {
+    const store = createFeaModeStore();
+    renderWithMeshSignal(bracketMesh({ displacement: [0, 0, 0.5] }), store);
+    const marker = placeProbe();
+
+    store.setShowDeformed(true);
+    expectAt(marker, [0, 0, 0.5]);
+
+    store.setWarpFactor(2);
+    expectAt(marker, [0, 0, 1]);
+
+    store.setShowDeformed(false);
+    expectAt(marker, [0, 0, 0]);
+  });
+
+  it('(c) a stale marker keeps its last displayed position', () => {
+    const setMeshes = renderWithMeshSignal();
+    const marker = placeProbe();
+    setMeshes({ bracket: bracketMesh({ translate: [1, 0, 0] }) });
+
+    setMeshes({});
+
+    expect(screen.getByTestId('probe-row').classList.contains('probe-stale')).toBe(true);
+    expectAt(marker, [1, 0, 0]);
   });
 });
 

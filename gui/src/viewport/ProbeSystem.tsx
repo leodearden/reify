@@ -9,7 +9,7 @@
  *   pickAndAddProbe(event) — raycast → computeBarycentric → addProbe
  *   resampleAll() — re-sample all probes; update or markStale + grey marker
  *   removeProbe(id) — remove from store + scene + dispose
- *   refreshMarkers() — reconcile marker Map with current store probes
+ *   refreshMarkers() — reconcile markers with the store: restyle, move live ones onto the current surface
  *   dispose() — tear down all markers and resources
  *
  * <ProbePopup store={store} onRemove={fn} onRepin={fn} /> — thin SolidJS panel.
@@ -65,12 +65,12 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   // Marker helpers
   // ---------------------------------------------------------------------------
 
+  /** The probe point on the live geometry, or null when its entity or face is not displayed. */
   function computeWorldPosition(
     entityPath: string,
     faceId: number,
     bary: BarycentricUV,
-  ): { x: number; y: number; z: number } {
-    // Try to compute from the live mesh geometry
+  ): { x: number; y: number; z: number } | null {
     const meshes = getMeshes();
     const mesh = meshes.get(entityPath);
     if (mesh) {
@@ -92,7 +92,13 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
         }
       }
     }
-    return { x: 0, y: 0, z: 0 };
+    return null;
+  }
+
+  /** Moves `marker` onto the probe point; leaves it in place when that point is not displayed. */
+  function placeMarker(marker: Mesh, entityPath: string, faceId: number, bary: BarycentricUV): void {
+    const pos = computeWorldPosition(entityPath, faceId, bary);
+    if (pos) marker.position.set(pos.x, pos.y, pos.z);
   }
 
   function createMarker(
@@ -108,8 +114,7 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
       opacity: stale ? MARKER_OPACITY_STALE : 1.0,
     });
     const marker = new Mesh(geo, mat);
-    const pos = computeWorldPosition(entityPath, faceId, bary);
-    marker.position.set(pos.x, pos.y, pos.z);
+    placeMarker(marker, entityPath, faceId, bary);
     return marker;
   }
 
@@ -190,11 +195,12 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   // ---------------------------------------------------------------------------
 
   function refreshMarkers(): void {
-    // Restyle existing markers based on current stale state
+    // A live marker follows its pin on the current (possibly deformed) surface; a stale one stays put.
     for (const probe of store.state.probes) {
       const marker = markerMap.get(probe.id);
       if (marker) {
         updateMarkerStyle(marker, probe.stale);
+        if (!probe.stale) placeMarker(marker, probe.entity_path, probe.face_id, probe.barycentric_uv);
       }
     }
     // Remove markers for probes no longer in the store

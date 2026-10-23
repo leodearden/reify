@@ -288,6 +288,8 @@ export function Viewport(props: ViewportProps) {
         } else {
           meshManager.setDeformation(null);
         }
+        // Untracked: refreshMarkers reads the probe store, which must not re-run this effect.
+        untrack(() => probeSession()?.system.refreshMarkers());
         requestRender();
       });
 
