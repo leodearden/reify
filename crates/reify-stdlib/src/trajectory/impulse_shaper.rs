@@ -437,6 +437,43 @@ mod tests {
         );
     }
 
+    /// convolve_at on a domain that does not start at 0 clamps τ to the
+    /// domain's own start: the shaped command starts at `f(start)`, freezes at
+    /// `f(end)` from `end + trailing_time` on, and is the time translation of
+    /// the same command convolved on `[0, end − start]`.
+    #[test]
+    fn convolve_at_on_shifted_domain_preserves_end_values() {
+        let train = ImpulseTrain::zv(2.0 * PI * 10.0, 0.05);
+        let delta = train.trailing_time();
+        let duration = 0.5_f64;
+        let start = 2.0_f64;
+        let domain = start..=start + duration;
+        // Unclamped, so only convolve_at's clamp keeps τ inside the domain.
+        let shifted_ramp = |tau: f64| tau - start;
+        let ramp = |tau: f64| tau;
+
+        assert_close(
+            convolve_at(&train, &shifted_ramp, &domain, start),
+            shifted_ramp(start),
+            1e-12,
+            "start value preserved at t = start",
+        );
+        assert_close(
+            convolve_at(&train, &shifted_ramp, &domain, start + duration + delta),
+            shifted_ramp(start + duration),
+            1e-12,
+            "final value preserved at t = end + trailing_time",
+        );
+        for x in [0.25 * delta, 0.5 * duration, duration + 0.5 * delta] {
+            assert_close(
+                convolve_at(&train, &shifted_ramp, &domain, start + x),
+                convolve_at(&train, &ramp, &(0.0..=duration), x),
+                1e-12,
+                "time translation of the origin-domain convolution",
+            );
+        }
+    }
+
     // ── step-9: EI train construction ────────────────────────────────────────
 
     /// EI (2-hump): exactly 4 impulses; amplitude_sum≈1; all amplitudes > 0;
