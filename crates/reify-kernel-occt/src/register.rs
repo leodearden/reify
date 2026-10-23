@@ -22,7 +22,7 @@
 //! section comments. `crates/reify-kernel-conformance/tests/descriptor_completeness.rs`
 //! pins that every emitted op is declared by some kernel.
 //!
-//! # Convert ×1 (wired in PRD §8 task δ — task 3435)
+//! # Convert (wired in PRD §8 task δ — task 3435)
 //!
 //! `(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)` was
 //! added to the `supports` table in task 3435 (PRD §8 task δ). Combined
@@ -99,11 +99,11 @@ pub const OCCT_KERNEL_VERSION: &str = "7.9.3";
 pub fn occt_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
-        // Booleans ×3
+        // Booleans
         (BooleanUnion, ReprKind::BRep),
         (BooleanDifference, ReprKind::BRep),
         (BooleanIntersection, ReprKind::BRep),
-        // Primitives ×8
+        // Primitives
         (PrimitiveBox, ReprKind::BRep),
         (PrimitiveCylinder, ReprKind::BRep),
         (PrimitiveSphere, ReprKind::BRep),
@@ -112,7 +112,7 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (PrimitiveWedge, ReprKind::BRep),
         (PrimitiveTorus, ReprKind::BRep),
         (PrimitiveHalfSpace, ReprKind::BRep),
-        // Modify ×9
+        // Modify
         (ModifyFillet, ReprKind::BRep),
         (ModifyChamfer, ReprKind::BRep),
         (ModifyShell, ReprKind::BRep),
@@ -122,20 +122,20 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (ModifyZoneSlab, ReprKind::BRep),
         (ModifyOffsetSolid, ReprKind::BRep),
         (ModifyOffsetSurface, ReprKind::BRep),
-        // Transform ×6
+        // Transform
         (TransformTranslate, ReprKind::BRep),
         (TransformRotate, ReprKind::BRep),
         (TransformScale, ReprKind::BRep),
         (TransformRotateAround, ReprKind::BRep),
         (TransformApplyTransform, ReprKind::BRep),
         (TransformAffineApply, ReprKind::BRep),
-        // Pattern ×5
+        // Pattern
         (PatternLinear, ReprKind::BRep),
         (PatternCircular, ReprKind::BRep),
         (PatternMirror, ReprKind::BRep),
         (PatternLinear2D, ReprKind::BRep),
         (PatternArbitrary, ReprKind::BRep),
-        // Sweep ×9
+        // Sweep
         (SweepLoft, ReprKind::BRep),
         (SweepExtrude, ReprKind::BRep),
         (SweepRevolve, ReprKind::BRep),
@@ -145,21 +145,21 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (SweepSweepGuided, ReprKind::BRep),
         (SweepLoftGuided, ReprKind::BRep),
         (SweepPipe, ReprKind::BRep),
-        // Curve ×6
+        // Curve
         (CurveLineSegment, ReprKind::BRep),
         (CurveArc, ReprKind::BRep),
         (CurveHelix, ReprKind::BRep),
         (CurveInterpCurve, ReprKind::BRep),
         (CurveBezierCurve, ReprKind::BRep),
         (CurveNurbsCurve, ReprKind::BRep),
-        // Profile ×4 — 2-D face producers (task-4160, task-4161)
+        // Profile — 2-D face producers (task-4160, task-4161)
         (ProfileRectangle, ReprKind::BRep),
         (ProfileCircle, ReprKind::BRep),
         (ProfilePolygon, ReprKind::BRep),
         (ProfileEllipse, ReprKind::BRep),
-        // Surface ×1 — free-form NURBS patch producer (OCCT execute arm GeometryOp::NurbsSurface)
+        // Surface — free-form NURBS patch producer (OCCT execute arm GeometryOp::NurbsSurface)
         (SurfaceNurbs, ReprKind::BRep),
-        // Convert ×1 — BRep→Mesh tessellation (PRD §8 task δ, task 3435)
+        // Convert — BRep→Mesh tessellation (PRD §8 task δ, task 3435)
         (Convert { from: ReprKind::BRep }, ReprKind::Mesh),
     ];
     CapabilityDescriptor { supports }

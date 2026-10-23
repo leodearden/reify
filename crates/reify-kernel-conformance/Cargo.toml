@@ -31,8 +31,7 @@ reify-kernel-occt.workspace = true
 # self-dev-dep feature activation.
 reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
 reify-kernel-manifold.workspace = true
-# So every `KernelRegistration` is linked into descriptor_completeness;
-# ι₆'s descriptor_accessor_parity reuses them.
+# Links every `KernelRegistration` into descriptor_completeness.
 reify-kernel-fidget.workspace = true
 reify-kernel-openvdb.workspace = true
 reify-eval.workspace = true
