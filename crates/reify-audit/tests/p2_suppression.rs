@@ -114,6 +114,60 @@ mod tests {
         assert!(summary.contains("line 1400"), "unescaped line must be reported: {summary}");
         assert!(!summary.contains("line 1297"), "escaped line must not be reported: {summary}");
     }
+
+    /// Introducer 9610 (in_progress) plus cited tasks: 7001 pending,
+    /// 7005 in-progress, 7002 done, 7003 cancelled. 7004 is deliberately absent.
+    fn cite_corpus(introducer_files: &[&str]) -> HashMap<String, TaskMetadata> {
+        corpus(vec![
+            meta("9610", "in_progress", introducer_files),
+            meta("7001", "pending", &[]),
+            meta("7005", "in-progress", &[]),
+            meta("7002", "done", &[]),
+            meta("7003", "cancelled", &[]),
+        ])
+    }
+
+    #[test]
+    fn marker_citing_live_other_task_suppressed() {
+        let control = "crates/x/control.rs";
+        let cases = [
+            ("crates/x/live.rs", "    // TODO(#7001): wire the consumer"),
+            ("crates/x/live_inprogress.rs", "    // TODO(#7005): wire"),
+            ("crates/x/live_trailing.rs", "    unimplemented!() // owned by #7001"),
+            ("crates/x/mixed.rs", "    // TODO(#7002, #7001): wire"),
+            (control, "    // TODO(impl pending)"),
+        ];
+        let mut git = MockGitOps::new();
+        for (path, line) in cases {
+            add_on_branch(&mut git, "9610", path, &[(10, line)]);
+        }
+        let paths: Vec<&str> = cases.iter().map(|(p, _)| *p).collect();
+
+        let findings = run_p2(&git, cite_corpus(&paths));
+
+        assert_eq!(finding_paths(&findings), vec![control.to_string()], "got {findings:?}");
+    }
+
+    #[test]
+    fn marker_citing_terminal_absent_or_self_still_reported() {
+        let cases = [
+            ("crates/x/done.rs", "    // TODO(#7002): wire"),
+            ("crates/x/cancelled.rs", "    // TODO(#7003): wire"),
+            ("crates/x/absent.rs", "    // TODO(#7004): wire"),
+            ("crates/x/self.rs", "    // TODO(#9610): wire"),
+        ];
+        let mut git = MockGitOps::new();
+        for (path, line) in cases {
+            add_on_branch(&mut git, "9610", path, &[(10, line)]);
+        }
+        let paths: Vec<&str> = cases.iter().map(|(p, _)| *p).collect();
+
+        let findings = run_p2(&git, cite_corpus(&paths));
+
+        let mut expected: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+        expected.sort();
+        assert_eq!(finding_paths(&findings), expected, "got {findings:?}");
+    }
 }
 
 }
