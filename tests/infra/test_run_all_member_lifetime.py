@@ -13,7 +13,10 @@ checks that:
     REIFY_RUN_ALL_MEMBER_KILL_GRACE;
   - a group SIGTERM to run_all (the merge envelope's shape) still reaches a
     member that ignores it;
-  - a malformed budget knob is a usage error (exit 64) before any member runs.
+  - a malformed budget knob is a usage error (exit 64) before any member runs;
+  - a SIGTERM to run_all's main pid alone removes its pool workdir before
+    run_all dies, and neither that nor a SIGKILL leaves its progress printer
+    running.
 
 Every fixture process carries the fixture's unique path or token in its
 /proc cmdline, so a survivor is found by scanning /proc, and each case
@@ -76,6 +79,10 @@ exit 124
     "test_ok.sh": r"""#!/usr/bin/env bash
 printf 'attempt\n' >> "$FIXTURE_STATE/$(basename "$0").attempts"
 exit 0
+""",
+    "test_brief.sh": r"""#!/usr/bin/env bash
+printf 'attempt\n' >> "$FIXTURE_STATE/$(basename "$0").attempts"
+sleep 5
 """,
 }
 
@@ -205,6 +212,9 @@ class Fixture:
                 return False
             time.sleep(0.2)
         return False
+
+    def pool_workdirs(self):
+        return sorted(str(p) for p in self.tmp.glob("reify-run-all-pool.*"))
 
     def strays(self):
         return _strays(str(self.root) + os.sep, self.token)
@@ -339,6 +349,45 @@ class OuterGroupTermTests(unittest.TestCase):
         out, _ = proc.communicate(timeout=RUN_TIMEOUT_S)
         self.assertIn("INTERRUPTED", out)
         self.assertEqual(fixture.settle(), [], out)
+
+
+class SignalToRunAllPidTests(unittest.TestCase):
+    """A signal to run_all's main pid alone (test_run_all.sh T25's shape) leaves nothing behind.
+
+    The one member sleeps 5s and the progress printer ticks every second, so
+    a run_all killed mid-Phase-1 has a live worker, relay, member and printer.
+    """
+
+    def start(self):
+        fixture = Fixture(self.addCleanup, ["test_brief.sh"])
+        proc = fixture.spawn(REIFY_RUN_ALL_POOL_CONCURRENCY="1", REIFY_RUN_ALL_PROGRESS_SECS="1")
+        if not fixture.wait_for_attempt("test_brief.sh", proc):
+            out = proc.communicate(timeout=RUN_TIMEOUT_S)[0] if proc.poll() is not None else ""
+            self.fail(f"test_brief.sh never started\n{out}")
+        return fixture, proc
+
+    def settle_and_read(self, fixture, proc):
+        """(survivors after the settle window, run_all's output); survivors are then killed."""
+        strays = fixture.settle()
+        fixture.kill_strays()
+        return strays, proc.communicate(timeout=RUN_TIMEOUT_S)[0]
+
+    def test_term_cleans_up_before_run_all_dies(self):
+        fixture, proc = self.start()
+        os.kill(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=RUN_TIMEOUT_S)
+        workdirs = fixture.pool_workdirs()
+        strays, out = self.settle_and_read(fixture, proc)
+        self.assertIn("INTERRUPTED", out)
+        self.assertEqual(workdirs, [], out)
+        self.assertEqual(strays, [], out)
+
+    def test_progress_printer_does_not_outlive_a_sigkilled_run_all(self):
+        fixture, proc = self.start()
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=RUN_TIMEOUT_S)
+        strays, out = self.settle_and_read(fixture, proc)
+        self.assertEqual(strays, [], out)
 
 
 class KnobValidationTests(unittest.TestCase):
