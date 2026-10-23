@@ -30,6 +30,8 @@
 //! Populated incrementally across task π's TDD steps (cache keys → marshalling
 //! → composers → accessors).
 
+use std::ops::RangeInclusive;
+
 use reify_core::{ContentHash, DimensionVector};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -668,7 +670,7 @@ const SAMPLES_PER_KNOT_INTERVAL: usize = 16;
 /// the round-trip through the downstream simulator's spline re-marshal).
 const SAMPLES_PER_SHAPER_DELAY: usize = 8;
 /// Upper bound on the shaped grid size — a backstop against a pathological
-/// `t_domain` / Δ ratio producing an unbounded waypoint count.
+/// duration / Δ ratio producing an unbounded waypoint count.
 const MAX_SHAPED_SAMPLES: usize = 1024;
 
 /// Compose `input_shape(profile, shaper)` at the `Value` layer — the deferred ζ
@@ -676,13 +678,16 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 /// `input_shape_trampoline` calls this through the crate-root re-export (mirroring
 /// the `build_train_for_shaper` boundary).
 ///
+/// Both arms keep the input's time origin: the shaped profile's first waypoint
+/// sits at the input's first waypoint time.
+///
 /// **Impulse arm** (ZV / ZVD / EI / Cascaded): resolve the shaper to an
 /// [`ImpulseTrain`](super::impulse_shaper::ImpulseTrain)
 /// ([`build_train_for_shaper`]), marshal the profile command to a
 /// [`MultiJointSpline`] ([`value_to_multijoint_spline`]), then resample the
 /// convolved command `f_shaped(t) = Σ Aᵢ·command(t − tᵢ)` ([`convolve_at`]) on a
 /// uniform grid over the Δ-extended domain `[start, end + trailing_time]` of the
-/// input's own time axis, so the shaped profile keeps the input's time origin.
+/// input's own time axis.
 /// The result is a fresh `PiecewisePolynomialProfile` whose `waypoints` carry the
 /// shaped command while **every other field** (`mechanism` / `boundary` /
 /// `spline_kind`) is preserved verbatim — real shaping changes ONLY the
@@ -699,8 +704,9 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 /// [`ModalModel`] ([`value_to_modal_model`]), and its `max_iters` / `tol` into the
 /// [`SqpConfig`]; seed `t_initial` from the input profile's own duration (the
 /// un-optimised baseline). Run the time-optimal SQP loop ([`solve_tots`]) and
-/// re-emit the optimised `[start, interior…, end]` per joint at uniform fractions
-/// of the solved `T` (mirroring `tots::build_spline`'s knot layout), again
+/// re-emit the optimised `[start, interior…, end]` per joint at the input's
+/// first waypoint time plus uniform fractions of the solved `T` (mirroring
+/// `tots::build_spline`'s knot layout), again
 /// preserving every non-`waypoints` field — so the move is genuinely *re-timed*,
 /// never an echo. `ConstraintInfeasible` ⇒ no feasible shaped profile exists ⇒
 /// `Undef`; `Converged` / `NonConvergence` (best-feasible iterate) ⇒ the re-timed
@@ -757,9 +763,9 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
 
     let domain = spline.domain();
     let t_start = *domain.start();
-    let t_domain = spline.duration();
+    let duration = spline.duration();
     let delta = train.trailing_time();
-    let span = t_domain + delta;
+    let span = duration + delta;
     let n_joints = spline.eval(t_start).len();
 
     // Uniform resample spacing fine enough to resolve BOTH the command curvature
@@ -768,7 +774,7 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
         Some(Value::List(wps)) => wps.len().max(2),
         _ => 2,
     };
-    let dt_curv = t_domain / ((n_in - 1) * SAMPLES_PER_KNOT_INTERVAL) as f64;
+    let dt_curv = duration / ((n_in - 1) * SAMPLES_PER_KNOT_INTERVAL) as f64;
     let dt = if delta > 0.0 {
         dt_curv.min(delta / SAMPLES_PER_SHAPER_DELAY as f64)
     } else {
@@ -853,8 +859,9 @@ fn field_f64(data: &StructureInstanceData, name: &str, default: f64) -> f64 {
 }
 
 /// Marshal a `PiecewisePolynomialProfile`'s waypoints into the per-joint TOTS
-/// point-to-point spec ([`JointWaypoints`]) plus the profile's baseline duration
-/// (`last.t − first.t`, the un-optimised `t_initial` seed).
+/// point-to-point spec ([`JointWaypoints`]) plus the profile's time domain
+/// `[first.t, last.t]`. Its span is the un-optimised `t_initial` seed; its
+/// start is the time origin the re-timed profile keeps.
 ///
 /// Per joint `j`: `start = wp[0].values[j]`, `end = wp[last].values[j]`,
 /// `interior = [wp[1..last].values[j]]` (the optimisable waypoints). The scalar
@@ -871,7 +878,7 @@ fn profile_to_joint_waypoints(
     vel_limit: f64,
     acc_limit: f64,
     max_force: f64,
-) -> Option<(Vec<JointWaypoints>, f64)> {
+) -> Option<(Vec<JointWaypoints>, RangeInclusive<f64>)> {
     let Some(Value::List(wps)) = profile_data.fields.get(&"waypoints".to_string()) else {
         return None;
     };
@@ -895,7 +902,8 @@ fn profile_to_joint_waypoints(
     if n_joints == 0 || vals.iter().any(|v| v.len() != n_joints) {
         return None;
     }
-    let duration = ts[ts.len() - 1] - ts[0];
+    let domain = ts[0]..=ts[ts.len() - 1];
+    let duration = domain.end() - domain.start();
     // Reject a non-positive, NaN, or infinite baseline duration (`!is_finite()`
     // catches NaN/±inf; `<= 0.0` catches a zero/reversed knot span).
     if duration <= 0.0 || !duration.is_finite() {
@@ -913,7 +921,7 @@ fn profile_to_joint_waypoints(
             max_force,
         })
         .collect();
-    Some((joints, duration))
+    Some((joints, domain))
 }
 
 /// The TOTS-family arm (`TOTSShaper` / `RevoluteTOTSShaper`, per
@@ -936,8 +944,9 @@ fn input_shape_tots(profile_data: &StructureInstanceData, shaper: &Value) -> Val
     let max_iters = field_f64(shaper_data, "max_iters", 100.0) as usize;
     let tol = field_f64(shaper_data, "tol", 1e-6);
 
-    // Profile waypoints → per-joint P2P spec + baseline (un-optimised) duration.
-    let Some((joints, duration)) =
+    // Profile waypoints → per-joint P2P spec + time domain (its span is the
+    // un-optimised baseline duration).
+    let Some((joints, domain)) =
         profile_to_joint_waypoints(profile_data, vel_limit, acc_limit, max_force)
     else {
         return Value::Undef;
@@ -956,7 +965,7 @@ fn input_shape_tots(profile_data: &StructureInstanceData, shaper: &Value) -> Val
 
     let params = TotsParams {
         joints,
-        t_initial: duration,
+        t_initial: domain.end() - domain.start(),
         vib_tol,
         n_grid: 30,
     };
@@ -978,19 +987,23 @@ fn input_shape_tots(profile_data: &StructureInstanceData, shaper: &Value) -> Val
         // Converged, or the solver's best-feasible iterate
         // (W_TrajectorySolverNonConvergence) — both are valid shaped profiles.
         TotsOutcome::Converged | TotsOutcome::NonConvergence => {
-            tots_result_to_profile(profile_data, &result.params)
+            tots_result_to_profile(profile_data, *domain.start(), &result.params)
         }
     }
 }
 
 /// Build the re-timed `PiecewisePolynomialProfile` `Value` from a solved
-/// [`TotsParams`]: one waypoint per TOTS knot (uniform fractions of the optimised
-/// `T`, mirroring `tots::build_spline`'s knot layout) carrying the optimised
-/// `[start, interior…, end]` per joint. Every non-`waypoints` field of the input
-/// profile is preserved verbatim — only the command is re-timed — and the new
-/// waypoints reuse the input waypoints' registered identity (sentinel fallback),
-/// exactly like the impulse arm.
-fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsParams) -> Value {
+/// [`TotsParams`]: one waypoint per TOTS knot (`t_start` plus uniform fractions
+/// of the optimised `T`, mirroring `tots::build_spline`'s knot layout) carrying
+/// the optimised `[start, interior…, end]` per joint. Every non-`waypoints`
+/// field of the input profile is preserved verbatim — only the command is
+/// re-timed — and the new waypoints reuse the input waypoints' registered
+/// identity (sentinel fallback), exactly like the impulse arm.
+fn tots_result_to_profile(
+    profile_data: &StructureInstanceData,
+    t_start: f64,
+    params: &TotsParams,
+) -> Value {
     let t = params.t_initial;
     let n_int = params.joints.first().map(|j| j.interior.len()).unwrap_or(0);
     let n_knots = n_int + 2;
@@ -1021,11 +1034,7 @@ fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsPar
 
     let mut new_waypoints = Vec::with_capacity(n_knots);
     for i in 0..n_knots {
-        let ti = if n_knots > 1 {
-            i as f64 / (n_knots - 1) as f64 * t
-        } else {
-            0.0
-        };
+        let ti = t_start + i as f64 / (n_knots - 1) as f64 * t;
         let values: Vec<Value> = knot_values.iter().map(|kv| Value::Real(kv[i])).collect();
         let fields: PersistentMap<String, Value> = [
             (
@@ -2289,7 +2298,8 @@ mod tests {
         // The impl marshals the profile to this same spline; reconstruct it here
         // to certify the convolution identity (and the grid mapping) independently.
         let spline = value_to_multijoint_spline(&ramp).expect("ramp marshals to a spline");
-        let t_domain = spline.duration();
+        let domain = spline.domain();
+        let duration = spline.duration();
         let train = build_train_for_shaper(&zv).expect("ZVShaper → train");
         let delta = train.trailing_time();
         assert!(delta > 0.0, "ZV has a nonzero shaper delay Δ");
@@ -2329,8 +2339,8 @@ mod tests {
         let last_t = out.last().unwrap().0;
         assert!((first_t - 0.0).abs() < 1e-9, "shaped grid starts at 0");
         assert!(
-            ((last_t - first_t) - (t_domain + delta)).abs() < 1e-9,
-            "total shaped duration == original ({t_domain}) + trailing_time ({delta}), got {}",
+            ((last_t - first_t) - (duration + delta)).abs() < 1e-9,
+            "total shaped duration == original ({duration}) + trailing_time ({delta}), got {}",
             last_t - first_t
         );
 
@@ -2338,14 +2348,14 @@ mod tests {
         let mut max_dev_from_ramp = 0.0_f64;
         for (t, vals) in &out {
             assert_eq!(vals.len(), 1, "one joint");
-            let want = convolve_at(&train, &|tau: f64| spline.eval(tau)[0], &spline.domain(), *t);
+            let want = convolve_at(&train, &|tau: f64| spline.eval(tau)[0], &domain, *t);
             assert!(
                 (vals[0] - want).abs() < 1e-9,
                 "shaped command at t={t:.5} must equal the convolve_at reconstruction: \
                  got {}, want {want}",
                 vals[0]
             );
-            if *t <= t_domain {
+            if domain.contains(t) {
                 max_dev_from_ramp = max_dev_from_ramp.max((vals[0] - spline.eval(*t)[0]).abs());
             }
         }
@@ -2496,12 +2506,18 @@ mod tests {
     /// interior). `duration` is the un-optimised baseline the time-optimal solve
     /// improves on.
     fn p2p_profile(duration: f64, start: f64, end: f64) -> Value {
+        p2p_profile_from(0.0, duration, start, end)
+    }
+
+    /// [`p2p_profile`] with its waypoints at `[t0, t0 + duration]` instead of
+    /// `[0, duration]`.
+    fn p2p_profile_from(t0: f64, duration: f64, start: f64, end: f64) -> Value {
         let mid = 0.5 * (start + end);
         pp_profile(
             vec![
-                waypoint(0.0, &[start], None, None),
-                waypoint(duration / 2.0, &[mid], None, None),
-                waypoint(duration, &[end], None, None),
+                waypoint(t0, &[start], None, None),
+                waypoint(t0 + duration / 2.0, &[mid], None, None),
+                waypoint(t0 + duration, &[end], None, None),
             ],
             instance("NaturalSpline", vec![]),
             spline_kind("CubicSpline"),
@@ -2583,6 +2599,50 @@ mod tests {
             t_opt < t_base,
             "time-optimal shaped duration {t_opt:.4} must be faster than the baseline {t_base}"
         );
+    }
+
+    /// (TOTS arm) A P2P profile whose waypoints start at t = 2 s re-times into
+    /// the exact time translation of the origin profile's re-timed output. The
+    /// solve reads only the waypoint values and the span, so the knot values
+    /// match, and the shaped profile keeps the input's time origin, as the
+    /// impulse arm's twin above does.
+    #[test]
+    fn input_shape_value_tots_arm_non_zero_origin_profile_is_time_translated_twin() {
+        let tots = tots_shaper(
+            "TOTSShaper",
+            5.0,
+            50.0,
+            1.0,
+            vec![mode(10.0, 0.05, &[[1.0, 0.0, 0.0]])],
+        );
+        let origin_out = read_waypoints(&input_shape_value(&p2p_profile(5.0, 0.0, 1.0), &tots));
+        let twin_out = read_waypoints(&input_shape_value(
+            &p2p_profile_from(2.0, 5.0, 0.0, 1.0),
+            &tots,
+        ));
+
+        assert_eq!(
+            twin_out.len(),
+            origin_out.len(),
+            "same re-timed waypoint count"
+        );
+        assert!(
+            (twin_out[0].0 - 2.0).abs() < 1e-9,
+            "re-timed twin starts at 2 s, got {}",
+            twin_out[0].0
+        );
+        for (i, ((tw_t, tw_v), (or_t, or_v))) in twin_out.iter().zip(&origin_out).enumerate() {
+            assert!(
+                (tw_t - or_t - 2.0).abs() < 1e-9,
+                "twin t[{i}] = {tw_t} must be origin t[{i}] = {or_t} shifted by 2 s"
+            );
+            assert!(
+                (tw_v[0] - or_v[0]).abs() < 1e-12,
+                "re-timed knot value[{i}]: twin {} must equal origin {}",
+                tw_v[0],
+                or_v[0]
+            );
+        }
     }
 
     /// (TOTS arm) An infeasible `TOTSShaper` — `velocity_limit = 0` on a nonzero
