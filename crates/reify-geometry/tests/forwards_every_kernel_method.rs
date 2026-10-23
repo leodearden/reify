@@ -13,11 +13,11 @@ use std::sync::{Arc, Mutex};
 use reify_core::hash::ContentHash;
 use reify_geometry::SingleKernelHolder;
 use reify_ir::{
-    AttributeHistory, BRepKind, ElementOrderTag, ExportError, ExportFormat, ExportOptions,
-    ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError,
-    SampledField, TessError, TopologyAttributeTable, Value, VolumeConnectivity, VolumeMesh,
-    VoxelResolution,
+    AttributeHistory, BRepKind, DenseSdfGrid, ElementOrderTag, ExportError, ExportFormat,
+    ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook,
+    KernelAttributeOutcome, Mesh, QueryError, SampledField, TessError, TopologyAttributeTable,
+    Value, VolumeConnectivity, VolumeMesh, VoxelResolution,
 };
 
 const GEOMETRY_KERNEL_SOURCE: &str = include_str!("../../reify-ir/src/geometry.rs");
@@ -246,6 +246,15 @@ impl GeometryKernel for RecordingKernel {
         Ok(Self::solid(mesh.vertices.len() as u64))
     }
 
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        self.record("ingest_dense_sdf");
+        Err(Self::echoed("ingest_dense_sdf", &(grid, opts)))
+    }
+
     fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
         self.record("attribute_hook");
         Some(self)
@@ -379,6 +388,9 @@ fn call_every_method(k: &mut dyn GeometryKernel) -> Vec<(&'static str, String)> 
         normals: None,
         boundary: None,
     };
+    let grid = DenseSdfGrid::from_fn([2, 3, 4], [0.0; 3], 1e-3, |p| p[0])
+        .expect("a 2x3x4 grid of finite samples is valid");
+    let implicit_options = ImplicitOptions::new(1e-3, 2).expect("h = 1 mm, band 2 is valid");
 
     let mut calls: Vec<(&'static str, String)> = Vec::new();
     calls.push(("execute", format!("{:?}", k.execute(&op))));
@@ -434,6 +446,10 @@ fn call_every_method(k: &mut dyn GeometryKernel) -> Vec<(&'static str, String)> 
     calls.push((
         "register_mesh_handle",
         format!("{:?}", k.register_mesh_handle(&mesh)),
+    ));
+    calls.push((
+        "ingest_dense_sdf",
+        format!("{:?}", k.ingest_dense_sdf(&grid, &implicit_options)),
     ));
     calls.push((
         "attribute_hook",

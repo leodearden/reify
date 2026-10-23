@@ -1,5 +1,5 @@
-//! Closed-mesh fixtures shared by this crate's unit tests and its `tests/`
-//! integration binaries.
+//! Test geometry fixtures (closed meshes and dense SDF grids) shared by this
+//! crate's unit tests and its `tests/` integration binaries.
 //!
 //! # Why a module rather than a copy per test file
 //!
@@ -21,7 +21,7 @@
 //! statement of what a length in a resolution request means — before reading a
 //! millimetre figure into any fixture below.
 
-use reify_ir::Mesh;
+use reify_ir::{DenseSdfGrid, Mesh};
 
 /// Closed axis-aligned box spanning `min`..`max`: 8 corner vertices and 12
 /// outward-wound triangles.
@@ -86,4 +86,60 @@ pub fn box_mesh(hx: f32, hy: f32, hz: f32) -> Mesh {
 /// mid-plane probe lands exactly on a sample point.
 pub fn plate_100x100x1() -> Mesh {
     axis_aligned_box([0.0, 0.0, 0.0], [100.0, 100.0, 1.0])
+}
+
+/// Exact signed distance to a sphere of `radius` centred at
+/// `grid_centre + sphere_offset`, sampled on a `dims` grid of spacing `h`
+/// centred at `grid_centre` (negative inside).
+pub fn sphere_sdf_grid(
+    grid_centre: [f64; 3],
+    sphere_offset: [f64; 3],
+    radius: f64,
+    dims: [u32; 3],
+    h: f64,
+) -> DenseSdfGrid {
+    let sphere_centre: [f64; 3] = std::array::from_fn(|a| grid_centre[a] + sphere_offset[a]);
+    DenseSdfGrid::from_fn(dims, grid_centre, h, |p| {
+        let d2: f64 = (0..3).map(|a| (p[a] - sphere_centre[a]).powi(2)).sum();
+        d2.sqrt() - radius
+    })
+    .expect("sphere_sdf_grid: fixture arguments must form a valid DenseSdfGrid")
+}
+
+/// The implicit-solids B5 fixture (`docs/prds/v0_6/implicit-solids.md`): an
+/// off-centre sphere on an anisotropic, padded grid with a non-zero centre, so
+/// an index-order or axis-flip error changes values. Its whole outer shell
+/// lies ≥ 3.25 mm outside the sphere and clamps to +band·h, so an ingest that
+/// deactivated background-valued voxels would shrink the active bounding box.
+///
+/// One definition for every test that must exercise the same grid: the B5
+/// round trip and the run-twice determinism tests (B17).
+pub mod b5_sphere {
+    use reify_ir::{DenseSdfGrid, ImplicitOptions};
+
+    /// Voxel size, metres.
+    pub const H: f64 = 5e-4;
+    pub const BAND: u32 = 3;
+    /// Extent the solid needs, before padding, metres.
+    pub const EXTENT: [f64; 3] = [0.012, 0.014, 0.016];
+    pub const GRID_CENTRE: [f64; 3] = [0.010, -0.020, 0.005];
+    pub const SPHERE_OFFSET: [f64; 3] = [1.0e-3, -1.5e-3, 2.0e-3];
+    pub const RADIUS: f64 = 3e-3;
+
+    /// The B5 oracle: n = ⌈E/h⌉ + 2·band per axis.
+    pub fn dims() -> [u32; 3] {
+        std::array::from_fn(|a| (EXTENT[a] / H).ceil() as u32 + 2 * BAND)
+    }
+
+    pub fn sphere_centre() -> [f64; 3] {
+        std::array::from_fn(|a| GRID_CENTRE[a] + SPHERE_OFFSET[a])
+    }
+
+    pub fn grid() -> DenseSdfGrid {
+        super::sphere_sdf_grid(GRID_CENTRE, SPHERE_OFFSET, RADIUS, dims(), H)
+    }
+
+    pub fn options() -> ImplicitOptions {
+        ImplicitOptions::new(H, BAND).expect("valid fixture options")
+    }
 }

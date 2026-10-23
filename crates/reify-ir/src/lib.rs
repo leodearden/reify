@@ -27,6 +27,7 @@ pub mod boundary_attachment;
 pub mod color;
 pub mod completeness;
 pub mod constraint;
+pub mod dense_sdf;
 pub mod expr;
 pub mod geometry;
 pub mod indeterminate;
@@ -52,6 +53,7 @@ pub mod warm_registry;
 
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use color::Rgb8;
+pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
@@ -82,6 +84,7 @@ pub use geometry::{
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
+    unsupported_dense_sdf_ingest,
 };
 pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
 pub use kernel_validation::{

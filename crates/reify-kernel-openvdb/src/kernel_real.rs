@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use reify_core::Type;
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution, write_stl_binary};
+use reify_ir::{DenseSdfGrid, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution, write_stl_binary};
 
 use crate::ffi::ffi as openvdb_ffi;
 use crate::init::ensure_initialized;
@@ -434,8 +434,9 @@ impl Default for OpenVdbKernel {
 //     no bbox-cache call, no LUT lazy-init path touched.
 //
 // Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
-// `densify_grid_to_sampled`) take `&mut self` and rely on Rust's borrow
-// checker for exclusive access, NOT on `Sync`.
+// `densify_grid_to_sampled`, `ingest_dense_sdf`) take `&mut self` and rely on
+// Rust's borrow checker for exclusive access, NOT on `Sync`.
+// (`ingest_dense_sdf`'s C++ fill mutates only the fresh, unregistered grid.)
 //
 // `densify_grid_to_sampled` uses `&mut self` rather than the PRD §7.1 `&self`
 // because it calls `grid_bbox_min` / `grid_bbox_max` / `grid_densify_to_buffer`,
@@ -713,6 +714,31 @@ impl GeometryKernel for OpenVdbKernel {
         Ok(GeometryHandle { id, repr: None })
     }
 
+    /// Ingest a dense SDF block as a level-set `FloatGrid` with every voxel
+    /// active (D-8; the C++ `dense_sdf_to_level_set_ffi` carries the policy),
+    /// registered like [`Self::realize_voxel_from_mesh`]. Refuses options
+    /// whose voxel size disagrees with the grid's spacing.
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        grid.check_options(opts).map_err(|e| {
+            GeometryError::OperationFailed(format!("OpenVdbKernel::ingest_dense_sdf: {e}"))
+        })?;
+        let grid_ptr = openvdb_ffi::dense_sdf_to_level_set_ffi(
+            grid.data(),
+            grid.dims(),
+            grid.voxel_centre([0, 0, 0]),
+            opts.voxel_size(),
+            opts.band_half_width(),
+        )
+        .map_err(|e| GeometryError::OperationFailed(format!("dense_sdf_to_level_set_ffi: {e}")))?;
+        let id = self.alloc_id();
+        self.handles.insert(id, grid_ptr);
+        Ok(GeometryHandle { id, repr: None })
+    }
+
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
         Err(QueryError::QueryFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
@@ -775,6 +801,9 @@ impl GeometryKernel for OpenVdbKernel {
     ///
     /// `&mut self` avoids the `evalActiveVoxelBoundingBox` `&self`-aliasing
     /// race; see the Sync maintenance contract at the bottom of this file.
+    ///
+    /// The codomain is a Length: every registered grid is a signed-distance
+    /// field. Grids without a `units` entry skip the unit check.
     fn densify_grid_to_sampled(
         &mut self,
         handle: GeometryHandleId,
@@ -804,7 +833,7 @@ impl GeometryKernel for OpenVdbKernel {
         let outcome = crate::ingest::lower_to_sampled(
             &source,
             SDF_FIELD_NAME,
-            &Type::dimensionless_scalar(),
+            &Type::length(),
         )
         .map_err(|e| QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}")))?;
 
