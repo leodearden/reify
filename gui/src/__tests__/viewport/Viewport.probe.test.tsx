@@ -156,16 +156,17 @@ function stubCanvasRect(left: number): void {
   });
 }
 
-function click(x: number, y: number, upX = x, upY = y): void {
+/** Presses at (x, y) and releases there; `up` overrides the release event (position, modifiers). */
+function click(x: number, y: number, up: MouseEventInit = {}): void {
   const canvas = screen.getByTestId('viewport-canvas');
   canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: x, clientY: y }));
-  canvas.dispatchEvent(new MouseEvent('pointerup', { clientX: upX, clientY: upY }));
+  canvas.dispatchEvent(new MouseEvent('pointerup', { clientX: x, clientY: y, ...up }));
 }
 
 /** Clicks and returns the scene children the click added. */
-function clickAndCollectNewChildren(x: number, y: number, upX = x, upY = y): Object3D[] {
+function clickAndCollectNewChildren(x: number, y: number, up: MouseEventInit = {}): Object3D[] {
   const before = new Set(lastScene!.children);
-  click(x, y, upX, upY);
+  click(x, y, up);
   return lastScene!.children.filter((child) => !before.has(child));
 }
 
@@ -245,7 +246,7 @@ describe('Viewport probe wiring', () => {
   it('(d) a drag in FEA mode places no probe', () => {
     renderViewport({ feaModeStore: createFeaModeStore() });
 
-    const added = clickAndCollectNewChildren(50, 50, 70, 50);
+    const added = clickAndCollectNewChildren(50, 50, { clientX: 70 });
 
     expect(screen.queryByTestId('probe-popup')).toBeNull();
     expect(added).toHaveLength(0);
@@ -300,6 +301,17 @@ describe('Viewport probe wiring', () => {
     flushFrame();
 
     expect(render).toHaveBeenCalled();
+  });
+
+  it('(i) a modifier click in FEA mode places a probe too, and selection still sees the modifier', () => {
+    const onSelect = vi.fn();
+    renderViewport({ feaModeStore: createFeaModeStore(), onSelect });
+
+    const added = clickAndCollectNewChildren(50, 50, { ctrlKey: true });
+
+    expect(added).toHaveLength(1);
+    expect(screen.getAllByTestId('probe-row')).toHaveLength(1);
+    expect(onSelect).toHaveBeenCalledWith('bracket', { ctrl: true, shift: false });
   });
 });
 

@@ -1262,8 +1262,8 @@ describe('createSelection', () => {
       domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: x, clientY: y }));
     }
 
-    function release(domElement: HTMLElement, x: number, y: number): MouseEvent {
-      const upEvent = new MouseEvent('pointerup', { clientX: x, clientY: y });
+    function release(domElement: HTMLElement, x: number, y: number, init: MouseEventInit = {}): MouseEvent {
+      const upEvent = new MouseEvent('pointerup', { clientX: x, clientY: y, ...init });
       domElement.dispatchEvent(upEvent);
       return upEvent;
     }
@@ -1281,6 +1281,21 @@ describe('createSelection', () => {
       expect(onClickGesture).toHaveBeenCalledTimes(1);
       expect(onClickGesture).toHaveBeenCalledWith(upEvent);
       expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
+    });
+
+    it('a modifier click reports the gesture too; the consumer reads the modifiers off the event', () => {
+      const meshA = createMockMesh('A');
+      const { domElement, onSelect, onClickGesture } = setupWithClickGesture(new Map([['A', meshA]]));
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      press(domElement, 400, 300);
+      const upEvent = release(domElement, 400, 300, { ctrlKey: true, shiftKey: true });
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: true, shift: true });
+      expect(onClickGesture).toHaveBeenCalledTimes(1);
+      expect(onClickGesture).toHaveBeenCalledWith(upEvent);
     });
 
     it('a drag (>5px) does not call onClickGesture', () => {

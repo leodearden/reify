@@ -39,7 +39,7 @@ export interface SelectionOptions {
   getMeshes: () => Map<string, Mesh>;
   onHover: (path: string | null) => void;
   onSelect: (path: string | null, modifiers: SelectionModifiers) => void;
-  /** Fired with the pointerup event of every gesture classified as a click (after onSelect), so another consumer can act on the same gesture without re-implementing click-vs-drag. */
+  /** Fired with the pointerup event of every gesture classified as a click, modifier clicks included, so another consumer can act on the same gesture without re-implementing click-vs-drag. */
   onClickGesture?: (event: MouseEvent) => void;
   controls?: { target: { copy: (v: any) => void } };
 }
