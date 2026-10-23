@@ -58,15 +58,6 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   const raycaster = new Raycaster();
   (raycaster as any).firstHitOnly = true;
 
-  let cachedRect: DOMRect | null = null;
-
-  function getRect(): DOMRect {
-    if (cachedRect === null) {
-      cachedRect = domElement.getBoundingClientRect();
-    }
-    return cachedRect;
-  }
-
   // Map from probe id → Three.js Mesh marker (+ its geometry/material for disposal)
   const markerMap = new Map<string, Mesh>();
 
@@ -156,7 +147,7 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   // ---------------------------------------------------------------------------
 
   function pickAndAddProbe(event: MouseEvent): void {
-    const rect = getRect();
+    const rect = domElement.getBoundingClientRect();
     const ndc = new Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
@@ -241,7 +232,6 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
     }
     markerMap.clear();
     store.clear();
-    cachedRect = null;
   }
 
   return { addProbe, pickAndAddProbe, resampleAll, removeProbe, refreshMarkers, dispose };
