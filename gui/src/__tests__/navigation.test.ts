@@ -22,7 +22,7 @@ describe('navigation', () => {
   });
 
   describe('navigateToSource', () => {
-    it('calls getSourceLocation with entityPath and passes result to scrollEditor', async () => {
+    it('calls getSourceLocation with entityPath and passes result to revealLocation', async () => {
       const sourceLocation: SourceLocation = {
         file_path: 'main.ri',
         line: 5,
@@ -31,23 +31,23 @@ describe('navigation', () => {
         end_column: 10,
       };
       const getSourceLocation = vi.fn().mockResolvedValue(sourceLocation);
-      const scrollEditor = vi.fn();
+      const revealLocation = vi.fn();
       const selectEntity = vi.fn();
 
       await navigateToSource('Bracket', {
         getSourceLocation,
-        scrollEditor,
+        revealLocation,
         selectEntity,
       });
 
       expect(getSourceLocation).toHaveBeenCalledWith('Bracket');
-      expect(scrollEditor).toHaveBeenCalledWith(sourceLocation);
+      expect(revealLocation).toHaveBeenCalledWith(sourceLocation);
       expect(selectEntity).toHaveBeenCalledWith('Bracket');
     });
 
     it('handles getSourceLocation rejection gracefully', async () => {
       const getSourceLocation = vi.fn().mockRejectedValue(new Error('not found'));
-      const scrollEditor = vi.fn();
+      const revealLocation = vi.fn();
       const selectEntity = vi.fn();
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -55,12 +55,12 @@ describe('navigation', () => {
       await expect(
         navigateToSource('Unknown', {
           getSourceLocation,
-          scrollEditor,
+          revealLocation,
           selectEntity,
         }),
       ).resolves.not.toThrow();
 
-      expect(scrollEditor).not.toHaveBeenCalled();
+      expect(revealLocation).not.toHaveBeenCalled();
       expect(consoleError).toHaveBeenCalled();
       consoleError.mockRestore();
     });
@@ -69,20 +69,20 @@ describe('navigation', () => {
       const getSourceLocation = vi
         .fn()
         .mockRejectedValue(new Error('No source location found for BooleanResult'));
-      const scrollEditor = vi.fn();
+      const revealLocation = vi.fn();
       const selectEntity = vi.fn();
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       await navigateToSource('BooleanResult', {
         getSourceLocation,
-        scrollEditor,
+        revealLocation,
         selectEntity,
       });
 
       // Selection must happen unconditionally — even when no source span exists
       expect(selectEntity).toHaveBeenCalledWith('BooleanResult');
       // Editor scroll is best-effort; must be skipped when no span is available
-      expect(scrollEditor).not.toHaveBeenCalled();
+      expect(revealLocation).not.toHaveBeenCalled();
       consoleError.mockRestore();
     });
   });

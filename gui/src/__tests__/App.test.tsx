@@ -1004,6 +1004,8 @@ describe('App navigation wiring', () => {
       return () => {};
     });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
+    // testState opens no files, so the reveal must open the named one first.
+    vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '/project/bracket.ri', content: 'structure Bracket {}' });
 
     await renderAndWaitForReady();
 
@@ -1025,6 +1027,81 @@ describe('App navigation wiring', () => {
         end_column: 9,
       });
     });
+    expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+    expect(capturedEditorStore.state.activeFile).toBe('/project/bracket.ri');
+  });
+
+  function twoFileState(active: string, other: string): GuiState {
+    return {
+      ...emptyState,
+      files: [
+        { path: active, content: '' },
+        { path: other, content: '' },
+      ],
+    };
+  }
+
+  /** Renders App with both files open and `active` the active tab. */
+  async function renderWithTabs(active: string, other: string) {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(twoFileState(active, other)));
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore?.state.openFiles).toHaveLength(2));
+    capturedEditorStore.setActiveFile(active);
+  }
+
+  it('navigate-to-source for an open, non-active tab activates it without opening it again', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    await renderWithTabs('/project/bracket.ri', '/project/gear.ri');
+
+    capturedNavigateCb!({ file: '/project/gear.ri', line: 3, column: 2, end_line: 5, end_column: 7 });
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/project/gear.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/project/gear.ri', line: 3, column: 2, end_line: 5, end_column: 7,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('viewport click whose source is an open, non-active tab activates it, scrolls, and selects', async () => {
+    const span = { file_path: '/proj/b.ri', line: 4, column: 1, end_line: 9, end_column: 2 };
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue(span);
+    await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+
+    capturedDualViewportProps.onSelect('Bracket');
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/b.ri'));
+    await waitFor(() => expect(capturedEditorScrollToLocation?.()).toEqual(span));
+    expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+  });
+
+  it('viewport click whose source cannot be opened still selects, warns, and raises no toast', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+        file_path: '/proj/missing.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+      });
+      vi.mocked(bridge.openFile).mockRejectedValueOnce(new Error('No such file or directory'));
+      await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+
+      capturedDualViewportProps.onSelect('Bracket');
+
+      await waitFor(() =>
+        expect(warn.mock.calls.some((args) => args.join(' ').includes('missing.ri'))).toBe(true),
+      );
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+      expect(
+        screen.queryAllByTestId('toast').filter((t) => t.textContent?.includes('missing.ri')),
+      ).toHaveLength(0);
+      expect(capturedEditorStore.state.activeFile).toBe('/proj/a.ri');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
