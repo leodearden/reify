@@ -534,7 +534,7 @@ subprojects:
       - "check/test/build exit codes match the contract above; build produces non-empty STEP"
       - "LSP diagnostics carry correct spans; rename across files applies atomically"
       - "MCP tools/list returns the advertised set; set_parameter is visible in subsequent get_parameters; tool errors use isError:true in the result body"
-      - "reify-config rejects a malformed reify.toml with a clear diagnostic"
+      - "reify-config's `Manifest::from_toml_str` rejects a malformed reify.toml with a clear diagnostic (library-level only; no binary loads the file, so a CLI probe proves nothing — see docs/notes/reify-toml-schema.md)"
       - "Doc output is deterministic across re-runs"
       - "All tests pass for reify-lsp, reify-mcp, reify-cli, reify-config, reify-doc, reify-doc-build"
 

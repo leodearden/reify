@@ -7,7 +7,8 @@ documentation lives in the `reify-config` crate rustdoc (`crates/reify-config/sr
 ## Status: parsed and validated, not loaded
 
 **No shipped binary loads a `reify.toml`; the CLI cache reads
-`.reify/config.toml`, a different file.** Canonical statement: rustdoc on
+`~/.config/reify/config.toml` and `<project>/.reify/config.toml` (see
+`reify_config::cache`), different files.** Canonical statement: rustdoc on
 `reify_config::Manifest`.
 
 ## `[kernels]`
