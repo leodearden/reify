@@ -1742,7 +1742,7 @@ fn keyword_table_never_collides_with_the_real_registry_census() {
 /// word: each row written call-shaped yields no claim, while a non-keyword
 /// written the same way (`extrude`) is still extracted.
 #[test]
-fn mention_filter_drops_exactly_the_keyword_table_words() {
+fn mention_filter_drops_every_keyword_table_word() {
     for k in reify_syntax::KEYWORDS {
         let hits = reify_audit::pdoccover::chunk_call_mentions(&format!("`{}(x)`\n", k.word));
         assert!(

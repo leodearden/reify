@@ -3,6 +3,7 @@
 
 use RenamePolicy::{Accepted, Refused};
 
+/// One row of [`KEYWORDS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keyword {
     pub word: &'static str,
@@ -27,6 +28,8 @@ pub enum RenamePolicy {
 }
 
 impl Keyword {
+    /// True when the LSP rename gate must refuse this word as a new binding name: every
+    /// `Reserved` row, plus each `Contextual` row whose policy is `Refused`.
     pub const fn rename_refused(&self) -> bool {
         matches!(
             self.kind,
@@ -38,6 +41,7 @@ impl Keyword {
     }
 }
 
+/// The [`KEYWORDS`] row for `word` (exact, case-sensitive), or `None` for a non-keyword.
 pub fn lookup_keyword(word: &str) -> Option<&'static Keyword> {
     KEYWORDS.iter().find(|keyword| keyword.word == word)
 }
@@ -56,6 +60,11 @@ const fn contextual(word: &'static str, rename: RenamePolicy) -> Keyword {
     }
 }
 
+/// Every reify keyword (PRD D15). Two tests below hold the table:
+/// - `keyword_words_match_spec_section_2_10` pins the word set to spec §2.10 plus the test-local
+///   `GRAMMAR_ONLY` list. A keyword the grammar has but the spec does not list goes there.
+/// - `keyword_kinds_match_parse_behaviour` pins each row's kind to how the parser treats the word
+///   as a binding name.
 pub const KEYWORDS: &[Keyword] = &[
     contextual("and", Refused),
     contextual("as", Accepted),
