@@ -57,7 +57,7 @@ mcp__escalation__escalate_info(
 
 PDOCCOVER and PPRDSTATUS are the batched patterns: one escalation per run, not one per finding (§2).
 
-**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
+**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/model.rs`.
 
 The escalation lands in the same queue `/unblock` drains. The skill is **advisory** here — pre-done blocking is D-1 hook territory. High findings raise visibility without mutating task state.
 
