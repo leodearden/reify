@@ -388,7 +388,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
         PrimitiveKind::Box => r#"Ok(
     Box {
-        width: Scalar {
+        size_x: Scalar {
             si_value: 0.01,
             dimension: DimensionVector(
                 [
@@ -435,7 +435,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
                 ],
             ),
         },
-        height: Scalar {
+        size_y: Scalar {
             si_value: 0.02,
             dimension: DimensionVector(
                 [
@@ -482,7 +482,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
                 ],
             ),
         },
-        depth: Scalar {
+        size_z: Scalar {
             si_value: 0.03,
             dimension: DimensionVector(
                 [

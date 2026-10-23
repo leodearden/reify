@@ -303,9 +303,9 @@ const SPHERE_DX: f64 = 0.030;
 fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandleId)> {
     let box_src = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_WIDTH),
-            height: Value::Real(BOX_HEIGHT),
-            depth: Value::Real(BOX_DEPTH),
+            size_x: Value::Real(BOX_WIDTH),
+            size_y: Value::Real(BOX_HEIGHT),
+            size_z: Value::Real(BOX_DEPTH),
         })
         .expect("box_10x20x30 should build");
     let box_id = kernel

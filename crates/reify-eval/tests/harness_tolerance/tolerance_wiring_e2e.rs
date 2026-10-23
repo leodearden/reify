@@ -1022,8 +1022,8 @@ fn edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one() {
         "exactly PartA's one op must re-execute; new ops: {new_ops:?}"
     );
     assert!(
-        matches!(&new_ops[0], reify_ir::GeometryOp::Box { depth, .. } if *depth == mm(7.5)),
-        "the re-executed box must carry the v2 depth; got {:?}",
+        matches!(&new_ops[0], reify_ir::GeometryOp::Box { size_z, .. } if *size_z == mm(7.5)),
+        "the re-executed box must carry the v2 size_z; got {:?}",
         new_ops[0]
     );
 }
@@ -1349,7 +1349,7 @@ fn edit_param_followed_by_build_snapshot_re_executes_only_the_edited_body_so_no_
     assert!(
         matches!(
             fixture.producing_op(part_a),
-            reify_ir::GeometryOp::Box { width, .. } if width == mm(30.0)
+            reify_ir::GeometryOp::Box { size_x: width, .. } if width == mm(30.0)
         ),
         "PartA's served handle must come from a Box with the NEW width, not a stale one"
     );

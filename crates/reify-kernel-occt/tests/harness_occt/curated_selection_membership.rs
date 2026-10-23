@@ -74,9 +74,9 @@ struct Fixture {
 fn make_box(kernel: &mut OcctKernel, [w, h, d]: [f64; 3]) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(w * MM),
-            height: Value::Real(h * MM),
-            depth: Value::Real(d * MM),
+            size_x: Value::Real(w * MM),
+            size_y: Value::Real(h * MM),
+            size_z: Value::Real(d * MM),
         })
         .expect("box should build")
         .id

@@ -4493,17 +4493,17 @@
             let op = result
                 .unwrap_or_else(|e| panic!("{slot}: a LENGTH Scalar must be accepted, got: {e}"));
             let reify_ir::GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } = op
             else {
                 panic!("{slot}: expected GeometryOp::Box, got {op:?}");
             };
             let stored = match slot {
-                "width" => width,
-                "height" => height,
-                _ => depth,
+                "width" => size_x,
+                "height" => size_y,
+                _ => size_z,
             };
             assert_eq!(
                 stored,

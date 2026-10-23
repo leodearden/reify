@@ -170,8 +170,8 @@ impl FidgetKernel {
     }
 
     /// Build the standard Inigo-Quilez axis-aligned-box SDF for a box
-    /// centred at the origin with full extents `(w, h, d)`. Half-extents
-    /// `b = (w/2, h/2, d/2)`:
+    /// centred at the origin with full X/Y/Z extents `(size_x, size_y, size_z)`.
+    /// Half-extents `b = (size_x/2, size_y/2, size_z/2)`:
     ///
     /// ```text
     /// q = abs(p) − b
@@ -183,13 +183,13 @@ impl FidgetKernel {
     ///
     /// # Precondition
     ///
-    /// Callers must pass finite positive extents (`w`, `h`, `d` all satisfy
-    /// `value.is_finite() && value > 0.0`). Input validation is enforced at
-    /// the `execute(Box)` boundary before this method is called.
-    fn box_tree(w: f64, h: f64, d: f64) -> Tree {
-        let bx = w * 0.5;
-        let by = h * 0.5;
-        let bz = d * 0.5;
+    /// Callers must pass finite positive extents (`size_x`, `size_y`, `size_z`
+    /// all satisfy `value.is_finite() && value > 0.0`). Input validation is
+    /// enforced at the `execute(Box)` boundary before this method is called.
+    fn box_tree(size_x: f64, size_y: f64, size_z: f64) -> Tree {
+        let bx = size_x * 0.5;
+        let by = size_y * 0.5;
+        let bz = size_z * 0.5;
 
         // q = |p| − b
         let qx = Tree::x().abs() - bx;
@@ -387,7 +387,7 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// first is bypassed or has a hole.
 ///
 /// All FOUR fidget numeric-extraction sites are length-semantic
-/// (`Sphere.radius`, `Box.width`/`height`/`depth`), so fidget has no
+/// (`Sphere.radius`, `Box.size_x`/`size_y`/`size_z`), so fidget has no
 /// deliberately-ungated site; the OCCT adapter keeps five (3 dimensionless
 /// unit-normal components, 2 ANGLE), enumerated in `kernel_validation.rs`.
 ///
@@ -445,24 +445,24 @@ impl GeometryKernel for FidgetKernel {
                 Ok(self.insert_tree(tree))
             }
             GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } => {
-                let w = extract_length_f64(width, op, "width")?;
-                let h = extract_length_f64(height, op, "height")?;
-                let d = extract_length_f64(depth, op, "depth")?;
+                let x = extract_length_f64(size_x, op, "size_x")?;
+                let y = extract_length_f64(size_y, op, "size_y")?;
+                let z = extract_length_f64(size_z, op, "size_z")?;
                 // Combined check: all three dimensions validated together so
                 // a single shared const covers any failure.  Using
                 // `BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE` (from
                 // `reify_types`) makes the error string byte-identical to
                 // OCCT's emission — structural, not just conventional.
-                if !(is_positive_finite(w) && is_positive_finite(h) && is_positive_finite(d)) {
+                if !(is_positive_finite(x) && is_positive_finite(y) && is_positive_finite(z)) {
                     return Err(GeometryError::OperationFailed(
                         BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.into(),
                     ));
                 }
-                let tree = Self::box_tree(w, h, d);
+                let tree = Self::box_tree(x, y, z);
                 Ok(self.insert_tree(tree))
             }
             GeometryOp::Union { left, right } => {
@@ -610,9 +610,9 @@ mod tests {
     fn fidget_kernel_execute_box_returns_handle() {
         let mut kernel = FidgetKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(2.0),
-            height: Value::Real(2.0),
-            depth: Value::Real(2.0),
+            size_x: Value::Real(2.0),
+            size_y: Value::Real(2.0),
+            size_z: Value::Real(2.0),
         });
         let handle = result.expect("Box execution must succeed on FidgetKernel");
         assert!(handle.repr.is_none());
@@ -786,9 +786,9 @@ mod tests {
         let mut kernel = FidgetKernel::new();
         let cube = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(2.0),
-                height: Value::Real(2.0),
-                depth: Value::Real(2.0),
+                size_x: Value::Real(2.0),
+                size_y: Value::Real(2.0),
+                size_z: Value::Real(2.0),
             })
             .expect("Box build");
         let h = cube.id;
@@ -970,9 +970,9 @@ mod tests {
         for (width, height, depth) in bad_triples {
             let mut kernel = FidgetKernel::new();
             let result = kernel.execute(&GeometryOp::Box {
-                width: width.clone(),
-                height: height.clone(),
-                depth: depth.clone(),
+                size_x: width.clone(),
+                size_y: height.clone(),
+                size_z: depth.clone(),
             });
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
@@ -996,9 +996,9 @@ mod tests {
         let mut kernel = FidgetKernel::new();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(2.0),
-                height: Value::Real(2.0),
-                depth: Value::Real(2.0),
+                size_x: Value::Real(2.0),
+                size_y: Value::Real(2.0),
+                size_z: Value::Real(2.0),
             })
             .expect("execute(Box) with valid dimensions must succeed");
     }
@@ -1174,9 +1174,9 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let result = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::length(0.002),
-                height: Value::length(0.002),
-                depth: Value::length(0.002),
+                size_x: Value::length(0.002),
+                size_y: Value::length(0.002),
+                size_z: Value::length(0.002),
             })
         });
 
@@ -1284,9 +1284,9 @@ mod tests {
         let mut kernel = FidgetKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(2.0),
-                height: Value::Real(2.0),
-                depth: Value::Real(2.0),
+                size_x: Value::Real(2.0),
+                size_y: Value::Real(2.0),
+                size_z: Value::Real(2.0),
             })
             .expect("Box execution must still succeed on FidgetKernel");
         assert!(handle.repr.is_none());
@@ -1365,9 +1365,9 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let bare = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::Real(0.002),
-                height: Value::Real(0.002),
-                depth: Value::Real(0.002),
+                size_x: Value::Real(0.002),
+                size_y: Value::Real(0.002),
+                size_z: Value::Real(0.002),
             })
         });
 
@@ -1376,9 +1376,9 @@ mod tests {
 
         // Same SI magnitudes, properly dimensioned: the disposition must match.
         let control = kernel.execute(&GeometryOp::Box {
-            width: Value::length(0.002),
-            height: Value::length(0.002),
-            depth: Value::length(0.002),
+            size_x: Value::length(0.002),
+            size_y: Value::length(0.002),
+            size_z: Value::length(0.002),
         });
         assert_eq!(
             bare.is_ok(),

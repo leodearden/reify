@@ -48,9 +48,9 @@ fn draft_angle_magnitude_is_read_as_radians() {
     let mut kernel = OcctKernel::new();
     let cube = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(CUBE_SIDE),
-            height: Value::Real(CUBE_SIDE),
-            depth: Value::Real(CUBE_SIDE),
+            size_x: Value::Real(CUBE_SIDE),
+            size_y: Value::Real(CUBE_SIDE),
+            size_z: Value::Real(CUBE_SIDE),
         })
         .expect("cube creation")
         .id;

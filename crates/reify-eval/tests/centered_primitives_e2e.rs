@@ -150,9 +150,9 @@ fn box_kernel_op_centred_at_origin() {
     // Execute Box(40mm × 20mm × 30mm) — depth=30mm gives z ∈ [-15mm, +15mm].
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(40.0),
-            height: mm(20.0),
-            depth: mm(30.0),
+            size_x: mm(40.0),
+            size_y: mm(20.0),
+            size_z: mm(30.0),
         })
         .expect("Box op should succeed");
 

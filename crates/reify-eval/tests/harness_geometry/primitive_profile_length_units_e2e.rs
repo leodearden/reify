@@ -197,17 +197,17 @@ fn dimensioned_box_builds_one_op_with_unchanged_si_dimensions() {
     );
 
     let GeometryOp::Box {
-        width,
-        height,
-        depth,
+        size_x,
+        size_y,
+        size_z,
     } = boxes[0]
     else {
         unreachable!("filtered to Box above")
     };
     for (name, value, expected) in [
-        ("width", width, 0.02),
-        ("height", height, 0.02),
-        ("depth", depth, 0.01),
+        ("size_x", size_x, 0.02),
+        ("size_y", size_y, 0.02),
+        ("size_z", size_z, 0.01),
     ] {
         let si = value
             .as_f64()

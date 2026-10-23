@@ -668,11 +668,11 @@ structure MultiPrinter {
     };
 
     let box_300 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_300,
+        GeometryOp::Box { size_x: width, .. } => width == &size_300,
         _ => false,
     });
     let box_30 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_30,
+        GeometryOp::Box { size_x: width, .. } => width == &size_30,
         _ => false,
     });
 
@@ -948,7 +948,7 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
         ops.iter()
             .filter(|rec| match &rec.op {
                 GeometryOp::Box {
-                    height: Value::Scalar { si_value, .. },
+                    size_y: Value::Scalar { si_value, .. },
                     ..
                 } => (*si_value - si_metres).abs() < 1e-9,
                 _ => false,

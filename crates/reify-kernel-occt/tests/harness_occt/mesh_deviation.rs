@@ -51,9 +51,9 @@ fn sphere_op(radius_m: f64) -> GeometryOp {
 
 fn box_op(w: f64, h: f64, d: f64) -> GeometryOp {
     GeometryOp::Box {
-        width: Value::Real(w),
-        height: Value::Real(h),
-        depth: Value::Real(d),
+        size_x: Value::Real(w),
+        size_y: Value::Real(h),
+        size_z: Value::Real(d),
     }
 }
 

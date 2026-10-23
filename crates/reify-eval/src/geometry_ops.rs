@@ -2919,9 +2919,9 @@ fn prim_box(
         diagnostics,
     )?;
     Ok(reify_ir::GeometryOp::Box {
-        width,
-        height,
-        depth,
+        size_x: width,
+        size_y: height,
+        size_z: depth,
     })
 }
 

@@ -92,9 +92,9 @@ fn extract_vertices_and_attribute_seeding_box() {
     let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box should build")
         .id;

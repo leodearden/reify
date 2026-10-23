@@ -576,11 +576,11 @@ inventory::collect!(KernelRegistration);
 // optimization, out of scope for the half_space producer.
 #[allow(clippy::large_enum_variant)]
 pub enum GeometryOp {
-    /// Create a box primitive centered at origin.
+    /// Create a box primitive centered at origin; the slots are its full X/Y/Z extents.
     Box {
-        width: Value,
-        height: Value,
-        depth: Value,
+        size_x: Value,
+        size_y: Value,
+        size_z: Value,
     },
     /// Create a cylinder primitive along Z axis.
     Cylinder { radius: Value, height: Value },
@@ -10005,9 +10005,9 @@ mod tests {
             (
                 "Box",
                 GeometryOp::Box {
-                    width: Value::Real(1.0),
-                    height: Value::Real(1.0),
-                    depth: Value::Real(1.0),
+                    size_x: Value::Real(1.0),
+                    size_y: Value::Real(1.0),
+                    size_z: Value::Real(1.0),
                 },
             ),
             (
