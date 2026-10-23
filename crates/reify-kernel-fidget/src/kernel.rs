@@ -619,6 +619,42 @@ mod tests {
         assert_ne!(handle.id, GeometryHandleId::INVALID);
     }
 
+    /// Each size slot bounds the SDF on its own axis: the surface crosses zero
+    /// between 0.9× and 1.1× that axis's half-extent. Distinct per-axis sizes
+    /// make any slot transposition move a crossing and fail.
+    #[test]
+    fn fidget_box_size_slots_drive_the_x_y_z_extents() {
+        let mut kernel = FidgetKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                size_x: Value::length(2.0),
+                size_y: Value::length(4.0),
+                size_z: Value::length(6.0),
+            })
+            .expect("Box execution must succeed on FidgetKernel")
+            .id;
+
+        let on_axis = |axis: usize, coord: f32| {
+            let mut p = [0.0_f32; 3];
+            p[axis] = coord;
+            kernel
+                .evaluate_sdf_at(handle, p[0], p[1], p[2])
+                .expect("SDF evaluation must succeed")
+        };
+        for (axis, half) in [(0, 1.0_f32), (1, 2.0), (2, 3.0)] {
+            let inside = on_axis(axis, 0.9 * half);
+            let outside = on_axis(axis, 1.1 * half);
+            assert!(
+                inside < 0.0,
+                "axis {axis}: 0.9×half must be inside, sdf = {inside}"
+            );
+            assert!(
+                outside > 0.0,
+                "axis {axis}: 1.1×half must be outside, sdf = {outside}"
+            );
+        }
+    }
+
     /// Helper: build two unit-radius spheres and return their handles.
     fn two_spheres(kernel: &mut FidgetKernel) -> (GeometryHandleId, GeometryHandleId) {
         let a = kernel
@@ -1088,16 +1124,16 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let result = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::Real(2.0),
-                height: Value::Real(2.0),
-                depth: Value::Real(2.0),
+                size_x: Value::Real(2.0),
+                size_y: Value::Real(2.0),
+                size_z: Value::Real(2.0),
             })
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
-        capture.assert_any_event_field_contains("field", "height");
-        capture.assert_any_event_field_contains("field", "depth");
+        capture.assert_any_event_field_contains("field", "size_x");
+        capture.assert_any_event_field_contains("field", "size_y");
+        capture.assert_any_event_field_contains("field", "size_z");
         assert!(
             result.is_ok(),
             "the tripwire is a detector, not a gate: {result:?}"
@@ -1194,30 +1230,30 @@ mod tests {
             ),
             (
                 GeometryOp::Box {
-                    width: Value::Real(2.0),
-                    height: Value::length(0.002),
-                    depth: Value::length(0.002),
+                    size_x: Value::Real(2.0),
+                    size_y: Value::length(0.002),
+                    size_z: Value::length(0.002),
                 },
                 "Box",
-                "width",
+                "size_x",
             ),
             (
                 GeometryOp::Box {
-                    width: Value::length(0.002),
-                    height: Value::Real(2.0),
-                    depth: Value::length(0.002),
+                    size_x: Value::length(0.002),
+                    size_y: Value::Real(2.0),
+                    size_z: Value::length(0.002),
                 },
                 "Box",
-                "height",
+                "size_y",
             ),
             (
                 GeometryOp::Box {
-                    width: Value::length(0.002),
-                    height: Value::length(0.002),
-                    depth: Value::Real(2.0),
+                    size_x: Value::length(0.002),
+                    size_y: Value::length(0.002),
+                    size_z: Value::Real(2.0),
                 },
                 "Box",
-                "depth",
+                "size_z",
             ),
         ];
 
@@ -1336,7 +1372,7 @@ mod tests {
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "size_x");
 
         // Same SI magnitudes, properly dimensioned: the disposition must match.
         let control = kernel.execute(&GeometryOp::Box {

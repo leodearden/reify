@@ -13847,9 +13847,9 @@ mod tests {
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
-        capture.assert_any_event_field_contains("field", "height");
-        capture.assert_any_event_field_contains("field", "depth");
+        capture.assert_any_event_field_contains("field", "size_x");
+        capture.assert_any_event_field_contains("field", "size_y");
+        capture.assert_any_event_field_contains("field", "size_z");
         assert!(
             result.is_ok(),
             "the tripwire is a detector, not a gate: {result:?}"
@@ -13897,7 +13897,7 @@ mod tests {
     /// Boundary row 13 through the real OCCT path, half 2 (field name).
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "width")]
+    #[should_panic(expected = "size_x")]
     fn occt_armed_bare_length_panics_naming_the_field() {
         let _g = reify_ir::arm_length_tripwire_assert();
         let mut kernel = OcctKernel::new();
@@ -14191,30 +14191,30 @@ mod tests {
         let cases: Vec<(GeometryOp, &str, &str)> = vec![
             (
                 GeometryOp::Box {
-                        width: Value::Real(2.0),
-                        height: Value::length(3.0),
-                        depth: Value::length(4.0),
+                        size_x: Value::Real(2.0),
+                        size_y: Value::length(3.0),
+                        size_z: Value::length(4.0),
                 },
                 "Box",
-                "width",
+                "size_x",
             ),
             (
                 GeometryOp::Box {
-                        width: Value::length(2.0),
-                        height: Value::Real(3.0),
-                        depth: Value::length(4.0),
+                        size_x: Value::length(2.0),
+                        size_y: Value::Real(3.0),
+                        size_z: Value::length(4.0),
                 },
                 "Box",
-                "height",
+                "size_y",
             ),
             (
                 GeometryOp::Box {
-                        width: Value::length(2.0),
-                        height: Value::length(3.0),
-                        depth: Value::Real(4.0),
+                        size_x: Value::length(2.0),
+                        size_y: Value::length(3.0),
+                        size_z: Value::Real(4.0),
                 },
                 "Box",
-                "depth",
+                "size_z",
             ),
             (
                 GeometryOp::Cylinder {
@@ -14621,7 +14621,7 @@ mod tests {
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "size_x");
 
         // Same SI magnitudes, properly dimensioned: the disposition must match.
         let control = kernel.execute(&GeometryOp::Box {
