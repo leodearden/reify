@@ -955,7 +955,7 @@ structure def UndefBoxWidth {
 
     let (status, stdout, stderr) = common::run_with_args(&["check", path]);
     assert!(
-        stderr.contains("argument 'width' for box is unresolved (Undef)")
+        stderr.contains("argument 'size_x' for box is unresolved (Undef)")
             && stdout.contains("All constraints satisfied."),
         "precondition: the Undef-argument Error is reported beside a green \
          summary; without it this test pins nothing.\n\
