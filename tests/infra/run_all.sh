@@ -94,6 +94,29 @@
 #                                   would let a wedged/over-subscribed pool
 #                                   semaphore block run_all.sh indefinitely,
 #                                   defeating the pool's never-hang contract.
+#   REIFY_RUN_ALL_MEMBER_TIMEOUT    per-member wall-clock budget, seconds
+#                                   (default 1200; task 9441). Applies on
+#                                   EVERY path. A member still running at its
+#                                   budget is TERMed together with its whole
+#                                   process group, is recorded as FAILED with
+#                                   a `MEMBER_TIMEOUT FAIL member=<name>
+#                                   budget_s=<B> elapsed_s=<E> rc=<rc>` line
+#                                   in its output and FAILED-DETAIL block, is
+#                                   named by an `ERROR: run_all.sh: member
+#                                   <name> exceeded ...` line on stderr, and is
+#                                   never retried. Mechanism:
+#                                   run-all-member-budget-lib.sh.
+#                                   Sized so that POOL_WAIT + budget + grace
+#                                   (1800 + 1200 + 30) stays inside verify.sh's
+#                                   60m merge envelope. Must be a positive
+#                                   integer (exit 64 otherwise); there is no
+#                                   "unlimited".
+#   REIFY_RUN_ALL_MEMBER_KILL_GRACE seconds between that TERM and a KILL of
+#                                   whatever in the member's group survived it
+#                                   (default 30). Must be a positive integer
+#                                   (exit 64 otherwise), and must stay below
+#                                   the merge envelope's own --kill-after (60),
+#                                   so a member's KILL lands before run_all's.
 #   REIFY_RUN_ALL_POOL_PSI_PROC_PATH   PSI source (default /proc/pressure/cpu)
 #   REIFY_RUN_ALL_POOL_PSI_THRESHOLD   avg10 ceiling (default 85; soft)
 #   REIFY_RUN_ALL_POOL_PSI_ATTEMPTS    load_tolerant_attempts base (default 3)
@@ -289,6 +312,20 @@ if [ ! -f "$_RA_EVENT_LOG_LIB" ]; then
 fi
 # shellcheck source=scripts/lib_event_log.sh
 source "$_RA_EVENT_LOG_LIB"
+
+# ---------------------------------------------------------------------------
+# Per-member budget (task 9441): member_budget_run spawns each member under
+# its REIFY_RUN_ALL_MEMBER_TIMEOUT, and member_budget_exceeded attributes a
+# timeout. Hard-required for the scrub's reason above: every branch spawns
+# members.
+# ---------------------------------------------------------------------------
+_RA_MEMBER_BUDGET_LIB="$SCRIPT_DIR/run-all-member-budget-lib.sh"
+if [ ! -f "$_RA_MEMBER_BUDGET_LIB" ]; then
+    echo "run_all.sh: ERROR — tests/infra/run-all-member-budget-lib.sh not found at $_RA_MEMBER_BUDGET_LIB" >&2
+    exit 1
+fi
+# shellcheck source=tests/infra/run-all-member-budget-lib.sh
+source "$_RA_MEMBER_BUDGET_LIB"
 
 # Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
 # line so the chronic-offender scan (_ra_flaky_chronic_check) can window
@@ -658,20 +695,24 @@ _ra_emit_fail_detail() {
 # rc file and the out file's fail-detail and duration sidecars.
 # ---------------------------------------------------------------------------
 
-# _ra_spawn_member <name> -- the ONE member spawn line. Every member gets the
-# git-env scrub, an unset REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this
-# run's discovery only; a member that drives run_all.sh over its own fixtures
-# must not inherit the filter), an unset REIFY_VERIFY_EVENT_LOG (no member
-# writes the parent channel, PRD §4 C4), FD 9 closed (no member holds a lock
-# FD this run or its caller opened) and the run's saved stdout/stderr closed
-# (so no member, nor a background child it leaves behind, holds the verify
-# stream open). The body is a subshell so those closes never reach the main
-# shell, where a deferred TERM trap runs inside this call and writes through
-# the saved fds.
+# _ra_spawn_member <name> -- the ONE member spawn line. Every member runs
+# under its budget, in a process group of its own (member_budget_run; the
+# REIFY_RUN_ALL_MEMBER_TIMEOUT knob), and gets the git-env scrub, an unset
+# REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this run's discovery only; a
+# member that drives run_all.sh over its own fixtures must not inherit the
+# filter), an unset REIFY_VERIFY_EVENT_LOG (no member writes the parent
+# channel, PRD §4 C4), FD 9 closed (no member holds a lock FD this run or its
+# caller opened) and the run's saved stdout/stderr closed (so no member, nor a
+# background child it leaves behind, holds the verify stream open). The body
+# is a subshell so those closes never reach the main shell, where a deferred
+# TERM trap runs inside this call and writes through the saved fds.
+# The scrub is the printed `env -u ...` argv, not the reify_git_env_scrub
+# function, because timeout must exec the command and cannot exec a function.
 _ra_spawn_member() (
     exec 9<&- {_RA_RUN_STDOUT_FD}>&- {_RA_RUN_STDERR_FD}>&-
-    reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_VERIFY_EVENT_LOG \
-        bash "$INFRA_DIR/$1"
+    # shellcheck disable=SC2046  # the scrub prefix is deliberately split into argv words
+    member_budget_run "$_RA_MEMBER_TIMEOUT" "$_RA_MEMBER_KILL_GRACE" \
+        $(reify_git_env_scrub_prefix) -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_VERIFY_EVENT_LOG bash "$INFRA_DIR/$1"
 )
 
 # _ra_sanitize_stream -- stdin to stdout through the one $_RA_SANITIZE_SED
@@ -710,6 +751,29 @@ _ra_duration_file() {
     printf '%s\n' "$1.ms"
 }
 
+# _ra_timeout_file <out-file> -- the path of an out file's budget sidecar,
+# present only when that run hit its REIFY_RUN_ALL_MEMBER_TIMEOUT.
+_ra_timeout_file() {
+    printf '%s\n' "$1.timeout"
+}
+
+# _ra_note_timeout <name> <out-file> <capture|stream> <rc> <elapsed-ms>
+#   Records a run that hit its budget. It writes the out file's budget sidecar
+#   (Phase 2.5 reads it), and appends a `MEMBER_TIMEOUT FAIL ...` line to the
+#   out file, which the fail-detail collector then carries into FAILED-DETAIL
+#   and member_finish. When streaming, it also prints that line live, inside
+#   the member's block. Then one ERROR line on stderr names the member.
+_ra_note_timeout() {
+    local _name="$1" _out_file="$2" _mode="$3" _rc="$4" _secs=$(( $5 / 1000 )) _line
+    _line="MEMBER_TIMEOUT FAIL member=$_name budget_s=$_RA_MEMBER_TIMEOUT elapsed_s=$_secs rc=$_rc"
+    : > "$(_ra_timeout_file "$_out_file")" || true
+    printf '%s\n' "$_line" >> "$_out_file" || true
+    if [ "$_mode" = stream ]; then
+        printf '%s\n' "$_line"
+    fi
+    echo "ERROR: run_all.sh: member $_name exceeded its ${_RA_MEMBER_TIMEOUT}s budget (elapsed ${_secs}s, rc=$_rc); its process group was killed -- recorded as FAILED" >&2
+}
+
 # _ra_read_duration_ms <out-file> -- the recorded duration, or empty when the
 # sidecar is missing or holds no integer (the record encodes that as null).
 _ra_read_duration_ms() {
@@ -727,9 +791,10 @@ _ra_read_duration_ms() {
 #   the member's stdout has closed it, so a background child's late output
 #   stays inside the member's block, at the cost of waiting for that child.
 #   <attempt> (1, or 2 for the Phase-2.5 retry) goes on the member_start
-#   record written before the spawn. Then writes the fail-detail sidecar
+#   record written before the spawn. A run that hit its budget is recorded by
+#   _ra_note_timeout first. Then writes the fail-detail sidecar
 #   (rc != 0), the duration sidecar and, LAST, the rc file, so a reader that
-#   sees the rc also sees both sidecars. Returns 0 whatever the member did;
+#   sees the rc also sees every sidecar. Returns 0 whatever the member did;
 #   the verdict is the rc file's.
 _ra_run_member() {
     if [ "$#" -ne 5 ]; then
@@ -760,6 +825,9 @@ _ra_run_member() {
     _t1="${EPOCHREALTIME//[.,]/}"
     if [ -n "$_t0" ] && [ -n "$_t1" ]; then
         _ms=$(( (_t1 - _t0) / 1000 ))
+    fi
+    if member_budget_exceeded "$_rc" "$_ms" "$_RA_MEMBER_TIMEOUT"; then
+        _ra_note_timeout "$_name" "$_out_file" "$_mode" "$_rc" "$_ms"
     fi
     local _detail
     _detail="$(_ra_fail_detail_file "$_out_file")"
@@ -1806,6 +1874,33 @@ if [ "${REIFY_RUN_ALL_SUBSET_COUNT_ONLY:-}" = "1" ]; then
     exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Per-member budget knobs (task 9441; see the Knobs block above). Resolved
+# here, after the count-only probe (which runs no member) and before the
+# branch chain, so every path runs its members under them. Shell-local, never
+# exported: no member inherits them. Load-bearing, so a malformed value exits
+# 64 like REIFY_RUN_ALL_POOL_WAIT's.
+# ---------------------------------------------------------------------------
+# _ra_require_positive_seconds <knob> <value> -- exit 64 unless <value> is a
+# positive integer.
+_ra_require_positive_seconds() {
+    case "$2" in
+        ''|*[!0-9]*)
+            echo "ERROR: run_all.sh: $1 must be a positive integer number of seconds (got '$2')" >&2
+            exit 64
+            ;;
+    esac
+    [ "$2" -ge 1 ] 2>/dev/null || { echo "ERROR: run_all.sh: $1 must be >= 1 (got '$2')" >&2; exit 64; }
+}
+_RA_MEMBER_TIMEOUT="${REIFY_RUN_ALL_MEMBER_TIMEOUT:-1200}"
+_RA_MEMBER_KILL_GRACE="${REIFY_RUN_ALL_MEMBER_KILL_GRACE:-30}"
+_ra_require_positive_seconds REIFY_RUN_ALL_MEMBER_TIMEOUT "$_RA_MEMBER_TIMEOUT"
+_ra_require_positive_seconds REIFY_RUN_ALL_MEMBER_KILL_GRACE "$_RA_MEMBER_KILL_GRACE"
+command -v timeout >/dev/null 2>&1 || {
+    echo "ERROR: run_all.sh: the per-member budget needs GNU timeout (coreutils) on PATH" >&2
+    exit 1
+}
+
 if [ "$SCOPE" = "host-infra" ]; then
     _RA_PATH=host-infra
     # -------------------------------------------------------------------------
@@ -2315,6 +2410,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # failed_names/failures) -- see Phase 3 below; a member that fails twice
     # keeps the exact existing FAILED contract. Exactly ONE retry per failed
     # eligible member; no slot_acquire/PSI gate (already serial).
+    # A member that hit its budget is NOT retried (task 9441): a retry could
+    # spend another whole budget here and push the run back toward the merge
+    # envelope, turning a named FAILED into an anonymous INTERRUPTED.
     declare -A _h2_retried=()
     _ra_mark "$_H2_WORKDIR/phase-retry.begin"
     for _h2_name in "${_h2_discovered_list[@]}"; do
@@ -2323,6 +2421,10 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         fi
         _h2_i="${_h2_index_of[$_h2_name]}"
         [ "$(_ra_read_rc "$_H2_WORKDIR/${_h2_i}.rc")" -eq 0 ] && continue
+        if [ -e "$(_ra_timeout_file "$_H2_WORKDIR/${_h2_i}.out")" ]; then
+            echo "INFO: run_all.sh: not retrying $_h2_name -- it exceeded its ${_RA_MEMBER_TIMEOUT}s budget" >&2
+            continue
+        fi
         _ra_mark "$_H2_WORKDIR/${_h2_i}.retry.ts"
         _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out" "$_H2_WORKDIR/${_h2_i}.retry.rc" capture 2
         _ra_mark "$_H2_WORKDIR/${_h2_i}.retry.te"

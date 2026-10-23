@@ -4455,8 +4455,9 @@ build_plan() {
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-        # Envelope sized for the full infra suite; per-member timeout tracked by
-        # #9441 (stopgap history: git log -L on this line).
+        # Envelope sized for the full infra suite; each member is bounded inside
+        # it by run_all.sh's REIFY_RUN_ALL_MEMBER_TIMEOUT (introduced by #9441;
+        # stopgap history: git log -L on this line).
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.

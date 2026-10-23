@@ -226,6 +226,9 @@ scripts/provision-warm-lane-fs.sh    tests/infra/test_warm_lane_sizing_lifecycle
 # through the full --scope all gate.
 tests/infra/run-all-classification.manifest    tests/infra/test_run_all_classification.sh
 tests/infra/run-all-classification-lib.sh      tests/infra/test_run_all_classification.sh
+# Task 9441: run_all.sh's per-member budget lib; every run_all*-driving suite
+# spawns its members through it.
+tests/infra/run-all-member-budget-lib.sh    tests/infra/test_run_all*.sh
 tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classification.sh
 
 # Task 5252 mechanical early gate: fail verify (naming the offending file) when

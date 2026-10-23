@@ -23,8 +23,9 @@
 # find -name or ls alike.
 inline-discovery-loop | test_["']?[*] | tests/infra/run_all.sh | 0 | α #8678
 # member-spawn-site: every run_all member spawn goes through _ra_spawn_member,
-# the one line carrying the git-env scrub, env isolation and FD hygiene.
-member-spawn-site | reify_git_env_scrub (bash|env) | tests/infra/run_all.sh | 1 | β #8681
+# the one line carrying the member budget, git-env scrub, env isolation and FD
+# hygiene.
+member-spawn-site | bash "[$]INFRA_DIR/ | tests/infra/run_all.sh | 1 | β #8681
 # result-fail-recorder: a member FAIL verdict is printed only by
 # _ra_record_result.
 result-fail-recorder | RESULT: FAIL | tests/infra/run_all.sh | 1 | β #8681
