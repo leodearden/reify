@@ -1429,7 +1429,7 @@ const App: Component = () => {
     {
       subscribe: () =>
         onNavigateToSource(({ file, line, column, end_line, end_column }) => {
-          setScrollToLocation({ file_path: file, line, column, end_line, end_column });
+          revealInEditor({ file_path: file, line, column, end_line, end_column });
         }),
       onFailure: (err) => console.warn('Failed to subscribe to navigate-to-source events:', err),
     },
@@ -1851,13 +1851,14 @@ const App: Component = () => {
       return;
     }
     // Plain click or shift+click: selection is applied unconditionally inside
-    // navigateToSource (mirrors the Ctrl+click toggleSelect path). Editor
-    // source-scroll is best-effort — silently skipped for realized/derived
-    // geometry (boolean results, patterns, auto-generated sub-entities) that
-    // has no 1:1 source span.
+    // navigateToSource (mirrors the Ctrl+click toggleSelect path). The source
+    // reveal is best-effort — skipped for realized/derived geometry (boolean
+    // results, patterns, auto-generated sub-entities) that has no 1:1 source
+    // span, and a file that cannot be opened is logged rather than toasted.
     navigateToSource(entityPath, {
       getSourceLocation: bridgeGetSourceLocation,
-      scrollEditor: (loc) => setScrollToLocation(loc),
+      revealLocation: (loc) =>
+        revealInEditor(loc, (message) => console.warn('Viewport source reveal skipped:', message)),
       selectEntity: (ep) => selectionStore.selectEntity(ep),
     });
   }
@@ -2041,7 +2042,7 @@ const App: Component = () => {
           runCommand={(id) => runCommand(id, shortcutCallbacks)}
           fetchSymbols={fetchPaletteSymbols}
           filePath={editorStore.state.activeFile ?? ''}
-          onJumpToLocation={(loc) => setScrollToLocation(loc)}
+          onJumpToLocation={(loc) => revealInEditor(loc)}
           onClose={() => setShowPalette(false)}
           initialMode={paletteMode()}
         />

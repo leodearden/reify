@@ -76,7 +76,7 @@ function findOpenFile(store: NavigationEditorStore, path: string): Pick<FileData
 
 export interface NavigateToSourceDeps {
   getSourceLocation: (entityPath: string) => Promise<SourceLocation>;
-  scrollEditor: (location: SourceLocation) => void;
+  revealLocation: (location: SourceLocation) => void;
   selectEntity: (entityPath: string | null) => void;
 }
 
@@ -86,10 +86,11 @@ export interface NavigateToSourceDeps {
  * Selection is updated unconditionally — the entity is always selected
  * regardless of whether it has a resolvable source span.
  *
- * Editor source-scroll is best-effort: it is silently skipped when
- * getSourceLocation rejects (e.g. realized/derived geometry — boolean
- * results, patterns, auto-generated sub-entities — that has no 1:1
- * source span). A console.error is logged for diagnostic purposes.
+ * Revealing the source in the editor (which may open or activate its file)
+ * is best-effort: it is silently skipped when getSourceLocation rejects
+ * (e.g. realized/derived geometry — boolean results, patterns,
+ * auto-generated sub-entities — that has no 1:1 source span). A
+ * console.error is logged for diagnostic purposes.
  */
 export async function navigateToSource(
   entityPath: string,
@@ -97,11 +98,11 @@ export async function navigateToSource(
 ): Promise<void> {
   // selectEntity is a synchronous SolidJS store setter that cannot throw,
   // so it is intentionally outside the try — the fallible step is the
-  // getSourceLocation await + scrollEditor inside the try block below.
+  // getSourceLocation await + revealLocation inside the try block below.
   deps.selectEntity(entityPath);
   try {
     const location = await deps.getSourceLocation(entityPath);
-    deps.scrollEditor(location);
+    deps.revealLocation(location);
   } catch (err) {
     console.error('Failed to navigate to source:', err);
   }
