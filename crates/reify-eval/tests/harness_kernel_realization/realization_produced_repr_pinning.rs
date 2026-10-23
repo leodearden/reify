@@ -19,15 +19,15 @@ fn single_box_realization_module() -> reify_compiler::CompiledModule {
         kind: PrimitiveKind::Box,
         args: vec![
             (
-                "width".to_string(),
+                "size_x".to_string(),
                 CompiledExpr::literal(Value::length(0.10), Type::length()),
             ),
             (
-                "height".to_string(),
+                "size_y".to_string(),
                 CompiledExpr::literal(Value::length(0.05), Type::length()),
             ),
             (
-                "depth".to_string(),
+                "size_z".to_string(),
                 CompiledExpr::literal(Value::length(0.02), Type::length()),
             ),
         ],

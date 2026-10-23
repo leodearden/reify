@@ -161,9 +161,9 @@ fn mm_literal(v: f64) -> CompiledExpr {
 
 fn box_args() -> Vec<(String, CompiledExpr)> {
     vec![
-        ("width".into(), mm_literal(10.0)),
-        ("height".into(), mm_literal(10.0)),
-        ("depth".into(), mm_literal(10.0)),
+        ("size_x".into(), mm_literal(10.0)),
+        ("size_y".into(), mm_literal(10.0)),
+        ("size_z".into(), mm_literal(10.0)),
     ]
 }
 

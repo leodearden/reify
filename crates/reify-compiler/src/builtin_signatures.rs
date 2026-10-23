@@ -803,12 +803,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   are the inert `c0`…`cN` that `geometry.rs` synthesises. There is no
         //   index-keyed `CheckableArg` to write.
         //
-        // box(width, height, depth) / box_centered(width, height, depth)
-        //   NOTE index 1 is `height` — the Y extent — NOT `depth`.
+        // box(width, depth, height) / box_centered(…) — X/Y/Z extents, slot
+        //   names size_x/size_y/size_z
         "box" | "box_centered" => const { &[
-            length_arg(0, "width"),
-            length_arg(1, "height"),
-            length_arg(2, "depth"),
+            length_arg(0, "size_x"),
+            length_arg(1, "size_y"),
+            length_arg(2, "size_z"),
         ] },
 
         // cylinder(radius, height) / cylinder_centered(radius, height)
@@ -843,9 +843,6 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         ] },
 
         // wedge(width, depth, height, top_width)
-        //   NOTE this orders its triple width/DEPTH/height — the opposite of
-        //   `box`'s width/height/depth. Both orders are copied from their own
-        //   lowering site rather than shared, which is why they can differ.
         "wedge" => const { &[
             length_arg(0, "width"),
             length_arg(1, "depth"),
@@ -1194,7 +1191,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}; {hint}"`
 ///
 /// Concretely, for a LENGTH slot:
-/// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
+/// `"box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
 /// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
 /// because the field is non-optional. Only [`ExpectedArg::Int`] and

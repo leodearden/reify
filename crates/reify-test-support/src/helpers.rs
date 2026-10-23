@@ -729,9 +729,9 @@ pub fn run_modify_pipeline(
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(20.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(20.0)),
+            ("size_x".into(), mm_literal(20.0)),
+            ("size_y".into(), mm_literal(20.0)),
+            ("size_z".into(), mm_literal(20.0)),
         ],
     };
 

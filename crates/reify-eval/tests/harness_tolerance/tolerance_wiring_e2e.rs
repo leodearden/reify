@@ -188,9 +188,9 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     TopologyTemplateBuilder::new("MyDesign")
@@ -827,11 +827,11 @@ fn body_template_reading_width(
         kind: PrimitiveKind::Box,
         args: vec![
             (
-                "width".into(),
+                "size_x".into(),
                 CompiledExpr::value_ref(ValueCellId::new(name, "w"), Type::length()),
             ),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(depth_mm)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(depth_mm)),
         ],
     };
     TopologyTemplateBuilder::new(name)
@@ -1241,9 +1241,9 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     let anonymous_template = TopologyTemplateBuilder::new("MyDesign")

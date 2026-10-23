@@ -147,7 +147,7 @@ fn squash_whitespace(s: &str) -> String {
 
 /// The compile layer's marker phrase for a LENGTH-slot rejection, as emitted by
 /// `reify_compiler::builtin_signatures` (see its
-/// `"box: width argument expects Length, got Int; …"` template).
+/// `"box: size_x argument expects Length, got Int; …"` template).
 ///
 /// A LOCAL CONST, NOT AN IMPORTED ONE, and knowably second-best: the sibling
 /// migration-hint assertion is made BY REFERENCE to
@@ -169,7 +169,7 @@ const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
 /// not one.
 ///
 /// The token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`]: in
-/// `"box: width argument expects Length, got Int; …"` that is `width`. Split out
+/// `"box: size_x argument expects Length, got Int; …"` that is `size_x`. Split out
 /// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
 /// test over a synthetic message rather than only through the live compiler,
 /// which is this file's convention for every hand-rolled text scan (see the
@@ -768,9 +768,9 @@ fn strip_reify_comments_removes_a_block_comment_and_preserves_line_count() {
 fn named_length_argument_reads_the_argument_out_of_a_message() {
     assert_eq!(
         named_length_argument(
-            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"
+            "box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"
         ),
-        Some("width")
+        Some("size_x")
     );
     // A multi-word prefix must still yield the LAST token, not the first.
     assert_eq!(

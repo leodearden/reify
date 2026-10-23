@@ -7586,13 +7586,13 @@
         let step_handles: Vec<GeometryHandleId> = vec![];
         let values = ValueMap::new();
 
-        // Box with height and depth present, but 'width' deliberately omitted
+        // Box with size_y and size_z present, but 'size_x' deliberately omitted
         let op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
-                // width deliberately omitted
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
+                // size_x deliberately omitted
             ],
         };
 
@@ -7701,9 +7701,9 @@
         let box_op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("width".into(), literal_length(0.10)),
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
+                ("size_x".into(), literal_length(0.10)),
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
             ],
         };
 

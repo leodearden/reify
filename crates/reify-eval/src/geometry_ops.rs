@@ -586,7 +586,7 @@ pub(crate) fn optional_length_value(
 /// [`required_length_values`] (which this delegates to at `N == 1`, so
 /// `reify_ir::Value::length` is still called from exactly one site) — the IR
 /// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
-/// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
+/// primitive and profile dimensions (`Box` size_x/size_y/size_z, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
 /// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
 /// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
@@ -2909,8 +2909,8 @@ fn prim_box(
     // ONE grouped read, not three `?`-chained ones: a bare `box(20, 20, 10)`
     // is bare in every dimension, so every failing slot must be diagnosed in a
     // single build (see `required_length_values`).
-    let [width, height, depth] = required_length_values(
-        ["width", "height", "depth"],
+    let [size_x, size_y, size_z] = required_length_values(
+        ["size_x", "size_y", "size_z"],
         kind,
         args,
         values,
@@ -2919,9 +2919,9 @@ fn prim_box(
         diagnostics,
     )?;
     Ok(reify_ir::GeometryOp::Box {
-        size_x: width,
-        size_y: height,
-        size_z: depth,
+        size_x,
+        size_y,
+        size_z,
     })
 }
 
