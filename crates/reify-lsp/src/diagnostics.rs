@@ -460,31 +460,50 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostic for
-    // FEA-dependent constraints that go unevaluated under this function's
-    // trampoline-free posture (see the doc comment above). A constraint
-    // reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
-    // `max_von_mises`) body-inlines to `Value::Undef` and therefore checks
-    // as `Satisfaction::Indeterminate` — neither the `violated_messages`
-    // skip-set above nor the span-aware `Satisfaction::Violated` loop emits
-    // anything for it, so today it surfaces NO diagnostic at all, silently
-    // indistinguishable from "no constraint". Surface a non-noisy
-    // `Severity::Info` hint instead, anchored to the constraint's span, so
-    // the user knows why the constraint shows nothing in the editor.
-    //
-    // Gated by `constraint_depends_on_unregistered_optimized_compute` so this
-    // does NOT fire on every `Indeterminate` constraint — e.g. a
-    // genuinely-unresolved `auto` param is also `Indeterminate` here (no
-    // solver attached), but is not FEA-dependent and must not get this hint.
-    //
-    // Deliberately additive and easily removable: a single emission branch
-    // plus one self-contained helper reading already-computed `check_result`
-    // / `compiled` data, no new `EvalState` fields, no keystroke-time solve.
-    //
+    diagnostics.extend(fea_not_evaluated_hints(&state.engine, &compiled, &check_result, source));
+    diagnostics.extend(freshness_diagnostics(&state.engine, &compiled, source));
+
+    // Record the content hash so the next call can choose incremental vs cold-start.
+    state.last_content_hash = Some(compiled.content_hash);
+
+    DiagnosticsResult {
+        diagnostics,
+        geometry_output: None,
+        log_messages,
+        check_result: Some(check_result),
+    }
+}
+
+/// Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostics for
+/// FEA-dependent constraints that go unevaluated under
+/// [`compute_diagnostics_with_state`]'s trampoline-free posture. A constraint
+/// reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
+/// `max_von_mises`) body-inlines to `Value::Undef` and therefore checks as
+/// `Satisfaction::Indeterminate` — neither the `violated_messages` skip-set
+/// nor the span-aware `Satisfaction::Violated` loop in that function emits
+/// anything for it, so without this hint it surfaces NO diagnostic at all,
+/// silently indistinguishable from "no constraint". Surface a non-noisy
+/// `Severity::Info` hint instead, anchored to the constraint's span, so the
+/// user knows why the constraint shows nothing in the editor.
+///
+/// Gated by `constraint_depends_on_unregistered_optimized_compute` so this
+/// does NOT fire on every `Indeterminate` constraint — e.g. a
+/// genuinely-unresolved `auto` param is also `Indeterminate` here (no solver
+/// attached), but is not FEA-dependent and must not get this hint.
+///
+/// Deliberately additive and easily removable: one emitter reading
+/// already-computed `check_result` / `compiled` data, no new `EvalState`
+/// fields, no keystroke-time solve.
+fn fea_not_evaluated_hints(
+    engine: &reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+    check_result: &reify_eval::CheckResult,
+    source: &str,
+) -> Vec<lsp_types::Diagnostic> {
     // TODO(#5023): remove this stopgap when async-recalc Phase A lands
     // per-constraint computing/not-evaluated states that supersede this hint.
     //
-    // Perf guard: this whole block — including the lookup maps below — runs
+    // Perf guard: this whole function — including the lookup maps below — runs
     // on the LSP keystroke hot path, so skip it entirely when there is no
     // `Indeterminate` constraint in this document at all. Nothing in the
     // loop below can fire without at least one such entry, so this still
@@ -499,7 +518,7 @@ pub fn compute_diagnostics_with_state(
     // test uses `param gap : Length = auto` as its non-FEA control case), so
     // plenty of non-FEA documents still build the maps below on every
     // keystroke. A cheaper *and correct* pre-filter isn't available for
-    // free: `state.engine.prelude()` is the full stdlib, which always
+    // free: `engine.prelude()` is the full stdlib, which always
     // declares `@optimized` functions (`solve_elastic_static` and its
     // siblings), so "does `compiled.functions` ∪ prelude declare any
     // function with `optimized_target.is_some()`" is trivially true on every
@@ -508,136 +527,133 @@ pub fn compute_diagnostics_with_state(
     // constraint reaches its solver call through a *prelude* function, not a
     // module-local one, and would wrongly lose its hint. A correct tighter
     // filter would have to either walk the same constraint/value-cell
-    // closure the block below already performs (no savings) or cache
+    // closure the code below already performs (no savings) or cache
     // results across calls, which would need new persistent state — ruled
-    // out by this hint's "no new `EvalState` fields" design (see the block
-    // comment above this `if`).
-    if check_result
+    // out by this hint's "no new `EvalState` fields" design (see this
+    // function's doc).
+    if !check_result
         .constraint_results
         .iter()
         .any(|e| e.satisfaction == Satisfaction::Indeterminate)
     {
-        let value_cell_exprs: HashMap<ValueCellId, _> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.value_cells.iter())
-            .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
-            .collect();
-        let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.constraints.iter())
-            .map(|c| (&c.id, c))
-            .collect();
-        // Precompute name -> "names an unregistered @optimized compute
-        // target" once per document, instead of re-scanning all visible
-        // functions for every `UserFunctionCall` node encountered across
-        // every constraint's transitive value-cell closure — O(nodes *
-        // functions) before, O(functions) once to build plus O(1) lookups
-        // after.
-        //
-        // Iterate the union of the compiled module's own functions and the
-        // engine's prelude functions directly, with no intermediate `Vec` —
-        // stdlib solvers like `solve_elastic_static` are prelude functions,
-        // not user-module functions, so the prelude must be included or
-        // every FEA constraint would fail to match. Module-local functions
-        // are chained FIRST so that `.or_insert_with` (which keeps only the
-        // first-seen function per name) resolves a name shared between a
-        // module-local function and a prelude solver to the module's own
-        // definition — see the caller precedence note on
-        // `constraint_depends_on_unregistered_optimized_compute`.
-        let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
-        for f in compiled.functions.iter().chain(
-            state
-                .engine
-                .prelude()
-                .iter()
-                .flat_map(|m| m.functions.iter()),
-        ) {
-            unregistered_optimized_fn_names
-                .entry(f.name.as_str())
-                .or_insert_with(|| {
-                    f.optimized_target
-                        .as_deref()
-                        .is_some_and(|t| state.engine.compute_dispatch(t).is_none())
-                });
-        }
-
-        // No `(id, label)` dedup guard is needed here. `check_result.
-        // constraint_results` is built upstream (reify-eval) with at most
-        // one entry per constraint id: `forall` per-element constraints
-        // each get a fresh, unique `ConstraintNodeId` (`forall_elaborate.rs`
-        // increments `constraint_index` per element, so distinct elements
-        // never share an id), and the GD&T/Conforms path explicitly
-        // overrides any existing same-id entry in place rather than pushing
-        // a second one (`engine_constraints.rs`'s "OVERRIDE the matching
-        // entry ... push if absent" comment). So this single iteration
-        // already yields at most one hint per constraint without any extra
-        // bookkeeping. Pinned by
-        // `fea_hint_two_fea_constraints_each_get_distinct_span_hint` (below,
-        // in `mod tests`), which is the case most sensitive to a regression
-        // in this upstream invariant.
-        for entry in &check_result.constraint_results {
-            if entry.satisfaction != Satisfaction::Indeterminate {
-                continue;
-            }
-            let Some(constraint) = compiled_constraints.get(&entry.id) else {
-                continue;
-            };
-            if !constraint_depends_on_unregistered_optimized_compute(
-                &constraint.expr,
-                &value_cell_exprs,
-                &unregistered_optimized_fn_names,
-            ) {
-                continue;
-            }
-            let range = constraint_spans
-                .get(&entry.id)
-                .map(|span| convert::span_to_range(source, *span))
-                .unwrap_or_default();
-            diagnostics.push(lsp_types::Diagnostic {
-                range,
-                severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
-                code: Some(lsp_types::NumberOrString::String(
-                    FEA_NOT_EVALUATED_CODE.to_string(),
-                )),
-                source: Some("reify".to_string()),
-                message: FEA_NOT_EVALUATED_HINT.to_string(),
-                ..Default::default()
-            });
-        }
+        return Vec::new();
     }
 
-    // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
+    let value_cell_exprs: HashMap<ValueCellId, _> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
+        .collect();
+    let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.constraints.iter())
+        .map(|c| (&c.id, c))
+        .collect();
+    // Precompute name -> "names an unregistered @optimized compute
+    // target" once per document, instead of re-scanning all visible
+    // functions for every `UserFunctionCall` node encountered across
+    // every constraint's transitive value-cell closure — O(nodes *
+    // functions) before, O(functions) once to build plus O(1) lookups
+    // after.
     //
+    // Iterate the union of the compiled module's own functions and the
+    // engine's prelude functions directly, with no intermediate `Vec` —
+    // stdlib solvers like `solve_elastic_static` are prelude functions,
+    // not user-module functions, so the prelude must be included or
+    // every FEA constraint would fail to match. Module-local functions
+    // are chained FIRST so that `.or_insert_with` (which keeps only the
+    // first-seen function per name) resolves a name shared between a
+    // module-local function and a prelude solver to the module's own
+    // definition — see the caller precedence note on
+    // `constraint_depends_on_unregistered_optimized_compute`.
+    let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
+    for f in compiled
+        .functions
+        .iter()
+        .chain(engine.prelude().iter().flat_map(|m| m.functions.iter()))
+    {
+        unregistered_optimized_fn_names
+            .entry(f.name.as_str())
+            .or_insert_with(|| {
+                f.optimized_target
+                    .as_deref()
+                    .is_some_and(|t| engine.compute_dispatch(t).is_none())
+            });
+    }
+
+    // No `(id, label)` dedup guard is needed here. `check_result.
+    // constraint_results` is built upstream (reify-eval) with at most
+    // one entry per constraint id: `forall` per-element constraints
+    // each get a fresh, unique `ConstraintNodeId` (`forall_elaborate.rs`
+    // increments `constraint_index` per element, so distinct elements
+    // never share an id), and the GD&T/Conforms path explicitly
+    // overrides any existing same-id entry in place rather than pushing
+    // a second one (`engine_constraints.rs`'s "OVERRIDE the matching
+    // entry ... push if absent" comment). So this single iteration
+    // already yields at most one hint per constraint without any extra
+    // bookkeeping. Pinned by
+    // `fea_hint_two_fea_constraints_each_get_distinct_span_hint` (below,
+    // in `mod tests`), which is the case most sensitive to a regression
+    // in this upstream invariant.
+    let mut hints = Vec::new();
+    for entry in &check_result.constraint_results {
+        if entry.satisfaction != Satisfaction::Indeterminate {
+            continue;
+        }
+        let Some(constraint) = compiled_constraints.get(&entry.id) else {
+            continue;
+        };
+        if !constraint_depends_on_unregistered_optimized_compute(
+            &constraint.expr,
+            &value_cell_exprs,
+            &unregistered_optimized_fn_names,
+        ) {
+            continue;
+        }
+        hints.push(lsp_types::Diagnostic {
+            range: convert::span_to_range(source, constraint.span),
+            severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
+            code: Some(lsp_types::NumberOrString::String(
+                FEA_NOT_EVALUATED_CODE.to_string(),
+            )),
+            source: Some("reify".to_string()),
+            message: FEA_NOT_EVALUATED_HINT.to_string(),
+            ..Default::default()
+        });
+    }
+    hints
+}
+
+/// Freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
+///
+/// Final → no emission (success state, no diagnostic by definition).
+/// Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
+///   not actionable in an editor — LSP diagnostics are for states users can act on).
+/// Pending → WARNING with code "computation-pending" (upstream dependency failed).
+///   The message includes the chain-root cell name when known, e.g.
+///   "computation pending: upstream dependency failed (because Bracket.volume failed)".
+///   Falls back to the static string when pending_cause is None (bulk mark_pending
+///   paths that intentionally omit a cause; see cache.rs:482-513).
+/// Failed → ERROR with code "computation-failed" (this cell's computation broke).
+///
+/// Constraint violations are intentionally NOT emitted here — they route through
+/// `Satisfaction::Violated` (arch §9.3), not `Freshness::Failed`. The separation
+/// regression test `constraint_violation_does_not_produce_computation_failed` pins this.
+fn freshness_diagnostics(
+    engine: &reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+    source: &str,
+) -> Vec<lsp_types::Diagnostic> {
     // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
     // ordering is deterministic — same compile-defined cell order on every call.
     // Using a HashMap would yield entries in unstable order, causing flapping in
     // snapshot tests and non-deterministic output for the user.
-    //
-    // Final → no emission (success state, no diagnostic by definition).
-    // Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
-    //   not actionable in an editor — LSP diagnostics are for states users can act on).
-    // Pending → WARNING with code "computation-pending" (upstream dependency failed).
-    //   The message includes the chain-root cell name when known, e.g.
-    //   "computation pending: upstream dependency failed (because Bracket.volume failed)".
-    //   Falls back to the static string when pending_cause is None (bulk mark_pending
-    //   paths that intentionally omit a cause; see cache.rs:482-513).
-    // Failed → ERROR with code "computation-failed" (this cell's computation broke).
-    //
-    // Constraint violations are intentionally NOT emitted here — they route through
-    // `Satisfaction::Violated` (arch §9.3), not `Freshness::Failed`. The separation
-    // regression test `constraint_violation_does_not_produce_computation_failed` pins this.
-    //
-    // This block is only in `compute_diagnostics_with_state` (persistent engine).
-    // The stateless `compute_diagnostics` has no persistent engine, so it has no
-    // freshness state to report and this block is intentionally absent there.
+    let mut diagnostics = Vec::new();
     for template in &compiled.templates {
         for vc in &template.value_cells {
-            match state
-                .engine
-                .freshness(&reify_eval::cache::NodeId::Value(vc.id.clone()))
-            {
+            match engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
                 Freshness::Failed { error } => {
                     let range = convert::span_to_range(source, vc.span);
                     diagnostics.push(lsp_types::Diagnostic {
@@ -657,9 +673,8 @@ pub fn compute_diagnostics_with_state(
                     // cause is present we embed it in the message so the user sees
                     // which upstream cell failed. Falls back to the historic static
                     // string when None (bulk mark_pending path, cache.rs:482-513).
-                    let cause = state
-                        .engine
-                        .pending_cause(&reify_eval::cache::NodeId::Value(vc.id.clone()));
+                    let cause =
+                        engine.pending_cause(&reify_eval::cache::NodeId::Value(vc.id.clone()));
                     let message = match cause {
                         Some(node) => format!(
                             "computation pending: upstream dependency failed (because {} failed)",
@@ -684,16 +699,7 @@ pub fn compute_diagnostics_with_state(
             }
         }
     }
-
-    // Record the content hash so the next call can choose incremental vs cold-start.
-    state.last_content_hash = Some(compiled.content_hash);
-
-    DiagnosticsResult {
-        diagnostics,
-        geometry_output: None,
-        log_messages,
-        check_result: Some(check_result),
-    }
+    diagnostics
 }
 
 /// Format the span-aware "constraint violated" diagnostic message emitted
@@ -713,8 +719,8 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
 }
 
 /// Exact wording of task 5078's (PRD `compute-fea-hardening.md` C2) FEA
-/// "not evaluated in editor" `Severity::Info` hint, emitted in
-/// [`compute_diagnostics_with_state`] above.
+/// "not evaluated in editor" `Severity::Info` hint, emitted by
+/// [`fea_not_evaluated_hints`] above.
 ///
 /// Defined once here rather than re-declared as a local constant in each
 /// regression test, so the production message and every test that asserts
@@ -728,15 +734,15 @@ const FEA_NOT_EVALUATED_HINT: &str = "FEA constraint not evaluated in editor —
 
 /// Stable `code` for task 5078's FEA "not evaluated in editor" hint (PRD
 /// `compute-fea-hardening.md` C2), set on the `lsp_types::Diagnostic`
-/// emitted in [`compute_diagnostics_with_state`] alongside
+/// emitted by [`fea_not_evaluated_hints`] alongside
 /// [`FEA_NOT_EVALUATED_HINT`].
 ///
 /// Unlike the message, which is free-text prose, this is the
 /// wording-independent handle consumers — including this file's own
 /// regression tests — should match on to identify the diagnostic,
 /// mirroring the `"computation-pending"` / `"computation-failed"` codes
-/// the freshness diagnostics carry (emitted just below in the same
-/// function). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
+/// the freshness diagnostics carry (emitted by
+/// [`freshness_diagnostics`]). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
 /// silently break identification for a consumer matching on this code.
 const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 
@@ -759,7 +765,7 @@ const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 /// prelude functions, not user-module functions) to whether that name's
 /// `@optimized("target")` annotation (if any) names a compute target with
 /// no registered trampoline on the engine. Building this map is the
-/// caller's responsibility (see `compute_diagnostics_with_state`) so it can
+/// caller's responsibility (see [`fea_not_evaluated_hints`]) so it can
 /// be computed once per document rather than once per constraint.
 ///
 /// Matching is by function NAME rather than full overload resolution: in
@@ -3726,8 +3732,8 @@ structure S {
     /// Amendment regression lock (task 5078, PRD `compute-fea-hardening.md`
     /// C2): the FEA "not evaluated in editor" Info hint must not double up
     /// with a freshness diagnostic (`computation-pending` /
-    /// `computation-failed`, arch §7.1/§9.2, emitted by the loop just below
-    /// this hint's emission block) for the same underlying unevaluated FEA
+    /// `computation-failed`, arch §7.1/§9.2, emitted by
+    /// [`freshness_diagnostics`]) for the same underlying unevaluated FEA
     /// value cell over the [`FEA_BEARING_SRC`] fixture.
     ///
     /// Under the trampoline-free posture, an unregistered `@optimized`
@@ -3897,7 +3903,7 @@ structure S {
     /// This is the scenario most sensitive to a regression in the upstream
     /// "at most one `constraint_results` entry per constraint id" invariant
     /// that the emission loop's dedup-elision rationale (in
-    /// `compute_diagnostics_with_state`, above) relies on instead of an
+    /// [`fea_not_evaluated_hints`], above) relies on instead of an
     /// explicit `(id, label)` guard: a regression there could plausibly
     /// collapse two constraints' entries into one, or misattribute one
     /// hint's span — `fea_indeterminate_constraint_emits_info_hint`'s
