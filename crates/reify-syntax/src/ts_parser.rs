@@ -4984,9 +4984,9 @@ impl<'a> Lowering<'a> {
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
+            let op_node = node.child_by_field_name("op")?;
             let left = self.lower_unit_expr(left_node)?;
             let right = self.lower_unit_expr(right_node)?;
-            let op_node = node.child_by_field_name("op")?;
             return match op_node.kind() {
                 "*" => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
                 "/" => Some(UnitExpr::Div(Box::new(left), Box::new(right))),

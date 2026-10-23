@@ -416,6 +416,57 @@ fn op_field_excludes_a_comment_between_the_operands() {
     }
 }
 
+/// Every mul/div `unit_expr` in the tree — those with `left` and `right` fields.
+fn mul_div_unit_exprs(node: tree_sitter::Node) -> Vec<tree_sitter::Node> {
+    let mut found = Vec::new();
+    if node.kind() == "unit_expr"
+        && node.child_by_field_name("left").is_some()
+        && node.child_by_field_name("right").is_some()
+    {
+        found.push(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        found.extend(mul_div_unit_exprs(child));
+    }
+    found
+}
+
+/// `reify-syntax` lowers a mul/div `unit_expr` by matching its op kind on `*` and
+/// `/` only, so no candidate operator spelling — accepted or rejected — may surface
+/// an op of any other kind.  A grammar edit introducing a new operator kind reds
+/// here instead of reaching that match's diagnostic arm.
+#[test]
+fn op_field_kind_is_star_or_slash_for_every_operator_spelling() {
+    let ascii_punctuation = (b'!'..=b'~')
+        .filter(u8::is_ascii_punctuation)
+        .map(char::from);
+    let unicode_operators = ['·', '×', '÷', '⋅', '∙', '∕', '⁄', '∗'];
+    let mut accepted = Vec::new();
+    for spelling in ascii_punctuation.chain(unicode_operators) {
+        let source = format!("structure S {{ let x = 5N{spelling}m }}");
+        let mut parser = make_parser();
+        let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
+        let units = mul_div_unit_exprs(tree.root_node());
+        for unit in &units {
+            let kind = op_node(*unit).kind();
+            assert!(
+                matches!(kind, "*" | "/"),
+                "`{source}`: unit operator kind `{kind}` is neither `*` nor `/`"
+            );
+        }
+        if !tree.root_node().has_error() && !units.is_empty() {
+            accepted.push(spelling);
+        }
+    }
+    for spelling in ['*', '·', '/'] {
+        assert!(
+            accepted.contains(&spelling),
+            "`5N{spelling}m` must parse as a mul/div unit_expr; accepted: {accepted:?}"
+        );
+    }
+}
+
 // ── `*`/`·` equivalence at the CST level ─────────────────────────────────────
 
 /// The two spellings must produce structurally identical trees — same node kinds in
