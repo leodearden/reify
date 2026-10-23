@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 
+use reify_core::identity::{IndexedNodeIdParseError, IndexedNodeKind, ValueCellIdParseError};
 use reify_core::{
     ComputeNodeId, ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId,
     ResolutionNodeId, ValueCellId, VersionId,
@@ -123,6 +125,67 @@ impl fmt::Display for NodeId {
             NodeId::Resolution(s) => s.fmt(f),
             NodeId::Compute(c) => c.fmt(f),
         }
+    }
+}
+
+/// Error returned by [`NodeId`]'s [`FromStr`] impl: the typed error of the
+/// grammar the input was routed to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeIdParseError {
+    Value(ValueCellIdParseError),
+    Indexed(IndexedNodeIdParseError),
+}
+
+impl fmt::Display for NodeIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeIdParseError::Value(e) => e.fmt(f),
+            NodeIdParseError::Indexed(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for NodeIdParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NodeIdParseError::Value(e) => Some(e),
+            NodeIdParseError::Indexed(e) => Some(e),
+        }
+    }
+}
+
+impl From<ValueCellIdParseError> for NodeIdParseError {
+    fn from(e: ValueCellIdParseError) -> Self {
+        NodeIdParseError::Value(e)
+    }
+}
+
+impl From<IndexedNodeIdParseError> for NodeIdParseError {
+    fn from(e: IndexedNodeIdParseError) -> Self {
+        NodeIdParseError::Indexed(e)
+    }
+}
+
+impl FromStr for NodeId {
+    type Err = NodeIdParseError;
+
+    /// The exact inverse of [`fmt::Display`] on every id it admits.
+    ///
+    /// A string whose last `'#'` segment names an [`IndexedNodeKind`] marker
+    /// is judged by that kind's grammar alone; anything else is read as a
+    /// value cell. The indexed reading must win because an indexed entity may
+    /// contain `'.'` (so its rendering is also a single-dot value-cell id),
+    /// whereas a value-cell member never ends in `#<marker>[<index>]`. The
+    /// value-cell reading keeps [`ValueCellId`]'s refusal of ambiguous
+    /// multi-dot ids; see its Display docs.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match IndexedNodeKind::of_rendered_id(s) {
+            Some(IndexedNodeKind::Constraint) => NodeId::Constraint(s.parse()?),
+            Some(IndexedNodeKind::Realization) => NodeId::Realization(s.parse()?),
+            Some(IndexedNodeKind::Resolution) => NodeId::Resolution(s.parse()?),
+            Some(IndexedNodeKind::Compute) => NodeId::Compute(s.parse()?),
+            None => NodeId::Value(s.parse()?),
+        })
     }
 }
 
@@ -2061,7 +2124,10 @@ mod tests {
         );
         assert_eq!(
             "Foo#constraint".parse::<NodeId>(),
-            indexed(IndexedNodeKind::Constraint, IndexedNodeIdFault::MissingMarker)
+            indexed(
+                IndexedNodeKind::Constraint,
+                IndexedNodeIdFault::MissingMarker
+            )
         );
         assert_eq!(
             "Rig.bolts#resolution[".parse::<NodeId>(),
