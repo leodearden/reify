@@ -1201,17 +1201,18 @@ async fn read_sidecar_output_skips_invalid_json_lines() {
 
 // --- read_sidecar_output warn tests (task-2819) ---
 
-/// A stale sidecar that omits `tool_use_id` from a ToolCall event must still
-/// deliver the message to `on_message` (not silently drop it), AND must emit
-/// exactly one WARN so operators know to rebuild the sidecar.
+/// A sidecar that omits `tool_use_id` from a ToolCall event must still deliver
+/// the message to `on_message` (not silently drop it). It emits no WARN: no host
+/// reply is correlated by that id, so its absence degrades nothing an operator
+/// needs to know about.
 #[tokio::test(flavor = "current_thread")]
-async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
+async fn read_sidecar_output_delivers_tool_call_missing_tool_use_id_without_warning() {
     use std::sync::{Arc, Mutex};
     use tokio::io::BufReader;
 
     let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
 
-    // Stale-sidecar payload: ToolCall without tool_use_id.
+    // ToolCall without tool_use_id.
     let data = b"{\"type\":\"tool_call\",\"id\":\"msg-1\",\"tool_name\":\"reify_get\",\"tool_input\":{}}\n";
     let reader = BufReader::new(&data[..]);
     let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
@@ -1231,7 +1232,7 @@ async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
     assert_eq!(
         msgs.len(),
         1,
-        "stale ToolCall must be delivered to on_message"
+        "ToolCall without tool_use_id must be delivered to on_message"
     );
     assert!(
         matches!(
@@ -1242,11 +1243,11 @@ async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
         msgs[0]
     );
 
-    // (b) Exactly one WARN must be emitted for the version-skew.
+    // (b) No WARN: a missing tool_use_id is not an operator-facing condition.
     reify_test_support::assert_warn_count(
         &warn_counter,
-        1,
-        "missing tool_use_id must emit exactly one WARN",
+        0,
+        "missing tool_use_id must not WARN",
     );
 }
 
