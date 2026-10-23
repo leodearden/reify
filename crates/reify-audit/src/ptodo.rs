@@ -1083,7 +1083,7 @@ fn has_deferral_prose(text: &str) -> bool {
 
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
-fn line_escaped(line: &str) -> bool {
+pub(crate) fn line_escaped(line: &str) -> bool {
     line.contains("ptodo:allow")
 }
 

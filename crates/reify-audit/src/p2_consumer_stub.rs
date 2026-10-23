@@ -33,6 +33,7 @@
 //!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P2.
 
+use crate::ptodo;
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 
 /// Returns `Some(label)` if the line matches any canonical stub-pattern family,
@@ -216,6 +217,9 @@ fn is_test_cfg_attr(trimmed_lower: &str) -> bool {
 /// `#[cfg(not(test))]` (production-only guard) does **not** trigger the gate,
 /// so genuine production stubs following it remain detected.
 ///
+/// A line carrying PTODO's `ptodo:allow` escape is a reviewed, intentional
+/// marker and is never reported.
+///
 /// # Known limitation
 ///
 /// The gate fires only when the `#[cfg(test)]` attribute line itself appears
@@ -235,6 +239,9 @@ fn scan_file_added_lines(added: &[(usize, String)]) -> Vec<(usize, String, &'sta
                 in_cfg_test = true;
                 continue;
             }
+            if ptodo::line_escaped(content) {
+                continue;
+            }
             if let Some(label) = line_matches_stub(content) {
                 result.push((*line_no, content.clone(), label));
             }
@@ -251,10 +258,10 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
-/// The detector's own source path, excluded from P2 scanning. The live code
-/// `return Some("TODO(post-)")` at line 41 lowercases to contain `todo(post-)`
-/// and self-matches Family 1 — excluding the file is the minimal correct fix.
-const SELF_SOURCE_PATH: &str = "crates/reify-audit/src/p2_consumer_stub.rs";
+/// The audit crate's own source, excluded from P2 scanning: its stub-pattern
+/// string literals and detector code self-match. Its tests are already
+/// skipped by `crate::is_test_path`.
+const DETECTOR_SOURCE_PREFIX: &str = "crates/reify-audit/src/";
 
 /// Threshold above which `check()` warns about an unbounded backlog
 /// when both `target_task_id` and `window` are unset (sweep mode
@@ -421,7 +428,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         for path in &meta.files {
             if crate::is_test_path(path) { continue; }
             if !is_code_ext(path) { continue; }
-            if path == SELF_SOURCE_PATH { continue; }
+            if path.starts_with(DETECTOR_SOURCE_PREFIX) { continue; }
 
             // Three-way routing — see module-level doc for rationale.
             let added = match (resolved_commit, provenance_commit) {
