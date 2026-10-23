@@ -2668,7 +2668,7 @@ pub(crate) fn check_expr_mechanism_joint_bound(
 mod tests {
     use super::*;
     use crate::compile_builder::ctx::CompilationCtx;
-    use crate::compile_builder::enums_phase::build_resolution_enums_from_cache;
+    use crate::compile_builder::enums_phase::bind_resolution_enums;
     use crate::compile_builder::names_phase::build_resolution_names;
     use crate::compile_builder::pre_pass::collect_decl_refs;
     use crate::compile_builder::traits_phase::phase_traits;
@@ -2744,7 +2744,7 @@ mod tests {
     /// `check_trait_conformance` for its one conformer.
     ///
     /// The phases are production's own, called in the order a full compile runs them:
-    /// `collect_decl_refs`, `build_resolution_names`, `build_resolution_enums_from_cache`,
+    /// `collect_decl_refs`, `build_resolution_names`, `bind_resolution_enums`,
     /// `phase_traits`. So the fixture's enums arrive with their declared variants and type
     /// parameters, its names resolve as they do in a real compile, and its traits compile
     /// exactly as production compiles them. Variant payload fields stay unresolved
@@ -2812,7 +2812,7 @@ mod tests {
             ctx.diagnostics
         );
         build_resolution_names(&mut ctx, &[], &decl_refs.trait_refs, &decl_refs.fn_refs);
-        build_resolution_enums_from_cache(&mut ctx, &[]);
+        bind_resolution_enums(&mut ctx, &[]);
         let trait_names = phase_traits(&mut ctx, &[], &decl_refs.trait_refs);
 
         let mut conformers = decl_refs

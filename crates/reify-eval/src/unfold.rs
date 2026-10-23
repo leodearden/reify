@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind, find_template};
+use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
 use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
@@ -26,9 +26,11 @@ use optimized_instance_reuse::{
     resolve_optimized_instance_cell,
 };
 
-/// Single source of truth for sub-component template resolution: the user
-/// module's templates first (module definitions shadow the prelude), then the
-/// engine's compiled stdlib prelude modules.
+/// The evaluator's sub-component template lookup. The binding rule itself —
+/// module templates first, then user-import prelude modules, then std prelude
+/// modules, first match wins — is NOT stated here: it is
+/// [`reify_compiler::name_env::resolve`], the NS-P1 policy point the compiler's
+/// registries also bind through, so compile and eval cannot disagree (NS-P4).
 ///
 /// Stdlib occurrence/structure templates (e.g. `STLOutput` and `DisplayStyle`
 /// from `stdlib/io.ri`) live in `Engine::prelude` and are deliberately NOT
@@ -36,7 +38,7 @@ use optimized_instance_reuse::{
 /// them as unknown (io-export δ / esc-4287-15).
 ///
 /// EVERY resolver on this file's recursion paths must go through here, not bare
-/// [`find_template`]. esc-5360-9: the instance-scope nesting recursion
+/// [`reify_compiler::find_template`]. esc-5360-9: the instance-scope nesting recursion
 /// originally resolved module-only while the top-level sub-elaboration loop in
 /// `engine_eval.rs` resolved with the prelude fallback. That asymmetry both
 /// (a) silently declined to materialise `Parent.m.o` for a prelude-typed
@@ -53,11 +55,7 @@ pub(crate) fn find_template_in_scope<'a>(
     prelude: &'a [CompiledModule],
     name: &str,
 ) -> Option<&'a TopologyTemplate> {
-    find_template(templates, name).or_else(|| {
-        prelude
-            .iter()
-            .find_map(|pm| find_template(&pm.templates, name))
-    })
+    reify_compiler::name_env::resolve(templates, prelude, name)
 }
 
 /// No-op [`ContainmentQuery`]: containment stays `None` on this
