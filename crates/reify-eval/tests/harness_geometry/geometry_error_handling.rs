@@ -1084,9 +1084,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 // Regression guard: missing primitive arg → no kernel call, no 'geometry error'
 // ---------------------------------------------------------------------------
 
-/// When a Box primitive is missing a required arg ('width'), build() should:
+/// When a Box primitive is missing a required arg ('size_x'), build() should:
 /// 1. Short-circuit: return geometry_output=None (kernel never called).
-/// 2. Emit a Warning: "missing required geometry argument" mentioning 'width'.
+/// 2. Emit a Warning: "missing required geometry argument" mentioning 'size_x'.
 /// 3. Emit an Error: "failed to compile geometry operation".
 /// 4. NOT emit any diagnostic containing "geometry error" (kernel was never reached).
 ///
@@ -1130,7 +1130,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         None,
-        &["missing required geometry argument", "width"],
+        &["missing required geometry argument", "size_x"],
     );
 }
 
@@ -1148,7 +1148,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
 ///
 /// The invariants pinned here:
 /// - `.filter(|d| Severity::Warning).count() == 1` — one (not two) warnings.
-/// - That Warning contains 'missing required geometry argument' and 'width'.
+/// - That Warning contains 'missing required geometry argument' and 'size_x'.
 /// - Exactly one `failed to compile geometry operation` Error diagnostic.
 /// - No diagnostic contains 'expected Geometry' or 'found Undef' (no cascade).
 ///
@@ -1184,20 +1184,20 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (a) Exactly one Warning containing the missing-arg message and 'width'.
+    // (a) Exactly one Warning containing the missing-arg message and 'size_x'.
     let matching_warnings: Vec<&Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
             d.severity == reify_core::Severity::Warning
                 && d.message.contains("missing required geometry argument")
-                && d.message.contains("width")
+                && d.message.contains("size_x")
         })
         .collect();
     assert_eq!(
         matching_warnings.len(),
         1,
-        "expected exactly one Warning about missing 'width'; got {}: {:?}",
+        "expected exactly one Warning about missing 'size_x'; got {}: {:?}",
         matching_warnings.len(),
         result
             .diagnostics

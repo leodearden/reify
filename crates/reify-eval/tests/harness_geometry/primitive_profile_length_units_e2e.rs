@@ -137,14 +137,14 @@ fn is_circle_profile(op: &GeometryOp) -> bool {
 /// its own argument, `Length` and the literal migration hint; and NO `Box` op
 /// reaches the kernel.
 ///
-/// ALL THREE SLOTS, not just `width` (reviewer amendment, task 5743): a box is
+/// ALL THREE SLOTS, not just `size_x` (reviewer amendment, task 5743): a box is
 /// written as one gesture, so a bare box is bare in every dimension. Reading
 /// the three fields through `?`-chained per-field calls would report only
-/// `width` and cost the author three edit-build cycles to fix one line — the
+/// `size_x` and cost the author three edit-build cycles to fix one line — the
 /// UX `required_length_values` exists to prevent. Needling the ANCHORED
 /// `"{slot} argument expects"` shape rather than the bare slot name is what
-/// makes this test able to see the difference: a single `width` rejection plus
-/// the op-compile Error would satisfy a loose `contains("height")`.
+/// makes this test able to see the difference: a single `size_x` rejection plus
+/// the op-compile Error would satisfy a loose `contains("size_y")`.
 #[test]
 fn bare_box_dimensions_drop_the_op_with_a_coded_error() {
     assert_rejected(
@@ -156,9 +156,9 @@ fn bare_box_dimensions_drop_the_op_with_a_coded_error() {
         "#,
         &[
             "box",
-            "width argument expects",
-            "height argument expects",
-            "depth argument expects",
+            "size_x argument expects",
+            "size_y argument expects",
+            "size_z argument expects",
             "Length",
             "pass a dimensioned length such as `5mm`",
         ],
