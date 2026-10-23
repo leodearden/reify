@@ -15,6 +15,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import type { Object3D, Scene } from 'three';
 import type { MeshData } from '../../types';
 import { createFeaModeStore } from '../../stores';
@@ -166,11 +167,18 @@ function flushFrame(): void {
   for (const cb of pending) cb(performance.now());
 }
 
-function renderViewport(opts: { feaModeStore?: FeaModeStore; onSelect?: ReturnType<typeof vi.fn> } = {}) {
+function renderViewport(
+  opts: {
+    feaModeStore?: FeaModeStore;
+    onSelect?: ReturnType<typeof vi.fn>;
+    meshes?: () => Record<string, MeshData>;
+  } = {},
+) {
+  const meshes = opts.meshes ?? (() => ({ bracket: bracketMesh() }));
   const result = render(() => (
     <Viewport
       viewportId="probe-vp"
-      meshes={{ bracket: bracketMesh() }}
+      meshes={meshes()}
       feaModeStore={opts.feaModeStore}
       onSelect={opts.onSelect}
     />
@@ -277,5 +285,41 @@ describe('Viewport probe wiring', () => {
     flushFrame();
 
     expect(render).toHaveBeenCalled();
+  });
+});
+
+describe('probes follow re-evaluation', () => {
+  function renderWithMeshSignal() {
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({ bracket: bracketMesh() });
+    renderViewport({ feaModeStore: createFeaModeStore(), meshes });
+    return setMeshes;
+  }
+
+  it('(a) a re-solve updates the probe readout to the new field', () => {
+    const setMeshes = renderWithMeshSignal();
+    placeProbe();
+    expect(screen.getByTestId('probe-row').textContent).toMatch(VALUE_300);
+
+    setMeshes({ bracket: bracketMesh([400, 400, 800]) });
+
+    const text = screen.getByTestId('probe-row').textContent;
+    expect(text).toMatch(/\b600(?:\.0+)?\b/);
+    expect(text).not.toMatch(VALUE_300);
+  });
+
+  it('(b) losing the entity marks the probe stale; Re-pin drops it', () => {
+    const setMeshes = renderWithMeshSignal();
+    const marker = placeProbe();
+
+    setMeshes({});
+
+    const row = screen.getByTestId('probe-row');
+    expect(row.classList.contains('probe-stale')).toBe(true);
+    expect(row.textContent).toMatch(VALUE_300);
+
+    fireEvent.click(screen.getByTestId('probe-repin'));
+
+    expect(screen.queryByTestId('probe-popup')).toBeNull();
+    expect(marker.parent).toBeNull();
   });
 });
