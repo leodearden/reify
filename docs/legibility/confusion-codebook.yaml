@@ -2391,6 +2391,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Partial match. watcher-rearm.sh CEILING timeout was retried four times in this session. Only the last attempt changed a parameter (timeout 3600 to 2700), and there was no user interrupt, so the match is weaker than the entry's description.
+  - date: '2026-10-22'
+    project: reify
+    session: 0186c74c-6ecc-4586-8d24-96ff7705dd68
+    origin_phase: ops
+    manifested_phase: ops
+    note: Repeated watcher-rearm.sh CEILING timeouts were retried with only the timeout parameter varied (3200, 3600, 400), ending without a change in approach.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260720-5
@@ -3641,6 +3647,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The foreground watcher-rearm.sh call at turn 134 (--timeout 3600, tool timeout 3660000 ms) was killed with exit 137. The same command had earlier ended in a designed CEILING exit 124 at turn 114. DARK_FACTORY_ROOT was set correctly, so the failure comes from the foreground bounded wait itself being killed, not from the path.
+  - date: '2026-10-22'
+    project: reify
+    session: 1e13e143-0bc1-4d65-a837-1b95a69455ce
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The foreground bounded-wait re-arm exited 137 at turn 110 and the agent kept using the same foreground wrapper rather than switching to a background wait.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260722-3
@@ -4066,6 +4078,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The bounded-wait watcher returned exit 124 with CEILING outcome at turn 114, which the digest records as a designed outcome. The digest's error neighborhood also shows an exit 137 death at turn 176. Both fall under the bounded-wait timeout pattern this entry covers.
+  - date: '2026-10-22'
+    project: reify
+    session: 1e13e143-0bc1-4d65-a837-1b95a69455ce
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The bounded-wait watcher timeout (exit 124) recurs; the digest shows the CEILING outcome repeating across the re-arm attempts.
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4518,6 +4536,24 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The identical `watcher-rearm.sh --timeout 3600` command was re-issued three times after the bounded wait hit its own CEILING (exit 124), matching the codebook entry's description of re-issuing an identical bounded rearm after its ceiling.
+  - date: '2026-10-22'
+    project: reify
+    session: cfbe71b7-fc6a-4f1c-9616-2a468750afdd
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Partial match. The digest shows the same watcher-rearm.sh Bash invocation re-issued 9 times with identical arguments (run_in_background, timeout 3660000), which fits the identical-re-issue pattern. The digest does not show the ceiling being hit, so the causal link to the timeout is not confirmed. Phases are unknown because the digest gives no phase evidence.
+  - date: '2026-10-22'
+    project: reify
+    session: 0186c74c-6ecc-4586-8d24-96ff7705dd68
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh hit its own CEILING (exit 124) at turns 99, 106 and 113, and the agent re-issued the same bounded wait each time, changing only the --timeout value.
+  - date: '2026-10-22'
+    project: reify
+    session: 1e13e143-0bc1-4d65-a837-1b95a69455ce
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Three identical Bash invocations of watcher-rearm.sh --timeout 3600 hit the wrapper''s own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) and were re-issued unchanged.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260726-8
@@ -8574,6 +8610,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The agent listed .task-meta/_lane-7/ and ran wc -c on iterations.jsonl. The directory held only agent_session.json, metadata.json, plan.json, plan.lock, reviews/ and verdicts/, so the file was missing at the expected path.
+  - date: '2026-10-22'
+    project: reify
+    session: 7372fc9f-77b4-4e29-8887-baa5a022dcc0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent tried to read .task/iterations.jsonl in the lane worktree (turn 26) and got 'No such file or directory'. This matches the codebook entry on the per-lane task-meta iterations.jsonl missing at its expected path.
+  - date: '2026-10-22'
+    project: reify
+    session: a55e5471-66ef-4498-a706-139ead0d77f9
+    origin_phase: unknown
+    manifested_phase: verify
+    note: A `tail -c 1500 .task/iterations.jsonl` probe in the lane-8 worktree returned 'No such file or directory' (exit 1) while the agent was investigating the post-merge verify failure, matching the missing per-lane task-meta iterations.jsonl at the expected path.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260727-8
@@ -10420,6 +10468,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Session was tasked with verifying this exact confusion cluster (grep patterns with triple backticks breaking under eval). Error neighborhood shows multiple blocked grep commands with backtick patterns (turns 22, 23, 30, 32), and turn 117 yields exit 2 from a grep command — the symptom the entry describes. The verification attempt itself became subject to the same issue.
+  - date: '2026-10-22'
+    project: reify
+    session: 7c78c312-9473-42d6-b31d-4c3530e1f143
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Bash grep pattern containing a literal backtick (inside a double-quoted alternation) was run under eval-wrapped bash, producing 'unexpected EOF while looking for matching ``' and exit 2. Same mechanism as the markdown-fence/backtick-under-eval entry.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -30526,6 +30580,45 @@ candidates:
   finding_tags:
   - h1
   - kind:confusion
+- id: cand-20261022-1
+  title: Pre-done validator hook rejection gives no reachable stderr, and the diagnostic probe is blocked by permission denial
+  cause: set_task_status(done) is rejected by a pre-done validator hook (exit 125) that tells the agent to 'fix the underlying issue reported in stderr', but the hook's stderr and config are not surfaced to the agent. When the agent tries to locate the hook's env vars and source (grep for PREDONE_HOOK, probing /tmp advisory files), Bash is denied in don't-ask mode, so the gate cannot be diagnosed and the agent is pushed toward disabling it via env var.
+  area: verification-gate diagnostics
+  first_seen: '2026-10-22'
+  disposition: pending
+  sightings:
+  - date: '2026-10-22'
+    project: reify
+    session: 7372fc9f-77b4-4e29-8887-baa5a022dcc0
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'set_task_status(done) rejected: pre_done_hook_rejected — Pre-done validator hook exited with code 125. Fix the underlying issue reported in stderr, then retry. To disable the hook temporarily, unset or clear the FUSED_MEMORY_PREDONE_HOOK_* env var for this project.'
+- id: cand-20261022-2
+  title: Verify outer-timeout with a stalled pool worker (198/199) is reported as test_failure
+  cause: 'run_all.sh pool sat at 198/199 for several minutes and the 30m outer timeout interrupted the run, yet the block reason and category read ''tests failed [category: test_failure]''. The agent cannot tell from the category whether a test failed or a hung worker consumed the budget, so the diagnosis starts from a misleading label.'
+  area: verify-harness
+  first_seen: '2026-10-22'
+  disposition: pending
+  sightings:
+  - date: '2026-10-22'
+    project: reify
+    session: a55e5471-66ef-4498-a706-139ead0d77f9
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: '=== Summary: INTERRUPTED (outer timeout; partial results) ==='
+- id: cand-20261022-3
+  title: Selector coercion split across pure evaluator and kernel post-process; ctor-field ResolveSelector never resolved
+  cause: Ruling esc-5307-3 assumed wrapping a constructor argument in resolve_selector during ctor lowering would stop a raw Selector being stored in a List<Geometry> field. The pure evaluator passes ResolveSelector through unchanged, ctor field values are evaluated only on that pure path, and the kernel resolver try_eval_resolve_selector matches only a cell's top-level default_expr. A ResolveSelector inside a StructureInstanceCtor field is therefore never resolved, so the RED/GREEN premise was false and the task blocked.
+  area: compiler/eval coercion pipeline (reify-expr, reify-eval, reify-compiler coerce)
+  first_seen: '2026-10-22'
+  disposition: pending
+  sightings:
+  - date: '2026-10-22'
+    project: reify
+    session: 2930f9f8-516b-4d71-814b-ee93e130cf29
+    origin_phase: unknown
+    manifested_phase: architect
+    evidence_quote: 'Architect reported false RED-test premise: Task #7956 (ruling esc-5307-3, option B) assumes two things. (2) Wrapping a ctor argument in `resolve_selector` during ctor lowering, "exactly as the fn-call path does", is what stops a raw Selector being stored in a `List<Geometry>` field.'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
