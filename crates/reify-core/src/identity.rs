@@ -765,6 +765,110 @@ mod tests {
         assert!("a]b#realization[0]".parse::<RealizationNodeId>().is_err());
     }
 
+    // ── Shared indexed-id grammar (`<entity>#<marker>[<index>]`) ─────
+
+    fn check_indexed_grammar<T>(kind: IndexedNodeKind, make: fn(&str, u32) -> T)
+    where
+        T: std::str::FromStr<Err = IndexedNodeIdParseError> + fmt::Display + PartialEq + fmt::Debug,
+    {
+        let entities = [
+            "Foo",
+            "box-2658-smoke",
+            "Rig.bolts",
+            "a#b",
+            // The constraint-entity shape minted by reify-eval's engine_edit.rs
+            // for `forall connect` bodies.
+            "forall_connect:v@Rig.bolts#3",
+        ];
+        for entity in entities {
+            for index in [0, 7, u32::MAX] {
+                let id = make(entity, index);
+                assert_eq!(
+                    id.to_string().parse::<T>(),
+                    Ok(make(entity, index)),
+                    "{kind:?} id {id} must round-trip"
+                );
+            }
+        }
+
+        let m = kind.marker();
+        let other = IndexedNodeKind::ALL
+            .into_iter()
+            .find(|k| *k != kind)
+            .unwrap()
+            .marker();
+        let rejections = [
+            (String::new(), IndexedNodeIdFault::MissingMarker),
+            ("Foo".to_string(), IndexedNodeIdFault::MissingMarker),
+            (format!("Foo#{other}[0]"), IndexedNodeIdFault::MissingMarker),
+            (format!("Foo#{m}"), IndexedNodeIdFault::MissingMarker),
+            (format!("#{m}[0]"), IndexedNodeIdFault::EmptyEntity),
+            (format!("a/b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
+            (format!("a[b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
+            (format!("a]b#{m}[0]"), IndexedNodeIdFault::InvalidEntity),
+            (format!("Foo#{m}[0"), IndexedNodeIdFault::MissingTerminator),
+            (format!("Foo#{m}[0]junk"), IndexedNodeIdFault::MissingTerminator),
+            (format!("Foo#{m}[]"), IndexedNodeIdFault::InvalidIndex),
+            (format!("Foo#{m}[x]"), IndexedNodeIdFault::InvalidIndex),
+            (format!("Foo#{m}[-1]"), IndexedNodeIdFault::InvalidIndex),
+            (format!("Foo#{m}[99999999999]"), IndexedNodeIdFault::InvalidIndex),
+        ];
+        for (input, fault) in rejections {
+            assert_eq!(
+                input.parse::<T>(),
+                Err(IndexedNodeIdParseError { kind, fault }),
+                "{kind:?} must reject {input:?} as {fault:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_node_ids_share_one_grammar_that_inverts_display() {
+        check_indexed_grammar(IndexedNodeKind::Constraint, |e, i| {
+            ConstraintNodeId::new(e, i)
+        });
+        check_indexed_grammar(IndexedNodeKind::Realization, |e, i| {
+            RealizationNodeId::new(e, i)
+        });
+        check_indexed_grammar(IndexedNodeKind::Resolution, |e, i| {
+            ResolutionNodeId::new(e, i)
+        });
+        check_indexed_grammar(IndexedNodeKind::Compute, |e, i| ComputeNodeId::new(e, i));
+    }
+
+    #[test]
+    fn indexed_node_kind_of_rendered_id_reads_the_last_marker() {
+        for k in IndexedNodeKind::ALL {
+            let m = k.marker();
+            assert_eq!(IndexedNodeKind::of_rendered_id(&format!("Foo#{m}[0]")), Some(k));
+            assert_eq!(IndexedNodeKind::of_rendered_id(&format!("Foo#{m}")), Some(k));
+        }
+        assert_eq!(
+            IndexedNodeKind::of_rendered_id("a#b#realization[1]"),
+            Some(IndexedNodeKind::Realization),
+            "the segment after the LAST '#' names the kind"
+        );
+        for s in [
+            "Bracket.width",
+            "Foo",
+            "Foo#bogus[0]",
+            "Foo#constraintx[0]",
+            r#"Widget.vents["x#y"]"#,
+        ] {
+            assert_eq!(IndexedNodeKind::of_rendered_id(s), None, "{s:?} names no marker");
+        }
+    }
+
+    #[test]
+    fn indexed_node_kind_markers_are_pairwise_distinct() {
+        let all = IndexedNodeKind::ALL;
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a.marker(), b.marker(), "{a:?} and {b:?} share a marker");
+            }
+        }
+    }
+
     // ── ValueCellId::from_str (FromStr) ──────────────────────────────
     //
     // The PARTIAL inverse of the `"<entity>.<member>"` Display grammar. Only the
