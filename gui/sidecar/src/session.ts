@@ -77,9 +77,6 @@ export class SidecarSession {
   private abortController: AbortController | null = null;
   private destroyed = false;
 
-  /** The stdin of the currently in-flight claude CLI process, if any. */
-  private currentStdin: NodeJS.WritableStream | null = null;
-
   /**
    * Maps request_id → tool_name for pending permission requests.
    * Used to look up the tool_name when a permission_decision with remember:true arrives.
@@ -304,8 +301,8 @@ export class SidecarSession {
     });
 
     // Attach an 'error' listener so an unhandled stream error cannot crash the sidecar process.
-    // Error reporting for *correlated* writes flows through per-write callbacks (see writes below),
-    // which capture the correct id for each write rather than the outer send_message id.
+    // Error reporting for the prompt write flows through its per-write callback (see below),
+    // which tags the error with the send_message id.
     //
     // Orphan stream errors (fired to the 'error' listener without a pending write callback, e.g.
     // when the underlying fd is closed externally) are now surfaced as a console.warn diagnostic
@@ -323,8 +320,7 @@ export class SidecarSession {
       }
     });
 
-    // Write the initial user prompt as a stream-json message line.
-    // Stdin is kept open until a 'result' event arrives so tool_result blocks can follow.
+    // Write the user prompt as a stream-json message line.
     // Per-write callback captures the send_message id for correct error correlation.
     proc.stdin?.write(
       JSON.stringify({
@@ -335,9 +331,8 @@ export class SidecarSession {
         if (err) this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
       }
     );
-
-    // Register the in-flight stdin.
-    this.currentStdin = proc.stdin ?? null;
+    // The prompt is the only input; closing stdin lets the CLI exit once the turn's result is out.
+    proc.stdin?.end();
 
     // Start timeout timer
     const timeoutMs = this.config.timeoutMs ?? 300_000;
@@ -360,7 +355,6 @@ export class SidecarSession {
       await this.consumeStream(proc, id);
     } finally {
       clearTimeout(timeoutId);
-      this.currentStdin = null;
     }
 
     // Wait for process exit and check exit code
@@ -390,7 +384,7 @@ export class SidecarSession {
       try {
         const step = mapStreamEvent(event, state);
         state = step.state;
-        this.forwardStep(step, proc);
+        this.forwardStep(step);
       } catch (error) {
         proc.kill();
         throw error;
@@ -398,8 +392,11 @@ export class SidecarSession {
     }
   }
 
-  /** Forward one event's outputs to the host, and finish the turn when it was the result. */
-  private forwardStep(step: StreamStep, proc: ChildProcess): void {
+  /**
+   * Forward one event's outputs to the host and, when it was the result that ends the
+   * turn, record the CLI session id for --resume.
+   */
+  private forwardStep(step: StreamStep): void {
     for (const msg of step.outputs) {
       if (msg.type === 'notice') {
         this.emitNotice(msg);
@@ -407,19 +404,7 @@ export class SidecarSession {
         this.onOutput(msg);
       }
     }
-    if (step.finished !== undefined) this.finishTurn(step.finished.sessionId, proc);
-  }
-
-  /**
-   * Record the CLI session id for --resume and close stdin: no tool_result follows a
-   * result event, and the CLI in stream-json input mode exits only once stdin closes.
-   * currentStdin is nulled at once so a late tool_result hits the "no in-flight" guard
-   * rather than writing to an ended stream.
-   */
-  private finishTurn(sessionId: string, proc: ChildProcess): void {
-    this.sessionId = sessionId;
-    proc.stdin?.end();
-    this.currentStdin = null;
+    if (step.finished !== undefined) this.sessionId = step.finished.sessionId;
   }
 
   /**
