@@ -24,6 +24,9 @@
 //! The runtime tier FAILS (RED) until step-10 (task #4191) replaces the stub
 //! eval lowering with the real nested-grid decode.
 
+#[path = "common/strict_routing.rs"]
+mod strict_routing;
+
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_ir::{ExportFormat, Value};
@@ -261,41 +264,15 @@ fn nurbs_surface_bilinear_patch_bbox_e2e() {
     );
 }
 
-// ── ι₂ (#8989): strict multi-kernel routing reaches OCCT for nurbs_surface ───
+// ── Strict multi-kernel routing reaches OCCT for nurbs_surface (#8989) ─────
 
-/// The bbox fixture builds STEP under `Engine::with_registered_kernels`, the
-/// strict routing ι₃ makes universal: `SurfaceNurbs` must be declared by a
-/// kernel that executes it, or dispatch emits a NoKernelChain Error. Not
-/// routed through `compile_and_build_occt`, whose sentinel-mode engine
-/// silently falls back to its default kernel for an undeclared op.
+/// `SurfaceNurbs` must be declared by the kernel that executes it. Not routed
+/// through `compile_and_build_occt`, whose sentinel-mode engine silently falls
+/// back to its default kernel for an undeclared op.
 #[test]
 fn nurbs_surface_builds_under_registered_kernels() {
-    let compiled = parse_and_compile_with_stdlib(NURBS_SURFACE_BBOX_SOURCE);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "nurbs_surface fixture should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
+    strict_routing::assert_step_builds_under_registered_kernels(
+        &parse_and_compile_with_stdlib(NURBS_SURFACE_BBOX_SOURCE),
+        reify_ir::Operation::SurfaceNurbs,
     );
-
-    let mut engine = reify_eval::Engine::with_registered_kernels(
-        reify_eval::SolverPosture::SolverFree,
-        Box::new(SimpleConstraintChecker),
-    );
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    let errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_core::Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "unexpected build errors (is (SurfaceNurbs, BRep) declared in \
-         occt_capability_descriptor?): {errors:?}"
-    );
-
-    let output = result
-        .geometry_output
-        .expect("nurbs_surface must produce STEP output under strict dispatch");
-    assert!(!output.is_empty(), "STEP output must be non-empty");
 }

@@ -15,8 +15,10 @@
 //! Modeled on `sub_placement_assembly_gate.rs` (task 3908) and
 //! `affine_apply_e2e.rs` (task 3963).
 
+#[path = "common/strict_routing.rs"]
+mod strict_routing;
+
 use reify_core::Severity;
-use reify_ir::ExportFormat;
 use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel};
 
 /// Path to the committed example, relative to this crate's manifest.
@@ -29,8 +31,8 @@ const EXAMPLE_SRC: &str = concat!(
 );
 
 /// Read and compile the committed example, panicking with a helpful message
-/// if the file is missing. Shared by all three gate tests below to avoid
-/// repeating the read+compile boilerplate.
+/// if the file is missing. Shared by the gate tests below to avoid repeating
+/// the read+compile boilerplate.
 fn compiled_example() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_SRC)
         .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
@@ -231,37 +233,15 @@ fn body_z_stretch_aabb_occt() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ι₂ (#8989): strict multi-kernel routing reaches OCCT for affine_apply
+// Strict multi-kernel routing reaches OCCT for affine_apply (#8989)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// The committed example builds STEP under `Engine::with_registered_kernels`,
-/// the strict routing ι₃ makes universal: `TransformAffineApply` must be
-/// declared by a kernel that executes it, or dispatch emits a NoKernelChain
-/// Error. In-process form of `reify build examples/affine_tapered_spacer.ri
-/// -o x.step` rc 0.
+/// In-process form of `reify build examples/affine_tapered_spacer.ri -o x.step`
+/// rc 0: `TransformAffineApply` must be declared by the kernel that executes it.
 #[test]
 fn example_builds_step_under_registered_kernels() {
-    let compiled = compiled_example();
-
-    let mut engine = reify_eval::Engine::with_registered_kernels(
-        reify_eval::SolverPosture::SolverFree,
-        Box::new(reify_constraints::SimpleConstraintChecker),
+    strict_routing::assert_step_builds_under_registered_kernels(
+        &compiled_example(),
+        reify_ir::Operation::TransformAffineApply,
     );
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    let errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "unexpected build errors (is (TransformAffineApply, BRep) declared in \
-         occt_capability_descriptor?): {errors:?}"
-    );
-
-    let output = result
-        .geometry_output
-        .expect("affine_tapered_spacer must produce STEP output under strict dispatch");
-    assert!(!output.is_empty(), "STEP output must be non-empty");
 }
