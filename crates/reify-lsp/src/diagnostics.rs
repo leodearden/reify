@@ -108,6 +108,8 @@ pub struct DiagnosticsResult {
     /// may be used, so every log site in the server is forwarded from the
     /// same place, spelled the same way, for the same reason (task #6329).
     pub log_messages: Vec<LogLine>,
+    /// None when parse errors or the eval-readiness predicate (`eval_guard::skip_reason`) stopped the pipeline.
+    pub check_result: Option<reify_eval::CheckResult>,
 }
 
 /// Run the stateful parse → compile → eval → check pipeline.
@@ -219,12 +221,7 @@ pub fn compute_diagnostics_with_state(
     // `DiagnosticsResult::log_messages`.
     let mut log_messages: Vec<LogLine> = Vec::new();
 
-    // Derive module name from URI
-    let module_name = uri
-        .path_segments()
-        .and_then(|mut segs| segs.next_back())
-        .and_then(|name| name.strip_suffix(".ri"))
-        .unwrap_or("unnamed");
+    let module_name = module_name_from_uri(uri);
 
     // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
@@ -241,6 +238,7 @@ pub fn compute_diagnostics_with_state(
             diagnostics,
             geometry_output: None,
             log_messages,
+            check_result: None,
         };
     }
 
@@ -280,6 +278,7 @@ pub fn compute_diagnostics_with_state(
             diagnostics,
             geometry_output: None,
             log_messages,
+            check_result: None,
         };
     }
 
@@ -693,6 +692,7 @@ pub fn compute_diagnostics_with_state(
         diagnostics,
         geometry_output: None,
         log_messages,
+        check_result: Some(check_result),
     }
 }
 
@@ -866,55 +866,10 @@ fn constraint_depends_on_unregistered_optimized_compute(
     false
 }
 
-/// Run the full parse → compile → check pipeline and return LSP diagnostics.
-///
-/// Shares `compute_diagnostics_with_state`'s trampoline-free engine posture —
-/// see that function's doc comment for the authoritative posture writeup.
+/// The server's pipeline, [`compute_diagnostics_with_state`], run once on a
+/// fresh [`EvalState`], returning only its diagnostics.
 pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
-    let mut result = Vec::new();
-
-    // Derive a module name from the URI
-    let module_name = module_name_from_uri(uri);
-
-    // Parse (prelude-aware so stdlib enum references disambiguate correctly;
-    // pairs with `compile_with_stdlib_checked` below). See task 2525.
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
-
-    // Convert parse errors
-    for err in &parsed.errors {
-        result.push(convert::convert_parse_error(err, source, uri));
-    }
-
-    // Compile. Real checker (task #6798, PRD leaf pi) — see
-    // `compute_diagnostics_with_state`'s "## Compile-time checker" doc
-    // section for the full rationale.
-    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-
-    // Convert compiler diagnostics
-    for diag in &compiled.diagnostics {
-        result.push(convert::convert_diagnostic(diag, source, uri));
-    }
-
-    // Containment for the unsubstituted-TypeParam panic — see
-    // `compute_diagnostics_with_state`'s equivalent guard for the full
-    // rationale (task #6851). This stateless surface panics identically and is
-    // guarded identically; it has no `EvalState` to leave untouched.
-    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
-        result.push(skipped.diagnostic());
-        return result;
-    }
-
-    // Check (eval with constraint checker, no geometry kernel)
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-    let check_result = engine.check(&compiled);
-
-    // Convert eval diagnostics
-    for diag in &check_result.diagnostics {
-        result.push(convert::convert_diagnostic(diag, source, uri));
-    }
-
-    result
+    compute_diagnostics_with_state(&mut EvalState::new(), source, uri).diagnostics
 }
 
 /// Shared `auto:` test fixtures and anti-vacuity guards — see
