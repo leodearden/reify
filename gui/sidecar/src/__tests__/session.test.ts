@@ -843,6 +843,29 @@ describe('SidecarSession in-flight invocation', () => {
     mockProc.emit('close', 0);
     await msgPromise;
   });
+
+  it('the prompt is the only stdin write: stdin is ended right after it while the invocation is still in flight', async () => {
+    const { mockProc, stdout, stdinLines } = makeMockProc([{ type: 'text', text: 'Hi' }]);
+    const textDeltaWait = waitForOutput(session, (m) => m.type === 'text_delta');
+    const msgPromise = session.handleMessage({ type: 'send_message', id: 'msg-eof', text: 'Hello' });
+    await textDeltaWait;
+
+    expect(mockProc.stdin.writableEnded).toBe(true);
+    await new Promise<void>((resolve) => {
+      if (mockProc.stdin.readableEnded) resolve();
+      else mockProc.stdin.once('end', resolve);
+    });
+    expect(stdinLines).toEqual([
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] } },
+    ]);
+    expect(session.isInvocationActive()).toBe(true);
+
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-eof' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
 });
 
 describe('SidecarSession stream failures surface as error', () => {
