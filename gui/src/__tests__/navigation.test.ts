@@ -11,10 +11,11 @@ import {
   navigateToSource,
   navigateToEntity,
   navigateFromConstraint,
-  navigateToLocation,
+  createLocationNavigator,
 } from '../navigation';
 import { createSelectionStore } from '../stores/selectionStore';
 import { createEditorStore } from '../stores/editorStore';
+import { deferred } from './test-utils';
 
 describe('navigation', () => {
   beforeEach(() => {
@@ -276,15 +277,20 @@ describe('navigation', () => {
     });
   });
 
-  describe('navigateToLocation', () => {
+  describe('createLocationNavigator', () => {
     type EditorStore = ReturnType<typeof createEditorStore>;
 
+    /** A navigator over `store` with spied deps; `navigate` reports open failures to `reportOpenFailure`. */
     function makeDeps(store: EditorStore) {
+      const openFile = vi.fn();
+      const setScrollToLocation = vi.fn();
+      const reportOpenFailure = vi.fn();
+      const navigateToLocation = createLocationNavigator({ store, openFile, setScrollToLocation });
       return {
-        store,
-        openFile: vi.fn(),
-        setScrollToLocation: vi.fn(),
-        reportOpenFailure: vi.fn(),
+        openFile,
+        setScrollToLocation,
+        reportOpenFailure,
+        navigate: (loc: SourceLocation) => navigateToLocation(loc, reportOpenFailure),
       };
     }
 
@@ -296,7 +302,7 @@ describe('navigation', () => {
         const deps = makeDeps(store);
         const loc = { file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9 };
 
-        await navigateToLocation(loc, deps);
+        await deps.navigate(loc);
 
         expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
         expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
@@ -316,7 +322,7 @@ describe('navigation', () => {
         const deps = makeDeps(store);
         const loc = { file_path: 'helper.ri', line: 10, column: 3, end_line: 10, end_column: 8 };
 
-        await navigateToLocation(loc, deps);
+        await deps.navigate(loc);
 
         expect(store.state.activeFile).toBe('helper.ri');
         expect(deps.openFile).not.toHaveBeenCalled();
@@ -339,7 +345,7 @@ describe('navigation', () => {
         });
         const loc = { file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15 };
 
-        await navigateToLocation(loc, deps);
+        await deps.navigate(loc);
 
         expect(deps.openFile).toHaveBeenCalledTimes(1);
         expect(deps.openFile).toHaveBeenCalledWith('helper.ri');
@@ -361,7 +367,7 @@ describe('navigation', () => {
         deps.openFile.mockRejectedValue(new Error('disk read error'));
         const loc = { file_path: 'missing.ri', line: 5, column: 2, end_line: 5, end_column: 10 };
 
-        await expect(navigateToLocation(loc, deps)).resolves.toBeUndefined();
+        await expect(deps.navigate(loc)).resolves.toBeUndefined();
 
         expect(deps.reportOpenFailure).toHaveBeenCalledTimes(1);
         expect(deps.reportOpenFailure).toHaveBeenCalledWith(expect.stringContaining('missing.ri'));
@@ -381,10 +387,7 @@ describe('navigation', () => {
         const deps = makeDeps(store);
         deps.openFile.mockResolvedValue({ path: '/proj/parts.ri', content: 'disk' });
 
-        await navigateToLocation(
-          { file_path: 'parts.ri', line: 3, column: 5, end_line: 3, end_column: 10 },
-          deps,
-        );
+        await deps.navigate({ file_path: 'parts.ri', line: 3, column: 5, end_line: 3, end_column: 10 });
 
         expect(store.state.activeFile).toBe('/proj/parts.ri');
         expect(store.state.openFiles.find((f) => f.path === '/proj/parts.ri')?.content).toBe('edited');
@@ -404,15 +407,104 @@ describe('navigation', () => {
         const deps = makeDeps(store);
         deps.openFile.mockResolvedValue({ path: '/real/proj/helper.ri', content: '' });
 
-        await navigateToLocation(
-          { file_path: '/link/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2 },
-          deps,
-        );
+        await deps.navigate({ file_path: '/link/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2 });
 
         expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
         expect(deps.setScrollToLocation).toHaveBeenCalledWith({
           file_path: '/real/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2,
         });
+
+        dispose();
+      });
+    });
+
+    it('opens that finish in reverse order leave the newer navigation active and scrolled', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        const older = deferred<{ path: string; content: string }>();
+        const newer = deferred<{ path: string; content: string }>();
+        deps.openFile.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+        const newerLoc = { file_path: 'b.ri', line: 8, column: 1, end_line: 8, end_column: 6 };
+
+        const first = deps.navigate({ file_path: 'a.ri', line: 2, column: 1, end_line: 2, end_column: 4 });
+        const second = deps.navigate(newerLoc);
+        newer.resolve({ path: 'b.ri', content: '' });
+        await second;
+        older.resolve({ path: 'a.ri', content: '' });
+        await first;
+
+        expect(store.state.activeFile).toBe('b.ri');
+        expect(store.state.openFiles.some((f) => f.path === 'a.ri')).toBe(false);
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(newerLoc);
+
+        dispose();
+      });
+    });
+
+    it('an open still pending when a navigation to an open tab starts is dropped when it resolves', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        store.openFile({ path: 'helper.ri', content: '' });
+        store.setActiveFile('main.ri');
+        const deps = makeDeps(store);
+        const pending = deferred<{ path: string; content: string }>();
+        deps.openFile.mockReturnValueOnce(pending.promise);
+        const helperLoc = { file_path: 'helper.ri', line: 4, column: 2, end_line: 4, end_column: 9 };
+
+        const first = deps.navigate({ file_path: 'slow.ri', line: 1, column: 1, end_line: 1, end_column: 3 });
+        await deps.navigate(helperLoc);
+        pending.resolve({ path: 'slow.ri', content: '' });
+        await first;
+
+        expect(store.state.activeFile).toBe('helper.ri');
+        expect(store.state.openFiles.some((f) => f.path === 'slow.ri')).toBe(false);
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(helperLoc);
+
+        dispose();
+      });
+    });
+
+    it('two navigations started in the same tick scroll only the later one', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'a.ri', content: '' });
+        store.openFile({ path: 'b.ri', content: '' });
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        const bLoc = { file_path: 'b.ri', line: 2, column: 1, end_line: 2, end_column: 4 };
+
+        const first = deps.navigate({ file_path: 'a.ri', line: 9, column: 1, end_line: 9, end_column: 4 });
+        const second = deps.navigate(bLoc);
+        await Promise.all([first, second]);
+
+        expect(store.state.activeFile).toBe('b.ri');
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(bLoc);
+
+        dispose();
+      });
+    });
+
+    it('a superseded navigation whose open fails reports nothing', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        const pending = deferred<{ path: string; content: string }>();
+        deps.openFile.mockReturnValueOnce(pending.promise);
+
+        const first = deps.navigate({ file_path: 'gone.ri', line: 1, column: 1, end_line: 1, end_column: 3 });
+        await deps.navigate({ file_path: 'main.ri', line: 6, column: 1, end_line: 6, end_column: 4 });
+        pending.reject(new Error('No such file or directory'));
+        await first;
+
+        expect(deps.reportOpenFailure).not.toHaveBeenCalled();
+        expect(store.state.activeFile).toBe('main.ri');
 
         dispose();
       });

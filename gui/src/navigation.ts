@@ -19,30 +19,55 @@ export interface NavigationEditorStore {
   openFile: (file: FileData) => void;
 }
 
-export interface NavigateToLocationDeps {
+/** How a navigation reports a target file that could not be opened. */
+export type OpenFailureReporter = (message: string) => void;
+
+export interface LocationNavigatorDeps {
   store: NavigationEditorStore;
   openFile: (path: string) => Promise<FileData>;
   setScrollToLocation: (location: SourceLocation) => void;
-  reportOpenFailure: (message: string) => void;
+}
+
+export type LocationNavigator = (
+  location: SourceLocation,
+  reportOpenFailure: OpenFailureReporter,
+) => Promise<void>;
+
+/** What one navigation carries through its disk read. */
+interface NavigationAttempt {
+  isCurrent: () => boolean;
+  reportOpenFailure: OpenFailureReporter;
 }
 
 /**
- * Reveal a source location in the editor: activate its tab — opening the file
- * from disk when no tab holds it — then scroll. The scroll names the store key
- * the tab is active under, so the Editor's same-file guard accepts it whatever
- * spelling the producer used. When the file cannot be opened the failure goes
- * to `reportOpenFailure` and nothing scrolls.
+ * Create the editor's location navigator. Each call reveals a source location:
+ * it activates the location's tab — opening the file from disk when no tab
+ * holds it — then scrolls. The scroll names the store key the tab is active
+ * under, so the Editor's same-file guard accepts it whatever spelling the
+ * producer used. When the file cannot be opened the failure goes to
+ * `reportOpenFailure` and nothing scrolls.
+ *
+ * The latest call wins: once a newer navigation starts, an older one —
+ * typically still reading its file — is dropped and from then on opens,
+ * activates, scrolls and reports nothing, so reads that finish out of order
+ * cannot pull the editor back to an older target.
  */
-export async function navigateToLocation(
-  location: SourceLocation,
-  deps: NavigateToLocationDeps,
-): Promise<void> {
-  const key = await activateFile(location.file_path, deps);
-  if (key) deps.setScrollToLocation({ ...location, file_path: key });
+export function createLocationNavigator(deps: LocationNavigatorDeps): LocationNavigator {
+  let latestGeneration = 0;
+  return async (location, reportOpenFailure) => {
+    const generation = ++latestGeneration;
+    const attempt = { isCurrent: () => generation === latestGeneration, reportOpenFailure };
+    const key = await activateFile(location.file_path, deps, attempt);
+    if (key && attempt.isCurrent()) deps.setScrollToLocation({ ...location, file_path: key });
+  };
 }
 
-/** Make `path` the active tab; returns the active store key, or null if it could not be opened. */
-async function activateFile(path: string, deps: NavigateToLocationDeps): Promise<string | null> {
+/** Make `path` the active tab; returns the active store key, or null if it was not activated. */
+async function activateFile(
+  path: string,
+  deps: LocationNavigatorDeps,
+  attempt: NavigationAttempt,
+): Promise<string | null> {
   const { store } = deps;
   const active = store.state.activeFile;
   if (active && isSameFile(path, active)) return active;
@@ -57,9 +82,10 @@ async function activateFile(path: string, deps: NavigateToLocationDeps): Promise
   try {
     fileData = await deps.openFile(path);
   } catch (err) {
-    deps.reportOpenFailure(`Could not open ${path}: ${errorMessage(err)}`);
+    if (attempt.isCurrent()) attempt.reportOpenFailure(`Could not open ${path}: ${errorMessage(err)}`);
     return null;
   }
+  if (!attempt.isCurrent()) return null;
   // The producer's spelling may resolve to a tab that is already open; reopening
   // it would reload a clean buffer or flag a dirty one as externally changed.
   const reopened = findOpenFile(store, fileData.path);

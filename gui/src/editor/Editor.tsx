@@ -79,7 +79,7 @@ export interface EditorProps {
    * Called when Shift+F12 (Find uses) resolves references for the symbol under
    * the cursor.  App opens the Find-uses panel with these results.  Results are
    * in native LSP (0-based) coordinates; a navigated row is converted by
-   * referenceSourceLocation and revealed through App's navigateToLocation path.
+   * referenceSourceLocation and revealed through App's revealInEditor.
    */
   onShowReferences?: (results: ReferenceResult[]) => void;
 }

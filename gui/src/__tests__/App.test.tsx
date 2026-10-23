@@ -1103,6 +1103,32 @@ describe('App navigation wiring', () => {
       warn.mockRestore();
     }
   });
+
+  it('a viewport reveal still opening its file does not override a newer navigate-to-source', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+      file_path: '/proj/slow.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+    });
+    const slowOpen = deferred<{ path: string; content: string }>();
+    vi.mocked(bridge.openFile).mockReturnValueOnce(slowOpen.promise);
+    await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+    const bSpan = { file_path: '/proj/b.ri', line: 3, column: 2, end_line: 5, end_column: 7 };
+
+    capturedDualViewportProps.onSelect('Bracket');
+    await waitFor(() => expect(bridge.openFile).toHaveBeenCalledWith('/proj/slow.ri'));
+    capturedNavigateCb!({ file: '/proj/b.ri', line: 3, column: 2, end_line: 5, end_column: 7 });
+    await waitFor(() => expect(capturedEditorScrollToLocation?.()).toEqual(bSpan));
+    slowOpen.resolve({ path: '/proj/slow.ri', content: '' });
+    await flushMacrotasks();
+
+    expect(capturedEditorStore.state.activeFile).toBe('/proj/b.ri');
+    expect(capturedEditorStore.state.openFiles.some((f: { path: string }) => f.path === '/proj/slow.ri')).toBe(false);
+    expect(capturedEditorScrollToLocation?.()).toEqual(bSpan);
+  });
 });
 
 describe('Find-uses panel navigation (task 9203)', () => {

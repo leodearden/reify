@@ -86,7 +86,8 @@ import {
   navigateToSource,
   navigateToEntity,
   navigateFromConstraint,
-  navigateToLocation,
+  createLocationNavigator,
+  type OpenFailureReporter,
 } from './navigation';
 import { diagnosticSourceLocation } from './panels/diagnosticsView';
 import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode, DisplayDirective, MeshData, AppearanceDirective, DisplayStyleData } from './types';
@@ -129,7 +130,7 @@ export interface PaneGroup {
  * Pane 0 is design-main; pane ≥ 1 are model panes (Open-Q 3: no phantom panes
  * materialized for dropped directives).
  *
- * Extracted for unit-testability without rendering App (DI pattern, cf. navigation.ts navigateToLocation).
+ * Extracted for unit-testability without rendering App (DI pattern, cf. navigation.ts createLocationNavigator).
  */
 export function computePaneGroups(
   displayPanes: DisplayDirective[],
@@ -959,19 +960,25 @@ const App: Component = () => {
   // Navigation state
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
 
+  const navigateToLocation = createLocationNavigator({
+    store: editorStore,
+    openFile: bridgeOpenFile,
+    setScrollToLocation,
+  });
+
+  // A producer's policy for a target file that cannot be opened: explicit
+  // navigations (diagnostics, find-uses, palette, MCP) toast; the best-effort
+  // source reveal of a viewport click only logs.
+  const toastOpenFailure: OpenFailureReporter = (message) => showToast(message, 'error');
+  const logOpenFailure: OpenFailureReporter = (message) =>
+    console.warn('Source reveal skipped:', message);
+
   // The one door from a source location to the editor: every producer reveals
-  // through here so the target file is opened or activated before the scroll.
-  // The .catch covers throws outside navigateToLocation's own disk-read guard.
-  function revealInEditor(
-    loc: SourceLocation,
-    reportOpenFailure: (message: string) => void = (message) => showToast(message, 'error'),
-  ): void {
-    void navigateToLocation(loc, {
-      store: editorStore,
-      openFile: bridgeOpenFile,
-      setScrollToLocation,
-      reportOpenFailure,
-    }).catch((err: unknown) => {
+  // through here so the target file is opened or activated before the scroll,
+  // and the latest reveal wins. The .catch covers throws outside the
+  // navigator's own disk-read guard.
+  function revealInEditor(loc: SourceLocation, reportOpenFailure: OpenFailureReporter): void {
+    void navigateToLocation(loc, reportOpenFailure).catch((err: unknown) => {
       showToast(`Navigation error: ${errorMessage(err)}`, 'error');
     });
   }
@@ -991,7 +998,7 @@ const App: Component = () => {
   // The panel stays open after navigation (docked design — no modal to dismiss).
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
     const loc = diagnosticSourceLocation(d);
-    if (loc) revealInEditor(loc);
+    if (loc) revealInEditor(loc, toastOpenFailure);
   }
 
   // Refs for splitter max-width clamping
@@ -1429,7 +1436,7 @@ const App: Component = () => {
     {
       subscribe: () =>
         onNavigateToSource(({ file, line, column, end_line, end_column }) => {
-          revealInEditor({ file_path: file, line, column, end_line, end_column });
+          revealInEditor({ file_path: file, line, column, end_line, end_column }, toastOpenFailure);
         }),
       onFailure: (err) => console.warn('Failed to subscribe to navigate-to-source events:', err),
     },
@@ -1857,8 +1864,7 @@ const App: Component = () => {
     // span, and a file that cannot be opened is logged rather than toasted.
     navigateToSource(entityPath, {
       getSourceLocation: bridgeGetSourceLocation,
-      revealLocation: (loc) =>
-        revealInEditor(loc, (message) => console.warn('Viewport source reveal skipped:', message)),
+      revealLocation: (loc) => revealInEditor(loc, logOpenFailure),
       selectEntity: (ep) => selectionStore.selectEntity(ep),
     });
   }
@@ -2042,7 +2048,7 @@ const App: Component = () => {
           runCommand={(id) => runCommand(id, shortcutCallbacks)}
           fetchSymbols={fetchPaletteSymbols}
           filePath={editorStore.state.activeFile ?? ''}
-          onJumpToLocation={(loc) => revealInEditor(loc)}
+          onJumpToLocation={(loc) => revealInEditor(loc, toastOpenFailure)}
           onClose={() => setShowPalette(false)}
           initialMode={paletteMode()}
         />
@@ -2176,7 +2182,7 @@ const App: Component = () => {
             results={findUsesResults()}
             onClose={() => setFindUsesOpen(false)}
             onNavigate={(r) => {
-              revealInEditor(referenceSourceLocation(r));
+              revealInEditor(referenceSourceLocation(r), toastOpenFailure);
               setFindUsesOpen(false);
             }}
           />

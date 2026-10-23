@@ -9,7 +9,7 @@ import styles from './FindUsesPanel.module.css';
  * Lists every reference (declaration ∪ uses) returned for the symbol under the
  * cursor when the user presses Shift+F12; rows may be in other files. Clicking a
  * row navigates to that occurrence via the App-level onNavigate handler, which
- * opens or activates the row's file before scrolling (navigateToLocation).
+ * opens or activates the row's file before scrolling (App's revealInEditor).
  */
 export interface FindUsesPanelProps {
   open: boolean;
