@@ -2664,23 +2664,23 @@ structure S {
 
     // --- task #2337 step-17: freshness diagnostic tests ---
 
-    /// Helper: build an EvalState whose engine has been pre-evaluated with
-    /// bracket_source and a forced panic on `cell_id`.  The engine has gone
-    /// through two full `eval()` passes:
+    /// Helper: compile `source` the way production does and evaluate it on a
+    /// trampoline-free engine twice:
     ///   1. Cold eval (all cells → Final).
-    ///   2. Hot eval with forced panic on `cell_id` (cell → Failed; cells
-    ///      that depend on it → Pending via §9.2 propagation).
+    ///   2. Eval with a forced panic on `cell_id` (cell → Failed; cells that
+    ///      depend on it → Pending via §9.2 propagation).
     ///
-    /// The returned EvalState has `last_content_hash` and `version_counter`
-    /// pre-set so that the NEXT call to `compute_diagnostics_with_state` with
-    /// the same bracket_source takes the **eval_cached** path (not cold-start).
-    /// This avoids the cold-start branch recreating the engine (which would
-    /// discard the freshness state we just set up).
+    /// A Failed or Pending cell is unreachable through the public pipeline
+    /// (`EvalState::new` registers no trampoline that could fail), so the
+    /// freshness tests drive [`freshness_diagnostics`] on this engine
+    /// directly.
     ///
     /// `test-instrumentation` feature is enabled in dev-deps (Cargo.toml line 29).
     #[cfg(any(test, feature = "test-support"))]
-    fn build_eval_state_with_failed_cell(cell_id: ValueCellId) -> EvalState {
-        let source = reify_test_support::bracket_source();
+    fn build_engine_with_failed_cell(
+        source: &str,
+        cell_id: ValueCellId,
+    ) -> (reify_eval::Engine, reify_compiler::CompiledModule) {
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
@@ -2695,35 +2695,23 @@ structure S {
         let _ = engine.eval(&compiled);
         // After pass 2: `cell_id` is Failed; its dependents are Pending.
 
-        // Package into EvalState with matching hash so next call uses eval_cached.
-        let mut state = EvalState::new();
-        state.engine = engine;
-        state.last_content_hash = Some(compiled.content_hash);
-        state.version_counter = 2;
-        state
+        (engine, compiled)
     }
 
-    /// (a) `compute_diagnostics_with_state` must emit exactly one ERROR diagnostic
-    /// with `code == "computation-failed"` for a cell whose freshness is Failed
+    /// (a) [`freshness_diagnostics`] must emit an ERROR diagnostic with
+    /// `code == "computation-failed"` for a cell whose freshness is Failed
     /// (forced-panic via test-instrumentation).
-    ///
-    /// This test is intentionally RED before step-18 adds the freshness-diagnostic
-    /// emission block to `compute_diagnostics_with_state`.
     #[cfg(any(test, feature = "test-support"))]
     #[test]
-    fn compute_diagnostics_with_state_emits_failed_diagnostic_for_failed_cell() {
+    fn freshness_diagnostics_emits_failed_diagnostic_for_failed_cell() {
         // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
         let volume_id = ValueCellId::new("Bracket", "volume");
-        let mut state = build_eval_state_with_failed_cell(volume_id.clone());
-
-        let uri = test_uri();
         let source = reify_test_support::bracket_source();
+        let (engine, compiled) = build_engine_with_failed_cell(source, volume_id.clone());
 
-        // eval_cached path: content unchanged, engine initialized.
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
 
-        let failed_diags: Vec<_> = result
-            .diagnostics
+        let failed_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.code
@@ -2737,15 +2725,13 @@ structure S {
             !failed_diags.is_empty(),
             "expected at least one 'computation-failed' ERROR diagnostic (got 0); \
              all diagnostics: {:#?}",
-            result.diagnostics
+            diagnostics
         );
 
-        // Pin that Bracket.volume's source span is among the failed diagnostics.
-        // Re-compile with the same pipeline to get the canonical cell span.  This
-        // avoids a hardcoded line number (which would drift if bracket_source changes)
-        // and is resilient to stdlib templates adding extra let cells in the future.
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        // Pin that Bracket.volume's source span is among the failed diagnostics,
+        // read off the compiled module rather than hardcoded (a line number
+        // would drift if bracket_source changes, and stdlib templates may add
+        // extra let cells in the future).
         let volume_span = compiled
             .templates
             .iter()
@@ -2773,7 +2759,7 @@ structure S {
         );
     }
 
-    /// (b) `compute_diagnostics_with_state` must emit at least one WARNING diagnostic
+    /// (b) [`freshness_diagnostics`] must emit at least one WARNING diagnostic
     /// with `code == "computation-pending"` for a cell that is Pending because its
     /// upstream dependency failed (Failed leaf → Pending consumer, arch §9.2).
     ///
@@ -2787,38 +2773,16 @@ structure S {
     /// a param and would not be affected by `set_panic_on_eval`).
     #[cfg(any(test, feature = "test-support"))]
     #[test]
-    fn compute_diagnostics_with_state_emits_pending_diagnostic_for_pending_cell() {
+    fn freshness_diagnostics_emits_pending_diagnostic_for_pending_cell() {
         // Source with a let-chain: S.derived depends on S.base.
         // Forcing S.base (a let) to fail makes S.derived Pending (arch §9.2).
-        // Module name "test" matches what compute_diagnostics_with_state derives
-        // from "file:///test.ri" (strip ".ri" suffix).
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
+        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
 
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
 
-        let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-
-        // Pass 1: cold eval — initialises cache (all cells → Final).
-        let _ = engine.eval(&compiled);
-
-        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
-        engine.set_panic_on_eval(base_id);
-        let _ = engine.eval(&compiled);
-
-        // Package into EvalState with matching hash so next call uses eval_cached.
-        let mut state = EvalState::new();
-        state.engine = engine;
-        state.last_content_hash = Some(compiled.content_hash);
-        state.version_counter = 2;
-
-        let uri = test_uri();
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-
-        let pending_diags: Vec<_> = result
-            .diagnostics
+        let pending_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.code
@@ -2833,7 +2797,7 @@ structure S {
             "expected at least one 'computation-pending' WARNING diagnostic \
              (S.derived is Pending because S.base failed), \
              got zero; all diagnostics: {:#?}",
-            result.diagnostics
+            diagnostics
         );
         for d in &pending_diags {
             assert_eq!(
@@ -2859,40 +2823,17 @@ structure S {
     ///   (iii) its `message` contains the parenthesized suffix
     ///         `"(because S.base failed)"` — pinning the exact user-visible
     ///         wording the enrichment introduces.
-    ///
-    /// Step-3 test: will fail with today's static message until step-4 enriches
-    /// the Pending arm to call `Engine::pending_cause`.
     #[cfg(any(test, feature = "test-support"))]
     #[test]
     fn pending_diagnostic_message_includes_upstream_cell_name() {
         // Same let-chain source and setup as the sibling pending-diagnostic test.
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
+        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
 
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
 
-        let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-
-        // Pass 1: cold eval — initialises cache (all cells → Final).
-        let _ = engine.eval(&compiled);
-
-        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
-        engine.set_panic_on_eval(base_id);
-        let _ = engine.eval(&compiled);
-
-        // Package into EvalState with matching hash so next call uses eval_cached.
-        let mut state = EvalState::new();
-        state.engine = engine;
-        state.last_content_hash = Some(compiled.content_hash);
-        state.version_counter = 2;
-
-        let uri = test_uri();
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-
-        let pending_diags: Vec<_> = result
-            .diagnostics
+        let pending_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.code
@@ -2908,7 +2849,7 @@ structure S {
             "expected at least one 'computation-pending' diagnostic \
              (S.derived is Pending because S.base failed); \
              got zero; all diagnostics: {:#?}",
-            result.diagnostics
+            diagnostics
         );
 
         for d in &pending_diags {
@@ -3845,11 +3786,11 @@ structure S {
     /// C2): pins the *other* half of
     /// `constraint_depends_on_unregistered_optimized_compute`'s
     /// discriminator — `engine.compute_dispatch(t).is_none()` — that every
-    /// other FEA-hint test leaves unexercised. Every other test builds its
-    /// `EvalState` via `EvalState::new()`, which never registers a compute
+    /// other FEA-hint test leaves unexercised. Every other test runs the
+    /// pipeline on `EvalState::new()`, which never registers a compute
     /// trampoline, so `compute_dispatch` returns `None` for every target in
     /// every other test; the "registered target ⇒ not FEA-dependent ⇒ no
-    /// hint" branch of the discriminator has never actually run.
+    /// hint" branch of the discriminator never runs there.
     ///
     /// Registers a trampoline for `"solver::elastic_static"` that itself
     /// completes with `Value::Undef` — deliberately mirroring the *value*
@@ -3858,20 +3799,12 @@ structure S {
     /// sanity check below confirms this) and the emission loop actually
     /// reaches the discriminator instead of short-circuiting earlier on
     /// `entry.satisfaction != Indeterminate`. Only the *registration status*
-    /// differs from the unregistered-path tests above — isolating the
-    /// `compute_dispatch(..).is_none()` check as the thing this test can
-    /// catch a regression in.
+    /// differs from the positive control taken on the same engine before
+    /// registering — isolating the `compute_dispatch(..).is_none()` check as
+    /// the thing this test can catch a regression in.
     ///
-    /// Registration happens *after* a priming first call, not before: a
-    /// freshly-constructed `EvalState` is not yet "initialized"
-    /// ([`EvalState::is_engine_initialized`]), so `compute_diagnostics_with_state`'s
-    /// cold-start branch would replace `state.engine` wholesale with a fresh
-    /// `Engine::new(..)` — silently discarding a trampoline registered
-    /// beforehand. Mirrors the priming pattern in
-    /// `incremental_path_uses_eval_cached_when_content_unchanged` (above):
-    /// call once to initialize the engine, register, then call again with
-    /// unchanged content so the `eval_cached` path is taken and `state.engine`
-    /// is reused rather than replaced.
+    /// Drives [`fea_not_evaluated_hints`] on a hand-built engine: no
+    /// registered trampoline is reachable through the public pipeline.
     #[test]
     fn fea_hint_does_not_fire_when_compute_target_is_registered() {
         fn undef_result_fn(
@@ -3890,39 +3823,42 @@ structure S {
             }
         }
 
-        let uri = test_uri();
-        let mut state = EvalState::new();
-
-        // Priming call: cold-starts and initializes `state.engine` (no
-        // trampoline registered yet, so this behaves like the ordinary
-        // unregistered/body-inline path — its result is discarded).
-        let _ = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-
-        // Register on the now-initialized, surviving engine instance.
-        state.engine.register_compute_fn(
-            "solver::elastic_static",
-            undef_result_fn as reify_eval::ComputeFn,
-        );
-        assert!(
-            state
-                .engine
-                .compute_dispatch("solver::elastic_static")
-                .is_some(),
-            "test setup sanity: solver::elastic_static must be registered \
-             before the second compute_diagnostics_with_state call"
-        );
-
-        // Second call, same content: takes the `eval_cached` path (content
-        // unchanged + engine now initialized), which does NOT replace
-        // `state.engine` — the registered trampoline survives into it.
-        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
-        let check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
-             immediately after compute_diagnostics_with_state evaluated it",
+        let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
+            Box::new(SimpleConstraintChecker),
+            None,
+        );
+        let _ = engine.eval(&compiled);
+
+        // Positive control: the same engine and module, target still
+        // unregistered, DO produce hints — so the empty result below is the
+        // registration's doing, not a fixture that never hints.
+        let unregistered_check_result = engine.check_snapshot(&compiled).expect(
+            "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval",
+        );
+        assert!(
+            !fea_not_evaluated_hints(
+                &engine,
+                &compiled,
+                &unregistered_check_result,
+                FEA_BEARING_SRC
+            )
+            .is_empty(),
+            "positive control: with solver::elastic_static unregistered, the \
+             FEA-bearing fixture must produce at least one hint"
+        );
+
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            undef_result_fn as reify_eval::ComputeFn,
+        );
+        let _ = engine.eval_cached(&compiled, VersionId(2));
+
+        let check_result = engine.check_snapshot(&compiled).expect(
+            "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval_cached",
         );
         let indeterminate_count = check_result
             .constraint_results
@@ -3941,17 +3877,7 @@ structure S {
             check_result.constraint_results
         );
 
-        let hints: Vec<_> = result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.code
-                        == Some(lsp_types::NumberOrString::String(
-                            FEA_NOT_EVALUATED_CODE.to_string(),
-                        ))
-            })
-            .collect();
+        let hints = fea_not_evaluated_hints(&engine, &compiled, &check_result, FEA_BEARING_SRC);
         assert!(
             hints.is_empty(),
             "no FEA \"not evaluated in editor\" hint should fire once \
