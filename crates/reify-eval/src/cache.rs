@@ -1990,6 +1990,99 @@ mod tests {
         }
     }
 
+    /// Exhaustive (no `_` arm), so a sixth `NodeId` variant fails to compile
+    /// here until the round-trip table below covers it.
+    fn node_id_variant_index(id: &NodeId) -> usize {
+        match id {
+            NodeId::Value(_) => 0,
+            NodeId::Constraint(_) => 1,
+            NodeId::Realization(_) => 2,
+            NodeId::Resolution(_) => 3,
+            NodeId::Compute(_) => 4,
+        }
+    }
+
+    #[test]
+    fn node_id_from_str_inverts_display_for_every_kind() {
+        use reify_core::{ComputeNodeId, ResolutionNodeId};
+
+        let ids = [
+            NodeId::Value(ValueCellId::new("Bracket", "width")),
+            NodeId::Value(ValueCellId::new("__field", "gravity")),
+            NodeId::Value(ValueCellId::new("Widget", r#"vents["intake"]"#)),
+            NodeId::Constraint(ConstraintNodeId::new("Rig.bolts", 2)),
+            NodeId::Constraint(ConstraintNodeId::new("forall_connect:v@Rig.bolts#3", 0)),
+            NodeId::Realization(RealizationNodeId::new("box-2658-smoke", 1)),
+            NodeId::Resolution(ResolutionNodeId::new("A", 0)),
+            NodeId::Compute(ComputeNodeId::new("Bracket", u32::MAX)),
+        ];
+        let kinds: std::collections::BTreeSet<usize> =
+            ids.iter().map(node_id_variant_index).collect();
+        assert_eq!(kinds, (0..5).collect(), "the table must cover every kind");
+
+        for id in ids {
+            assert_eq!(
+                id.to_string().parse::<NodeId>(),
+                Ok(id.clone()),
+                "{id} must round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn node_id_from_str_prefers_the_indexed_reading() {
+        let rendered = "Rig.bolts#constraint[2]";
+        assert!(
+            rendered.parse::<ValueCellId>().is_ok(),
+            "the single-dot value-cell reading (Rig, bolts#constraint[2]) exists, \
+             so precedence decides which node this string names"
+        );
+        assert_eq!(
+            rendered.parse::<NodeId>(),
+            Ok(NodeId::Constraint(ConstraintNodeId::new("Rig.bolts", 2)))
+        );
+    }
+
+    #[test]
+    fn node_id_from_str_routes_typed_errors_by_kind() {
+        use reify_core::identity::{
+            IndexedNodeIdFault, IndexedNodeIdParseError, IndexedNodeKind, ValueCellIdParseError,
+        };
+
+        let indexed = |kind, fault| {
+            Err::<NodeId, _>(NodeIdParseError::Indexed(IndexedNodeIdParseError {
+                kind,
+                fault,
+            }))
+        };
+        assert_eq!(
+            "Foo#computation[x]".parse::<NodeId>(),
+            indexed(IndexedNodeKind::Compute, IndexedNodeIdFault::InvalidIndex)
+        );
+        assert_eq!(
+            "Foo#constraint".parse::<NodeId>(),
+            indexed(IndexedNodeKind::Constraint, IndexedNodeIdFault::MissingMarker)
+        );
+        assert_eq!(
+            "Rig.bolts#resolution[".parse::<NodeId>(),
+            indexed(
+                IndexedNodeKind::Resolution,
+                IndexedNodeIdFault::MissingTerminator
+            )
+        );
+        for (input, fault) in [
+            ("Compute(foo)", ValueCellIdParseError::MissingSeparator),
+            ("Foo#bogus[0]", ValueCellIdParseError::MissingSeparator),
+            ("A.b.c", ValueCellIdParseError::Ambiguous),
+        ] {
+            assert_eq!(
+                input.parse::<NodeId>(),
+                Err(NodeIdParseError::Value(fault)),
+                "{input:?} names no indexed marker, so the value-cell grammar judges it"
+            );
+        }
+    }
+
     #[test]
     fn node_id_from_value_cell_id() {
         let vcid = ValueCellId::new("Bracket", "width");
