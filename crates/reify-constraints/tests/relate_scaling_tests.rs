@@ -218,15 +218,18 @@ fn incoherent_ladders_are_refused_naming_the_rung() {
 }
 
 #[test]
-fn assertion_rung_is_selected_by_row_unit() {
+fn absolute_assertion_rung_is_selected_by_row_unit() {
     let tol = RelateTolerance::kernel_default();
-    assert_eq!(tol.assertion_rung(ResidualUnit::Length), tol.assertion());
     assert_eq!(
-        tol.assertion_rung(ResidualUnit::Angle),
+        tol.absolute_assertion_rung(ResidualUnit::Length),
+        tol.assertion()
+    );
+    assert_eq!(
+        tol.absolute_assertion_rung(ResidualUnit::Angle),
         tol.assertion_angle()
     );
     assert_eq!(
-        tol.assertion_rung(ResidualUnit::Dimensionless),
+        tol.absolute_assertion_rung(ResidualUnit::Dimensionless),
         tol.assertion_dimensionless()
     );
 }

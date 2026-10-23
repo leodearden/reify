@@ -239,8 +239,13 @@ impl RelateTolerance {
         self.assertion_angle().sin()
     }
 
-    /// The assertion rung for a row measured in `unit`.
-    pub fn assertion_rung(&self, unit: ResidualUnit) -> f64 {
+    /// The assertion rung for a row measured in `unit`, independent of the model's
+    /// size. It judges geometry no solve produced — static verification of a scope
+    /// with no `auto` sub — whose rows carry no solver error to absorb, so a model
+    /// is held to the same absolute bar at every size. A SOLVED pose is judged
+    /// against [`SolveScaling::assertion_rung`] instead, whose metre rung grows with
+    /// `L` to stay above the scale-relative solver bar that produced it.
+    pub fn absolute_assertion_rung(&self, unit: ResidualUnit) -> f64 {
         match unit {
             ResidualUnit::Length => self.assertion(),
             ResidualUnit::Angle => self.assertion_angle(),
@@ -332,19 +337,19 @@ impl SolveScaling {
         }
     }
 
-    /// The post-solve assertion rung of a row measured in `unit`. The metre rung
-    /// grows as `max(L / R_ref, 1)` so it stays above [`row_tolerance`](Self::row_tolerance)
+    /// The assertion rung of a row measured in `unit`, at a pose this solve
+    /// produced. The metre rung is the
+    /// [`absolute_assertion_rung`](RelateTolerance::absolute_assertion_rung) grown
+    /// by `max(L / R_ref, 1)`, so it stays above [`row_tolerance`](Self::row_tolerance)
     /// at every `L`; the angular rungs are absolute (PRD §7.3 "Coherence at every
     /// scale").
     pub fn assertion_rung(&self, unit: ResidualUnit) -> f64 {
+        let absolute = self.tolerance.absolute_assertion_rung(unit);
         match unit {
             ResidualUnit::Length => {
-                self.tolerance.assertion()
-                    * (self.characteristic_length / ANGULAR_REFERENCE_RADIUS_M).max(1.0)
+                absolute * (self.characteristic_length / ANGULAR_REFERENCE_RADIUS_M).max(1.0)
             }
-            ResidualUnit::Angle | ResidualUnit::Dimensionless => {
-                self.tolerance.assertion_rung(unit)
-            }
+            ResidualUnit::Angle | ResidualUnit::Dimensionless => absolute,
         }
     }
 

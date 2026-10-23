@@ -1009,9 +1009,10 @@ enum StaticVerdict {
 ///    relation name / operand-kind combination. Never folded into "satisfied".
 ///    Arm 4 runs first so this arm's reason is only ever given for a genuinely
 ///    UNMODELLED combination;
-/// 6. otherwise each row against the assertion rung for ITS OWN unit
-///    ([`RelateTolerance::assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
-///    violated.
+/// 6. otherwise each row against the ABSOLUTE assertion rung for ITS OWN unit
+///    ([`RelateTolerance::absolute_assertion_rung`], which says why it does not
+///    scale with the model): every row within ⇒ verified (silent), any row beyond
+///    ⇒ violated.
 ///
 /// The counts therefore always sum to the scope's relation count, which is what
 /// makes a silently-skipped relation impossible to hide.
@@ -1035,7 +1036,7 @@ enum StaticVerdict {
 /// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
 /// degrees for an orientation row, and a bare number for a direction/dot/cosine
 /// row, which has no length reading at all. That same unit tag also selects the
-/// rung the row is JUDGED against ([`RelateTolerance::assertion_rung`]) — rendering a row in one
+/// rung the row is JUDGED against ([`RelateTolerance::absolute_assertion_rung`]) — rendering a row in one
 /// unit while thresholding it in another would leave the category error in place
 /// where it does the most damage, since a static violation FAILS the build. [`conflict_diagnostic`] is deliberately NOT reused: it
 /// needs an auto sub and a driving/redundant partition that a zero-auto scope does
@@ -1217,7 +1218,7 @@ fn static_verdict(
     let (dominant, exceedance) = rows
         .iter()
         .copied()
-        .map(|row| (row, row.value.abs() / tol.assertion_rung(row.unit)))
+        .map(|row| (row, row.value.abs() / tol.absolute_assertion_rung(row.unit)))
         .reduce(|m, r| if r.1 > m.1 { r } else { m })
         .expect("rows is non-empty — the empty case returned Unverifiable above");
     if exceedance <= 1.0 {
@@ -2456,6 +2457,32 @@ structure PerpendicularScope {
                 violated: 2,
                 unverifiable: 0,
             })
+        );
+    }
+
+    /// A static scope is held to the ABSOLUTE metre rung however large the model:
+    /// a 5e-5 m `flush` miss among datums spread over 20 m is a violation, although
+    /// a solved scope of that size accepts it under its `L`-scaled rung.
+    #[test]
+    fn verify_static_scope_holds_a_large_model_to_the_absolute_metre_rung() {
+        let miss = 5e-5;
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v((20.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v((0.0, 0.0, miss), (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&scope("StaticScope"), &datums);
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "`concentric` holds and the 5e-5 m `flush` miss exceeds the absolute \
+             1e-5 m rung; got {:?}",
+            solution.diagnostics
         );
     }
 
