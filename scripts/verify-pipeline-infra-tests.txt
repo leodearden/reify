@@ -832,6 +832,7 @@ tests/infra/test_verify_ledger_cli.py    tests/infra/test_verify_ledger_cli.sh
 tests/infra/test_verify_ledger_e2e.py    tests/infra/test_verify_ledger_e2e.sh
 tests/infra/test_verify_ledger_lane_seed.py    tests/infra/test_verify_ledger_lane_seed.sh
 tests/infra/test_run_all_timing.py    tests/infra/test_run_all_timing.sh
+tests/infra/test_run_all_member_lifetime.py    tests/infra/test_run_all_member_lifetime.sh
 scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
 scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
 
