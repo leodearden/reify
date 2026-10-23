@@ -791,18 +791,20 @@ _t10b() {
 # bare `&`) cannot turn that self-signal into a no-op; where the host cannot
 # reset it, that sub-arm SKIPs instead of being counted.
 #
-# WHY THE PROBE SIGKILLS ITSELF AFTERWARDS — this is the whole difference between
-# this arm and a vacuous one. _nextest_absent_trap_dispatch deliberately does not
-# re-raise, so once the handler returns the shell RESUMES, runs to the end and
-# exits NORMALLY — firing the EXIT trap and appending CALLER_RAN whether or not
-# the signal dispatch replayed anything at all. Measured: the first version of
-# this arm reported PASS against a lib that stashed nothing for INT/TERM/HUP, for
-# exactly that reason. SIGKILL is uncatchable and untrappable, so it removes the
-# second path outright: past that line CALLER_RAN can only have been written by
-# the <signal> dispatch. SURVIVED_KILL is asserted ABSENT rather than assumed, so
-# a probe that somehow outlived its own KILL is reported instead of silently
-# restoring the vacuity. rc is deliberately never asserted on — the probe is
-# EXPECTED to die 137.
+# WHAT CALLER_RAN PROVES HERE, since task 9441. The dispatcher now ends the
+# shell on INT/TERM/HUP with `exit 128+n` (10m below pins that), and the exit
+# runs the EXIT dispatch, which replays the caller's EXIT handler as well. So
+# for this EXIT-only caller CALLER_RAN can come from either dispatch, and a lib
+# that stashed nothing for INT/TERM/HUP would pass. The first version of this
+# arm passed such a lib for the same reason, back when the dispatcher let the
+# shell resume and exit normally; that is why the probe SIGKILLs itself after
+# the signal. The gap no longer hides a defect a caller can observe: an
+# EXIT-only caller's handler now runs on the signal either way. What this arm
+# still pins is that outcome, per signal: the caller's handler fired and the
+# lib's workdir is gone. The trailing SIGKILL still stops a lib that RESUMES
+# from reaching a normal exit, and SURVIVED_KILL is asserted ABSENT rather than
+# assumed. Termination itself (no RESUMED, exit 128+n) is 10m's assert, so rc
+# is not asserted here.
 NX_TRAP_SIG="$NX_TRAP_DIR/signal.sh"
 cat > "$NX_TRAP_SIG" <<'TRAP_SIG'
 # argv: <repo-root> <marker-file> <signal>

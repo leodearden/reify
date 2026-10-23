@@ -173,10 +173,18 @@ _nextest_absent_mirror_source() {
 #       signal cannot terminate the shell either, and EXIT still runs on a normal
 #       exit. See tests/infra/README.md, "Signals ignored on entry".
 #
-#       ONE CONSEQUENCE, and it is not new: because the dispatcher does not
-#       re-raise, a handler replayed on INT/TERM/HUP may run AGAIN at EXIT if the
-#       shell resumes and then exits normally. A COMPOSED HANDLER MUST THEREFORE
-#       BE IDEMPOTENT. That is exactly the semantics of the plain
+#       A FATAL SIGNAL ENDS THE SHELL (task 9441). On INT/TERM/HUP, after
+#       teardown and the replayed handler, the dispatcher exits 128+n. It
+#       does not let the shell resume against the NX_WORKDIR it has just
+#       deleted. That is the shape diagnosed in esc-8989-2 / esc-6673-6:
+#       test_verify_nextest_absent_suites.sh outlived the merge envelope's
+#       TERM, and its later nested suites failed against the removed farm.
+#       `exit` runs the EXIT dispatch too, so the caller's EXIT handler still
+#       fires.
+#
+#       ONE CONSEQUENCE: a handler composed onto EXIT is replayed for the
+#       signal and then AGAIN at EXIT, so a COMPOSED HANDLER MUST BE
+#       IDEMPOTENT. That is exactly the semantics of the plain
 #       `trap cleanup EXIT INT TERM HUP` this composition replaces (and which
 #       test_verify_semaphore_wiring.sh itself used before it moved onto the
 #       lib); both live consumers' handlers are `rm -rf` loops, which are.
@@ -219,10 +227,10 @@ _nextest_absent_trap_body() {
 }
 
 # _nextest_absent_trap_dispatch <sig> — the composed handler: lib teardown
-# first, then the caller's stashed handler.
-#
-# Signals are deliberately NOT re-raised after the handler runs, matching the
-# behaviour of the plain `trap 'rm -rf ...' EXIT INT TERM HUP` this replaces.
+# first, then the caller's stashed handler. On INT/TERM/HUP the shell then
+# exits 128+n (see "A FATAL SIGNAL ENDS THE SHELL" above). It uses `exit`, not
+# `trap - SIG; kill -SIG $$`, for two reasons: exit still runs the EXIT
+# dispatch, and `$$` would name the parent shell inside a subshell.
 _nextest_absent_trap_dispatch() {
     local sig="$1" prev=""
     nextest_absent_cleanup
@@ -230,6 +238,12 @@ _nextest_absent_trap_dispatch() {
     if [ -n "$prev" ]; then
         eval "$prev" || true
     fi
+    case "$sig" in
+        INT|TERM|HUP)
+            trap - "$sig"
+            exit $(( 128 + $(kill -l "$sig") ))
+            ;;
+    esac
     return 0
 }
 

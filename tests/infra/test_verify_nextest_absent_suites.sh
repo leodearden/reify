@@ -59,9 +59,10 @@
 # capture — scope was 73s there). End to end this suite measured 155s with all
 # eight S-rows green, against ~130s for the original four; run-to-run variance
 # of roughly ±30s comes from plan-capture cache warmth, so treat ~3 min as the
-# working figure. tests/infra/run_all.sh applies NO per-member timeout — only
-# verify.sh's `timeout --kill-after=60 30m` envelope around the whole run — so
-# this sits comfortably inside budget for the intra-run-serial bucket. Weighed
+# working figure. tests/infra/run_all.sh bounds each member by its
+# REIFY_RUN_ALL_MEMBER_TIMEOUT (default 1200s, introduced by #9441), inside
+# verify.sh's envelope around the whole run, so this sits comfortably inside
+# budget for the intra-run-serial bucket. Weighed
 # deliberately: the alternative is a prose audit verdict that rots silently.
 # The 9th member (retry_subset, task 5587) adds ~3s (measured 2.5s ambient on
 # this lane; hermetic --print-plan only, no cargo build), so the ~3 min working
