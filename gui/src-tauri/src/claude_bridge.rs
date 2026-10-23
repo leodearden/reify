@@ -44,15 +44,6 @@ pub enum InboundMessage {
     },
     Abort,
     ClearSession,
-    /// Tool result sent back to the sidecar after in-process MCP tool execution.
-    ToolResult {
-        id: String,
-        tool_name: String,
-        result: Value,
-        /// The Claude CLI tool_use_id echoed from the corresponding ToolCall outbound.
-        /// Enables id-based correlation in the sidecar (avoids FIFO-by-tool_name fallback).
-        tool_use_id: String,
-    },
     /// User's decision on a pending permission-prompt request.
     /// Sent in response to an outbound `PermissionRequest` identified by `request_id`.
     PermissionDecision {
@@ -103,9 +94,10 @@ pub enum OutboundMessage {
         id: String,
         tool_name: String,
         tool_input: Value,
-        /// The Claude CLI tool_use_id enabling id-based correlation in the sidecar.
-        /// Defaults to empty string when absent (stale sidecar without this field),
-        /// so a missing field degrades gracefully (FIFO-by-tool_name fallback).
+        /// The claude CLI's tool_use id, forwarded to the frontend in the
+        /// `claude-tool-call` payload. Empty when an older sidecar omits it:
+        /// `#[serde(default)]` keeps such a line delivered rather than dropped as a
+        /// parse failure.
         #[serde(default)]
         tool_use_id: String,
     },
@@ -180,31 +172,6 @@ pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
         .map_err(|e| format!("write_to_sidecar: {}", e))
 }
 
-/// Emit a WARN when a ToolCall arrives without a `tool_use_id` field.
-///
-/// This is the dev-mode version-skew case: a stale sidecar (pre-dating task #2766)
-/// omits `tool_use_id` from ToolCall events.  The message is still delivered to
-/// `on_message`; id-correlation falls back to FIFO-by-tool_name in the sidecar
-/// TypeScript.  All other `OutboundMessage` variants are silently ignored.
-pub(crate) fn warn_if_stale_tool_call(msg: &OutboundMessage) {
-    if let OutboundMessage::ToolCall {
-        tool_use_id,
-        id,
-        tool_name,
-        ..
-    } = msg
-        && tool_use_id.is_empty()
-    {
-        tracing::warn!(
-            message_id = %id,
-            tool_name = %tool_name,
-            "sidecar tool_call missing tool_use_id; \
-             likely dev-mode version skew between sidecar and Rust binary \
-             — id-correlation will fall back to FIFO-by-tool_name"
-        );
-    }
-}
-
 /// Read lines from sidecar stdout, parse each as OutboundMessage, and call callbacks.
 /// Skips lines that fail to parse (and warns operators). Calls on_exit when the stream ends (EOF).
 pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
@@ -217,10 +184,7 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
         match lines.next_line().await {
             Ok(Some(line)) => {
                 match parse_outbound(&line) {
-                    Ok(msg) => {
-                        warn_if_stale_tool_call(&msg);
-                        on_message(msg);
-                    }
+                    Ok(msg) => on_message(msg),
                     Err(e) => {
                         // Cap the payload snippet to avoid log spam from unexpectedly large lines.
                         // Use chars().take(200) to truncate on character boundaries rather than raw
@@ -319,7 +283,7 @@ pub enum SidecarState {
 /// Counter for generating unique message IDs per session.
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Shared stdin writer type — Arc<Mutex<>> so the reader task can write back tool results.
+/// The sidecar's stdin, written by `SidecarHandle`'s inbound-message methods.
 type SharedStdin = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 /// Handle to a running sidecar process.

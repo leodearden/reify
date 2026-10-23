@@ -335,8 +335,8 @@ fn parse_outbound_tool_call() {
 
 #[test]
 fn parse_outbound_tool_call_without_tool_use_id_defaults_to_empty() {
-    // Stale-sidecar payload: ToolCall JSON missing tool_use_id.
-    // After #[serde(default)] is applied, this should parse Ok with tool_use_id == "".
+    // A ToolCall line without tool_use_id (an older sidecar) still parses, with
+    // tool_use_id == "", rather than being dropped as a parse failure.
     let line = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get","tool_input":{"x":1}}"#;
     let result = parse_outbound(line);
     match result {
@@ -1244,11 +1244,7 @@ async fn read_sidecar_output_delivers_tool_call_missing_tool_use_id_without_warn
     );
 
     // (b) No WARN: a missing tool_use_id is not an operator-facing condition.
-    reify_test_support::assert_warn_count(
-        &warn_counter,
-        0,
-        "missing tool_use_id must not WARN",
-    );
+    reify_test_support::assert_warn_count(&warn_counter, 0, "missing tool_use_id must not WARN");
 }
 
 /// Parse failures (e.g. invalid JSON) must emit a WARN and NOT deliver a
@@ -1293,38 +1289,6 @@ async fn read_sidecar_output_warns_on_parse_failure() {
         1,
         "parse failure must emit exactly one WARN",
     );
-}
-
-/// `warn_if_stale_tool_call` must emit exactly one WARN for a stale ToolCall
-/// (empty tool_use_id), and zero WARNs for a valid ToolCall or a non-ToolCall
-/// variant.  Three branches tested in a single subscriber session so the
-/// assert is on the cumulative count.
-#[test]
-fn warn_if_stale_tool_call_emits_one_warn_only_for_stale_tool_call() {
-    let (_guard, counter) = reify_test_support::warn_counting_guard();
-
-    // (i) Stale ToolCall — empty tool_use_id → must bump the counter by 1.
-    let stale = OutboundMessage::ToolCall {
-        id: "msg-1".to_string(),
-        tool_name: "reify_get".to_string(),
-        tool_input: json!({}),
-        tool_use_id: String::new(),
-    };
-    warn_if_stale_tool_call(&stale);
-
-    // (ii) Valid ToolCall — non-empty tool_use_id → counter unchanged.
-    let valid = OutboundMessage::ToolCall {
-        id: "msg-2".to_string(),
-        tool_name: "reify_get".to_string(),
-        tool_input: json!({}),
-        tool_use_id: "tu-1".to_string(),
-    };
-    warn_if_stale_tool_call(&valid);
-
-    // (iii) Non-ToolCall variant → counter unchanged.
-    warn_if_stale_tool_call(&OutboundMessage::Ready);
-
-    reify_test_support::assert_warn_count(&counter, 1, "only the stale ToolCall must warn");
 }
 
 // --- outbound_to_event tests (step-7) ---
@@ -1761,26 +1725,6 @@ fn format_inbound_send_message_with_context_includes_context() {
     assert!(line.ends_with('\n'));
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
-}
-
-#[test]
-fn format_inbound_tool_result_includes_tool_use_id() {
-    let msg = InboundMessage::ToolResult {
-        id: "msg-tr1".to_string(),
-        tool_name: "reify_get_diagnostics".to_string(),
-        result: serde_json::json!([]),
-        tool_use_id: "tu-echo-1".to_string(),
-    };
-    let line = format_inbound(&msg);
-    assert!(line.ends_with('\n'), "Should end with newline");
-    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-    assert_eq!(json_val["type"], "tool_result");
-    assert_eq!(json_val["id"], "msg-tr1");
-    assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
-    assert_eq!(
-        json_val["tool_use_id"], "tu-echo-1",
-        "tool_use_id must be echoed so the sidecar can use id-based correlation"
-    );
 }
 
 // --- shutdown_sidecar edge-case tests (task-353/step-1) ---
