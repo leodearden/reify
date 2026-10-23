@@ -8,12 +8,7 @@ import type { PermissionServer } from './permission-server.js';
 import { wrapClaudeArgs } from './sandbox.js';
 import { sidecarMcpServers } from './tool-surface.js';
 import { buildClaudeArgs } from './claudeArgs.js';
-import {
-  forgetToolUses,
-  initialStreamState,
-  mapStreamEvent,
-  type StreamState,
-} from './streamEvents.js';
+import { initialStreamState, mapStreamEvent, type StreamStep } from './streamEvents.js';
 import { errorMessage } from './utils.js';
 
 export interface SessionConfig {
@@ -82,8 +77,6 @@ export class SidecarSession {
   private abortController: AbortController | null = null;
   private destroyed = false;
 
-  /** The in-flight invocation's stream state (delta offsets, tool_use correlation), if any. */
-  private stream: StreamState | null = null;
   /** The stdin of the currently in-flight claude CLI process, if any. */
   private currentStdin: NodeJS.WritableStream | null = null;
 
@@ -343,9 +336,8 @@ export class SidecarSession {
       }
     );
 
-    // Register the in-flight stdin and a fresh stream state for this invocation.
+    // Register the in-flight stdin.
     this.currentStdin = proc.stdin ?? null;
-    this.stream = initialStreamState(id);
 
     // Start timeout timer
     const timeoutMs = this.config.timeoutMs ?? 300_000;
@@ -365,11 +357,10 @@ export class SidecarSession {
     });
 
     try {
-      await this.consumeStream(proc);
+      await this.consumeStream(proc, id);
     } finally {
       clearTimeout(timeoutId);
       this.currentStdin = null;
-      this.stream = null;
     }
 
     // Wait for process exit and check exit code
@@ -380,12 +371,14 @@ export class SidecarSession {
   }
 
   /**
-   * Read the claude child's stream-json stdout to its end, applying each event. A line
-   * that is not JSON is skipped with a warning. If applying an event throws, the child is
+   * Read the claude child's stream-json stdout to its end, folding each event into the
+   * invocation's stream state and forwarding the outputs it implies. A line that is not
+   * JSON is skipped with a warning. If mapping or forwarding an event throws, the child is
    * killed (it would otherwise keep running tools for a turn that has already failed)
    * and the error propagates, so the turn ends with an error outbound.
    */
-  private async consumeStream(proc: ChildProcess): Promise<void> {
+  private async consumeStream(proc: ChildProcess, invocationId: string): Promise<void> {
+    let state = initialStreamState(invocationId);
     for await (const line of createLineReader(proc.stdout!)) {
       let event: unknown;
       try {
@@ -395,7 +388,9 @@ export class SidecarSession {
         continue;
       }
       try {
-        this.applyStreamEvent(event, proc);
+        const step = mapStreamEvent(event, state);
+        state = step.state;
+        this.forwardStep(step, proc);
       } catch (error) {
         proc.kill();
         throw error;
@@ -403,16 +398,8 @@ export class SidecarSession {
     }
   }
 
-  /**
-   * Advance the in-flight stream state by one event and forward the outputs it implies.
-   * The state is re-read from `this.stream` on every event, so claims and forgets made
-   * between events survive, and it is committed BEFORE forwarding, so a host answering a
-   * tool_call synchronously finds its tool_use.
-   */
-  private applyStreamEvent(event: unknown, proc: ChildProcess): void {
-    if (this.stream === null) throw new Error('stream event received with no in-flight invocation state');
-    const step = mapStreamEvent(event, this.stream);
-    this.stream = step.state;
+  /** Forward one event's outputs to the host, and finish the turn when it was the result. */
+  private forwardStep(step: StreamStep, proc: ChildProcess): void {
     for (const msg of step.outputs) {
       if (msg.type === 'notice') {
         this.emitNotice(msg);
@@ -516,7 +503,6 @@ export class SidecarSession {
    */
   private handleClearSession(): void {
     this.sessionId = null;
-    if (this.stream !== null) this.stream = forgetToolUses(this.stream);
     // Cancel any in-flight permission requests before clearing the tracking map.
     // Without this, the HTTP handlers awaiting pendingPromises in the permission
     // server would hang forever (no one calls decide() after the map is cleared).

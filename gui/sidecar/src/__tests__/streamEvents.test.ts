@@ -1,14 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import {
-  forgetToolUses,
-  initialStreamState,
-  mapStreamEvent,
-  type StreamState,
-} from '../streamEvents.js';
+import { initialStreamState, mapStreamEvent } from '../streamEvents.js';
 import type { OutboundMessage } from '../types.js';
 
-function fold(events: unknown[], start: StreamState = initialStreamState('inv-1')) {
-  let state = start;
+function fold(events: unknown[]) {
+  let state = initialStreamState('inv-1');
   const outputs: OutboundMessage[] = [];
   for (const event of events) {
     const step = mapStreamEvent(event, state);
@@ -200,15 +195,5 @@ describe('mapStreamEvent: purity', () => {
       expect(registered).toEqual(snapshot);
       expect(step.state).not.toBe(registered);
     }
-  });
-});
-
-const announced = (...blocks: unknown[]) => fold([assistant(blocks)]).state;
-
-describe('forgetToolUses', () => {
-  it('keeps the text offset, so the next delta is only the new suffix', () => {
-    const forgotten = forgetToolUses(announced(text('Hello'), toolUse('toolu_1', 'reify_x')));
-    const { outputs } = fold([assistant([text('Hello world')])], forgotten);
-    expect(outputs).toEqual([textDelta(' world')]);
   });
 });

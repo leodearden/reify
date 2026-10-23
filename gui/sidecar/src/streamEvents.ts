@@ -159,11 +159,6 @@ function mapResult(sessionId: unknown, state: StreamState): StreamStep {
   return { outputs: [], state, finished: { sessionId } };
 }
 
-/** The state with no tool_use named; delta offsets and the turn are kept. */
-export function forgetToolUses(state: StreamState): StreamState {
-  return { ...state, toolNameById: new Map() };
-}
-
 function unseenSuffix(full: unknown, emittedLen: number): string | null {
   return typeof full === 'string' && full.length > emittedLen ? full.slice(emittedLen) : null;
 }
