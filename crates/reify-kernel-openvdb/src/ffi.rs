@@ -46,6 +46,23 @@ pub mod ffi {
             band_half_width: f64,
         ) -> Result<UniquePtr<OpenVdbGridHandle>>;
 
+        // Level-set CSG: a ∪ b, a minus b, a ∩ b. Reads both grids, mutates
+        // neither, and returns a fresh grid on `a`'s transform (`b` is
+        // resampled onto it when the transforms differ). Throws when either
+        // operand is not a level set. Policy: the header's doc block.
+        fn csg_union_ffi(
+            a: &OpenVdbGridHandle,
+            b: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+        fn csg_difference_ffi(
+            a: &OpenVdbGridHandle,
+            b: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+        fn csg_intersection_ffi(
+            a: &OpenVdbGridHandle,
+            b: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+
         // Volume → Mesh (marching cubes): FloatGrid SDF → triangle soup.
         //
         // `iso_level`: isovalue (0.0 = zero level-set / SDF surface).

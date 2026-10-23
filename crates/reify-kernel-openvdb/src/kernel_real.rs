@@ -434,9 +434,12 @@ impl Default for OpenVdbKernel {
 //     no bbox-cache call, no LUT lazy-init path touched.
 //
 // Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
-// `densify_grid_to_sampled`, `ingest_dense_sdf`) take `&mut self` and rely on
-// Rust's borrow checker for exclusive access, NOT on `Sync`.
-// (`ingest_dense_sdf`'s C++ fill mutates only the fresh, unregistered grid.)
+// `densify_grid_to_sampled`, `ingest_dense_sdf`, and `execute`'s voxel
+// Booleans via `voxel_boolean`) take `&mut self` and rely on Rust's borrow
+// checker for exclusive access, NOT on `Sync`.
+// (`ingest_dense_sdf`'s C++ fill mutates only the fresh, unregistered grid;
+// the voxel Booleans' CSG and resample only read their registered inputs and
+// write a fresh, unregistered grid.)
 //
 // `densify_grid_to_sampled` uses `&mut self` rather than the PRD §7.1 `&self`
 // because it calls `grid_bbox_min` / `grid_bbox_max` / `grid_densify_to_buffer`,
@@ -500,8 +503,21 @@ const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxe
      are dispatchable. Full execute()-trait routing (GeometryOp Mesh-input variant) \
      remains future work (task ε).";
 
-impl GeometryKernel for OpenVdbKernel {
-    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+/// The shape of the three level-set CSG entry points in [`openvdb_ffi`], so
+/// [`OpenVdbKernel::voxel_boolean`] takes the Boolean as a parameter.
+type LevelSetCsgFfi = fn(
+    &openvdb_ffi::OpenVdbGridHandle,
+    &openvdb_ffi::OpenVdbGridHandle,
+) -> Result<cxx::UniquePtr<openvdb_ffi::OpenVdbGridHandle>, cxx::Exception>;
+
+/// The `execute()` arms, one method per supported op.
+impl OpenVdbKernel {
+    fn execute_surface(
+        &mut self,
+        grid: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    ) -> Result<GeometryHandle, GeometryError> {
         // Task 5033 Gap #2/#3 (PRD OQ-1(a)): the isosurface terminal anchor.
         // `openvdb_capability_descriptor()`'s `(Surface, Mesh)` entry makes
         // the dispatcher route a Voxel-only `Surface` operand through a
@@ -514,88 +530,150 @@ impl GeometryKernel for OpenVdbKernel {
         // running it here (and self-registering the mesh) so `execute()`
         // stays correct for a caller that reaches this arm with `grid`
         // naming a genuine voxel grid instead.
-        if let GeometryOp::Surface {
-            grid,
+        if self.mesh_handles.contains_key(&grid) {
+            return Ok(GeometryHandle {
+                id: grid,
+                repr: None,
+            });
+        }
+        let opts = crate::MarchingCubesOptions {
             iso_level,
             adaptive,
-        } = op
+        };
+        let mesh = self.realize_mesh_from_voxel_with_options(grid, &opts)?;
+        self.register_mesh_handle(&mesh)
+    }
+
+    fn execute_apply_transform(
+        &mut self,
+        target: GeometryHandleId,
+        rotation: [f64; 4],
+        translation: [f64; 3],
+    ) -> Result<GeometryHandle, GeometryError> {
+        // Mirrors `OcctKernel::execute`'s `ApplyTransform` finiteness
+        // guard (crates/reify-kernel-occt/src/lib.rs:2783-2795) — reject
+        // non-finite components before touching any handle table.
+        if !rotation[0].is_finite()
+            || !rotation[1].is_finite()
+            || !rotation[2].is_finite()
+            || !rotation[3].is_finite()
+            || !translation[0].is_finite()
+            || !translation[1].is_finite()
+            || !translation[2].is_finite()
         {
-            if self.mesh_handles.contains_key(grid) {
-                return Ok(GeometryHandle {
-                    id: *grid,
-                    repr: None,
-                });
-            }
-            let opts = crate::MarchingCubesOptions {
-                iso_level: *iso_level,
-                adaptive: *adaptive,
-            };
-            let mesh = self.realize_mesh_from_voxel_with_options(*grid, &opts)?;
-            return self.register_mesh_handle(&mesh);
+            return Err(GeometryError::OperationFailed(format!(
+                "apply_transform parameters must be finite: rotation={:?}, translation={:?}",
+                rotation, translation
+            )));
         }
-        if let GeometryOp::ApplyTransform {
-            target,
-            rotation,
-            translation,
-        } = op
-        {
-            // Mirrors `OcctKernel::execute`'s `ApplyTransform` finiteness
-            // guard (crates/reify-kernel-occt/src/lib.rs:2783-2795) — reject
-            // non-finite components before touching any handle table.
-            if !rotation[0].is_finite()
-                || !rotation[1].is_finite()
-                || !rotation[2].is_finite()
-                || !rotation[3].is_finite()
-                || !translation[0].is_finite()
-                || !translation[1].is_finite()
-                || !translation[2].is_finite()
-            {
-                return Err(GeometryError::OperationFailed(format!(
-                    "apply_transform parameters must be finite: rotation={:?}, translation={:?}",
-                    rotation, translation
-                )));
-            }
-            // Task 5033 review fix-forward: a placed isosurface handle (mesh
-            // OR voxel-grid) previously fell through to the
-            // `VOXEL_BOOL_STUB_MSG` `Err` below, so `walk_placed_realizations`
-            // (geometry_ops.rs) pushed a "transform application error"
-            // diagnostic and silently dropped the realization for any
-            // non-identity `at` pose. An `Err` here does NOT satisfy that
-            // caller's "no diagnostics" bar — it turns any `execute()` `Err`
-            // into a dropped realization — so resolve the source as a `Mesh`
-            // from whichever table actually holds `target` and transform it.
-            let source_mesh = if let Some(mesh) = self.mesh_handles.get(target) {
-                // The isosurface's own Surface result, stored verbatim by
-                // `register_mesh_handle`. Cloning releases the `&self`
-                // borrow before the grid branch's `&mut self` call below
-                // would otherwise conflict with it.
-                mesh.clone()
-            } else if self.handles.contains_key(target) {
-                // A genuine voxel grid (e.g. the isosurface operand, held at
-                // Voxel repr by task 5033's post-loop conversion edge):
-                // surface it via the same marching-cubes path `Surface` /
-                // `tessellate` use — the identity-pose walk already does
-                // this for display, so this loses no fidelity.
-                self.realize_mesh_from_voxel_with_options(
-                    *target,
-                    &crate::MarchingCubesOptions::default(),
-                )?
-            } else {
-                return Err(GeometryError::OperationFailed(format!(
-                    "ApplyTransform: handle {:?} is not a registered mesh or voxel grid",
-                    target
-                )));
-            };
-            let placed = apply_rigid_transform_to_mesh(&source_mesh, *rotation, *translation);
-            return self.register_mesh_handle(&placed);
+        // Task 5033 review fix-forward: a placed isosurface handle (mesh
+        // OR voxel-grid) previously fell through to the
+        // `VOXEL_BOOL_STUB_MSG` `Err` below, so `walk_placed_realizations`
+        // (geometry_ops.rs) pushed a "transform application error"
+        // diagnostic and silently dropped the realization for any
+        // non-identity `at` pose. An `Err` here does NOT satisfy that
+        // caller's "no diagnostics" bar — it turns any `execute()` `Err`
+        // into a dropped realization — so resolve the source as a `Mesh`
+        // from whichever table actually holds `target` and transform it.
+        let source_mesh = if let Some(mesh) = self.mesh_handles.get(&target) {
+            // The isosurface's own Surface result, stored verbatim by
+            // `register_mesh_handle`. Cloning releases the `&self`
+            // borrow before the grid branch's `&mut self` call below
+            // would otherwise conflict with it.
+            mesh.clone()
+        } else if self.handles.contains_key(&target) {
+            // A genuine voxel grid (e.g. the isosurface operand, held at
+            // Voxel repr by task 5033's post-loop conversion edge):
+            // surface it via the same marching-cubes path `Surface` /
+            // `tessellate` use — the identity-pose walk already does
+            // this for display, so this loses no fidelity.
+            self.realize_mesh_from_voxel_with_options(
+                target,
+                &crate::MarchingCubesOptions::default(),
+            )?
+        } else {
+            return Err(GeometryError::OperationFailed(format!(
+                "ApplyTransform: handle {:?} is not a registered mesh or voxel grid",
+                target
+            )));
+        };
+        let placed = apply_rigid_transform_to_mesh(&source_mesh, rotation, translation);
+        self.register_mesh_handle(&placed)
+    }
+
+    /// Run the level-set Boolean `csg` on two registered voxel grids and
+    /// register its fresh result. Operand order is the op's: the result lives
+    /// on `left`'s lattice.
+    fn voxel_boolean(
+        &mut self,
+        op_name: &'static str,
+        csg: LevelSetCsgFfi,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let result = csg(
+            self.voxel_grid(op_name, left)?,
+            self.voxel_grid(op_name, right)?,
+        )
+        .map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "{op_name} of voxel grids {left:?} and {right:?}: {e}"
+            ))
+        })?;
+        let id = self.alloc_id();
+        self.handles.insert(id, result);
+        Ok(GeometryHandle { id, repr: None })
+    }
+
+    /// The grid registered under `id`, or the reason `id` cannot be an
+    /// operand of `op_name`.
+    fn voxel_grid(
+        &self,
+        op_name: &'static str,
+        id: GeometryHandleId,
+    ) -> Result<&cxx::UniquePtr<openvdb_ffi::OpenVdbGridHandle>, GeometryError> {
+        if let Some(grid) = self.handles.get(&id) {
+            return Ok(grid);
         }
-        // Voxel op execution through execute() degrades gracefully — see
-        // VOXEL_BOOL_STUB_MSG and the planning-vs-execution contract note above.
-        // The capability descriptor declares (Convert{from:Mesh},Voxel) and the
-        // three Booleans so the dispatcher BFS can reach Voxel; execute() returns
-        // OperationFailed (not a panic, not Ok(_)) until task ε wires the
-        // realize_voxel_from_mesh_with_options wrapper into engine dispatch.
-        Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
+        if self.mesh_handles.contains_key(&id) {
+            return Err(GeometryError::OperationFailed(format!(
+                "{op_name}: operand {id:?} is a Mesh handle, not a voxel grid"
+            )));
+        }
+        Err(GeometryError::InvalidReference(id))
+    }
+}
+
+impl GeometryKernel for OpenVdbKernel {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        match op {
+            GeometryOp::Surface {
+                grid,
+                iso_level,
+                adaptive,
+            } => self.execute_surface(*grid, *iso_level, *adaptive),
+            GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => self.execute_apply_transform(*target, *rotation, *translation),
+            GeometryOp::Union { left, right } => {
+                self.voxel_boolean(op.kind_name(), openvdb_ffi::csg_union_ffi, *left, *right)
+            }
+            GeometryOp::Difference { left, right } => self.voxel_boolean(
+                op.kind_name(),
+                openvdb_ffi::csg_difference_ffi,
+                *left,
+                *right,
+            ),
+            GeometryOp::Intersection { left, right } => self.voxel_boolean(
+                op.kind_name(),
+                openvdb_ffi::csg_intersection_ffi,
+                *left,
+                *right,
+            ),
+            _ => Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into())),
+        }
     }
 
     /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle,
