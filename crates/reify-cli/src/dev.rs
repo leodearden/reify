@@ -252,6 +252,13 @@ mod tests {
     };
     use reify_eval::cache::NodeId;
 
+    #[test]
+    fn usage_example_node_id_is_accepted() {
+        if let Err(e) = EXAMPLE_NODE_ID.parse::<NodeId>() {
+            panic!("the usage example {EXAMPLE_NODE_ID:?} must be a valid node id: {e}");
+        }
+    }
+
     // ── render_inspection (step-5 RED) ───────────────────────────────────────
 
     #[test]
