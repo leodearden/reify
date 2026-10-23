@@ -498,6 +498,53 @@ fn rotation_centre_counts_as_a_lever_arm() {
     assert!(close(l, 0.05), "L = {l}");
 }
 
+/// `L` is NOT invariant under a rigid translation of the model (PRD §11 Q4): the
+/// same 10 mm cluster authored 50 m from the moving frame's origin has a 50 m
+/// lever arm about it, so `L` is ≈ 50 m and the metre-row bar and metre assertion
+/// rung loosen with it. The angular bars do not move.
+#[test]
+fn extent_spans_the_cluster_distance_from_the_rotation_centre() {
+    let tol = RelateTolerance::kernel_default();
+    let scaling_with_cluster_at = |x: f64| {
+        let relations = [rel(
+            "concentric",
+            vec![
+                moving(z_axis_at(x, 0.0, 0.0)),
+                anchor(z_axis_at(x + 0.006, 0.008, 0.0)),
+            ],
+        )];
+        scaling_for(&relations, &moving_unknown(), &Pose::identity())
+    };
+    let near = scaling_with_cluster_at(0.0);
+    let far = scaling_with_cluster_at(50.0);
+
+    let (near_l, far_l) = (near.characteristic_length(), far.characteristic_length());
+    assert!(close(near_l, 0.010), "L = {near_l}");
+    assert!(close(far_l, 50.006_f64.hypot(0.008)), "L = {far_l}");
+
+    assert!(close(
+        far.row_tolerance(ResidualUnit::Length),
+        far_l / near_l * near.row_tolerance(ResidualUnit::Length)
+    ));
+    assert_eq!(near.assertion_rung(ResidualUnit::Length), tol.assertion());
+    assert!(close(
+        far.assertion_rung(ResidualUnit::Length),
+        tol.assertion() * far_l / ANGULAR_REFERENCE_RADIUS_M
+    ));
+    for unit in [ResidualUnit::Angle, ResidualUnit::Dimensionless] {
+        assert_eq!(
+            far.row_tolerance(unit),
+            near.row_tolerance(unit),
+            "{unit:?}"
+        );
+        assert_eq!(
+            far.assertion_rung(unit),
+            near.assertion_rung(unit),
+            "{unit:?}"
+        );
+    }
+}
+
 /// A DRIVE magnitude is a physical extent of the configuration the solve drives
 /// to; an angle is not a length and does not contribute.
 #[test]
