@@ -75,6 +75,7 @@ pub enum Shape {
     GatedItemInUngatedTraitImpl { item: String },
     GlobReexport,
     ItemMacroInvocation,
+    AmbiguousSelfType { self_ty: String },
 }
 
 impl fmt::Display for Shape {
@@ -89,13 +90,21 @@ impl fmt::Display for Shape {
             }
             Self::GlobReexport => f.write_str("a glob re-export"),
             Self::ItemMacroInvocation => f.write_str("an item-position macro invocation"),
+            Self::AmbiguousSelfType { self_ty } => write!(
+                f,
+                "an impl on `{self_ty}` (a name a gated and an ungated type share; rename one)"
+            ),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct GatedSurface {
+    /// Names a consumer spells only to reach gated surface.
     pub evidence: BTreeSet<String>,
+    /// Gated names an ungated public position also carries: spelling one
+    /// proves nothing about the feature.
+    pub shared: BTreeSet<String>,
     pub violations: Vec<ShapeViolation>,
 }
 
@@ -106,7 +115,11 @@ impl GatedSurface {
             entries: Vec::new(),
         };
         let mod_dir = lib_root.parent().unwrap_or(Path::new("")).to_path_buf();
-        walker.walk_file(lib_root, mod_dir, false)?;
+        let crate_root = Scope {
+            gated: false,
+            exported: true,
+        };
+        walker.walk_file(lib_root, mod_dir, crate_root)?;
         Ok(classify(&walker.entries))
     }
 }
@@ -120,6 +133,8 @@ struct SurfaceEntry {
     inherited_gate: bool,
     cfg_attr_gate: bool,
     public: bool,
+    /// Public, and for a module-level item every enclosing module is too.
+    exported: bool,
     file: PathBuf,
     line: usize,
 }
@@ -127,6 +142,25 @@ struct SurfaceEntry {
 impl SurfaceEntry {
     fn gated(&self) -> bool {
         self.own_gate || self.inherited_gate
+    }
+}
+
+/// What an enclosing position passes down: its gate, and whether a public
+/// position inside it is reachable from outside the crate.
+#[derive(Clone, Copy)]
+struct Scope {
+    gated: bool,
+    exported: bool,
+}
+
+impl Scope {
+    /// Members (fields, variants, impl and trait items) are reached through
+    /// their type, wherever the type is declared.
+    fn members(self) -> Scope {
+        Scope {
+            exported: true,
+            ..self
+        }
     }
 }
 
@@ -160,7 +194,7 @@ enum EntryKind {
 struct ModuleCtx {
     file: PathBuf,
     mod_dir: PathBuf,
-    gated: bool,
+    scope: Scope,
     inline: bool,
 }
 
@@ -189,7 +223,7 @@ struct Walker<'f> {
 }
 
 impl Walker<'_> {
-    fn walk_file(&mut self, file: &Path, mod_dir: PathBuf, gated: bool) -> Result<(), ScanError> {
+    fn walk_file(&mut self, file: &Path, mod_dir: PathBuf, scope: Scope) -> Result<(), ScanError> {
         let source = fs::read_to_string(file).map_err(|source| ScanError::Io {
             path: file.to_path_buf(),
             source,
@@ -201,7 +235,7 @@ impl Walker<'_> {
         let ctx = ModuleCtx {
             file: file.to_path_buf(),
             mod_dir,
-            gated,
+            scope,
             inline: false,
         };
         parsed
@@ -213,23 +247,24 @@ impl Walker<'_> {
     fn walk_item(&mut self, item: &Item, ctx: &ModuleCtx) -> Result<(), ScanError> {
         let facts = item_facts(item);
         let public = facts.public;
-        let gated = self.record(facts, ctx.gated, &ctx.file, item);
+        let inner = self.record(facts, ctx.scope, &ctx.file, item);
         match item {
-            Item::Mod(module) => self.walk_mod(module, ctx, gated)?,
+            Item::Mod(module) => self.walk_mod(module, ctx, inner)?,
             Item::Impl(imp) => {
                 let self_ty = self_type_name(&imp.self_ty);
                 for member in &imp.items {
                     let facts = impl_item_facts(member, imp.trait_.is_some(), self_ty.clone());
-                    self.record(facts, gated, &ctx.file, member);
+                    self.record(facts, inner.members(), &ctx.file, member);
                 }
             }
             Item::Trait(tr) => {
                 for member in &tr.items {
-                    self.record(trait_item_facts(member, public), gated, &ctx.file, member);
+                    let facts = trait_item_facts(member, public);
+                    self.record(facts, inner.members(), &ctx.file, member);
                 }
             }
-            Item::Struct(st) => self.walk_fields(&st.fields, gated, &ctx.file),
-            Item::Union(un) => self.walk_fields(&un.fields.named, gated, &ctx.file),
+            Item::Struct(st) => self.walk_fields(&st.fields, inner.members(), &ctx.file),
+            Item::Union(un) => self.walk_fields(&un.fields.named, inner.members(), &ctx.file),
             Item::Enum(en) => {
                 for variant in &en.variants {
                     let facts = Facts {
@@ -238,7 +273,7 @@ impl Walker<'_> {
                         attrs: &variant.attrs,
                         public,
                     };
-                    self.record(facts, gated, &ctx.file, variant);
+                    self.record(facts, inner.members(), &ctx.file, variant);
                 }
             }
             _ => {}
@@ -250,7 +285,7 @@ impl Walker<'_> {
         &mut self,
         module: &ItemMod,
         ctx: &ModuleCtx,
-        gated: bool,
+        scope: Scope,
     ) -> Result<(), ScanError> {
         let name = module.ident.unraw().to_string();
         let path_attr = path_attribute(&module.attrs);
@@ -264,7 +299,7 @@ impl Walker<'_> {
             let inner = ModuleCtx {
                 file: ctx.file.clone(),
                 mod_dir: ctx.mod_dir.join(&name),
-                gated,
+                scope,
                 inline: true,
             };
             return items
@@ -291,13 +326,13 @@ impl Walker<'_> {
         if !file.is_file() {
             return Err(unresolved());
         }
-        self.walk_file(&file, mod_dir, gated)
+        self.walk_file(&file, mod_dir, scope)
     }
 
     fn walk_fields<'a>(
         &mut self,
         fields: impl IntoIterator<Item = &'a Field>,
-        parent_gated: bool,
+        scope: Scope,
         file: &Path,
     ) {
         for field in fields {
@@ -308,33 +343,31 @@ impl Walker<'_> {
                     attrs: &field.attrs,
                     public: is_public(&field.vis),
                 };
-                self.record(facts, parent_gated, file, field);
+                self.record(facts, scope, file, field);
             }
         }
     }
 
     /// Gates one position (own cfg OR the enclosing gate), records it, and
-    /// returns its gate for the positions nested inside it.
-    fn record(
-        &mut self,
-        facts: Facts,
-        parent_gated: bool,
-        file: &Path,
-        node: &impl Spanned,
-    ) -> bool {
+    /// returns the scope it passes to the positions nested inside it.
+    fn record(&mut self, facts: Facts, scope: Scope, file: &Path, node: &impl Spanned) -> Scope {
         let entry = SurfaceEntry {
             kind: facts.kind,
             name: facts.name,
             own_gate: self.gates(facts.attrs),
-            inherited_gate: parent_gated,
+            inherited_gate: scope.gated,
             cfg_attr_gate: self.cfg_attr_gates(facts.attrs),
             public: facts.public,
+            exported: facts.public && scope.exported,
             file: file.to_path_buf(),
             line: line_of(node),
         };
-        let gated = entry.gated();
+        let inner = Scope {
+            gated: entry.gated(),
+            exported: entry.exported,
+        };
         self.entries.push(entry);
-        gated
+        inner
     }
 
     fn gates(&self, attrs: &[Attribute]) -> bool {
@@ -574,23 +607,29 @@ impl UseLeaves {
 
 /// The pure classifier: evidence and shape violations from the whole inventory.
 fn classify(entries: &[SurfaceEntry]) -> GatedSurface {
-    let gated_types: BTreeSet<&str> = entries
+    let types = &TypeNames::of(entries);
+    let reach = Reach::of(entries);
+    let ungated_names: BTreeSet<String> = entries
         .iter()
-        .filter(|entry| matches!(entry.kind, EntryKind::TypeItem) && entry.gated())
-        .filter_map(|entry| entry.name.as_deref())
+        .filter(|entry| !entry.gated())
+        .flat_map(|entry| reach.spelled_names(entry))
         .collect();
-    let gated_types = &gated_types;
+    let (shared, evidence) = entries
+        .iter()
+        .filter(|entry| entry.gated() && !reached_through_gated_type(entry, types))
+        .flat_map(|entry| reach.spelled_names(entry))
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .partition(|name| ungated_names.contains(name));
     GatedSurface {
-        evidence: entries
-            .iter()
-            .flat_map(|entry| evidence_names(entry, gated_types))
-            .collect(),
+        evidence,
+        shared,
         violations: entries
             .iter()
             .flat_map(|entry| {
                 SHAPE_RULES
                     .iter()
-                    .filter_map(move |rule| rule(entry, gated_types))
+                    .filter_map(move |rule| rule(entry, types))
                     .map(move |shape| ShapeViolation {
                         file: entry.file.clone(),
                         line: entry.line,
@@ -601,51 +640,109 @@ fn classify(entries: &[SurfaceEntry]) -> GatedSurface {
     }
 }
 
-/// The names a consumer must spell to reach a gated public position. Members
-/// of a gated type add none: they are reachable only through the type's name.
-fn evidence_names(entry: &SurfaceEntry, gated_types: &BTreeSet<&str>) -> Vec<String> {
-    let name = || entry.name.iter().cloned().collect();
-    if !entry.gated() {
-        return Vec::new();
-    }
-    match &entry.kind {
-        EntryKind::MacroRules => name(),
-        EntryKind::Use { leaves, .. } if entry.public => leaves.clone(),
-        EntryKind::Field | EntryKind::Variant | EntryKind::TraitItem if entry.inherited_gate => {
-            Vec::new()
+/// The provider's type names by gate. Identity is the bare name, so a name
+/// declared both gated and ungated cannot say which type an impl is on.
+struct TypeNames<'a> {
+    gated: BTreeSet<&'a str>,
+    ungated: BTreeSet<&'a str>,
+}
+
+impl<'a> TypeNames<'a> {
+    fn of(entries: &'a [SurfaceEntry]) -> Self {
+        let (gated, ungated) = entries
+            .iter()
+            .filter(|entry| matches!(entry.kind, EntryKind::TypeItem))
+            .partition::<Vec<_>, _>(|entry| entry.gated());
+        let names = |types: Vec<&'a SurfaceEntry>| {
+            types
+                .into_iter()
+                .filter_map(|entry| entry.name.as_deref())
+                .collect()
+        };
+        TypeNames {
+            gated: names(gated),
+            ungated: names(ungated),
         }
+    }
+
+    fn is_gated(&self, name: &str) -> bool {
+        self.gated.contains(name)
+    }
+
+    fn is_ambiguous(&self, name: &str) -> bool {
+        self.gated.contains(name) && self.ungated.contains(name)
+    }
+}
+
+/// Which public positions a consumer can spell. A public item of a private
+/// module is reachable only through a re-export, unless some ungated glob
+/// re-export may expose any module.
+struct Reach {
+    any_module: bool,
+}
+
+impl Reach {
+    fn of(entries: &[SurfaceEntry]) -> Self {
+        let ungated_glob = |entry: &SurfaceEntry| {
+            matches!(entry.kind, EntryKind::Use { glob: true, .. })
+                && entry.public
+                && !entry.gated()
+        };
+        Reach {
+            any_module: entries.iter().any(ungated_glob),
+        }
+    }
+
+    /// The names a consumer spells to reach a position, gated or not.
+    fn spelled_names(&self, entry: &SurfaceEntry) -> Vec<String> {
+        let reachable = if self.any_module {
+            entry.public
+        } else {
+            entry.exported
+        };
+        match &entry.kind {
+            EntryKind::MacroRules => entry.name.iter().cloned().collect(),
+            EntryKind::Use { leaves, .. } if reachable => leaves.clone(),
+            _ if reachable => entry.name.iter().cloned().collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Members of a gated type add no evidence: they are reachable only through
+/// the type's name.
+fn reached_through_gated_type(entry: &SurfaceEntry, types: &TypeNames) -> bool {
+    match &entry.kind {
+        EntryKind::Field | EntryKind::Variant | EntryKind::TraitItem => entry.inherited_gate,
         EntryKind::ImplItem {
             self_ty: Some(self_ty),
             ..
-        } if gated_types.contains(self_ty.as_str()) => Vec::new(),
-        _ if entry.public => name(),
-        _ => Vec::new(),
+        } => types.is_gated(self_ty),
+        _ => false,
     }
 }
 
 /// One admissibility rule: the shape by which a position exposes gated
 /// surface that a consumer can reach without naming an evidence item.
-type ShapeRule = fn(&SurfaceEntry, &BTreeSet<&str>) -> Option<Shape>;
+type ShapeRule = fn(&SurfaceEntry, &TypeNames) -> Option<Shape>;
 
-const SHAPE_RULES: [ShapeRule; 5] = [
+const SHAPE_RULES: [ShapeRule; 6] = [
     cfg_attr_shape,
     trait_impl_for_ungated_self,
     gated_item_in_ungated_trait_impl,
     glob_reexport,
     item_macro_invocation,
+    ambiguous_self_type,
 ];
 
 /// Reported as the Self of a trait impl whose Self type is not a path.
 const NON_PATH_SELF_TYPE: &str = "<non-path type>";
 
-fn cfg_attr_shape(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+fn cfg_attr_shape(entry: &SurfaceEntry, _: &TypeNames) -> Option<Shape> {
     entry.cfg_attr_gate.then_some(Shape::CfgAttr)
 }
 
-fn trait_impl_for_ungated_self(
-    entry: &SurfaceEntry,
-    gated_types: &BTreeSet<&str>,
-) -> Option<Shape> {
+fn trait_impl_for_ungated_self(entry: &SurfaceEntry, types: &TypeNames) -> Option<Shape> {
     let EntryKind::Impl {
         trait_impl: true,
         self_ty,
@@ -653,15 +750,13 @@ fn trait_impl_for_ungated_self(
     else {
         return None;
     };
-    let self_is_gated = self_ty
-        .as_deref()
-        .is_some_and(|ty| gated_types.contains(ty));
+    let self_is_gated = self_ty.as_deref().is_some_and(|ty| types.is_gated(ty));
     (entry.gated() && !self_is_gated).then(|| Shape::TraitImplForUngatedSelf {
         self_ty: self_ty.as_deref().unwrap_or(NON_PATH_SELF_TYPE).to_string(),
     })
 }
 
-fn gated_item_in_ungated_trait_impl(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+fn gated_item_in_ungated_trait_impl(entry: &SurfaceEntry, _: &TypeNames) -> Option<Shape> {
     let EntryKind::ImplItem {
         in_trait_impl: true,
         ..
@@ -673,16 +768,35 @@ fn gated_item_in_ungated_trait_impl(entry: &SurfaceEntry, _: &BTreeSet<&str>) ->
     (entry.own_gate && !entry.inherited_gate).then_some(Shape::GatedItemInUngatedTraitImpl { item })
 }
 
-fn glob_reexport(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+fn glob_reexport(entry: &SurfaceEntry, _: &TypeNames) -> Option<Shape> {
     let EntryKind::Use { glob: true, .. } = &entry.kind else {
         return None;
     };
     (entry.gated() && entry.public).then_some(Shape::GlobReexport)
 }
 
-fn item_macro_invocation(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+fn item_macro_invocation(entry: &SurfaceEntry, _: &TypeNames) -> Option<Shape> {
     (matches!(entry.kind, EntryKind::MacroInvocation) && entry.gated())
         .then_some(Shape::ItemMacroInvocation)
+}
+
+/// A gated impl, or a gated item of an ungated inherent impl, is judged by
+/// whether its Self is a gated type; an ambiguous Self name cannot say.
+fn ambiguous_self_type(entry: &SurfaceEntry, types: &TypeNames) -> Option<Shape> {
+    let self_ty = match &entry.kind {
+        EntryKind::Impl { self_ty, .. } if entry.gated() => self_ty,
+        EntryKind::ImplItem {
+            in_trait_impl: false,
+            self_ty,
+        } if entry.own_gate && !entry.inherited_gate => self_ty,
+        _ => return None,
+    };
+    let self_ty = self_ty.as_deref()?;
+    types
+        .is_ambiguous(self_ty)
+        .then(|| Shape::AmbiguousSelfType {
+            self_ty: self_ty.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -824,6 +938,47 @@ mod tests {
              #[cfg(feature = \"f\")]\npub use inner::{A, B as C};\n",
         )]);
         assert_eq!(evidence, names(&["A", "C"]));
+    }
+
+    fn surface(lib: &str) -> GatedSurface {
+        let fx = crate_with(&[("src/lib.rs", lib)]);
+        GatedSurface::scan(&lib_root(&fx), "f").expect("fixture crate scans")
+    }
+
+    #[test]
+    fn a_gated_name_a_reachable_ungated_item_also_carries_is_shared_not_evidence() {
+        let found = surface(
+            "pub mod realization_cache {\n    pub const NO_OPTIONS: u8 = 0;\n}\n\
+             #[cfg(not(feature = \"f\"))]\npub fn twin() {}\n\
+             #[cfg(feature = \"f\")]\npub fn twin() {}\n\
+             fn hook() {}\n\
+             pub struct Engine;\n\
+             impl Engine {\n\
+                 #[cfg(feature = \"f\")]\n    pub fn realization_cache(&self) {}\n\
+                 #[cfg(feature = \"f\")]\n    pub fn hook(&self) {}\n\
+             }\n",
+        );
+        assert_eq!(found.evidence, names(&["hook"]));
+        assert_eq!(found.shared, names(&["realization_cache", "twin"]));
+    }
+
+    #[test]
+    fn a_private_modules_public_item_is_reachable_only_through_a_reexport() {
+        let lib = "mod inner {\n    pub fn hook() {}\n    #[cfg(feature = \"f\")]\n    pub fn hidden() {}\n}\n\
+                   pub struct Engine;\n\
+                   impl Engine {\n    #[cfg(feature = \"f\")]\n    pub fn hook(&self) {}\n}\n";
+        let private = surface(lib);
+        assert_eq!(
+            (private.evidence, private.shared),
+            (names(&["hook"]), names(&[]))
+        );
+
+        let globbed = surface(&format!("{lib}pub use inner::*;\n"));
+        assert_eq!(
+            (globbed.evidence, globbed.shared),
+            (names(&["hidden"]), names(&["hook"])),
+            "an ungated glob re-export may expose any module"
+        );
     }
 
     #[test]
@@ -1031,6 +1186,42 @@ mod tests {
             vec![
                 at(&fx, "src/lib.rs", 1, Shape::ItemMacroInvocation),
                 at(&fx, "src/registry.rs", 1, Shape::ItemMacroInvocation),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gated_trait_impl_on_a_name_gated_and_ungated_types_share_is_a_violation() {
+        let (fx, found) = violations(&[(
+            "src/lib.rs",
+            "pub mod other {\n    pub struct Mock;\n}\n\
+             #[cfg(feature = \"f\")]\npub struct Mock;\n\
+             #[cfg(feature = \"f\")]\nimpl Clone for other::Mock {\n    fn clone(&self) -> Self {\n        other::Mock\n    }\n}\n",
+        )]);
+        let shape = Shape::AmbiguousSelfType {
+            self_ty: "Mock".to_string(),
+        };
+        assert_eq!(found, vec![at(&fx, "src/lib.rs", 6, shape)]);
+    }
+
+    #[test]
+    fn gated_inherent_surface_on_a_name_gated_and_ungated_types_share_is_a_violation() {
+        let (fx, found) = violations(&[(
+            "src/lib.rs",
+            "pub mod other {\n    pub struct Mock;\n    impl Mock {\n        \
+             #[cfg(feature = \"f\")]\n        pub fn hook(&self) {}\n        \
+             pub fn plain(&self) {}\n    }\n    \
+             #[cfg(feature = \"f\")]\n    impl Mock {\n        pub fn gated_block(&self) {}\n    }\n}\n\
+             #[cfg(feature = \"f\")]\npub struct Mock;\n",
+        )]);
+        let shape = || Shape::AmbiguousSelfType {
+            self_ty: "Mock".to_string(),
+        };
+        assert_eq!(
+            found,
+            vec![
+                at(&fx, "src/lib.rs", 4, shape()),
+                at(&fx, "src/lib.rs", 8, shape()),
             ]
         );
     }

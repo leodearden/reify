@@ -36,6 +36,7 @@ pub enum Finding {
     DeadActivation {
         pair: RegisteredPair,
         activation: Activation,
+        shared_names: BTreeSet<String>,
     },
     InadmissibleShape {
         pair: RegisteredPair,
@@ -50,16 +51,11 @@ pub enum Finding {
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DeadActivation { pair, activation } => write!(
-                f,
-                "dead feature activation: {} activates {pair} at {} {} but names none of the \
-                 items {} gates on `{}`; drop the activation or use a gated item",
-                activation.consumer,
-                activation.manifest.display(),
-                activation.site,
-                pair.provider,
-                pair.feature,
-            ),
+            Self::DeadActivation {
+                pair,
+                activation,
+                shared_names,
+            } => describe_dead_activation(f, *pair, activation, shared_names),
             Self::InadmissibleShape { pair, violation } => write!(
                 f,
                 "inadmissible gate shape: {}:{}: {} exposes {pair} surface through {} without \
@@ -79,6 +75,38 @@ impl fmt::Display for Finding {
     }
 }
 
+fn describe_dead_activation(
+    f: &mut fmt::Formatter<'_>,
+    pair: RegisteredPair,
+    activation: &Activation,
+    shared_names: &BTreeSet<String>,
+) -> fmt::Result {
+    let RegisteredPair { provider, feature } = pair;
+    write!(
+        f,
+        "dead feature activation: {} activates {pair} at {} {}",
+        activation.consumer,
+        activation.manifest.display(),
+        activation.site,
+    )?;
+    if let Some(via) = &activation.via {
+        write!(f, " (through `{via}`, which implies `{feature}`)")?;
+    }
+    write!(
+        f,
+        " but names none of the items {provider} gates on `{feature}`"
+    )?;
+    if !shared_names.is_empty() {
+        let names: Vec<String> = shared_names.iter().map(|n| format!("`{n}`")).collect();
+        write!(
+            f,
+            " ({} not counted: an ungated public item of {provider} carries the same name)",
+            names.join(", "),
+        )?;
+    }
+    f.write_str("; drop the activation or use a gated item")
+}
+
 fn describe_defect(
     f: &mut fmt::Formatter<'_>,
     pair: RegisteredPair,
@@ -94,9 +122,11 @@ fn describe_defect(
             f,
             "`{feature}` is a default feature of {provider}, so every dependent turns it on"
         ),
-        RegistryDefect::NoGatedSurface => {
-            write!(f, "{provider} gates no public item on `{feature}`")
-        }
+        RegistryDefect::NoGatedSurface => write!(
+            f,
+            "{provider} gates no public item on `{feature}` under a name its ungated public \
+             items do not also carry"
+        ),
         RegistryDefect::NoActivations => write!(f, "no workspace member activates {pair}"),
     }
 }
@@ -172,16 +202,12 @@ fn judge(workspace: &Workspace, pair: RegisteredPair) -> Result<Vec<Finding>, Ch
     findings.extend(
         surface
             .violations
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|violation| Finding::InadmissibleShape { pair, violation }),
     );
     if !surface.evidence.is_empty() {
-        findings.extend(dead_activations(
-            provider,
-            pair,
-            &surface.evidence,
-            activations,
-        )?);
+        findings.extend(dead_activations(provider, pair, &surface, activations)?);
     }
     Ok(findings)
 }
@@ -190,7 +216,7 @@ fn judge(workspace: &Workspace, pair: RegisteredPair) -> Result<Vec<Finding>, Ch
 fn dead_activations(
     provider: &Member,
     pair: RegisteredPair,
-    evidence: &BTreeSet<String>,
+    surface: &GatedSurface,
     activations: Vec<Activation>,
 ) -> Result<Vec<Finding>, CheckError> {
     let mut liveness: BTreeMap<String, bool> = BTreeMap::new();
@@ -199,13 +225,17 @@ fn dead_activations(
         let live = match liveness.get(&activation.consumer) {
             Some(&live) => live,
             None => {
-                let live = names_evidence(provider, &activation, evidence)?;
+                let live = names_evidence(provider, &activation, &surface.evidence)?;
                 liveness.insert(activation.consumer.clone(), live);
                 live
             }
         };
         if !live {
-            findings.push(Finding::DeadActivation { pair, activation });
+            findings.push(Finding::DeadActivation {
+                pair,
+                activation,
+                shared_names: surface.shared.clone(),
+            });
         }
     }
     Ok(findings)
@@ -230,6 +260,7 @@ fn names_evidence(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     use super::*;
@@ -270,18 +301,24 @@ mod tests {
         check(fx.root(), registry).expect("fixture workspace checks")
     }
 
+    fn activation(root: &Path, consumer: &str, kind: DepKind) -> Activation {
+        Activation {
+            consumer: consumer.to_string(),
+            manifest: root.join(consumer).join("Cargo.toml"),
+            site: ActivationSite::Dependency {
+                table: DepTable { kind, target: None },
+                key: "prov".to_string(),
+                inherited_from_workspace: false,
+            },
+            via: None,
+        }
+    }
+
     fn dead(pair: RegisteredPair, root: &Path, consumer: &str, kind: DepKind) -> Finding {
         Finding::DeadActivation {
             pair,
-            activation: Activation {
-                consumer: consumer.to_string(),
-                manifest: root.join(consumer).join("Cargo.toml"),
-                site: ActivationSite::Dependency {
-                    table: DepTable { kind, target: None },
-                    key: "prov".to_string(),
-                    inherited_from_workspace: false,
-                },
-            },
+            activation: activation(root, consumer, kind),
+            shared_names: BTreeSet::new(),
         }
     }
 
@@ -385,6 +422,66 @@ mod tests {
         assert_eq!(
             run(&fx, &[PAIR]),
             vec![defect(PAIR, RegistryDefect::FeatureEnabledByDefault)]
+        );
+    }
+
+    #[test]
+    fn a_feature_default_turns_on_through_another_feature_is_a_registry_defect() {
+        let fx = workspace(
+            "[features]\ndefault = [\"g\"]\ng = [\"f\"]\nf = []\n",
+            &[("live", DEV_ACTIVATION)],
+        );
+        fx.write("live/tests/t.rs", CALLS_HOOK);
+        assert_eq!(
+            run(&fx, &[PAIR]),
+            vec![defect(PAIR, RegistryDefect::FeatureEnabledByDefault)]
+        );
+    }
+
+    #[test]
+    fn activating_a_feature_that_implies_the_registered_one_is_judged_as_its_activation() {
+        let fx = workspace(
+            "[features]\nf = []\ng = [\"f\"]\n",
+            &[(
+                "dead",
+                "[dev-dependencies]\nprov = { workspace = true, features = [\"g\"] }\n",
+            )],
+        );
+        assert_eq!(
+            run(&fx, &[PAIR]),
+            vec![Finding::DeadActivation {
+                pair: PAIR,
+                activation: Activation {
+                    via: Some("g".to_string()),
+                    ..activation(fx.root(), "dead", DepKind::Dev)
+                },
+                shared_names: BTreeSet::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn naming_only_a_gated_name_an_ungated_public_item_shares_is_dead() {
+        let fx = workspace(PROVIDER_FEATURES, &[("dead", DEV_ACTIVATION)]);
+        fx.write(
+            "prov/src/lib.rs",
+            &format!(
+                "{PROVIDER_LIB}pub mod cache {{\n    pub const NONE: u8 = 0;\n}}\n\
+                 pub struct Engine;\n\
+                 impl Engine {{\n    #[cfg(feature = \"f\")]\n    pub fn cache(&self) {{}}\n}}\n"
+            ),
+        );
+        fx.write(
+            "dead/tests/t.rs",
+            "#[test]\nfn t() {\n    let _ = prov::cache::NONE;\n}\n",
+        );
+        assert_eq!(
+            run(&fx, &[PAIR]),
+            vec![Finding::DeadActivation {
+                pair: PAIR,
+                activation: activation(fx.root(), "dead", DepKind::Dev),
+                shared_names: BTreeSet::from(["cache".to_string()]),
+            }]
         );
     }
 

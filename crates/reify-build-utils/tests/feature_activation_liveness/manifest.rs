@@ -95,6 +95,9 @@ pub struct Activation {
     pub consumer: String,
     pub manifest: PathBuf,
     pub site: ActivationSite,
+    /// The provider feature the site names when it turns the feature on only
+    /// by implying it.
+    pub via: Option<String>,
 }
 
 #[derive(Debug)]
@@ -104,6 +107,7 @@ pub struct Member {
     pub manifest: PathBuf,
     pub lib_root: PathBuf,
     pub declared_features: BTreeSet<String>,
+    /// Every feature `default` turns on, transitively.
     pub default_features: BTreeSet<String>,
     features: BTreeMap<String, Vec<String>>,
     dependencies: Vec<DependencyEntry>,
@@ -146,19 +150,85 @@ impl Workspace {
     }
 
     pub fn activations(&self, provider: &str, feature: &str) -> Vec<Activation> {
+        let triggers = FeatureTriggers::of(self.member(provider), feature);
         self.members
             .iter()
             .flat_map(|member| {
                 member
-                    .activation_sites(provider, feature)
-                    .map(|site| Activation {
+                    .activation_sites(provider, &triggers)
+                    .map(|(site, via)| Activation {
                         consumer: member.name.clone(),
                         manifest: member.manifest.clone(),
                         site,
+                        via,
                     })
             })
             .collect()
     }
+}
+
+/// One provider feature and every provider feature that turns it on.
+struct FeatureTriggers<'a> {
+    feature: &'a str,
+    triggers: BTreeSet<String>,
+}
+
+impl<'a> FeatureTriggers<'a> {
+    fn of(provider: Option<&Member>, feature: &'a str) -> Self {
+        let features = provider.map(|provider| &provider.features);
+        let mut triggers: BTreeSet<String> = features
+            .into_iter()
+            .flat_map(|features| {
+                features
+                    .keys()
+                    .filter(|name| implied_features(features, [name.as_str()]).contains(feature))
+            })
+            .cloned()
+            .collect();
+        triggers.insert(feature.to_string());
+        FeatureTriggers { feature, triggers }
+    }
+
+    /// The named feature that turns the feature on: the feature itself when
+    /// named, else the first named feature implying it.
+    fn first_trigger<'n>(&self, named: impl IntoIterator<Item = &'n String>) -> Option<&'n str> {
+        let named: Vec<&str> = named
+            .into_iter()
+            .map(String::as_str)
+            .filter(|name| self.triggers.contains(*name))
+            .collect();
+        named
+            .iter()
+            .find(|name| **name == self.feature)
+            .or(named.first())
+            .copied()
+    }
+
+    fn via(&self, trigger: &str) -> Option<String> {
+        (trigger != self.feature).then(|| trigger.to_string())
+    }
+}
+
+/// `roots` and every feature of the same package they turn on, transitively.
+fn implied_features<'a>(
+    features: &'a BTreeMap<String, Vec<String>>,
+    roots: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<String> {
+    let mut on = BTreeSet::new();
+    let mut pending: Vec<&str> = roots.into_iter().collect();
+    while let Some(feature) = pending.pop() {
+        if on.insert(feature.to_string()) {
+            let enables = features.get(feature).into_iter().flatten();
+            pending.extend(enables.map(String::as_str).filter(|e| is_own_feature(e)));
+        }
+    }
+    on
+}
+
+/// A `[features]` value naming a feature of the same package, not `dep:x`
+/// or `dep/feat`.
+fn is_own_feature(enable: &str) -> bool {
+    !enable.starts_with("dep:") && !enable.contains('/')
 }
 
 impl Member {
@@ -189,47 +259,51 @@ impl Member {
                 .filter(|f| *f != "default")
                 .cloned()
                 .collect(),
-            default_features: features
-                .get("default")
-                .into_iter()
-                .flatten()
-                .cloned()
-                .collect(),
+            default_features: default_features(&features),
             features,
             dependencies: dependency_entries(&table, workspace_deps),
             manifest,
         })
     }
 
+    /// Each site turning the feature on, with the implying feature it names
+    /// when it does not name the feature itself.
     fn activation_sites<'a>(
         &'a self,
         provider: &'a str,
-        feature: &'a str,
-    ) -> impl Iterator<Item = ActivationSite> + 'a {
+        triggers: &'a FeatureTriggers,
+    ) -> impl Iterator<Item = (ActivationSite, Option<String>)> + 'a {
         let dependency_sites = self
             .dependencies
             .iter()
             .filter(move |entry| entry.resolved.provider == provider)
-            .filter_map(move |entry| entry.activation_site(feature));
+            .filter_map(move |entry| entry.activation_site(triggers));
         dependency_sites.chain(feature_table_activations(
             &self.features,
             &self.dependencies,
             provider,
-            feature,
+            triggers,
         ))
     }
 }
 
 impl DependencyEntry {
-    fn activation_site(&self, feature: &str) -> Option<ActivationSite> {
-        let inherited = self.resolved.workspace_features.contains(feature);
-        (inherited || self.resolved.own_features.contains(feature)).then(|| {
-            ActivationSite::Dependency {
-                table: self.table.clone(),
-                key: self.key.clone(),
-                inherited_from_workspace: inherited,
-            }
-        })
+    fn activation_site(
+        &self,
+        triggers: &FeatureTriggers,
+    ) -> Option<(ActivationSite, Option<String>)> {
+        let ResolvedDep {
+            own_features,
+            workspace_features,
+            ..
+        } = &self.resolved;
+        let trigger = triggers.first_trigger(own_features.iter().chain(workspace_features))?;
+        let site = ActivationSite::Dependency {
+            table: self.table.clone(),
+            key: self.key.clone(),
+            inherited_from_workspace: triggers.first_trigger(workspace_features).is_some(),
+        };
+        Some((site, triggers.via(trigger)))
     }
 }
 
@@ -286,6 +360,12 @@ fn member_entries(
             Ok(entry.to_string())
         })
         .collect()
+}
+
+fn default_features(features: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+    let mut on = implied_features(features, ["default"]);
+    on.remove("default");
+    on
 }
 
 fn feature_table(manifest: &Table) -> BTreeMap<String, Vec<String>> {
@@ -372,24 +452,26 @@ fn feature_table_activations<'a>(
     features: &'a BTreeMap<String, Vec<String>>,
     dependencies: &'a [DependencyEntry],
     provider: &'a str,
-    feature: &'a str,
-) -> impl Iterator<Item = ActivationSite> + 'a {
+    triggers: &'a FeatureTriggers,
+) -> impl Iterator<Item = (ActivationSite, Option<String>)> + 'a {
     let names_provider = move |key: &str| {
         dependencies
             .iter()
             .any(|entry| entry.key == key && entry.resolved.provider == provider)
     };
-    features
-        .iter()
-        .filter(move |(_, enables)| {
-            enables
-                .iter()
-                .filter_map(|e| dependency_feature(e))
-                .any(|(dep, enabled)| enabled == feature && names_provider(dep))
-        })
-        .map(|(name, _)| ActivationSite::FeatureTable {
+    features.iter().filter_map(move |(name, enables)| {
+        let provider_features: Vec<String> = enables
+            .iter()
+            .filter_map(|e| dependency_feature(e))
+            .filter(|(dep, _)| names_provider(dep))
+            .map(|(_, enabled)| enabled.to_string())
+            .collect();
+        let trigger = triggers.first_trigger(&provider_features)?;
+        let site = ActivationSite::FeatureTable {
             feature: name.clone(),
-        })
+        };
+        Some((site, triggers.via(trigger)))
+    })
 }
 
 #[cfg(test)]
@@ -491,6 +573,84 @@ mod tests {
     }
 
     #[test]
+    fn default_features_follow_implication_transitively() {
+        let fx = Fixture::new();
+        fx.write("Cargo.toml", &root_manifest(&["prov"], ""));
+        fx.write(
+            "prov/Cargo.toml",
+            &package(
+                "prov",
+                "[dependencies]\nx = { version = \"1\", optional = true }\n\n\
+                 [features]\ndefault = [\"g\"]\ng = [\"h\", \"dep:x\", \"x/y\"]\nh = [\"f\"]\nf = []\nother = []\n",
+            ),
+        );
+        let ws = load(&fx);
+
+        assert_eq!(
+            ws.member("prov").unwrap().default_features,
+            names(&["g", "h", "f"])
+        );
+    }
+
+    #[test]
+    fn a_feature_implying_the_feature_activates_it_and_is_reported_as_via() {
+        let fx = Fixture::new();
+        fx.write(
+            "Cargo.toml",
+            &root_manifest(&["prov", "direct", "implied", "table", "unrelated"], ""),
+        );
+        fx.write(
+            "prov/Cargo.toml",
+            &package(
+                "prov",
+                "[features]\nf = []\nh = [\"f\"]\ng = [\"h\"]\nother = []\n",
+            ),
+        );
+        let dep = |features: &str| {
+            format!("[dependencies]\nprov = {{ path = \"../prov\", features = [{features}] }}\n")
+        };
+        fx.write(
+            "direct/Cargo.toml",
+            &package("direct", &dep("\"g\", \"f\"")),
+        );
+        fx.write("implied/Cargo.toml", &package("implied", &dep("\"g\"")));
+        fx.write(
+            "table/Cargo.toml",
+            &package(
+                "table",
+                "[dependencies]\nprov = { path = \"../prov\", optional = true }\n\n\
+                 [features]\nx = [\"prov/h\"]\n",
+            ),
+        );
+        fx.write(
+            "unrelated/Cargo.toml",
+            &package("unrelated", &dep("\"other\"")),
+        );
+        let ws = load(&fx);
+
+        let found: Vec<(String, ActivationSite, Option<String>)> = ws
+            .activations("prov", "f")
+            .into_iter()
+            .map(|a| (a.consumer, a.site, a.via))
+            .collect();
+        let normal = dep_site(DepKind::Normal, None, "prov", false);
+        assert_eq!(
+            found,
+            vec![
+                ("direct".to_string(), normal.clone(), None),
+                ("implied".to_string(), normal, Some("g".to_string())),
+                (
+                    "table".to_string(),
+                    ActivationSite::FeatureTable {
+                        feature: "x".to_string(),
+                    },
+                    Some("h".to_string()),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn workspace_inherited_dev_dependency_with_member_features_is_an_activation() {
         let fx = provider_and_consumer(
             "prov = { path = \"prov\" }",
@@ -504,6 +664,7 @@ mod tests {
                 consumer: "cons".to_string(),
                 manifest: fx.root().join("cons/Cargo.toml"),
                 site: dep_site(DepKind::Dev, None, "prov", false),
+                via: None,
             }]
         );
     }
