@@ -486,7 +486,7 @@ Out-of-batch hard edges wired as real dependencies: ζ ← #6653 · γ ← #5540
 
 - **Basin enumeration, multistart policy, global uniqueness, discrete×continuous coupling** → the **P3** PRD, which consumes this core. `#5388` and `#5711` live there; `#5472`/`#5474` are PRD2's own leaves ζ/θ (discrete-cost-minimisation), which P3 sequences around rather than owning. *(Corrected 2026-08-26 per P3's §7.1 companion obligation — the original line mis-assigned PRD2's leaves.)*
 - **Telemetry and presentation** (GUI badges, reify-debug MCP tools, `reify explain` parity, slack rendering, the DOF badge) → the **P4** PRD. This PRD *produces* the causes, multipliers and slacks; it renders none of them.
-- **Which commands solve** (`cmd_build` / `cmd_check` posture, determinism across cold/warm/edit, cost tiers, LSP and `mcp-server` postures) → the **P1** PRD.
+- **Which commands solve** (`cmd_build` / `cmd_check` posture, determinism across cold/warm/edit, cost tiers, LSP and `mcp-server` *(deleted by bbfbc7dd29 (#6665))* postures) → the **P1** PRD.
 - **Per-trial geometry re-realization** (a scalar auto feeding a geometry op's parameter; `geo_loop_a`/`geo_loop_b`; M-WASTE's regime; design §12's bounded fixpoint). The existing typed decline stands and gains a better cause. Successor: an outer candidate-sweep PRD gated on the realization-cache input-cone rekey.
 - **Sparse linear algebra.** Named successor when a measured cluster exceeds ~100 unknowns.
 - **Augmented Lagrangian.** The named upgrade path from squared slack, warranted when active-set degeneracy is *measured* or when exact KKT multipliers are needed beyond what the reduced-gradient loop supplies.
