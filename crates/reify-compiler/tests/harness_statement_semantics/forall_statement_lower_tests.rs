@@ -1031,7 +1031,8 @@ structure S {
 ///     `operator == ConnectOp::Forward`,
 ///     `connector_type.is_none()`,
 ///     `params.is_empty()`,
-///     `port_mappings.is_empty()`.
+///     `port_mappings.is_empty()`,
+///     `directions_compatible` (the fixture is Out -> In).
 /// (f) No "not re-elaborated at runtime" info diagnostic for the forall
 ///     connect — it is captured.
 #[test]
@@ -1107,6 +1108,7 @@ structure def S {
             connector_type,
             params,
             port_mappings,
+            directions_compatible,
         } => {
             assert_eq!(
                 *left,
@@ -1143,6 +1145,10 @@ structure def S {
                 port_mappings.is_empty(),
                 "expected no port_mappings for simple connect, got {:?}",
                 port_mappings
+            );
+            assert!(
+                *directions_compatible,
+                "expected the Out -> In fixture's capture-time direction verdict to be compatible"
             );
         }
         other => panic!("expected CompiledForallBody::Connect, got {:?}", other),

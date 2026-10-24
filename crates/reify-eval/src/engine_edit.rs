@@ -2507,6 +2507,7 @@ impl Engine {
                             connector_type: _,
                             params: _,
                             port_mappings,
+                            directions_compatible: _,
                         } => {
                             // task 2690: per-element forall-Connect runtime
                             // re-emission. Mirrors the Constraint-arm shape:

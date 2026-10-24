@@ -648,6 +648,9 @@ pub enum CompiledForallBody {
         /// Explicit port-mappings (left_member, right_member). Carried
         /// through verbatim from the source declaration.
         port_mappings: Vec<(String, String)>,
+        /// The capture-time direction verdict that each element's
+        /// compatibility constraint carries.
+        directions_compatible: bool,
     },
 }
 
