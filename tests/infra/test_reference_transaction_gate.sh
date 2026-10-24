@@ -68,6 +68,7 @@ rm -f "$SENTINEL" "$LOG"
 drive prepared "$MAIN_LINE"
 assert "(a) warn-only allows the move (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(a) UNSANCTIONED logged" bash -c "grep -q 'UNSANCTIONED main move' '$LOG'"
+assert "(a) no sentinel, so no unbound-sentinel line" bash -c "! grep -qF 'unbound (empty) sentinel' '$LOG'"
 
 # -- (b) main move, no sentinel, ENFORCE=1 -> exit 1 (aborts the transaction) --
 echo ""
@@ -168,12 +169,12 @@ assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanct
 # ===========================================================================
 # Token table (D9): the sentinel carries the main tip it sanctions a move FROM.
 #   matched token (== the move's old oid)  -> consumed, sanctioned       (c, j)
-#   empty token (= no sentinel)            -> consumed, UNSANCTIONED      (s)
+#   empty (unbound) token                  -> discarded, UNSANCTIONED     (s)
 #   stale token (any other oid)            -> discarded, UNSANCTIONED     (t, t2)
 #   bypass                                 -> sentinel untouched          (u)
 # ===========================================================================
 
-# -- (s) empty sentinel == no sentinel -> UNSANCTIONED, consumed ---------------
+# -- (s) empty sentinel sanctions nothing -> UNSANCTIONED, logged unbound ------
 echo ""
 echo "--- (s) empty sentinel, ENFORCE=1 -> exit 1, consumed, UNSANCTIONED ---"
 reset_durable; rm -f "$SENTINEL" "$LOG"; : > "$SENTINEL"
@@ -182,7 +183,7 @@ assert "(s) empty sentinel does not sanction the move (exit 1)" test "$DRIVE_RC"
 assert "(s) empty sentinel consumed" bash -c "! test -e '$SENTINEL'"
 assert "(s) move logged UNSANCTIONED" grep -qF "UNSANCTIONED main move $ONE -> $TWO" "$LOG"
 assert "(s) no sanction line logged" bash -c "! grep -q 'sanctioned' '$LOG'"
-assert "(s) no stale-token line for an empty sentinel" bash -c "! grep -qF 'stale sentinel' '$LOG'"
+assert "(s) empty sentinel logged as unbound, not as no sentinel" grep -qF "unbound (empty) sentinel discarded" "$LOG"
 
 # -- (t) stale token under ENFORCE -> discarded, UNSANCTIONED, abort -----------
 echo ""

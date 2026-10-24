@@ -206,7 +206,11 @@ STASH_REFUSAL
             main_gate_log "sanctioned main move ${_old} -> ${_new}"
             continue
         fi
-        [ -n "$_token" ] && main_gate_log "stale sentinel ${_token} discarded"
+        if [ -n "$_token" ]; then
+            main_gate_log "stale sentinel ${_token} discarded"
+        else
+            main_gate_log "unbound (empty) sentinel discarded"
+        fi
     fi
 
     main_gate_log "UNSANCTIONED main move ${_old} -> ${_new}"
