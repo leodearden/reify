@@ -84,15 +84,13 @@ fn infer_traits_for_op_in_env_resolves_sub_ref_on_pattern_target() {
     );
 }
 
-/// The `Sweep` arm infers from `profiles.first()` ONLY, so with the env now
-/// resolving `Sub` operands, a `loft` whose first profile is bounded infers
-/// `bounded=true` however unbounded its later profiles are.
+/// The `Sweep` arm infers from `profiles.first()` ONLY, so a `loft` whose first
+/// profile resolves bounded infers `bounded=true` however unbounded its later
+/// profiles are.
 ///
-/// That single-profile approximation is pre-existing — it behaves identically
-/// for inlined `GeomRef::Step` profiles — but chasing `Sub` makes it reachable
-/// on shapes that previously safe-defaulted, so it is recorded here as a known
-/// decision rather than left undocumented. Both orderings are asserted: the
-/// second is the one that fails if `infer_op` ever starts folding every profile.
+/// The approximation applies equally to inlined `GeomRef::Step` profiles. Both
+/// orderings are asserted: the second is the one that fails if `infer_op` ever
+/// starts folding every profile.
 #[test]
 fn infer_traits_for_op_in_env_sweep_consults_only_the_first_profile() {
     let unbounded_first = vec![CompiledGeometryOp::Sweep {
@@ -167,11 +165,10 @@ fn infer_traits_for_op_without_env_still_defaults_sub_ref_to_all() {
 // ─── Sibling-let GeomRef::Sub chasing, end to end (#7060) ───────────────────
 //
 // A bare sibling-let geometry operand lowers to `GeomRef::Sub(<name>)` rather
-// than an inlined `GeomRef::Step` (#4668). Before #7060 the inference walker
-// safe-defaulted every `Sub` to `InferredTraits::all()`, so an unbounded
-// producer reached through a `let` silently satisfied a `Bounded` slot while
-// the identical inline shape diagnosed correctly. These cases pin the
-// end-to-end behaviour in both directions.
+// than an inlined `GeomRef::Step` (#4668). The inference walker chases that
+// `Sub` into the sibling realization, so an unbounded producer reached through
+// a `let` is diagnosed at a `Bounded` slot exactly as the inline shape is.
+// These cases pin the end-to-end behaviour in both directions.
 
 /// Count the `GeometryUnbounded` diagnostics a source produces, returning the
 /// full error list alongside so a failure message can show what DID fire.
@@ -320,16 +317,16 @@ fn translate_of_bounded_sibling_let_at_bounded_slot_emits_no_geometry_unbounded(
 
 // ─── Regression locks for the #7060 Sub-chasing fix ────────────────────────
 
-/// (a) Cycle termination. Two sibling lets that name each other compile on main
-/// today — `let a = translate(b, ..)` / `let b = translate(a, ..)` lowers to
+/// (a) Cycle termination. Two sibling lets that name each other are accepted
+/// source — `let a = translate(b, ..)` / `let b = translate(a, ..)` lowers to
 /// `a = [Xform(.., Sub("b"))]` / `b = [Xform(.., Sub("a"))]`, a genuine 2-cycle
 /// in the sibling-let graph (#4668). Chasing those Subs without a visited set
 /// recurses forever.
 ///
 /// This test asserts only that compilation RETURNS and safe-defaults. It is the
-/// executable proof of the `in_flight` guard's relocation above the realization
-/// arm: remove that guard and this does not fail, it aborts the whole test
-/// binary with a stack overflow.
+/// executable proof that the `in_flight` guard sits above the realization arm:
+/// remove that guard and this does not fail, it aborts the whole test binary
+/// with a stack overflow.
 #[test]
 fn mutually_referential_sibling_lets_terminate_instead_of_overflowing() {
     let source = r#"
@@ -357,7 +354,7 @@ fn mutually_referential_sibling_lets_terminate_instead_of_overflowing() {
 /// carries `"<sub>.<member>"` for cross-sub `self.<sub>.<member>` references,
 /// whose referent lives on a DIFFERENT template. The consumer's `contains('.')`
 /// carve-out declines those, and a declined name collapses to the `all()` safe
-/// default here — so cross-sub behaviour is exactly what it was before #7060.
+/// default here — so cross-sub references are never chased.
 ///
 /// Op shape mirrors the lowering pinned by
 /// `harness_type_checking::boolean_arg_cross_sub_diagnostic_tests::
@@ -474,16 +471,14 @@ fn sibling_let_chain_source(n: usize) -> String {
 /// check waves through, and the chase recurses once per hop. The compiler's own
 /// `recursion_guard` cap does not cover it either — each let is depth-1 for
 /// `compile_expr`/`compile_geometry_call`, so `MAX_COMPILE_RECURSION_DEPTH`
-/// never fires. MEASURED before the depth cap landed: this source at n=2000
-/// printed `has overflowed its stack / fatal runtime error: stack overflow` and
-/// SIGABRTed the whole test binary.
+/// never fires. Without the cap, this source at n=2000 overflows the stack and
+/// aborts the whole test binary.
 ///
 /// Like the cycle case, the cap trades the diagnostic for termination: past
 /// 256 hops the chase declines and the operand collapses to
 /// `InferredTraits::all()`, so an unbounded producer at the far end of a
-/// pathological chain goes unreported. That is the deliberate choice — an
-/// uncatchable abort cannot be traded for anything else, and the companion test
-/// below pins that realistic depths are unaffected.
+/// pathological chain goes unreported. The companion test below pins that
+/// realistic depths are unaffected.
 #[test]
 fn sibling_let_chain_past_the_depth_cap_terminates_instead_of_overflowing() {
     // Reaching the next line at all is the assertion: without the depth cap
@@ -521,11 +516,10 @@ fn sibling_let_chain_within_the_depth_cap_still_emits_geometry_unbounded() {
 /// geometry lets — so `GeomRef::Sub("p")` resolves to the DEFAULT's traits, not
 /// to whatever an instantiation might pass for `p`.
 ///
-/// This pair documents that #7060 did not invent the policy, it made it
-/// consistent: the direct form already diagnosed before the fix (no `Sub`
-/// involved), and the let-indirected form now agrees with it. Declining
-/// param-sourced realizations would have made `Foo(g: p)` and
-/// `Foo(g: translate(p, ..))` disagree about the same default.
+/// This pair pins that the policy is consistent across hop counts: the direct
+/// form `Foo(g: p)` involves no `Sub`, the let-indirected form
+/// `Foo(g: translate(p, ..))` reaches the same default through
+/// `GeomRef::Sub("p")`, and both diagnose it.
 #[test]
 fn solid_param_default_direct_at_bounded_slot_emits_geometry_unbounded() {
     let source = r#"

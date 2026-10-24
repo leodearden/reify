@@ -2218,19 +2218,14 @@ impl Drop for InFlightGuard<'_> {
 /// `compile_expr` / `compile_geometry_call`, and each let in such a chain is
 /// depth-1 for both, so `MAX_COMPILE_RECURSION_DEPTH` never fires here.
 ///
-/// Same motivating hazard as `recursion_guard`, and the same uncatchable
-/// failure mode: a stack overflow SIGSEGVs/aborts the process rather than
-/// unwinding, so it must be prevented by a counter, not caught. Measured in a
-/// **debug** build on a `t{i} = translate(t{i-1}, ..)` chain at a `Bounded`
-/// slot: N=800 compiles on the GUI's 2 MiB tokio-worker stack while N=1600
-/// aborts, i.e. ≈1.7 KiB of stack per hop. At 256 the chase spends ≈0.4 MiB —
-/// comfortably inside 2 MiB with room for the compile recursion beneath it.
+/// A stack overflow aborts the process rather than unwinding, so the chain must
+/// be bounded by a counter; it cannot be caught.
 ///
-/// Deliberately a SEPARATE constant from `MAX_COMPILE_RECURSION_DEPTH` rather
-/// than an alias of it: the two bound different recursions with different
-/// per-frame costs, so tying them would let a future bump on one axis silently
-/// overflow the other. They coincide at 256 today only because the same
-/// "realistic designs nest a few dozen levels" argument applies to both.
+/// A separate constant from `MAX_COMPILE_RECURSION_DEPTH`, not an alias: the two
+/// bound different recursions with different per-frame costs.
+///
+/// Pinned by the `sibling_let_chain_*_depth_cap_*` pair in
+/// `geometry_traits_sibling_chase_tests.rs`.
 const MAX_SIBLING_CHASE_DEPTH: usize = 256;
 
 /// A `LetBindingEnv` that resolves geometry-typed `let` bindings by looking up
@@ -2299,8 +2294,7 @@ const MAX_SIBLING_CHASE_DEPTH: usize = 256;
 /// A cycle check bounds revisits but not chain LENGTH, and a long acyclic
 /// sibling-let chain recurses once per hop, so the same Vec's LENGTH is
 /// additionally bounded by [`MAX_SIBLING_CHASE_DEPTH`] — see that constant for
-/// the measured per-hop stack cost and why it is not the compiler's
-/// `MAX_COMPILE_RECURSION_DEPTH`.
+/// why it is not the compiler's `MAX_COMPILE_RECURSION_DEPTH`.
 struct RealizationLetEnv<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
     /// In-flight visited set used to terminate cycles on both lookup paths
