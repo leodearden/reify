@@ -152,6 +152,18 @@ into trees that no longer exist, such as the deleted `crates/reify-types`.
 | `reify-audit --pattern PLINECITE`, real tree | 0 findings, exit 0 |
 | Shrink-only regeneration over the seeded ledger | byte-identical |
 
+**Measured at #9188** (main 8113685867, 2026-10-24), the lead-in widening:
+
+| Measure | Value |
+|---|---|
+| Rows admitted by the spelled lead-ins | 28: ` ~` 16, `:~` 7, ` (~` 2, ` lines ` 2, ` line ` 1 (19 in reify-compiler) |
+| … sample tokens | `entity.rs (~2145`, `entity.rs:~631`, `graph.rs ~429`, `lib.rs line 444`, `kernel.rs lines 178` |
+| False positives | 1, `parts.ri line 0` in reify-lsp `server.rs` (an LSP position a test asserts), settled by `plinecite:allow` |
+| Carried-over colon rows, un-ledgered on the base after a file move | 2: kernel-occt `lib.rs` → `op_args.rs`, reify-lsp `references.rs` → `references/cross_file/tests.rs` |
+| Stale rows dropped, the same set any regeneration on the base drops | 32 |
+| Ledger rows after `--admit-new` | 737 (the same run with the base's grammar writes 709) |
+| Shrink-only regeneration over the written ledger | byte-identical; 0 stale, 0 new debt |
+
 ## 6. Residual ledger
 
 About 740 pre-existing cites (exact, dated counts: §5's landing table) span
