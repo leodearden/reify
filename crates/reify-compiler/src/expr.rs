@@ -3483,11 +3483,9 @@ fn compile_expr_guarded_with_expected_inner(
                         diagnostics,
                     );
 
-                    // task 6249: forward-trig (sin/cos/tan) argument-dimension
-                    // check. A third parallel pure diagnostic side-effect, same
-                    // slot and contract as the two above; the rule lives on
-                    // `math_signatures::check_transcendental_arg_dimensions`.
-                    math_signatures::check_transcendental_arg_dimensions(
+                    // Task 6249: a third diagnostic-only check, with the same
+                    // contract as the two above.
+                    math_signatures::check_forward_trig_arg_dimensions(
                         name,
                         &compiled_args,
                         expr.span,

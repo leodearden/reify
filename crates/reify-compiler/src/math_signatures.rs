@@ -135,65 +135,28 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
         || MATH_TRANSCENDENTAL_NAMES.contains(&name)
 }
 
-/// The forward-trig subset of [`MATH_TRANSCENDENTAL_NAMES`] whose ARGUMENT
-/// dimension is policed by [`check_transcendental_arg_dimensions`].
-///
-/// Deliberately NOT the whole transcendental slice — see that function's
-/// "Deliberately out of scope" section.
+/// The forward-trig names whose argument dimension
+/// [`check_forward_trig_arg_dimensions`] polices.
 const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
 
-/// Compile-time argument-DIMENSION check for the forward-trig builtins
-/// `sin` / `cos` / `tan`.
+/// Rejects a `sin`/`cos`/`tan` argument typed as a dimensioned `Scalar` other
+/// than `Angle`, pushing one `ArgTypeMismatch` Error at the call span.
 ///
-/// A pure side-effect on `diagnostics`, mirroring its two siblings
-/// [`crate::builtin_signatures::check_builtin_arg_types`] and
-/// [`crate::relation_signatures::check_relation_arg_types`]: it never
-/// influences the inferred result type, so `math_fn_result_type` still returns
-/// `Type::dimensionless_scalar()` for a rejected `sin(5mm)` and no secondary
-/// type errors cascade off the rejection.
+/// `Angle`, dimensionless and `Int` arguments pass, mirroring the `Some` arms
+/// of `reify_stdlib::helpers::trig_input`; eval turns every other scalar
+/// dimension into `Value::Undef`, so this rejects statically only what already
+/// fails at runtime. Unresolved arguments (`Error`, `TypeParam`, `ScalarParam`)
+/// pass, and so does every non-`Scalar` type: this checks dimension, not kind.
 ///
-/// # The eval contract this mirrors
+/// Like `check_builtin_arg_types` and `check_relation_arg_types`, it only
+/// pushes diagnostics and never changes the call's result type.
 ///
-/// `sin`/`cos`/`tan` route through `reify_stdlib::helpers::trig_input`, which
-/// returns `Some` radians for exactly three shapes — `Value::Scalar { dimension:
-/// ANGLE }`, `Value::Real`, and `Value::Int` — and `None` for a scalar of ANY
-/// other dimension, which `reify_stdlib::trig::eval_trig` maps to a silent
-/// `Value::Undef`. This check rejects statically exactly the set eval already
-/// Undefs on, so no program that works today can start failing.
-///
-/// # Why `Angle`, dimensionless AND `Int` are all accepted
-///
-/// Each mirrors one `trig_input` arm and each has live callers: bare-radians
-/// dimensionless input (`sin(pi)`, the bolt-circle example's
-/// `cos(i * 2 * pi / bolt_count)`), a true `Angle` (`sin(0.5rad)`), and `Int`
-/// (`sin(2)`) — overload resolution carries no Int→Real widening, so a
-/// `Scalar`-only rule would reject what eval happily evaluates.
-///
-/// # Deliberately out of scope
-///
-/// Only the three [`FORWARD_TRIG_NAMES`] are gated; the remaining six
-/// transcendental names pass silently, pinned by scope-fence tests:
-///
-///   * `exp` / `log` — owned by task **#6943**
-///     (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b)), which
-///     delivers them as registry rows with a chartered `E_ArgDimension` code
-///     family and dimension-aware fixit hints. Note the failure mode there is
-///     DIFFERENT: `unary_f64` extracts via `Value::as_f64`, whose `Value::Scalar`
-///     arm accepts any dimension, so `log(2mm)` silently evaluates `ln(0.002)`
-///     rather than Undefing.
-///   * `asin` / `acos` / `atan` / `atan2` — owned by task **#5809**
-///     (`docs/prds/v0_6/dimension-checked-readers.md` leaf κ). `atan2` needs a
-///     same-dimension-PAIR rule rather than a dimensionless-only one
-///     (`atan2(dy, dx)` over two LENGTHs is legitimate), which is why it is not
-///     expressible with this leaf's mechanism.
-///
-/// This leaf polices DIMENSION, not KIND: a `Bool` / `Geometry` / `Vector`
-/// argument passes silently here. Kind-policing across the math surface is
-/// #6943's `ResultSpec::ArgAware` job.
-///
-/// Only arg 0 is inspected — the three names are unary. A short call returns
-/// early; arity errors are raised elsewhere, matching both siblings.
-pub(crate) fn check_transcendental_arg_dimensions(
+/// The other transcendental names are deliberately unchecked here. Their owners
+/// are recorded in `docs/legibility/design-invariants.md` (D7), and the
+/// scope-fence tests in
+/// `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
+/// pin them.
+pub(crate) fn check_forward_trig_arg_dimensions(
     name: &str,
     compiled_args: &[CompiledExpr],
     call_span: SourceSpan,
@@ -209,9 +172,9 @@ pub(crate) fn check_transcendental_arg_dimensions(
     };
 
     match &arg.result_type {
-        // Gradualism: poison + unresolved pass silently (identical to
-        // `check_builtin_arg_types` / `check_relation_arg_types`).
-        Type::Error | Type::TypeParam(_) => {}
+        // Gradualism: poison and unresolved types pass silently, as in
+        // `check_builtin_arg_types` and `check_relation_arg_types`.
+        Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
 
         // Mirrors `trig_input`'s `Value::Int` arm.
         Type::Int => {}
@@ -227,7 +190,7 @@ pub(crate) fn check_transcendental_arg_dimensions(
         }
 
         // Every other `Type` variant (Bool, Geometry, Vector, List, …) passes
-        // silently: this leaf polices dimension, not kind.
+        // silently: this checks dimension, not kind.
         _ => {}
     }
 }
@@ -2516,7 +2479,7 @@ mod tests {
     fn assert_single_trig_rejection(name: &str, arg: CompiledExpr) {
         let span = trig_call_span();
         let mut diagnostics = Vec::new();
-        check_transcendental_arg_dimensions(name, &[arg], span, &mut diagnostics);
+        check_forward_trig_arg_dimensions(name, &[arg], span, &mut diagnostics);
 
         assert_eq!(
             diagnostics.len(),
@@ -2581,7 +2544,7 @@ mod tests {
 
     fn assert_no_trig_diagnostic(name: &str, args: &[CompiledExpr], why: &str) {
         let mut diagnostics = Vec::new();
-        check_transcendental_arg_dimensions(name, args, trig_call_span(), &mut diagnostics);
+        check_forward_trig_arg_dimensions(name, args, trig_call_span(), &mut diagnostics);
         assert!(
             diagnostics.is_empty(),
             "{name}: {why} must push nothing, got {diagnostics:?}"
@@ -2594,15 +2557,21 @@ mod tests {
         assert_no_trig_diagnostic("sin", &[], "an empty arg list");
     }
 
-    /// Gradualism: poison and unresolved args pass silently.
+    /// Gradualism: poison and unresolved args pass silently, including a
+    /// `Scalar<Q>` whose dimension is unresolved inside a generic fn body.
     #[test]
-    fn forward_trig_skips_error_and_type_param_args() {
+    fn forward_trig_skips_unresolved_args() {
         let typed = |ty: Type| CompiledExpr::literal(Value::Undef, ty);
         assert_no_trig_diagnostic("cos", &[typed(Type::Error)], "a Type::Error arg");
         assert_no_trig_diagnostic(
             "tan",
             &[typed(Type::TypeParam("T".to_string()))],
             "a Type::TypeParam arg",
+        );
+        assert_no_trig_diagnostic(
+            "sin",
+            &[typed(Type::ScalarParam("Q".to_string()))],
+            "a Type::ScalarParam arg",
         );
     }
 

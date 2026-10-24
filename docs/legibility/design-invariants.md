@@ -337,8 +337,9 @@ the arc measure? Is there any path to an Angle-typed value in this
 feature that does not pass through a named primitive/channel/helper?
 
 **Evidence**: inverse trig and `phase`/`arg` return `Type::angle()` at
-the static layer (`crates/reify-compiler/src/math_signatures.rs:514,
-:532`) and tag `DimensionVector::ANGLE` at eval
+the static layer (their arms of `math_fn_result_type` in
+`crates/reify-compiler/src/math_signatures.rs`) and tag
+`DimensionVector::ANGLE` at eval
 (`crates/reify-stdlib/src/trig.rs:20-35`); the geometry queries `angle`
 and `angle_between_surfaces` are the same shape — `Type::angle()` at
 `crates/reify-compiler/src/units.rs:349` (`angle_between_surfaces`) and
@@ -530,16 +531,16 @@ unrelated reasons — nothing in this family changes that:
   dimension-checked, and dimensionless passes that check**: since
   task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE
   argument at compile time with a coded `ArgTypeMismatch`
-  (`check_transcendental_arg_dimensions`,
-  `crates/reify-compiler/src/math_signatures.rs:196`, wired into
-  `resolve_function_overload`'s `NoUserFunctions` arm at
-  `crates/reify-compiler/src/expr.rs:3489`). `sin(5.0mm)` (LENGTH)
+  (`check_forward_trig_arg_dimensions` in
+  `crates/reify-compiler/src/math_signatures.rs`, called from
+  `resolve_function_overload`'s `NoUserFunctions` arm in
+  `crates/reify-compiler/src/expr.rs`). `sin(5.0mm)` (LENGTH)
   therefore no longer compiles clean. But `sin(2.5)` and
   `sin(ratio * 2.0)` still do, and for the same reason as each
   other: the check accepts `Angle`, dimensionless, and `Int` alike
   — mirroring the eval contract in
   `reify_stdlib::helpers::trig_input`
-  (`crates/reify-stdlib/src/helpers.rs:102`), which reads a bare
+  (`crates/reify-stdlib/src/helpers.rs`), which reads a bare
   dimensionless value as radians. So the bullet's point survives:
   the literal/expression distinction is still not what decides
   `sin(2.5)`, and nothing here is a dimensionless→dimensioned
@@ -553,12 +554,11 @@ unrelated reasons — nothing in this family changes that:
   (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision
   6(b)), and the inverse-trig names `asin`/`acos`/`atan`/`atan2`
   under task #5809 (`docs/prds/v0_6/dimension-checked-readers.md`
-  leaf κ). `MATH_TRANSCENDENTAL_NAMES`
-  (`crates/reify-compiler/src/math_signatures.rs:117`) is still a
-  bare name list for those six, and its "accept ANGLE-or-Real"
-  comment is still intent only; `math_fn_result_type`
-  (`crates/reify-compiler/src/math_signatures.rs:531`) still fixes
-  only the RESULT type and never inspects an argument. Both
+  leaf κ). In `crates/reify-compiler/src/math_signatures.rs`,
+  `MATH_TRANSCENDENTAL_NAMES` is still a bare name list for those
+  six, and its "accept ANGLE-or-Real" comment is still intent only;
+  `math_fn_result_type` still fixes only the RESULT type and never
+  inspects an argument. Both
   non-enforcements are pinned by scope-fence tests in
   `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
   that name their owning task and are to be FLIPPED, not deleted,
