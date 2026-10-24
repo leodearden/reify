@@ -8,6 +8,10 @@ use reify_compiler::{
 };
 use reify_core::DiagnosticCode;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
+use std::panic;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 // ─── SubRefEnv: op-array Sub-ref resolution seam (#7060) ────────────────────
 
@@ -506,6 +510,108 @@ fn sibling_let_chain_within_the_depth_cap_still_emits_geometry_unbounded() {
          still reach `t0 = half_space(..)` and report the one Bounded slot exactly once. \
          Got {count}. All diagnostics: {diags:?}"
     );
+}
+
+/// Run `f` on a worker thread and fail if it has not returned within a 60s
+/// class-T anti-hang budget (`docs/prds/infra-test-wallclock-deflake.md`): a
+/// ceiling that only ever catches a true hang, never a slow run.
+///
+/// The worker keeps the default thread stack size, the same budget libtest gives
+/// a test thread, so the depth cap is exercised against the stack it is sized
+/// for. A panic inside `f` is forwarded as itself. On timeout the worker cannot
+/// be cancelled and leaks until the test binary exits.
+fn within_anti_hang_budget<T: Send + 'static>(
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = tx.send(panic::catch_unwind(panic::AssertUnwindSafe(f)));
+    });
+    match rx.recv_timeout(Duration::from_secs(60)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(payload)) => panic::resume_unwind(payload),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+            "{what} did not finish within the 60s anti-hang budget: the sibling-let chase \
+             re-resolved a sibling once per reference instead of once per env"
+        ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("{what}: the worker thread exited without sending a result")
+        }
+    }
+}
+
+/// A sibling-let chain in which every hop names its predecessor TWICE: `let x0 =
+/// {x0_init}`, then `n` hops of `let x{i} = union(translate(x{i-1}, ..),
+/// translate(x{i-1}, ..))`, with `x{n}` passed to a `Bounded` slot.
+///
+/// The boolean operands are inlined, but each nested `translate` target lowers
+/// to `GeomRef::Sub("x{i-1}")`, so the chase meets every predecessor twice.
+fn fan_out_sibling_let_chain_source(n: usize, x0_init: &str) -> String {
+    let mut body = format!("            let x0 = {x0_init}\n");
+    for i in 1..=n {
+        let prev = i - 1;
+        body.push_str(&format!(
+            "            let x{i} = union(translate(x{prev}, 0mm, 0mm, 0mm), \
+             translate(x{prev}, 1mm, 0mm, 0mm))\n"
+        ));
+    }
+    format!(
+        "        structure def Foo {{\n\
+         \x20           param g : Bounded\n\
+         \x20       }}\n\
+         \x20       structure def Top {{\n\
+         {body}\
+         \x20           sub x = Foo(g: x{n})\n\
+         \x20       }}\n"
+    )
+}
+
+/// A 40-hop fan-out chain still reaches the unbounded `x0` and diagnoses the one
+/// `Bounded` slot, within the anti-hang budget: each sibling is resolved once,
+/// not once per path that reaches it.
+#[test]
+fn fan_out_sibling_let_chain_within_the_depth_cap_still_emits_geometry_unbounded_promptly() {
+    let source = fan_out_sibling_let_chain_source(40, "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
+    within_anti_hang_budget("the 40-hop fan-out sibling-let chain", move || {
+        let (count, diags) = geometry_unbounded_count(&source);
+        assert_eq!(
+            count, 1,
+            "a 40-hop fan-out chain is inside MAX_SIBLING_CHASE_DEPTH, so chasing must reach \
+             `x0 = half_space(..)` and report the one Bounded slot exactly once. \
+             Got {count}. All diagnostics: {diags:?}"
+        );
+    });
+}
+
+/// A fan-out chain longer than `MAX_SIBLING_CHASE_DEPTH` safe-defaults at the cap
+/// and still finishes promptly, so a result computed under a depth cut is reused
+/// rather than re-chased at every level above the cut.
+#[test]
+fn fan_out_sibling_let_chain_past_the_depth_cap_terminates_promptly() {
+    let source = fan_out_sibling_let_chain_source(300, "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
+    within_anti_hang_budget("the 300-hop fan-out sibling-let chain", move || {
+        assert_compiles_with_no_geometry_unbounded(
+            &source,
+            "a fan-out chain past MAX_SIBLING_CHASE_DEPTH must decline at the cap and \
+             safe-default to InferredTraits::all(), which reports nothing",
+        );
+    });
+}
+
+/// A fan-out chain closed into a cycle (`x0 = translate(x40, ..)`) terminates at
+/// the cycle guard and finishes promptly, so a result computed under a cycle cut
+/// is reused rather than re-chased below the cut.
+#[test]
+fn cyclic_fan_out_sibling_lets_terminate_promptly() {
+    let source = fan_out_sibling_let_chain_source(40, "translate(x40, 0mm, 0mm, 0mm)");
+    within_anti_hang_budget("the 40-hop cyclic fan-out sibling-let chain", move || {
+        assert_compiles_with_no_geometry_unbounded(
+            &source,
+            "a cyclic fan-out chain must terminate at the in_flight guard and safe-default to \
+             InferredTraits::all(), which reports nothing",
+        );
+    });
 }
 
 /// (e) A Solid-typed param's geometry DEFAULT is authoritative for trait
