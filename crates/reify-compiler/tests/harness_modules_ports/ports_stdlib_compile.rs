@@ -641,7 +641,7 @@ fn motive_port_trait_surface() {
 /// max_speed]):
 ///   max_speed  : Scalar<ANGULAR_VELOCITY>
 ///   max_torque : Scalar<Torque = Force·Length/Angle>  (renamed from torque_capacity)
-///   axis       : Vector3<Length>
+///   axis       : Vector3<Dimensionless>
 ///
 /// The Torque dimension (Force·Length/Angle) is distinct from Energy
 /// (kg·m²·s⁻²) via the Angle⁻¹ slot — a regression to Energy is caught here.
@@ -704,13 +704,9 @@ fn rotary_port_trait_surface() {
 
     assert_eq!(
         param_type("std/ports/mechanical", "RotaryPort", "axis"),
-        Type::Vector {
-            n: 3,
-            quantity: Box::new(Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }),
-        },
-        "RotaryPort.axis must be Vector3<Length>"
+        Type::vec3(Type::dimensionless_scalar()),
+        "RotaryPort.axis denotes a DIRECTION, so it must be Vector3<Dimensionless> \
+         (task 5848 ruling)"
     );
 
     // Regression guard: torque_capacity was renamed to max_torque.
@@ -749,7 +745,7 @@ structure def RotaryConformer : RotaryPort {
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
-    param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
+    param axis : Vector3<Dimensionless> = vec3(0, 0, 1)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -798,7 +794,7 @@ structure def RotaryConformerMissingTorque : RotaryPort {
         z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
-    param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
+    param axis : Vector3<Dimensionless> = vec3(0, 0, 1)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -825,7 +821,7 @@ structure def RotaryConformerMissingTorque : RotaryPort {
 ///               `pub type Velocity` in units.ri resolves to the same dimension)
 ///   max_force : Scalar<FORCE>
 ///   stroke    : Scalar<LENGTH>
-///   axis      : Vector3<Length>
+///   axis      : Vector3<Dimensionless>
 ///
 /// RED: LinearPort is absent → find_trait panics.
 #[test]
@@ -886,13 +882,9 @@ fn linear_port_trait_surface() {
     );
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "axis"),
-        Type::Vector {
-            n: 3,
-            quantity: Box::new(Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }),
-        },
-        "LinearPort.axis must be Vector3<Length>"
+        Type::vec3(Type::dimensionless_scalar()),
+        "LinearPort.axis denotes a DIRECTION, so it must be Vector3<Dimensionless> \
+         (task 5848 ruling)"
     );
 }
 
