@@ -681,7 +681,10 @@ fn seed_cross_sub_named_steps(
             // ── no-args path (existing behaviour) ───────────────────────────
             if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(&sub.name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -816,7 +819,10 @@ fn realize_overridden_instance_into(
             realization_name.to_string(),
         );
         if let Some(&cached) = per_call_dedup.get(&dedup_key) {
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), cached);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                cached,
+            );
             continue;
         }
 
@@ -874,7 +880,10 @@ fn realize_overridden_instance_into(
                 kernel: kernel_id_for_registry_name(default_kernel_name),
                 id: final_handle_id,
             };
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                final_handle,
+            );
             per_call_dedup.insert(dedup_key, final_handle);
         }
     }
@@ -968,7 +977,10 @@ fn seed_cross_let_named_steps(
             // ── no-args path: copy the def's shared snapshot ────────────────
             if let Some(child_snapshot) = module_named_steps.get(def_name.as_str()) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", binding_name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(binding_name, member),
+                        *handle,
+                    );
                 }
             }
         } else {

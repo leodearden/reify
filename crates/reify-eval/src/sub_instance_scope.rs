@@ -4,12 +4,28 @@
 //! under, and a child template's own `ValueRef`s are rewritten onto it. The
 //! scope is one level deep. Collection subs are excluded because they have
 //! no single scoped entity.
+//!
+//! It also owns the compound key under which a parent's `named_steps` hold
+//! each sub's (or `let`-bound instance's) realization steps: the seeders write
+//! it with [`scoped_step_key`] and [`SubInstance::named_steps_view`] reads it
+//! back.
 
 use std::collections::HashMap;
 
 use reify_compiler::TopologyTemplate;
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, KernelHandle};
+
+/// The parent `named_steps` key for step `member` of the sub (or `let`
+/// binding) `binding`. It matches the name the compiler gives
+/// `GeomRef::Sub` for `self.<binding>.<member>`.
+pub(crate) fn scoped_step_key(binding: &str, member: &str) -> String {
+    format!("{}{member}", scoped_step_key_prefix(binding))
+}
+
+fn scoped_step_key_prefix(binding: &str) -> String {
+    format!("{binding}.")
+}
 
 /// One direct, non-collection sub-component of a parent template, paired with
 /// the child template it instantiates.
@@ -63,13 +79,12 @@ impl<'t> SubInstance<'t> {
     }
 
     /// This instance's own step-name → handle map, read back out of the
-    /// parent's `"<sub>.<member>"` keys that `seed_cross_sub_named_steps`
-    /// (engine_build.rs) seeds.
+    /// parent's [`scoped_step_key`] entries for this sub.
     pub(crate) fn named_steps_view(
         &self,
         parent_named_steps: &HashMap<String, KernelHandle>,
     ) -> HashMap<String, KernelHandle> {
-        let prefix = format!("{}.", self.sub_name);
+        let prefix = scoped_step_key_prefix(self.sub_name);
         parent_named_steps
             .iter()
             .filter_map(|(key, handle)| {
@@ -90,7 +105,7 @@ mod tests {
     };
     use reify_test_support::parse_and_compile_with_stdlib;
 
-    use super::direct_sub_instances;
+    use super::{direct_sub_instances, scoped_step_key};
 
     const MINI_SOURCE: &str = r#"
 structure def Inner {
@@ -214,6 +229,28 @@ structure def MiniParent {
             .into_iter()
             .map(|(name, id)| (name.to_string(), occt_handle(id)))
             .collect();
+        assert_eq!(instance.named_steps_view(&parent_steps), expected);
+    }
+
+    #[test]
+    fn named_steps_view_reads_back_what_scoped_step_key_writes() {
+        let compiled = compile_mini();
+        let parent = mini_parent(&compiled);
+        let instance = direct_sub_instances(parent, &compiled.templates)
+            .next()
+            .expect("MiniParent has one direct instance");
+
+        assert_eq!(scoped_step_key("c", "body"), "c.body");
+
+        let parent_steps: HashMap<String, KernelHandle> = [
+            (scoped_step_key("c", "body"), occt_handle(7)),
+            (scoped_step_key("c2", "body"), occt_handle(8)),
+        ]
+        .into_iter()
+        .collect();
+
+        let expected: HashMap<String, KernelHandle> =
+            [("body".to_string(), occt_handle(7))].into_iter().collect();
         assert_eq!(instance.named_steps_view(&parent_steps), expected);
     }
 }
