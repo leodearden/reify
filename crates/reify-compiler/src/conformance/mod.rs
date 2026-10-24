@@ -2282,7 +2282,7 @@ const MAX_SIBLING_CHASE_DEPTH: usize = 256;
 /// `Foo(g: p)` disagree about the same default. Consistency across hop counts
 /// is the deliberate choice — see
 /// `solid_param_default_*_at_bounded_slot_*` in
-/// `geometry_traits_inference_tests.rs`.
+/// `geometry_traits_sibling_chase_tests.rs`.
 ///
 /// # Cycle and depth guards
 ///
