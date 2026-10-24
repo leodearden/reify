@@ -48,7 +48,12 @@ pub(super) fn run_load_cases(
 ) -> ComputeOutcome {
     let cases = match non_empty_cases(sweep, cases_val) {
         Ok(cases) => cases,
-        Err(diagnostic) => return CaseResults::default().failed(vec![diagnostic], vec![]),
+        Err(diagnostic) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![diagnostic],
+                structured_detail: vec![],
+            };
+        }
     };
     let mut results = CaseResults::default();
     for case_val in cases {

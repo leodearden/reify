@@ -33,7 +33,7 @@
 use reify_core::Diagnostic;
 use reify_ir::{OpaqueState, Value};
 
-use super::load_cases::{LoadCaseSweep, run_load_cases};
+use super::load_cases::{LoadCaseParts, LoadCaseSweep, run_load_cases};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 const SWEEP: LoadCaseSweep = LoadCaseSweep {
@@ -74,9 +74,13 @@ pub fn solve_buckling_multi_case_trampoline(
     run_load_cases(
         &SWEEP,
         &value_inputs[4],
-        |parts| {
+        |LoadCaseParts {
+             loads,
+             supports,
+             options_override: _,
+         }| {
             let mut inputs = material_and_dims.to_vec();
-            inputs.extend([parts.loads, parts.supports, shared_options.clone()]);
+            inputs.extend([loads, supports, shared_options.clone()]);
             inputs
         },
         realization_inputs,
