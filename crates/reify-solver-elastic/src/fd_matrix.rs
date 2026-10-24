@@ -3,11 +3,168 @@
 //! [`crate::prestress_stability`]): the line-member matrix `D = CᵀQC` and the
 //! one classifier of a real symmetric matrix's spectrum.
 
+use faer::mat::MatRef;
+use faer::{Mat, Side};
+
+/// Relative null threshold: an eigenvalue is a null direction when
+/// `|λ| ≤ NULLITY_REL_TOL · max|λ|`.
+pub(crate) const NULLITY_REL_TOL: f64 = 1e-8;
+
+/// Why a matrix has no dense symmetric spectrum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpectrumError {
+    /// An entry is NaN or infinite: the first such entry in column-major order.
+    NonFinite {
+        /// Row of the entry.
+        row: usize,
+        /// Column of the entry.
+        col: usize,
+    },
+    /// The dense self-adjoint eigendecomposition did not converge.
+    NoConvergence,
+}
+
+/// The line-member force-density matrix `D = CᵀQC` (`n×n`): for each member
+/// `(j, k)` with force density `qᵢ`, `+qᵢ` on the diagonal entries `D[j,j]`,
+/// `D[k,k]` and `−qᵢ` on the off-diagonal pair `D[j,k]`, `D[k,j]`.
+///
+/// Endpoints must index real nodes: callers range-check the members first, and
+/// debug builds assert it here, naming the offending member.
+pub(crate) fn assemble_d(n: usize, members: &[(usize, usize)], q: &[f64]) -> Mat<f64> {
+    let mut d = Mat::<f64>::zeros(n, n);
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        debug_assert!(
+            j < n && k < n,
+            "member ({j}, {k}) indexes past the {n}×{n} force-density matrix; \
+             ForceDensityProblem::new must run before assemble_d",
+        );
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+    d
+}
+
+/// The spectrum of a real symmetric matrix: its eigenpairs ascending by `|λ|`
+/// with signs kept (a force-density matrix is indefinite), so the null
+/// directions come first.
+#[derive(Debug)]
+pub(crate) struct SymmetricSpectrum {
+    eigenvalues: Vec<f64>,
+    /// Column `j` is the eigenvector of `eigenvalues[j]`.
+    eigenvectors: Mat<f64>,
+    max_mag: f64,
+}
+
+impl SymmetricSpectrum {
+    /// The spectrum of the symmetric matrix `m`, from a dense self-adjoint
+    /// eigendecomposition of its lower triangle.
+    ///
+    /// # Errors
+    ///
+    /// [`SpectrumError::NonFinite`] names `m`'s first NaN or infinite entry,
+    /// checked here because faer's self-adjoint path does not check it;
+    /// [`SpectrumError::NoConvergence`] when that eigendecomposition fails.
+    ///
+    /// # Panics
+    ///
+    /// If `m` is not square.
+    pub(crate) fn of(m: &Mat<f64>) -> Result<SymmetricSpectrum, SpectrumError> {
+        let n = m.nrows();
+        assert_eq!(
+            n,
+            m.ncols(),
+            "a symmetric spectrum needs a square matrix, got {n}×{}",
+            m.ncols(),
+        );
+        if n == 0 {
+            return Ok(SymmetricSpectrum {
+                eigenvalues: Vec::new(),
+                eigenvectors: Mat::zeros(0, 0),
+                max_mag: 0.0,
+            });
+        }
+        if let Some((row, col)) = first_non_finite_entry(m) {
+            return Err(SpectrumError::NonFinite { row, col });
+        }
+        let eig = m
+            .self_adjoint_eigen(Side::Lower)
+            .map_err(|_| SpectrumError::NoConvergence)?;
+        let s = eig.S();
+        let u = eig.U();
+
+        // faer returns ascending ALGEBRAIC order; reorder by |λ| so the null
+        // directions lead.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| s[a].abs().total_cmp(&s[b].abs()));
+
+        let eigenvalues: Vec<f64> = order.iter().map(|&i| s[i]).collect();
+
+        let mut eigenvectors = Mat::<f64>::zeros(n, n);
+        for (new_col, &src_col) in order.iter().enumerate() {
+            for r in 0..n {
+                eigenvectors[(r, new_col)] = u[(r, src_col)];
+            }
+        }
+
+        let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+
+        Ok(SymmetricSpectrum {
+            eigenvalues,
+            eigenvectors,
+            max_mag,
+        })
+    }
+
+    /// Eigenvalues ascending by `|λ|`, signs kept.
+    pub(crate) fn eigenvalues(&self) -> &[f64] {
+        &self.eigenvalues
+    }
+
+    /// Largest eigenvalue magnitude `max|λ|` (`0` for an empty spectrum).
+    pub(crate) fn max_mag(&self) -> f64 {
+        self.max_mag
+    }
+
+    /// Count of eigenvalues with `|λ| ≤ rel_tol · max|λ|`.
+    pub(crate) fn nullity(&self, rel_tol: f64) -> usize {
+        let threshold = rel_tol * self.max_mag;
+        self.eigenvalues
+            .iter()
+            .filter(|v| v.abs() <= threshold)
+            .count()
+    }
+
+    /// Count of eigenvalues clear of the null threshold
+    /// (see [`nullity`](Self::nullity)).
+    pub(crate) fn rank(&self, rel_tol: f64) -> usize {
+        self.eigenvalues.len() - self.nullity(rel_tol)
+    }
+
+    /// The eigenvectors of the `k` smallest-`|λ|` eigenvalues, as orthonormal
+    /// columns.
+    pub(crate) fn leading_eigenvectors(&self, k: usize) -> MatRef<'_, f64> {
+        self.eigenvectors.subcols(0, k)
+    }
+
+    /// Orthonormal basis of the null space under `rel_tol`: the leading
+    /// [`nullity`](Self::nullity) eigenvectors.
+    pub(crate) fn null_basis(&self, rel_tol: f64) -> MatRef<'_, f64> {
+        self.leading_eigenvectors(self.nullity(rel_tol))
+    }
+}
+
+/// `m`'s first NaN or infinite entry in column-major order, as `(row, col)`.
+fn first_non_finite_entry(m: &Mat<f64>) -> Option<(usize, usize)> {
+    (0..m.ncols())
+        .flat_map(|col| (0..m.nrows()).map(move |row| (row, col)))
+        .find(|&(row, col)| !m[(row, col)].is_finite())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use faer::Mat;
-    use faer::mat::MatRef;
 
     const UNIT_TOL: f64 = 1e-12;
 

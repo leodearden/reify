@@ -170,7 +170,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "line-rank1-scatters",
-        home: "scatter_line_members in form_find.rs (solver-crates-layering D3, leaf η)",
+        home: "assemble_d in fd_matrix.rs (solver-crates-layering D3, leaf η; φ-ff)",
         baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "[(j, k)] -= qi",

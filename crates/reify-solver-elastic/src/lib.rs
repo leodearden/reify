@@ -844,6 +844,9 @@ pub use form_find::{
     FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, form_find_anchored,
     form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
+// Task 9273 (solver-crates-layering φ-ff): why a force-density or Gram matrix has
+// no dense spectrum, nested as `Spectrum(..)` in FreeFormError and StabilityError.
+pub use fd_matrix::SpectrumError;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline

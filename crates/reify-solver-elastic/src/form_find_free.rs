@@ -40,10 +40,10 @@
 //! `form_find` signature, or the reify-eval trampoline (those remain anchored-T1a
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
+use crate::fd_matrix::assemble_d;
 use crate::form_find::{
     ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
-    free_equilibrium_residual_relative, member_axial_forces, scatter_line_members,
-    scatter_surface_stencils,
+    free_equilibrium_residual_relative, member_axial_forces, scatter_surface_stencils,
 };
 use faer::{Mat, Side};
 use std::borrow::Cow;
@@ -415,7 +415,7 @@ pub fn form_find_free_surfaces(
         // iteration (only the surface term varies with geometry), so the line-only
         // CᵀQC matrix is hoisted once and each surface term is added to it — the
         // (2b) trial-residual check further down reuses this same `d_line`.
-        let d_line = assemble_force_density_matrix(n, members, &q);
+        let d_line = assemble_d(n, members, &q);
         let d_at_current = &d_line + &surface_mat;
         let resid = all_node_equilibrium_residual_relative(&d_at_current, &current);
 
@@ -612,7 +612,7 @@ fn combined_force_density_matrix(
     q: &[f64],
     surface_mat: &Mat<f64>,
 ) -> Mat<f64> {
-    assemble_force_density_matrix(surface_mat.nrows(), members, q) + surface_mat
+    assemble_d(surface_mat.nrows(), members, q) + surface_mat
 }
 
 /// ALL-node equilibrium residual — the free-standing fixed point's stop test:
@@ -1021,7 +1021,7 @@ fn form_find_group_ratios(
     // from stalling at the tolerance crossing.
     let objective = |group_mag: &[f64]| -> f64 {
         let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
-        let d = assemble_force_density_matrix(n, members, &q);
+        let d = assemble_d(n, members, &q);
         let spec = classify_spectrum(&d, NULLITY_REL_TOL);
         spec.eigenvalues
             .iter()
@@ -1215,30 +1215,6 @@ impl SpectrumClassification {
     }
 }
 
-/// Assemble the full `N×N` force-density matrix `D = Cᵀ Q C` for the whole
-/// (unanchored) structure.
-///
-/// Reuses the anchored kernel's rank-1 per-member accumulation
-/// ([`scatter_line_members`]): for a member `(j, k)` with force density `qᵢ`,
-/// add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and `D[k,j]`. Unlike
-/// the anchored case there is no free/anchor partition — the full `D` is what
-/// the eigenvalue / null-space form-finding operates on.
-///
-/// `pub(crate)` so the layer-3 prestress-stability kernel
-/// ([`crate::prestress_stability`], Task 3796) can reuse this exact assembly:
-/// the geometric/stress stiffness `K_G = D ⊗ I₃` and the super-stability
-/// `D`-spectrum test both build on the same `D = CᵀQC` (PRD
-/// `docs/prds/v0_6/tensegrity-structures.md` §5 "shares layer 2's core").
-pub(crate) fn assemble_force_density_matrix(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
-) -> Mat<f64> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    scatter_line_members(&mut d, members, q);
-    d
-}
-
 /// Classify the spectrum of the symmetric force-density matrix `D` via a dense
 /// self-adjoint eigendecomposition.
 ///
@@ -1358,7 +1334,7 @@ impl FreeStandingForm {
 /// Assemble a validated problem's `D` and certify it as a free-standing form
 /// ([`FreeFormError::NotAForm`] otherwise).
 fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<FreeStandingForm, FreeFormError> {
-    let d = assemble_force_density_matrix(problem.nodes().len(), problem.members(), problem.q());
+    let d = assemble_d(problem.nodes().len(), problem.members(), problem.q());
     FreeStandingForm::certify(&d).map_err(FreeFormError::NotAForm)
 }
 
@@ -1524,7 +1500,7 @@ mod tests {
     fn closed_form_prism_q_has_nullity_four_with_spectral_gap() {
         let (members, _kinds) = triplex_topology();
         let q = closed_form_q();
-        let d = assemble_force_density_matrix(6, &members, &q);
+        let d = assemble_d(6, &members, &q);
         let spec = classify_spectrum(&d, NULLITY_REL_TOL);
 
         assert_eq!(
@@ -1576,7 +1552,7 @@ mod tests {
         // nullity must be exactly 1 — distinguishing it from the special
         // closed-form prism q (nullity 4).
         let q = generic_admissible_q(&kinds);
-        let d = assemble_force_density_matrix(6, &members, &q);
+        let d = assemble_d(6, &members, &q);
         let spec = classify_spectrum(&d, NULLITY_REL_TOL);
 
         assert_eq!(
@@ -1591,7 +1567,7 @@ mod tests {
     #[test]
     fn certify_accepts_connected_nullity_four_d() {
         let (members, _kinds) = triplex_topology();
-        let d = assemble_force_density_matrix(6, &members, &closed_form_q());
+        let d = assemble_d(6, &members, &closed_form_q());
 
         let form = FreeStandingForm::certify(&d).expect("closed-form prism D is a form");
         assert_eq!(form.spectrum().nullity, FREE_FORM_NULLITY);
@@ -1600,7 +1576,7 @@ mod tests {
     #[test]
     fn certify_names_the_nullity_of_a_connected_wrong_rank_d() {
         let (members, kinds) = triplex_topology();
-        let d = assemble_force_density_matrix(6, &members, &generic_admissible_q(&kinds));
+        let d = assemble_d(6, &members, &generic_admissible_q(&kinds));
 
         assert_eq!(
             FreeStandingForm::certify(&d).unwrap_err(),
@@ -1616,7 +1592,7 @@ mod tests {
         // Four disjoint unit cable pairs: one translation mode per pair makes
         // the nullity exactly 4, so the count alone certifies nothing.
         let members = [(0, 1), (2, 3), (4, 5), (6, 7)];
-        let d = assemble_force_density_matrix(8, &members, &[1.0; 4]);
+        let d = assemble_d(8, &members, &[1.0; 4]);
 
         assert_eq!(
             FreeStandingForm::certify(&d).unwrap_err(),
@@ -1640,7 +1616,7 @@ mod tests {
     #[test]
     fn certify_counts_an_isolated_node_as_a_component() {
         let (members, _kinds) = triplex_topology();
-        let prism_d = assemble_force_density_matrix(6, &members, &closed_form_q());
+        let prism_d = assemble_d(6, &members, &closed_form_q());
         let d = with_isolated_node(&prism_d);
 
         assert_eq!(
@@ -1735,7 +1711,7 @@ mod tests {
         let q = closed_form_q();
         // Point a member at node 6 — out of range for the 6-node (0..=5) problem.
         // `D` is 6×6, so without the bounds guard this panics on the `d[(j, j)]`
-        // index in `assemble_force_density_matrix`; the guard turns it into a
+        // index in `assemble_d`; the guard turns it into a
         // clean indexed input error through the public entry point (no panic).
         members[0] = (0, 6);
         assert_eq!(
@@ -1846,7 +1822,7 @@ mod tests {
 
         // (1) Equilibrium: X lies in null(D), so the per-axis residual ‖D·X‖∞
         // must vanish to machine precision — the rock-solid correctness signal.
-        let d = assemble_force_density_matrix(6, &members, &q);
+        let d = assemble_d(6, &members, &q);
         let mut resid = 0.0_f64;
         for i in 0..6 {
             // (D·X) row i, a 3-vector across the coordinate axes.
@@ -2756,7 +2732,7 @@ mod tests {
         const SOFT: f64 = 1.0;
         const STIFF: f64 = 1_048_576.0; // 2^20
         const OFFSET: f64 = 1.0 / 1_048_576.0; // 2^-20
-        let d = assemble_force_density_matrix(3, &[(0, 1), (1, 2)], &[SOFT, STIFF]);
+        let d = assemble_d(3, &[(0, 1), (1, 2)], &[SOFT, STIFF]);
         let nodes = vec![[1.0 + OFFSET, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]];
 
         let resid = all_node_equilibrium_residual_relative(&d, &nodes);

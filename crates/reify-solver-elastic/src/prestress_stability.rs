@@ -23,8 +23,8 @@
 //!    rigid-excluded internal mechanism count.
 //! 4. **Maxwell number** `m − d·N` (Calladine's identity, reported as the raw
 //!    integer field).
-//! 5. **Geometric/stress stiffness** `K_G = D ⊗ I₃` with `D = CᵀQC` reused
-//!    verbatim from layer-2 ([`crate::form_find_free::assemble_force_density_matrix`]).
+//! 5. **Geometric/stress stiffness** `K_G = D ⊗ I₃` with `D = CᵀQC` the same
+//!    matrix layer-2 form-finding assembles ([`crate::fd_matrix::assemble_d`]).
 //!    No sign flip — `q` already encodes cable(+)/strut(−); this is the prestress
 //!    energy Hessian (contrast the buckling kernel's `−K_g`).
 //! 6. **Prestress stability**: reduced `K_G^red = Mᵀ K_G M` on the internal
@@ -531,7 +531,7 @@ pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> M
 /// Assemble the geometric / stress stiffness `K_G = D ⊗ I₃` (`3N × 3N`) from the
 /// layer-2 force-density matrix `D = CᵀQC`.
 ///
-/// `D` ([`crate::form_find_free::assemble_force_density_matrix`]) is reused
+/// `D` ([`crate::fd_matrix::assemble_d`], shared with layer 2) is reused
 /// verbatim (PRD §5 "shares layer 2's core"), then expanded by the Kronecker
 /// product with the 3×3 identity: `K_G[3a+α, 3b+α] = D[a,b]` for each axis
 /// `α ∈ {0,1,2}`, with every off-axis (`α≠β`) entry zero. There is NO sign flip —
@@ -543,7 +543,7 @@ pub(crate) fn assemble_geometric_stiffness(
     members: &[(usize, usize)],
     q: &[f64],
 ) -> Mat<f64> {
-    let d = crate::form_find_free::assemble_force_density_matrix(n, members, q);
+    let d = crate::fd_matrix::assemble_d(n, members, q);
     let mut k_g = Mat::<f64>::zeros(3 * n, 3 * n);
     for a in 0..n {
         for b in 0..n {
@@ -650,7 +650,7 @@ fn min_eigenvalue_on_subspace(k_g: &Mat<f64>, basis: &Mat<f64>) -> f64 {
 /// Connelly super-stability verdict (algebraic conditions only): the force-density
 /// matrix `D = CᵀQC` is positive-semidefinite **and** has rank exactly `N − d − 1`.
 ///
-/// `D` ([`crate::form_find_free::assemble_force_density_matrix`]) is the same
+/// `D` ([`crate::fd_matrix::assemble_d`]) is the same
 /// layer-2 stress matrix reused by [`assemble_geometric_stiffness`]; its spectrum
 /// is classified with the dense self-adjoint pattern shared across this kernel
 /// (faer `self_adjoint_eigen`, [`NULLITY_REL_TOL`] relative threshold):
@@ -677,7 +677,7 @@ fn is_super_stable(n: usize, members: &[(usize, usize)], q: &[f64], d: usize) ->
     if n == 0 {
         return false;
     }
-    let d_mat = crate::form_find_free::assemble_force_density_matrix(n, members, q);
+    let d_mat = crate::fd_matrix::assemble_d(n, members, q);
     let eig = d_mat
         .self_adjoint_eigen(Side::Lower)
         .expect("force-density matrix D is real symmetric; self-adjoint EVD must succeed");
@@ -927,7 +927,7 @@ mod tests {
         // K_G = D ⊗ I₃: the on-axis block (α=β) replicates D[a,b]; every
         // off-axis entry (α≠β) is zero. Compare against the layer-2 D assembly
         // the kernel reuses verbatim.
-        let d = crate::form_find_free::assemble_force_density_matrix(n, &members, &q);
+        let d = crate::fd_matrix::assemble_d(n, &members, &q);
         const TOL: f64 = 1e-12;
         for a in 0..n {
             for b in 0..n {
