@@ -245,10 +245,11 @@
 //! same reason.  Task 5848 has since
 //! LANDED and retyped the direction fields this paragraph used to name —
 //! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
-//! `Vec3<Dimensionless>` today — but the residual is structural, not a property
-//! of those sites, and `ports_mechanical.ri`'s `RotaryPort.axis` /
-//! `LinearPort.axis` (`Vector3<Length>`) are surviving instances.  Retyping what remains is a stdlib type-vocabulary
-//! ruling of its own and is deliberately not folded in here.  Pinned by
+//! `Vec3<Dimensionless>` today — and task 5948 retyped the last two,
+//! `ports_mechanical.ri`'s `RotaryPort.axis` / `LinearPort.axis`, so no stdlib
+//! DIRECTION field is `Length`-typed.  The residual is structural, not a
+//! property of those sites: it is any user-declared `Vector3<Length>` param a
+//! dimensionless vector is fed into.  Pinned by
 //! `vector_param_accepts_dimensionless_vector_arg` (`conformance/mod.rs`) and
 //! `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 //! (`struct_ctor_field_conformance_tests.rs`).
