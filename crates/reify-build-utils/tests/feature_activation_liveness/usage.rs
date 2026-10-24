@@ -26,7 +26,14 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
-            Self::Lex { file } => write!(f, "cannot lex {} as Rust tokens", file.display()),
+            Self::Lex { file } => write!(
+                f,
+                "cannot lex {} as Rust tokens. The feature-activation liveness gate reads every \
+                 .rs file of a package that activates a registered feature, compiled or not \
+                 (all but target/, hidden entries and nested packages), so a deliberately \
+                 malformed fixture there needs a non-.rs extension",
+                file.display()
+            ),
         }
     }
 }
