@@ -876,63 +876,78 @@ fn lower_to_sampled_scales_cm_values_to_metres_but_keeps_voxel_transform_in_metr
     assert_eq!(field.axis_grids, vec![vec![0.0, 1.0, 2.0, 3.0]]);
 }
 
+/// Expected SI scale and dimension, written independently of `KNOWN_UNITS`,
+/// for the OpenVDB units that `reify_core::units::unit_symbol_to_si` does not
+/// resolve.
+const UNITS_OUTSIDE_REIFY_CORE: [(&str, f64, DimensionVector); 6] = [
+    ("km", 1e3, DimensionVector::LENGTH),
+    ("Pa", 1.0, DimensionVector::PRESSURE),
+    ("kPa", 1e3, DimensionVector::PRESSURE),
+    ("MPa", 1e6, DimensionVector::PRESSURE),
+    ("GPa", 1e9, DimensionVector::PRESSURE),
+    ("kg/m^3", 1.0, DimensionVector::MASS_DENSITY),
+];
+
+/// `symbol`'s SI scale and dimension from a source other than `KNOWN_UNITS`.
+fn independent_si_unit(symbol: &str) -> Option<(f64, DimensionVector)> {
+    reify_core::units::unit_symbol_to_si(symbol).or_else(|| {
+        UNITS_OUTSIDE_REIFY_CORE
+            .iter()
+            .find(|(pinned_symbol, ..)| *pinned_symbol == symbol)
+            .map(|&(_, si_scale, dimension)| (si_scale, dimension))
+    })
+}
+
+/// The data of a 4-voxel grid holding 1.0 in `symbol`, lowered onto a Scalar
+/// codomain of `dimension`.
+fn lowered_unit_values(symbol: &str, dimension: DimensionVector) -> Vec<f64> {
+    let grid = unit_scaling_grid(Some(symbol), vec![1.0; 4]);
+    lower_to_sampled(&grid, "f", &Type::Scalar { dimension })
+        .unwrap_or_else(|e| panic!("unit '{symbol}' must lower on its own dimension: {e}"))
+        .field
+        .data
+}
+
 #[test]
-fn every_known_unit_row_scales_lowered_values_by_its_si_scale() {
+fn every_known_unit_row_lowers_by_an_si_scale_pinned_outside_the_table() {
     for row in KNOWN_UNITS {
-        let grid = unit_scaling_grid(Some(row.symbol), vec![1.0; 4]);
-        let codomain = Type::Scalar {
-            dimension: row.dimension,
-        };
-        let outcome = lower_to_sampled(&grid, "f", &codomain).unwrap_or_else(|e| {
-            panic!("unit '{}' must lower on its own dimension: {e}", row.symbol)
+        let (si_scale, dimension) = independent_si_unit(row.symbol).unwrap_or_else(|| {
+            panic!(
+                "unit '{}' has no SI scale outside KNOWN_UNITS to check it against; \
+                 pin it in UNITS_OUTSIDE_REIFY_CORE",
+                row.symbol
+            )
         });
         assert_eq!(
-            outcome.field.data,
-            vec![row.si_scale; 4],
-            "unit '{}' must scale lowered values by its si_scale {}",
-            row.symbol,
-            row.si_scale
+            lowered_unit_values(row.symbol, dimension),
+            vec![si_scale; 4],
+            "unit '{}' must scale lowered values by {si_scale}",
+            row.symbol
         );
     }
 }
 
 #[test]
-fn known_units_table_is_well_formed_and_agrees_with_reify_core_builtin_units() {
+fn every_unit_pinned_outside_reify_core_lowers_by_its_literal_si_scale() {
+    for (symbol, si_scale, dimension) in UNITS_OUTSIDE_REIFY_CORE {
+        assert_eq!(
+            lowered_unit_values(symbol, dimension),
+            vec![si_scale; 4],
+            "unit '{symbol}' must scale lowered values by {si_scale}"
+        );
+    }
+}
+
+#[test]
+fn known_units_symbols_are_unique() {
     let mut seen_symbols = std::collections::HashSet::new();
-    let mut rows_shared_with_reify_core = 0;
     for row in KNOWN_UNITS {
         assert!(
             seen_symbols.insert(row.symbol),
             "duplicate KNOWN_UNITS symbol '{}' (the linear lookup shadows it)",
             row.symbol
         );
-        assert!(
-            row.si_scale.is_finite() && row.si_scale > 0.0,
-            "unit '{}' has non-positive or non-finite si_scale {}",
-            row.symbol,
-            row.si_scale
-        );
-        if let Some((factor, dimension)) = reify_core::units::unit_symbol_to_si(row.symbol) {
-            rows_shared_with_reify_core += 1;
-            assert_eq!(
-                row.si_scale.to_bits(),
-                factor.to_bits(),
-                "unit '{}': si_scale {} disagrees with reify_core BUILTIN_UNITS factor {}",
-                row.symbol,
-                row.si_scale,
-                factor
-            );
-            assert_eq!(
-                row.dimension, dimension,
-                "unit '{}': dimension disagrees with reify_core BUILTIN_UNITS",
-                row.symbol
-            );
-        }
     }
-    assert!(
-        rows_shared_with_reify_core > 0,
-        "no KNOWN_UNITS row is shared with reify_core BUILTIN_UNITS; the drift guard is vacuous"
-    );
 }
 
 // ---------------------------------------------------------------------------
