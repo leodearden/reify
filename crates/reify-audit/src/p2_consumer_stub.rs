@@ -13,8 +13,8 @@
 //!    `diff_added_lines_in_commit(commit, path)`** — the surviving merge
 //!    commit's first-parent diff (`<commit>^1..<commit>`) recovers the task's
 //!    exact added lines even after the orchestrator has reaped the `task/N`
-//!    branch. Being historical, it keeps only the markers whose trimmed line
-//!    is still present in the file on `main`.
+//!    branch. Being historical, it drops a marker once the file on `main` is
+//!    known not to carry its trimmed line; a copy git cannot read keeps it.
 //!
 //! 2. **`done_provenance.commit` present but NOT reachable from `main`**
 //!    (gc'd / recycled SHA) → `file_lines_on("main", path)` — last-resort
@@ -347,11 +347,37 @@ impl<'a> AddedLineSource<'a> {
     }
 }
 
-/// The trimmed lines of each file on [`MAINLINE`], read lazily and at most
-/// once per path for the duration of one `check` call.
+/// What one `check` call could learn about one file's copy on [`MAINLINE`].
+enum MainlineCopy {
+    /// Its trimmed lines; empty when main no longer tracks the file.
+    Read(HashSet<String>),
+    /// The read came back empty for a path main may still track: git failed
+    /// (`file_lines_on` reports an error as an empty file) or the file is empty.
+    Unread,
+}
+
+impl MainlineCopy {
+    /// An empty read counts as "file gone" only when git confirms main no
+    /// longer tracks the path; an unanswered probe leaves it [`Self::Unread`].
+    fn read(git: &dyn GitOps, path: &str) -> Self {
+        let lines = git.file_lines_on(MAINLINE, path);
+        if lines.is_empty() && !matches!(git.try_path_tracked_on(MAINLINE, path), Ok(false)) {
+            return Self::Unread;
+        }
+        Self::Read(
+            lines
+                .into_iter()
+                .map(|(_, l)| l.trim().to_string())
+                .collect(),
+        )
+    }
+}
+
+/// Each file's [`MainlineCopy`], read lazily and at most once per path for the
+/// duration of one `check` call.
 struct MainlineLines<'g> {
     git: &'g dyn GitOps,
-    by_path: HashMap<String, HashSet<String>>,
+    by_path: HashMap<String, MainlineCopy>,
 }
 
 impl<'g> MainlineLines<'g> {
@@ -362,19 +388,19 @@ impl<'g> MainlineLines<'g> {
         }
     }
 
-    /// `true` when `line`, trimmed, is still a line of `path` on main — so a
-    /// re-indented or moved marker is kept, a reworded or removed one is not.
-    fn contains(&mut self, path: &str, line: &str) -> bool {
+    /// `true` only when main is known not to carry `line`, trimmed, in `path`:
+    /// a re-indented or moved marker is still carried, a reworded or removed
+    /// one is not. Fails open — an unreadable copy keeps the marker reported.
+    fn known_absent(&mut self, path: &str, line: &str) -> bool {
         let git = self.git;
-        self.by_path
+        match self
+            .by_path
             .entry(path.to_string())
-            .or_insert_with(|| {
-                git.file_lines_on(MAINLINE, path)
-                    .into_iter()
-                    .map(|(_, l)| l.trim().to_string())
-                    .collect()
-            })
-            .contains(line.trim())
+            .or_insert_with(|| MainlineCopy::read(git, path))
+        {
+            MainlineCopy::Read(lines) => !lines.contains(line.trim()),
+            MainlineCopy::Unread => false,
+        }
     }
 }
 
@@ -506,18 +532,15 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             if !is_code_ext(path) { continue; }
             if path.starts_with(DETECTOR_SOURCE_PREFIX) { continue; }
 
-            // Filtered before the Phase-2 dedup, so a dropped match can never
-            // win introducer attribution over a reportable one.
+            // A stale match is dropped before the Phase-2 dedup, so it can
+            // never win introducer attribution over a live re-introduction.
             let added = source.added_lines(ctx.git, path);
-            let reportable = scan_file_added_lines(&added)
+            let current = scan_file_added_lines(&added)
                 .into_iter()
                 .filter(|(_, content, _)| {
-                    !cites_live_owner(content, &meta.task_id, &ctx.task_metadata)
-                })
-                .filter(|(_, content, _)| {
-                    !source.can_be_stale() || mainline.contains(path, content)
+                    !(source.can_be_stale() && mainline.known_absent(path, content))
                 });
-            for (line_no, content, label) in reportable {
+            for (line_no, content, label) in current {
                 raw.push(RawEntry {
                     path: path.clone(),
                     line_no,
@@ -547,9 +570,13 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         }
     }
 
-    // Phase 3 — group winners by (task_id, path).
+    // Phase 3 — group winners by (task_id, path). The live-owner rule runs
+    // here, on the winner, because it turns on who introduced the line.
     let mut groups: GroupMap = std::collections::HashMap::new();
-    for (_, entry) in dedup {
+    let unowned = dedup
+        .into_values()
+        .filter(|entry| !cites_live_owner(&entry.content, &entry.task_id, &ctx.task_metadata));
+    for entry in unowned {
         groups
             .entry((entry.task_id, entry.path))
             .or_default()

@@ -374,7 +374,10 @@ mod p2_suppression {
             git.set_diff_added_lines_in_commit(
                 "m1",
                 path,
-                owned_lines(&[(8, "    // TODO(impl pending)"), (12, "    unimplemented!()")]),
+                owned_lines(&[
+                    (8, "    // TODO(impl pending)"),
+                    (12, "    unimplemented!()"),
+                ]),
             );
             let via_commit = merged(meta("9660", "done", &[path]), "m1", 1000);
             // `gone` is unreachable from main, so 9661 is read by scanning main.
