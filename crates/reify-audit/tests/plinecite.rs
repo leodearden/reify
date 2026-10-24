@@ -508,6 +508,57 @@ fn baseline_ledger_refuses_a_tree_with_nothing_in_scope() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Spelled lead-ins — `entity.rs ~2145`, `entity.rs (~2145`, `lib.rs line 444`
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COMPILER_SRC: &str = "crates/reify-compiler/src/connect.rs";
+
+#[test]
+fn a_spelled_line_cite_is_reported_verbatim() {
+    let content = "fn f() {}\n// guard at entity.rs (~2145) and (lib.rs line 444)\n";
+    let findings = check_fixture(&[(COMPILER_SRC, content)], &[COMPILER_SRC]);
+    let cites = ["entity.rs (~2145", "lib.rs line 444"];
+    assert_eq!(names_in(&findings, "line-cite"), cites, "got {findings:#?}");
+    assert_eq!(findings.len(), cites.len(), "got {findings:#?}");
+    for (f, cite) in findings.iter().zip(cites) {
+        assert_eq!(f.task_id, COMPILER_SRC);
+        assert_eq!(f.evidence, vec![file_line(COMPILER_SRC, 2, Some(cite))]);
+    }
+}
+
+#[test]
+fn a_spelled_cite_is_absorbed_by_its_verbatim_row() {
+    let rows = ledger(&[&ledger_row(COMPILER_SRC, "entity.rs (~2145")]);
+    let findings = check_fixture(
+        &[
+            (COMPILER_SRC, "// guard at entity.rs (~2145)\n"),
+            (LEDGER, &rows),
+        ],
+        &[COMPILER_SRC, LEDGER],
+    );
+    assert!(
+        findings.is_empty(),
+        "a row holding a space and a paren round-trips; got {findings:#?}"
+    );
+}
+
+#[test]
+fn re_spelling_a_ledgered_cite_is_new_debt_plus_a_stale_row() {
+    let rows = ledger(&[&ledger_row(COMPILER_SRC, "entity.rs ~2145")]);
+    let findings = check_fixture(
+        &[(COMPILER_SRC, "// see entity.rs:2145\n"), (LEDGER, &rows)],
+        &[COMPILER_SRC, LEDGER],
+    );
+    assert_eq!(names_in(&findings, "line-cite"), vec!["entity.rs:2145"]);
+    assert_eq!(
+        names_in(&findings, "stale-baseline-entry"),
+        vec![ledger_row(COMPILER_SRC, "entity.rs ~2145")],
+        "re-spelling a number is not the fix; got {findings:#?}"
+    );
+    assert_eq!(findings.len(), 2, "got {findings:#?}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CLI — reachable by `--pattern PLINECITE`, and exit-neutral
 // ─────────────────────────────────────────────────────────────────────────────
 

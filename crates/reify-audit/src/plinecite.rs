@@ -400,6 +400,88 @@ mod tests {
     }
 
     #[test]
+    fn a_tilde_lead_is_a_cite_reported_verbatim() {
+        assert_eq!(
+            line_cites("// The guards (graph.rs ~429, unfold.rs ~308)"),
+            vec!["graph.rs ~429", "unfold.rs ~308"]
+        );
+    }
+
+    #[test]
+    fn a_parenthesised_tilde_lead_is_a_cite() {
+        assert_eq!(
+            line_cites("// args lookup in entity.rs (~2726-2790):"),
+            vec!["entity.rs (~2726"]
+        );
+    }
+
+    #[test]
+    fn a_colon_tilde_lead_is_a_cite() {
+        assert_eq!(
+            line_cites("/// pre-pass (entity.rs:~531) and (guards.rs:~183)."),
+            vec!["entity.rs:~531", "guards.rs:~183"]
+        );
+    }
+
+    #[test]
+    fn line_and_lines_leads_are_cites() {
+        assert_eq!(
+            line_cites("/// The inline arm (lib.rs line 444) guards"),
+            vec!["lib.rs line 444"]
+        );
+        assert_eq!(
+            line_cites("/// (kernel.rs lines 178–215): x"),
+            vec!["kernel.rs lines 178"]
+        );
+        assert_eq!(
+            line_cites("// see units.ri line 12"),
+            vec!["units.ri line 12"]
+        );
+    }
+
+    #[test]
+    fn the_esc_anchor_composes_with_every_lead() {
+        assert_eq!(
+            line_cites("// (units.ri esc-4026-121 ~80)"),
+            vec!["units.ri esc-4026-121 ~80"]
+        );
+        assert_eq!(
+            line_cites("// units.ri esc-4026-121:~80"),
+            vec!["units.ri esc-4026-121:~80"]
+        );
+    }
+
+    #[test]
+    fn colon_and_spelled_cites_on_one_line_come_back_in_line_order() {
+        assert_eq!(
+            line_cites("// a.rs:1 then b.rs ~2 and c.rs line 3"),
+            vec!["a.rs:1", "b.rs ~2", "c.rs line 3"]
+        );
+    }
+
+    #[test]
+    fn spelled_near_misses_cite_nothing() {
+        for line in [
+            "// beam.rs (2)",
+            "// foo.rs ~ 12",
+            "// foo.rs~12",
+            "// foo.rs  ~12",
+            "// foo.rs, line 12",
+            "// foo.rs (line 12)",
+            "// foo.rs line ~12",
+            "// foo.rs line",
+            "// foo.rs lines of code",
+            "// foo.rs linear 3",
+            "// foo.rs ~",
+            "// foo.rs (~)",
+            "// foo.rs:~",
+            "// foo.rsx ~1",
+        ] {
+            assert_eq!(line_cites(line), NONE, "{line:?} carries no hard cite");
+        }
+    }
+
+    #[test]
     fn legal_spellings_without_a_line_number_cite_nothing() {
         for line in [
             "// units.ri esc-4026-121",
