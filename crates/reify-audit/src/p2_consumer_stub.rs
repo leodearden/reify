@@ -34,8 +34,9 @@
 //!
 //! ## Suppressions
 //!
-//! Beyond test paths and non-code files, P2 never reports the audit crate's
-//! own source, a line carrying PTODO's `ptodo:allow` escape, or a marker
+//! Beyond test paths and non-code files, P2 never reports the audit crate
+//! itself (PTODO's [`ptodo::AUDIT_CRATE_PREFIX`] exemption), a line carrying
+//! PTODO's `ptodo:allow` escape, or a marker
 //! citing a non-terminal task other than the one that introduced it (that
 //! task already owns the stub).
 //!
@@ -282,11 +283,6 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
-/// The audit crate's own source, excluded from P2 scanning: its stub-pattern
-/// string literals and detector code self-match. Its tests are already
-/// skipped by `crate::is_test_path`.
-const DETECTOR_SOURCE_PREFIX: &str = "crates/reify-audit/src/";
-
 /// Threshold above which `check()` warns about an unbounded backlog
 /// when both `target_task_id` and `window` are unset (sweep mode
 /// without pre-narrowing — see the `# Callers` rustdoc on `check`).
@@ -530,7 +526,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         for path in &meta.files {
             if crate::is_test_path(path) { continue; }
             if !is_code_ext(path) { continue; }
-            if path.starts_with(DETECTOR_SOURCE_PREFIX) { continue; }
+            if path.starts_with(ptodo::AUDIT_CRATE_PREFIX) { continue; }
 
             // A stale match is dropped before the Phase-2 dedup, so it can
             // never win introducer attribution over a live re-introduction.

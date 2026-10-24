@@ -102,7 +102,7 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
 - Test files (`*/tests/*`, `*_test.rs`, `__tests__/`) excluded.
 - Stub-pattern matches that were present in pre-task `main` (i.e. moved code) are excluded — diff-based detection handles this.
 - Tasks whose description explicitly names "stub" or "placeholder" in the title (e.g. "Add stub for X") are flagged but with severity downgraded to low.
-- The audit crate's own source (`crates/reify-audit/src/`) is excluded: its stub-pattern string literals and detector code self-match.
+- The audit crate itself (`crates/reify-audit/`) is excluded: its stub-pattern string literals, detector code and fixtures self-match. This is the same exemption PTODO's §6.8 allowlist applies, held in one constant (`ptodo::AUDIT_CRATE_PREFIX`) so the two lanes cannot drift; like PTODO, P2 therefore does not see a genuine stub anywhere in the crate.
 - A line carrying PTODO's inline escape `ptodo:allow` is excluded: it is a reviewed, intentional marker.
 - A marker citing (`#NNNN`) a non-terminal task other than the task that introduced it is suppressed: the stub already has a live owner, which PTODO's liveness lane tracks, so a P2 follow-up would duplicate it. Cites of done/cancelled tasks, of tasks absent from the corpus, and of the introducing task itself stay reported.
 
