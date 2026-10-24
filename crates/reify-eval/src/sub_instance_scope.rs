@@ -60,6 +60,11 @@ impl<'t> SubInstance<'t> {
         self.child_template
     }
 
+    /// The `"<parent>.<sub>"` entity this instance's cells live under.
+    pub(crate) fn scoped_entity(&self) -> &str {
+        &self.scoped_entity
+    }
+
     /// The id of this instance's copy of the child cell `member`.
     pub(crate) fn scoped_id(&self, member: &str) -> ValueCellId {
         ValueCellId::new(self.scoped_entity.as_str(), member)

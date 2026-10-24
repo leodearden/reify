@@ -11729,6 +11729,10 @@ impl Engine {
     /// instance resolves against its own handles, so a param override is
     /// honoured. One level deep, collection subs excluded; the rescoping rule
     /// lives in [`crate::sub_instance_scope`].
+    ///
+    /// Each instance re-runs expressions the child template's own
+    /// [`Engine::post_process_kinematic_queries`] already ran, so its
+    /// diagnostics go through [`merge_sub_instance_diagnostics`].
     fn post_process_cross_sub_kinematic_queries(
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, KernelHandle>,
@@ -11743,8 +11747,13 @@ impl Engine {
         > = HashMap::new();
         for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
             let steps = instance.named_steps_view(named_steps);
+            let mut instance_diagnostics = Vec::new();
             for cell in &instance.child_template().value_cells {
-                let Some(default_expr) = &cell.default_expr else {
+                let Some(default_expr) = cell
+                    .default_expr
+                    .as_ref()
+                    .filter(|e| calls_kinematic_query(e))
+                else {
                     continue;
                 };
                 if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
@@ -11752,12 +11761,17 @@ impl Engine {
                     &steps,
                     values,
                     kernel,
-                    diagnostics,
+                    &mut instance_diagnostics,
                     &mut pose_cache,
                 ) {
                     values.insert(instance.scoped_id(&cell.id.member), value);
                 }
             }
+            merge_sub_instance_diagnostics(
+                diagnostics,
+                instance_diagnostics,
+                instance.scoped_entity(),
+            );
         }
     }
 
@@ -13851,6 +13865,46 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
         }
     });
     found
+}
+
+/// Returns `true` if `expr` calls a kinematic-query helper
+/// ([`reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES`]) at any depth. That
+/// covers every shape [`crate::geometry_ops::try_eval_kinematic_query`]
+/// dispatches, a direct helper call or a `flat_map` whose lambda wraps one,
+/// so a cell that fails this test is not worth rescoping for it.
+fn calls_kinematic_query(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if let reify_ir::CompiledExprKind::FunctionCall { function, .. } = &e.kind
+            && reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&function.name.as_str())
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Folds one sub instance's diagnostics into `diagnostics`. A diagnostic that
+/// is already there (same severity and message, usually from the child
+/// template's own pass over the same expression) is dropped. Any other is
+/// kept, with `scoped_entity` added to its message so the reader knows which
+/// instance raised it.
+fn merge_sub_instance_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    instance_diagnostics: Vec<Diagnostic>,
+    scoped_entity: &str,
+) {
+    for mut diagnostic in instance_diagnostics {
+        let tagged = format!("{} (sub-instance `{scoped_entity}`)", diagnostic.message);
+        let already_reported = diagnostics.iter().any(|d| {
+            d.severity == diagnostic.severity
+                && (d.message == diagnostic.message || d.message == tagged)
+        });
+        if !already_reported {
+            diagnostic.message = tagged;
+            diagnostics.push(diagnostic);
+        }
+    }
 }
 
 /// Returns `true` if `expr` is a top-level `FunctionCall` to `fits_build_volume`.
