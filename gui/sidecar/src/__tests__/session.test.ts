@@ -1523,22 +1523,21 @@ describe('entrypoint wiring', () => {
 });
 
 /**
- * Shared setup for orphan-stdin-error tests. Creates a mock proc with one tool_use,
- * installs a console.warn spy, dispatches handleMessage, and awaits the tool_call
- * output to confirm the stdin 'error' listener is attached before returning.
+ * Shared setup for orphan-stdin-error tests. Installs a console.warn spy, dispatches
+ * handleMessage, and awaits the first text_delta. By then the prompt has been written and
+ * stdin ended, so the 'error' listener is attached and no write callback is pending: any
+ * 'error' the test emits on stdin is an orphan.
  *
  * Returns { mockProc, warnSpy, finish } where finish() restores the spy, closes the
  * mock process (using stdout/msgPromise captured in its closure), and resolves the
  * pending handleMessage.
  */
 async function setupOrphanStdinErrorScenario(session: SidecarSession) {
-  const { mockProc, stdout } = makeMockProc([
-    { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
-  ]);
+  const { mockProc, stdout } = makeMockProc([{ type: 'text', text: 'Hi' }]);
 
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-  const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+  const textDeltaWait = waitForOutput(session, (m) => m.type === 'text_delta');
 
   const msgPromise = session.handleMessage({
     type: 'send_message',
@@ -1546,8 +1545,7 @@ async function setupOrphanStdinErrorScenario(session: SidecarSession) {
     text: 'Hi',
   });
 
-  // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
-  await toolCallWait;
+  await textDeltaWait;
 
   const finish = async () => {
     warnSpy.mockRestore();

@@ -366,15 +366,8 @@ impl SidecarHandle {
                         });
                     }
 
-                    // 2. Event emission. All outbound messages — including tool_call —
-                    // are forwarded to the frontend as-is. There is no in-process MCP
-                    // tool interception here: the `reify_`-prefixed interception that
-                    // used to run engine-mutating tools via
-                    // `mcp_context::mcp_tool_call_impl` with zero frontend sync was
-                    // deleted (gui-state-sync PRD L8). A future properly-wired, synced
-                    // re-introduction of engine-mutating sidecar tools is owned by
-                    // docs/prds/v0_6/ai-native-editing.md (registered on the
-                    // reify-debug HTTP MCP server, not a claude_bridge interception).
+                    // 2. Forward every outbound as an event; no tool interception
+                    // (see docs/prds/v0_6/ai-native-editing.md).
                     if let Some(ref emit) = event_emitter {
                         let (event_name, payload) = outbound_to_event(&msg);
                         emit(event_name, payload);
