@@ -30,6 +30,7 @@ pub mod constraint;
 pub mod dense_sdf;
 pub mod expr;
 pub mod geometry;
+mod geometry_id;
 pub mod indeterminate;
 pub mod kernel_validation;
 pub mod node_traits;
