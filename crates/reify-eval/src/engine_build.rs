@@ -681,7 +681,10 @@ fn seed_cross_sub_named_steps(
             // ── no-args path (existing behaviour) ───────────────────────────
             if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(&sub.name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -816,7 +819,10 @@ fn realize_overridden_instance_into(
             realization_name.to_string(),
         );
         if let Some(&cached) = per_call_dedup.get(&dedup_key) {
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), cached);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                cached,
+            );
             continue;
         }
 
@@ -874,7 +880,10 @@ fn realize_overridden_instance_into(
                 kernel: kernel_id_for_registry_name(default_kernel_name),
                 id: final_handle_id,
             };
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                final_handle,
+            );
             per_call_dedup.insert(dedup_key, final_handle);
         }
     }
@@ -968,7 +977,10 @@ fn seed_cross_let_named_steps(
             // ── no-args path: copy the def's shared snapshot ────────────────
             if let Some(child_snapshot) = module_named_steps.get(def_name.as_str()) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", binding_name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(binding_name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -11395,6 +11407,17 @@ impl Engine {
             diagnostics,
             templates,
         );
+        // Sub-instance copies of kinematic-query cells. Must run BEFORE
+        // `post_process_derived_lets` so a parent let over
+        // `self.<sub>.<kinematic-cell>` folds in the same fixpoint.
+        Engine::post_process_cross_sub_kinematic_queries(
+            template,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            templates,
+        );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
         // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
@@ -11619,13 +11642,12 @@ impl Engine {
     /// material.density`) — but a geometry-query leaf can't resolve without a
     /// kernel there, so the cell folds to `Value::Undef`.
     ///
-    /// This pass re-attempts that fold with kernel access. For each
-    /// non-collection sub-component, for each of the child template's OWN
-    /// value cells that is still `Undef` at its scoped id, this takes the
-    /// child cell's `default_expr` and rescopes every `ValueRef` (via
-    /// [`reify_ir::CompiledExpr::map_value_refs`]) whose entity is the child
-    /// template's own name to the sub-instance's scoped entity, then
-    /// dispatches the rescoped expression exactly like the per-DEF fold
+    /// This pass re-attempts that fold with kernel access. For each direct
+    /// sub instance ([`crate::sub_instance_scope`] owns the enumeration and
+    /// the rescoping rule), for each of the child template's OWN value cells
+    /// that is still `Undef` at its scoped id, this rescopes the child cell's
+    /// `default_expr` onto the instance, then dispatches the rescoped
+    /// expression exactly like the per-DEF fold
     /// ([`crate::geometry_ops::try_eval_geometry_query`]):
     ///
     ///   - A rescoped geometry-query leaf's arg (e.g.
@@ -11663,42 +11685,18 @@ impl Engine {
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for sub in &template.sub_components {
-            // Collection subs have no single scoped entity to fold into (each
-            // element would need its own indexed scope); out of scope here,
-            // mirroring `seed_cross_sub_named_steps`'s no-collection-subs
-            // contract.
-            if sub.is_collection {
-                continue;
-            }
-            let Some(child_template) =
-                reify_compiler::find_template(templates, &sub.structure_name)
-            else {
-                continue;
-            };
-            let scoped_entity = format!("{}.{}", template.name, sub.name);
-            let child_entity = child_template.name.as_str();
-
-            for child_cell in &child_template.value_cells {
+        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+            for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
                 };
-                let scoped_id = reify_core::ValueCellId::new(
-                    scoped_entity.clone(),
-                    child_cell.id.member.as_str(),
-                );
+                let scoped_id = instance.scoped_id(&child_cell.id.member);
                 if values.get(&scoped_id).is_some_and(|v| !v.is_undef()) {
                     // Already folded (e.g. a Param cell populated by
                     // `elaborate_child_params_only`) — nothing to do.
                     continue;
                 }
-                let rescoped = default_expr.clone().map_value_refs(&mut |id| {
-                    if id.entity == child_entity {
-                        reify_core::ValueCellId::new(scoped_entity.clone(), id.member)
-                    } else {
-                        id
-                    }
-                });
+                let rescoped = instance.rescope(default_expr);
                 // Skip CrossSubGeometryRef expressions — same guard as
                 // `post_process_derived_lets`; that variant `unreachable!()`s in
                 // `reify_expr::eval_expr` outside a bare-let top level.
@@ -11721,6 +11719,59 @@ impl Engine {
             ) {
                 values.insert(scoped_id, value);
             }
+        }
+    }
+
+    /// Dispatch the kinematic-query helpers for each direct sub instance's
+    /// copies of its child template's cells, writing at the instance-scoped id
+    /// `ValueCellId("<parent>.<sub>", member)`. The pure eval pass leaves those
+    /// copies `Undef` because kernel values only exist in the build phase. Each
+    /// instance resolves against its own handles, so a param override is
+    /// honoured. One level deep, collection subs excluded; the rescoping rule
+    /// lives in [`crate::sub_instance_scope`].
+    ///
+    /// Each instance re-runs expressions the child template's own
+    /// [`Engine::post_process_kinematic_queries`] already ran, so its
+    /// diagnostics go through [`merge_sub_instance_diagnostics`].
+    fn post_process_cross_sub_kinematic_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+        templates: &[reify_compiler::TopologyTemplate],
+    ) {
+        let mut pose_cache: HashMap<
+            (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
+            reify_ir::GeometryHandleId,
+        > = HashMap::new();
+        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+            let steps = instance.named_steps_view(named_steps);
+            let mut instance_diagnostics = Vec::new();
+            for cell in &instance.child_template().value_cells {
+                let Some(default_expr) = cell
+                    .default_expr
+                    .as_ref()
+                    .filter(|e| calls_kinematic_query(e))
+                else {
+                    continue;
+                };
+                if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
+                    &instance.rescope(default_expr),
+                    &steps,
+                    values,
+                    kernel,
+                    &mut instance_diagnostics,
+                    &mut pose_cache,
+                ) {
+                    values.insert(instance.scoped_id(&cell.id.member), value);
+                }
+            }
+            merge_sub_instance_diagnostics(
+                diagnostics,
+                instance_diagnostics,
+                instance.scoped_entity(),
+            );
         }
     }
 
@@ -13814,6 +13865,46 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
         }
     });
     found
+}
+
+/// Returns `true` if `expr` calls a kinematic-query helper
+/// ([`reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES`]) at any depth. That
+/// covers every shape [`crate::geometry_ops::try_eval_kinematic_query`]
+/// dispatches, a direct helper call or a `flat_map` whose lambda wraps one,
+/// so a cell that fails this test is not worth rescoping for it.
+fn calls_kinematic_query(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if let reify_ir::CompiledExprKind::FunctionCall { function, .. } = &e.kind
+            && reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&function.name.as_str())
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Folds one sub instance's diagnostics into `diagnostics`. A diagnostic that
+/// is already there (same severity and message, usually from the child
+/// template's own pass over the same expression) is dropped. Any other is
+/// kept, with `scoped_entity` added to its message so the reader knows which
+/// instance raised it.
+fn merge_sub_instance_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    instance_diagnostics: Vec<Diagnostic>,
+    scoped_entity: &str,
+) {
+    for mut diagnostic in instance_diagnostics {
+        let tagged = format!("{} (sub-instance `{scoped_entity}`)", diagnostic.message);
+        let already_reported = diagnostics.iter().any(|d| {
+            d.severity == diagnostic.severity
+                && (d.message == diagnostic.message || d.message == tagged)
+        });
+        if !already_reported {
+            diagnostic.message = tagged;
+            diagnostics.push(diagnostic);
+        }
+    }
 }
 
 /// Returns `true` if `expr` is a top-level `FunctionCall` to `fits_build_volume`.
