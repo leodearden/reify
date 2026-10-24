@@ -1,13 +1,15 @@
 //! PLINECITE — hard line cites in source comments.
 //!
-//! A comment that cites code as `<file>.rs:<line>` or `<file>.ri:<line>`
-//! rots silently: any edit above the target moves it and nothing re-checks
-//! the number. PLINECITE reports each such cite so the author cites the
-//! enclosing symbol instead.
+//! A comment that cites a `.rs` or `.ri` file by line number (`cache.rs:617`,
+//! `entity.rs ~2145`, `lib.rs line 444`; the lead-ins are
+//! `LINE_NUMBER_LEADS`) rots silently: any edit above the target moves it and
+//! nothing re-checks the number. PLINECITE reports each such cite so the
+//! author cites the enclosing symbol instead.
 //!
 //! It reports and never certifies. The grammar (`line_cites`) is
-//! deliberately decline-only: prose, line-wrapped and string-literal cites go
-//! unseen, so a clean run does not prove a file free of line cites.
+//! deliberately decline-only: prefix prose (`line N of foo.rs`), line-wrapped
+//! and string-literal cites go unseen, so a clean run does not prove a file
+//! free of line cites.
 //!
 //! Every finding is [`Severity::Medium`], so the lane is report-only and
 //! exit-neutral. Kinds, carried as the summary prefix:
@@ -43,6 +45,11 @@ const EXCLUDED_PREFIXES: &[&str] = &["crates/reify-audit/"];
 /// The escalation anchor a cite may carry between its extension and its line
 /// number.
 const ESC_ANCHOR: &[u8] = b" esc-";
+
+/// The literal lead-ins a cite's line number may follow, each matched as
+/// written and followed directly by a digit — the closed set of
+/// `docs/prds/reify-audit-stale-line-cite-detector.md` §4.
+const LINE_NUMBER_LEADS: &[&[u8]] = &[b":", b":~", b" ~", b" (~", b" line ", b" lines "];
 
 /// Whether PLINECITE scans the tracked file `path` — the lane's single scope
 /// boundary: the bundled stdlib's `.ri` files, and every `.rs` under a
@@ -312,21 +319,30 @@ fn cite_at(bytes: &[u8], dot: usize, floor: usize) -> Option<(usize, usize)> {
 }
 
 /// Past the first digit run of the line number that follows an extension
-/// ending at `after`: either `:<digits>` or ` esc-<id>:<digits>`.
+/// ending at `after`: an optional ` esc-<id>` anchor, then one of
+/// [`LINE_NUMBER_LEADS`], then the digits.
 fn line_number_end(bytes: &[u8], after: usize) -> Option<usize> {
-    let rest = &bytes[after..];
-    let colon = if rest.starts_with(b":") {
-        after
-    } else if rest.starts_with(ESC_ANCHOR) {
-        let id_start = after + ESC_ANCHOR.len();
-        let id_end = run_end(bytes, id_start, |b| b.is_ascii_digit() || b == b'-');
-        (id_end > id_start && bytes.get(id_end) == Some(&b':')).then_some(id_end)?
-    } else {
+    let lead_start = esc_anchor_end(bytes, after).unwrap_or(after);
+    let rest = &bytes[lead_start..];
+    LINE_NUMBER_LEADS.iter().find_map(|lead| {
+        if !rest.starts_with(lead) {
+            return None;
+        }
+        let digits_start = lead_start + lead.len();
+        let digits_end = run_end(bytes, digits_start, |b| b.is_ascii_digit());
+        (digits_end > digits_start).then_some(digits_end)
+    })
+}
+
+/// Past the ` esc-<digits and hyphens>` anchor starting at `at`; `None` when
+/// there is none or its id is empty.
+fn esc_anchor_end(bytes: &[u8], at: usize) -> Option<usize> {
+    if !bytes[at..].starts_with(ESC_ANCHOR) {
         return None;
-    };
-    let digits_start = colon + 1;
-    let digits_end = run_end(bytes, digits_start, |b| b.is_ascii_digit());
-    (digits_end > digits_start).then_some(digits_end)
+    }
+    let id_start = at + ESC_ANCHOR.len();
+    let id_end = run_end(bytes, id_start, |b| b.is_ascii_digit() || b == b'-');
+    (id_end > id_start).then_some(id_end)
 }
 
 fn is_stem_byte(b: u8) -> bool {
