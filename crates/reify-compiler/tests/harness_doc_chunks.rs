@@ -60,6 +60,8 @@
 mod angle_crossings_diagnostics_smoke;
 #[path = "harness_doc_chunks/arity_gate_probe.rs"]
 mod arity_gate_probe;
+#[path = "harness_doc_chunks/call_arity_gate.rs"]
+mod call_arity_gate;
 #[path = "harness_doc_chunks/call_scan.rs"]
 mod call_scan;
 #[path = "harness_doc_chunks/callable_registries.rs"]
