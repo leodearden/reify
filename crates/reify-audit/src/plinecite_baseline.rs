@@ -21,9 +21,10 @@ pub const BASELINE_HEADER: &str = "\
 # PLINECITE baseline — accepted line-cite debt.
 #
 # One row per line, `<path> :: <cite>`: a tracked in-scope file, and a hard
-# `<file>.rs:<line>` / `<file>.ri:<line>` cite that one of its comment lines
-# carries. The citing line's own number is deliberately absent, so a row
-# survives code motion.
+# line cite one of its comment lines carries, quoted from its stem through its
+# line number (`cache.rs:617`, `entity.rs ~2145`, `lib.rs line 444`; grammar:
+# docs/prds/reify-audit-stale-line-cite-detector.md §4). The citing line's own
+# number is deliberately absent, so a row survives code motion.
 #
 # GENERATED — do not hand-edit. Regenerate with:
 #   cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . --write
@@ -48,7 +49,7 @@ pub const BASELINE_HEADER: &str = "\
 ";
 
 /// Between a row's path and its cite. A path holds no space and a cite can
-/// (` esc-<id>`), so a row splits at the first occurrence.
+/// (` esc-<id>`, ` ~`, ` line `), so a row splits at the first occurrence.
 const SEPARATOR: &str = " :: ";
 
 /// One line of the ledger: a citing file and one cite it carries.

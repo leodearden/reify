@@ -107,7 +107,7 @@ Seven more deterministic detectors that, like PTODO, read the tracked tree and n
 | `PDCHECK` | `metadata.delivered_checks` grep rows that name no tracked path. Needs `tasks.db` |
 | `PCITE` | Symbols a `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence that no tracked non-prose file contains. Medium only (report-only) |
 | `PPRDSTATUS` | PRD status-prose drift: PRDs whose decomposition leaves are all terminal but whose Status header is not, and `#NNNN` cites whose status parenthetical contradicts the cited task. Reads the loaded task corpus |
-| `PLINECITE` | Hard `<file>.rs:<line>` / `<file>.ri:<line>` cites in source comments (stdlib `.ri`, `crates/*/src` `.rs`). Medium only (report-only) |
+| `PLINECITE` | Hard line cites (`foo.rs:12`, `foo.rs ~12`, `foo.rs line 12`, …; grammar: `docs/prds/reify-audit-stale-line-cite-detector.md` §4) in source comments (stdlib `.ri`, `crates/*/src` `.rs`). Medium only (report-only) |
 
 PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other six key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
