@@ -72,6 +72,7 @@ use reify_core::{Diagnostic, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
 use crate::chunk_io::{FUNCTIONS_CHUNK_PATH as CHUNK_PATH, read_chunk};
+use crate::written_calls::{balanced_run, count_parameters, skip_balanced};
 
 /// The centralised label every `arg_check.rs` arity rejection carries
 /// (`crates/reify-compiler/src/arg_check.rs:72`). NOT universal — see
@@ -159,7 +160,7 @@ struct DocSignature {
 /// - an optional generic list on the NAME is skipped by walking a balanced
 ///   `<…>` run from the end of the name, within which `->` is read as an arrow
 ///   and not as a closing bracket, so a function-typed bound (`F: Fn(A) -> B`)
-///   does not truncate the run — see [`is_arrow`];
+///   does not truncate the run — see `written_calls::is_arrow`;
 /// - the parameter list is the balanced `(…)` run that follows; its interior is
 ///   split on DEPTH-0 commas only, tracking `<>`, `()` and `[]`, so
 ///   `Tensor<2, 3, Pressure>` counts as ONE parameter;
@@ -224,77 +225,6 @@ fn declared_signatures(markdown: &str) -> Vec<DocSignature> {
     signatures.sort();
     signatures.dedup();
     signatures
-}
-
-/// Whether `c`, preceded by `prev`, is the `>` of an `->` arrow rather than a
-/// closing angle bracket.
-///
-/// A generic bound may carry a function type — `F: Fn(A) -> B` — whose arrow
-/// would otherwise close the bound early, leaving `B>(…)` where the parameter
-/// list is expected, and DROPPING a well-formed declaration that balances
-/// perfectly well. The same rule stops a comma nested in `Map<Fn(X) -> Y, Z>`
-/// from being counted at depth 0. Stated once here so both bracket walks below
-/// read the arrow identically.
-fn is_arrow(prev: char, c: char) -> bool {
-    c == '>' && prev == '-'
-}
-
-/// `s` with a leading balanced `open`…`close` run removed, or `s` unchanged when
-/// it does not start with `open`. `None` if such a run starts but never closes.
-fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
-    if !s.starts_with(open) {
-        return Some(s);
-    }
-    let mut depth = 0usize;
-    let mut prev = ' ';
-    for (i, c) in s.char_indices() {
-        if c == open {
-            depth += 1;
-        } else if c == close && !is_arrow(prev, c) {
-            depth -= 1;
-            if depth == 0 {
-                return Some(&s[i + c.len_utf8()..]);
-            }
-        }
-        prev = c;
-    }
-    None
-}
-
-/// The INTERIOR of the balanced `open`…`close` run that `s` starts with, or
-/// `None` when `s` does not start with `open` or the run never closes.
-fn balanced_run(s: &str, open: char, close: char) -> Option<&str> {
-    let rest = s.trim_start();
-    if !rest.starts_with(open) {
-        return None;
-    }
-    let after = skip_balanced(rest, open, close)?;
-    let end = rest.len() - after.len() - close.len_utf8();
-    Some(&rest[open.len_utf8()..end])
-}
-
-/// The number of DEPTH-0 comma-separated parameters in a parameter-list
-/// interior, tracking `<>`, `()` and `[]` so a nested argument list contributes
-/// no separators, and reading `->` as an arrow rather than a bracket (see
-/// [`is_arrow`]). A whitespace-only interior is 0 parameters.
-fn count_parameters(inner: &str) -> usize {
-    if inner.trim().is_empty() {
-        return 0;
-    }
-    let mut depth = 0usize;
-    let mut parameters = 1usize;
-    let mut prev = ' ';
-    for c in inner.chars() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            _ if is_arrow(prev, c) => {}
-            '>' | ')' | ']' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => parameters += 1,
-            _ => {}
-        }
-        prev = c;
-    }
-    parameters
 }
 
 /// Anti-vacuity control for every later assertion in this module: it pins that
