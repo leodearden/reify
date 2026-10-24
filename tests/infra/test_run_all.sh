@@ -2251,11 +2251,17 @@ if python3 -I "$VERIFY_EVENTS" wait "$T25_CHANNEL" --event member_start --where 
 # rather than assuming it from timing.
 if holder_wait_for_marker "$T25_HANG_DIR/ready"; then t25_hang_started=1; else t25_hang_started=0; fi
 kill -TERM "$t25_pid" 2>/dev/null || true
-( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
-t25_killer=$!
+# Same main-shell kill -0 backstop as T25s below, and for the same reason: a
+# `( sleep; kill ) &` helper TERMed straight after its fork still runs this
+# script's EXIT trap and wipes the fixtures before the assertions read them.
+t25_budget="$(load_tolerant_attempts 25)"
+t25_polls=0
+while kill -0 "$t25_pid" 2>/dev/null && [ "$t25_polls" -lt "$t25_budget" ]; do
+    sleep 0.2
+    t25_polls=$((t25_polls + 1))
+done
+if kill -0 "$t25_pid" 2>/dev/null; then kill -KILL "$t25_pid" 2>/dev/null || true; fi
 wait "$t25_pid" 2>/dev/null || t25_rc=$?
-kill "$t25_killer" 2>/dev/null || true
-wait "$t25_killer" 2>/dev/null || true
 
 # End the orphaned hang member now rather than leaving it to its backstop.
 t25_hang_pid="$(cat "$T25_HANG_DIR/ready" 2>/dev/null || true)"
