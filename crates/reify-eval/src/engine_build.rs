@@ -8013,7 +8013,7 @@ impl Engine {
                                 // ── Phase 1: validate stages + find source ────────
                                 // Walk the chain as a VALIDATION gate. Each stage
                                 // must classify as a known ConversionProjection:
-                                // - Tessellate: records the source kernel name (the
+                                // - Tessellate: records the source kernel (the
                                 //   kernel that tessellates BRep → Mesh).
                                 // - Voxelize: realised by ingest_mesh on plan.kernel
                                 //   below; no separate action needed here.
@@ -8023,13 +8023,13 @@ impl Engine {
                                 // chains (e.g. Mesh→Voxel before BRep→Mesh) would
                                 // silently mis-key the intermediate cache under the
                                 // single-recipe executor.
-                                let mut tessellate_source: Option<&'static str> = None;
+                                let mut tessellate_source: Option<KernelId> = None;
                                 // Task γ (5001): the MarchingCubes counterpart of
                                 // `tessellate_source` above — records the source
                                 // kernel of an at-most-one Voxel→Mesh stage. Phase 2
                                 // below picks whichever of the two is `Some` (the
                                 // gate after this loop guarantees exactly one is).
-                                let mut marching_cubes_source: Option<&'static str> = None;
+                                let mut marching_cubes_source: Option<KernelId> = None;
                                 // prev_to tracks the prior stage's output repr for
                                 // the contiguity check below.
                                 let mut prev_to: Option<ReprKind> = None;
@@ -8088,8 +8088,7 @@ impl Engine {
                                                      in v0.3-β",
                                                 ));
                                             } else {
-                                                tessellate_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                tessellate_source = Some(*stage_kernel);
                                             }
                                         }
                                         Some(ConversionProjection::Voxelize) => {
@@ -8127,8 +8126,7 @@ impl Engine {
                                                      in v0.3-γ",
                                                 ));
                                             } else {
-                                                marching_cubes_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                marching_cubes_source = Some(*stage_kernel);
                                             }
                                         }
                                     }
@@ -8180,16 +8178,27 @@ impl Engine {
                                 if conversion_error.is_none() {
                                     // Phase 1's gate above guarantees exactly one of
                                     // these is `Some`.
-                                    let (source_name, from_marching_cubes) =
+                                    let (source_kernel, from_marching_cubes) =
                                         match (tessellate_source, marching_cubes_source) {
-                                            (Some(name), None) => (name, false),
-                                            (None, Some(name)) => (name, true),
+                                            (Some(kernel), None) => (kernel, false),
+                                            (None, Some(kernel)) => (kernel, true),
                                             _ => unreachable!(
                                                 "checked above: exactly one of \
                                                  tessellate_source/marching_cubes_source \
                                                  is Some"
                                             ),
                                         };
+                                    // `source_name` is the source kernel's identity
+                                    // (provenance, error texts); `source_key` is the
+                                    // map entry serving it, which under the
+                                    // single-pick constructor is the default-kernel
+                                    // sentinel rather than "occt".
+                                    let source_name = source_kernel.as_registry_name();
+                                    let source_key = resolve_owning_kernel_name(
+                                        kernels,
+                                        source_kernel,
+                                        default_kernel_name,
+                                    );
                                     // Task γ (5001): extract the marching-cubes
                                     // options from `geom_op` when it is the
                                     // options-carrying `GeometryOp::Surface` (task
@@ -8216,7 +8225,7 @@ impl Engine {
                                     // per-parent loop since it does not depend on
                                     // `pid`.
                                     let options_hash = if from_marching_cubes {
-                                        kernels.get(source_name).map_or(NO_OPTIONS, |src| {
+                                        kernels.get(source_key).map_or(NO_OPTIONS, |src| {
                                             src.surface_options_content_hash(
                                                 surface_iso_level,
                                                 surface_adaptive,
@@ -8385,7 +8394,7 @@ impl Engine {
                                         // different error types (`TessError` /
                                         // `GeometryError`), so each arm maps its error
                                         // to `String` before the two branches unify.
-                                        let mesh = match kernels.get(source_name) {
+                                        let mesh = match kernels.get(source_key) {
                                             Some(src) => {
                                                 let produced = if from_marching_cubes {
                                                     src.realize_mesh_from_voxel(
@@ -8412,8 +8421,8 @@ impl Engine {
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
-                                                 '{source_name}' absent from \
-                                                 engine.geometry_kernels"
+                                                 '{source_name}' (map key '{source_key}') \
+                                                 absent from engine.geometry_kernels"
                                                 ));
                                                 break 'convert;
                                             }
