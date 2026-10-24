@@ -12,7 +12,9 @@ use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
 // `Parent` owns a step named `cube_a` 500mm away from everything, so a
 // sub-instance that resolved its snapshot bodies against the parent's own
-// steps instead of its own would read a clearance of roughly 450mm.
+// steps instead of its own would read a clearance of roughly 450mm. The
+// overridden `f` closes its gap until the cubes overlap, so its Bool and pair
+// cells differ from the template's.
 const INSTANCE_SCOPE_SOURCE: &str = r#"
 structure def Child {
     param gap : Length = 30mm
@@ -46,6 +48,7 @@ structure def Parent {
 
     sub d = Child()
     sub e = Child(gap: 50mm)
+    sub f = Child(gap: 10mm)
 
     let margin = self.d.clearance_ab - 5mm
 
@@ -118,31 +121,33 @@ fn swept_metres(v: &Value, label: &str) -> Vec<f64> {
     }
 }
 
-fn assert_instance_matches_template(values: &ValueMap, member: &str) {
-    let template = cell(values, "Child", member);
-    let instance = cell(values, "Parent.d", member);
-    assert!(
-        !template.is_undef(),
-        "precondition: Child.{member} must resolve, got {template:?}"
-    );
-    match member {
-        "clearance_ab" => {
-            let expected = read_si_f64(template, "Child.clearance_ab");
-            assert_close(instance, expected, 1e-9, "Parent.d.clearance_ab");
+/// `actual` matches the fully defined `expected`: numbers to within 1e-9
+/// (SI), lists element by element, anything else exactly.
+fn assert_value_matches(actual: &Value, expected: &Value, label: &str) {
+    match expected {
+        Value::Undef => panic!("{label}: the expected value must be defined"),
+        Value::Real(_) | Value::Scalar { .. } => {
+            assert_close(actual, read_si_f64(expected, label), 1e-9, label);
         }
-        "swept" => {
-            let expected = swept_metres(template, "Child.swept");
-            let actual = swept_metres(instance, "Parent.d.swept");
-            assert_eq!(actual.len(), expected.len(), "Parent.d.swept length");
-            for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
-                assert!(
-                    (a - e).abs() < 1e-9,
-                    "Parent.d.swept[{i}]: expected ~{e}, got {a}"
-                );
+        Value::List(expected_items) => {
+            let Value::List(actual_items) = actual else {
+                panic!("{label}: expected a list, got {actual:?}");
+            };
+            assert_eq!(actual_items.len(), expected_items.len(), "{label} length");
+            for (i, (a, e)) in actual_items.iter().zip(expected_items).enumerate() {
+                assert_value_matches(a, e, &format!("{label}[{i}]"));
             }
         }
-        _ => assert_eq!(instance, template, "Parent.d.{member}"),
+        _ => assert_eq!(actual, expected, "{label}"),
     }
+}
+
+fn assert_instance_matches_template(values: &ValueMap, member: &str) {
+    assert_value_matches(
+        cell(values, "Parent.d", member),
+        cell(values, "Child", member),
+        &format!("Parent.d.{member}"),
+    );
 }
 
 fn satisfaction_of(results: &[reify_eval::ConstraintCheckEntry], id: &str) -> Satisfaction {
@@ -188,6 +193,53 @@ fn build_resolves_an_overridden_sub_instance_against_its_own_geometry() {
         1e-6,
         "Parent.e.clearance_ab",
     );
+    assert_eq!(
+        cell(&result.values, "Parent.e", "collide_ab"),
+        &Value::Bool(false),
+        "Parent.e.collide_ab"
+    );
+
+    // The sweep slides cube_a 0, 10 and 20mm toward cube_b, which sits 50mm
+    // out in `e` (the template's 30mm gap closes to contact instead).
+    let swept = swept_metres(cell(&result.values, "Parent.e", "swept"), "Parent.e.swept");
+    assert_eq!(swept.len(), 3, "Parent.e.swept length: {swept:?}");
+    for (i, (actual, expected)) in swept.iter().zip([0.030, 0.020, 0.010]).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "Parent.e.swept[{i}]: expected ~{expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn build_resolves_a_colliding_override_against_its_own_geometry() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+    let compiled = compile_no_errors(INSTANCE_SCOPE_SOURCE);
+    let result = engine_with_occt().build(&compiled, ExportFormat::Step);
+
+    assert_eq!(
+        cell(&result.values, "Child", "collide_ab"),
+        &Value::Bool(false),
+        "precondition: Child.collide_ab"
+    );
+    assert_eq!(
+        cell(&result.values, "Parent.f", "collide_ab"),
+        &Value::Bool(true),
+        "Parent.f.collide_ab"
+    );
+    assert_close(
+        cell(&result.values, "Parent.f", "clearance_ab"),
+        0.0,
+        1e-9,
+        "Parent.f.clearance_ab",
+    );
+    match cell(&result.values, "Parent.f", "pairs") {
+        Value::List(pairs) => assert_eq!(pairs.len(), 1, "Parent.f.pairs: {pairs:?}"),
+        other => panic!("Parent.f.pairs: expected a list, got {other:?}"),
+    }
 }
 
 #[test]
@@ -217,6 +269,50 @@ fn build_parent_constraints_and_lets_over_sub_kinematic_cells_are_determinate() 
         0.005,
         1e-6,
         "Parent.margin",
+    );
+}
+
+// Every `BadIdChild` instance re-runs the template's `min_clearance` call
+// with the same Real body id, so each would repeat the template's warning.
+const BAD_BODY_ID_SOURCE: &str = r#"
+structure def BadIdChild {
+    let cube_a = box(20mm, 20mm, 20mm)
+    let cube_b = translate(box(20mm, 20mm, 20mm), 30mm, 0mm, 0mm)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "cube_a", fixed())
+    let m2 = body(m1, "cube_b", fixed())
+    let s = snapshot(m2, [])
+
+    let id_b = body_id_of(m2, "cube_b")
+    let clearance_bad = min_clearance(s, 1.5, id_b)
+}
+
+structure def BadIdParent {
+    sub d = BadIdChild()
+    sub e = BadIdChild()
+}
+"#;
+
+#[test]
+fn build_reports_a_template_level_kinematic_warning_once_not_per_instance() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+    let compiled = compile_no_errors(BAD_BODY_ID_SOURCE);
+    let result = engine_with_occt().build(&compiled, ExportFormat::Step);
+
+    let body_id_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("min_clearance") && d.message.contains("body_a"))
+        .collect();
+    assert_eq!(
+        body_id_warnings.len(),
+        1,
+        "the bad body id is reported once, not once per sub instance: {body_id_warnings:#?}"
     );
 }
 
