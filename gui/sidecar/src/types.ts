@@ -21,22 +21,6 @@ export interface ClearSession {
   type: 'clear_session';
 }
 
-export interface InboundToolResult {
-  type: 'tool_result';
-  id: string;
-  /** The Claude CLI tool_use_id from the corresponding tool_call outbound message.
-   * Required by the wire contract — Rust `InboundMessage::ToolResult.tool_use_id`
-   * is `String` (mandatory). The sidecar uses id-based correlation via this echoed
-   * value (preferred, correct for out-of-order results). Hosts that pre-date the
-   * echoed-id contract (sending without this field) will be rejected at parse time;
-   * the sidecar still implements a FIFO-by-tool_name fallback at the private handler
-   * level as defense-in-depth, but it is no longer reachable from the public API
-   * surface. */
-  tool_use_id: string;
-  tool_name: string;
-  result: unknown;
-}
-
 export interface PermissionDecision {
   type: 'permission_decision';
   request_id: string;
@@ -46,7 +30,7 @@ export interface PermissionDecision {
   remember?: boolean;
 }
 
-export type InboundMessage = SendMessage | Abort | ClearSession | InboundToolResult | PermissionDecision;
+export type InboundMessage = SendMessage | Abort | ClearSession | PermissionDecision;
 
 // --- Outbound messages (Sidecar -> GUI) ---
 
@@ -65,8 +49,7 @@ export interface ThinkingDelta {
 export interface ToolCall {
   type: 'tool_call';
   id: string;
-  /** The Claude CLI tool_use_id. The host should echo this back as InboundToolResult.tool_use_id
-   * to enable id-based correlation and avoid the FIFO-by-tool_name in-order-only contract. */
+  /** The claude CLI's tool_use id, forwarded to the host as claude-tool-call's tool_use_id. */
   tool_use_id: string;
   tool_name: string;
   tool_input: Record<string, unknown>;

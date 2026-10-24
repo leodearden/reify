@@ -574,26 +574,6 @@ fn builder_with_both_options() {
     assert_eq!(recorded[0].0, "focus-entity");
 }
 
-// --- McpConfig struct tests ---
-
-#[test]
-fn mcp_config_struct_stores_fields() {
-    use crate::claude_bridge::McpConfig;
-
-    let sink_called = Arc::new(Mutex::new(false));
-    let sink_clone = sink_called.clone();
-
-    let config = McpConfig {
-        event_emitter: Arc::new(move |_name: String, _payload: serde_json::Value| {
-            *sink_clone.lock().unwrap() = true;
-        }),
-    };
-
-    // Assert the event_emitter field is accessible and invokable
-    (config.event_emitter)("test".to_string(), serde_json::json!({}));
-    assert!(*sink_called.lock().unwrap());
-}
-
 // --- Compile-time trait assertions ---
 
 #[test]
