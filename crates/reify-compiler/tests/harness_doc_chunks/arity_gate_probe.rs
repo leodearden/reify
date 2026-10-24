@@ -1,6 +1,28 @@
 //! Which `(name, arity)` call forms a builtin's arity gate rejects.
+//!
+//! Every form is probed by calling it BARE with `1mm` in every slot. Placeholder
+//! fillers suffice because a builtin dispatches on argument COUNT before it
+//! resolves any argument, so a wrong arity is reported whatever the fillers are;
+//! `probe_lowering_accepted_arities` in `crates/reify-compiler/src/builtin_signatures.rs`
+//! probes with the same shape. All forms share ONE module and one compile.
+//!
+//! # What is NOT read
+//!
+//! - **A type error drawn by a filler.** A correctly documented form draws one
+//!   (`rotate: angle argument expects Angle, got Scalar[m]`), so only the
+//!   argument-count message shape is read — see [`arg_count_rejections`].
+//! - **A stdlib-`.ri` function's rejection.** It reports
+//!   `no matching overload for NAME(types), candidates: …`, which mixes arity
+//!   with type; telling them apart would mean parsing the candidate list out of
+//!   a message, an ad-hoc parser of a meaningful string (heuristic 12).
+//! - **A form whose bare call does not parse as a call of that name and arity**
+//!   — a keyword callee such as `auto`. The parser decides, never a kept list.
 
-use reify_core::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+use std::collections::BTreeSet;
+
+use reify_ast::{Declaration, ExprKind, MemberDecl};
+use reify_compiler::parse_with_stdlib;
+use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity, SourceSpan};
 use reify_test_support::compile_source_with_stdlib;
 
 /// The centralised label every `arg_check.rs` arity rejection carries
@@ -8,14 +30,61 @@ use reify_test_support::compile_source_with_stdlib;
 /// [`arg_count_rejections`].
 const ARG_COUNT_LABEL: &str = "wrong number of arguments";
 
+/// The arity a `"…, got {N}"` arg-count message reports, or `None` when its tail
+/// is not a bare count this matcher can read.
+///
+/// The split is from the RIGHT and the parse is whole-tail, so `", got 1"` is
+/// never read out of `", got 12"`.
+fn reported_arity(message: &str) -> Option<usize> {
+    message.rsplit_once(", got ")?.1.parse().ok()
+}
+
 /// Every diagnostic in `diagnostics` that is an argument-count rejection of
 /// `name` at `arity`.
-fn arg_count_rejections<'a>(
-    _diagnostics: &'a [Diagnostic],
-    _name: &str,
-    _arity: usize,
+///
+/// # Why the match is on the MESSAGE SHAPE, and the label is only a fallback
+///
+/// `arg_check.rs` does centralise the [`ARG_COUNT_LABEL`] wording, but the label
+/// is NOT universal: `crates/reify-compiler/src/builtin_signatures.rs`
+/// (`probe_lowering_accepted_arities`, and the doc block above it) records the
+/// measurement that `geometry.rs`'s `extrude` arm pushes an arg-count error
+/// carrying no label at all. A label-ONLY matcher therefore has UNSAFE polarity
+/// — an unlabelled arity rejection reads as "arity accepted" and yields a false
+/// GREEN, the exact silent pass an arity gate exists to prevent. So the label
+/// cannot be required.
+///
+/// Nor can it be a plain alternative to the arity tail: a rejection carrying the
+/// label would then match at EVERY arity, and the matcher would stop
+/// discriminating the one thing it is asked about. The two signals are therefore
+/// layered rather than OR'd —
+///
+/// 1. a `"{name}() expects"` message whose tail [`reported_arity`] can read is
+///    attributed to exactly that arity;
+/// 2. a `"{name}() expects"` message whose tail it CANNOT read is attributed to
+///    every arity if it carries the label, and to none otherwise.
+///
+/// Layer 2 is what keeps the failure polarity safe: an arity message this
+/// matcher does not recognise can only produce a false RED that forces a human
+/// look, never a false GREEN. The message shape `"{name}() expects …, got {N}"`
+/// held for all 34 observable names across all three emit sites when the
+/// builtin_signatures ledger was measured, so layer 2 is expected to stay
+/// unreached.
+pub(crate) fn arg_count_rejections<'a>(
+    diagnostics: &'a [Diagnostic],
+    name: &str,
+    arity: usize,
 ) -> Vec<&'a Diagnostic> {
-    Vec::new()
+    let prefix = format!("{name}() expects");
+    diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.starts_with(&prefix)
+                && match reported_arity(&d.message) {
+                    Some(reported) => reported == arity,
+                    None => d.labels.iter().any(|l| l.message == ARG_COUNT_LABEL),
+                }
+        })
+        .collect()
 }
 
 /// One call form a builtin rejects on arity, with the compiler's message.
@@ -26,9 +95,70 @@ pub(crate) struct ArityRejection {
     pub(crate) message: String,
 }
 
-/// Every form in `forms` that a builtin's arity gate rejects, sorted.
-pub(crate) fn arity_rejections(_forms: &[(String, usize)]) -> Vec<ArityRejection> {
-    Vec::new()
+/// Every form in `forms` that a builtin's arity gate rejects, sorted and
+/// deduped — one entry per rejecting message.
+///
+/// Only the forms whose bare call parses as a call of that name and arity are
+/// probed ([`parses_as_call`]), so the one shared compile can never meet a
+/// parse error.
+pub(crate) fn arity_rejections(forms: &[(String, usize)]) -> Vec<ArityRejection> {
+    let probed: BTreeSet<(&str, usize)> = forms
+        .iter()
+        .map(|(name, arity)| (name.as_str(), *arity))
+        .filter(|(name, arity)| parses_as_call(name, *arity))
+        .collect();
+
+    let mut source = String::from("module arity_gate_probe\n\nstructure def ArityProbe {\n");
+    for (i, (name, arity)) in probed.iter().enumerate() {
+        source.push_str(&format!("    let v{i} = {}\n", probe_call(name, *arity)));
+    }
+    source.push_str("}\n");
+    let compiled = compile_source_with_stdlib(&source);
+
+    let mut rejections: Vec<ArityRejection> = probed
+        .iter()
+        .flat_map(|(name, arity)| {
+            arg_count_rejections(&compiled.diagnostics, name, *arity)
+                .into_iter()
+                .map(|d| ArityRejection {
+                    name: name.to_string(),
+                    arity: *arity,
+                    message: d.message.clone(),
+                })
+        })
+        .collect();
+    rejections.sort();
+    rejections.dedup();
+    rejections
+}
+
+/// `name` called bare with `arity` `1mm` fillers.
+fn probe_call(name: &str, arity: usize) -> String {
+    format!("{name}({})", vec!["1mm"; arity].join(", "))
+}
+
+/// Whether `name`'s probe call parses, on its own, as a call of `name` with
+/// `arity` arguments — the parser's word on what is a call, so a keyword
+/// callee (`auto`) is never probed.
+fn parses_as_call(name: &str, arity: usize) -> bool {
+    let source = format!(
+        "structure def ArityProbe {{\n    let v = {}\n}}\n",
+        probe_call(name, arity)
+    );
+    let parsed = parse_with_stdlib(&source, ModulePath::single("arity_gate_probe"));
+    if !parsed.errors.is_empty() {
+        return false;
+    }
+    let [Declaration::Structure(structure)] = parsed.declarations.as_slice() else {
+        return false;
+    };
+    let [MemberDecl::Let(binding)] = structure.members.as_slice() else {
+        return false;
+    };
+    matches!(
+        &binding.value.kind,
+        ExprKind::FunctionCall { name: called, args, .. } if called == name && args.len() == arity
+    )
 }
 
 /// Anti-vacuity control for every arity gate built on [`arg_count_rejections`]:

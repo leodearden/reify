@@ -68,75 +68,11 @@
 //!   [`declared_signatures`]'s "Known limitation". Every declaration in the
 //!   chunk fits one line today.
 
-use reify_compiler::CompiledModule;
-use reify_core::Diagnostic;
 use reify_test_support::compile_source_with_stdlib;
 
+use crate::arity_gate_probe::arg_count_rejections;
 use crate::chunk_io::{FUNCTIONS_CHUNK_PATH as CHUNK_PATH, read_chunk};
 use crate::written_calls::{balanced_run, count_parameters, skip_balanced};
-
-/// The centralised label every `arg_check.rs` arity rejection carries
-/// (`crates/reify-compiler/src/arg_check.rs:72`). NOT universal — see
-/// [`arg_count_rejections`].
-const ARG_COUNT_LABEL: &str = "wrong number of arguments";
-
-/// The arity a `"…, got {N}"` arg-count message reports, or `None` when its tail
-/// is not a bare count this matcher can read.
-///
-/// The split is from the RIGHT and the parse is whole-tail, so `", got 1"` is
-/// never read out of `", got 12"`.
-fn reported_arity(message: &str) -> Option<usize> {
-    message.rsplit_once(", got ")?.1.parse().ok()
-}
-
-/// Every diagnostic in `compiled` that is an argument-count rejection of `name`
-/// at `arity`.
-///
-/// # Why the match is on the MESSAGE SHAPE, and the label is only a fallback
-///
-/// `arg_check.rs` does centralise the [`ARG_COUNT_LABEL`] wording, but the label
-/// is NOT universal: `crates/reify-compiler/src/builtin_signatures.rs`
-/// (`probe_lowering_accepted_arities`, and the doc block above it) records the
-/// measurement that `geometry.rs`'s `extrude` arm pushes an arg-count error
-/// carrying no label at all. A label-ONLY matcher therefore has UNSAFE polarity
-/// — an unlabelled arity rejection reads as "arity accepted" and yields a false
-/// GREEN, the exact silent pass this module exists to prevent. So the label
-/// cannot be required.
-///
-/// Nor can it be a plain alternative to the arity tail: a rejection carrying the
-/// label would then match at EVERY arity, and the matcher would stop
-/// discriminating the one thing it is asked about. The two signals are therefore
-/// layered rather than OR'd —
-///
-/// 1. a `"{name}() expects"` message whose tail [`reported_arity`] can read is
-///    attributed to exactly that arity;
-/// 2. a `"{name}() expects"` message whose tail it CANNOT read is attributed to
-///    every arity if it carries the label, and to none otherwise.
-///
-/// Layer 2 is what keeps the failure polarity safe: an arity message this
-/// matcher does not recognise can only produce a false RED that forces a human
-/// look, never a false GREEN. The message shape `"{name}() expects …, got {N}"`
-/// held for all 34 observable names across all three emit sites when the
-/// builtin_signatures ledger was measured, so layer 2 is expected to stay
-/// unreached.
-fn arg_count_rejections<'a>(
-    compiled: &'a CompiledModule,
-    name: &str,
-    arity: usize,
-) -> Vec<&'a Diagnostic> {
-    let prefix = format!("{name}() expects");
-    compiled
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.message.starts_with(&prefix)
-                && match reported_arity(&d.message) {
-                    Some(reported) => reported == arity,
-                    None => d.labels.iter().any(|l| l.message == ARG_COUNT_LABEL),
-                }
-        })
-        .collect()
-}
 
 /// One example signature declared in the chunk: a name and the number of
 /// parameters written for it. A `fn` declaration is never variadic, so a plain
@@ -346,7 +282,7 @@ fn functions_chunk_example_signatures_are_never_rejected_on_arity_by_a_builtin()
     let offenders: Vec<String> = signatures
         .iter()
         .flat_map(|signature| {
-            arg_count_rejections(&compiled, &signature.name, signature.arity)
+            arg_count_rejections(&compiled.diagnostics, &signature.name, signature.arity)
                 .into_iter()
                 .map(move |d| format!("  {}/{} — {}", signature.name, signature.arity, d.message))
         })
