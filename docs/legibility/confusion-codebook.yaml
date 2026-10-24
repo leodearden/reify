@@ -2397,6 +2397,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Repeated watcher-rearm.sh CEILING timeouts were retried with only the timeout parameter varied (3200, 3600, 400), ending without a change in approach.
+  - date: '2026-10-23'
+    project: reify
+    session: a799f2ea-9324-4acf-9149-0f59f9df13d0
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'Partial match: watcher-rearm.sh CEILING (exit 124) timeout is retried repeatedly. Here the retries are verbatim rather than cosmetic, and the session ends by clean digest rather than user interrupt.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260720-5
@@ -3653,6 +3659,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The foreground bounded-wait re-arm exited 137 at turn 110 and the agent kept using the same foreground wrapper rather than switching to a background wait.
+  - date: '2026-10-23'
+    project: reify
+    session: a799f2ea-9324-4acf-9149-0f59f9df13d0
+    origin_phase: ops
+    manifested_phase: ops
+    note: Foreground bounded-wait watcher-rearm invocation at turn 117 exited 137 after the 3600s timeout. The digest shows the same foreground command being re-run rather than a switch to background waiting.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260722-3
@@ -4554,6 +4566,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Three identical Bash invocations of watcher-rearm.sh --timeout 3600 hit the wrapper''s own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) and were re-issued unchanged.'
+  - date: '2026-10-23'
+    project: reify
+    session: a799f2ea-9324-4acf-9149-0f59f9df13d0
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'Bounded rearm wait re-issued identically three times (turns 95, 101, 109), each returning WATCHER_REARM_OUTCOME: CEILING exit=124, with no change in arguments or strategy between attempts.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260726-8
@@ -30619,6 +30637,19 @@ candidates:
     origin_phase: unknown
     manifested_phase: architect
     evidence_quote: 'Architect reported false RED-test premise: Task #7956 (ruling esc-5307-3, option B) assumes two things. (2) Wrapping a ctor argument in `resolve_selector` during ctor lowering, "exactly as the fn-call path does", is what stops a raw Selector being stored in a `List<Geometry>` field.'
+- id: cand-20261023-1
+  title: Review trusts a live-path comment's claimed graceful handling without tracing the indexing path, missing an out-of-bounds crash
+  cause: The live path's comment states that an empty spacing vector yields h=+∞ and a BelowResolution result rather than panicking. The reviewer accepted that description. The code reads spacing[0..3] in reify_shell_extract::min_wall_thickness before the field is validated, so a field with 0, 1 or 2 spacing entries panics the check pass. A misleading comment on input handling can steer the next change or review away from the real failure mode.
+  area: reify_shell_extract::min_wall_thickness (spacing validation ordering)
+  first_seen: '2026-10-23'
+  disposition: pending
+  sightings:
+  - date: '2026-10-23'
+    project: reify
+    session: 7dc83cbe-d272-4e18-9604-ed44b7230f1b
+    origin_phase: unknown
+    manifested_phase: review
+    evidence_quote: 'The review missed a real bug. The live path''s comment says an empty spacing vector gives h=+∞ and a "BelowResolution" result "rather than panicking". That''s wrong: `reify_shell_extract::min_wall_thickness` reads `spacing[0..3]` before the field is validated.'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
