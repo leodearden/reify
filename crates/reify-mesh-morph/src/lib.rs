@@ -1,7 +1,7 @@
 //! Mesh morphing classifier and engine for Reify.
 //!
-//! This crate provides the combined eligibility predicate for mesh morphing
-//! (PRD `docs/prds/v0_3/mesh-morphing.md`, tasks #3 and #10).
+//! This crate is the mesh-morph pipeline (PRD `docs/prds/v0_3/mesh-morphing.md`),
+//! entered through [`compose_morph`].
 //!
 //! ## PRD task #5 — boundary-node correspondence + closest-point projection — boundary module
 //!
@@ -74,7 +74,7 @@
 //!
 //! [`quality::QualityVerdict::Unsupported`] means `morphed`/`source` is a
 //! non-tet (hex/wedge) mesh; [`quality_check`] returns it instead of
-//! panicking. `compose_morph` intercepts it before [`record_quality_remesh`]
+//! panicking. `compose_morph` intercepts it before `record_quality_remesh`
 //! and returns a structured [`MorphFailure::SolverError`].
 //!
 //! The intercept is unreachable through any constructible `compose_morph`
@@ -85,16 +85,9 @@
 //! upstream ordering ever changes, and has no behaviour test for the same
 //! reason: no constructible input reaches it.
 //!
-//! It also records no diagnostic counter, unlike the sibling Ineligible /
-//! Panicked / HardFail / SoftFail arms — there is no `MorphOutcome` bucket
-//! for a branch that cannot fire today, and the failure still reaches the
-//! caller via the structured `Err`, so this is silent-from-diagnostics, not
-//! silent-from-the-API. [`record_quality_remesh`]'s own `Unsupported` arm
-//! mirrors this with a `debug_assert!` instead of a counter, since this
-//! intercept always fires first. If the upstream guards are ever relaxed and
-//! this path becomes reachable, add a dedicated `MorphOutcome` bucket (or
-//! reuse an existing failure bucket) so it is observable in release
-//! diagnostics rather than silent.
+//! Like every other non-panic `SolverError` exit, the intercept records the
+//! `remeshed_solver_error` diagnostic bucket, so it stays observable if it
+//! ever becomes reachable.
 pub mod boundary;
 pub mod diagnostics;
 pub mod elasticity;
@@ -102,19 +95,14 @@ pub mod eligibility;
 pub mod laplacian;
 pub mod options;
 pub mod quality;
-pub mod stats;
 pub mod types;
 
-pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
-// Bare diagnostics re-exports. Two symbols are deliberately omitted:
-//   - `snapshot` stays reachable as `diagnostics::snapshot()` to avoid
-//     colliding with the `stats::snapshot` re-export above; and
-//   - `MorphOutcome` is kept crate-internal — it carries no external behaviour
-//     (its only consumer is the private bucket-routing `fn counter`), so it is
-//     not part of the public API surface.
-pub use diagnostics::{
-    DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
-    record_quality_remesh,
+// Bare diagnostics re-exports: the read side only. The recorders are
+// crate-private (`compose_morph` is their sole caller), while `snapshot`,
+// `reset` and the test-seeding `MorphOutcome` stay under `diagnostics::`.
+pub use diagnostics::{DiagnosticSnapshot, format_summary};
+use diagnostics::{
+    record_ineligible, record_morphed, record_panicked, record_quality_remesh, record_solver_error,
 };
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
@@ -135,24 +123,6 @@ pub use reify_eval::{
 /// Re-exported so consumers of [`elasticity_morph_with_cg_opts`] can construct
 /// `CgSolverOptions` without depending on `reify-solver-elastic` directly.
 pub use reify_solver_elastic::CgSolverOptions;
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/// Bool-only wrapper around [`morph_eligible`] per PRD task #4.
-///
-/// Returns `true` if both Stage A and Stage B pass (the edit is morphable),
-/// `false` otherwise. The structured rejection [`Reason`] is discarded;
-/// callers that need it for failure-mode visibility counters (PRD task #11)
-/// should call [`morph_eligible`] directly.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer task #4744 (done) — the §8 task β morph arm landed via `morph_eligible` directly, not this bool-only `eligible` wrapper; remains an in-scope orphan BY DESIGN (convenience wrapper with no current caller — see PINS in engine_seam_orphans_g_allow.rs); re-homed from cancelled #3429/#2947
-pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
-    // `BRep` is `Copy` (alias for `MorphSnapshot<'a>`); pass by value matches
-    // `morph_eligible`'s signature directly.
-    matches!(
-        eligibility::morph_eligible(old_brep, new_brep),
-        Eligibility::Eligible(_)
-    )
-}
 
 // ── compose_morph: the real morph pipeline (task 4744 β) ───────────────────────
 
@@ -179,11 +149,11 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// 3. Displacement-magnitude rule → [`laplacian_smooth`] (small) or
 ///    [`elasticity_morph`] (large). The solve is wrapped in
 ///    [`std::panic::catch_unwind`] so a solver panic is recorded
-///    ([`record_panicked`]) and degraded to a structured failure rather than
+///    (`record_panicked`) and degraded to a structured failure rather than
 ///    unwinding through the engine dispatch.
 /// 4. [`quality_check`] — on [`QualityVerdict::Pass`], attach the source's
 ///    [`BoundaryAssociation`] re-keyed onto the NEW BRep
-///    ([`rekey_boundary_association`]), then [`record_morphed`] and return the
+///    ([`rekey_boundary_association`]), then `record_morphed` and return the
 ///    deformed mesh.
 ///
 /// Connectivity is preserved by construction (both solvers deform vertices in
@@ -202,9 +172,11 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// handle yields `None`, degrading the next tick to an honest remesh rather
 /// than a silent misprojection.
 ///
-/// The eligibility-reject and quality-reject arms each record one diagnostic
-/// bucket ([`record_ineligible`] / [`record_quality_remesh`]) before returning
-/// their structured [`MorphFailure`].
+/// Every failure arm records exactly one diagnostic bucket before returning its
+/// structured [`MorphFailure`]: ineligible (`record_ineligible`), quality remesh
+/// (`record_quality_remesh`), solver error (`record_solver_error`, for a
+/// projection failure, a solver `Err` or an unsupported mesh) or panicked
+/// (`record_panicked`).
 pub fn compose_morph(
     source_mesh: &reify_ir::VolumeMesh,
     boundary: &BoundaryAssociation,
@@ -229,7 +201,7 @@ pub fn compose_morph(
     let projector = boundary::KernelProjector(kernel);
     let prescribed = compute_dirichlet_bcs(source_mesh, boundary, &correspondence, &projector)
         .map_err(|failure| {
-            MorphFailure::SolverError(SolverErrorPayload::new(format!(
+            solver_failure(SolverErrorPayload::new(format!(
                 "boundary-node projection failed: {failure:?}"
             )))
         })?;
@@ -249,7 +221,7 @@ pub fn compose_morph(
     });
     let mut morphed = match std::panic::catch_unwind(solve) {
         Ok(Ok(mesh)) => mesh,
-        Ok(Err(payload)) => return Err(MorphFailure::SolverError(payload)),
+        Ok(Err(payload)) => return Err(solver_failure(payload)),
         Err(panic) => {
             let detail = panic_detail(panic.as_ref());
             record_panicked(&detail);
@@ -281,7 +253,7 @@ pub fn compose_morph(
     // caller as `MorphFailure::SolverError`. Full rationale: module docs
     // above (`Task #5007`).
     if matches!(verdict, QualityVerdict::Unsupported) {
-        return Err(MorphFailure::SolverError(SolverErrorPayload::new(
+        return Err(solver_failure(SolverErrorPayload::new(
             "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
         )));
     }
@@ -331,6 +303,14 @@ fn bbox_diagonal(mesh: &reify_ir::VolumeMesh) -> f64 {
     let dy = (max[1] - min[1]) as f64;
     let dz = (max[2] - min[2]) as f64;
     (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Record a non-panic solver failure's diagnostic bucket and wrap it as a
+/// [`MorphFailure::SolverError`]. The panic arm records `panicked` instead and
+/// builds its failure directly, so no exit is counted twice.
+fn solver_failure(payload: SolverErrorPayload) -> MorphFailure {
+    record_solver_error(payload.message());
+    MorphFailure::SolverError(payload)
 }
 
 /// Best-effort extraction of a panic message from a caught panic payload.
@@ -533,28 +513,6 @@ mod tests {
         }
     }
 
-    // ── Step-5: eligible() contract ───────────────────────────────────────────
-
-    #[test]
-    fn eligible_returns_true_when_morph_eligible_yields_eligible() {
-        let (old_graph, values) = width_graph_and_values();
-        let new_graph = old_graph.clone();
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(eligible(old_brep, new_brep));
-    }
-
-    #[test]
-    fn eligible_returns_false_on_stage_a_structural_change() {
-        let (old_graph, values) = width_graph_and_values();
-        let new_graph = diverged_graph(&old_graph);
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(!eligible(old_brep, new_brep));
-    }
-
     // ── Step-31: lib re-exports make boundary module public surface accessible ─
 
     // Compile fence: verifies each name from the boundary module is accessible
@@ -684,36 +642,15 @@ mod tests {
 
     // ── task 2948: lib re-export fence for the diagnostics surface ───────────
 
-    // Compile fence: verifies the diagnostics surface is re-exported from the
-    // crate root. Two symbols are intentionally absent from the bare re-export
-    // (and therefore from this fence): `snapshot`, reached via the
-    // `diagnostics::` module path to avoid colliding with the existing
-    // `stats::snapshot` re-export; and `MorphOutcome`, kept crate-internal
-    // (internal bucket-routing only). Dropping any bare re-export breaks
-    // compilation immediately.
+    // Compile fence: pins the public diagnostics surface — the crate-root
+    // `DiagnosticSnapshot` / `format_summary` re-exports plus the module-path
+    // `diagnostics::snapshot` / `diagnostics::reset`. Dropping any of them, or
+    // drifting a signature, breaks compilation immediately.
     const _: fn() = || {
-        use crate::{
-            DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
-            record_quality_remesh,
-        };
-        let _: fn() = record_morphed;
-        let _: fn(&crate::QualityVerdict) = record_quality_remesh;
-        let _: fn(&crate::Reason) = record_ineligible;
-        let _: fn(&str) = record_panicked;
+        use crate::{DiagnosticSnapshot, format_summary};
         let _: fn(&DiagnosticSnapshot) -> String = format_summary;
-        // `snapshot` via the module path, not a bare re-export (avoids the
-        // collision with `stats::snapshot`).
         let _: fn() -> DiagnosticSnapshot = crate::diagnostics::snapshot;
-    };
-
-    // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
-
-    // Compile fence: fails to compile until `eligible` takes `BRep` by value.
-    // Mirrors the boundary/laplacian/quality fence discipline above.
-    #[allow(unused)]
-    const _: fn() = || {
-        let _fn_ref: fn(BRep, BRep) -> bool = eligible;
-        let _ = _fn_ref;
+        let _: fn() = crate::diagnostics::reset;
     };
 
     // ── Step-7 (task 4744 β): compose_morph success path ─────────────────────
@@ -957,6 +894,19 @@ mod tests {
         );
     }
 
+    /// A non-panic solver failure records exactly the `remeshed_solver_error`
+    /// bucket — no morph, no quality remesh, no panic.
+    fn assert_only_solver_error_recorded() {
+        assert_eq!(
+            diagnostics::snapshot(),
+            DiagnosticSnapshot {
+                remeshed_solver_error: 1,
+                ..Default::default()
+            },
+            "a non-panic solver failure must record only the solver-error bucket"
+        );
+    }
+
     #[test]
     fn compose_morph_stage_a_structural_change_returns_ineligible_and_records_structural_bucket() {
         with_diag_lock(|| {
@@ -1089,6 +1039,107 @@ mod tests {
                 "compose_morph must record the soft-fail remesh bucket"
             );
             assert_no_morph_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_projection_failure_returns_solver_error_and_records_only_solver_error_bucket()
+    {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::cap_face();
+            // Node 5 is out of range for the 4-node tet, so boundary projection
+            // fails with `ProjectionFailure::InvalidNodeIndex(5)`.
+            let mut boundary = BoundaryAssociation::default();
+            boundary.associate(5, NodeAttachment::OnFace(h(10)));
+
+            let result = compose_morph(
+                &single_tet_mesh(),
+                &boundary,
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &MorphOptions::default(),
+            );
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "a boundary-projection failure must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
+        });
+    }
+
+    /// [`single_tet_mesh`] re-tagged P2: both `laplacian_smooth` and
+    /// `elasticity_morph` reject a non-P1 mesh at entry, so whichever solver
+    /// arm the displacement rule picks returns `Err`.
+    fn p2_tagged_single_tet_mesh() -> reify_ir::VolumeMesh {
+        let mut mesh = single_tet_mesh();
+        mesh.connectivity = reify_ir::VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: reify_ir::ElementOrderTag::P2,
+        };
+        mesh
+    }
+
+    /// The position [`ShiftingKernel`] prescribes for node 0, which sits at the
+    /// origin in every [`single_tet_mesh`]-derived fixture: lets a test assert
+    /// which solver arm [`displacement_is_small`] routes its source to.
+    const SHIFTED_ORIGIN_NODE: [(u32, [f64; 3]); 1] = [(0, [SHIFT_EPS as f64, 0.0, 0.0])];
+
+    /// Run [`compose_morph`] on `source` over the eligible cap-face fixture with
+    /// every node prescribed by [`ShiftingKernel`] and default options.
+    fn compose_cap_face_shift(
+        source: &reify_ir::VolumeMesh,
+    ) -> Result<reify_ir::VolumeMesh, MorphFailure> {
+        let fixture = BijectionFixture::cap_face();
+        compose_morph(
+            source,
+            &all_nodes_on_cap_face(),
+            fixture.old_brep(),
+            fixture.new_brep(),
+            &ShiftingKernel,
+            &MorphOptions::default(),
+        )
+    }
+
+    #[test]
+    fn compose_morph_solver_err_returns_solver_error_and_records_only_solver_error_bucket() {
+        with_diag_lock(|| {
+            let source = p2_tagged_single_tet_mesh();
+            assert!(
+                displacement_is_small(&source, &SHIFTED_ORIGIN_NODE),
+                "fixture precondition: the unit tet must route the Laplacian arm"
+            );
+
+            let result = compose_cap_face_shift(&source);
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "a Laplacian solver Err must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_elasticity_err_returns_solver_error_and_records_only_solver_error_bucket() {
+        with_diag_lock(|| {
+            // Shrink the tet until ShiftingKernel's fixed SHIFT_EPS is a large
+            // displacement relative to its bbox diagonal.
+            let mut source = p2_tagged_single_tet_mesh();
+            source.vertices.iter_mut().for_each(|c| *c *= 1.0e-4);
+            assert!(
+                !displacement_is_small(&source, &SHIFTED_ORIGIN_NODE),
+                "fixture precondition: the shrunken tet must route the elasticity arm"
+            );
+
+            let result = compose_cap_face_shift(&source);
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "an elasticity solver Err must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
         });
     }
 

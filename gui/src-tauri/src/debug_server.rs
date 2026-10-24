@@ -411,28 +411,12 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "morph_stats",
-            description: "Mesh-morph runtime stats: morph_count, remesh_count, last_rejection_reason. \
-                          Surfaces reify-mesh-morph::stats::snapshot(). Per GR-016 / \
-                          docs/prds/v0_3/gui-event-channel-inventory.md §2.3.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "body_id": {
-                        "type": "string",
-                        "description": "Optional body identifier (currently ignored; \
-                                        returns global stats — per-body filtering deferred \
-                                        to mesh-morphing PRD #2947+ engine wiring)."
-                    }
-                }
-            }),
-        },
-        ToolDef {
             name: "mesh_morph_stats",
             description: "Session diagnostic counter snapshot from the mesh-morph engine \
                           (morphed, remeshed_quality_hard_fail, remeshed_quality_soft_fail, \
-                          ineligible_structural_change, ineligible_bijection_failure, \
-                          ineligible_naming_error, panicked) plus session_start_unix_ms \
+                          remeshed_solver_error, ineligible_structural_change, \
+                          ineligible_bijection_failure, ineligible_naming_error, panicked) \
+                          plus session_start_unix_ms \
                           (debug-server spawn time, or the last reset time). Pass reset:true \
                           to zero all counters and restart the measurement clock before \
                           returning the post-reset snapshot — useful for benchmark sequences. \
@@ -1472,7 +1456,6 @@ fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
 // Returns Some(result) when the name matches a stateless arm, None otherwise.
 async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Value, String>> {
     match name {
-        "morph_stats" => Some(handle_morph_stats(params.clone()).await),
         "mesh_morph_stats" => Some(handle_mesh_morph_stats(params.clone()).await),
         _ => None,
     }
@@ -1621,20 +1604,6 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
     .await
 }
 
-/// `morph_stats` debug-MCP RPC handler. Surfaces the process-global
-/// `reify_mesh_morph::stats::snapshot()`. State-free: mesh-morph stats are
-/// not engine-bound, so no DebugServerState / engine lock is needed.
-///
-/// `_params` may carry an optional `body_id` (per PRD §2.3 request shape) but
-/// it is intentionally ignored — per-body filtering is deferred to the
-/// mesh-morphing engine wiring (PRD tasks #2947-#2949). Both the `()` and
-/// `{body_id: ...}` request forms return the same global snapshot. See
-/// docs/prds/v0_3/gui-event-channel-inventory.md §2.3.
-async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
-    let stats = reify_mesh_morph::stats::snapshot();
-    serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
-}
-
 // --- Session-start / measurement-window timestamp (process-global) ---
 
 /// Unix-epoch-milliseconds captured at debug-server spawn (see [`spawn_debug_server`]).
@@ -1678,10 +1647,11 @@ fn reset_session_start() {
 
 /// `mesh_morph_stats` debug-MCP RPC handler.
 ///
-/// Returns a flat JSON object containing all seven diagnostic counters from
+/// Returns a flat JSON object containing all eight diagnostic counters from
 /// `reify_mesh_morph::diagnostics::snapshot()` (morphed,
 /// remeshed_quality_hard_fail, remeshed_quality_soft_fail,
-/// ineligible_structural_change, ineligible_bijection_failure,
+/// remeshed_solver_error, ineligible_structural_change,
+/// ineligible_bijection_failure,
 /// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field
 /// (debug-server spawn time, or the last reset time).
 ///
@@ -3368,9 +3338,8 @@ mod tests {
     use super::*;
 
     // Process-global lock serializing the tests IN THIS MODULE against each
-    // other when they touch process-global mesh-morph counters —
-    // reify_mesh_morph::diagnostics (seven AtomicU64) and
-    // reify_mesh_morph::stats (Mutex<StatsState>). Acquire this before
+    // other when they touch the process-global mesh-morph counters in
+    // reify_mesh_morph::diagnostics (eight AtomicU64). Acquire this before
     // reset_for_test() + handler call. Scope: private to `debug_server::tests`.
     // Any test elsewhere in this binary that evaluates a morphing design
     // would reach `reify_mesh_morph::compose_morph` via the producer
@@ -3527,31 +3496,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_defs_registers_morph_stats() {
-        let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "morph_stats")
-            .expect("morph_stats must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["type"].as_str(),
-            Some("object"),
-            "input_schema.type must be 'object'"
-        );
-        assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
-        // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
-        // `required` may be absent entirely; if present it must not list body_id.
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("body_id")),
-                "'body_id' must NOT be listed in required (it is optional)"
-            );
-        }
-    }
-
-    #[test]
     fn tool_defs_includes_wait_for_idle() {
         let defs = tool_defs();
         let entry = defs
@@ -3587,72 +3531,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_morph_stats_returns_morph_stats_shape() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Precondition: pristine stats. reset_for_test() is exposed via the
-        // `testing` feature on reify-mesh-morph (activated by [dev-dependencies]
-        // features = ["testing"] in Cargo.toml). This keeps the test correct even
-        // after engine wiring (PRD #2947-#2949) lands and production code paths
-        // start recording morph activity — without this reset, parallel tests or
-        // leaked state from other test runs could produce non-zero counts.
-        reify_mesh_morph::stats::reset_for_test();
-
-        // State-free handler — call directly (not through dispatch). Zero snapshot expected after reset.
-        let result = super::handle_morph_stats(serde_json::json!({}))
-            .await
-            .expect("morph_stats handler must succeed");
-
-        assert!(result.is_object(), "response must be a JSON object");
-        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
-        assert_eq!(result["remesh_count"].as_u64(), Some(0), "remesh_count key present, default 0");
-        // last_rejection_reason: skip_serializing_if Option::is_none on Rust ⇒
-        // key absent (Value::Null on index) when no rejection recorded.
-        assert!(
-            result.get("last_rejection_reason").is_none()
-                || result["last_rejection_reason"].is_null(),
-            "last_rejection_reason absent/null by default; got: {:?}",
-            result.get("last_rejection_reason")
-        );
-
-        // body_id is accepted but ignored — `{body_id}` form returns the
-        // identical response as the `()` form (forward-compat, per design).
-        let with_body = super::handle_morph_stats(serde_json::json!({"body_id": "Bracket.body"}))
-            .await
-            .expect("morph_stats with body_id must succeed");
-        assert_eq!(with_body, result, "body_id must be ignored — identical response");
-    }
-
-    #[tokio::test]
-    async fn dispatch_stateless_tool_handles_morph_stats_arm() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Unique coverage: the exact "morph_stats" match-arm string in
-        // dispatch_stateless_tool. A typo or deletion returns None, caught
-        // by the unwrap. Shape assertions live in
-        // handle_morph_stats_returns_morph_stats_shape; here we only verify
-        // delegation fidelity.
-        reify_mesh_morph::stats::reset_for_test();
-
-        let direct = super::handle_morph_stats(serde_json::json!({}))
-            .await
-            .expect("handle_morph_stats must succeed");
-
-        let via_dispatch = super::dispatch_stateless_tool("morph_stats", &serde_json::json!({}))
-            .await
-            .expect("dispatch_stateless_tool must return Some for 'morph_stats'")
-            .expect("morph_stats handler must succeed");
-
-        assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
-    }
-
-    #[tokio::test]
     async fn handle_mesh_morph_stats_reset_true_zeros_counters() {
+        use reify_mesh_morph::diagnostics::{MorphOutcome, seed_for_test};
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        // --- (a) reset:true path: counter recorded, then handler zeros it ---
+        // --- (a) reset:true path: counter seeded, then handler zeros it ---
         reify_mesh_morph::diagnostics::reset_for_test();
-        reify_mesh_morph::diagnostics::record_morphed();
+        seed_for_test(MorphOutcome::Morphed);
         // Pre-condition: morphed == 1 before the call.
         assert_eq!(reify_mesh_morph::diagnostics::snapshot().morphed, 1);
 
@@ -3692,7 +3577,7 @@ mod tests {
 
         // --- (b) control: no reset flag — counter must survive ---
         reify_mesh_morph::diagnostics::reset_for_test();
-        reify_mesh_morph::diagnostics::record_morphed();
+        seed_for_test(MorphOutcome::Morphed);
 
         let result_no_reset = super::handle_mesh_morph_stats(serde_json::json!({}))
             .await
@@ -3742,7 +3627,7 @@ mod tests {
     async fn handle_mesh_morph_stats_returns_counters_and_session_start() {
         // Acquire process-global lock so no concurrent test races on counters.
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Reset all 7 diagnostic counters to zero for a clean baseline.
+        // Reset all 8 diagnostic counters to zero for a clean baseline.
         reify_mesh_morph::diagnostics::reset_for_test();
 
         let result = super::handle_mesh_morph_stats(serde_json::json!({}))
@@ -3751,11 +3636,12 @@ mod tests {
 
         assert!(result.is_object(), "response must be a JSON object");
 
-        // All seven named buckets must be present and zero after reset.
+        // All eight named buckets must be present and zero after reset.
         let buckets = [
             "morphed",
             "remeshed_quality_hard_fail",
             "remeshed_quality_soft_fail",
+            "remeshed_solver_error",
             "ineligible_structural_change",
             "ineligible_bijection_failure",
             "ineligible_naming_error",
@@ -3777,6 +3663,29 @@ mod tests {
         assert!(
             session_start > 0,
             "session_start_unix_ms must be > 0; got {session_start}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mesh_morph_stats_reports_seeded_remeshed_solver_error() {
+        use reify_mesh_morph::diagnostics::{MorphOutcome, seed_for_test};
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reify_mesh_morph::diagnostics::reset_for_test();
+        seed_for_test(MorphOutcome::RemeshedSolverError);
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        assert_eq!(
+            result["remeshed_solver_error"].as_u64(),
+            Some(1),
+            "an injected solver failure must surface as remeshed_solver_error"
+        );
+        assert_eq!(
+            result["morphed"].as_u64(),
+            Some(0),
+            "seeding the solver-error bucket must not touch morphed"
         );
     }
 
