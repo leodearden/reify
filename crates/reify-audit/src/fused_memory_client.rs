@@ -72,14 +72,11 @@ impl std::error::Error for LoadError {}
 
 /// Sync MCP streamable-HTTP client. One instance == one MCP session.
 ///
-/// Note: [`TaskMetadata::done_at`] populated by this loader is an
-/// approximation derived from the wire `updatedAt` field, because
-/// fused-memory does not currently expose a dedicated done-flip timestamp.
-/// The JSON-file loader (`--tasks-file`) reads an explicit `done_at` field
-/// stored at done-flip time, so for the same task the two loaders can
-/// disagree by minutes-to-days depending on post-done edits. Time-window
-/// audits (`--since`) may therefore include/exclude the same task
-/// differently across loader paths.
+/// [`TaskMetadata::done_at`] is the done-flip stamp when fused-memory supplies
+/// `metadata.done_at`, otherwise it is approximated from `updatedAt` (last-edit
+/// time), derived like the wire→snapshot jq filter feeding `--tasks-file`. See
+/// `docs/architecture-audit/f-infra-design.md` §11.2 (residual divergences:
+/// §11.2.1).
 pub struct FusedMemoryClient {
     url: String,
     session_id: String,
@@ -336,20 +333,8 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         .map(String::from);
     let audit_foundation = metadata.get("audit_foundation").and_then(|p| p.as_bool());
 
-    // `done_at` approximation: fused-memory does not currently expose a
-    // dedicated done-flip timestamp on the `get_task`/`get_tasks` payload,
-    // so we fall back to `updatedAt` (last-edit time) for done tasks. This
-    // means any post-done metadata edit (re-label, status round-trip, etc.)
-    // will shift the recorded `done_at` and can subtly affect the P5
-    // detector's time window. The JSON-file loader (`--tasks-file`) gets a
-    // `done_at` field stored explicitly at done-flip time, so the two loader
-    // paths can disagree for the same task. If fused-memory grows a real
-    // `doneAt` field, prefer it here and fall back to `updatedAt` only when
-    // it's absent.
     let done_at = if status == "done" {
-        v.get("updatedAt")
-            .and_then(|s| s.as_str())
-            .and_then(parse_iso8601_to_epoch)
+        done_flip_epoch(v, &metadata)
     } else {
         None
     };
@@ -364,6 +349,19 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         consumer_ref,
         audit_foundation,
         done_at,
+    })
+}
+
+/// `done_at` of a `done` task, mirroring the precedence in
+/// `scripts/reify-audit-snapshot-filter.jq`: an explicit epoch-seconds
+/// `metadata.done_at` wins, else the `updatedAt` proxy. Why, and the residual
+/// non-integer-stamp divergence from the jq path:
+/// `docs/architecture-audit/f-infra-design.md` §11.2.1.
+fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
+    metadata.get("done_at").and_then(Value::as_i64).or_else(|| {
+        task.get("updatedAt")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_to_epoch)
     })
 }
 
@@ -577,6 +575,71 @@ mod tests {
         assert!(tm.done_at.is_none());
         assert!(tm.files.is_empty());
         assert!(tm.done_provenance.is_none());
+    }
+
+    /// A `done` wire task carrying only the two inputs `done_at` is derived from.
+    fn done_task_wire(updated_at: Value, metadata: Value) -> Value {
+        json!({
+            "id": "7233",
+            "title": "t",
+            "status": "done",
+            "updatedAt": updated_at,
+            "metadata": metadata,
+        })
+    }
+
+    #[test]
+    fn wire_adapter_metadata_done_at_wins_over_updated_at() {
+        let v = done_task_wire(
+            json!("2026-05-16T07:39:04Z"),
+            json!({"done_at": 1700000000}),
+        );
+        let tm = task_metadata_from_wire(&v).expect("done decode");
+        assert_eq!(tm.done_at, Some(1700000000));
+    }
+
+    #[test]
+    fn wire_adapter_metadata_done_at_wins_over_garbage_updated_at() {
+        let v = done_task_wire(json!("garbage"), json!({"done_at": 1700000000}));
+        let tm = task_metadata_from_wire(&v).expect("done decode");
+        assert_eq!(tm.done_at, Some(1700000000));
+    }
+
+    #[test]
+    fn wire_adapter_null_or_false_metadata_done_at_falls_back_to_updated_at() {
+        for stamp in [json!(null), json!(false)] {
+            let v = done_task_wire(
+                json!("2026-05-16T07:39:04Z"),
+                json!({"done_at": stamp.clone()}),
+            );
+            let tm = task_metadata_from_wire(&v).expect("done decode");
+            assert_eq!(tm.done_at, Some(1778917144), "metadata.done_at = {stamp}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_non_integer_metadata_done_at_falls_back_to_updated_at() {
+        for stamp in [json!("2026-01-01T00:00:00Z"), json!(1700000000.5)] {
+            let v = done_task_wire(
+                json!("2026-05-16T07:39:04Z"),
+                json!({"done_at": stamp.clone()}),
+            );
+            let tm = task_metadata_from_wire(&v).expect("done decode");
+            assert_eq!(tm.done_at, Some(1778917144), "metadata.done_at = {stamp}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_pending_task_ignores_metadata_done_at() {
+        let v = json!({
+            "id": "7233",
+            "title": "t",
+            "status": "pending",
+            "updatedAt": "2026-05-16T07:39:04Z",
+            "metadata": {"done_at": 1700000000}
+        });
+        let tm = task_metadata_from_wire(&v).expect("pending decode");
+        assert!(tm.done_at.is_none());
     }
 
     #[test]

@@ -31,6 +31,15 @@ const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure B
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
 const file3: FileData = { path: '/project/src/plate.ri', content: 'structure Plate {}' };
 
+// A path with a space reaches the editor under TWO spellings: pathToUri leaves
+// the store path decoded, while every URI the backend mints comes back
+// percent-encoded from the `url` crate. They must resolve to ONE version
+// counter — an ASCII-only fixture cannot tell the two apart.
+const SPACED_PATH = '/project/src/hello world.ri';
+const SPACED_URI = 'file:///project/src/hello world.ri';
+const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
+const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
@@ -837,6 +846,26 @@ describe('Editor diagnostics URI filtering', () => {
     });
 
     // Diagnostics SHOULD have been applied
+    expect(diagnosticCount(view.state)).toBe(1);
+  });
+
+  it('diagnostics published under the percent-encoded spelling of the active file ARE applied', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([fileSpaced]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    handler!({
+      payload: {
+        uri: SPACED_URI_ENCODED,
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
     expect(diagnosticCount(view.state)).toBe(1);
   });
 });
@@ -2275,19 +2304,10 @@ describe('PRIMARY-selection guard integration (task #5361)', () => {
 const FILE1_URI = 'file:///project/src/bracket.ri';
 const FILE2_URI = 'file:///project/src/mount.ri';
 
-// A path with a space reaches the editor under TWO spellings: pathToUri leaves
-// the store path decoded, while every URI the backend mints comes back
-// percent-encoded from the `url` crate. They must resolve to ONE version
-// counter — an ASCII-only fixture cannot tell the two apart.
-const SPACED_PATH = '/project/src/hello world.ri';
-const SPACED_URI = 'file:///project/src/hello world.ri';
-const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
-const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
-
-type LspVersionCall = { method: string; uri?: string; version?: number };
+type LspVersionCall = { method: string; uri?: string; version?: number; text?: string };
 
 /**
- * Record every LSP notification's method/uri/version off the invoke mock.
+ * Record every LSP notification's method/uri/version/text off the invoke mock.
  * `responses` supplies canned JSON payloads for request methods (initialize is
  * always answered, since Editor parses its result).
  */
@@ -2301,6 +2321,7 @@ function captureLspVersionCalls(responses: Record<string, unknown> = {}): LspVer
       method,
       uri: params?.textDocument?.uri,
       version: params?.textDocument?.version,
+      text: params?.textDocument?.text,
     });
     if (method === 'initialize') return JSON.stringify({ capabilities: {} });
     if (method in responses) return JSON.stringify(responses[method]);
@@ -2312,6 +2333,33 @@ function captureLspVersionCalls(responses: Record<string, unknown> = {}): LspVer
 /** The most recent call of `method` for `uri` (versions are per document). */
 function lastCallFor(calls: LspVersionCall[], method: string, uri: string): LspVersionCall | undefined {
   return [...calls].reverse().find((c) => c.method === method && c.uri === uri);
+}
+
+/**
+ * Hold every answer to `method` until the returned release is called. Each call
+ * is still recorded the moment it is made. Wraps the recorder installed by
+ * captureLspVersionCalls, so call it AFTER that.
+ */
+function holdAnswersTo(method: string): () => void {
+  const recordAndAnswer = mockInvoke.getMockImplementation()!;
+  const held = deferred<void>();
+  mockInvoke.mockImplementation(async (cmd: string, args: any) => {
+    const answer = recordAndAnswer(cmd, args);
+    if ((args as any)?.method === method) await held.promise;
+    return answer;
+  });
+  return held.resolve;
+}
+
+/** Replay didOpen/didClose in wire order: the documents the server is left holding. */
+function documentsLeftOpen(calls: LspVersionCall[]): string[] {
+  const open = new Set<string>();
+  for (const { method, uri } of calls) {
+    if (uri === undefined) continue;
+    if (method === 'textDocument/didOpen') open.add(uri);
+    if (method === 'textDocument/didClose') open.delete(uri);
+  }
+  return [...open];
 }
 
 describe('Editor LSP per-document versions (task 7118)', () => {
@@ -2458,6 +2506,61 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     });
     expect(calls.filter((c) => c.method === 'textDocument/rename')).toHaveLength(2);
     expect(view.state.doc.toString()).not.toContain('Howdy');
+  });
+
+  it('a fresh rename on the active spaced-path file lands on the live buffer, keeping unsaved typing', async () => {
+    const store = setupStore([fileSpaced]);
+    store.setActiveFile(SPACED_PATH);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    const calls = captureLspVersionCalls({
+      // Line 1: the typed '// edit\n' pushes 'structure Hello {}' down a line.
+      'textDocument/prepareRename': {
+        range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+        placeholder: 'Hello',
+      },
+      // Stamped against version 2 — the didChange the typing sends — so the
+      // version-skew guard judges it fresh. Encoded, as the backend mints it.
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: SPACED_URI_ENCODED, version: 2 },
+            edits: [
+              {
+                range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+                newText: 'Howdy',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', SPACED_URI)).toBeDefined();
+    });
+
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', SPACED_URI)!.version).toBe(2);
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Howdy';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe('// edit\nstructure Howdy {}');
+    });
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(store.state.dirtyFiles).toContain(SPACED_PATH);
   });
 
   it("a rename into a spaced-path buffer shares that file's own didOpen counter", async () => {
@@ -2658,16 +2761,7 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     store.setActiveFile(file1.path);
     const calls = captureLspVersionCalls({ 'textDocument/references': [] });
     // Hold the flushed didChange unanswered so a file switch lands inside its window.
-    const recordAndAnswer = mockInvoke.getMockImplementation()!;
-    let answerDidChange!: () => void;
-    const didChangeAnswered = new Promise<void>((resolve) => {
-      answerDidChange = resolve;
-    });
-    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
-      const answer = recordAndAnswer(cmd, args);
-      if ((args as any)?.method === 'textDocument/didChange') await didChangeAnswered;
-      return answer;
-    });
+    const answerDidChange = holdAnswersTo('textDocument/didChange');
 
     render(() => <Editor store={store} />);
     const view = getEditorView(screen.getByTestId('editor-container'));
@@ -2693,5 +2787,75 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     // The key asked about file1's text; the view now shows file2, whose cursor
     // and URI the command would read instead.
     expect(calls.some((c) => c.method === 'textDocument/references')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LSP bootstrap racing a file switch or an unmount (task 7512)
+// ---------------------------------------------------------------------------
+//
+// Same wire-level stance as the 7118 block. `initialize` is held unanswered so
+// the user acts inside the bootstrap window.
+
+describe('Editor LSP bootstrap racing a file switch or unmount (task 7512)', () => {
+  const docCalls = (calls: LspVersionCall[]) =>
+    calls.filter((c) => c.method === 'textDocument/didOpen' || c.method === 'textDocument/didClose');
+
+  /** The LSP lifecycle: `initialized` goes out before any document notification. */
+  const expectInitializedBeforeDocuments = (calls: LspVersionCall[]) => {
+    const initializedAt = calls.findIndex((c) => c.method === 'initialized');
+    expect(initializedAt).toBeGreaterThan(-1);
+    const early = calls.slice(0, initializedAt).filter((c) => c.method.startsWith('textDocument/'));
+    expect(early).toEqual([]);
+  };
+
+  it('a file switch before initialize resolves opens each document with its own text and its own version sequence', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls();
+    const answerInitialize = holdAnswersTo('initialize');
+
+    // The user switches file while initialize is unanswered.
+    render(() => <Editor store={store} />);
+    store.setActiveFile(file2.path);
+    answerInitialize();
+    await vi.waitFor(() => expect(docCalls(calls)).toHaveLength(3));
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    // The bootstrap opens file1 as mounted; the switch then closes it and opens file2.
+    expect(docCalls(calls)).toEqual([
+      { method: 'textDocument/didOpen', uri: FILE1_URI, version: 1, text: file1.content },
+      { method: 'textDocument/didClose', uri: FILE1_URI },
+      { method: 'textDocument/didOpen', uri: FILE2_URI, version: 1, text: file2.content },
+    ]);
+    expectInitializedBeforeDocuments(calls);
+
+    // Switching back reopens file1 as a fresh sequence, not a continuation.
+    store.setActiveFile(file1.path);
+    await vi.waitFor(() => expect(docCalls(calls)).toHaveLength(5));
+    expect(docCalls(calls)[4]).toEqual({
+      method: 'textDocument/didOpen',
+      uri: FILE1_URI,
+      version: 1,
+      text: file1.content,
+    });
+  });
+
+  it('unmount before initialize resolves leaves no document open on the server', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls();
+    const answerInitialize = holdAnswersTo('initialize');
+
+    // The editor goes away while initialize is unanswered.
+    const { unmount } = render(() => <Editor store={store} />);
+    unmount();
+    answerInitialize();
+    // Cleanup's close is the queue's tail, so once it is out every earlier notification is too.
+    await vi.waitFor(() => expect(lastCallFor(calls, 'textDocument/didClose', FILE1_URI)).toBeDefined());
+
+    // Whatever the bootstrap sent, the server is left holding nothing.
+    expect(documentsLeftOpen(calls)).toEqual([]);
+    expectInitializedBeforeDocuments(calls);
   });
 });

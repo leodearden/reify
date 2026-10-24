@@ -8,7 +8,7 @@
 //! stiffness path), so a sign-convention or tying-point-ordering change made
 //! here propagates to both consumers atomically.
 
-use crate::shell_assembly::ShellFrame;
+use crate::elements::shell_frame::ShellFrame;
 
 /// Per-element shell kinematics derived from physical nodes + the local
 /// mid-surface frame.
@@ -130,7 +130,7 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
 mod tests {
     use super::*;
     use crate::elements::mitc3_plus::Mitc3Plus;
-    use crate::shell_assembly::build_shell_frame;
+    use crate::elements::shell_frame::build_shell_frame;
 
     const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     const WIDE_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
@@ -312,7 +312,7 @@ mod tests {
     /// un-tilted case (within floating-point rounding).
     #[test]
     fn shell_kinematics_tilted_triangle_local_coords_collapse_to_un_tilted() {
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
 
         // Build tilted nodes: Q · UNIT_TRI
         let mut tilted = [[0.0_f64; 3]; 3];

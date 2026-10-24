@@ -1,0 +1,13 @@
+// B11 (solver-driver-parity §5): two independent infeasible components; the reported failure must be a's, every run (harness_cli/cli_eval_registry_determinism.rs).
+
+module registry_determinism_two_infeasible
+
+structure Twin {
+    param a: Length = auto
+    param b: Length = auto
+
+    constraint a == 10mm
+    constraint a == 20mm
+    constraint b == 1mm
+    constraint b == 2mm
+}

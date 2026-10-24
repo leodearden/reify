@@ -353,6 +353,7 @@ tasks:
       pattern: reify-language-spec
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
   - name: infra-test-keying-file-exists-and-is-live
     binding: 'G3: scripts/verify-pipeline-infra-tests.txt is present at HEAD (314
@@ -733,7 +734,7 @@ tasks:
       kind: grep
       pattern: fn parse_purpose_flag
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: cli-tier-@test-rows-are-deferred-not-silently-included
     binding: 'Scope honesty: CLI-tier @test rows are gated on the driver-contract

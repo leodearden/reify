@@ -21,7 +21,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile, parse_and_compil
 
 /// Build an Engine with an empty prelude for self-contained tests.
 fn fresh_engine() -> Engine {
-    Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[])
 }
 
 /// Convenience: parse + compile a source string.

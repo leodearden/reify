@@ -520,8 +520,10 @@ pub structure CapstanUnit {
     /// 2026-08-23 pitch-radius re-sync: at cap_pitch_r 24 the old stand-off
     /// left the pulley rims 0.06mm off the drum flanges (analytic sweep
     /// 2026-08-25); +5mm restores a ~5mm rim-to-rim margin.
-    /// TODO(#6583): replace the L376-style 2D bound with a real posed
-    /// distance() constraint once cross-sub geometry reads carry placement.
+    /// TODO(#5436): replace the analytic 2D flange-crossing bound below
+    /// (`pulley_x - r_pitch > sqrt(...)`) with a real posed distance()
+    /// constraint once member geometry reads compose through the sub's
+    /// placement.
     param pulley_x : Length = 50mm
     /// #6586 pin: == self.capstan.groove_len (constraints below). The pair
     /// heights derive from THIS so they can feed FairleadPair constructor
@@ -1553,7 +1555,7 @@ pub structure DriveTendons {
     // separation in mm between derived stations, so an edit that re-breaks
     // one fails `reify check` instead of needing another analytic sweep.
     // (Cross-sub geometry queries would be the richer form, but a sub's `at`
-    // placement is silently dropped before the kernel today — #6583 — so
+    // placement is silently dropped before the kernel today — #5436 — so
     // these compare the parent-frame coordinates that place the geometry.)
     //
     // 1. (v3) Every OUT descent hangs outboard of the fairlead hardware in
@@ -2736,7 +2738,7 @@ pub structure DToolhead {
 ///    sampled union is the ceiling.
 ///  Bodies are all TOP-LEVEL lets (#5439: sub bodies never reach snapshots);
 ///  the tool solid is read from a ToolBody sub in its LOCAL frame and
-///  translated here (#6583-safe by construction). Pose lets are `aux`
+///  translated here (#5436-safe by construction). Pose lets are `aux`
 ///  (realised hidden) so the viewport shows the dock, not 20 ghost heads.
 /// REACH (live cells, no constraint — frame-round posture): the dock is at
 /// its FUTURE-correct position and is unreachable TODAY by reach_short_today
@@ -2841,7 +2843,7 @@ pub structure ToolDock {
 
     // ── Geometry (world) ─────────────────────────────────────────────────
     /// Tool prototype: NOT placed — its body is read in the leaf's local
-    /// frame and translated here per station (single source, #6583-safe).
+    /// frame and translated here per station (single source, #5436-safe).
     sub tool_proto = ToolBody(
         width: tool_w, depth: tool_d, height: tool_h, mass: m_tool,
         ball_protrude: ball_protrude, r_maxwell: r_maxwell, cpl_z: cpl_z,

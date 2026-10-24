@@ -1,0 +1,333 @@
+prd: docs/prds/v0_6/cargo-native-harness-layout.md
+schema_version: 1
+signal_leaves:
+- δ
+- ε₁
+- ε₂
+tasks:
+- label: α
+  task_id: 9396
+  title: 'Guard learns the tests/harness_x/main.rs root shape; contract doc layout half (main.rs form, subtopic splits, placement rule)'
+  note: 'Root detection in test_harness_kloc_cap.sh::harness_layout_violations and the lib unit walk derive the module dir as ${root%.rs} and glob tests/harness_*.rs only (S1/S4 at 3f9015b3b5), so a moved root would silently stop being measured.'
+  capabilities:
+  - name: guard-blind-to-main-rs-today
+    binding: 'existing-substrate — harness_layout_violations, harness_path_attr_violations, harness_undeclared_member_violations glob top-level tests/harness_*.rs; harness_layout_unit_lines / harness_layout_declared_members use ${root%.rs}; git grep -c main.rs over tests/infra/harness-layout-lib.sh = 0 at 3f9015b3b5.'
+    verdict: PASS
+  - name: contract-doc-upstream
+    binding: 'producer:task-8700 upstream (S19 θ creates docs/contributor/harness-layout-contract.md; absent at 3f9015b3b5).'
+    verdict: PASS
+  - name: lib-learns-main-rs
+    binding: 'producer-self — the lib walk and every root-glob site of the bash guard accept a main.rs root; no delivered check, because ε₁/ε₂ delete those functions (a check there would flip back). BT2 is the behavioural cover.'
+    verdict: PASS
+  - name: subtopic-split-rule
+    binding: 'producer-self — R3 (Leo 2026-10-19) harness_<topic>_<subtopic> rule in the contract doc.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: harness_<topic>_<subtopic>
+      expect: present
+      paths:
+      - docs/contributor/harness-layout-contract.md
+- label: β₁
+  task_id: 9397
+  title: 'Step A, reify-cli: roots to main.rs, #[path] stripped, mod common re-pathed, root prose deleted'
+  capabilities:
+  - name: selector-parity
+    binding: 'probe (S3, cargo 1.96 / nextest 0.9.136 scratch workspace) — tests/harness_par.rs+#[path] vs tests/harness_par/main.rs+bare mod: target name, nextest binary id, test names and binary metadata hash byte-identical; only src_path differs.'
+    verdict: PASS
+  - name: escaping-include-form
+    binding: 'probe (S3 M3) — #[path = "../common/mod.rs"] in tests/harness_x/main.rs compiles; a bare mod common; there resolves to harness_x/common.rs. reify-cli has 1 bare mod common; (harness_cli).'
+    verdict: PASS
+  - name: root-moved
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-cli/tests/harness_cli/main.rs
+  - name: old-root-gone
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-cli/tests/harness_cli.rs
+- label: β₂
+  task_id: 9398
+  title: 'Step A, reify-syntax'
+  capabilities:
+  - name: escaping-includes
+    binding: 'measured (S1) — 1 #[path = "common/…"] in reify-syntax roots, 0 bare mod common;.'
+    verdict: PASS
+  - name: root-moved
+    binding: 'producer-self (harness_syntax_lowering is used because γ may split harness_syntax)'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-syntax/tests/harness_syntax_lowering/main.rs
+  - name: old-root-gone
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-syntax/tests/harness_syntax_lowering.rs
+- label: β₃
+  task_id: 9399
+  title: 'Step A, reify-kernel-occt'
+  capabilities:
+  - name: escaping-includes
+    binding: 'measured (S1) — 1 bare mod common; (harness_occt_measurement).'
+    verdict: PASS
+  - name: root-moved
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/tests/harness_occt_measurement/main.rs
+  - name: old-root-gone
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-kernel-occt/tests/harness_occt_measurement.rs
+- label: β₄
+  task_id: 9400
+  title: 'Step A, reify-compiler (22 roots, 13 common includes)'
+  capabilities:
+  - name: escaping-includes
+    binding: 'measured (S1, lead) — 12 #[path = "common/mod.rs"] in reify-compiler roots; 1 member cites esc-5056-11.'
+    verdict: PASS
+  - name: root-moved
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-compiler/tests/harness_units/main.rs
+  - name: old-root-gone
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-compiler/tests/harness_units.rs
+- label: β₅
+  task_id: 9401
+  title: 'Step A, reify-eval (16 roots); heavy-filter atom test repointed; the last root prose'
+  capabilities:
+  - name: escaping-includes
+    binding: 'measured (S1) — 3 #[path = "common/…"] (common/differential.rs, common/eval_gate_support.rs, common/numeric_cell.rs) + 1 bare mod common; (harness_fea_solver_e2e).'
+    verdict: PASS
+  - name: heavy-filter-atom-test-names-root
+    binding: 'existing-substrate — tests/infra/test_heavy_filter_atoms.sh asserts crates/reify-eval/tests/harness_fea_solver_e2e.rs declares the heavy member mods (S4 Q-h).'
+    verdict: PASS
+  - name: root-moved
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/tests/harness_engine/main.rs
+  - name: escalation-cites-gone
+    binding: 'producer-self (D-K8-3) — esc-5056-11 appears in 2 reify-eval roots and 0 members at 3f9015b3b5.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: esc-5056-11
+      expect: absent
+      paths:
+      - crates/reify-eval/tests
+- label: γ
+  task_id: 9402
+  title: 'Split harness_syntax by subtopic (harness_syntax_<subtopic>/main.rs) ahead of the code-line cap'
+  capabilities:
+  - name: split-needed
+    binding: 'measured (S4, RUST_LEXER_AWK rule over the dep-info .rs set) — harness_syntax 12,777 code lines > 12,000 (R2).'
+    verdict: PASS
+  - name: split-achievable
+    binding: 'measured (lead, RUST_LEXER_AWK over the 55 members) — members total 12,620 code lines; the declarations/members theme alone exceeds 2,000, so a coherent carve brings every unit <= 10,800.'
+    verdict: PASS
+  - name: units-under-advisory-line
+    binding: 'behavioural — every reify-syntax unit <= 10,800 code lines.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the subtopic name is chosen in-leaf, so no path is known in advance; ε₁''s cap check is the mechanical cover.'
+- label: δ
+  task_id: 9403
+  title: 'Step C: autotests = false + explicit [[test]] lists; baseline + diff gate retired; engine registered/check-registration; planner step fails closed; INV-TEST-1'
+  capabilities:
+  - name: no-test-tables-today
+    binding: 'existing-substrate — no autotests / [[test]] in any workspace Cargo.toml at 3f9015b3b5 (S1 item 9, S4 F4).'
+    verdict: PASS
+  - name: standalones-match-baseline
+    binding: 'measured (S1) — reify-eval 220 flat tests/*.rs = 218 baseline rows + 2 override stems; the other four crates 0.'
+    verdict: PASS
+  - name: planner-upstream
+    binding: 'producer:task-9112 upstream (S18 ζ: the Python planner owns build_plan''s emitters) and producer:task-9097 upstream (selection.py::select_harness_kloc_guard).'
+    verdict: PASS
+  - name: fail-open-today
+    binding: 'existing-substrate — check-harness-baseline-registration.sh::_derive_added_from_git failure falls through to _check_candidates with no args and prints PASS added=0 (fk-e6dd1263aafe verifier note).'
+    verdict: PASS
+  - name: autotests-off
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^autotests = false
+      expect: present
+      paths:
+      - crates/reify-eval/Cargo.toml
+  - name: baseline-retired
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - tests/infra/harness-layout-baseline.manifest
+  - name: diff-gate-retired
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - scripts/check-harness-baseline-registration.sh
+  - name: registration-fails-closed
+    binding: 'producer-self — registration_violations reds standalone-added and cannot-derive-diff.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: def registration_violations
+      expect: present
+      paths:
+      - scripts/harness_layout.py
+  - name: registration-step-emitted
+    binding: 'producer-self — the build-module emitter replacing the old add_tool line (S18 seam, after ζ).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check-registration
+      expect: present
+      paths:
+      - scripts/reify_verify
+  - name: registered-check
+    binding: 'producer-self — registered_violations (corrected subset check, PRD §2.6 1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: def registered_violations
+      expect: present
+      paths:
+      - scripts/harness_layout.py
+- label: ε₁
+  task_id: 9404
+  title: 'Engine: code-line cap from dep-info, freshness, undeclared member; lexer hoisted; bash cap/undeclared rules and awk resolver deleted (B folded)'
+  capabilities:
+  - name: dep-info-present-and-agreeing
+    binding: 'measured (S4 probe over 45 roots) — 4-17 .d per unit in target/debug/deps; the two newest agree on the .rs set 45/45; clippy check-mode .d lists the same .rs set as the test build.'
+    verdict: PASS
+  - name: dep-info-fresh-after-nextest
+    binding: 'CORRECTED (R8) — dark-factory runs verify.sh test and lint concurrently as separate processes (orchestrator verify.py asyncio.gather), so no clippy precedes the infra suite; the warm-lane env!() relink makes seeded .d stale. The debug nextest pass (add_test_passes, after build_plan) rebuilds every in-scope test target, so dep-info is read by a planner step right after it at merge/background; the engine still proves freshness (D10).'
+    verdict: PASS
+  - name: one-lexer
+    binding: 'existing-substrate — scripts/lib_rust_production_view.sh::RUST_LEXER_AWK; assert-module-scc.py LEXER_SPAWN/LEXER_DRIVER spawn it. Lead spot-check: string-literal interior lines lex to empty.'
+    verdict: PASS
+  - name: cap-floor
+    binding: 'floor — after γ the largest unit is harness_topology_selector at 11,215 code lines (93% of 12,000), below the cap; ε₁ splits any unit that crosses before it lands (no cap bump, R2).'
+    verdict: PASS
+  - name: lexer-hoisted
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - scripts/rust_lexed_source.py
+  - name: awk-resolver-deleted
+    binding: 'producer-self — fk-b904603b81f2'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: _harness_layout_mod_decls
+      expect: absent
+      paths:
+      - tests/infra/harness-layout-lib.sh
+  - name: code-line-cap
+    binding: 'producer-self — R2 (the number lives only in the engine; the check matches the constant, not the figure)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^CAP_CODE_LINES = '
+      expect: present
+      paths:
+      - scripts/harness_layout.py
+  - name: post-nextest-step
+    binding: 'producer-self — R8: the check-dep-info emitter after the debug nextest pass at merge/background roles; scripts/reify_verify does not exist at 3f9015b3b5 (S18 creates it).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check-dep-info
+      expect: present
+      paths:
+      - scripts/reify_verify
+  - name: undeclared-member-check
+    binding: 'producer-self — R1 (B folded)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: def dep_info_violations
+      expect: present
+      paths:
+      - scripts/harness_layout.py
+- label: ε₂
+  task_id: 9405
+  title: 'Engine: stale-selector check; test_harness_kloc_cap.sh and the lib''s layout remainder deleted; selection retargeted'
+  capabilities:
+  - name: live-selector-atoms
+    binding: 'measured (S4 F15) — 10 binary() atoms in .config/nextest.toml and 8 in scripts/heavy-test-filter-lib.sh REIFY_HEAVY_NEXTEST_FILTER; no live --test atom outside prose.'
+    verdict: PASS
+  - name: bash-test-deleted
+    binding: 'producer-self — fk-53a9afc0d2b9'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - tests/infra/test_harness_kloc_cap.sh
+  - name: stale-selector-check
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: def stale_selector_violations
+      expect: present
+      paths:
+      - scripts/harness_layout.py
+- label: Ω
+  task_id: 9406
+  title: 'PRD close: SHIPPED header, landed ids, AS-AUTHORED freeze'
+  capabilities:
+  - name: terminal-stamp
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*Status:\*\* SHIPPED
+      expect: present
+      paths:
+      - docs/prds/v0_6/cargo-native-harness-layout.md

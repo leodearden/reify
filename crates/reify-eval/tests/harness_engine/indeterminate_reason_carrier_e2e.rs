@@ -65,7 +65,7 @@ fn check_compiled(compiled: reify_compiler::CompiledModule) -> CheckResult {
         compile_errors.is_empty(),
         "fixture must be compile-clean; got {compile_errors:?}"
     );
-    Engine::new(Box::new(SimpleConstraintChecker), None).check(&compiled)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None).check(&compiled)
 }
 
 fn display_name(entry: &ConstraintCheckEntry) -> String {
@@ -205,7 +205,7 @@ fn build_recheck_upgrade_clears_the_recorded_reason() {
     let kernel = (1..=4u64).fold(MockGeometryKernel::new(), |kernel, handle| {
         kernel.with_volume_result(GeometryHandleId(handle), Value::Real(1e-6))
     });
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     let built = engine.build(
         &compile_source_with_stdlib(VOLUME_GATED),

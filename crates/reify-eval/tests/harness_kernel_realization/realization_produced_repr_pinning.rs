@@ -50,7 +50,7 @@ fn every_realization_node_has_produced_repr_brep_after_eval() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Drive eval so the snapshot is populated from the compiled module.
     // `eval` builds the EvaluationGraph (which initializes produced_repr to

@@ -21,7 +21,8 @@
 mod common;
 
 use reify_audit::pdoccover::{CHUNKS_PREFIX, DegenerateInputs, UNITS_PATH};
-use reify_audit::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger};
+use reify_audit::pdoccover_baseline::{BASELINE_PATH, BaselineRow};
+use reify_audit::ratchet_ledger::Ledger;
 use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
 };
@@ -1790,7 +1791,7 @@ fn fabricated(chunk: &str, name: &str) -> BaselineRow {
     }
 }
 
-fn ledger_of(ctx: &AuditContext<'_>) -> Ledger {
+fn ledger_of(ctx: &AuditContext<'_>) -> Ledger<BaselineRow> {
     reify_audit::pdoccover::baseline_ledger(ctx).expect("fixture inputs are not degenerate")
 }
 

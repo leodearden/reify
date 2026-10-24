@@ -1,0 +1,7 @@
+module s7_resolution_enum_in_option
+
+enum Mode { Fast, Slow }
+
+structure def S {
+    param m : Option<Mode> = none
+}

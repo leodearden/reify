@@ -1,0 +1,9 @@
+module auto_reach_tk_child_let
+pub structure Leaf {
+    param k : Length = auto
+    let d = k * 2.0
+}
+pub structure P {
+    sub l = Leaf()
+    constraint self.l.d == 4mm
+}

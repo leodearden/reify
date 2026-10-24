@@ -6,8 +6,8 @@ use reify_core::{
     ResolutionNodeId, ValueCellId, VersionId,
 };
 use reify_ir::{
-    CompiledExpr, DeterminacyState, FieldImportProvenance, Freshness, GeometryHandleId, NodeTraits,
-    NodeTraitsMap, OpaqueState, ResultRef, Satisfaction, Value, ValueMap,
+    DeterminacyState, FieldImportProvenance, Freshness, GeometryHandleId, NodeTraits,
+    NodeTraitsMap, OpaqueState, ResultRef, Satisfaction, Value,
 };
 
 use crate::deps::DependencyTrace;
@@ -1629,7 +1629,7 @@ impl CacheStore {
     ///
     /// Delegates to [`derive_output_freshness_from_trace_with_cause`] and drops the
     /// cause, so the §7.2/§9.2 classification logic lives in exactly one place. See
-    /// that method for the full truth table.
+    /// [`derive_output_freshness_with_cause`] for the full truth table.
     ///
     /// Callers that hold the just-evaluated trace (e.g. the wire site in
     /// `evaluate_let_bindings`) should prefer this over
@@ -1649,7 +1649,7 @@ impl CacheStore {
     ///
     /// Delegates to [`derive_output_freshness_for_node_with_cause`] and drops the
     /// cause, so the §7.2/§9.2 classification logic lives in exactly one place. See
-    /// that method for the full truth table.
+    /// [`derive_output_freshness_with_cause`] for the full truth table.
     ///
     /// **Old-trace semantics:** this method reads the trace that was stored during the
     /// *prior* evaluation of `node_id`, not a freshly-computed one.  At the wire site in
@@ -1682,7 +1682,8 @@ impl CacheStore {
     /// [`CacheStore::pending_cause`].
     ///
     /// **Absent node fallback:** if `node_id` has no cache entry, returns
-    /// `(Final, None)` (consistent with the pure helper's empty-input case).
+    /// `(Final, None)` (consistent with [`derive_output_freshness_with_cause`]'s
+    /// empty-input case).
     ///
     /// See arch §9.2 lines 880-890 (Failed → Pending carve-out) and arch §7.2
     /// line 748 (Pending forwards the chain).
@@ -1805,68 +1806,22 @@ impl CacheStore {
     }
 }
 
-/// Derive output freshness from `still_refining` flag and input freshnesses.
+/// Derive output freshness from `still_refining` and the input freshnesses
+/// (arch §7.2 with the §9.2 carve-out).
 ///
-/// Implements arch §7.2 lines 730-749 with the §9.2 line 890 carve-out
-/// (`docs/reify-implementation-architecture.md`):
+/// Truth table (`docs/reify-implementation-architecture.md` §7.2 and §9.2):
 ///
-/// | `still_refining` | any input Failed | any input Pending | any input Intermediate | output                     |
-/// |------------------|------------------|-------------------|------------------------|----------------------------|
-/// | `true`           | –                | –                 | –                      | `Intermediate { generation }` |
+/// | `still_refining` | any input Failed | any input Pending | any input Intermediate | output                                                   |
+/// |------------------|------------------|-------------------|------------------------|----------------------------------------------------------|
+/// | `true`           | –                | –                 | –                      | `Intermediate { generation }`                            |
 /// | `false`          | `true`           | –                 | –                      | `Pending { last_substantive: ResultRef::none() }` (§9.2) |
 /// | `false`          | `false`          | `true`            | –                      | `Pending { last_substantive: ResultRef::none() }` (§7.2) |
-/// | `false`          | `false`          | `false`           | `true`                 | `Intermediate { generation }` |
-/// | `false`          | `false`          | `false`           | `false` (all Final)    | `Final`                    |
+/// | `false`          | `false`          | `false`           | `true`                 | `Intermediate { generation }`                            |
+/// | `false`          | `false`          | `false`           | `false` (all Final)    | `Final`                                                  |
 ///
-/// Note: Failed and Pending are carved out of the §7.2 "any non-Final → Intermediate"
-/// rule per §9.2 line 890 (Failed) and §7.2 line 748 (Pending). Both produce a Pending
-/// output so the downstream subtree is naturally quieted. Chain forwarding (the cause
-/// NodeId) is handled at the `_with_cause` layer; the pure helper drops the chain and
-/// returns `Pending { last_substantive: ResultRef::none() }`.
-///
-/// See the `derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final`
-/// unit test for truth-table coverage across all 4 input variants and the
-/// `derive_output_freshness_with_cause_returns_failing_node` test for chain semantics.
-pub fn derive_output_freshness(
-    still_refining: bool,
-    input_freshnesses: impl IntoIterator<Item = Freshness>,
-    generation: u64,
-) -> Freshness {
-    if still_refining {
-        return Freshness::Intermediate { generation };
-    }
-    // Single pass: classify the strongest non-Final input we see.
-    let mut saw_failed = false;
-    let mut saw_pending = false;
-    let mut saw_intermediate = false;
-    for f in input_freshnesses {
-        match f {
-            Freshness::Final => {}
-            Freshness::Intermediate { .. } => saw_intermediate = true,
-            Freshness::Pending { .. } => saw_pending = true,
-            Freshness::Failed { .. } => saw_failed = true,
-        }
-    }
-    // §9.2 carve-out: Failed input → Pending output (chain handled at the _with_cause layer).
-    if saw_failed {
-        return Freshness::Pending {
-            last_substantive: ResultRef::none(),
-        };
-    }
-    // §7.2 line 748: Pending input → Pending output (chain forwarded at _with_cause layer).
-    if saw_pending {
-        return Freshness::Pending {
-            last_substantive: ResultRef::none(),
-        };
-    }
-    // §7.2 main rule: Intermediate input → Intermediate output.
-    if saw_intermediate {
-        return Freshness::Intermediate { generation };
-    }
-    Freshness::Final
-}
-
-/// Cause-bearing variant of [`derive_output_freshness`].
+/// Failed and Pending inputs are carved out of the §7.2 "any non-Final →
+/// Intermediate" rule: both produce a Pending output, so the downstream subtree
+/// is naturally quieted. They differ only in the chain root reported alongside it.
 ///
 /// Returns both the derived `Freshness` AND the upstream `NodeId` (if any) that
 /// drove the Pending output. The chain semantics are:
@@ -1947,106 +1902,6 @@ pub fn derive_output_freshness_with_cause(
     (Freshness::Final, None)
 }
 
-/// Compute the input hash for a value cell expression.
-///
-/// Combines the expression's content_hash with dependency value hashes
-/// to produce a deterministic input hash. This ensures that if either the
-/// expression structure or any dependency value changes, the input hash changes.
-pub fn compute_input_hash(
-    expr: &CompiledExpr,
-    deps: &[ValueCellId],
-    values: &ValueMap,
-) -> ContentHash {
-    // Start with expression's content hash (captures structure)
-    let mut combined = expr.content_hash;
-
-    // Collect dependency value hashes (order doesn't matter since we combine them all)
-    let dep_hashes: Vec<_> = deps
-        .iter()
-        .filter_map(|id| values.get(id))
-        .map(|v| v.content_hash())
-        .collect();
-
-    // Only combine if there are dependency hashes (empty combine_all returns zero hash)
-    if !dep_hashes.is_empty() {
-        let dep_combined = ContentHash::combine_all(dep_hashes);
-        combined = combined.combine(dep_combined);
-    }
-
-    combined
-}
-
-/// Check if a re-evaluated value has the same content hash as cached.
-///
-/// Returns true if the new value hash matches the cached entry's result hash,
-/// indicating no change occurred (early cutoff should apply).
-pub fn check_early_cutoff(
-    store: &CacheStore,
-    id: &ValueCellId,
-    new_value_hash: ContentHash,
-) -> bool {
-    let node = NodeId::Value(id.clone());
-    if let Some(entry) = store.get(&node) {
-        entry.result_hash == new_value_hash
-    } else {
-        false
-    }
-}
-
-/// Compute the dirty set: all cells that need re-evaluation after input changes.
-///
-/// Walks dependents in topological order, re-evaluating and checking for early
-/// cutoff to prune the propagation frontier. Returns cells that actually
-/// changed value.
-pub fn dirty_set(
-    changed: &[ValueCellId],
-    dep_map: &crate::deps::DependencyMap,
-    _graph: &crate::graph::EvaluationGraph,
-    _values: &ValueMap,
-    store: &mut CacheStore,
-) -> Vec<ValueCellId> {
-    let mut dirty: Vec<ValueCellId> = changed.to_vec();
-    let mut result: Vec<ValueCellId> = Vec::new();
-    let mut visited: std::collections::HashSet<ValueCellId> = std::collections::HashSet::new();
-
-    // Get topological order for consistent processing
-    let topo_order = dep_map.topological_order();
-
-    // Process in topological order
-    for cell in &topo_order {
-        if !dirty.contains(cell) {
-            continue;
-        }
-
-        // Skip if already processed
-        if visited.contains(cell) {
-            continue;
-        }
-        visited.insert(cell.clone());
-
-        // Check if fresh
-        if store.is_fresh(cell) {
-            // Clear dirty reasons for this cell since it's fresh
-            let node = NodeId::Value(cell.clone());
-            store.clear_dirty(&node);
-            continue;
-        }
-
-        // Mark as changed (needs re-evaluation)
-        result.push(cell.clone());
-
-        // Propagate to dependents
-        let dependents = dep_map.dependents_of(cell);
-        for dependent in dependents {
-            if !dirty.contains(dependent) {
-                dirty.push(dependent.clone());
-            }
-        }
-    }
-
-    result
-}
-
 impl Default for CacheStore {
     fn default() -> Self {
         Self::new()
@@ -2056,7 +1911,7 @@ impl Default for CacheStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::{ConstraintNodeId, RealizationNodeId, Type, ValueCellId};
+    use reify_core::{ConstraintNodeId, RealizationNodeId, ValueCellId};
 
     /// Task 4357 δ (step-1): `NodeId::describe()` must return a distinct,
     /// human-readable, kind-naming string for each of the five variants —
@@ -2567,103 +2422,6 @@ mod tests {
         assert_eq!(store.version(), VersionId(2));
     }
 
-    // --- compute_input_hash tests (Step 13) ---
-
-    #[test]
-    fn compute_input_hash_deterministic_with_sorted_deps() {
-        use reify_ir::BinOp;
-
-        // x + y where x < y in id order
-        let x = ValueCellId::new("A", "a");
-        let y = ValueCellId::new("A", "b");
-        let expr = CompiledExpr::binop(
-            BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
-            CompiledExpr::value_ref(y.clone(), Type::dimensionless_scalar()),
-            Type::dimensionless_scalar(),
-        );
-
-        let mut values = ValueMap::new();
-        values.insert(x.clone(), Value::Real(1.0));
-        values.insert(y.clone(), Value::Real(2.0));
-
-        // Compute hash with deps in order [a, b]
-        let deps = vec![x.clone(), y.clone()];
-        let hash1 = compute_input_hash(&expr, &deps, &values);
-
-        // Same deps same order should produce same hash
-        let hash2 = compute_input_hash(&expr, &deps, &values);
-        assert_eq!(hash1, hash2, "same deps should produce same hash");
-    }
-
-    #[test]
-    fn compute_input_hash_different_values_produce_different_hashes() {
-        let x = ValueCellId::new("A", "a");
-        let expr = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
-
-        // Values: 1.0
-        let mut values1 = ValueMap::new();
-        values1.insert(x.clone(), Value::Real(1.0));
-        let hash1 = compute_input_hash(&expr, std::slice::from_ref(&x), &values1);
-
-        // Values: 2.0
-        let mut values2 = ValueMap::new();
-        values2.insert(x.clone(), Value::Real(2.0));
-        let hash2 = compute_input_hash(&expr, std::slice::from_ref(&x), &values2);
-
-        assert_ne!(
-            hash1, hash2,
-            "different values should produce different hashes"
-        );
-    }
-
-    #[test]
-    fn compute_input_hash_empty_deps_uses_expr_hash() {
-        // Literal expression with no deps
-        use std::f64::consts::PI;
-        let expr = CompiledExpr::literal(Value::Real(PI), Type::dimensionless_scalar());
-        let values = ValueMap::new();
-
-        let hash = compute_input_hash(&expr, &[], &values);
-        let expr_hash = expr.content_hash;
-
-        assert_eq!(hash, expr_hash, "empty deps should return expr hash");
-    }
-
-    #[test]
-    fn compute_input_hash_different_expr_produce_different_hashes() {
-        use reify_ir::BinOp;
-
-        let x = ValueCellId::new("A", "a");
-
-        // a + a
-        let expr_add = CompiledExpr::binop(
-            BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
-            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
-            Type::dimensionless_scalar(),
-        );
-
-        // a * a
-        let expr_mul = CompiledExpr::binop(
-            BinOp::Mul,
-            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
-            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
-            Type::dimensionless_scalar(),
-        );
-
-        let mut values = ValueMap::new();
-        values.insert(x.clone(), Value::Real(2.0));
-
-        let hash_add = compute_input_hash(&expr_add, std::slice::from_ref(&x), &values);
-        let hash_mul = compute_input_hash(&expr_mul, std::slice::from_ref(&x), &values);
-
-        assert_ne!(
-            hash_add, hash_mul,
-            "different expressions should produce different hashes"
-        );
-    }
-
     // --- CacheStore tests ---
 
     fn make_test_node_cache(val: i64, version: u64) -> NodeCache {
@@ -2972,62 +2730,6 @@ mod tests {
         assert_ne!(sat.content_hash(), geo.content_hash());
     }
 
-    // --- Early cutoff tests (Step 17) ---
-
-    #[test]
-    fn check_early_cutoff_returns_true_when_hash_matches() {
-        let mut store = CacheStore::new();
-        let id = ValueCellId::new("A", "x");
-        let node = NodeId::Value(id.clone());
-
-        // Cache entry with value hash
-        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
-        let cache = NodeCache::new(
-            result,
-            Freshness::Final,
-            DependencyTrace::default(),
-            VersionId(1),
-        );
-        store.put(node.clone(), cache);
-
-        // Same value hash -> early cutoff applies
-        let same_hash = store.get(&node).unwrap().result_hash;
-        let result = check_early_cutoff(&store, &id, same_hash);
-        assert!(result, "should return true when hash matches");
-    }
-
-    #[test]
-    fn check_early_cutoff_returns_false_when_hash_differs() {
-        let mut store = CacheStore::new();
-        let id = ValueCellId::new("A", "x");
-        let node = NodeId::Value(id.clone());
-
-        // Cache entry with value hash
-        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
-        let cache = NodeCache::new(
-            result,
-            Freshness::Final,
-            DependencyTrace::default(),
-            VersionId(1),
-        );
-        store.put(node.clone(), cache);
-
-        // Different value hash -> no early cutoff
-        let different_hash = ContentHash::of_str("different");
-        let result = check_early_cutoff(&store, &id, different_hash);
-        assert!(!result, "should return false when hash differs");
-    }
-
-    #[test]
-    fn check_early_cutoff_returns_false_for_missing_entry() {
-        let store = CacheStore::new();
-        let id = ValueCellId::new("A", "nonexistent");
-        let hash = ContentHash::of_str("any");
-
-        let result = check_early_cutoff(&store, &id, hash);
-        assert!(!result, "should return false when entry doesn't exist");
-    }
-
     // --- Integration tests ---
 
     #[test]
@@ -3058,7 +2760,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
         let result = engine.eval_cached(&module, VersionId(1));
 
         // All values computed (no cache hits on first run)
@@ -3107,7 +2809,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First call: populates cache
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3168,7 +2870,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: populate cache
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3248,7 +2950,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         assert_eq!(
             engine.cache_stats().realization_entries,
@@ -3343,7 +3045,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: all computed
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3432,7 +3134,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: all computed. a=5, x=1, y=5+1=6
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3524,7 +3226,7 @@ mod tests {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         // First eval: a=5, b=100, x=1, y=5+100+1=106
         let result1 = engine.eval_cached(&module, VersionId(1));
@@ -3991,21 +3693,58 @@ mod tests {
         );
     }
 
-    // --- derive_output_freshness tests (task #2328, step-1) ---
+    // --- derive_output_freshness_with_cause tests (task #2328, step-1) ---
+
+    /// Freshness that `CacheStore::derive_output_freshness_for_node_with_cause`
+    /// derives for an output let-cell whose cached trace reads one input cell
+    /// per supplied freshness.
+    fn freshness_derived_from_inputs(
+        still_refining: bool,
+        input_freshnesses: impl IntoIterator<Item = Freshness>,
+        generation: u64,
+    ) -> Freshness {
+        let mut store = CacheStore::new();
+        let mut out_trace = DependencyTrace::default();
+        for (i, freshness) in input_freshnesses.into_iter().enumerate() {
+            let input_id = ValueCellId::new("T", format!("in{i}"));
+            store.put(
+                NodeId::Value(input_id.clone()),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(i as i64), DeterminacyState::Determined),
+                    freshness,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            out_trace.reads.push(input_id);
+        }
+        let out = NodeId::Value(ValueCellId::new("T", "out"));
+        store.put(
+            out.clone(),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                out_trace,
+                VersionId(1),
+            ),
+        );
+        store
+            .derive_output_freshness_for_node_with_cause(&out, still_refining, generation)
+            .0
+    }
 
     /// Arch §7.2 (lines 730-749) truth table:
     ///   still_refining=true  → Intermediate{generation} always
-    ///   still_refining=false, any input != Final → Intermediate{generation}
+    ///   still_refining=false, any input Intermediate → Intermediate{generation}
     ///   still_refining=false, all inputs == Final → Final
     #[test]
     fn derive_output_freshness_implements_arch_7_2_truth_table() {
-        use reify_ir::Freshness;
         let g = 7u64;
 
         // Row 1: still_refining=true, all inputs Final → Intermediate
         let inputs_all_final = [Freshness::Final, Freshness::Final];
         assert_eq!(
-            derive_output_freshness(true, inputs_all_final.iter().cloned(), g),
+            freshness_derived_from_inputs(true, inputs_all_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=true, all-Final inputs → Intermediate"
         );
@@ -4013,35 +3752,35 @@ mod tests {
         // Row 2: still_refining=true, some input non-Final → Intermediate
         let inputs_with_non_final = [Freshness::Final, Freshness::Intermediate { generation: 3 }];
         assert_eq!(
-            derive_output_freshness(true, inputs_with_non_final.iter().cloned(), g),
+            freshness_derived_from_inputs(true, inputs_with_non_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=true, non-Final inputs → Intermediate"
         );
 
         // Row 3: still_refining=false, all inputs Final → Final
         assert_eq!(
-            derive_output_freshness(false, inputs_all_final.iter().cloned(), g),
+            freshness_derived_from_inputs(false, inputs_all_final.iter().cloned(), g),
             Freshness::Final,
             "still_refining=false, all-Final inputs → Final"
         );
 
         // Row 4: still_refining=false, any input non-Final → Intermediate
         assert_eq!(
-            derive_output_freshness(false, inputs_with_non_final.iter().cloned(), g),
+            freshness_derived_from_inputs(false, inputs_with_non_final.iter().cloned(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=false, non-Final inputs → Intermediate"
         );
 
         // Edge case: no inputs, still_refining=false → Final
         assert_eq!(
-            derive_output_freshness(false, std::iter::empty::<Freshness>(), g),
+            freshness_derived_from_inputs(false, std::iter::empty::<Freshness>(), g),
             Freshness::Final,
             "still_refining=false, empty inputs → Final"
         );
 
         // Edge case: no inputs, still_refining=true → Intermediate
         assert_eq!(
-            derive_output_freshness(true, std::iter::empty::<Freshness>(), g),
+            freshness_derived_from_inputs(true, std::iter::empty::<Freshness>(), g),
             Freshness::Intermediate { generation: g },
             "still_refining=true, empty inputs → Intermediate"
         );
@@ -4110,7 +3849,7 @@ mod tests {
     // --- derive_output_freshness_for_node tests (task #2328, step-5) ---
 
     /// Verifies that derive_output_freshness_for_node walks the cached dependency_trace.reads
-    /// for a let-cell and delegates to derive_output_freshness correctly.
+    /// for a let-cell and delegates to derive_output_freshness_with_cause correctly.
     #[test]
     fn derive_output_freshness_for_node_walks_cached_dependency_trace() {
         use reify_core::VersionId;
@@ -4178,7 +3917,7 @@ mod tests {
         );
     }
 
-    // --- derive_output_freshness §9.2 carve-out (task #2330 step-5) ---
+    // --- derive_output_freshness_with_cause §9.2 carve-out (task #2330 step-5) ---
 
     /// Pins the §9.2 carve-out (rewritten from the §7.2 truth-table coverage of task
     /// #2328): Failed and Pending inputs now produce a Pending output rather than
@@ -4193,24 +3932,18 @@ mod tests {
 
         // Intermediate input → Intermediate output (§7.2 unchanged for this row).
         assert_eq!(
-            derive_output_freshness(
-                false,
-                [Freshness::Intermediate { generation: 0 }].into_iter(),
-                g
-            ),
+            freshness_derived_from_inputs(false, [Freshness::Intermediate { generation: 0 }], g),
             Freshness::Intermediate { generation: g },
             "Intermediate input must yield Intermediate output"
         );
 
         // Pending input → Pending output (§7.2 line 748 + §9.2 line 890 carve-out).
-        // Chain forwarding is at the `_with_cause` layer; the pure helper drops the chain.
         assert_eq!(
-            derive_output_freshness(
+            freshness_derived_from_inputs(
                 false,
                 [Freshness::Pending {
                     last_substantive: ResultRef::none()
-                }]
-                .into_iter(),
+                }],
                 g
             ),
             Freshness::Pending {
@@ -4221,12 +3954,11 @@ mod tests {
 
         // Failed input → Pending output (§9.2 line 890 carve-out).
         assert_eq!(
-            derive_output_freshness(
+            freshness_derived_from_inputs(
                 false,
                 [Freshness::Failed {
                     error: ErrorRef::new("type mismatch")
-                }]
-                .into_iter(),
+                }],
                 g
             ),
             Freshness::Pending {

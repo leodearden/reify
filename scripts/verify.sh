@@ -364,6 +364,22 @@
 #                                  observation channel must never gate the
 #                                  integrity gate it observes.
 #
+# Verify instrumentation ledger (task 7424). Schema, activation rules and
+# consumer rules: docs/notes/verify-instrumentation-ledger.md.
+#   REIFY_VERIFY_LEDGER_DIR      — where a top-level EXECUTED run appends its
+#                                  one JSON record, to verify-runs.jsonl
+#                                  (default: <main checkout>/data/verify-logs,
+#                                  resolved like REIFY_BACKGROUND_SWEEP_LEDGER;
+#                                  the default refuses a run beneath a
+#                                  tests/infra suite or run_all.sh).
+#   REIFY_VERIFY_LEDGER_LANE_DIR — the lane whose seed stamp the record reads
+#                                  (default: this checkout).
+#   REIFY_VERIFY_RUN_ID          — exported by a recording run to its whole
+#                                  process tree; a run that INHERITS it is
+#                                  nested and records nothing.
+#   REIFY_RUN_ALL_TIMING_OUT     — exported around each plan step; run_all.sh
+#                                  consumes it and writes its pool timing there.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -374,6 +390,7 @@
 
 set -euo pipefail
 
+_VL_STARTED_AT="${EPOCHREALTIME/,/.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -876,6 +893,7 @@ _die_nextest_config() {
     echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
     exit "$1"
 }
+_VERIFY_ROLE_RAW="${DF_VERIFY_ROLE-}"
 export DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"  # exported: gui/vitest.config.ts reads it from the child env (task 7630)
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
@@ -1584,6 +1602,8 @@ is_occt_crate() {
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
 #     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     curvature_rad_literal.ri (read via std::fs::read_to_string by
+#     curvature_dimension_tests.rs, task 6179),
 #     jacobian_column_members.ri (read via std::fs::read_to_string by
 #     jacobian_column_member_access.rs's fixture_source(), task 6102),
 #     joint_constrained_dof_compliance.ri (same idiom, by
@@ -1592,6 +1612,10 @@ is_occt_crate() {
 #     (both read via std::fs::read_to_string by materials_fea_tests.rs, task
 #     6877 — the mixin one pins the Damped-mixin SUBSTRATE with probe-local
 #     trait names, the preset one pins the LANDED stdlib surface)
+#     occt_internals_centroid_translated_profile.ri,
+#     occt_internals_fillet_extruded_wire.ri,
+#     occt_internals_fillet_translated_disjoint_union.ri (built via
+#     Engine::build by occt_repr_policy_fixtures_e2e.rs, task 8669)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1615,10 +1639,9 @@ is_occt_crate() {
 #     shift_invert_modal_e2e.rs's shift_changes_the_mode_set_and_warns_once —
 #     the two files differ ONLY in their `sigma:` literal and header, so the
 #     mode-set difference between them IS the signal, task 7261)
-#   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
+#   named by a WAIVER TABLE in a compiled test (task 5305): the six fixtures
 #     keyed by (file, param) in harness_ctor_conformance_survey/disposition.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
-#     curvature_rad_literal.ri,
 #     dcr_load_ctor_dimension_silent.ri,
 #     dcr_material_dimension_silent.ri,
 #     dcr_reader_ctor_dimension_silent.ri,
@@ -1662,7 +1685,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -2293,7 +2316,7 @@ select_harness_kloc_guard
 # no-op against a stamped target/ keeps that state reachable there. Whether
 # the merge tier should also require the ratchet is a decision about
 # REIFY_AUDIT_NO_COLD_BUILD=1 on that pool leaf — a budget question about its
-# 30m wall — which this selector cannot answer and does not claim to; it is
+# outer envelope — which this selector cannot answer and does not claim to; it is
 # filed separately.
 # ---------------------------------------------------------------------------
 select_cheap_ptodo_gate() {
@@ -2481,25 +2504,64 @@ select_pdoccover_ratchet() {
 select_pdoccover_ratchet
 
 # ---------------------------------------------------------------------------
-# Cheap cited-test-path gate on the hook-gated --scope staged path (task #7785).
+# select_staged_whole_tree_gate <leaf> — under --scope staged, add <leaf> to
+# SELECTED_INFRA_GLOBS iff anything at all is staged. The one home of the
+# trigger shared by the landing-path-parity gates below; the ruling that every
+# in-charter whole-tree gate gets one is landing-contract §3 R3
+# (docs/legibility/landing-contract.md).
+#
+# A whole-tree gate otherwise ran ONLY in the merge-tier run_all.sh pool.
+# hooks/pre-commit -> hooks/project-checks is the sole --scope staged caller
+# and invokes it with no DF_VERIFY_ROLE set, so the role defaults to `task` and
+# that pool never fires; a docs-only stage also classifies inert (RUN_RUST=0),
+# which is the pool block's other precondition. That is a PATH ASYMMETRY, not
+# just a latency gap: a writer whose only landing path is a hook-gated
+# `git commit` on `main` can mint content that passes its OWN gate and then
+# fails the whole-tree gate for everyone else.
+#
+# Hence NO per-file loop: "any staged change at all, in any tracked file" IS
+# `[ -n "$CHANGED_FILES_RAW" ]`, and writing it as a loop would only offer
+# someone a `case` to put inside. Why no filter over the staged set is sound
+# for a given leaf, and what that leaf costs, is that leaf's own header.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_cheap_ptodo_gate, so
+# every leaf inherits the four properties that selector's header enumerates BY
+# MECHANISM rather than by restatement: (a) merge/background suppression — the
+# selective emission block is suppressed under those roles, where run_all.sh
+# runs the file wholesale, so it still runs exactly once (INV-5); (b) the
+# REIFY_INFRA_SUITE_ACTIVE re-entrancy guard; (c) fail-fast ordering ahead of
+# the cargo poles; (d) add_tool's LD_LIBRARY_PATH scrub.
+#
+# RESIDUAL, shared with select_cheap_ptodo_gate and NOT introduced here: a
+# decide_scope C5 fail-wide leaves SCOPE=staged with CHANGED_FILES_RAW="" and
+# RUN_RUST=1, so this selector returns without adding while the role is still
+# `task` and no run_all.sh pool runs. Such a commit gets the full cargo
+# workspace but not these gates. Closing it needs a fail-wide signal
+# decide_scope does not expose today; the merge tier remains the wholesale
+# authority. Also shared: the leaves scan the working tree, not the index
+# (follow-up ticket tkt_0RW1FVPYNRMX4G7R4ZTB0AVZ0Z).
+# ---------------------------------------------------------------------------
+select_staged_whole_tree_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    add_selected_infra_glob "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Cheap cited-test-path gate on the hook-gated --scope staged path (task #7831).
 #
 # tests/infra/test_cited_test_paths_resolve.sh — prose that names a
 # `crates/<crate>/tests/**/*.rs` file must name a path that still resolves —
-# ran ONLY in the merge-tier run_all.sh pool. hooks/pre-commit ->
-# hooks/project-checks invokes `--scope staged` with no DF_VERIFY_ROLE set, so
-# the role defaults to `task` and that pool never fires; a docs-only stage also
-# classifies inert (RUN_RUST=0), which is the pool block's other precondition.
-# That is a PATH ASYMMETRY, not just a latency gap: a writer whose only landing
-# path is a hook-gated `git commit` on `main` can mint content that passes its
-# OWN gate and then fails the whole-tree gate for everyone else. Commit
-# f7b607527e (an unattended nightly trickle) landed a stale citation at
-# 03:20:36 having passed its own hook, and every merge for the next 8 hours
-# failed on it. This selector makes that commit fail at ITS OWN commit.
+# ran ONLY in the merge-tier run_all.sh pool, so it carried the path asymmetry
+# that select_staged_whole_tree_gate (above) describes. Commit f7b607527e (an
+# unattended nightly trickle) landed a stale citation at 03:20:36 having passed
+# its own hook, and every merge for the next 8 hours failed on it. This
+# selector makes that commit fail at ITS OWN commit.
 #
 # NO EXTENSION FILTER. That is the deliberate difference from
-# select_cheap_ptodo_gate directly above, which DOES filter, and it is the one
-# thing a later reader must not "helpfully" add. Three independent reasons,
-# any one of them sufficient:
+# select_cheap_ptodo_gate (earlier in this file), which DOES filter, and it is
+# the one thing a later reader must not "helpfully" add. Three independent
+# reasons, any one of them sufficient:
 #
 #   (1) The scan is extension-agnostic BY CONSTRUCTION, and says so:
 #       cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited
@@ -2531,32 +2593,27 @@ select_pdoccover_ratchet
 # three runs. No cargo, no npm. On a path taken only by a hook-gated commit on
 # `main`, against an 8-hour fleet-wide merge outage, a cleverer filter would be
 # trading a coverage hole for a latency saving that does not matter.
-#
-# Hence NO per-file loop: "any staged change at all, in any tracked file" IS
-# `[ -n "$CHANGED_FILES_RAW" ]`, and writing it as a loop would only offer
-# someone a `case` to put inside.
-#
-# Appends into the SAME SELECTED_INFRA_GLOBS as select_cheap_ptodo_gate, so it
-# inherits the four properties that selector's header enumerates BY MECHANISM
-# rather than by restatement: (a) merge/background suppression — the selective
-# emission block is suppressed under those roles, where run_all.sh runs this
-# file wholesale, so it still runs exactly once (INV-5); (b) the
-# REIFY_INFRA_SUITE_ACTIVE re-entrancy guard; (c) fail-fast ordering ahead of
-# the cargo poles; (d) add_tool's LD_LIBRARY_PATH scrub.
-#
-# RESIDUAL, shared with select_cheap_ptodo_gate and NOT introduced here: a
-# decide_scope C5 fail-wide leaves SCOPE=staged with CHANGED_FILES_RAW="" and
-# RUN_RUST=1, so this selector returns without adding while the role is still
-# `task` and no run_all.sh pool runs. Such a commit gets the full cargo
-# workspace but not this gate. Closing it needs a fail-wide signal decide_scope
-# does not expose today; the merge tier remains the wholesale authority.
 # ---------------------------------------------------------------------------
 select_cited_test_path_gate() {
-    [ "$SCOPE" = "staged" ] || return 0
-    [ -n "$CHANGED_FILES_RAW" ] || return 0
-    add_selected_infra_glob "tests/infra/test_cited_test_paths_resolve.sh"
+    select_staged_whole_tree_gate tests/infra/test_cited_test_paths_resolve.sh
 }
 select_cited_test_path_gate
+
+# ---------------------------------------------------------------------------
+# Canonical-config-path gate on the hook-gated --scope staged path (task #7797):
+# landing-contract §3 R3 (docs/legibility/landing-contract.md) for
+# tests/infra/test_orchestrator_config_canonical_path.sh.
+#
+# Fires on ANY staged change. The verdict depends on the whole tracked tree and
+# on whether dark-factory-orchestrator.yaml exists and parses, so a staged
+# delete or a YAML-breaking edit of that file carries no legacy-name text: no
+# predicate over the staged set is sound. The leaf is hermetic bash, no cargo
+# and no npm, so always-on is affordable.
+# ---------------------------------------------------------------------------
+select_canonical_config_path_gate() {
+    select_staged_whole_tree_gate tests/infra/test_orchestrator_config_canonical_path.sh
+}
+select_canonical_config_path_gate
 
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
@@ -3142,6 +3199,18 @@ _NEXTEST_CONFIG_FILE=""
 # docs/notes/main-tip-sweep-observation.md, not silently replaced by this.
 # ---------------------------------------------------------------------------
 
+# The MAIN checkout's path, never this worktree's. Prints nothing and returns
+# non-zero when unresolvable.
+_main_checkout_dir() {
+    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
+    local _main=""
+    _main="$(reify_main_checkout 2>/dev/null)" || return 1
+    [ -n "$_main" ] || return 1
+    printf '%s' "$_main"
+}
+
 # Where the record goes. An explicit knob wins; otherwise the MAIN checkout,
 # never this worktree — see the knob's header note for why that distinction is
 # the whole design. Prints nothing and returns non-zero when unresolvable.
@@ -3150,12 +3219,8 @@ _sweep_ledger_path() {
         printf '%s' "$REIFY_BACKGROUND_SWEEP_LEDGER"
         return 0
     fi
-    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
-    # shellcheck source=/dev/null
-    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
     local _main=""
-    _main="$(reify_main_checkout 2>/dev/null)" || return 1
-    [ -n "$_main" ] || return 1
+    _main="$(_main_checkout_dir)" || return 1
     printf '%s' "$_main/data/orchestrator/verify-background-sweeps.jsonl"
 }
 
@@ -3197,11 +3262,119 @@ _record_background_verdict() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# Verify instrumentation ledger (task 7424). scripts/verify-ledger.py owns the
+# phase taxonomy, the observations and the record; this group only writes
+# numeric step events and calls it. Every _vl_* function is a no-op unless
+# _vl_init activated the run, and none can change the plan, stdout or the exit
+# code; a failed finalize reports on stderr. Schema and activation rules:
+# docs/notes/verify-instrumentation-ledger.md.
+# ---------------------------------------------------------------------------
+_VL_ACTIVE=0
+_VL_DIR=""
+_VL_LEDGER_DIR=""
+_VL_EXIT_RC=""
+declare -A _VL_SNAPSHOT=()
+
+# _vl_tool: stderr is the caller's. _vl_py: stderr goes to the run's journal.
+_vl_tool() {
+    LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}" python3 "$SCRIPT_DIR/verify-ledger.py" "$@" || true
+}
+
+_vl_py() {
+    _vl_tool "$@" 2>>"$_VL_DIR/errors.log" || true
+}
+
+# The production ledger refuses a run beneath reify's infra harness, however
+# the suite was launched. An explicit REIFY_VERIFY_LEDGER_DIR is a deliberate
+# private ledger and still records.
+_vl_ledger_dir() {
+    if [ -n "${REIFY_VERIFY_LEDGER_DIR:-}" ]; then
+        printf '%s' "$REIFY_VERIFY_LEDGER_DIR"
+        return 0
+    fi
+    local _harness="" _main=""
+    _harness="$(_vl_tool harness-ancestor --self-pid "$$" 2>/dev/null)"
+    [ -z "$_harness" ] || return 1
+    _main="$(_main_checkout_dir)" || return 1
+    printf '%s' "$_main/data/verify-logs"
+}
+
+_vl_append_event() {
+    { printf '%s\n' "$1" >>"$_VL_DIR/journal.jsonl"; } 2>/dev/null || true
+}
+
+_vl_init() {
+    [ "${#PLAN[@]}" -gt 0 ] || return 0
+    [ "${PRINT_PLAN:-0}" -eq 0 ] || return 0
+    [ -z "${REIFY_VERIFY_RUN_ID:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    [ -f "$SCRIPT_DIR/verify-ledger.py" ] || return 0
+    _VL_LEDGER_DIR="$(_vl_ledger_dir)" || return 0
+    [ -n "$_VL_LEDGER_DIR" ] || return 0
+    _VL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-verify-journal.XXXXXX" 2>/dev/null)" || return 0
+    { printf '%s\0' "${PLAN[@]}" >"$_VL_DIR/plan.nul"; } 2>/dev/null || { rm -rf "$_VL_DIR"; return 0; }
+    export REIFY_VERIFY_RUN_ID="${EPOCHSECONDS}-$$-${RANDOM}${RANDOM}"
+    local _idx
+    while IFS= read -r _idx; do
+        [[ "$_idx" =~ ^[0-9]+$ ]] && _VL_SNAPSHOT[$_idx]=1
+    done < <(_vl_py run-begin --journal "$_VL_DIR" --run-id "$REIFY_VERIFY_RUN_ID" \
+        --role "$DF_VERIFY_ROLE" --role-raw "$_VERIFY_ROLE_RAW" --action "$ACTION" \
+        --profile "$PROFILE" --scope "$SCOPE" --repo-root "$REPO_ROOT" \
+        --lane-dir "${REIFY_VERIFY_LEDGER_LANE_DIR:-$REPO_ROOT}" \
+        --release-delta-skip "$_RELEASE_DELTA_SKIP" --started-at "$_VL_STARTED_AT")
+    _VL_ACTIVE=1
+}
+
+_vl_step_begin() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    local _i="$1"
+    if [ -n "${_VL_SNAPSHOT[$_i]:-}" ]; then
+        _vl_py boundary --journal "$_VL_DIR" --index "$_i" --edge before \
+            --at "${EPOCHREALTIME/,/.}" --self-pid "$$" >/dev/null
+    fi
+    _vl_append_event "{\"ev\":\"step_begin\",\"index\":$_i,\"at\":${EPOCHREALTIME/,/.}}"
+    export REIFY_RUN_ALL_TIMING_OUT="$_VL_DIR/step-$_i.run-all.jsonl"
+    return 0
+}
+
+_vl_step_end() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    local _i="$1" _rc="$2"
+    _vl_append_event "{\"ev\":\"step_end\",\"index\":$_i,\"at\":${EPOCHREALTIME/,/.},\"rc\":$_rc}"
+    unset REIFY_RUN_ALL_TIMING_OUT
+    _VL_EXIT_RC="$_rc"
+    if [ -n "${_VL_SNAPSHOT[$_i]:-}" ]; then
+        _vl_py boundary --journal "$_VL_DIR" --index "$_i" --edge after \
+            --at "${EPOCHREALTIME/,/.}" --self-pid "$$" --junit "$_CONFIRM_JUNIT_PATH" >/dev/null
+    fi
+    return 0
+}
+
+# _vl_finalize <exit-code> [INT|TERM|HUP]. The last step's rc wins over the
+# trap's $?, which the Node-lane EXIT trap resets before calling _verify_cleanup.
+_vl_finalize() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    _VL_ACTIVE=0
+    local _rc="${_VL_EXIT_RC:-$1}" _signal="${2:-}"
+    case "$_signal" in
+        INT) _rc=130 ;;
+        TERM) _rc=143 ;;
+        HUP) _rc=129 ;;
+    esac
+    # stderr stays verify.sh's: the journal, errors.log included, is deleted next.
+    _vl_tool finalize --journal "$_VL_DIR" --ledger-dir "$_VL_LEDGER_DIR" --exit-code "$_rc" \
+        --ended-at "${EPOCHREALTIME/,/.}" --signal "$_signal" >/dev/null
+    rm -rf "$_VL_DIR" 2>/dev/null || true
+    return 0
+}
+
 _verify_cleanup() {
     # FIRST statement: $? is still the status the shell is exiting with. Any
     # command before this one would overwrite it.
     local _exit_rc=$?
     _record_background_verdict "$_exit_rc" || true
+    _vl_finalize "$_exit_rc" "${1:-}" || true
     reaper_teardown || true
     if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
         rm -f "$_NEXTEST_CONFIG_FILE"
@@ -3216,9 +3389,9 @@ _verify_cleanup() {
 # ONE EXIT trap, extended in place: bash EXIT traps do NOT stack, so a second
 # `trap … EXIT` here would silently displace the reaper/config cleanup above.
 trap '_verify_cleanup' EXIT
-trap '_verify_cleanup; exit 130' INT
-trap '_verify_cleanup; exit 143' TERM
-trap '_verify_cleanup; exit 129' HUP
+trap '_verify_cleanup INT; exit 130' INT
+trap '_verify_cleanup TERM; exit 143' TERM
+trap '_verify_cleanup HUP; exit 129' HUP
 
 # emit_nextest_pass <selector> <rel> <outer_timeout>
 # Emit a single nextest (or cargo-test fallback) pass.
@@ -3737,7 +3910,7 @@ add_test_passes() {
     # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
     # can emit an `-E` filterset — and an `-E` here would narrow away the very
     # gui-gated tests this pass exists to run (asserted by (b8) in
-    # tests/infra/test_compute_trampoline_registration_wired.sh), so they would all
+    # tests/infra/test_verify_gui_feature_test_pass.sh), so they would all
     # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
     # that single construction site.  The two arms below therefore mirror its
     # nextest/cargo-test if/else by hand so this pass is shape-identical on a
@@ -4130,7 +4303,7 @@ build_plan() {
     # --include-infra, while EVERY per-task lane passes --include-infra — so gating
     # run_all.sh on INCLUDE_INFRA (as before) ran the full 103-test suite on every
     # task lane and NEVER at merge, starving the shared 16-slot pool (M-way
-    # contention -> 30m timeout -> exit 124 -> BLOCKED). Gating on role instead
+    # contention -> outer-envelope timeout -> exit 124 -> BLOCKED). Gating on role instead
     # makes DF_VERIFY_ROLE=merge (stamped by both merge seams: hooks/pre-merge-commit
     # and the dark-factory merge-verify command) the single source of truth: the
     # full pool runs exactly once, at merge; per-task lanes get the cheap selective
@@ -4172,7 +4345,7 @@ build_plan() {
     # Section B, which proves the merge-role semaphore bypass — would re-satisfy
     # this role==merge gate and re-emit run_all.sh, recursing unboundedly
     # (run_all -> semaphore-e2e -> merge-role verify -> run_all -> ...) until the
-    # 30m wall SIGKILLs it. The gate keys on the INHERITED env var
+    # outer-envelope wall SIGKILLs it. The gate keys on the INHERITED env var
     # DF_VERIFY_ROLE, so the break is also an inherited env var. It is set
     # NARROWLY, at the single recursion source (that Section-B spawn), NOT
     # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
@@ -4183,7 +4356,7 @@ build_plan() {
     # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
     # nested background spawn, mirroring Section B's merge spawn).
     if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
-        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
+        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh outer envelope.
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
@@ -4282,11 +4455,8 @@ build_plan() {
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-        # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
-        # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
-        # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
-        # tipping a suite already near its budget over the wall (exit 124). 30m
-        # restores headroom for the full --scope all / merge gate.
+        # Envelope sized for the full infra suite; per-member timeout tracked by
+        # #9441 (stopgap history: git log -L on this line).
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
@@ -4344,7 +4514,7 @@ build_plan() {
         # trip the ledger drift guard and drag in a per-var hostile-ambient
         # sub-case. Both known bites of the leak (esc-4581-87, task 5321) were
         # infra tests reached through this line.
-        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
+        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 60m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
@@ -4389,10 +4559,16 @@ build_plan() {
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
         local _leaf_env
+        # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
+        # slot_acquire deadline or nested run_all.sh never writes into this
+        # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
+        # unset extends the scrub prefix's documented `env -u ...` argv, so one
+        # env invocation builds the member environment; it is per member
+        # command, so verify.sh's own processes keep the channel.
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi
@@ -4629,30 +4805,23 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
-# the whole loop is a deliberate choice, not a forced one: a per-line prefix
-# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
-# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
-# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
-# command (measured, bash 5.2.21) and would leak the OCCT path into every later
-# line. One export keeps both dispatch arms uniform; its cost is that
-# test_semaphore_acquire/release and reaper_teardown, which interleave with the
-# loop, also run on the OCCT path.
-export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
-
-for _cmd in "${PLAN[@]}"; do
+# _run_plan_step <cmd> — dispatch ONE plan entry and return its exit code.
+# Called only in an `||` context, so errexit is suspended inside it exactly as
+# it is for the `eval … ||` / `reaper_run_in_pgroup … ||` arms themselves.
+_run_plan_step() {
+    local _cmd="$1" _rc=0
     case "$_cmd" in
         '@@SEMAPHORE_ACQUIRE@@')
             test_semaphore_acquire || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): test-run semaphore acquire" >&2
-                exit "$_rc"
+                return "$_rc"
             }
-            continue
+            return 0
             ;;
         '@@SEMAPHORE_RELEASE@@')
             test_semaphore_release || true
-            continue
+            return 0
             ;;
     esac
     echo "verify.sh: + $_cmd" >&2
@@ -4664,7 +4833,7 @@ for _cmd in "${PLAN[@]}"; do
             eval "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-                exit "$_rc"
+                return "$_rc"
             }
             ;;
         *)
@@ -4674,9 +4843,33 @@ for _cmd in "${PLAN[@]}"; do
             reaper_run_in_pgroup "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-                exit "$_rc"
+                return "$_rc"
             }
             ;;
     esac
+    return 0
+}
+
+_vl_init
+
+# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
+# the whole loop is a deliberate choice, not a forced one: a per-line prefix
+# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
+# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
+# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
+# command (measured, bash 5.2.21) and would leak the OCCT path into every later
+# line. One export keeps both dispatch arms uniform; its cost is that
+# test_semaphore_acquire/release and reaper_teardown, which interleave with the
+# loop, also run on the OCCT path.
+export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
+
+_vl_i=0
+for _cmd in "${PLAN[@]}"; do
+    _vl_step_begin "$_vl_i"
+    _rc=0
+    _run_plan_step "$_cmd" || _rc=$?
+    _vl_step_end "$_vl_i" "$_rc"
+    [ "$_rc" -eq 0 ] || exit "$_rc"
+    _vl_i=$((_vl_i + 1))
 done
 echo "verify.sh: all checks passed (action=$ACTION profile=$PROFILE scope=$SCOPE)." >&2

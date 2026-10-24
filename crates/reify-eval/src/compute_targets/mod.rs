@@ -45,6 +45,12 @@ pub mod elastic_static;
 pub mod fdm_slice;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
+/// Task 6922: the FEA leaf input readers shared by the FEA trampolines.
+mod fea_inputs;
+/// Task 6922 (γ1): the one reader of a load magnitude off an FEA load struct.
+mod fea_loads;
+/// Task 6922 (γ1): the FEA value-shape error shared by the FEA trampolines.
+mod fea_value_shape;
 pub mod form_find;
 pub mod multi_case;
 pub mod shell_solve;
@@ -68,7 +74,9 @@ pub mod membrane_load;
 use std::sync::Arc;
 
 use reify_core::DimensionVector;
-use reify_ir::{FieldSourceKind, SampledField, Value};
+use reify_ir::{
+    FieldSourceKind, PersistentMap, SampledField, StructureInstanceData, StructureTypeId, Value,
+};
 
 /// Flatten per-node 3×3 tensors `[[f64;3];3]` into a stride-9 row-major
 /// `Vec<f64>`.
@@ -417,6 +425,47 @@ pub(crate) fn sampled_error_indicator_field(sf: SampledField) -> Value {
         },
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+// ── Rejected-input outcome ──────────────────────────────────────────────────
+
+/// The `Failed` outcome of a trampoline whose input gate rejected an argument:
+/// exactly that one `error`, no structured detail.
+pub(crate) fn rejected_input_outcome(error: reify_core::Diagnostic) -> crate::ComputeOutcome {
+    crate::ComputeOutcome::Failed {
+        diagnostics: vec![error],
+        structured_detail: vec![],
+    }
+}
+
+// ── Registry-free StructureInstance helpers ─────────────────────────────────
+
+/// Registry-free placeholder type id for the StructureInstances the compute
+/// trampolines mint Rust-side (mirrors `dynamics_ops::REGISTRY_FREE_TYPE_ID`).
+/// They are never re-resolved against the stdlib `StructureRegistry`, so the
+/// opaque id is unused.
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+/// A registry-free `Value::StructureInstance` of `type_name` carrying `fields`.
+fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+    let fields: PersistentMap<String, Value> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: type_name.to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// The instance data of a `Value::StructureInstance`; `None` for any other value.
+fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
+    match v {
+        Value::StructureInstance(d) => Some(d),
+        _ => None,
     }
 }
 
@@ -823,7 +872,7 @@ mod tests {
     /// so `demands_volume_mesh("solver::elastic_static")` is `false` (step-12 wires it).
     #[test]
     fn register_compute_fns_marks_elastic_static_volume_mesh_demand() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         super::register_compute_fns(&mut engine);
 
         assert!(
@@ -865,7 +914,7 @@ mod tests {
     /// `demands_volume_mesh("solver::multi_case")` is `false` (step-6a wires it).
     #[test]
     fn register_compute_fns_marks_multi_case_volume_mesh_demand() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         super::register_compute_fns(&mut engine);
 
         assert!(
@@ -922,7 +971,7 @@ mod tests {
     /// exist yet — this `mod tests` fails to compile until step-2 defines them.
     #[test]
     fn register_production_compute_fns_enabled_invokes_f() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_production_compute_fns(super::MorphRegistration::Enabled(
             install_test_producer,
         ));
@@ -947,7 +996,7 @@ mod tests {
     /// exist yet.
     #[test]
     fn register_production_compute_fns_unavailable_does_not_install_morph() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
             reason: "test-runner: reify-mesh-morph is dev-dep-only",
         });
@@ -977,7 +1026,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate target")]
     fn register_production_compute_fns_twice_panics() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
             reason: "test",
         });

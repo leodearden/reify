@@ -1,55 +1,23 @@
 /**
- * Panel layout persistence via localStorage.
- * Pure functions for loading and saving panel dimensions.
+ * Panel layout persistence via localStorage: raw read/write of the saved
+ * layout plus pure clamp helpers. The layout's schema and validation live with
+ * LAYOUT_DIMENSIONS in stores/layoutStore.ts.
  */
 
 export const STORAGE_KEY = 'reify-panel-layout';
 
-export type PanelLayout = {
-  editorWidth: number;
-  sideWidth: number;
-  designTreeHeight: number;
-  propertyHeight: number;
-  constraintHeight: number;
-  problemsHeight: number;
-  problemsCollapsed: boolean;
-};
-
-/** Load persisted panel layout from localStorage. Returns null if missing, invalid, or incomplete.
- *  Missing sub-panel heights fall back to `undefined` so the caller can apply defaults —
- *  this keeps older saved layouts forward-compatible when new panels become resizable. */
-export function loadPanelLayout(): Partial<PanelLayout> | null {
+/** The JSON value stored under STORAGE_KEY, or null when absent or unparseable. Not validated. */
+export function readStoredPanelLayout(): unknown {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return null;
-
-    const parsed = JSON.parse(raw);
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      typeof parsed.editorWidth !== 'number' ||
-      typeof parsed.sideWidth !== 'number'
-    ) {
-      return null;
-    }
-
-    const out: Partial<PanelLayout> = {
-      editorWidth: parsed.editorWidth,
-      sideWidth: parsed.sideWidth,
-    };
-    if (typeof parsed.designTreeHeight === 'number') out.designTreeHeight = parsed.designTreeHeight;
-    if (typeof parsed.propertyHeight === 'number') out.propertyHeight = parsed.propertyHeight;
-    if (typeof parsed.constraintHeight === 'number') out.constraintHeight = parsed.constraintHeight;
-    if (typeof parsed.problemsHeight === 'number') out.problemsHeight = parsed.problemsHeight;
-    if (typeof parsed.problemsCollapsed === 'boolean') out.problemsCollapsed = parsed.problemsCollapsed;
-    return out;
+    return raw === null ? null : JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
 /** Save panel layout to localStorage. */
-export function savePanelLayout(layout: PanelLayout): void {
+export function savePanelLayout(layout: Readonly<Record<string, number | boolean>>): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
   } catch {

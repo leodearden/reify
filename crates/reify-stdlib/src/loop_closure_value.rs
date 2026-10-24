@@ -180,6 +180,12 @@ impl JointKind {
     }
 }
 
+/// Total storage width of a flat buffer holding one `JointValue` per shape:
+/// the loop-closure Newton-state and warm-start width.
+pub fn flat_width(shapes: &[JointKind]) -> usize {
+    shapes.iter().map(JointKind::flat_len).sum()
+}
+
 /// Walk `shapes` in order and consume `kind.flat_len()` f64s from `dofs`
 /// per shape via [`JointValue::from_slice`].  Returns
 /// `Err(FlattenError::BufferTooShort)` on shortfall and
@@ -514,5 +520,24 @@ mod tests {
                 leftover: 2,
             }
         ));
+    }
+
+    #[test]
+    fn flat_width_sums_per_kind_storage_widths() {
+        assert_eq!(flat_width(&[]), 0);
+        assert_eq!(flat_width(&[JointKind::Prismatic]), 1);
+        // 3 + 4 + 2 + 1: the Sphere slot counts its 4 stored quaternion
+        // components, not its 3 manifold DOF.
+        let shapes = [
+            JointKind::Planar,
+            JointKind::Spherical,
+            JointKind::Cylindrical,
+            JointKind::Revolute,
+        ];
+        assert_eq!(flat_width(&shapes), 10);
+        assert!(
+            unflatten_dofs(&vec![0.0; flat_width(&shapes)], &shapes).is_ok(),
+            "a buffer of flat_width(shapes) must unflatten cleanly against shapes"
+        );
     }
 }

@@ -39,7 +39,7 @@ extern crate reify_kernel_occt as _;
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Serializes every test in this binary that touches the **process-global**
@@ -639,6 +639,7 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
     // Kernel-free engine: `None` for the geometry kernel. The fixture realizes
     // no geometry, so nothing in this test can depend on OCCT or gmsh.
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
         None,
     );
@@ -753,6 +754,7 @@ fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
     ));
 
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
         None,
     );

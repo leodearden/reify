@@ -4,9 +4,10 @@
 //! session, per real kernel. This is the regression guard that "would have
 //! caught #4262" — see `docs/prds/kernel-seam-contracts.md` §5/§12.
 //!
-//! Scope: all four arms of the §12 ζ conformance matrix — OCCT
+//! Scope: the four arms of the §12 ζ conformance matrix — OCCT
 //! `extract_faces`, OCCT `extract_edges`, Manifold `extract_faces`, and
-//! Manifold `extract_edges`. The Manifold `extract_edges` arm was
+//! Manifold `extract_edges` — plus two OCCT arms outside that matrix,
+//! described below. The Manifold `extract_edges` arm was
 //! DELIBERATELY OMITTED when this file was first landed (task ζ):
 //! `ManifoldKernel::extract_edges`, in
 //! `crates/reify-kernel-manifold/src/kernel.rs`, minted a fresh id every
@@ -15,14 +16,18 @@
 //! assertion would have been permanently red and un-greenable within that
 //! task's scope. The downstream leaf η landed the mirrored
 //! `extracted_edges` memoization cache and added this arm to complete the
-//! matrix (§5/§8/§12).
+//! matrix (§5/§8/§12). The two OCCT arms outside the matrix cover the
+//! sub-shape-kind axis behind `OcctKernel`'s one extraction body:
+//! `extract_vertices` stability, and edges/faces/vertices interleaved on one
+//! parent (each stable, the kinds disjoint, every id carrying its own kind's
+//! repr and the parent as owner).
 //!
-//! All four arms here are GREEN on current main: the memoization they pin
-//! already landed (OCCT `extracted_faces`/`extracted_edges` caches, #318/
-//! #4262; Manifold `extracted_faces`/`extracted_edges` caches). Their value
-//! is red-on-revert — delete the relevant cache and a repeated `extract_*`
-//! call mints fresh ids, `first != second`, and the test fails: exactly the
-//! #4262 defect.
+//! Every arm here is GREEN on current main: the memoization they pin already
+//! landed (OCCT `extracted_faces`/`extracted_edges` caches, #318/#4262, and
+//! its `extracted_vertices` cache; Manifold `extracted_faces`/
+//! `extracted_edges` caches). Their value is red-on-revert — delete the
+//! relevant cache and a repeated `extract_*` call mints fresh ids,
+//! `first != second`, and the test fails: exactly the #4262 defect.
 //!
 //! Also out of scope: none of the arms below call `OcctKernel::with_warm_state`,
 //! so this file pins ONLY within-session stability, not the cache's
@@ -42,7 +47,9 @@
 
 mod common;
 
-use reify_ir::{GeometryHandleId, GeometryKernel, QueryError};
+use std::collections::HashSet;
+
+use reify_ir::{BRepKind, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
 use reify_kernel_manifold::ManifoldKernel;
 
 /// Assert the handle-stability contract (INV-GEO-2) this file's arms pin:
@@ -157,6 +164,75 @@ fn occt_extract_edges_returns_stable_ids() {
     );
 
     assert_stable_ids("occt extract_edges", box_id, &runs);
+}
+
+/// `extract_vertices` on a real OCCT BRep box SOLID handle returns identical
+/// ids, in identical order, across repeated calls within a session.
+#[test]
+fn occt_extract_vertices_returns_stable_ids() {
+    let (mut kernel, box_id) = common::occt_box_solid();
+
+    let runs = run_thrice("occt extract_vertices", || kernel.extract_vertices(box_id));
+
+    assert_eq!(
+        runs[0].len(),
+        8,
+        "a 10x20x30 mm box has exactly 8 unique vertices, got {}",
+        runs[0].len()
+    );
+
+    assert_stable_ids("occt extract_vertices", box_id, &runs);
+}
+
+/// Interleaving the three OCCT sub-shape kinds on ONE parent keeps each
+/// kind's ids stable, keeps the kinds' id sets disjoint, and stamps every id
+/// with its own kind's repr and the parent's provenance. Each arm above uses
+/// a fresh kernel and one kind, so a per-kind cache, repr or provenance
+/// mix-up between kinds would hide from them.
+#[test]
+fn occt_interleaved_extract_kinds_stay_stable_and_disjoint() {
+    let (mut kernel, box_id) = common::occt_box_solid();
+
+    let (mut edge_runs, mut face_runs, mut vertex_runs) = (Vec::new(), Vec::new(), Vec::new());
+    for round in 0..3 {
+        let call = |r: Result<Vec<GeometryHandleId>, QueryError>, kind: &str| {
+            r.unwrap_or_else(|e| panic!("round {round}: extract_{kind} should succeed: {e:?}"))
+        };
+        edge_runs.push(call(kernel.extract_edges(box_id), "edges"));
+        face_runs.push(call(kernel.extract_faces(box_id), "faces"));
+        vertex_runs.push(call(kernel.extract_vertices(box_id), "vertices"));
+    }
+
+    let kinds = [
+        ("edges", BRepKind::Edge, 12, &edge_runs),
+        ("faces", BRepKind::Face, 6, &face_runs),
+        ("vertices", BRepKind::Vertex, 8, &vertex_runs),
+    ];
+    for (kind, repr, count, runs) in kinds {
+        let label = format!("occt interleaved extract_{kind}");
+        assert_eq!(runs[0].len(), count, "[{label}] count");
+        assert_stable_ids(&label, box_id, runs);
+        for &id in &runs[0] {
+            assert_eq!(kernel.repr_of(id), Some(repr), "[{label}] repr of {id:?}");
+            match kernel.query(&GeometryQuery::OwnerBody(id)) {
+                Ok(Value::Int(owner)) => {
+                    assert_eq!(owner, box_id.0 as i64, "[{label}] OwnerBody of {id:?}")
+                }
+                other => panic!("[{label}] OwnerBody of {id:?}: expected Int, got {other:?}"),
+            }
+        }
+    }
+
+    let sets: Vec<(&str, HashSet<GeometryHandleId>)> = kinds
+        .iter()
+        .map(|(kind, _, _, runs)| (*kind, runs[0].iter().copied().collect()))
+        .collect();
+    for (i, (a, a_ids)) in sets.iter().enumerate() {
+        for (b, b_ids) in &sets[i + 1..] {
+            let shared: Vec<_> = a_ids.intersection(b_ids).collect();
+            assert!(shared.is_empty(), "{a} and {b} share ids {shared:?}");
+        }
+    }
 }
 
 /// `extract_faces` on a real Manifold handle — a genuine OCCT box mesh

@@ -9,12 +9,14 @@ pub mod blocking_work;
 pub mod bridge;
 pub mod completion;
 pub mod convert;
+pub mod decl_oracle;
 pub mod diagnostics;
 pub mod document;
 pub mod goto_def;
 pub mod hover;
 pub mod references;
 pub mod server;
+pub mod symbols;
 
 /// Re-export test support types for cross-crate test use.
 #[cfg(any(test, feature = "test-support"))]

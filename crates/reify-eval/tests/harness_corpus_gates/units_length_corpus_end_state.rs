@@ -289,6 +289,7 @@ fn realize(rel: &str, compiled: &reify_compiler::CompiledModule) -> SweepOutcome
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(kernel)),
     );

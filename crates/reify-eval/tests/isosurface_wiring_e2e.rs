@@ -87,7 +87,7 @@ fn isosurface_wiring_builds_honest_voxel_operand_and_mesh_terminal() {
     // Same pairing the fixed `cmd_build` uses (and `ensure_openvdb_kernel.rs`
     // pins): single-pick OCCT default + lazily-acquired OpenVDB.
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let acquired = engine.ensure_openvdb_kernel();
     assert!(
         acquired,
@@ -235,7 +235,7 @@ structure PlacedAssembly {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let acquired = engine.ensure_openvdb_kernel();
     assert!(
         acquired,
@@ -402,7 +402,7 @@ fn isosurface_wiring_degrades_to_warning_without_openvdb_kernel() {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     // Deliberately DOES NOT call `ensure_openvdb_kernel()` — no OpenVDB
     // kernel is registered, so the operand's post-loop Voxel conversion
     // edge must degrade honestly instead of panicking or erroring.

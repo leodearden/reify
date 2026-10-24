@@ -1,0 +1,9 @@
+module auto_reach_child_side_let
+structure Bearing {
+    param bore : Length = 10mm
+    let fit = self.bore * 2.0
+}
+structure Holder {
+    sub b : Bearing { bore = auto }
+    constraint self.b.fit == 20mm
+}

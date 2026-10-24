@@ -34,8 +34,29 @@
 //! Each scenario also pins its expected HIT set, so the oracle can never pass
 //! vacuously by expecting a miss everywhere.
 //!
+//! # Consumer kinds
+//!
+//! Beyond param, guard-value, collection, source and tolerance edits, the
+//! corpus reaches a moved body's consumers through each path the eviction set
+//! is built from: a one-hop and a two-hop resolvable `Sub` chain (the dirty
+//! cone), a hierarchical chain of ambiguous `Sub` operands (dropped-operand
+//! seeding), and cross-entity and same-entity pattern ops. The converse of the
+//! ambiguous case — an ambiguous consumer that must HIT after an unrelated
+//! edit — over-evicts by design today (#8338). The conversion intermediate an
+//! evicted family owns is pinned separately, in
+//! `selective_eviction_conversion_intermediate`.
+//!
 //! The last test is not a regime pair: it pins the CLASSIFICATION the
 //! selective regime evicts by, across a value a build writes between edits.
+//!
+//! # Not covered
+//!
+//! - A selector consumer, `fillet(base, edges(self.a.body), r)`: under
+//!   `build_snapshot` neither the selector let (#7270) nor the cross-sub read
+//!   (#7300) resolves, so the fillet never dispatches, and `build()`
+//!   re-evaluates the module, so an edit never reaches its kernel.
+//! - A guard flip that ACTIVATES or DEACTIVATES a realization: guards do not
+//!   gate realization on main, so both regimes behave identically (#8450).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
@@ -44,6 +65,7 @@ use reify_compiler::{CompiledGeometryOp, CompiledModule, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, RealizationNodeId, Type, ValueCellId};
 use reify_eval::cache::NodeId;
+use reify_eval::deps::ReverseDependencyIndex;
 use reify_eval::realization_cache::NO_OPTIONS;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{
@@ -77,6 +99,27 @@ fn canonical_shape(records: &[GeometryOpRecord], handle: GeometryHandleId) -> St
         GeometryOp::Translate { target, dx, dy, dz } => {
             format!("translate({}, {dx}, {dy}, {dz})", parent(target))
         }
+        GeometryOp::LinearPattern {
+            target,
+            direction,
+            count,
+            spacing,
+        } => format!(
+            "linear_pattern({}, {direction:?}, {count}, {})",
+            parent(target),
+            si(spacing)
+        ),
+        GeometryOp::CircularPattern {
+            target,
+            axis_origin,
+            axis_dir,
+            count,
+            angle,
+        } => format!(
+            "circular_pattern({}, {axis_origin:?}, {axis_dir:?}, {count}, {})",
+            parent(target),
+            si(angle)
+        ),
         other => panic!("canonical_shape does not cover {other:?}; extend it"),
     }
 }
@@ -119,7 +162,7 @@ impl Regime {
     fn new(module: &CompiledModule, activations: &[(&str, &str)]) -> Self {
         let kernel = MockGeometryKernel::new();
         let ops = kernel.operations_ref();
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
         engine.set_build_scheduler(BuildScheduler::UnifiedDag);
         engine.eval(module);
         for (purpose, entity) in activations {
@@ -696,6 +739,149 @@ fn repeated_edits_without_build_stay_stale_until_rebuilt() {
     assert_eq!(rebuilt.hit_entities(), entities(&["PartB"]));
 }
 
+/// A two-hop `Sub` chain `A.body → B.mid → C.top`. Every member name is
+/// exported by exactly one entity, so the reverse index links each hop and
+/// nothing is seeded as a dropped operand. Only `A`'s own fold moves; `B` and
+/// `C` must be reached by the realization cone, `C` two hops deep.
+#[test]
+fn a_two_hop_sub_chain_is_evicted_through_the_cone() {
+    const SRC: &str = r#"pub structure A {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure B {
+    sub a = A()
+    let mid = translate(self.a.body, 1mm, 0mm, 0mm)
+}
+pub structure C {
+    sub b = B()
+    let top = translate(self.b.mid, 0mm, 1mm, 0mm)
+}
+pub structure S {
+    let shell = cylinder(5mm, 10mm)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_a", "A", 1e-6),
+            ("mfg_b", "B", 1e-6),
+            ("mfg_c", "C", 1e-6),
+            ("mfg_s", "S", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["A", "B", "C", "S"]);
+
+    pair.edit_param("A", "w", mm(30.0));
+    assert_eq!(
+        pair.selective.engine.last_changed_realizations(),
+        &HashSet::from([RealizationNodeId::new("A", 0)]),
+        "premise: only A's own input cone moves; B and C ride the cone"
+    );
+    let rebuilt = pair.rebuild();
+
+    assert_eq!(rebuilt.hit_entities(), entities(&["S"]));
+}
+
+/// A hierarchical chain `P.body → Asm.body → Top.body` where every hop
+/// exports `body`, so for each consumer the producer candidates are
+/// ambiguous and the reverse index links neither hop. `Asm` and `Top` are
+/// reached only because the edit seeds every `Sub` consumer the index drops.
+/// The converse — an ambiguous consumer that must HIT after an unrelated edit
+/// — over-evicts by design today and is #8338's deliverable.
+#[test]
+fn a_hierarchical_chain_of_ambiguous_sub_operands_is_evicted_by_seeding() {
+    const SRC: &str = r#"pub structure P {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure Asm {
+    sub p = P()
+    let body = translate(self.p.body, 1mm, 0mm, 0mm)
+}
+pub structure Top {
+    sub a = Asm()
+    let body = translate(self.a.body, 0mm, 1mm, 0mm)
+}
+pub structure Bystander {
+    let shell = cylinder(5mm, 10mm)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_p", "P", 1e-6),
+            ("mfg_asm", "Asm", 1e-6),
+            ("mfg_top", "Top", 1e-6),
+            ("mfg_by", "Bystander", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["P", "Asm", "Top", "Bystander"]);
+    let graph = &pair
+        .selective
+        .engine
+        .snapshot()
+        .expect("a built engine has a snapshot")
+        .graph;
+    let index = ReverseDependencyIndex::build_from_graph(graph);
+    for producer in ["P", "Asm"] {
+        let linked: Vec<_> = index
+            .realization_dependents_of(&RealizationNodeId::new(producer, 0))
+            .iter()
+            .filter(|node| matches!(node, NodeId::Realization(_)))
+            .collect();
+        assert!(
+            linked.is_empty(),
+            "premise: the index links no consumer of the ambiguous {producer}.body; got {linked:?}"
+        );
+    }
+
+    pair.edit_param("P", "w", mm(30.0));
+    let rebuilt = pair.rebuild();
+
+    assert_eq!(rebuilt.hit_entities(), entities(&["Bystander"]));
+}
+
+/// Pattern consumers, across entities and within one. `Ring` patterns `A`'s
+/// body through a `Sub` operand; `Row` patterns its own sibling `base`, so
+/// `row` is `Row`'s terminal and `base` is never cache-resident. Each edit
+/// must evict exactly the patterns downstream of the moved body.
+#[test]
+fn pattern_consumers_of_the_edited_body_are_evicted() {
+    const SRC: &str = r#"pub structure A {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure Ring {
+    sub a = A()
+    let ring = circular_pattern(self.a.body, 0mm, 0mm, 0mm, 0, 0, 1, 4, 90deg)
+}
+pub structure Row {
+    param w2 : Length = 4mm
+    let base = box(w2, 5mm, 5mm)
+    let row = linear_pattern(base, 1, 0, 0, 3, 10mm)
+}
+pub structure S {
+    let shell = cylinder(5mm, 10mm)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_a", "A", 1e-6),
+            ("mfg_ring", "Ring", 1e-6),
+            ("mfg_row", "Row", 1e-6),
+            ("mfg_s", "S", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["A", "Ring", "Row", "S"]);
+
+    pair.edit_param("A", "w", mm(30.0));
+    let rebuilt = pair.rebuild();
+    assert_eq!(rebuilt.hit_entities(), entities(&["Row", "S"]));
+
+    pair.edit_param("Row", "w2", mm(6.0));
+    let rebuilt = pair.rebuild();
+    assert_eq!(rebuilt.hit_entities(), entities(&["A", "Ring", "S"]));
+}
+
 // ── A value a build writes between edits ────────────────────────────────────
 
 /// A selective-demand tessellate refreshes the demanded `let` `sb`
@@ -736,6 +922,7 @@ fn a_realization_reading_a_build_refreshed_let_is_changed_by_an_unrelated_edit()
             .and_then(|node| node.input_cone_hash)
     };
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

@@ -1,0 +1,8 @@
+// /prd generic-instantiation-and-call-binding α₁ evidence (probe c): an arity
+// mismatch inside a parametric alias body names the inner alias and the counts.
+// Today only "unresolved type: Q<Int>" is printed.
+module gicb_alpha_nested_alias_arity
+
+type P<T> = List<T>
+type Q<X> = P<X, X>
+structure def S { param q : Q<Int> }

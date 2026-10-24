@@ -86,7 +86,7 @@ fn eval_emits_eval_unresolved_for_consumer_cells() {
         compile_errors
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     // Collect only EvalUnresolved diagnostics at Error severity.
@@ -153,7 +153,7 @@ fn check_surfaces_eval_unresolved_for_consumer_cells() {
         "CONSUMER_SRC must compile cleanly"
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.check(&compiled);
 
     let eval_unresolved: Vec<_> = result
@@ -188,7 +188,7 @@ fn eval_cached_emits_eval_unresolved_parity_with_eval() {
     let compiled = parse_and_compile_with_stdlib(CONSUMER_SRC);
     assert!(errors_only(&compiled).is_empty(), "CONSUMER_SRC must compile cleanly");
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
     let eval_unresolved: Vec<_> = result
@@ -238,7 +238,7 @@ fn eval_no_unresolved_error_for_construction_only_source() {
         "CONSTRUCTION_ONLY_SRC must compile cleanly"
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
     // eval() path
     let eval_result = engine.eval(&compiled);
@@ -310,7 +310,7 @@ fn build_path_emits_no_additional_eval_unresolved_beyond_eval() {
 
     // Reference: how many EvalUnresolved errors the eval-surface detector emits
     // (should be 2 — one for `neighbors`, one for `face_n`).
-    let mut engine_ref = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine_ref = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let eval_result = engine_ref.eval(&compiled);
     let eval_count = eval_result
         .diagnostics
@@ -321,7 +321,7 @@ fn build_path_emits_no_additional_eval_unresolved_beyond_eval() {
     // build() → check() → eval() → detector fires; EvalUnresolved diagnostics
     // from detect_unresolved_geometry_consumers appear in BuildResult.diagnostics.
     // The guard asserts run_unified_pass adds NO additional EvalUnresolved on top.
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let build_count = result

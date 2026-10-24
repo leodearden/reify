@@ -115,6 +115,7 @@ fn resolve_initial_file_path_nonexistent_ri_returns_some_fallback() {
 
 fn fresh_engine() -> std::sync::Arc<std::sync::Mutex<crate::engine::EngineSession>> {
     std::sync::Arc::new(std::sync::Mutex::new(crate::engine::EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(reify_test_support::MockGeometryKernel::new())),
     )))

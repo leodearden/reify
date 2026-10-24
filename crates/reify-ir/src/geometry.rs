@@ -3,6 +3,7 @@ use std::fmt;
 
 use reify_core::hash::ContentHash;
 use crate::boundary_attachment::BoundaryAssociation;
+use crate::dense_sdf::{DenseSdfGrid, ImplicitOptions};
 use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
@@ -2183,9 +2184,10 @@ pub enum GeometryQuery {
     /// sign convention follows the Frenet frame: positive curvature bends
     /// toward the principal normal.
     ///
-    /// Returns `Value::Real` (SI units: 1/m = m⁻¹, i.e. the `Curvature`
-    /// dimension = 1/Length). The eval-side dispatcher wraps this in
-    /// `Value::Scalar { si_value, dimension: Dimension::Curvature }`.
+    /// Returns a raw, untagged `Value::Real` κ (numerically 1/r). The eval-side
+    /// dispatcher tags it as
+    /// `Value::Scalar { si_value, dimension: DimensionVector::CURVATURE }`
+    /// (rad·m⁻¹; η = 1, so the value is unchanged).
     ///
     /// Powers the v0.3 stdlib helper
     /// `curvature(curve: Curve, point: Point3<Length>) -> Scalar<Curvature>`
@@ -2213,9 +2215,10 @@ pub enum GeometryQuery {
     ///
     /// Returns a 2×2 diagonal principal-curvature matrix encoded as nested
     /// `Value::List`: `[[kappa_max, 0.0], [0.0, kappa_min]]` where both
-    /// values are in SI units (1/m). The trace/2 equals the mean curvature H
-    /// and the det equals the Gaussian curvature K = kappa_max * kappa_min.
-    /// The eval-side dispatcher repackages this as `Value::Matrix`.
+    /// values are raw, untagged κ (numerically 1/r). The trace/2 equals the mean
+    /// curvature H and the det equals the Gaussian curvature K = kappa_max * kappa_min.
+    /// The eval-side dispatcher repackages this as a `Value::Matrix` of cells
+    /// tagged `DimensionVector::CURVATURE` (rad·m⁻¹; η = 1).
     ///
     /// Powers the v0.3 stdlib helper
     /// `curvature(surface: Surface, point: Point3<Length>) -> Matrix<2,2,Curvature>`
@@ -4287,6 +4290,44 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+// `InvalidReference` is the only invalid-handle case; every other
+// `GeometryError` is a failure carrying its cause.
+impl GeometryError {
+    fn into_failure_text(self) -> String {
+        match self {
+            GeometryError::OperationFailed(msg) => msg,
+            other => other.to_string(),
+        }
+    }
+}
+
+impl From<GeometryError> for QueryError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => QueryError::InvalidHandle(id),
+            other => QueryError::QueryFailed(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for ExportError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => ExportError::InvalidHandle(id),
+            other => ExportError::FormatError(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for TessError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => TessError::InvalidHandle(id),
+            other => TessError::TessellationFailed(other.into_failure_text()),
+        }
+    }
+}
+
 /// Errors from constructing a [`BooleanOpParents`] value with mismatched
 /// slice lengths.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4535,6 +4576,15 @@ pub enum VoxelResolution {
     /// A model-space length, per the "Units" section above: a 1 mm wall is
     /// `MinFeature(0.001)`, NOT `MinFeature(1.0)`.
     MinFeature(f64),
+}
+
+/// The error a kernel `K` returns for [`GeometryKernel::ingest_dense_sdf`] when
+/// it does not support dense SDF ingest — the one home of that message.
+pub fn unsupported_dense_sdf_ingest<K: ?Sized>() -> GeometryError {
+    GeometryError::OperationFailed(format!(
+        "{} does not ingest dense SDF grids",
+        std::any::type_name::<K>()
+    ))
 }
 
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
@@ -4949,6 +4999,22 @@ pub trait GeometryKernel: Send + Sync {
     /// verbatim in a side-table disjoint from its voxel-grid handles.
     fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         self.ingest_mesh(mesh)
+    }
+
+    /// Ingest a dense SDF sample grid as a Voxel-repr solid.
+    ///
+    /// The absence of an override is the not-supported contract (the
+    /// [`Self::ingest_mesh`] pattern). `OpenVdbKernel` overrides it under the
+    /// D-8 activation policy (`docs/prds/v0_6/implicit-solids.md`). Delegating
+    /// wrappers such as `reify_geometry::SingleKernelHolder` must forward it
+    /// rather than inherit this default.
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let _ = (grid, opts);
+        Err(unsupported_dense_sdf_ingest::<Self>())
     }
 
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT

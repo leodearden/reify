@@ -1,0 +1,241 @@
+# Machine-readable twin of selector-resolution-factoring.capability-manifest.md
+# (review-all S13). Stamped by commit_planning at pass 2 (2026-10-12).
+# Every delivered_check below is NOT delivered at main 8e6ffcac9d (2026-10-12), checked by
+# git grep: correct polarity for a not-yet-started batch.
+# Amended 2026-10-20 (retro-critic sitting R9): α/ε script checks -> adoption-ratchet.manifest
+# row greps; β's children check split one per child; S13-η #8753 has shipped (merge c59ea110a6).
+prd: docs/prds/v0_6/selector-resolution-factoring.md
+schema_version: 1
+tasks:
+  - label: "S13-α"
+    task_id: 8747
+    title: "selector_resolve module: one compose, NormalCone, one attribute-table walk; SCC dissolved"
+    capabilities:
+      - name: "one-composition-rule"
+        binding: "grep — two Union/Intersect/Difference copies today (resolve_with_attributes, resolve_against_carried_topology)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fn compose<"
+          paths: ["crates/reify-eval/src/selector_resolve.rs"]
+          expect: present
+      - name: "normal-cone-single-home"
+        binding: "grep — dot3(..).clamp(-1.0, 1.0) twice in topology_selectors.rs today"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "struct NormalCone\\b"
+          paths: ["crates/reify-eval/src/topology_selectors.rs"]
+          expect: present
+      - name: "carried-mode-takes-face-normals"
+        binding: "grep — CarriedTopology::face_normals() is pub; resolver needs nothing else (PRD D2)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "pub fn resolve_against_face_normals\\b"
+          paths: ["crates/reify-eval/src/selector_resolve.rs"]
+          expect: present
+      - name: "nodes-for-faces-on-carried-topology"
+        binding: "grep — nodes_for_faces reads only carried.boundary()"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fn nodes_for_faces\\b"
+          paths: ["crates/reify-eval/src/compute_targets/result_topology.rs"]
+          expect: present
+      - name: "adoption-ratchet-rows-1-3"
+        binding: "INV candidate 5 — rows 1-3 of PRD §5 (ceiling 1) added to the shared tests/infra/adoption-ratchet.manifest; no bespoke member (retro-critic R9 M2, 2026-10-20: script check repointed to a manifest-row grep; ^selector-resolution- absent at main)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^selector-resolution-"
+          paths: ["tests/infra/adoption-ratchet.manifest"]
+          expect: present
+      - name: "scc-dissolved-and-behaviour-unchanged"
+        binding: "probe P1/P2 byte-identical before/after; r3b two-way parity test unchanged; no selector_vocabulary_v2/compute_targets ref in topology_selectors' production region"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "production-region scoping and before/after byte identity are not expressible as one git grep (overlay rule 4: whole-file absent scans the in-file test module); the adoption-ratchet rows 1-3 and the reviewer cover it"
+  - label: "S13-β"
+    task_id: 8748
+    title: "geometry_ops lower layers: args, pose, query, kinematic children"
+    capabilities:
+      - name: "lower-layer-child-args"
+        binding: "probe — D4 cross-partition measurement; producer: S3 predicate-move leaf upstream (retro-critic R9 polarity, 2026-10-20: one check per child, so a partial β does not deliver)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) mod args;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: present
+      - name: "lower-layer-child-pose"
+        binding: "probe — D4 cross-partition measurement; producer: S3 predicate-move leaf upstream (retro-critic R9 polarity, 2026-10-20: one check per child, so a partial β does not deliver)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) mod pose;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: present
+      - name: "lower-layer-child-query"
+        binding: "probe — D4 cross-partition measurement; producer: S3 predicate-move leaf upstream (retro-critic R9 polarity, 2026-10-20: one check per child, so a partial β does not deliver)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) mod query;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: present
+      - name: "lower-layer-child-kinematic"
+        binding: "probe — D4 cross-partition measurement; producer: S3 predicate-move leaf upstream (retro-critic R9 polarity, 2026-10-20: one check per child, so a partial β does not deliver)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) mod kinematic;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: present
+  - label: "S13-γ"
+    task_id: 8749
+    title: "geometry_ops selector_eval/ child"
+    capabilities:
+      - name: "selector-eval-child-exists"
+        binding: "producer: α (selector_resolve) upstream; size ≈ 3,400 lines forces a directory (PRD D5)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) mod selector_eval;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: present
+  - label: "S13-δ"
+    task_id: 8750
+    title: "geometry_ops compile/ child, one family per file with its dispatch table"
+    capabilities:
+      - name: "compile-child-exists"
+        binding: "grep — 7 lock_dispatch_table! tables + dispatch_table_uniqueness.rs; geometry_op_characterization_probe reaches compile_geometry_op"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) mod compile;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: present
+  - label: "S13-ε"
+    task_id: 8751
+    title: "Seam tests that can only see seams; geometry_ops/tests.rs deleted; pub(crate) ratchet"
+    capabilities:
+      - name: "crate-level-seam-test-module"
+        binding: "grep — precedent mod registry_drift_tests; in reify-eval lib.rs"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^mod geometry_ops_seam_tests;"
+          paths: ["crates/reify-eval/src/lib.rs"]
+          expect: present
+      - name: "parent-test-module-retired"
+        binding: "probe — zero placed_walk symbols referenced from geometry_ops/tests.rs today (S2 contract)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^mod tests;"
+          paths: ["crates/reify-eval/src/geometry_ops.rs"]
+          expect: absent
+      - name: "pub-crate-surface-ratchet"
+        binding: "INV candidate 5 — row 4 of PRD §5 in the shared tests/infra/adoption-ratchet.manifest (retro-critic R9 M2/polarity, 2026-10-20: the script check shared with α read delivered before ε; now a single-line grep of ε's own row id, absent at main)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^selector-resolution-pub-crate-surface"
+          paths: ["tests/infra/adoption-ratchet.manifest"]
+          expect: present
+  - label: "S13-ζ"
+    task_id: 8752
+    title: "ValidatedSketch: typed operands, emitter matches on types, drift guards deleted"
+    capabilities:
+      - name: "validated-sketch-type"
+        binding: "grep — validate() has one caller (add_sketch); solve_sketch signature unchanged"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "struct ValidatedSketch\\b"
+          paths: ["crates/reify-constraints/src/sketch.rs"]
+          expect: present
+      - name: "drift-guards-deleted"
+        binding: "grep — 9 unresolved_* call sites + 2 fn defs in solvespace.rs today"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fn unresolved_(constraint|entity)_ref\\b"
+          paths: ["crates/reify-constraints/src/solvespace.rs"]
+          expect: absent
+      - name: "sketch-seam-preserved"
+        binding: "grep — #6682's sketch-path-survives check greps the same symbol"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "a preservation property is green before and after this leaf (vacuous_present under the polarity gate); sketch_solve_tests.rs plus #6682's own sketch-path-survives check are the cover"
+  - label: "S13-η"
+    task_id: 8753
+    title: "WarmStatePool: no public path drops cost; cfg(test) field becomes a constructor parameter"
+    capabilities:
+      - name: "cost-dropping-wrappers-deleted"
+        binding: "grep — donate_preserving_lru has no production caller; checkout_with_lru_stamp's only production caller is checkout()"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "pub fn (donate_preserving_lru|checkout_with_lru_stamp)\\("
+          paths: ["crates/reify-eval/src/warm_pool.rs"]
+          expect: absent
+      - name: "events-cap-constructor-parameter"
+        binding: "grep — test_events_cap is a #[cfg(test)] field today"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fn with_limits\\("
+          paths: ["crates/reify-eval/src/warm_pool.rs"]
+          expect: present
+  - label: "S13-κ"
+    task_id: 9297
+    title: "Op-kind dispatch total by type: exhaustive match fns replace the locked (Kind, fn) tables"
+    capabilities:
+      - name: "dispatch-lock-macro-deleted"
+        binding: "grep at main c7bbfe2519 — macro_rules! lock_dispatch_table in geometry_ops.rs plus 7 lock lines (8 matches in crates/reify-eval); gap-fill K4-D4 (plans/gap-fill-deliberation-reify-20261016.md), fk-fe5ac99ce241"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "lock_dispatch_table"
+          paths: ["crates/reify-eval"]
+          expect: absent
+      - name: "uniqueness-guard-deleted"
+        binding: "grep — mod dispatch_table_uniqueness; declared in geometry_ops.rs today (δ re-points it as a move)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "mod dispatch_table_uniqueness"
+          paths: ["crates/reify-eval/src"]
+          expect: absent
+      - name: "census-literal-deleted"
+        binding: "grep — DOCUMENTED_KIND_FAMILY_CENSUS = 53 in compile_geometry_op_characterization.rs (2 matches)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "DOCUMENTED_KIND_FAMILY_CENSUS"
+          paths: ["crates/reify-eval"]
+          expect: absent
+      - name: "lookup-is-total"
+        binding: "grep — 7 'no registered compiler for' runtime errors in geometry_ops.rs today; a total match leaves no lookup miss"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "no registered compiler for"
+          paths: ["crates/reify-eval/src"]
+          expect: absent
+  - label: "S13-ι"
+    task_id: 8754
+    title: "PRD close: stamp SHIPPED, freeze header, LIVE/AS-AUTHORED map"
+    capabilities:
+      - name: "terminal-stamp"
+        binding: "overlay 'PRD terminal status' — closed vocabulary"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^\\*\\*Status:\\*\\* SHIPPED"
+          paths: ["docs/prds/v0_6/selector-resolution-factoring.md"]
+          expect: present

@@ -98,7 +98,7 @@ fn voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal() {
     // lazily-acquired OpenVDB (adds ONLY the openvdb adapter, leaves
     // default_kernel_name == "occt").
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let acquired = engine.ensure_openvdb_kernel();
     assert!(
         acquired,

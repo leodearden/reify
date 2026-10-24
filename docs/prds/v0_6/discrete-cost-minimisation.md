@@ -1,6 +1,6 @@
 # Discrete cost minimisation — CP-SAT deployment, let-tracing, honest discrete optimality (PRD 2)
 
-**Milestone:** v0_6 · **Status:** active (authored 2026-07-24 in a `/prd` session under G1–G7+META; scope decisions resolved with Leo 2026-07-24; **amended 2026-10-08** (Leo, esc-5470-5: catalog membership moved to `docs/prds/v0_6/catalog-membership-constraint.md`, δ re-scoped — see the amendment note under §0) · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active (gap-fill 2026-10-16: δ #5470 re-homed onto solver-crates-layering ξ₂ #9267; authored 2026-07-24 in a `/prd` session under G1–G7+META; scope decisions resolved with Leo 2026-07-24; **amended 2026-10-08** (Leo, esc-5470-5: catalog membership moved to `docs/prds/v0_6/catalog-membership-constraint.md`, δ re-scoped — see the amendment note under §0) · **Approach:** B + H
 **Cluster:** `cost-optimisation`. Charter inherited from `continuous-cost-minimisation.md` (PRD 1, landed) §0.1: **supplier / stock-size / count selection** — `Int`/`Bool`/`Enum` autos plus discrete-set `Real`s. Consumes `ranked-solve-result.md` (F-result, landed): PRD 2 owns the CP-SAT `solve_ranked` override (F-result §0.1/§6). Mixed discrete+continuous follows `whole-model-objective-coupling.md` (M-WHOLE) §3.1: **CP-SAT outer enumeration wrapping the continuous inner solve; MINLP rejected** — binding, do not re-litigate.
 
 ---
@@ -279,3 +279,19 @@ B+H shape. Greek labels; task IDs at decompose. Spine: α → β → γ, then δ
 5. **Strict-`Int` uniqueness UX** — a strict `Int` auto with a multi-member feasible domain correctly reports non-unique; examples should model with `auto(free)` + constraints (or an objective) when exploration is intended. Confirm example authoring in ε (mirrors PRD 1's `auto(free)` precedent).
 6. **Spike-code reuse extent** — cherry-pick vs re-derive against moved `main`; the spike is 1 commit, small. Decide in β.
 7. **Fixture naming/location** for the committed probe fixtures (`docs/prds/v0_6/fixtures/discrete_*.ri` vs `crates/reify-eval/tests/fixtures/`). ~~Decide in ε; the PRD-level probes stay under `docs/prds/v0_6/fixtures/`.~~ **SUPERSEDED 2026-08-21 (Leo).** This question weighed the docs path against a *crate-local* path only; it never considered `tests/prd-gate/fixtures/` and so never ruled on the actual two-location conflict, and the ε it deferred to (#5471) has no fixture-location scope in its record. The standing standard is now: committed `.ri` fixtures that are PRD or capability-manifest evidence live in `tests/prd-gate/fixtures/`, cited by full repo-relative path; `docs/prds/**/fixtures/` is deprecated and is being emptied by #6431. Do not cite this row as a constraint on relocation — #6077 and #6369 both did, in error.
+
+## Gap-fill amendments (2026-10-16)
+
+- **`plans/gap-fill-deliberation-reify-20261016.md` §K3-D3** (Leo, 2026-10-16; re-rules the
+  *field home* of esc-5470-5 D/M only). δ #5470's declared discrete domain moves from
+  `AutoParam.domain` in reify-ir to `ParamDomain.finite` in reify-constraints' `DomainTable`, the
+  one feasible-domain carrier introduced by `docs/prds/v0_6/solver-crates-layering.md` leaf ξ₂
+  #9267 (produced once per component after decomposition; `AutoParam.bounds` deleted there).
+  Preserved: a domain is hard; the Enum declared-domain helper is producer-agnostic and called by
+  every AutoParam builder; membership extraction stays in the solver layer (catalog-membership β
+  #8356 writes the same table). δ's Int bound-mining becomes `DomainTable::int_range()`
+  (`Open(c)` → ceil/floor ± 1). δ #5470 now depends on ξ₂ #9267. Its delivered check
+  `autoparam-is-discrete-in-ir` (`fn is_discrete` present) is re-pointed from
+  `crates/reify-ir/src` to `crates/reify-constraints/src` (yaml, `.md` twin row and #5470
+  metadata, all 2026-10-16/17). §3 decisions 6/7 and §4.4's `AutoParam.domain` wording are read
+  through this amendment; they are not rewritten.

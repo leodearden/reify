@@ -72,7 +72,7 @@ fn continuous_cost_min_example_resolves_off_boundary_and_emits_info() {
     );
 
     // ── eval ───────────────────────────────────────────────────────────────────
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 
