@@ -770,105 +770,6 @@ mod tests {
         assert_eq!(map.get(&ComputeNodeId::new("Missing", 0)), None);
     }
 
-    // ── RealizationNodeId::from_str (FromStr) ─────────────────────────
-    //
-    // The inverse of the `"<entity>#realization[<index>]"` Display grammar.
-    // Round-trip (I2/B3): any `RealizationNodeId` Display output must parse
-    // back to an equal value, including hyphenated entities produced by
-    // `FeatureId::realization(...)` test fixtures. Strictly reject malformed
-    // or structurally-ambiguous inputs.
-
-    #[test]
-    fn realization_node_id_from_str_roundtrip() {
-        let id = RealizationNodeId::new("Foo", 3);
-        let parsed: RealizationNodeId = id.to_string().parse().unwrap();
-        assert_eq!(parsed, RealizationNodeId::new("Foo", 3));
-        assert_eq!(parsed.entity, "Foo");
-        assert_eq!(parsed.index, 3);
-    }
-
-    #[test]
-    fn realization_node_id_from_str_index_zero_roundtrip() {
-        let id = RealizationNodeId::new("Bracket", 0);
-        let parsed: RealizationNodeId = id.to_string().parse().unwrap();
-        assert_eq!(parsed, id);
-    }
-
-    #[test]
-    fn realization_node_id_from_str_hyphenated_entity_roundtrips() {
-        // CRUCIAL (I2/B3): realization()-constructed fixtures use hyphens.
-        // from_str MUST NOT impose a strict [a-zA-Z_] identifier charset —
-        // hyphens (and any non-delimiter char) must round-trip.
-        for entity in ["box-2658-smoke", "not-a-real-feature", "F99-never-existed"] {
-            let id = RealizationNodeId::new(entity, 0);
-            let parsed: RealizationNodeId = id.to_string().parse().unwrap();
-            assert_eq!(parsed, id, "hyphenated entity {entity:?} must round-trip");
-        }
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_empty() {
-        assert!("".parse::<RealizationNodeId>().is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_missing_marker() {
-        assert!("Foo".parse::<RealizationNodeId>().is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_missing_brackets() {
-        assert!("Foo#realization".parse::<RealizationNodeId>().is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_empty_index() {
-        assert!("Foo#realization[]".parse::<RealizationNodeId>().is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_non_digit_index() {
-        assert!("Foo#realization[x]".parse::<RealizationNodeId>().is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_overflowing_index() {
-        // All-ascii-digit, so it passes the pre-parse digit guard, but the value
-        // exceeds u32::MAX — only the `index_str.parse::<u32>()` step rejects it.
-        // Pins the overflow branch promised by IndexedNodeIdFault::
-        // InvalidIndex's doc comment so a future refactor that drops `.parse()`
-        // (e.g. building the u32 from digit bytes by hand) can't silently regress.
-        assert!("Foo#realization[99999999999]"
-            .parse::<RealizationNodeId>()
-            .is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_empty_entity() {
-        assert!("#realization[0]".parse::<RealizationNodeId>().is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_trailing_junk() {
-        assert!("Foo#realization[0]junk".parse::<RealizationNodeId>().is_err());
-        assert!("Foo#realization[0] ".parse::<RealizationNodeId>().is_err());
-        assert!("Foo#realization[0]]".parse::<RealizationNodeId>().is_err());
-        // A trailing "/mid_surface" belongs to the FeatureId grammar, not the
-        // bare RealizationNodeId grammar — reject it here.
-        assert!("Foo#realization[0]/mid_surface"
-            .parse::<RealizationNodeId>()
-            .is_err());
-    }
-
-    #[test]
-    fn realization_node_id_from_str_rejects_structural_delimiter_in_entity() {
-        // An entity containing a structural delimiter ('/', '[', ']') would make
-        // the Display↔FromStr mapping ambiguous, so reject such inputs.
-        assert!("a[b#realization[0]".parse::<RealizationNodeId>().is_err());
-        assert!("a/b#realization[0]".parse::<RealizationNodeId>().is_err());
-        assert!("a]b#realization[0]".parse::<RealizationNodeId>().is_err());
-    }
-
     // ── Shared indexed-id grammar (`<entity>#<marker>[<index>]`) ─────
 
     fn check_indexed_grammar<T>(kind: IndexedNodeKind, make: fn(&str, u32) -> T)
@@ -877,6 +778,8 @@ mod tests {
     {
         let entities = [
             "Foo",
+            // Hyphens, as in reify-ir's `FeatureId::realization` fixtures: no
+            // identifier charset is imposed.
             "box-2658-smoke",
             "Rig.bolts",
             "a#b",
@@ -915,9 +818,21 @@ mod tests {
                 format!("Foo#{m}[0]junk"),
                 IndexedNodeIdFault::MissingTerminator,
             ),
+            (
+                format!("Foo#{m}[0] "),
+                IndexedNodeIdFault::MissingTerminator,
+            ),
+            // A trailing "/mid_surface" belongs to reify-ir's FeatureId
+            // grammar, not to a bare indexed id.
+            (
+                format!("Foo#{m}[0]/mid_surface"),
+                IndexedNodeIdFault::MissingTerminator,
+            ),
+            (format!("Foo#{m}[0]]"), IndexedNodeIdFault::InvalidIndex),
             (format!("Foo#{m}[]"), IndexedNodeIdFault::InvalidIndex),
             (format!("Foo#{m}[x]"), IndexedNodeIdFault::InvalidIndex),
             (format!("Foo#{m}[-1]"), IndexedNodeIdFault::InvalidIndex),
+            // All digits, so only the u32 parse itself rejects it.
             (
                 format!("Foo#{m}[99999999999]"),
                 IndexedNodeIdFault::InvalidIndex,
@@ -1006,8 +921,8 @@ mod tests {
             // Compiler-synthesized member, minted by `compile_block_guard` in
             // reify-compiler/src/guards.rs.
             ValueCellId::new("Part", "__guard_0"),
-            // No strict identifier charset, mirroring
-            // `realization_node_id_from_str_hyphenated_entity_roundtrips`.
+            // No strict identifier charset, mirroring the hyphenated entities
+            // of `indexed_node_ids_share_one_grammar_that_inverts_display`.
             ValueCellId::new("my-part_2", "hole_diameter"),
             // Keyed member, minted by `keyed_member_cell` in reify-ir/src/value.rs
             // and asserted by its `keyed_member_cell_carries_key_in_nodeid_path`
