@@ -70,9 +70,30 @@ mod p2_suppression {
         paths
     }
 
+    /// The summary of the one finding attributed to `task_id`.
+    fn summary_of<'a>(findings: &'a [Finding], task_id: &str) -> &'a str {
+        findings
+            .iter()
+            .find(|f| f.task_id == task_id)
+            .map(|f| f.summary.as_str())
+            .unwrap_or_else(|| panic!("no finding for task {task_id}: {findings:?}"))
+    }
+
     /// Registers `lines` as what task `task_id`'s live branch adds to `path`.
     fn add_on_branch(git: &mut MockGitOps, task_id: &str, path: &str, lines: &[(usize, &str)]) {
         git.set_diff_added_lines("main", &format!("task/{task_id}"), path, owned_lines(lines));
+    }
+
+    /// `task`, recorded as merged by `commit` at `done_at`. Whether P2 reads
+    /// that commit's diff or scans main depends on the fixture's `is_ancestor`.
+    fn merged(mut task: TaskMetadata, commit: &str, done_at: i64) -> TaskMetadata {
+        task.done_at = Some(done_at);
+        task.done_provenance = Some(DoneProvenance {
+            kind: Some("merged".to_string()),
+            commit: Some(commit.to_string()),
+            note: None,
+        });
+        task
     }
 
     mod tests {
@@ -217,15 +238,10 @@ mod p2_suppression {
                 kept,
                 owned_lines(&[(3, "fn f() {"), (44, "        unimplemented!()"), (45, "}")]),
             );
-            // No file_lines_on for `deleted`: the file is gone from main.
+            // `deleted` is gone from main: no lines there, and git says untracked.
             git.set_diff_added_lines_in_commit("m1", deleted, owned_lines(&[(5, "    // stub")]));
-            let mut task = meta("9620", "done", &[kept, deleted]);
-            task.done_at = Some(1000);
-            task.done_provenance = Some(DoneProvenance {
-                kind: Some("merged".to_string()),
-                commit: Some("m1".to_string()),
-                note: None,
-            });
+            git.set_path_tracked_on("main", deleted, false);
+            let task = merged(meta("9620", "done", &[kept, deleted]), "m1", 1000);
 
             let findings = run_p2(&git, corpus(vec![task]));
 
@@ -260,6 +276,127 @@ mod p2_suppression {
                 finding_paths(&findings),
                 vec![path.to_string()],
                 "got {findings:?}"
+            );
+        }
+
+        /// An empty read of main's copy is "removed" only when git says main no
+        /// longer tracks the file. A tracked file that read empty, or a probe
+        /// git could not answer, keeps the marker: the presence check fails
+        /// open, toward reporting.
+        #[test]
+        fn merged_commit_marker_kept_when_main_copy_unreadable() {
+            let unreadable = "crates/x/unreadable.rs";
+            let unanswered = "crates/x/unanswered.rs";
+            let untracked = "crates/x/untracked.rs";
+            let mut git = MockGitOps::new();
+            git.set_is_ancestor("m1", "main", true);
+            for path in [unreadable, unanswered, untracked] {
+                git.set_diff_added_lines_in_commit(
+                    "m1",
+                    path,
+                    owned_lines(&[(5, "    unimplemented!()")]),
+                );
+            }
+            // No file_lines_on for any path: every read of main comes back empty.
+            git.set_path_tracked_on("main", unreadable, true);
+            git.set_path_tracked_on_error("main", unanswered, "fatal: unable to read tree");
+            git.set_path_tracked_on("main", untracked, false);
+            let paths = [unreadable, unanswered, untracked];
+            let task = merged(meta("9650", "done", &paths), "m1", 1000);
+
+            let findings = run_p2(&git, corpus(vec![task]));
+
+            let mut expected = vec![unanswered.to_string(), unreadable.to_string()];
+            expected.sort();
+            assert_eq!(finding_paths(&findings), expected, "got {findings:?}");
+        }
+
+        /// The live-owner rule asks about the introducer (the dedup winner), not
+        /// about every task whose diff surfaces the line. Done task 9640 merged
+        /// a marker citing live task 7001, and 7001's own scan of main surfaces
+        /// the same line: 7001 owns it, so it is not re-reported as a self-cite.
+        #[test]
+        fn live_owner_rule_judges_the_introducer_not_each_surfacing_task() {
+            let path = "crates/x/owned.rs";
+            let line = "    // TODO(#7001): wire the consumer";
+            let mut git = MockGitOps::new();
+            git.set_is_ancestor("m1", "main", true);
+            git.set_diff_added_lines_in_commit("m1", path, owned_lines(&[(10, line)]));
+            git.set_file_lines_on("main", path, owned_lines(&[(10, line)]));
+            let introducer = merged(meta("9640", "done", &[path]), "m1", 1000);
+            // `gone` is unreachable from main, so 7001 is read by scanning main.
+            let owner = merged(meta("7001", "pending", &[path]), "gone", 2000);
+
+            let findings = run_p2(&git, corpus(vec![introducer, owner]));
+
+            assert!(findings.is_empty(), "got {findings:?}");
+        }
+
+        /// Presence is content membership, not occurrence count: a merge that
+        /// added two identical markers keeps both while main still carries one,
+        /// even if the other was removed. Accepted imprecision: P2 cannot tell
+        /// which occurrence survived.
+        #[test]
+        fn merged_commit_twin_markers_kept_while_main_carries_one() {
+            let path = "crates/x/twins.rs";
+            let marker = "    unimplemented!()";
+            let mut git = MockGitOps::new();
+            git.set_is_ancestor("m1", "main", true);
+            git.set_diff_added_lines_in_commit(
+                "m1",
+                path,
+                owned_lines(&[(20, marker), (30, marker)]),
+            );
+            git.set_file_lines_on("main", path, owned_lines(&[(20, marker)]));
+            let task = merged(meta("9670", "done", &[path]), "m1", 1000);
+
+            let findings = run_p2(&git, corpus(vec![task]));
+
+            let summary = summary_of(&findings, "9670");
+            assert!(
+                summary.contains("line 20") && summary.contains("line 30"),
+                "both twins must be reported: {summary}"
+            );
+        }
+
+        /// One file read by all three routes in one `check`: main's lines are
+        /// cached per path, and only the merge-commit route is filtered by them.
+        #[test]
+        fn presence_check_filters_only_the_merged_commit_route_on_a_shared_path() {
+            let path = "crates/x/shared.rs";
+            let mut git = MockGitOps::new();
+            git.set_file_lines_on(
+                "main",
+                path,
+                owned_lines(&[(1, "fn a() {"), (2, "    unimplemented!()"), (3, "}")]),
+            );
+            git.set_is_ancestor("m1", "main", true);
+            git.set_diff_added_lines_in_commit(
+                "m1",
+                path,
+                owned_lines(&[(8, "    // TODO(impl pending)"), (12, "    unimplemented!()")]),
+            );
+            let via_commit = merged(meta("9660", "done", &[path]), "m1", 1000);
+            // `gone` is unreachable from main, so 9661 is read by scanning main.
+            let via_mainline = merged(meta("9661", "done", &[path]), "gone", 2000);
+            add_on_branch(&mut git, "9662", path, &[(40, "    // TODO(later): wire")]);
+            let via_branch = meta("9662", "in_progress", &[path]);
+
+            let findings = run_p2(&git, corpus(vec![via_commit, via_mainline, via_branch]));
+
+            assert_eq!(findings.len(), 3, "got {findings:?}");
+            let commit_summary = summary_of(&findings, "9660");
+            assert!(
+                commit_summary.contains("line 12") && !commit_summary.contains("line 8"),
+                "merge-commit route keeps only what main still carries: {commit_summary}"
+            );
+            assert!(
+                summary_of(&findings, "9661").contains("line 2"),
+                "mainline scan is not presence-filtered"
+            );
+            assert!(
+                summary_of(&findings, "9662").contains("line 40"),
+                "live-branch route is not presence-filtered"
             );
         }
     }
