@@ -85,7 +85,6 @@ drive prepared "$MAIN_LINE"
 assert "(c) sanctioned move allowed (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(c) sentinel consumed (one-shot)" bash -c "! test -e '$SENTINEL'"
 assert "(c) sanctioned logged" bash -c "grep -q 'sanctioned main move' '$LOG'"
-assert "(c) a bound token is not logged as legacy" bash -c "! grep -qF 'legacy unbound sentinel' '$LOG'"
 # A sanctioned move passes even under ENFORCE.
 rm -f "$LOG"; printf '%s\n' "$ONE" > "$SENTINEL"
 drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
@@ -169,19 +168,21 @@ assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanct
 # ===========================================================================
 # Token table (D9): the sentinel carries the main tip it sanctions a move FROM.
 #   matched token (== the move's old oid)  -> consumed, sanctioned       (c, j)
-#   empty (legacy unbound) token           -> consumed, sanctioned+legacy (s)
+#   empty token (= no sentinel)            -> consumed, UNSANCTIONED      (s)
 #   stale token (any other oid)            -> discarded, UNSANCTIONED     (t, t2)
 #   bypass                                 -> sentinel untouched          (u)
 # ===========================================================================
 
-# -- (s) legacy empty sentinel -> sanctioned, logged as legacy -----------------
+# -- (s) empty sentinel == no sentinel -> UNSANCTIONED, consumed ---------------
 echo ""
-echo "--- (s) legacy empty sentinel, ENFORCE=1 -> exit 0, consumed, legacy line ---"
+echo "--- (s) empty sentinel, ENFORCE=1 -> exit 1, consumed, UNSANCTIONED ---"
 reset_durable; rm -f "$SENTINEL" "$LOG"; : > "$SENTINEL"
 drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
-assert "(s) legacy empty sentinel sanctions the move (exit 0)" test "$DRIVE_RC" -eq 0
-assert "(s) legacy sentinel consumed" bash -c "! test -e '$SENTINEL'"
-assert "(s) legacy line logged" grep -qF "sanctioned (legacy unbound sentinel) main move $ONE -> $TWO" "$LOG"
+assert "(s) empty sentinel does not sanction the move (exit 1)" test "$DRIVE_RC" -eq 1
+assert "(s) empty sentinel consumed" bash -c "! test -e '$SENTINEL'"
+assert "(s) move logged UNSANCTIONED" grep -qF "UNSANCTIONED main move $ONE -> $TWO" "$LOG"
+assert "(s) no sanction line logged" bash -c "! grep -q 'sanctioned' '$LOG'"
+assert "(s) no stale-token line for an empty sentinel" bash -c "! grep -qF 'stale sentinel' '$LOG'"
 
 # -- (t) stale token under ENFORCE -> discarded, UNSANCTIONED, abort -----------
 echo ""
@@ -389,7 +390,6 @@ assert "(B5) the move succeeds under ENFORCE (rc 0)" test "$FIX2_RC" -eq 0
 assert "(B5) main advanced to Y" test "$(fix2_main)" = "$Y"
 assert "(B5) sentinel consumed" bash -c "! test -e '$F2_SENTINEL'"
 assert "(B5) log records the bound sanction" grep -qF "sanctioned main move $X -> $Y" "$F2_LOG"
-assert "(B5) log has no legacy line" bash -c "! grep -qF 'legacy unbound sentinel' '$F2_LOG'"
 
 # -- (B5') a docs commit on main through the real pre-commit is sanctioned ------
 echo ""
@@ -402,7 +402,6 @@ assert "(B5') the commit succeeds under ENFORCE (rc 0)" test "$FIX2_RC" -eq 0
 assert "(B5') main advanced" test "$before" != "$after"
 assert "(B5') sentinel consumed" bash -c "! test -e '$F2_SENTINEL'"
 assert "(B5') log records the bound sanction" grep -qF "sanctioned main move $before -> $after" "$F2_LOG"
-assert "(B5') log has no legacy line" bash -c "! grep -qF 'legacy unbound sentinel' '$F2_LOG'"
 
 # -- (B6) gate passed, commit aborted, main moved on: the leftover token is stale
 # A mark at T0 that nothing consumed (bypass never touches the sentinel) must
@@ -441,7 +440,6 @@ b8_seam() {
     in_fix2 REIFY_MAIN_GATE_ENFORCE=1 git update-ref refs/heads/main "$t1" "$t0"
     assert "($label) the CAS move after a mark succeeds under ENFORCE" test "$FIX2_RC" -eq 0
     assert "($label) the move logs the bound sanction" grep -qF "sanctioned main move $t0 -> $t1" "$F2_LOG"
-    assert "($label) the move is not logged as legacy" bash -c "! grep -qF 'legacy unbound sentinel' '$F2_LOG'"
     assert "($label) the token was consumed" bash -c "! test -e '$F2_SENTINEL'"
 
     in_fix2 sh -c "$mark_cmd"
