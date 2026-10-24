@@ -2,13 +2,12 @@
 //! (root cause owned by task **#6851**; this module is its caller-side
 //! "fix-site 2", scoped to `reify-lsp`).
 //!
-//! One predicate, asked by all three LSP production entry points —
-//! [`crate::diagnostics::compute_diagnostics_with_state`],
-//! [`crate::diagnostics::compute_diagnostics`] and
+//! One predicate, asked by both LSP production entry points —
+//! [`crate::diagnostics::compute_diagnostics_with_state`] and
 //! `crate::analysis::AnalysisContext::from_parsed` — immediately before they
-//! would hand a compiled module to the engine. It is a `reify-eval`
-//! graph-safety question, not diagnostics logic, so it lives in its own file
-//! rather than in `diagnostics.rs`: `analysis.rs` gets an import that names
+//! would hand a compiled module to the engine. It
+//! is a `reify-eval` graph-safety question, not diagnostics logic, so it lives
+//! in its own file rather than in `diagnostics.rs`: `analysis.rs` gets an import that names
 //! what it is asking, and the predicate's ~250 lines of derivation stay
 //! readable next to the tests that pin them.
 //!
@@ -85,7 +84,7 @@ fn stage_one_scanned_cells(
 /// representable) is owned by **task #6851**, whose addendum independently
 /// designates a caller-side error gate as its "fix-site 2
 /// (defence-in-depth)". This predicate is that gate, scoped to `reify-lsp`
-/// only: the three LSP production entry points ask [`skip_reason`] and skip
+/// only: the two LSP production entry points ask [`skip_reason`] and skip
 /// their eval/check pass when it answers `Some`, so the server stays alive
 /// and the user is told what happened — by the compile-stage diagnostics
 /// where the module has any, and by [`SkippedEval::diagnostic`] on the
@@ -268,8 +267,8 @@ static LAST_REPORTED_SKIP: AtomicU64 = AtomicU64::new(0);
 /// Why the eval/check pass was skipped for a document, and the ONE place that
 /// renders that reason for a human — server log and editor alike.
 ///
-/// The three production entry points hold three different return types and so
-/// keep three different early-return bodies, but the reason they return early
+/// The two production entry points hold two different return types and so
+/// keep two different early-return bodies, but the reason they return early
 /// is one thing and is spelled once here. Before this type the predicate call
 /// and a character-for-character identical two-line `eprintln!` were
 /// triplicated across `compute_diagnostics_with_state`, `compute_diagnostics`
@@ -361,15 +360,15 @@ impl SkippedEval {
 }
 
 /// `Some(reason)` when `compiled`'s evaluation graph must NOT be fed to the
-/// engine, already reported to the server log — the form all three production
+/// engine, already reported to the server log — the form both production
 /// entry points call.
 ///
 /// Wraps [`first_unrepresentable_cell`] (which stays a pure predicate, so the
 /// unit tests below can ask it without writing to a log) and folds the
 /// reporting in, so the guard's observability policy has ONE definition
 /// rather than one per call site. The caller decides only what to DO about
-/// it: `diagnostics.rs`'s two entry points push
-/// [`SkippedEval::diagnostic`] and return their partial diagnostics,
+/// it: `diagnostics.rs`'s `compute_diagnostics_with_state` pushes
+/// [`SkippedEval::diagnostic`] and returns its partial diagnostics,
 /// `AnalysisContext::from_parsed` returns an empty `CheckResult`.
 pub(crate) fn skip_reason(compiled: &reify_compiler::CompiledModule) -> Option<SkippedEval> {
     let (cell_id, cell_type) = first_unrepresentable_cell(compiled)?;
@@ -381,7 +380,7 @@ pub(crate) fn skip_reason(compiled: &reify_compiler::CompiledModule) -> Option<S
 /// Boolean face of [`first_unrepresentable_cell`] — see that function's doc
 /// for the mechanism, the cost model and the rejected alternatives.
 ///
-/// **Test-only.** All three production entry points go through
+/// **Test-only.** Both production entry points go through
 /// [`skip_reason`], which needs the OFFENDER rather than the bit in order to
 /// name it — so nothing in the lib build calls this form. It is kept because the property the unit
 /// test below pins genuinely IS a boolean ("fires / does not fire", per
