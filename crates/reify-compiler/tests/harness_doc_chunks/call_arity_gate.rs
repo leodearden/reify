@@ -1,5 +1,23 @@
 //! Every call form any chunk writes as copyable code passes the compiler's
 //! arity gate.
+//!
+//! A reader copies a documented call form — out of prose, a fence or a
+//! signature listing — and the compiler resolves its bare name. When a builtin
+//! of that name rejects the written arity, the served documentation asserts a
+//! call the compiler refuses (task #6890's `rotate(geometry, axis, angle)`).
+//! What is read as copyable is `written_calls.rs`'s `COPYABLE_FENCE_TAGS` plus
+//! unfenced prose code spans; whether a builtin rejects a form is
+//! `arity_gate_probe.rs`'s, asked once for the whole corpus.
+//!
+//! # What is NOT established
+//!
+//! - **Argument types and order.** Only the argument COUNT is checked.
+//! - **Anything about names with no arity gate.** Topology selectors,
+//!   measurement queries and stdlib-`.ri` functions draw no argument-count
+//!   message, so they contribute nothing — and nor does a name that resolves to
+//!   nothing at all.
+//! - **An elided call.** `box(...)` has no arity to check.
+//! - **A fence whose tag is not listed** as copyable: it is unread until listed.
 
 use std::collections::BTreeSet;
 
@@ -8,7 +26,7 @@ use reify_test_support::compile_source_with_stdlib;
 
 use crate::arity_gate_probe::{ArityRejection, arity_rejections};
 use crate::chunk_io::{all_chunks, chunk_label, report};
-use crate::written_calls::WrittenCall;
+use crate::written_calls::{WrittenCall, chunk_written_calls};
 
 /// One chunk's written call forms, or why its markup could not be read.
 struct ChunkCalls<'a> {
@@ -17,18 +35,68 @@ struct ChunkCalls<'a> {
 }
 
 /// Every chunk of `chunks` (`(stem, markdown)`) read for its written calls.
-fn read_chunks<'a>(_chunks: &[(&'a str, &str)]) -> Vec<ChunkCalls<'a>> {
-    Vec::new()
+fn read_chunks<'a>(chunks: &[(&'a str, &str)]) -> Vec<ChunkCalls<'a>> {
+    chunks
+        .iter()
+        .map(|(stem, markdown)| ChunkCalls {
+            stem,
+            calls: chunk_written_calls(markdown),
+        })
+        .collect()
 }
 
 /// The distinct `(name, arity)` forms written across `read`.
-fn written_forms(_read: &[ChunkCalls]) -> BTreeSet<(String, usize)> {
-    BTreeSet::new()
+fn written_forms(read: &[ChunkCalls]) -> BTreeSet<(String, usize)> {
+    read.iter()
+        .flat_map(|chunk| chunk.calls.iter().flatten())
+        .map(|call| (call.name.clone(), call.arity))
+        .collect()
 }
 
-/// Every violation in `read`, given the forms the compiler `rejections` name.
-fn violations(_read: &[ChunkCalls], _rejections: &[ArityRejection]) -> Vec<String> {
-    Vec::new()
+/// Every violation in `read`, given the forms the compiler `rejections` name:
+/// one line per written LOCATION of a rejected form, and one per chunk whose
+/// markup cannot be read. Sorted and deduped.
+fn violations(read: &[ChunkCalls], rejections: &[ArityRejection]) -> Vec<String> {
+    let unreadable = read.iter().filter_map(|chunk| {
+        chunk.calls.as_ref().err().map(|error| {
+            format!(
+                "{}: {error} — so no call form in it is checked. FIX: repair the markup.",
+                chunk_label(chunk.stem)
+            )
+        })
+    });
+    let rejected = read.iter().flat_map(|chunk| {
+        chunk.calls.iter().flatten().flat_map(move |call| {
+            rejections
+                .iter()
+                .filter(|r| r.name == call.name && r.arity == call.arity)
+                .map(move |rejection| rejected_call_violation(chunk.stem, call, rejection))
+        })
+    });
+
+    let mut violations: Vec<String> = unreadable.chain(rejected).collect();
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
+/// The violation line for `call`, written in chunk `stem`, whose form the
+/// compiler rejects as `rejection` says. A wrapped call's text is shown on one
+/// line.
+fn rejected_call_violation(stem: &str, call: &WrittenCall, rejection: &ArityRejection) -> String {
+    format!(
+        "{}:{} — `{}` writes {}/{}, which the compiler's arity gate rejects: {}. FIX: correct \
+         the documented call to an arity the compiler accepts (and its mirror in \
+         docs/reify-stdlib-reference.md, if it has one); if it illustrates a user-declared \
+         function, rename it off the builtin's name (functions.md's `align`, task #6890); a form \
+         documented AS rejected belongs in a ```reify-invalid fence.",
+        chunk_label(stem),
+        call.line,
+        call.text.split_whitespace().collect::<Vec<_>>().join(" "),
+        call.name,
+        call.arity,
+        rejection.message
+    )
 }
 
 /// Everything wrong across `chunks` (`(stem, markdown)`), one line each, sorted
@@ -204,9 +272,15 @@ fn an_unreadable_chunk_is_reported_never_skipped() {
 /// beside `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
 const MINIMUM_WRITTEN_CALL_FORMS: usize = 166;
 
-/// `(stem, name, documented arity, rejected arity)`: a form the chunk writes,
-/// each from a different source kind, whose name the compiler arity-gates — so
-/// the live gate is proven to reach every source kind AND to discriminate.
+/// `(stem, name, documented arity, rejected arity)`: a form the chunk writes
+/// whose name the compiler rejects at another arity — so the live gate is
+/// proven, on live content, to reach each source kind AND to discriminate,
+/// rather than being green because nothing it reads is arity-gated.
+///
+/// One per source kind, each in a chunk that writes the form in that kind
+/// only: a ```` ```reify-fragment ```` (constraints), a
+/// ```` ```reify-schematic ```` listing (parameters), a ```` ```reify ```` fence
+/// (purposes) and a prose code span (stdlib).
 const SENTINELS: &[(&str, &str, usize, usize)] = &[
     ("constraints", "determined", 1, 2),
     ("parameters", "constrained", 1, 2),
@@ -214,7 +288,8 @@ const SENTINELS: &[(&str, &str, usize, usize)] = &[
     ("stdlib", "rotate", 5, 3),
 ];
 
-/// THE GATE over the live corpus.
+/// THE GATE over the live corpus. The sentinels' rejected forms join the
+/// written forms in the SAME probe, so the gate stays one compile.
 #[test]
 fn every_call_form_a_chunk_writes_passes_the_compiler_arity_gate() {
     let chunks = all_chunks("the call-arity gate");
