@@ -622,6 +622,25 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
+/// The phrase a compile-layer LENGTH-slot rejection carries right after the
+/// name of the slot it blames, as in `reify_compiler::builtin_signatures`'
+/// documented template `"box: size_x argument expects Length, got Int; …"`.
+///
+/// The compile layer exports no constant for this phrase (the module that
+/// emits it is private to `reify-compiler`), so this is the one place tests
+/// spell it. A rewording of the diagnostic surfaces as tests that read
+/// LENGTH-slot names suddenly finding none; update this constant, not the
+/// tests that read it.
+pub const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
+
+/// The slot name a LENGTH-slot rejection blames, or `None` if `message` is not
+/// one: the token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`], so
+/// `"box: size_x argument expects Length, got Int"` yields `size_x`.
+pub fn named_length_argument(message: &str) -> Option<&str> {
+    let (before, _) = message.split_once(LENGTH_SLOT_DIAGNOSTIC_MARKER)?;
+    before.split_whitespace().next_back()
+}
+
 /// Assert that some `Severity::Error` diagnostic carries `code`.
 ///
 /// `context` is a short label that appears in the panic message to identify
@@ -3333,5 +3352,39 @@ mod tests {
             "expected empty result for OptionNone; got {:?}",
             result_none
         );
+    }
+
+    /// Pinned on SYNTHETIC messages in the documented template, independently
+    /// of what the compiler emits today: if the live diagnostic diverges, the
+    /// consumers that read real messages go red while these stay green, which
+    /// says the wording moved rather than the gate breaking.
+    #[test]
+    fn named_length_argument_reads_the_argument_out_of_a_message() {
+        assert_eq!(
+            super::named_length_argument(
+                "box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"
+            ),
+            Some("size_x")
+        );
+        // A multi-word prefix must still yield the LAST token, not the first.
+        assert_eq!(
+            super::named_length_argument(
+                "linear_pattern: spacing argument expects Length, got Int"
+            ),
+            Some("spacing")
+        );
+    }
+
+    /// A message that is not a LENGTH-slot rejection yields `None` rather than
+    /// a bogus name, so a consumer never "recovers" a slot from a message it
+    /// did not actually parse — e.g. the eval layer's differently-worded
+    /// `missing or non-Length argument '<arg>' for <op>`.
+    #[test]
+    fn named_length_argument_rejects_a_message_without_the_marker() {
+        assert_eq!(
+            super::named_length_argument("missing or non-Length argument 'ox' for mirror"),
+            None
+        );
+        assert_eq!(super::named_length_argument(""), None);
     }
 }

@@ -1684,10 +1684,7 @@ mod tests {
                 .diagnostics
                 .iter()
                 .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
-                .filter_map(|d| {
-                    let (prefix, _) = d.message.split_once(" argument expects Length")?;
-                    prefix.split_whitespace().next_back()
-                })
+                .filter_map(|d| reify_test_support::named_length_argument(&d.message))
                 .collect();
 
             assert_eq!(
