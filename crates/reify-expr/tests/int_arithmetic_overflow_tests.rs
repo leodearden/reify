@@ -120,16 +120,12 @@ fn int_div_at_boundary_keeps_semantics() {
 // ── Remainder ────────────────────────────────────────────────────────────────
 
 #[test]
-fn int_rem_overflow_is_undef() {
-    assert_int_binop(BinOp::Mod, MIN, -1, Value::Undef);
-}
-
-#[test]
 fn int_rem_at_boundary_keeps_semantics() {
     assert_int_binop(BinOp::Mod, 7, 3, Value::Int(1));
     assert_int_binop(BinOp::Mod, -7, 3, Value::Int(-1));
     assert_int_binop(BinOp::Mod, 7, -3, Value::Int(1));
     assert_int_binop(BinOp::Mod, MAX, -1, Value::Int(0));
+    assert_int_binop(BinOp::Mod, MIN, -1, Value::Int(0));
     assert_int_binop(BinOp::Mod, MIN, 1, Value::Int(0));
     assert_int_binop(BinOp::Mod, MIN, 2, Value::Int(0));
     assert_int_binop(BinOp::Mod, 7, 0, Value::Undef);

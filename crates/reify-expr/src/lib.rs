@@ -3809,9 +3809,8 @@ fn scale_components(
     }
 }
 
-/// Int arithmetic's overflow rule: a checked `i64` result that overflowed
-/// (`None`) is `Undef`, never a panic or a wrapped value. Every
-/// `(Value::Int, Value::Int)` operator arm and Int negation go through here.
+/// Int overflow (a `None` from a checked `i64` op) is `Undef`, never a panic
+/// or a wrapped value.
 #[inline]
 fn int_or_undef(checked: Option<i64>) -> Value {
     checked.map_or(Value::Undef, Value::Int)
@@ -4680,7 +4679,15 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_rem(*b)),
+        (Value::Int(a), Value::Int(b)) => {
+            if *b == 0 {
+                Value::Undef
+            } else {
+                // A remainder always fits an i64; `wrapping_rem` is `%` made total
+                // for `i64::MIN % -1` (exactly 0, but `%` panics on it).
+                Value::Int(a.wrapping_rem(*b))
+            }
+        }
         (Value::Real(a), Value::Real(b)) => {
             if *b == 0.0 {
                 Value::Undef
@@ -8372,8 +8379,8 @@ mod tests {
 
     /// `7 % 0` must evaluate to `Undef` (division by zero).
     ///
-    /// GREEN on arrival: in `eval_mod(Int(7), Int(0))` a zero divisor makes
-    /// `checked_rem` return `None`, which `int_or_undef` maps to `Value::Undef`.
+    /// GREEN on arrival: `eval_mod(Int(7), Int(0))` hits the `b == 0` branch
+    /// in `eval_mod` and returns `Value::Undef`.
     #[test]
     fn eval_mod_int_zero_returns_undef() {
         let expr = CompiledExpr::binop(
