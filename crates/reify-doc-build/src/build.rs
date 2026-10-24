@@ -435,14 +435,18 @@ fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
                 "minimize"
             };
             (
-                Some(ExprText::Unavailable(UnavailableReason::NoSpan)),
+                ExprText::Unavailable(UnavailableReason::NoSpan),
                 direction.to_string(),
             )
         }
         None => {
-            // Fall back to the first constraint expression; a purpose that
-            // declares neither an objective nor a constraint has no expression.
-            let expr = p.constraints.first().map(|c| expr_text_at(source, c.span));
+            // Fall back to first constraint expression if available.
+            let expr = p
+                .constraints
+                .first()
+                .map_or(ExprText::Unavailable(UnavailableReason::NoSpan), |c| {
+                    expr_text_at(source, c.span)
+                });
             (expr, "minimize".to_string())
         }
     };
