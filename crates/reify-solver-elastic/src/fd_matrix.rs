@@ -36,7 +36,7 @@ pub(crate) fn assemble_d(n: usize, members: &[(usize, usize)], q: &[f64]) -> Mat
         debug_assert!(
             j < n && k < n,
             "member ({j}, {k}) indexes past the {n}×{n} force-density matrix; \
-             ForceDensityProblem::new must run before assemble_d",
+             callers must range-check members before assemble_d",
         );
         d[(j, j)] += qi;
         d[(k, k)] += qi;
@@ -127,13 +127,31 @@ impl SymmetricSpectrum {
         self.max_mag
     }
 
+    /// The null threshold `rel_tol · max|λ|`: an eigenvalue whose magnitude is
+    /// at most this is numerically zero.
+    fn null_threshold(&self, rel_tol: f64) -> f64 {
+        rel_tol * self.max_mag
+    }
+
     /// Count of eigenvalues with `|λ| ≤ rel_tol · max|λ|`.
     pub(crate) fn nullity(&self, rel_tol: f64) -> usize {
-        let threshold = rel_tol * self.max_mag;
+        let threshold = self.null_threshold(rel_tol);
         self.eigenvalues
             .iter()
             .filter(|v| v.abs() <= threshold)
             .count()
+    }
+
+    /// Whether the matrix is positive-semidefinite under `rel_tol`: its
+    /// algebraic minimum eigenvalue exceeds `−rel_tol · max|λ|`, so no
+    /// eigenvalue is meaningfully negative.
+    pub(crate) fn is_psd(&self, rel_tol: f64) -> bool {
+        let min_lambda = self
+            .eigenvalues
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        min_lambda > -self.null_threshold(rel_tol)
     }
 
     /// Count of eigenvalues clear of the null threshold
@@ -224,6 +242,16 @@ mod tests {
     }
 
     #[test]
+    fn psd_tolerates_a_negative_eigenvalue_only_inside_the_null_threshold() {
+        let spectrum = SymmetricSpectrum::of(&diag(&[-1e-6, 1.0, 2.0])).expect("finite matrix");
+        assert!(spectrum.is_psd(1e-5));
+        assert!(!spectrum.is_psd(1e-8));
+
+        let indefinite = SymmetricSpectrum::of(&diag(&[5.0, -2.0, 0.0])).expect("finite matrix");
+        assert!(!indefinite.is_psd(NULLITY_REL_TOL));
+    }
+
+    #[test]
     fn a_nan_entry_is_a_typed_error_naming_its_position() {
         let mut m = Mat::<f64>::identity(3, 3);
         m[(1, 2)] = f64::NAN;
@@ -253,5 +281,6 @@ mod tests {
         assert_eq!(spectrum.nullity(NULLITY_REL_TOL), 0);
         assert_eq!(spectrum.rank(NULLITY_REL_TOL), 0);
         assert_eq!(spectrum.null_basis(NULLITY_REL_TOL).ncols(), 0);
+        assert!(spectrum.is_psd(NULLITY_REL_TOL));
     }
 }

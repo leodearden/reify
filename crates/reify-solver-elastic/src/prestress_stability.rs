@@ -365,18 +365,6 @@ fn gram_self_transpose(a: &Mat<f64>) -> Mat<f64> {
     column_gram(a.as_ref().transpose())
 }
 
-/// Orthonormal basis of the null space of a symmetric Gram matrix: its
-/// eigenvectors whose eigenvalue magnitude is `≤ rel_tol · max|λ|`, as owned
-/// columns. The eigenvectors of a real symmetric matrix are orthonormal, so the
-/// returned set is already an orthonormal null-space basis.
-fn null_space_basis(gram: &Mat<f64>, rel_tol: f64) -> Result<Vec<Vec<f64>>, SpectrumError> {
-    let spectrum = SymmetricSpectrum::of(gram)?;
-    let null = spectrum.null_basis(rel_tol);
-    Ok((0..null.ncols())
-        .map(|c| (0..null.nrows()).map(|r| null[(r, c)]).collect())
-        .collect())
-}
-
 /// Assemble the six rigid-body generators of `nodes` as columns of a `3N × 6`
 /// matrix, in node-major / axis-minor DOF order (`3r + α`).
 ///
@@ -431,7 +419,7 @@ fn rigid_body_modes(nodes: &[[f64; 3]]) -> Mat<f64> {
 /// the framework: `null(Aᵀ)` with the rigid-body span projected out.
 ///
 /// 1. `null(Aᵀ)` = the zero-eigenvalue eigenvectors of `AAᵀ`
-///    ([`null_space_basis`] on [`gram_self_transpose`]).
+///    ([`SymmetricSpectrum::null_basis`] of [`gram_self_transpose`]).
 /// 2. Orthonormalise the six rigid-body generators ([`rigid_body_modes`]); the
 ///    surviving count is the true rigid rank `n_rigid` (6 for a non-degenerate
 ///    3-D form, fewer for planar/collinear node sets).
@@ -450,8 +438,8 @@ pub(crate) fn extract_internal_mechanisms(
     let dim = a.nrows();
 
     // 1. null(Aᵀ): left null space of A via the zero eigenvectors of AAᵀ.
-    let gram = gram_self_transpose(a);
-    let null_vectors = null_space_basis(&gram, NULLITY_REL_TOL)?;
+    let gram_spectrum = SymmetricSpectrum::of(&gram_self_transpose(a))?;
+    let null_vectors = gram_spectrum.null_basis(NULLITY_REL_TOL);
 
     // 2. Orthonormal rigid-body basis (rank = n_rigid).
     let rigid = rigid_body_modes(nodes);
@@ -461,9 +449,9 @@ pub(crate) fn extract_internal_mechanisms(
     let rigid_basis = orthonormalize_columns(&rigid_cols, NULLITY_REL_TOL);
 
     // 3. Project the rigid span out of each null(Aᵀ) vector.
-    let mut projected: Vec<Vec<f64>> = Vec::with_capacity(null_vectors.len());
-    for v in &null_vectors {
-        let mut w = v.clone();
+    let mut projected: Vec<Vec<f64>> = Vec::with_capacity(null_vectors.ncols());
+    for c in 0..null_vectors.ncols() {
+        let mut w: Vec<f64> = (0..dim).map(|r| null_vectors[(r, c)]).collect();
         for rb in &rigid_basis {
             let proj = dot(&w, rb);
             for (wi, ri) in w.iter_mut().zip(rb.iter()) {
@@ -641,17 +629,7 @@ fn is_super_stable(
         return Ok(false);
     }
     let spectrum = SymmetricSpectrum::of(&assemble_d(n, members, q))?;
-    let threshold = NULLITY_REL_TOL * spectrum.max_mag();
-
-    // PSD: no eigenvalue is meaningfully negative (algebraic min above −threshold).
-    let min_lambda = spectrum
-        .eigenvalues()
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let psd = min_lambda > -threshold;
-
-    Ok(psd && spectrum.rank(NULLITY_REL_TOL) + d + 1 == n)
+    Ok(spectrum.is_psd(NULLITY_REL_TOL) && spectrum.rank(NULLITY_REL_TOL) + d + 1 == n)
 }
 
 #[cfg(test)]
