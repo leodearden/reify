@@ -699,6 +699,7 @@ fn is_super_stable(n: usize, members: &[(usize, usize)], q: &[f64], d: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fd_matrix::SpectrumError;
 
     /// The complete 9-cable triplex member list (3 struts + 9 cables) in
     /// struts-then-cables order, mirroring `form_find_free.rs`'s
@@ -835,6 +836,18 @@ mod tests {
             0,
             "planar open square has no self-stress state",
         );
+    }
+
+    #[test]
+    fn gram_spectra_of_a_non_finite_equilibrium_matrix_are_typed_errors() {
+        let nodes = canonical_prism();
+        let mut a = assemble_equilibrium_matrix(&nodes, &triplex_members());
+        // Poisons AᵀA[0,0] and AAᵀ[0,0], each Gram matrix's first entry in
+        // column-major order.
+        a[(0, 0)] = f64::NAN;
+        let non_finite = SpectrumError::NonFinite { row: 0, col: 0 };
+        assert_eq!(count_self_stress_states(&a), Err(non_finite));
+        assert_eq!(extract_internal_mechanisms(&a, &nodes).err(), Some(non_finite));
     }
 
     #[test]
