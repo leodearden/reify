@@ -5422,7 +5422,7 @@ mod tests {
     }
 
     /// Helper: build a FunctionCall Expr named "box" with three specific numeric arg values.
-    fn make_box_with_values(w: f64, h: f64, d: f64) -> reify_ast::Expr {
+    fn make_box_with_values(size_x: f64, size_y: f64, size_z: f64) -> reify_ast::Expr {
         let num = |v: f64| reify_ast::Expr {
             kind: reify_ast::ExprKind::NumberLiteral {
                 value: v,
@@ -5433,7 +5433,7 @@ mod tests {
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "box".to_string(),
-                args: vec![num(w), num(h), num(d)],
+                args: vec![num(size_x), num(size_y), num(size_z)],
                 arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),

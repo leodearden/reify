@@ -42,13 +42,13 @@ use reify_kernel_occt::OcctKernel;
 /// Build a kernel with a single box primitive.
 ///
 /// Returns `(kernel, handle_id)`.
-fn box_kernel(width: f64, height: f64, depth: f64) -> (OcctKernel, GeometryHandleId) {
+fn box_kernel(size_x: f64, size_y: f64, size_z: f64) -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Box {
-            size_x: Value::Real(width),
-            size_y: Value::Real(height),
-            size_z: Value::Real(depth),
+            size_x: Value::Real(size_x),
+            size_y: Value::Real(size_y),
+            size_z: Value::Real(size_z),
         })
         .expect("box creation should succeed");
     (kernel, handle.id)

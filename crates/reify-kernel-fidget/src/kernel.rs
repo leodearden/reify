@@ -943,21 +943,21 @@ mod tests {
     /// over-reject.
     #[test]
     fn fidget_kernel_execute_box_rejects_invalid_dimensions() {
-        // (width, height, depth) triples — each has at least one bad axis.
+        // (size_x, size_y, size_z) triples — each has at least one bad axis.
         let bad_triples: &[(Value, Value, Value)] = &[
-            // negative width
+            // negative size_x
             (Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)),
-            // zero height
+            // zero size_y
             (Value::Real(1.0), Value::Real(0.0), Value::Real(1.0)),
-            // NaN depth
+            // NaN size_z
             (Value::Real(1.0), Value::Real(1.0), Value::Real(f64::NAN)),
-            // +Inf width
+            // +Inf size_x
             (
                 Value::Real(f64::INFINITY),
                 Value::Real(1.0),
                 Value::Real(1.0),
             ),
-            // -Inf height
+            // -Inf size_y
             (
                 Value::Real(1.0),
                 Value::Real(f64::NEG_INFINITY),
@@ -967,26 +967,26 @@ mod tests {
             (Value::Real(-1.0), Value::Real(-2.0), Value::Real(-3.0)),
         ];
 
-        for (width, height, depth) in bad_triples {
+        for (size_x, size_y, size_z) in bad_triples {
             let mut kernel = FidgetKernel::new();
             let result = kernel.execute(&GeometryOp::Box {
-                size_x: width.clone(),
-                size_y: height.clone(),
-                size_z: depth.clone(),
+                size_x: size_x.clone(),
+                size_y: size_y.clone(),
+                size_z: size_z.clone(),
             });
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
                     assert_eq!(
                         msg.as_str(),
                         BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
-                        "box-dimensions rejection message must be byte-identical to the shared const; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
+                        "box-dimensions rejection message must be byte-identical to the shared const; triple=({size_x:?},{size_y:?},{size_z:?}), got {msg:?}",
                     );
                 }
                 Ok(handle) => panic!(
-                    "execute(Box) with ({width:?},{height:?},{depth:?}) must fail, but returned Ok({handle:?})",
+                    "execute(Box) with ({size_x:?},{size_y:?},{size_z:?}) must fail, but returned Ok({handle:?})",
                 ),
                 Err(other) => panic!(
-                    "execute(Box) with ({width:?},{height:?},{depth:?}) must return \
+                    "execute(Box) with ({size_x:?},{size_y:?},{size_z:?}) must return \
                      OperationFailed, got {other:?}",
                 ),
             }

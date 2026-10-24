@@ -71,12 +71,12 @@ struct Fixture {
     foreign_face: GeometryHandleId,
 }
 
-fn make_box(kernel: &mut OcctKernel, [w, h, d]: [f64; 3]) -> GeometryHandleId {
+fn make_box(kernel: &mut OcctKernel, [x_mm, y_mm, z_mm]: [f64; 3]) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            size_x: Value::Real(w * MM),
-            size_y: Value::Real(h * MM),
-            size_z: Value::Real(d * MM),
+            size_x: Value::Real(x_mm * MM),
+            size_y: Value::Real(y_mm * MM),
+            size_z: Value::Real(z_mm * MM),
         })
         .expect("box should build")
         .id

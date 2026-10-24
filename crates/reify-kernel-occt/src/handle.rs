@@ -3484,13 +3484,17 @@ mod tests {
     // --- Topology extraction through the handle channel (step-21) ---
 
     /// Helper: build a box on a fresh handle and return both.
-    fn handle_with_box(w: f64, h: f64, d: f64) -> (super::OcctKernelHandle, GeometryHandleId) {
+    fn handle_with_box(
+        size_x: f64,
+        size_y: f64,
+        size_z: f64,
+    ) -> (super::OcctKernelHandle, GeometryHandleId) {
         let handle = super::OcctKernelHandle::spawn();
         let gh = handle
             .execute(&GeometryOp::Box {
-                size_x: Value::Real(w),
-                size_y: Value::Real(h),
-                size_z: Value::Real(d),
+                size_x: Value::Real(size_x),
+                size_y: Value::Real(size_y),
+                size_z: Value::Real(size_z),
             })
             .expect("Box execute should succeed");
         (handle, gh.id)

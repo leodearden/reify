@@ -15,13 +15,13 @@ use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, QueryError
 /// (converted to SI metres at the kernel boundary so geometric queries
 /// like `SurfaceArea`/`EdgeLength` return values in m² / m) and return
 /// the kernel + its handle id.
-fn box_kernel(width_mm: f64, height_mm: f64, depth_mm: f64) -> (OcctKernel, GeometryHandleId) {
+fn box_kernel(x_mm: f64, y_mm: f64, z_mm: f64) -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let h = kernel
         .execute(&GeometryOp::Box {
-            size_x: Value::Real(width_mm * 1e-3),
-            size_y: Value::Real(height_mm * 1e-3),
-            size_z: Value::Real(depth_mm * 1e-3),
+            size_x: Value::Real(x_mm * 1e-3),
+            size_y: Value::Real(y_mm * 1e-3),
+            size_z: Value::Real(z_mm * 1e-3),
         })
         .expect("Box creation should succeed");
     (kernel, h.id)

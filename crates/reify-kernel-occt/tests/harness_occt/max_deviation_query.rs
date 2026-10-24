@@ -35,11 +35,11 @@ use reify_kernel_occt::OcctKernel;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn box_op(w: f64, h: f64, d: f64) -> GeometryOp {
+fn box_op(size_x: f64, size_y: f64, size_z: f64) -> GeometryOp {
     GeometryOp::Box {
-        size_x: Value::Real(w),
-        size_y: Value::Real(h),
-        size_z: Value::Real(d),
+        size_x: Value::Real(size_x),
+        size_y: Value::Real(size_y),
+        size_z: Value::Real(size_z),
     }
 }
 
