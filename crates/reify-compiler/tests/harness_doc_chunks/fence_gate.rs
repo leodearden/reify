@@ -93,10 +93,11 @@
 //! What closed it instead was renaming the example to `align`, a name no
 //! builtin arity-gates, so copying the CALL form alone now fails as an
 //! undefined function rather than as a misleading arity error on a real
-//! builtin. The arity of every signature the chunk declares is now pinned
-//! directly by `functions_chunk_overloading_smoke.rs` — a scan over chunk
-//! text, not a fence gate, which is why that guard lives beside this one
-//! rather than inside it.
+//! builtin. The arity of every call form the chunk writes is now pinned by
+//! `call_arity_gate.rs`, which checks every call form in every chunk's prose
+//! and copyable fences — ```` ```reify-schematic ```` listings included — a
+//! scan over chunk text, not a fence gate, which is why that guard lives
+//! beside this one rather than inside it.
 //!
 //! The third gap is `reify-fragment`, and it is WIDER than the tag's wording
 //! admits. "Member-level or otherwise context-dependent" asserts that SOME

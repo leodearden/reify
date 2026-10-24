@@ -55,6 +55,12 @@
 //!   split out of geometry.md with the guard that covers it.
 //! - `prose_idiom_gate` (#8050) — every concrete idiom in a gated chunk's
 //!   unfenced prose compiles, its metavariables left unbound.
+//! - `written_calls` (#7232) — every call form a chunk writes as copyable
+//!   code, read as text.
+//! - `arity_gate_probe` (#7232) — which `(name, arity)` call forms a builtin's
+//!   arity gate rejects.
+//! - `call_arity_gate` (#7232) — every call form any chunk writes passes the
+//!   compiler's arity gate.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
