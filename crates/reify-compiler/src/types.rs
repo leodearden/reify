@@ -631,9 +631,10 @@ pub enum CompiledForallBody {
     /// names the same ports the resolved (non-deferred) path names.
     ///
     /// At runtime each element gets a fresh `CompiledConnection` paired with a
-    /// synthetic `Bool::True` compatibility constraint: the connect-time
-    /// direction check is not replayed, and `connector_type` / `params` are
-    /// dropped — no `connector_sub` or `frame_constraint` is created, and
+    /// compatibility constraint carrying `directions_compatible`, which
+    /// `forall_elaborate.rs` computes once at capture through the same
+    /// endpoint checks `compile_connection` runs. `connector_type` / `params`
+    /// are dropped — no `connector_sub` or `frame_constraint` is created, and
     /// `port_mappings` is carried verbatim.
     Connect {
         left: PortPath,
