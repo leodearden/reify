@@ -219,6 +219,19 @@ const RATCHETS: &[Ratchet] = &[
             shared_dir: "tests/common/",
         },
     },
+    Ratchet {
+        name: "eigen-calls-outside-spectrum-module",
+        home: "SymmetricSpectrum::of in fd_matrix.rs (solver-crates-layering gap-fill φ-ff)",
+        baseline: 0,
+        measure: Measure::Occurrences(Pattern {
+            exclude: &["src/fd_matrix.rs"],
+            ..Pattern::whole_file(
+                ".self_adjoint_eigen(",
+                SRC,
+                "let eig = d.self_adjoint_eigen(Side::Lower);",
+            )
+        }),
+    },
 ];
 
 #[test]
