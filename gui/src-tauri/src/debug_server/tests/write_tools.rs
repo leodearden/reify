@@ -1331,6 +1331,51 @@ async fn reify_export_rejects_an_unknown_format() {
     );
 }
 
+/// The `reify_export` schema tells an AI client which `format` spellings
+/// exist; it must list exactly what `parse_export_format` accepts, or the
+/// advertisement lies about the tool.
+#[test]
+fn reify_export_advertises_exactly_the_spellings_parse_export_format_accepts() {
+    let defs = tool_defs();
+    let export = defs
+        .iter()
+        .find(|d| d.name == "reify_export")
+        .expect("reify_export must be advertised in tool_defs()");
+    let format = &export.input_schema["properties"]["format"];
+
+    assert_eq!(
+        format["type"].as_str(),
+        Some("string"),
+        "reify_export: properties.format.type must stay 'string'"
+    );
+
+    let advertised: Vec<&str> = format["enum"]
+        .as_array()
+        .unwrap_or_else(|| panic!("reify_export: properties.format.enum must be an array"))
+        .iter()
+        .map(|v| {
+            v.as_str().unwrap_or_else(|| {
+                panic!("reify_export: properties.format.enum must hold strings, got {v}")
+            })
+        })
+        .collect();
+    let accepted: Vec<&str> = crate::commands::EXPORT_FORMAT_SPELLINGS
+        .iter()
+        .map(|&(spelling, _)| spelling)
+        .collect();
+    assert_eq!(
+        advertised, accepted,
+        "reify_export: properties.format.enum must be EXPORT_FORMAT_SPELLINGS, in table order"
+    );
+
+    for spelling in advertised {
+        assert!(
+            crate::commands::parse_export_format(spelling).is_ok(),
+            "reify_export advertises {spelling:?}, which parse_export_format refuses"
+        );
+    }
+}
+
 // ── Task 5097 (δ) step-15: RED — the AI write-tool SURFACE ──
 //
 // The five engine-side write handlers landed in steps 1-14; what is
