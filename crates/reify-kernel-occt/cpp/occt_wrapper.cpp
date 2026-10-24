@@ -635,10 +635,10 @@ static gp_Vec face_outward_unit_normal(const TopoDS_Face& face, const char* who)
 
 // --- Primitive construction ---
 
-std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
+std::unique_ptr<OcctShape> make_box(double size_x, double size_y, double size_z) {
     return wrap_occt_call("make_box", [&]() {
-        gp_Pnt corner(-width / 2.0, -height / 2.0, -depth / 2.0);
-        BRepPrimAPI_MakeBox maker(corner, width, height, depth);
+        gp_Pnt corner(-size_x / 2.0, -size_y / 2.0, -size_z / 2.0);
+        BRepPrimAPI_MakeBox maker(corner, size_x, size_y, size_z);
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeBox failed");

@@ -404,7 +404,7 @@ pub mod ffi {
         fn precision_confusion() -> f64;
 
         // --- Primitive construction ---
-        fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_box(size_x: f64, size_y: f64, size_z: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;

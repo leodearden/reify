@@ -2022,15 +2022,15 @@ impl OcctKernel {
     pub fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let outcome = match op {
             GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } => {
-                let w = extract_length_f64(width, op, "width")?;
-                let h = extract_length_f64(height, op, "height")?;
-                let d = extract_length_f64(depth, op, "depth")?;
-                validate_all_positive_finite(&[w, h, d], BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE)?;
-                let built = ffi::ffi::make_box(w, h, d)
+                let x = extract_length_f64(size_x, op, "size_x")?;
+                let y = extract_length_f64(size_y, op, "size_y")?;
+                let z = extract_length_f64(size_z, op, "size_z")?;
+                validate_all_positive_finite(&[x, y, z], BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE)?;
+                let built = ffi::ffi::make_box(x, y, z)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
@@ -4525,9 +4525,9 @@ mod tests {
     fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(5.0),
             })
             .expect("Box creation must succeed")
             .id
@@ -4756,9 +4756,9 @@ mod tests {
         // Execute a box and a cylinder
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         kernel
@@ -4783,9 +4783,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -4815,9 +4815,9 @@ mod tests {
         // Create box (10x20x30), handle ID 1
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -4906,9 +4906,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         let box_h = kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -4970,9 +4970,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -5191,9 +5191,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let faces_a = kernel_a
@@ -5266,9 +5266,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let box_id = box_handle.id;
@@ -5329,9 +5329,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let box_id = box_handle.id;
@@ -5420,9 +5420,9 @@ mod tests {
 
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         kernel
@@ -5451,9 +5451,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let box_id = box_handle.id;
@@ -5526,9 +5526,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let pre = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let pre_id = pre.id.0;
@@ -5570,9 +5570,9 @@ mod tests {
         for _ in 0..CYCLES {
             let box_h = kernel
                 .execute(&GeometryOp::Box {
-                    width: Value::Real(10.0),
-                    height: Value::Real(20.0),
-                    depth: Value::Real(30.0),
+                    size_x: Value::Real(10.0),
+                    size_y: Value::Real(20.0),
+                    size_z: Value::Real(30.0),
                 })
                 .unwrap();
             first_ids.push(box_h.id.0);
@@ -5706,9 +5706,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -5737,9 +5737,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -5766,9 +5766,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -5813,9 +5813,9 @@ mod tests {
         // Kernel should still function normally
         let gh = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let vol = kernel.query(&GeometryQuery::Volume(gh.id)).unwrap();
@@ -5831,9 +5831,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -5890,9 +5890,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         kernel
@@ -5990,9 +5990,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -6193,9 +6193,9 @@ mod tests {
         let mut source = OcctKernel::new();
         source
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let state = source.warm_state().expect("should have warm state");
@@ -6232,9 +6232,9 @@ mod tests {
         // Create a valid box (id=1)
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -6547,9 +6547,9 @@ mod tests {
         // Create a valid box (id=1)
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -6582,9 +6582,9 @@ mod tests {
     fn execute_box_zero_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(0.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(0.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -6602,9 +6602,9 @@ mod tests {
     fn execute_box_negative_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(-5.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(-5.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -6688,9 +6688,9 @@ mod tests {
         // Create a valid box first
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
@@ -6711,9 +6711,9 @@ mod tests {
     fn execute_box_nan_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(f64::NAN),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(f64::NAN),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -6731,9 +6731,9 @@ mod tests {
     fn execute_box_infinity_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(f64::INFINITY),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(f64::INFINITY),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -6751,9 +6751,9 @@ mod tests {
     fn execute_box_neg_infinity_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(f64::NEG_INFINITY),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(f64::NEG_INFINITY),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -6836,9 +6836,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
@@ -6858,9 +6858,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
@@ -6882,9 +6882,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -6904,9 +6904,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -6926,9 +6926,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -6948,9 +6948,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -6978,9 +6978,9 @@ mod tests {
     fn make_10mm_box_for_local_feature_test(kernel: &mut OcctKernel) -> GeometryHandle {
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0e-3),
-                height: Value::Real(10.0e-3),
-                depth: Value::Real(10.0e-3),
+                size_x: Value::Real(10.0e-3),
+                size_y: Value::Real(10.0e-3),
+                size_z: Value::Real(10.0e-3),
             })
             .expect("10mm box should build")
     }
@@ -7046,9 +7046,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7068,9 +7068,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7090,9 +7090,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7112,9 +7112,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // A near-zero axis (mag_sq = 1e-34, non-zero but physically meaningless)
@@ -7138,9 +7138,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // axis=[1e-10, 0, 0] has mag_sq=1e-20, physically meaningless (0.1 nanometer)
@@ -7168,9 +7168,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // axis=[0, 1e-8, 0] has mag_sq=1e-16, physically meaningless (10 nanometers)
@@ -7203,9 +7203,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7231,9 +7231,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7261,9 +7261,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Radius 100.0 is much larger than any edge of the 10x10x10 box
@@ -7286,9 +7286,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7309,9 +7309,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7332,9 +7332,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7382,9 +7382,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Apply LinearPattern: 4 copies along X with spacing 20
@@ -7415,9 +7415,9 @@ mod tests {
         // Create a small 5x5x5 box (volume = 125)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(5.0),
-                height: Value::Real(5.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(5.0),
+                size_y: Value::Real(5.0),
+                size_z: Value::Real(5.0),
             })
             .unwrap();
         // Translate to (20,0,0) to offset from center
@@ -7458,9 +7458,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Apply LinearPattern2D: 3×4 grid along X and Y with 20mm spacing
@@ -7494,9 +7494,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Apply ArbitraryPattern with 3 non-overlapping translations
@@ -7527,9 +7527,9 @@ mod tests {
     /// carries a 90-degree-about-Y rotation (zero translation) must honor the rotation
     /// in the fused result, not just the translation.
     ///
-    /// `box(width=2, height=2, depth=10)` maps to X-extent=2, Y-extent=2, Z-extent=10
-    /// (`make_box(width,height,depth)` -> `gp_Pnt(-w/2,-h/2,-d/2)` + `MakeBox(dx,dy,dz)`,
-    /// so width->X, height->Y, depth->Z). A 90-degree rotation about Y swaps the X and Z
+    /// `Box { size_x: 2, size_y: 2, size_z: 10 }` has X-extent=2, Y-extent=2, Z-extent=10
+    /// (`make_box(size_x,size_y,size_z)` -> `gp_Pnt(-size_x/2,-size_y/2,-size_z/2)` +
+    /// `MakeBox(dx,dy,dz)`). A 90-degree rotation about Y swaps the X and Z
     /// extents (2<->10) for the rotated copy; fusing it with the untouched original
     /// (X-extent 2) grows the union's overall X-extent to the max of the two, ~10.
     ///
@@ -7541,9 +7541,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(2.0),
-                height: Value::Real(2.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(2.0),
+                size_y: Value::Real(2.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Single instance: 90-degree-about-Y quaternion [cos45,0,sin45,0], zero
@@ -7574,9 +7574,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::LinearPattern2D {
@@ -7604,9 +7604,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::LinearPattern2D {
@@ -7634,9 +7634,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // NaN in direction1 should fail
@@ -7690,9 +7690,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::ArbitraryPattern {
@@ -7856,9 +7856,9 @@ mod tests {
         // Create a 10x10x10mm box (10mm = 0.010m)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .unwrap();
         // Positive thicken: should expand box to ~11mm
@@ -7905,9 +7905,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Thicken by offset=2.0 — result should have volume > 1000
@@ -8073,9 +8073,9 @@ mod tests {
         // 10×10×10 box; inradius = 5
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Inward offset -100 >> inradius 5 → degenerate, must return Err
@@ -8095,9 +8095,9 @@ mod tests {
         // Create a 20x20x20 box (volume = 8000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
         // Shell with thickness=1.0, remove face 0 to create hollow box
@@ -8269,9 +8269,9 @@ mod tests {
         // (c) Overload 2 — offset on a reference surface (a box face) → Ok wire.
         let boxx = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.02),
-                height: Value::Real(0.02),
-                depth: Value::Real(0.02),
+                size_x: Value::Real(0.02),
+                size_y: Value::Real(0.02),
+                size_z: Value::Real(0.02),
             })
             .expect("box should build");
         let faces = kernel
@@ -8315,17 +8315,17 @@ mod tests {
         // Create box_a at origin (10x10x10, centered)
         let box_a = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Create box_b and translate to (50,0,0)
         let box_b_raw = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let box_b = kernel
@@ -8358,9 +8358,9 @@ mod tests {
         // Create a 10x10x10 box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Query MoI around Z axis
@@ -8393,9 +8393,9 @@ mod tests {
         // Mirror
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let translated = kernel
@@ -8448,9 +8448,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -8513,9 +8513,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let translated = kernel
@@ -8570,9 +8570,9 @@ mod tests {
         // Create plate: 100x60x10
         let plate = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(60.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(60.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let plate_vol = match kernel.query(&GeometryQuery::Volume(plate.id)).unwrap() {
@@ -8634,17 +8634,17 @@ mod tests {
         // Create a 20x20x20 box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
         // Create a plane reference (small flat box at z=0)
         let plane_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(100.0),
-                depth: Value::Real(0.1),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(100.0),
+                size_z: Value::Real(0.1),
             })
             .unwrap();
         // Apply Draft with angle ~5.7 degrees (0.1 rad)
@@ -8692,16 +8692,16 @@ mod tests {
     fn build_draft_fixture(kernel: &mut OcctKernel) -> (GeometryHandle, GeometryHandle) {
         let target_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
         let plane_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(100.0),
-                depth: Value::Real(0.1),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(100.0),
+                size_z: Value::Real(0.1),
             })
             .unwrap();
         (target_h, plane_h)
@@ -8975,9 +8975,9 @@ mod tests {
         // Build a second box and extract its faces — these are foreign to `target`.
         let second_box = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(5.0),
-                height: Value::Real(5.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(5.0),
+                size_y: Value::Real(5.0),
+                size_z: Value::Real(5.0),
             })
             .unwrap();
         let foreign_faces = kernel
@@ -9028,9 +9028,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Translate box to (5,0,0) so it's off-center
@@ -9075,9 +9075,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // plane_normal=[1e-20, 0, 0] has mag_sq=1e-40, physically meaningless.
@@ -9124,9 +9124,9 @@ mod tests {
         // Create a 10x10x10 box, volume = 1000
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Scale by 2: linear dimensions double, volume becomes 8x = 8000
@@ -9157,9 +9157,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let scaled_h = kernel
@@ -9189,9 +9189,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Scale {
@@ -9221,9 +9221,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Scale {
@@ -9256,9 +9256,9 @@ mod tests {
         // Create a 10x10x10 box centered at origin.
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -9342,9 +9342,9 @@ mod tests {
         // Target box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
 
@@ -9402,9 +9402,9 @@ mod tests {
         // Create a box as a stand-in profile (provides a valid handle)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         // Extrude with zero distance should fail
@@ -9433,9 +9433,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Extrude {
@@ -9463,9 +9463,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Extrude {
@@ -9751,9 +9751,9 @@ mod tests {
         // Create a box solid as (invalid) path
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Create a circle face as profile
@@ -9791,9 +9791,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9810,9 +9810,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9829,9 +9829,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9900,9 +9900,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9919,9 +9919,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9938,9 +9938,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9957,9 +9957,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9977,9 +9977,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -9997,9 +9997,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         // 1e-35 is below C++ threshold (1e-30) and below any reasonable physical angle.
@@ -10018,9 +10018,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         // axis=[1e-8, 0, 0] has mag_sq=1e-16, physically meaningless
@@ -11032,9 +11032,9 @@ mod tests {
         // Create a 10×10×10 box and translate it by dx=5 so centroid is at (5, 0, 0).
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let translated = kernel
@@ -11259,9 +11259,9 @@ mod tests {
         // A 10×10×10 box centred at the origin.
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("Box creation must succeed");
         // Query with four density values including the two edge cases ρ=0 and ρ<0.
@@ -11347,9 +11347,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("Box creation must succeed");
         let translated = kernel
@@ -11634,9 +11634,9 @@ mod tests {
         // zero at the centroid.
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(1000.0),
-                height: Value::Real(1000.0),
-                depth: Value::Real(1000.0),
+                size_x: Value::Real(1000.0),
+                size_y: Value::Real(1000.0),
+                size_z: Value::Real(1000.0),
             })
             .unwrap();
         let result = kernel
@@ -11740,19 +11740,19 @@ mod tests {
     #[test]
     fn inertia_tensor_rotated_non_cubic_box_offdiagonals_symmetric() {
         let mut kernel = OcctKernel::new();
-        // Non-cubic box: width=1000, height=2000, depth=500, density=1.
+        // Non-cubic box: size_x=1000, size_y=2000, size_z=500, density=1.
         // Volume = 1e9, mass m = 1e9.
         // Centroidal moments in local frame (box axes):
-        //   I_xx_local = m/12·(h²+d²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
-        //   I_yy_local = m/12·(w²+d²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
+        //   I_xx_local = m/12·(size_y²+size_z²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
+        //   I_yy_local = m/12·(size_x²+size_z²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
         // After 30° rotation around Z:
         //   I_xy_world = (I_xx_local - I_yy_local)·sin30°·cos30° ≈ 1.08e14
         // (I_xz and I_yz remain zero because Z-rotation doesn't mix Z cross-products.)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(1000.0),
-                height: Value::Real(2000.0),
-                depth: Value::Real(500.0),
+                size_x: Value::Real(1000.0),
+                size_y: Value::Real(2000.0),
+                size_z: Value::Real(500.0),
             })
             .expect("Box creation must succeed");
         // Rotate 30° around Z-axis (PI/6 radians).
@@ -12347,9 +12347,9 @@ mod tests {
 
         let source = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("box creation should succeed");
 
@@ -12399,9 +12399,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let transformed = kernel
@@ -12443,9 +12443,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let orig_mesh = kernel.tessellate(box_h.id, 1e-4).unwrap();
@@ -12492,9 +12492,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let transformed = kernel.execute(&GeometryOp::AffineApply {
@@ -12530,9 +12530,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::AffineApply {
@@ -12570,9 +12570,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let scaled = kernel
@@ -12616,9 +12616,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let scaled = kernel
@@ -12650,9 +12650,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::ScaleNonUniform {
@@ -12684,9 +12684,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::ScaleNonUniform {
@@ -12738,16 +12738,16 @@ mod tests {
         // Build two distinct box handles.
         let ha = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.02),
-                height: Value::length(0.02),
-                depth: Value::length(0.02),
+                size_x: Value::length(0.02),
+                size_y: Value::length(0.02),
+                size_z: Value::length(0.02),
             })
             .expect("Box A must succeed");
         let hb = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.02),
-                height: Value::length(0.02),
-                depth: Value::length(0.02),
+                size_x: Value::length(0.02),
+                size_y: Value::length(0.02),
+                size_z: Value::length(0.02),
             })
             .expect("Box B must succeed");
 
@@ -12811,9 +12811,9 @@ mod tests {
         // Build ONE box handle — used as BOTH inputs to make_compound.
         let h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.02),
-                height: Value::length(0.02),
-                depth: Value::length(0.02),
+                size_x: Value::length(0.02),
+                size_y: Value::length(0.02),
+                size_z: Value::length(0.02),
             })
             .expect("Box must succeed");
 
@@ -13279,9 +13279,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -13662,9 +13662,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -13781,9 +13781,9 @@ mod tests {
         real;
         OcctKernelHandle::spawn,
         valid_op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         },
     );
 
@@ -13840,16 +13840,16 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let result = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(5.0),
             })
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
-        capture.assert_any_event_field_contains("field", "height");
-        capture.assert_any_event_field_contains("field", "depth");
+        capture.assert_any_event_field_contains("field", "size_x");
+        capture.assert_any_event_field_contains("field", "size_y");
+        capture.assert_any_event_field_contains("field", "size_z");
         assert!(
             result.is_ok(),
             "the tripwire is a detector, not a gate: {result:?}"
@@ -13865,9 +13865,9 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let result = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::length(0.020),
-                height: Value::length(0.010),
-                depth: Value::length(0.005),
+                size_x: Value::length(0.020),
+                size_y: Value::length(0.010),
+                size_z: Value::length(0.005),
             })
         });
 
@@ -13888,23 +13888,23 @@ mod tests {
         let _g = reify_ir::arm_length_tripwire_assert();
         let mut kernel = OcctKernel::new();
         let _ = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(20.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(20.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(5.0),
         });
     }
 
     /// Boundary row 13 through the real OCCT path, half 2 (field name).
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "width")]
+    #[should_panic(expected = "size_x")]
     fn occt_armed_bare_length_panics_naming_the_field() {
         let _g = reify_ir::arm_length_tripwire_assert();
         let mut kernel = OcctKernel::new();
         let _ = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(20.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(20.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(5.0),
         });
     }
 
@@ -14191,30 +14191,30 @@ mod tests {
         let cases: Vec<(GeometryOp, &str, &str)> = vec![
             (
                 GeometryOp::Box {
-                        width: Value::Real(2.0),
-                        height: Value::length(3.0),
-                        depth: Value::length(4.0),
+                        size_x: Value::Real(2.0),
+                        size_y: Value::length(3.0),
+                        size_z: Value::length(4.0),
                 },
                 "Box",
-                "width",
+                "size_x",
             ),
             (
                 GeometryOp::Box {
-                        width: Value::length(2.0),
-                        height: Value::Real(3.0),
-                        depth: Value::length(4.0),
+                        size_x: Value::length(2.0),
+                        size_y: Value::Real(3.0),
+                        size_z: Value::length(4.0),
                 },
                 "Box",
-                "height",
+                "size_y",
             ),
             (
                 GeometryOp::Box {
-                        width: Value::length(2.0),
-                        height: Value::length(3.0),
-                        depth: Value::Real(4.0),
+                        size_x: Value::length(2.0),
+                        size_y: Value::length(3.0),
+                        size_z: Value::Real(4.0),
                 },
                 "Box",
-                "depth",
+                "size_z",
             ),
             (
                 GeometryOp::Cylinder {
@@ -14614,20 +14614,20 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let bare = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::Real(0.020),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.005),
+                size_x: Value::Real(0.020),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.005),
             })
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "size_x");
 
         // Same SI magnitudes, properly dimensioned: the disposition must match.
         let control = kernel.execute(&GeometryOp::Box {
-            width: Value::length(0.020),
-            height: Value::length(0.010),
-            depth: Value::length(0.005),
+            size_x: Value::length(0.020),
+            size_y: Value::length(0.010),
+            size_z: Value::length(0.005),
         });
         assert_eq!(
             bare.is_ok(),

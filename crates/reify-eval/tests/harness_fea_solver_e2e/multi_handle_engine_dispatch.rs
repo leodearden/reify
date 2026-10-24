@@ -304,9 +304,9 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     TopologyTemplateBuilder::new("MyDesign")

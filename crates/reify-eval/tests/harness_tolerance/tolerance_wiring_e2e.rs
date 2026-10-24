@@ -188,9 +188,9 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     TopologyTemplateBuilder::new("MyDesign")
@@ -811,7 +811,7 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
 
 /// One body of the γ (#4730) two-body fixture: a template named `name`
 /// whose single named realization is a `Box` whose width READS the Length
-/// param `<name>.w` (default `width_mm`), with a literal `depth_mm`. A
+/// param `<name>.w` (default `width_mm`), with a literal `size_z_mm`. A
 /// second param, `<name>.label`, is read by nothing — editing it moves no
 /// realization's input cone.
 ///
@@ -820,18 +820,18 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
 fn body_template_reading_width(
     name: &str,
     width_mm: f64,
-    depth_mm: f64,
+    size_z_mm: f64,
 ) -> reify_compiler::TopologyTemplate {
     let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
             (
-                "width".into(),
+                "size_x".into(),
                 CompiledExpr::value_ref(ValueCellId::new(name, "w"), Type::length()),
             ),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(depth_mm)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(size_z_mm)),
         ],
     };
     TopologyTemplateBuilder::new(name)
@@ -841,14 +841,14 @@ fn body_template_reading_width(
         .build()
 }
 
-/// The two-body module: `PartA` (w = 10mm, depth `part_a_depth_mm`) and
-/// `PartB` (w = 20mm, depth 5mm), plus one manufacturing purpose PER
+/// The two-body module: `PartA` (w = 10mm, size_z `part_a_size_z_mm`) and
+/// `PartB` (w = 20mm, size_z 5mm), plus one manufacturing purpose PER
 /// entity. `activate_purpose` is keyed by purpose name, so one shared purpose
 /// would silently bind only the first entity and leave the other uncached.
-fn two_body_module(module_name: &str, part_a_depth_mm: f64) -> reify_compiler::CompiledModule {
+fn two_body_module(module_name: &str, part_a_size_z_mm: f64) -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::new(vec![module_name.to_string()]))
         .template(step_output_template(1e-6))
-        .template(body_template_reading_width("PartA", 10.0, part_a_depth_mm))
+        .template(body_template_reading_width("PartA", 10.0, part_a_size_z_mm))
         .template(body_template_reading_width("PartB", 20.0, 5.0))
         .compiled_purpose(manufacturing_purpose("mfg_a", 1e-6))
         .compiled_purpose(manufacturing_purpose("mfg_b", 1e-6))
@@ -983,9 +983,9 @@ fn rejected_edit_param_evicts_nothing_and_the_next_build_serves_only_cache_hits(
 
 /// γ (#4730, PRD D5/D7) supersedes task #2874's "`edit_source` flushes the
 /// whole realization cache". The v2 module changes ONLY `PartA`'s box (its
-/// depth literal); `PartB`'s template is byte-identical. The recompiled body
+/// size_z literal); `PartB`'s template is byte-identical. The recompiled body
 /// is evicted, the identical one survives with the same handle, and the
-/// next build re-executes exactly `PartA`'s one op — producing the v2 depth.
+/// next build re-executes exactly `PartA`'s one op — producing the v2 size_z.
 #[test]
 fn edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one() {
     let mut fixture = engine_with_two_cached_bodies("test_edit_source_keyed_eviction");
@@ -1022,8 +1022,8 @@ fn edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one() {
         "exactly PartA's one op must re-execute; new ops: {new_ops:?}"
     );
     assert!(
-        matches!(&new_ops[0], reify_ir::GeometryOp::Box { depth, .. } if *depth == mm(7.5)),
-        "the re-executed box must carry the v2 depth; got {:?}",
+        matches!(&new_ops[0], reify_ir::GeometryOp::Box { size_z, .. } if *size_z == mm(7.5)),
+        "the re-executed box must carry the v2 size_z; got {:?}",
         new_ops[0]
     );
 }
@@ -1241,9 +1241,9 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     let anonymous_template = TopologyTemplateBuilder::new("MyDesign")
@@ -1349,7 +1349,7 @@ fn edit_param_followed_by_build_snapshot_re_executes_only_the_edited_body_so_no_
     assert!(
         matches!(
             fixture.producing_op(part_a),
-            reify_ir::GeometryOp::Box { width, .. } if width == mm(30.0)
+            reify_ir::GeometryOp::Box { size_x: width, .. } if width == mm(30.0)
         ),
         "PartA's served handle must come from a Box with the NEW width, not a stale one"
     );

@@ -4441,14 +4441,14 @@
         };
         CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
-            args: vec![arg("width"), arg("height"), arg("depth")],
+            args: vec![arg("size_x"), arg("size_y"), arg("size_z")],
         }
     }
 
     /// Contract C1's THREE-STATE mapping at every `box` length slot, asserted
     /// through `compile_geometry_op` — the sole IR-build funnel (contract C2).
     ///
-    /// Each of `width` / `height` / `depth` is exercised independently, so a
+    /// Each of `size_x` / `size_y` / `size_z` is exercised independently, so a
     /// gate applied to only one slot cannot pass this test.
     ///
     /// (i)  ACCEPTED — a LENGTH `Scalar` yields `Ok`, and the stored
@@ -4464,7 +4464,7 @@
     ///      well-meaning "but zero has no units" patch to carve out, and
     ///      carving it out reopens the hazard for `box(0, 0, 0)`.
     /// (iii) UNDEFINED — `Value::Undef` yields `Err` whose message is the
-    ///      EXISTING distinct `"argument 'width' for box is unresolved (Undef)"`
+    ///      EXISTING distinct `"argument 'size_x' for box is unresolved (Undef)"`
     ///      wording, NOT the "missing or non-Length" text, and pushes NO
     ///      rejection diagnostic (D10 / INV-SF-1: loud at the chokepoint, quiet
     ///      at `accept_arg`). During solver iteration an Undef cell is expected
@@ -4478,7 +4478,7 @@
     fn compile_geometry_op_box_length_slots_follow_the_three_state_contract() {
         let values = ValueMap::new();
 
-        for slot in ["width", "height", "depth"] {
+        for slot in ["size_x", "size_y", "size_z"] {
             // (i) ACCEPTED.
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
@@ -4493,17 +4493,17 @@
             let op = result
                 .unwrap_or_else(|e| panic!("{slot}: a LENGTH Scalar must be accepted, got: {e}"));
             let reify_ir::GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } = op
             else {
                 panic!("{slot}: expected GeometryOp::Box, got {op:?}");
             };
             let stored = match slot {
-                "width" => width,
-                "height" => height,
-                _ => depth,
+                "size_x" => size_x,
+                "size_y" => size_y,
+                _ => size_z,
             };
             assert_eq!(
                 stored,
@@ -7586,13 +7586,13 @@
         let step_handles: Vec<GeometryHandleId> = vec![];
         let values = ValueMap::new();
 
-        // Box with height and depth present, but 'width' deliberately omitted
+        // Box with size_y and size_z present, but 'size_x' deliberately omitted
         let op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
-                // width deliberately omitted
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
+                // size_x deliberately omitted
             ],
         };
 
@@ -7613,11 +7613,11 @@
             "compile_geometry_op should return None when a required arg is missing"
         );
 
-        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        // Exactly one diagnostic warning should have been emitted for the missing 'size_x'
         assert_eq!(
             diagnostics.len(),
             1,
-            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            "expected exactly one diagnostic for missing 'size_x', got: {:?}",
             diagnostics
         );
         assert_eq!(
@@ -7626,8 +7626,8 @@
             "expected Warning severity"
         );
         assert!(
-            diagnostics[0].message.contains("width"),
-            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message.contains("size_x"),
+            "diagnostic message should mention 'size_x', got: {}",
             diagnostics[0].message
         );
         assert!(
@@ -7701,9 +7701,9 @@
         let box_op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("width".into(), literal_length(0.10)),
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
+                ("size_x".into(), literal_length(0.10)),
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
             ],
         };
 

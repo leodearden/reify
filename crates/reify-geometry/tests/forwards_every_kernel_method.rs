@@ -368,9 +368,9 @@ impl GeometryKernel for Unregistered {
 fn call_every_method(k: &mut dyn GeometryKernel) -> Vec<(&'static str, String)> {
     let handle = GeometryHandleId(7);
     let op = GeometryOp::Box {
-        width: Value::length(0.01),
-        height: Value::length(0.02),
-        depth: Value::length(0.03),
+        size_x: Value::length(0.01),
+        size_y: Value::length(0.02),
+        size_z: Value::length(0.03),
     };
     let query = GeometryQuery::Volume(handle);
     let mesh = Mesh {

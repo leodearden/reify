@@ -1325,7 +1325,7 @@ structure HolderAt {
     // Assert the Box's `len`-axis width is the OVERRIDDEN 600mm (0.6m in SI),
     // NOT the 200mm (0.2m) definition default.
     let width_si = match &box_rec.op {
-        GeometryOp::Box { width, .. } => match width {
+        GeometryOp::Box { size_x: width, .. } => match width {
             Value::Scalar { si_value, .. } => *si_value,
             other => panic!("expected Scalar width in Box op; got {:?}", other),
         },
@@ -1544,7 +1544,7 @@ structure Asm {
         .filter(|rec| {
             matches!(
                 &rec.op,
-                GeometryOp::Box { width, .. }
+                GeometryOp::Box { size_x: width, .. }
                 if matches!(width, Value::Scalar { si_value, .. } if (*si_value - 0.02_f64).abs() < 1e-9)
             )
         })

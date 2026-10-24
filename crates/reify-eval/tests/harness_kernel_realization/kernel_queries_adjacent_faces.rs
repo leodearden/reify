@@ -85,9 +85,9 @@ fn adjacent_faces_and_shared_edges_compile_and_return_correct_semantics() {
     // Build the same 10×20×30 mm box that adjacent_faces.ri models.
     let box_id = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(30.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(20.0e-3),
+            size_z: Value::Real(30.0e-3),
         })
         .expect("10×20×30 mm box should build via OCCT")
         .id;

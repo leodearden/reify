@@ -558,14 +558,14 @@ structure SmallPart {
 ///       This is the direct flip of today's all-Indeterminate result (step-1 RED).
 ///
 ///   (b) **Distinct per-instance ops** — the kernel's recorded op list contains a
-///       `GeometryOp::Box` with `width == 0.30 m` (binding `a`, 300mm) AND one
-///       with `width == 0.03 m` (binding `b`, 30mm), and their `result_handle`
+///       `GeometryOp::Box` with `size_x == 0.30 m` (binding `a`, 300mm) AND one
+///       with `size_x == 0.03 m` (binding `b`, 30mm), and their `result_handle`
 ///       values DIFFER. This proves each binding was re-realized against its own
 ///       override (not the shared `box(200mm)` default or each other's handle).
 ///
 /// Technique borrowed from `cross_sub_two_subs_with_distinct_overrides_get_distinct_handles`
 /// (cross_sub_geometry_e2e.rs): capture `kernel.operations_ref()` before boxing,
-/// build, then inspect recorded ops by concrete width value.
+/// build, then inspect recorded ops by concrete size_x value.
 ///
 /// Contrast `unified_dag_cross_sub_build_volume_constraint_is_definite`: the
 /// SINGLE-instance `let proc = FdmPrinter()` form (count == 1) still folds to a
@@ -668,11 +668,11 @@ structure MultiPrinter {
     };
 
     let box_300 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_300,
+        GeometryOp::Box { size_x, .. } => size_x == &size_300,
         _ => false,
     });
     let box_30 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_30,
+        GeometryOp::Box { size_x, .. } => size_x == &size_30,
         _ => false,
     });
 
@@ -855,9 +855,9 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///     recorded ops, but on its own it says nothing about WHICH branch
 ///     dispatched it.
 ///
-/// Every box carries `height == width`, so matching recorded boxes by their
-/// concrete `Scalar` HEIGHT keys all three realizations uniformly (`p` → 0.010m,
-/// `q` → 0.020m, `r` → 0.005m).
+/// Every box is a cube (`size_x == size_y == size_z`), so matching recorded
+/// boxes by their concrete `Scalar` `size_y` keys all three realizations
+/// uniformly (`p` → 0.010m, `q` → 0.020m, `r` → 0.005m).
 ///
 /// Asserts, under `UnifiedDag`:
 ///   (a) δ surfaces `DiagnosticCode::EvalCycle` (confirming the planner is on the
@@ -871,7 +871,7 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///       `a` — was actually ATTEMPTED, witnessed by the D10 "unresolved (Undef)"
 ///       compile error it now raises (and by zero `Fillet` ops reaching the
 ///       kernel). Without (c) the test's stated subject is unpinned: `r`'s Box
-///       alone is fully concrete, so `box_height_count(0.005) == 1` would hold
+///       alone is fully concrete, so `box_size_y_count(0.005) == 1` would hold
 ///       whether or not `r` was classified as residue and whether or not the
 ///       fallback-append branch ran at all (reviewer amendment).
 #[test]
@@ -939,16 +939,16 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
     );
 
     // (b) exactly-once dispatch for every realization, keyed by the box's concrete
-    //     `Scalar` HEIGHT — the one key shared by all three realizations. `r`'s
+    //     `Scalar` `size_y` — the one key shared by all three realizations. `r`'s
     //     Undef lives on its FILLET radius, not on any box dimension, so every
-    //     recorded box has a concrete height to match on.
+    //     recorded box has a concrete `size_y` to match on.
     let ops = ops_ref.lock().unwrap().clone();
     let recorded: Vec<&GeometryOp> = ops.iter().map(|rec| &rec.op).collect();
-    let box_height_count = |si_metres: f64| -> usize {
+    let box_size_y_count = |si_metres: f64| -> usize {
         ops.iter()
             .filter(|rec| match &rec.op {
                 GeometryOp::Box {
-                    height: Value::Scalar { si_value, .. },
+                    size_y: Value::Scalar { si_value, .. },
                     ..
                 } => (*si_value - si_metres).abs() < 1e-9,
                 _ => false,
@@ -956,19 +956,19 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
             .count()
     };
     assert_eq!(
-        box_height_count(0.010),
+        box_size_y_count(0.010),
         1,
         "the scheduled `p` (box 10mm) must dispatch EXACTLY ONCE — no duplicate \
          Realize, no dropped realization; recorded ops={recorded:?}",
     );
     assert_eq!(
-        box_height_count(0.020),
+        box_size_y_count(0.020),
         1,
         "the scheduled `q` (box 20mm) must dispatch EXACTLY ONCE — no duplicate \
          Realize, no dropped realization; recorded ops={recorded:?}",
     );
     assert_eq!(
-        box_height_count(0.005),
+        box_size_y_count(0.005),
         1,
         "the RESIDUE `r` (`fillet(box(5mm,5mm,5mm), a)`, whose fillet radius reads \
          the cyclic `a`) must dispatch EXACTLY ONCE via the \

@@ -429,9 +429,9 @@ mod tests {
     fn execute_no_kernel_returns_error() {
         let mut planner = SingleKernelHolder::new();
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         let result = planner.execute(&op);
         assert!(result.is_err());
@@ -453,9 +453,9 @@ mod tests {
         planner.register_kernel(Box::new(MockGeometryKernel::new()));
 
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         let handle = planner.execute(&op).expect("execute should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
@@ -490,9 +490,9 @@ mod tests {
 
         // Execute an op first to create handle 1
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         planner.execute(&op).unwrap();
 
@@ -526,9 +526,9 @@ mod tests {
 
         // Execute an op to create a handle
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         planner.execute(&op).unwrap();
 
@@ -563,9 +563,9 @@ mod tests {
 
         // Execute an op to create a handle
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         planner.execute(&op).unwrap();
 
@@ -596,9 +596,9 @@ mod tests {
 
         // Create a box
         let box_op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.02),
-            depth: Value::length(0.03),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.02),
+            size_z: Value::length(0.03),
         };
         let box_handle = planner.execute(&box_op).expect("box should succeed");
         assert_eq!(box_handle.id, GeometryHandleId(1));

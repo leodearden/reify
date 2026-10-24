@@ -505,7 +505,7 @@ fn the_corpus_checker_fires_on_a_seeded_bare_length() {
         3,
         "a bare box draws one coded rejection per slot; got: {messages:?}"
     );
-    for slot in ["width", "height", "depth"] {
+    for slot in ["size_x", "size_y", "size_z"] {
         assert!(
             messages
                 .iter()

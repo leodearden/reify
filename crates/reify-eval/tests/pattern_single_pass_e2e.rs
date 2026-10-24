@@ -257,9 +257,9 @@ fn perforated_plate_volume_and_topology_occt() {
     // The solid plate — a proper closed solid (watertight anchor).
     let plate = kernel
         .execute(&GeometryOp::Box {
-            width: v(PLATE_SIZE),
-            height: v(PLATE_SIZE),
-            depth: v(THICKNESS),
+            size_x: v(PLATE_SIZE),
+            size_y: v(PLATE_SIZE),
+            size_z: v(THICKNESS),
         })
         .expect("plate box should succeed")
         .id;

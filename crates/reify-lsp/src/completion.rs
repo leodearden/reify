@@ -494,8 +494,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     // --- 01-geometry: solid geometry primitives ---
     BuiltinFunctionInfo {
         name: "box",
-        signature: "box(width: Length, height: Length, depth: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -512,8 +512,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "box_centered",
-        signature: "box_centered(width: Length, depth: Length, height: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box_centered(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -1649,6 +1649,55 @@ mod tests {
                 detail.contains(": Length"),
                 "{name}: signature should type at least one gated slot as \
                  Length, got: {detail}"
+            );
+        }
+    }
+
+    /// The editor names box's parameters the way a diagnostic names them, in
+    /// the same order.
+    ///
+    /// `served` is the parameter list completion advertises; `compiler` is the
+    /// slot each `ArgTypeMismatch` blames for a bare `<name>(1, 2, 3)`, in
+    /// emission order. An author told "box: size_y argument expects Length"
+    /// must find `size_y` at that position in the signature popup.
+    #[test]
+    fn box_signatures_name_the_compiler_slots_in_order() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        for name in ["box", "box_centered"] {
+            let signature = served_signature(&items, name);
+            let params = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .map(|(params, _)| params)
+                .unwrap_or_else(|| panic!("{name}: signature has no parameter list: {signature}"));
+            let served: Vec<&str> = params
+                .split(',')
+                .map(|param| param.split(':').next().unwrap_or(param).trim())
+                .collect();
+
+            let compiled = reify_test_support::compile_source(&format!(
+                "structure def S {{\n    let b = {name}(1, 2, 3)\n}}\n"
+            ));
+            let compiler: Vec<&str> = compiled
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+                .filter_map(|d| reify_test_support::named_length_argument(&d.message))
+                .collect();
+
+            assert_eq!(
+                compiler.len(),
+                3,
+                "{name}: a bare {name}(1, 2, 3) should blame three LENGTH slots; \
+                 diagnostics: {:#?}",
+                compiled.diagnostics
+            );
+            assert_eq!(
+                served, compiler,
+                "{name}: the served signature `{signature}` must name the slots \
+                 the compiler's diagnostics name, in order"
             );
         }
     }

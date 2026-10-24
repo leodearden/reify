@@ -1923,9 +1923,9 @@ mod tests {
     fn execute_creates_box_and_returns_handle() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let result = handle.execute(&op).unwrap();
         assert_eq!(result.id, GeometryHandleId(1));
@@ -1936,9 +1936,9 @@ mod tests {
     fn query_volume_returns_correct_value() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let result = handle
@@ -1977,9 +1977,9 @@ mod tests {
         let mut handle = super::OcctKernelHandle::spawn();
         let box_h = handle
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         assert!(
@@ -2003,9 +2003,9 @@ mod tests {
         // monotonic on the kernel thread, so ids are never reused.
         let box_h2 = handle
             .execute(&GeometryOp::Box {
-                width: Value::Real(1.0),
-                height: Value::Real(1.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(1.0),
+                size_y: Value::Real(1.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         assert!(
@@ -2031,9 +2031,9 @@ mod tests {
     fn query_many_returns_ordered_values_for_heterogeneous_batch() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let result = handle
@@ -2064,9 +2064,9 @@ mod tests {
     fn query_many_short_circuits_on_first_invalid_handle() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let result = handle.query_many(&[
@@ -2102,9 +2102,9 @@ mod tests {
     fn export_step_contains_iso_header() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
@@ -2144,9 +2144,9 @@ mod tests {
         // A 30 mm cube expressed in reify's SI-metre model space.
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(0.030),
-            height: Value::Real(0.030),
-            depth: Value::Real(0.030),
+            size_x: Value::Real(0.030),
+            size_y: Value::Real(0.030),
+            size_z: Value::Real(0.030),
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
@@ -2698,9 +2698,9 @@ mod tests {
         use reify_ir::{ExportFormat, ExportOptions, StepSchema};
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
 
@@ -2784,9 +2784,9 @@ mod tests {
     fn plain_export_step_still_writes_default_ap214_schema() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
@@ -2810,9 +2810,9 @@ mod tests {
         // error-path contract for an unsupported format.
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
@@ -2827,9 +2827,9 @@ mod tests {
         // Use it through the trait interface as Box<dyn GeometryKernel>
         let kernel: &mut dyn GeometryKernel = &mut handle;
         let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(5.0),
+            size_y: Value::Real(5.0),
+            size_z: Value::Real(5.0),
         };
         let gh = kernel.execute(&op).unwrap();
         assert_eq!(gh.id, GeometryHandleId(1));
@@ -2839,9 +2839,9 @@ mod tests {
     fn tessellate_returns_valid_mesh() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute(&op).unwrap();
         let mesh = handle.tessellate(gh.id, 0.1).unwrap();
@@ -2859,9 +2859,9 @@ mod tests {
     fn chamfer_all_edges_through_channel() {
         let handle = super::OcctKernelHandle::spawn();
         let box_op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         };
         let gh = handle.execute(&box_op).unwrap();
         let chamfer_op = GeometryOp::Chamfer {
@@ -2951,9 +2951,9 @@ mod tests {
         let handle = super::OcctKernelHandle::spawn();
         // Execute an op to ensure kernel thread is alive and working
         let op = GeometryOp::Box {
-            width: Value::Real(1.0),
-            height: Value::Real(1.0),
-            depth: Value::Real(1.0),
+            size_x: Value::Real(1.0),
+            size_y: Value::Real(1.0),
+            size_z: Value::Real(1.0),
         };
         handle.execute(&op).unwrap();
         // Drop should not panic — thread exits cleanly
@@ -2965,9 +2965,9 @@ mod tests {
         for _ in 0..3 {
             let handle = super::OcctKernelHandle::spawn();
             let op = GeometryOp::Box {
-                width: Value::Real(5.0),
-                height: Value::Real(5.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(5.0),
+                size_y: Value::Real(5.0),
+                size_z: Value::Real(5.0),
             };
             let gh = handle.execute(&op).unwrap();
             // Each handle starts with its own id counter
@@ -2983,9 +2983,9 @@ mod tests {
         // Create box
         let box_h = handle
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(60.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(60.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         assert_eq!(box_h.id, GeometryHandleId(1));
@@ -3047,9 +3047,9 @@ mod tests {
     async fn execute_async_creates_box() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let result = handle.execute_async(&op).await.unwrap();
         assert_eq!(result.id, GeometryHandleId(1));
@@ -3060,9 +3060,9 @@ mod tests {
     async fn query_async_volume() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute_async(&op).await.unwrap();
         let result = handle
@@ -3096,9 +3096,9 @@ mod tests {
     async fn export_async_returns_step_bytes() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute_async(&op).await.unwrap();
         let bytes = handle
@@ -3131,9 +3131,9 @@ mod tests {
     async fn tessellate_async_returns_valid_mesh() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         let gh = handle.execute_async(&op).await.unwrap();
         let mesh = handle.tessellate_async(gh.id, 0.1).await.unwrap();
@@ -3154,9 +3154,9 @@ mod tests {
         // Create box
         let box_h = handle
             .execute_async(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(60.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(60.0),
+                size_z: Value::Real(10.0),
             })
             .await
             .unwrap();
@@ -3225,9 +3225,9 @@ mod tests {
         // the tokio worker thread (i.e., must not call thread.join()).
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(5.0),
+            size_y: Value::Real(5.0),
+            size_z: Value::Real(5.0),
         };
         handle.execute_async(&op).await.unwrap();
         // Drop inside async context — must complete without blocking
@@ -3238,9 +3238,9 @@ mod tests {
     async fn shutdown_completes_cleanly() {
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(5.0),
+            size_y: Value::Real(5.0),
+            size_z: Value::Real(5.0),
         };
         handle.execute_async(&op).await.unwrap();
         // Explicit async shutdown — should complete cleanly
@@ -3258,9 +3258,9 @@ mod tests {
         use reify_ir::WarmStartable;
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         handle.execute(&op).unwrap();
         let state = handle.warm_state();
@@ -3277,9 +3277,9 @@ mod tests {
         // Handle A: create box
         let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         handle_a.execute(&op).unwrap();
 
@@ -3306,9 +3306,9 @@ mod tests {
     async fn async_warm_start_roundtrip() {
         let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         handle_a.execute_async(&op).await.unwrap();
 
@@ -3352,9 +3352,9 @@ mod tests {
         // panicked inside tokio runtime).
         let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         };
         handle_a.execute_async(&op).await.unwrap();
 
@@ -3391,9 +3391,9 @@ mod tests {
                     s.spawn(|| {
                         let handle = super::OcctKernelHandle::spawn();
                         let op = GeometryOp::Box {
-                            width: Value::Real(10.0),
-                            height: Value::Real(20.0),
-                            depth: Value::Real(30.0),
+                            size_x: Value::Real(10.0),
+                            size_y: Value::Real(20.0),
+                            size_z: Value::Real(30.0),
                         };
                         let gh = handle.execute(&op).unwrap();
                         let mut buf = Vec::new();
@@ -3421,9 +3421,9 @@ mod tests {
         // 1. Create a valid box (id=1) — should succeed
         let box_h = handle
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         assert_eq!(box_h.id, GeometryHandleId(1));
@@ -3437,9 +3437,9 @@ mod tests {
 
         // 3. Box with zero width — should return Err(OperationFailed) from validation
         let zero_result = handle.execute(&GeometryOp::Box {
-            width: Value::Real(0.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(0.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         assert!(zero_result.is_err());
 
@@ -3450,9 +3450,9 @@ mod tests {
         // 5. Create another valid box — proves kernel thread is still alive
         let box2_h = handle
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -3471,9 +3471,9 @@ mod tests {
         // Sync (non-async) Drop should preserve existing join behavior
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
-            width: Value::Real(5.0),
-            height: Value::Real(5.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(5.0),
+            size_y: Value::Real(5.0),
+            size_z: Value::Real(5.0),
         };
         handle.execute(&op).unwrap();
         // Drop outside async context — should join the thread
@@ -3484,13 +3484,17 @@ mod tests {
     // --- Topology extraction through the handle channel (step-21) ---
 
     /// Helper: build a box on a fresh handle and return both.
-    fn handle_with_box(w: f64, h: f64, d: f64) -> (super::OcctKernelHandle, GeometryHandleId) {
+    fn handle_with_box(
+        size_x: f64,
+        size_y: f64,
+        size_z: f64,
+    ) -> (super::OcctKernelHandle, GeometryHandleId) {
         let handle = super::OcctKernelHandle::spawn();
         let gh = handle
             .execute(&GeometryOp::Box {
-                width: Value::Real(w),
-                height: Value::Real(h),
-                depth: Value::Real(d),
+                size_x: Value::Real(size_x),
+                size_y: Value::Real(size_y),
+                size_z: Value::Real(size_z),
             })
             .expect("Box execute should succeed");
         (handle, gh.id)
@@ -3529,9 +3533,9 @@ mod tests {
         let handle = super::OcctKernelHandle::spawn();
         let gh = handle
             .execute_async(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .await
             .unwrap();
@@ -3568,9 +3572,9 @@ mod tests {
         let handle = super::OcctKernelHandle::spawn();
         let gh = handle
             .execute_async(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .await
             .unwrap();
@@ -3607,9 +3611,9 @@ mod tests {
         let handle = super::OcctKernelHandle::spawn();
         let gh = handle
             .execute_async(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .await
             .unwrap();

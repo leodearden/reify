@@ -280,7 +280,7 @@ fn edit_param_then_build_snapshot_updates_geometry() {
     let ops = ops_ref.lock().unwrap();
     let last_op = &ops[ops.len() - 1];
     match &last_op.op {
-        reify_ir::GeometryOp::Box { width, .. } => {
+        reify_ir::GeometryOp::Box { size_x: width, .. } => {
             assert_eq!(
                 *width,
                 Value::length(0.1),

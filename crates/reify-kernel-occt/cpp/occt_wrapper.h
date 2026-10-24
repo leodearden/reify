@@ -122,8 +122,8 @@ double precision_confusion();
 
 // --- Primitive construction ---
 
-/// Create a box centered at origin with given dimensions (in meters).
-std::unique_ptr<OcctShape> make_box(double width, double height, double depth);
+/// Create a box centered at origin; the arguments are its full X/Y/Z extents (in meters).
+std::unique_ptr<OcctShape> make_box(double size_x, double size_y, double size_z);
 
 /// Create a cylinder along Z axis (in meters).
 std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
