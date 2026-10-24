@@ -18,6 +18,9 @@ fn prestress_stability_reports_a_nan_force_density_matrix_as_a_spectrum_error() 
     q[0] = f64::NAN;
     assert_eq!(
         analyze_prestress_stability(&canonical_prism(), &members, &q),
-        Err(StabilityError::Spectrum(SpectrumError::NonFinite { row: 0, col: 0 })),
+        Err(StabilityError::Spectrum(SpectrumError::NonFinite {
+            row: 0,
+            col: 0
+        })),
     );
 }

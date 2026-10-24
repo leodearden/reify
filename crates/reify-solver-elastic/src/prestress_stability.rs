@@ -42,28 +42,9 @@
 //! the T1a ([`crate::form_find`]) and T1b ([`crate::form_find_free`]) kernels
 //! before it. See `plan.json` design_decisions for the scoping rationale.
 
+use crate::fd_matrix::{NULLITY_REL_TOL, SpectrumError, SymmetricSpectrum, assemble_d};
+use faer::Mat;
 use faer::mat::MatRef;
-use faer::{Mat, Side};
-
-/// Relative tolerance for spectral rank / nullity classification: an eigenvalue
-/// of a symmetric Gram matrix counts as nonzero (a rank direction) only when its
-/// magnitude exceeds this fraction of the largest-magnitude eigenvalue.
-///
-/// The *value* `1e-8` matches the layer-2 form-finding classifier
-/// ([`crate::form_find_free`]'s `NULLITY_REL_TOL`), but it is applied to a
-/// different spectrum here, which is worth stating precisely. `classify_spectrum`
-/// thresholds the eigenvalues of `D` directly; this kernel thresholds the spectra
-/// of the Gram matrices `AᵀA` / `AAᵀ`, i.e. the **squared** singular values of
-/// `A`. Squaring squares the condition number, so a `1e-8` relative threshold on
-/// the Gram spectrum corresponds to a ~`1e-4` relative threshold on `A`'s singular
-/// values — a *more conservative* (weaker) separation than the same constant
-/// applied to a non-squared spectrum. For the exact unit-scale fixtures this
-/// kernel targets the gap is O(1) nonzero vs O(1e-15) numerical-zero singular
-/// values, so even after squaring the null space is cleanly separated. The
-/// squaring only erodes robustness for genuinely near-degenerate / ill-conditioned
-/// geometries, where classifying directly from `A`'s singular values (a dedicated
-/// SVD) would be the more robust — and heavier — alternative.
-const NULLITY_REL_TOL: f64 = 1e-8;
 
 /// The self-stress / mechanism / stability verdict of a prestressed framework,
 /// as reported by [`analyze_prestress_stability`] — the five PRD §5 output fields.
@@ -104,6 +85,15 @@ pub enum StabilityError {
     /// poison the equilibrium matrix, the self-stress count, and the final
     /// verdict, contradicting this enum's clean-typed-error contract.
     DegenerateMember,
+    /// `D` or an equilibrium Gram matrix has no dense spectrum: a non-finite
+    /// entry, or an eigendecomposition that did not converge.
+    Spectrum(SpectrumError),
+}
+
+impl From<SpectrumError> for StabilityError {
+    fn from(e: SpectrumError) -> Self {
+        StabilityError::Spectrum(e)
+    }
 }
 
 /// Analyse the self-stress / mechanism / prestress-stability of a prestressed
@@ -121,7 +111,9 @@ pub enum StabilityError {
 /// Returns [`StabilityError::DimensionMismatch`] if `members.len() != q.len()` or
 /// any member references a node index `≥ nodes.len()`; returns
 /// [`StabilityError::DegenerateMember`] if any member is a self-loop or joins two
-/// (near-)coincident nodes (a zero-length member has no well-defined direction).
+/// (near-)coincident nodes (a zero-length member has no well-defined direction);
+/// returns [`StabilityError::Spectrum`] if `D` (e.g. from a NaN `q`) or a Gram
+/// matrix of `A` has no dense spectrum ([`SpectrumError`]).
 // G-allow: Tensegrity T2 stability API (analyze_prestress_stability), task #3796 (T2, provenance, done); Type-A: re-exported but consumed only by tests; live DSL/production consumer: tensegrity-membrane batch (#4412–#4419, all done — integration gate #4419 landed).
 pub fn analyze_prestress_stability(
     nodes: &[[f64; 3]],
@@ -153,17 +145,18 @@ pub fn analyze_prestress_stability(
 
     // Equilibrium matrix A; self-stress count s = nullity(A) = m − rank(A).
     let a = assemble_equilibrium_matrix(nodes, members);
-    let self_stress_states = count_self_stress_states(&a);
+    let self_stress_states = count_self_stress_states(&a)?;
 
     // Internal (rigid-body-excluded) infinitesimal mechanism subspace.
-    let mech_basis = extract_internal_mechanisms(&a, nodes);
+    let mech_basis = extract_internal_mechanisms(&a, nodes)?;
     let m_count = mech_basis.ncols();
 
     // Maxwell number m − d·N (raw integer; −6 for the triplex). d = 3 (3-D).
     let maxwell = members.len() as i64 - 3 * (n as i64);
 
-    // Super-stability: the algebraic Connelly conditions on D (d = 3).
-    let super_stable = is_super_stable(n, members, q, 3);
+    // Super-stability: the algebraic Connelly conditions on D (d = 3). Before the
+    // K_G = D ⊗ I₃ eigenproblem below, so a non-finite D stops here, typed.
+    let super_stable = is_super_stable(n, members, q, 3)?;
 
     // Prestress stability, with the PRD §5 short-circuits:
     //   s == 0       ⇒ no prestress to stabilise ⇒ not stable.
@@ -209,31 +202,11 @@ fn max_abs_entry(m: &Mat<f64>) -> f64 {
 }
 
 /// Rank of a symmetric Gram matrix (e.g. `AᵀA` or `AAᵀ`) from its spectrum: the
-/// count of eigenvalues whose magnitude exceeds `rel_tol · max|λ|`.
-///
-/// Reuses the dense self-adjoint eigendecomposition pattern of
-/// [`crate::form_find_free`]'s `classify_spectrum` (faer `self_adjoint_eigen`
-/// with a relative threshold). A Gram matrix is real-symmetric PSD by
-/// construction, so its eigenvalues are the **squared** singular values of the
-/// underlying matrix — see [`NULLITY_REL_TOL`] for how that squaring makes the
-/// effective singular-value threshold conservative (`1e-8` on the Gram spectrum
-/// ≈ `1e-4` on the singular values).
-fn spectral_rank(gram: &Mat<f64>, rel_tol: f64) -> usize {
-    let n = gram.nrows();
-    if n == 0 {
-        return 0;
-    }
-    // Dense self-adjoint EVD; the Gram matrix is real symmetric, so a failure
-    // here is a bug, not infeasible input — panic with a descriptive message
-    // (matching the form_find_free / eigensolve `.expect` precedent).
-    let eig = gram
-        .self_adjoint_eigen(Side::Lower)
-        .expect("Gram matrix is real symmetric PSD; self-adjoint EVD must succeed");
-    let s = eig.S();
-    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
-    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-    let threshold = rel_tol * max_mag;
-    eigenvalues.iter().filter(|v| v.abs() > threshold).count()
+/// count of eigenvalues whose magnitude exceeds `rel_tol · max|λ|`. Gram
+/// eigenvalues are `A`'s squared singular values, so [`NULLITY_REL_TOL`] here is
+/// ~`1e-4` on the singular values.
+fn spectral_rank(gram: &Mat<f64>, rel_tol: f64) -> Result<usize, SpectrumError> {
+    Ok(SymmetricSpectrum::of(gram)?.rank(rel_tol))
 }
 
 /// Column-Gram matrix `MᵀM` (`cols × cols`) of a matrix view `m`
@@ -274,11 +247,11 @@ fn gram_transpose_self(a: &Mat<f64>) -> Mat<f64> {
 /// spectral rank of `AᵀA` under [`NULLITY_REL_TOL`]. A valid tensegrity needs
 /// `s ≥ 1` — at least one self-equilibrated prestress (PRD §5).
 // G-allow: Tensegrity T2 stability API (count_self_stress_states), task #3796 (T2, provenance, done); Type-A: consumed only by tests; live DSL/production consumer: tensegrity-membrane batch (#4412–#4419, all done — integration gate #4419 landed).
-pub(crate) fn count_self_stress_states(a: &Mat<f64>) -> usize {
+pub(crate) fn count_self_stress_states(a: &Mat<f64>) -> Result<usize, SpectrumError> {
     let m = a.ncols();
     let gram = gram_transpose_self(a);
-    let rank = spectral_rank(&gram, NULLITY_REL_TOL);
-    m - rank
+    let rank = spectral_rank(&gram, NULLITY_REL_TOL)?;
+    Ok(m - rank)
 }
 
 /// Whether member `(j, k)` is geometrically degenerate — a self-loop (`j == k`)
@@ -393,32 +366,15 @@ fn gram_self_transpose(a: &Mat<f64>) -> Mat<f64> {
 }
 
 /// Orthonormal basis of the null space of a symmetric Gram matrix: its
-/// eigenvectors whose eigenvalue magnitude is `≤ rel_tol · max|λ|`.
-///
-/// Mirrors [`crate::form_find_free`]'s `classify_spectrum` (dense
-/// `self_adjoint_eigen`, relative threshold), returning the null eigenvectors as
-/// owned columns. The eigenvectors of a real symmetric matrix are orthonormal,
-/// so the returned set is already an orthonormal null-space basis.
-fn null_space_basis(gram: &Mat<f64>, rel_tol: f64) -> Vec<Vec<f64>> {
-    let n = gram.nrows();
-    if n == 0 {
-        return Vec::new();
-    }
-    let eig = gram
-        .self_adjoint_eigen(Side::Lower)
-        .expect("Gram matrix is real symmetric PSD; self-adjoint EVD must succeed");
-    let s = eig.S();
-    let u = eig.U();
-    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
-    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-    let threshold = rel_tol * max_mag;
-    let mut basis = Vec::new();
-    for (i, &lambda) in eigenvalues.iter().enumerate() {
-        if lambda.abs() <= threshold {
-            basis.push((0..n).map(|r| u[(r, i)]).collect());
-        }
-    }
-    basis
+/// eigenvectors whose eigenvalue magnitude is `≤ rel_tol · max|λ|`, as owned
+/// columns. The eigenvectors of a real symmetric matrix are orthonormal, so the
+/// returned set is already an orthonormal null-space basis.
+fn null_space_basis(gram: &Mat<f64>, rel_tol: f64) -> Result<Vec<Vec<f64>>, SpectrumError> {
+    let spectrum = SymmetricSpectrum::of(gram)?;
+    let null = spectrum.null_basis(rel_tol);
+    Ok((0..null.ncols())
+        .map(|c| (0..null.nrows()).map(|r| null[(r, c)]).collect())
+        .collect())
 }
 
 /// Assemble the six rigid-body generators of `nodes` as columns of a `3N × 6`
@@ -487,12 +443,15 @@ fn rigid_body_modes(nodes: &[[f64; 3]]) -> Mat<f64> {
 /// `m_count = nullity(Aᵀ) − n_rigid` is the internal mechanism count (1 for the
 /// canonical triplex: its single non-affine prism twist).
 // G-allow: Tensegrity T2 stability API (extract_internal_mechanisms), task #3796 (T2, provenance, done); Type-A: consumed only by tests; live DSL/production consumer: tensegrity-membrane batch (#4412–#4419, all done — integration gate #4419 landed).
-pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> Mat<f64> {
+pub(crate) fn extract_internal_mechanisms(
+    a: &Mat<f64>,
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, SpectrumError> {
     let dim = a.nrows();
 
     // 1. null(Aᵀ): left null space of A via the zero eigenvectors of AAᵀ.
     let gram = gram_self_transpose(a);
-    let null_vectors = null_space_basis(&gram, NULLITY_REL_TOL);
+    let null_vectors = null_space_basis(&gram, NULLITY_REL_TOL)?;
 
     // 2. Orthonormal rigid-body basis (rank = n_rigid).
     let rigid = rigid_body_modes(nodes);
@@ -525,13 +484,13 @@ pub(crate) fn extract_internal_mechanisms(a: &Mat<f64>, nodes: &[[f64; 3]]) -> M
             out[(r, c)] = val;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Assemble the geometric / stress stiffness `K_G = D ⊗ I₃` (`3N × 3N`) from the
 /// layer-2 force-density matrix `D = CᵀQC`.
 ///
-/// `D` ([`crate::fd_matrix::assemble_d`], shared with layer 2) is reused
+/// `D` ([`assemble_d`], shared with layer 2) is reused
 /// verbatim (PRD §5 "shares layer 2's core"), then expanded by the Kronecker
 /// product with the 3×3 identity: `K_G[3a+α, 3b+α] = D[a,b]` for each axis
 /// `α ∈ {0,1,2}`, with every off-axis (`α≠β`) entry zero. There is NO sign flip —
@@ -543,7 +502,7 @@ pub(crate) fn assemble_geometric_stiffness(
     members: &[(usize, usize)],
     q: &[f64],
 ) -> Mat<f64> {
-    let d = crate::fd_matrix::assemble_d(n, members, q);
+    let d = assemble_d(n, members, q);
     let mut k_g = Mat::<f64>::zeros(3 * n, 3 * n);
     for a in 0..n {
         for b in 0..n {
@@ -650,10 +609,9 @@ fn min_eigenvalue_on_subspace(k_g: &Mat<f64>, basis: &Mat<f64>) -> f64 {
 /// Connelly super-stability verdict (algebraic conditions only): the force-density
 /// matrix `D = CᵀQC` is positive-semidefinite **and** has rank exactly `N − d − 1`.
 ///
-/// `D` ([`crate::fd_matrix::assemble_d`]) is the same
-/// layer-2 stress matrix reused by [`assemble_geometric_stiffness`]; its spectrum
-/// is classified with the dense self-adjoint pattern shared across this kernel
-/// (faer `self_adjoint_eigen`, [`NULLITY_REL_TOL`] relative threshold):
+/// `D` ([`assemble_d`]) is the same layer-2 stress matrix reused by
+/// [`assemble_geometric_stiffness`]; its [`SymmetricSpectrum`] is classified
+/// under the [`NULLITY_REL_TOL`] relative threshold:
 ///
 /// * **PSD**: the algebraic minimum eigenvalue exceeds `−rel_tol · max|λ|` — no
 ///   eigenvalue is meaningfully negative. For the canonical triplex `D`'s spectrum
@@ -673,33 +631,32 @@ fn min_eigenvalue_on_subspace(k_g: &Mat<f64>, basis: &Mat<f64>) -> f64 {
 /// documented scope boundary / follow-up. `is_super_stable` therefore means
 /// precisely "satisfies the algebraic PSD + rank conditions of Connelly
 /// super-stability".
-fn is_super_stable(n: usize, members: &[(usize, usize)], q: &[f64], d: usize) -> bool {
+fn is_super_stable(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    d: usize,
+) -> Result<bool, SpectrumError> {
     if n == 0 {
-        return false;
+        return Ok(false);
     }
-    let d_mat = crate::fd_matrix::assemble_d(n, members, q);
-    let eig = d_mat
-        .self_adjoint_eigen(Side::Lower)
-        .expect("force-density matrix D is real symmetric; self-adjoint EVD must succeed");
-    let s = eig.S();
-    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
-    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-    let threshold = NULLITY_REL_TOL * max_mag;
+    let spectrum = SymmetricSpectrum::of(&assemble_d(n, members, q))?;
+    let threshold = NULLITY_REL_TOL * spectrum.max_mag();
 
     // PSD: no eigenvalue is meaningfully negative (algebraic min above −threshold).
-    let min_lambda = eigenvalues.iter().copied().fold(f64::INFINITY, f64::min);
+    let min_lambda = spectrum
+        .eigenvalues()
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
     let psd = min_lambda > -threshold;
 
-    // rank(D) = count of eigenvalues clear of the relative null threshold.
-    let rank = eigenvalues.iter().filter(|v| v.abs() > threshold).count();
-
-    psd && rank + d + 1 == n
+    Ok(psd && spectrum.rank(NULLITY_REL_TOL) + d + 1 == n)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fd_matrix::SpectrumError;
 
     /// The complete 9-cable triplex member list (3 struts + 9 cables) in
     /// struts-then-cables order, mirroring `form_find_free.rs`'s
@@ -823,7 +780,7 @@ mod tests {
         // tensegrity needs (PRD §5).
         let a_prism = assemble_equilibrium_matrix(&canonical_prism(), &triplex_members());
         assert_eq!(
-            count_self_stress_states(&a_prism),
+            count_self_stress_states(&a_prism).expect("finite A"),
             1,
             "canonical triplex must have exactly one self-stress state",
         );
@@ -832,7 +789,7 @@ mod tests {
         // nullity(A) = 0, no self-stress.
         let a_square = assemble_equilibrium_matrix(&open_square(), &square_members());
         assert_eq!(
-            count_self_stress_states(&a_square),
+            count_self_stress_states(&a_square).expect("finite A"),
             0,
             "planar open square has no self-stress state",
         );
@@ -847,7 +804,10 @@ mod tests {
         a[(0, 0)] = f64::NAN;
         let non_finite = SpectrumError::NonFinite { row: 0, col: 0 };
         assert_eq!(count_self_stress_states(&a), Err(non_finite));
-        assert_eq!(extract_internal_mechanisms(&a, &nodes).err(), Some(non_finite));
+        assert_eq!(
+            extract_internal_mechanisms(&a, &nodes).err(),
+            Some(non_finite)
+        );
     }
 
     #[test]
@@ -858,7 +818,7 @@ mod tests {
         // Internal (rigid-body-excluded) mechanism basis of the canonical
         // triplex: nullity(Aᵀ) = 7, minus n_rigid = 6 rigid-body modes ⇒ exactly
         // one internal infinitesimal mechanism (the textbook prism twist).
-        let basis = extract_internal_mechanisms(&a, &nodes);
+        let basis = extract_internal_mechanisms(&a, &nodes).expect("finite A");
         assert_eq!(
             basis.ncols(),
             1,
@@ -940,7 +900,7 @@ mod tests {
         // K_G = D ⊗ I₃: the on-axis block (α=β) replicates D[a,b]; every
         // off-axis entry (α≠β) is zero. Compare against the layer-2 D assembly
         // the kernel reuses verbatim.
-        let d = crate::fd_matrix::assemble_d(n, &members, &q);
+        let d = assemble_d(n, &members, &q);
         const TOL: f64 = 1e-12;
         for a in 0..n {
             for b in 0..n {
@@ -968,7 +928,7 @@ mod tests {
         let nodes = canonical_prism();
         let members = triplex_members();
         let a = assemble_equilibrium_matrix(&nodes, &members);
-        let basis = extract_internal_mechanisms(&a, &nodes);
+        let basis = extract_internal_mechanisms(&a, &nodes).expect("finite A");
         let k_g = assemble_geometric_stiffness(6, &members, &closed_form_q());
         let min_prism: f64 = min_eigenvalue_on_subspace(&k_g, &basis);
         assert!(
@@ -1020,7 +980,7 @@ mod tests {
         // (min λ = 0, no negative eigenvalue) and rank 2 == N − d − 1 = 6 − 3 − 1.
         // Both algebraic Connelly super-stability conditions hold ⇒ super_stable.
         assert!(
-            is_super_stable(6, &members, &closed_form_q(), 3),
+            is_super_stable(6, &members, &closed_form_q(), 3).expect("finite D"),
             "canonical triplex with closed-form q is super-stable (D PSD, rank 2 = N−d−1)",
         );
 
@@ -1028,7 +988,7 @@ mod tests {
         // mode in null(D), so rank(D) = 5 ≠ N − d − 1 = 2. The rank condition
         // fails ⇒ NOT super-stable (verdict is false regardless of the PSD test).
         assert!(
-            !is_super_stable(6, &members, &generic_admissible_q(), 3),
+            !is_super_stable(6, &members, &generic_admissible_q(), 3).expect("finite D"),
             "generic admissible q gives D rank 5 ≠ N−d−1 = 2 ⇒ not super-stable",
         );
     }
