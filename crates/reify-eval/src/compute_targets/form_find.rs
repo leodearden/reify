@@ -589,8 +589,8 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
         )
         .into(),
         FreeFormError::Spectrum(SpectrumError::NoConvergence) => {
-            "eigendecomposition did not converge — the dense eigendecomposition of the \
-             force-density matrix D did not converge"
+            "force-density matrix D has no dense spectrum — its eigendecomposition did \
+             not converge; check for extreme or near-degenerate force densities"
                 .into()
         }
         FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
