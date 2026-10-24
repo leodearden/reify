@@ -69,7 +69,7 @@ fn reported_arity(message: &str) -> Option<usize> {
 /// held for all 34 observable names across all three emit sites when the
 /// builtin_signatures ledger was measured, so layer 2 is expected to stay
 /// unreached.
-pub(crate) fn arg_count_rejections<'a>(
+fn arg_count_rejections<'a>(
     diagnostics: &'a [Diagnostic],
     name: &str,
     arity: usize,

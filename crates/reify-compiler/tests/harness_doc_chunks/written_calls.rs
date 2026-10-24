@@ -154,7 +154,7 @@ fn is_arrow(prev: char, c: char) -> bool {
 
 /// `s` with a leading balanced `open`…`close` run removed, or `s` unchanged when
 /// it does not start with `open`. `None` if such a run starts but never closes.
-pub(crate) fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
+fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
     if !s.starts_with(open) {
         return Some(s);
     }
@@ -179,7 +179,7 @@ pub(crate) fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
 ///
 /// `s` must start with `open` IMMEDIATELY: a name separated from its `(` by
 /// whitespace (`point3 (x)`) does not open a call.
-pub(crate) fn balanced_run(s: &str, open: char, close: char) -> Option<&str> {
+fn balanced_run(s: &str, open: char, close: char) -> Option<&str> {
     if !s.starts_with(open) {
         return None;
     }
@@ -201,7 +201,7 @@ pub(crate) fn balanced_run(s: &str, open: char, close: char) -> Option<&str> {
 ///   a comparison (`a > b`) or a `=>` cannot unbalance the nesting;
 /// - a `|` outside any bracket opens or closes a lambda-parameter list, whose
 ///   commas never count (`|a, b| a + b`).
-pub(crate) fn count_parameters(inner: &str) -> usize {
+fn count_parameters(inner: &str) -> usize {
     if inner.trim().is_empty() {
         return 0;
     }
