@@ -1289,7 +1289,9 @@ dimension before choosing a unit."
                 "properties": {
                     "format": {
                         "type": "string",
-                        "description": "Export format: 'step' (or 'stp') or 'stl'."
+                        "enum": crate::commands::EXPORT_FORMAT_SPELLINGS.map(|(spelling, _)| spelling),
+                        "description": "Export format spelling; the geometry kernel refuses a \
+                                        format it cannot write."
                     },
                     "output_path": {
                         "type": "string",
