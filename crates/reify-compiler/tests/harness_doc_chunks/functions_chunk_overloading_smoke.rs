@@ -164,6 +164,54 @@ fn declared_signatures(markdown: &str) -> Vec<DocSignature> {
     signatures
 }
 
+/// The names `markdown` DECLARES with `fn` at two or more distinct arities,
+/// sorted and deduped.
+fn arity_overloaded_declarations(_markdown: &str) -> Vec<String> {
+    Vec::new()
+}
+
+#[test]
+fn arity_overloaded_declarations_counts_declarations_never_calls() {
+    let declared_once_called_twice = "\
+```reify-schematic
+fn mover(a: A) -> G { ... }
+```
+
+```reify-fragment
+let m = mover(x, y)
+```
+";
+    assert_eq!(
+        arity_overloaded_declarations(declared_once_called_twice),
+        Vec::<String>::new(),
+        "a CALL at a second arity is not an overload — only `fn` declarations count"
+    );
+
+    let declared_at_two_arities = "\
+```reify-schematic
+fn mover<G>(g: G, o: O) -> G { ... }
+fn mover<G>(g: G, a: A, b: B) -> G { ... }
+```
+";
+    assert_eq!(
+        arity_overloaded_declarations(declared_at_two_arities),
+        vec!["mover".to_string()],
+        "one name declared at two distinct arities is overloading by arity"
+    );
+
+    let declared_by_type = "\
+```reify-schematic
+fn area(c: Circle) -> Scalar<Area> { ... }
+fn area(r: Rect) -> Scalar<Area> { ... }
+```
+";
+    assert_eq!(
+        arity_overloaded_declarations(declared_by_type),
+        Vec::<String>::new(),
+        "two declarations at ONE arity overload by TYPE, not by arity"
+    );
+}
+
 /// Pins the extraction rule directly, on inline markdown with no chunk
 /// involved, before anything consumes it.
 ///
