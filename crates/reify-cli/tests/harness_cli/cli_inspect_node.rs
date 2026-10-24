@@ -125,6 +125,7 @@ fn printed_node_id_parses_back_to_the_same_node_id_for_every_kind() {
     let ids = [
         NodeId::Value(ValueCellId::new("Bracket", "width")),
         NodeId::Value(ValueCellId::new("Widget", r#"vents["intake"]"#)),
+        NodeId::Value(ValueCellId::new("Widget", r#"vents["k#computation[0]"]"#)),
         NodeId::Constraint(ConstraintNodeId::new("forall_connect:v@Rig.bolts#3", 0)),
         NodeId::Realization(RealizationNodeId::new("box-2658-smoke", 1)),
         NodeId::Resolution(ResolutionNodeId::new("A", 0)),
