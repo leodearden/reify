@@ -26,6 +26,11 @@ pub(crate) struct WrittenCall {
     pub(crate) line: usize,
 }
 
+/// Every call form `markdown` writes as copyable code, each at its chunk line.
+pub(crate) fn chunk_written_calls(_markdown: &str) -> Result<Vec<WrittenCall>, String> {
+    Ok(Vec::new())
+}
+
 /// Every call form written in `code`, whose first line is `first_line`, in
 /// document order.
 ///
@@ -380,4 +385,104 @@ fn a_call_reports_the_line_its_name_sits_on_framed_by_first_line() {
         }],
         "a call on the third line of code whose first line is 10 sits on line 12"
     );
+}
+
+/// A chunk writing one call in every source kind. Its line layout is part of
+/// the fixture: the test below names the chunk line of each copyable call.
+const DEMO_CHUNK: &str = r##"# Demo
+
+Call `box(w, d, h)` for a box; sphere(r) is bare prose.
+See `rotate(geo, ax,
+ay)` when wrapped.
+
+<!-- maintainer: `note_call(a, b, c)` -->
+
+```reify
+structure def Demo {
+    let s = cylinder(1mm, 2mm)
+}
+```
+
+```reify-fragment
+let a = 1mm
+let b = 2mm
+let c = torus(a, b)
+```
+
+```reify-schematic
+cone(r1, r2, h) -> Solid
+```
+
+```reify-invalid
+let bad = invalid_call(1mm)
+```
+
+```reify-rejected
+let bad = rejected_call(1mm)
+```
+
+```reify-rejected-at-eval
+let bad = rejected_at_eval_call(1mm)
+```
+
+```ebnf
+call = ebnf_call(name) ;
+```
+
+```text
+text_call(x)
+```
+"##;
+
+#[test]
+fn chunk_written_calls_reads_prose_spans_and_copyable_fences_at_their_chunk_lines() {
+    let mut read: Vec<(String, usize, usize)> = chunk_written_calls(DEMO_CHUNK)
+        .expect("the demo chunk is well-formed")
+        .into_iter()
+        .map(|call| (call.name, call.arity, call.line))
+        .collect();
+    read.sort_by_key(|(_, _, line)| *line);
+
+    assert_eq!(
+        read,
+        vec![
+            ("box".to_string(), 3, 3),
+            ("rotate".to_string(), 3, 4),
+            ("cylinder".to_string(), 2, 11),
+            ("torus".to_string(), 2, 18),
+            ("cone".to_string(), 3, 22),
+        ],
+        "read: a prose code span (box, line 3); a span wrapped across two lines, at the line its \
+         name sits on (rotate, line 4); a ```reify fence (cylinder), a ```reify-fragment fence on \
+         its THIRD body line (torus, open_line 15 + 3) and a ```reify-schematic listing (cone). \
+         NOT read: a bare un-backticked call in prose (sphere), a maintainer note (note_call), a \
+         fence documenting a REJECTED form (reify-invalid, reify-rejected, \
+         reify-rejected-at-eval) and a non-reify language (ebnf, text)"
+    );
+}
+
+#[test]
+fn chunk_written_calls_is_an_err_when_the_chunk_cannot_be_read() {
+    let span = "Call `box(w, d, h)` here.\n\n";
+    assert_eq!(
+        chunk_written_calls(span).map(|calls| calls.len()),
+        Ok(1),
+        "control: the span alone is read"
+    );
+
+    for (defect, why) in [
+        (
+            "```reify-fragment\nlet c = torus(a, b)\n",
+            "an unterminated fence",
+        ),
+        (
+            "<!-- an unterminated note\n",
+            "an unterminated HTML comment",
+        ),
+    ] {
+        assert!(
+            chunk_written_calls(&format!("{span}{defect}")).is_err(),
+            "{why} hides the rest of the chunk, so it is an Err, never a short list of calls"
+        );
+    }
 }
