@@ -3809,11 +3809,18 @@ fn scale_components(
     }
 }
 
+/// Int overflow (a `None` from a checked `i64` op) is `Undef`, never a panic
+/// or a wrapped value.
+#[inline]
+fn int_or_undef(checked: Option<i64>) -> Value {
+    checked.map_or(Value::Undef, Value::Int)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
     match v {
-        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Int(i) => int_or_undef(i.checked_neg()),
         Value::Real(r) => Value::Real(-r),
         Value::Scalar {
             si_value,
@@ -3962,7 +3969,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
 
 pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_add(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 + b)
@@ -4066,7 +4073,7 @@ pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_sub(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 - b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a - *b as f64),
@@ -4248,7 +4255,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
 
 pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_mul(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
@@ -4532,15 +4539,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => {
-            if *b == 0 {
-                Value::Undef
-            } else if a % b == 0 {
-                Value::Int(a / b)
-            } else {
-                Value::Real(*a as f64 / *b as f64)
-            }
-        }
+        (Value::Int(a), Value::Int(b)) => match a.checked_rem(*b) {
+            Some(0) => int_or_undef(a.checked_div(*b)),
+            Some(_) => Value::Real(*a as f64 / *b as f64),
+            None => Value::Undef,
+        },
         (Value::Real(a), Value::Real(b)) => Value::Real(a / b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 / b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a / *b as f64),
@@ -4680,7 +4683,9 @@ pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
             if *b == 0 {
                 Value::Undef
             } else {
-                Value::Int(a % b)
+                // A remainder always fits an i64; `wrapping_rem` is `%` made total
+                // for `i64::MIN % -1` (exactly 0, but `%` panics on it).
+                Value::Int(a.wrapping_rem(*b))
             }
         }
         (Value::Real(a), Value::Real(b)) => {
@@ -4713,14 +4718,21 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // so the wrapping is zero-cost for the common case.
     // (task-4106 step-6)
     let result = match (lv, rv) {
+        // Exponent domain is [i32::MIN, u32::MAX]: a non-negative exponent stays
+        // Int (exact, or Undef on overflow), a negative one is a Real reciprocal
+        // power, and anything wider is Undef rather than silently truncated.
         (Value::Int(base), Value::Int(exp)) => {
-            if *exp >= 0 && *exp <= i32::MAX as i64 {
-                Value::Int(base.pow(*exp as u32))
+            if let Ok(e) = u32::try_from(*exp) {
+                int_or_undef(base.checked_pow(e))
+            } else if let Ok(e) = i32::try_from(*exp) {
+                Value::Real((*base as f64).powi(e))
             } else {
-                Value::Real((*base as f64).powi(*exp as i32))
+                Value::Undef
             }
         }
-        (Value::Real(base), Value::Int(exp)) => Value::Real(base.powi(*exp as i32)),
+        (Value::Real(base), Value::Int(exp)) => {
+            i32::try_from(*exp).map_or(Value::Undef, |e| Value::Real(base.powi(e)))
+        }
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
         // Scalar ^ Int: raise value, multiply dimension exponents.
