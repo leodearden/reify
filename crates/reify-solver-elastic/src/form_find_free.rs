@@ -557,7 +557,7 @@ pub fn form_find_free_surfaces(
         members,
         &result.force_densities,
         &surface_mat_final,
-    ))?;
+    ));
 
     // Non-convergence: match the line-only `form_find_free` contract — return
     // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
@@ -565,13 +565,17 @@ pub fn form_find_free_surfaces(
     // downstream consumers that only inspect the result value (not `.converged`)
     // silently treat a failed combined solve as a valid equilibrium.
     if !converged {
-        return Err(FreeFormError::SearchDidNotConverge {
-            defect: certified.err(),
+        return Err(match certified {
+            Ok(_) => FreeFormError::SearchDidNotConverge { defect: None },
+            Err(FreeFormError::NotAForm(defect)) => FreeFormError::SearchDidNotConverge {
+                defect: Some(defect),
+            },
+            Err(other) => other,
         });
     }
     // Converged: the equilibrium was reached, so a `D` that fails certification
     // is not a form, whatever spec produced it.
-    let form = certified.map_err(FreeFormError::NotAForm)?;
+    let form = certified?;
 
     result.converged = true;
     result.nullity = form.nullity();
@@ -1232,22 +1236,22 @@ struct FreeStandingForm(SymmetricSpectrum);
 impl FreeStandingForm {
     /// The single validity rule: `d` is a free-standing form when its force
     /// graph is ONE connected piece and it is rank-deficient by exactly
-    /// [`FREE_FORM_NULLITY`]; otherwise the observed [`FormDefect`]. Both
-    /// conditions are needed: every connected piece carries its own translation
-    /// mode, so a disconnected `D` can still show nullity 4. The outer `Err`
-    /// means `d` has no spectrum to classify.
-    fn certify(d: &Mat<f64>) -> Result<Result<FreeStandingForm, FormDefect>, SpectrumError> {
+    /// [`FREE_FORM_NULLITY`]; otherwise [`FreeFormError::NotAForm`] with the
+    /// observed [`FormDefect`]. Both conditions are needed: every connected
+    /// piece carries its own translation mode, so a disconnected `D` can still
+    /// show nullity 4. [`FreeFormError::Spectrum`] when `d` has no spectrum.
+    fn certify(d: &Mat<f64>) -> Result<FreeStandingForm, FreeFormError> {
         let spectrum = SymmetricSpectrum::of(d)?;
         let nullity = spectrum.nullity(NULLITY_REL_TOL);
         let components = force_graph_components(d);
-        Ok(if components == 1 && nullity == FREE_FORM_NULLITY {
+        if components == 1 && nullity == FREE_FORM_NULLITY {
             Ok(FreeStandingForm(spectrum))
         } else {
-            Err(FormDefect {
+            Err(FreeFormError::NotAForm(FormDefect {
                 nullity,
                 components,
-            })
-        })
+            }))
+        }
     }
 
     /// Nullity of the certified `D`: [`FREE_FORM_NULLITY`], by certification.
@@ -1266,7 +1270,7 @@ impl FreeStandingForm {
 /// has no spectrum).
 fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<FreeStandingForm, FreeFormError> {
     let d = assemble_d(problem.nodes().len(), problem.members(), problem.q());
-    FreeStandingForm::certify(&d)?.map_err(FreeFormError::NotAForm)
+    FreeStandingForm::certify(&d)
 }
 
 /// Recover gauge-fixed free-standing node coordinates from the null space of `D`.
@@ -1501,9 +1505,7 @@ mod tests {
         let (members, _kinds) = triplex_topology();
         let d = assemble_d(6, &members, &closed_form_q());
 
-        let form = FreeStandingForm::certify(&d)
-            .expect("finite D")
-            .expect("closed-form prism D is a form");
+        let form = FreeStandingForm::certify(&d).expect("closed-form prism D is a form");
         assert_eq!(form.nullity(), FREE_FORM_NULLITY);
     }
 
@@ -1513,13 +1515,11 @@ mod tests {
         let d = assemble_d(6, &members, &generic_admissible_q(&kinds));
 
         assert_eq!(
-            FreeStandingForm::certify(&d)
-                .expect("finite D")
-                .unwrap_err(),
-            FormDefect {
+            FreeStandingForm::certify(&d).unwrap_err(),
+            FreeFormError::NotAForm(FormDefect {
                 nullity: 1,
                 components: 1,
-            },
+            }),
         );
     }
 
@@ -1531,13 +1531,11 @@ mod tests {
         let d = assemble_d(8, &members, &[1.0; 4]);
 
         assert_eq!(
-            FreeStandingForm::certify(&d)
-                .expect("finite D")
-                .unwrap_err(),
-            FormDefect {
+            FreeStandingForm::certify(&d).unwrap_err(),
+            FreeFormError::NotAForm(FormDefect {
                 nullity: 4,
                 components: 4,
-            },
+            }),
         );
     }
 
@@ -1558,13 +1556,11 @@ mod tests {
         let d = with_isolated_node(&prism_d);
 
         assert_eq!(
-            FreeStandingForm::certify(&d)
-                .expect("finite D")
-                .unwrap_err(),
-            FormDefect {
+            FreeStandingForm::certify(&d).unwrap_err(),
+            FreeFormError::NotAForm(FormDefect {
                 nullity: 5,
                 components: 2,
-            },
+            }),
         );
     }
 
