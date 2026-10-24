@@ -1,5 +1,7 @@
 //! Pins the value-layer rule "Int arithmetic overflow yields `Undef`, never a
-//! panic or a wrapped value" for every `(Int, Int)` operator arm.
+//! panic or a wrapped value" for every `(Int, Int)` operator arm, and its
+//! counterpart for `^`: an `Int` exponent the power cannot represent is `Undef`,
+//! never truncated.
 //!
 //! Every row drives only the public `reify_expr::eval_expr` seam. Overflow rows
 //! and stays-`Int` boundary rows live in separate `#[test]` fns, so a panic in
@@ -39,6 +41,17 @@ fn assert_int_binop(op: BinOp, a: i64, b: i64, expected: Value) {
         eval_binop(op, Value::Int(a), Value::Int(b)),
         expected,
         "{a} {op:?} {b}"
+    );
+}
+
+/// Assert `base ^ exp` for a `Real` base and an `Int` exponent evaluates to
+/// `expected`; the failure message names the expression.
+#[track_caller]
+fn assert_real_pow_int(base: f64, exp: i64, expected: Value) {
+    assert_eq!(
+        eval_binop(BinOp::Pow, Value::Real(base), Value::Int(exp)),
+        expected,
+        "{base:?} ^ {exp}"
     );
 }
 
@@ -165,6 +178,23 @@ fn int_pow_exponent_beyond_i32_is_exact_or_undef() {
     assert_int_binop(BinOp::Pow, 2, 3_000_000_000, Value::Undef);
     assert_int_binop(BinOp::Pow, 2, 4_294_967_296, Value::Undef);
     assert_int_binop(BinOp::Pow, 2, -4_294_967_296, Value::Undef);
+}
+
+#[test]
+fn real_pow_int_exponent_beyond_i32_is_undef() {
+    assert_real_pow_int(2.0, i64::from(i32::MAX) + 1, Value::Undef);
+    assert_real_pow_int(2.0, i64::from(i32::MIN) - 1, Value::Undef);
+    assert_real_pow_int(2.0, 3_000_000_000, Value::Undef);
+    assert_real_pow_int(2.0, 4_294_967_296, Value::Undef);
+    assert_real_pow_int(2.0, -4_294_967_296, Value::Undef);
+}
+
+#[test]
+fn real_pow_int_exponent_within_i32_keeps_real_semantics() {
+    assert_real_pow_int(2.0, 10, Value::Real(1024.0));
+    assert_real_pow_int(2.0, -1, Value::Real(0.5));
+    assert_real_pow_int(1.0, i64::from(i32::MAX), Value::Real(1.0));
+    assert_real_pow_int(1.0, i64::from(i32::MIN), Value::Real(1.0));
 }
 
 // ── Reaching the Int arm through composite values and the op sink ────────────
