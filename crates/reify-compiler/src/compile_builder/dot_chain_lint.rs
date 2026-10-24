@@ -25,13 +25,6 @@
 //! recurses into the chain's leaf root so that nested chains (e.g. a deep
 //! chain inside `IndexAccess.index` or a `FunctionCall.args` element) are
 //! detected too.
-//!
-//! # Walk coverage
-//!
-//! Member nesting is not walked here — it is delegated to
-//! [`reify_ast::walk_all_member_bodies`], which owns both the recursion set and
-//! the depth bound ([`reify_ast::MAX_MEMBER_NESTING_DEPTH`]). This lint walks
-//! only each member's own expressions.
 
 use reify_ast::{Expr, ExprKind, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
@@ -184,13 +177,8 @@ fn walk_structure(s: &reify_ast::StructureDef, diagnostics: &mut Vec<Diagnostic>
     walk_members(&s.members, diagnostics);
 }
 
-/// Walk every member reachable under `members`, at any nesting depth.
-///
-/// Nesting and its depth bound belong to [`reify_ast::walk_all_member_bodies`];
-/// this lint contributes only [`walk_member_own_exprs`]. The widest recursion
-/// set is deliberate: spec §5.7 lints every user expression, so no member body
-/// may be skipped — sub specialization overrides (body or keyed), sketch bodies
-/// and match-arm members included (decision record: task #7127).
+/// Walk every member under `members`; recursion and depth bound are reify-ast's
+/// ([`walk_all_member_bodies`]).
 fn walk_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
     walk_all_member_bodies(members, &mut |member| {
         walk_member_own_exprs(member, diagnostics)
@@ -341,9 +329,7 @@ fn walk_member_own_exprs(member: &MemberDecl, diagnostics: &mut Vec<Diagnostic>)
                 walk_expr(&body.result_expr, diagnostics);
             }
         }
-        // A sketch block carries no expression of its own. Its body members
-        // (lets and bare relations) are reached by `walk_members`, because
-        // ALL_MEMBER_BODIES descends into sketch bodies (task 5506).
+        // No expression of its own; `walk_members` reaches its body.
         MemberDecl::Sketch(_) => {}
         // Members with no embedded expressions.
         MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
