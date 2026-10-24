@@ -29,7 +29,7 @@
 
 use std::collections::BTreeSet;
 
-use reify_compiler::{CompiledConstraint, TopologyTemplate};
+use reify_compiler::{CompiledConstraint, SolverHintKind, TopologyTemplate, ValueCellDecl};
 
 use super::capstan_groove_e2e::{CAPSTAN_ENTITY, DEV_CAPSTAN, dev_capstan_compiled};
 use super::design_fixture::{Strictness, assert_constraints_ok, entity_template};
@@ -60,6 +60,14 @@ fn cell_names(template: &TopologyTemplate) -> BTreeSet<String> {
         .iter()
         .map(|c| c.id.member.clone())
         .collect()
+}
+
+/// A cell's solver hints without their source spans, which differ between the
+/// two files by construction.
+fn solver_hints(cell: &ValueCellDecl) -> impl Iterator<Item = (SolverHintKind, &str)> {
+    cell.solver_hints
+        .iter()
+        .map(|h| (h.kind, h.collection.as_str()))
 }
 
 fn is_omitted(cell: &str) -> bool {
@@ -140,11 +148,15 @@ fn capstan_copies_declare_the_same_cells() {
     );
 }
 
-/// Every cell both copies declare must be the same cell: the same kind, aux
-/// flag and declared type, and a default expression with the same structural
-/// hash. The hash carries no span and no doc, so a comment or formatting
-/// difference can never trip this — and the copies deliberately differ in
-/// comments: printer.ri's are abridged, pointing at dev_capstan.ri.
+/// Every cell both copies declare must be the same cell: the same kind,
+/// visibility, aux flag, declared type and solver hints, and a default
+/// expression with the same structural hash. Only the expression is a template
+/// hash input; the rest are compared because the hash cannot see them, and a
+/// `pub` on one copy's cell changes what a composing structure may read. The
+/// expression hash carries no span and no doc, and hints are compared without
+/// their spans, so a comment or formatting difference can never trip this — and
+/// the copies deliberately differ in comments: printer.ri's are abridged,
+/// pointing at dev_capstan.ri.
 #[test]
 fn capstan_copies_compute_every_shared_cell_alike() {
     let printer = printer_capstan();
@@ -162,8 +174,10 @@ fn capstan_copies_compute_every_shared_cell_alike() {
         shared += 1;
         let aspects: Vec<&str> = [
             ("kind", s.kind != p.kind),
+            ("visibility", s.visibility != p.visibility),
             ("aux flag", s.is_aux != p.is_aux),
             ("declared type", s.cell_type != p.cell_type),
+            ("solver hints", solver_hints(s).ne(solver_hints(p))),
             (
                 "expression",
                 s.default_expr.as_ref().map(|e| e.content_hash)

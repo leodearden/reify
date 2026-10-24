@@ -113,7 +113,9 @@ use super::design_fixture::{
 };
 
 /// The design file that OWNS the idler seat contract, reached from this crate's
-/// manifest dir. Mirrors [`super::capstan_groove_e2e`]'s `DEV_CAPSTAN`.
+/// manifest dir. Mirrors [`super::capstan_groove_e2e`]'s `DEV_CAPSTAN`, and like
+/// it is `pub(super)` so every gate in the compile unit that reads this file
+/// names the same path.
 pub(super) const PRINTER_RI: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../prj/printer_v01/printer.ri"
@@ -336,9 +338,8 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
 /// The cost side is the ordinary saving: printer.ri is ~3.7 k lines and is read,
 /// parsed and stdlib-compiled once.
 ///
-/// `pub(super)`: [`super::capstan_copies_lockstep`] reads printer.ri's
-/// `Capstan` constraint results off this same surface rather than checking the
-/// file a second time.
+/// `pub(super)`: shared by every gate in the compile unit that reads
+/// printer.ri's check surface, so none checks the file a second time.
 pub(super) fn printer_checked() -> &'static CheckResult {
     static M: OnceLock<CheckResult> = OnceLock::new();
     M.get_or_init(|| check_printer(printer_compiled()))
@@ -351,9 +352,8 @@ pub(super) fn printer_checked() -> &'static CheckResult {
 /// One `OnceLock` so the constraint expressions a gate inspects and the cell
 /// values it compares them against come from the SAME module. Compiling twice
 /// would make them agree only by assuming the compiler is deterministic.
-/// `pub(super)` extends that across the module boundary:
-/// [`super::capstan_copies_lockstep`] reads printer.ri's compiled `Capstan`
-/// template from this same compilation.
+/// `pub(super)` extends that across the compile unit: every gate that reads
+/// printer.ri's compiled templates reads this same compilation.
 pub(super) fn printer_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
     M.get_or_init(compile_printer)
@@ -1004,8 +1004,8 @@ fn idler_seat_clears_the_tendon() {
 // single-compilation argument across the boundary: the `IdlerPulley` template
 // this module hashes and the cells it reads provably come from ONE compilation
 // of the file, rather than from two that agree only if the compiler is
-// deterministic. The printer.ri fixtures above are shared the same way, in the
-// other direction: they are `pub(super)` for [`super::capstan_copies_lockstep`].
+// deterministic. The printer.ri fixtures above are shared across the compile
+// unit the same way.
 use super::capstan_groove_e2e::{
     dev_capstan, dev_capstan_checked, dev_capstan_compiled, DEV_CAPSTAN,
 };
