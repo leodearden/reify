@@ -13,6 +13,9 @@
 //! - Brackets are counted as text: a bracket quoted inside a string literal is
 //!   counted like any other.
 
+use crate::chunk_markdown::parse_fences;
+use crate::doc_forms::unfenced_code_spans;
+
 /// One call form written in code text: a call site or a `fn` declaration head.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct WrittenCall {
@@ -26,9 +29,38 @@ pub(crate) struct WrittenCall {
     pub(crate) line: usize,
 }
 
-/// Every call form `markdown` writes as copyable code, each at its chunk line.
-pub(crate) fn chunk_written_calls(_markdown: &str) -> Result<Vec<WrittenCall>, String> {
-    Ok(Vec::new())
+/// The fence tags whose body a reader copies as accepted Reify — the vocabulary
+/// is `fence_gate.rs`'s "Tag vocabulary".
+///
+/// A positive list, not an exempt list: a fence documenting a REJECTED form
+/// (`reify-invalid`, `reify-rejected`, `reify-rejected-at-eval`) shows exactly
+/// the call forms the compiler refuses, and a non-reify language (`ebnf`,
+/// `text`) writes none. A new tag stays unread until it is listed here.
+const COPYABLE_FENCE_TAGS: &[&str] = &["reify", "reify-fragment", "reify-schematic"];
+
+/// Every call form `markdown` writes as copyable code — in its unfenced prose
+/// code spans and in the bodies of its [`COPYABLE_FENCE_TAGS`] fences — each at
+/// the chunk line its name sits on. Prose first, then fences, each in document
+/// order.
+///
+/// A whole fence body is cut at once, never line by line, so a call wrapped
+/// across lines is read. Maintainer notes and bare prose are never read. `Err`
+/// when the markup cannot be read (an unterminated fence or note), never a
+/// short list.
+pub(crate) fn chunk_written_calls(markdown: &str) -> Result<Vec<WrittenCall>, String> {
+    let prose = unfenced_code_spans(markdown)?
+        .into_iter()
+        .flat_map(|span| written_calls(&span.text, span.line));
+    let fences = parse_fences(markdown)?
+        .into_iter()
+        .filter(|fence| {
+            fence
+                .tag
+                .as_deref()
+                .is_some_and(|tag| COPYABLE_FENCE_TAGS.contains(&tag))
+        })
+        .flat_map(|fence| written_calls(&fence.body, fence.open_line + 1));
+    Ok(prose.chain(fences).collect())
 }
 
 /// Every call form written in `code`, whose first line is `first_line`, in
