@@ -100,3 +100,5 @@ mod topology_chunk_smoke;
 mod unfenced_signature_gate;
 #[path = "harness_doc_chunks/units_chunk_smoke.rs"]
 mod units_chunk_smoke;
+#[path = "harness_doc_chunks/written_calls.rs"]
+mod written_calls;
