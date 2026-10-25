@@ -780,12 +780,13 @@ pub(crate) fn free_equilibrium_residual_relative(
 /// uniform `(q, σ) → λ(q, σ)` rescale.
 ///
 /// Returns `f64::INFINITY` ("not at equilibrium") when there is no free row,
-/// or when any free row is identically zero or carries a NaN. A zero row is a
-/// node touched by neither a member nor a triangle: its net force is vacuously
-/// 0, which must not read as converged and echo the caller's unsolved initial
-/// guess back; `solve_reduced` then reports `SingularReducedStiffness`. The
-/// check runs per row, before the row divides anything, so a healthy row
-/// cannot mask a degenerate one.
+/// when any free row is identically zero or carries a NaN, or when any free
+/// row's net force is NaN (e.g. a NaN coordinate). A zero row is a node touched
+/// by neither a member nor a triangle: its net force is vacuously 0, which must
+/// not read as converged and echo the caller's unsolved initial guess back;
+/// `solve_reduced` then reports `SingularReducedStiffness`. Each check runs per
+/// row, before the row enters the NaN-transparent max, so a healthy row cannot
+/// mask a degenerate one.
 #[allow(clippy::needless_range_loop)]
 fn free_equilibrium_residual_relative_to(
     d: &Mat<f64>,
@@ -810,6 +811,9 @@ fn free_equilibrium_residual_relative_to(
             let mut net = 0.0;
             for j in 0..n {
                 net += d[(i, j)] * nodes[j][axis];
+            }
+            if net.is_nan() {
+                return f64::INFINITY;
             }
             worst = worst.max(net.abs() / row);
         }
