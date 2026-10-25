@@ -117,6 +117,15 @@ scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
 scripts/verify-ledger.py
 #
+# scripts/verify_events_lib.py (task 9309): the C2 event-record parser that
+#   scripts/verify-ledger.py imports to fold each plan step's
+#   step-<i>.run-all.jsonl into the record's run_all block. verify.sh invokes
+#   verify-ledger.py rather than sourcing it, and a Python import is invisible
+#   to both of verify-pipeline-guard.sh's auto-derivation clauses, so an edit
+#   here would otherwise take the config fast-path while changing what every
+#   ledger record says about run_all.
+scripts/verify_events_lib.py
+#
 # scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
 #   behind `--confirm-failed`. Both callers are inside the verify pipeline —
 #   the recording pass's inline manifest write (fused into emit_nextest_pass's

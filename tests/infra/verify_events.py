@@ -6,10 +6,12 @@ consumer rules this module applies, is PRD
 docs/prds/v0_6/run-all-runner-infra-harness.md §4; the schema table is in
 tests/infra/README.md "Verify event channel".
 
-Stdlib only, and safe under `python3 -I`: it imports nothing from tests/infra.
-It is an importable module (read_events, summarize, select, wait_for) and a
-CLI whose output is `key=value` scalars or JSON lines, so a bash caller reads
-scalars and never parses JSON:
+Stdlib only, and safe under `python3 -I`: the one module it imports beyond
+the stdlib is the parser it shares with scripts/verify-ledger.py,
+scripts/verify_events_lib.py, by absolute path. It is an importable module
+(read_events, summarize, select, wait_for) and a CLI whose output is
+`key=value` scalars or JSON lines, so a bash caller reads scalars and never
+parses JSON:
 
     verify_events.py summary PATH
     verify_events.py query PATH [--event E] [--where K=V ...] [--count]
@@ -22,10 +24,10 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from verify_events_lib import read_events  # noqa: E402  (imported after sys.path manipulation)
 
 _SUMMARY_ORDER = (
     "channel",
@@ -40,45 +42,6 @@ _SUMMARY_ORDER = (
     "slot_timeout_soft",
     "skipped_lines",
 )
-
-
-@dataclass(frozen=True)
-class Events:
-    records: tuple
-    skipped_lines: int
-
-    @property
-    def channel_present(self):
-        return any(r.get("event") == "run_start" for r in self.records)
-
-
-def _parse_line(raw):
-    try:
-        record = json.loads(raw.decode("utf-8", "surrogateescape"))
-    except ValueError:
-        return None
-    if isinstance(record, dict) and type(record.get("v")) is int and record["v"] == SCHEMA_VERSION:
-        return record
-    return None
-
-
-def read_events(path):
-    """Every v1 record in the file, in order; every other non-empty line is counted."""
-    try:
-        data = Path(path).read_bytes()
-    except FileNotFoundError:
-        return Events((), 0)
-    records = []
-    skipped = 0
-    for raw in data.split(b"\n"):
-        if not raw:
-            continue
-        record = _parse_line(raw)
-        if record is None:
-            skipped += 1
-        else:
-            records.append(record)
-    return Events(tuple(records), skipped)
 
 
 def _matches(record, event, where):

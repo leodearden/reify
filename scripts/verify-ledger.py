@@ -27,6 +27,9 @@ import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verify_events_lib import read_events  # noqa: E402  (imported after sys.path manipulation)
+
 RECORD_SCHEMA = "reify.verify-run/1"
 LEDGER_FILE = "verify-runs.jsonl"
 SEED_STAMP_SCHEMA = "reify.lane-seed/1"
@@ -180,7 +183,8 @@ def split_nul(text):
 # ---------------------------------------------------------------------------
 # Journal: <journal>/plan.nul (verify.sh), meta.json (run-begin),
 # journal.jsonl (step events from verify.sh, observations from boundary),
-# step-<i>.run-all.jsonl (run_all.sh), errors.log (every instrument failure).
+# step-<i>.run-all.jsonl (run_all.sh's copy of its C2 event records, through
+# lib_event_log.sh's EVENT_LOG_COPY_TO), errors.log (every instrument failure).
 # ---------------------------------------------------------------------------
 
 
@@ -224,19 +228,54 @@ def read_run_all(journal, index):
     path = journal_path(journal, f"step-{index}.run-all.jsonl")
     if not path.exists():
         return None
-    summary, members = None, []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        if row.get("kind") == "summary" and summary is None:
-            summary = row
-        elif row.get("kind") == "member":
-            members.append(row)
-    return {"summary": summary, "members": members}
+    return fold_run_all(read_events(path).records)
+
+
+def ns_to_secs(ns):
+    """Epoch nanoseconds as epoch seconds; anything but an int is unknown."""
+    return round(ns / 1_000_000_000, 6) if type(ns) is int else None
+
+
+def fold_run_all(records):
+    """run_all.sh's C2 records as the step's run_all block: {summary, members}."""
+    return {
+        "summary": run_all_summary(records),
+        "members": [run_all_member(r) for r in records if r.get("event") == "member_finish"],
+    }
+
+
+def run_all_summary(records):
+    """The first run_start's identity plus each phase's window; None without a run_start."""
+    run_start = next((r for r in records if r.get("event") == "run_start"), None)
+    if run_start is None:
+        return None
+    phases = {}
+    for r in records:
+        phase = r.get("phase")
+        if r.get("event") == "phase_finish" and isinstance(phase, str) and phase not in phases:
+            phases[phase] = {
+                "began_at": ns_to_secs(r.get("started_ns")),
+                "ended_at": ns_to_secs(r.get("ended_ns")),
+            }
+    return {
+        "run_id": run_start.get("run_id"),
+        "branch": run_start.get("branch"),
+        "discovered": run_start.get("discovered"),
+        "phases": phases,
+    }
+
+
+def run_all_member(record):
+    """One member_finish record as a member row, its times in epoch seconds."""
+    return {
+        "name": record.get("member"),
+        "attempt": record.get("attempt"),
+        "verdict": record.get("verdict"),
+        "rc": record.get("rc"),
+        "queued_at": ns_to_secs(record.get("queued_ns")),
+        "started_at": ns_to_secs(record.get("started_ns")),
+        "ended_at": ns_to_secs(record.get("ended_ns")),
+    }
 
 
 # ---------------------------------------------------------------------------
