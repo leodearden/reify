@@ -38,6 +38,7 @@
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
 use crate::fd_matrix::assemble_d;
+use crate::group_spec::GroupSpecDefect;
 use faer::Mat;
 use faer::linalg::solvers::Solve;
 
@@ -98,6 +99,8 @@ pub enum RealInput {
 pub enum ForceDensityInputError {
     /// `members`, `kinds` and the per-member force densities disagree in length.
     DimensionMismatch,
+    /// A `GroupRatios` spec cannot seed the search.
+    MalformedGroupSpec(GroupSpecDefect),
     /// A node index read from `what` is not below the node count `len`.
     IndexOutOfRange {
         /// The input the index was read from.
@@ -141,6 +144,12 @@ pub enum ForceDensityInputError {
         /// Position in that input: the node, for [`RealInput::NodeCoordinate`].
         index: usize,
     },
+}
+
+impl From<GroupSpecDefect> for ForceDensityInputError {
+    fn from(defect: GroupSpecDefect) -> Self {
+        ForceDensityInputError::MalformedGroupSpec(defect)
+    }
 }
 
 /// Why one surface's prestress is inadmissible on its own, before any geometry.

@@ -45,6 +45,7 @@ use crate::form_find::{
     ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
     free_equilibrium_residual_relative, member_axial_forces, scatter_surface_stencils,
 };
+use crate::group_spec::{GroupSpec, GroupSpecDefect};
 use faer::Mat;
 use faer::mat::MatRef;
 use std::borrow::Cow;
@@ -102,10 +103,10 @@ pub struct FreeFormResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreeFormError {
     /// The input violates the force-density input contract. A
-    /// [`ForceDensitySpec::GroupRatios`] spec is checked at its seed densities.
+    /// [`ForceDensitySpec::GroupRatios`] spec that cannot seed the search is
+    /// [`ForceDensityInputError::MalformedGroupSpec`]; a well-formed one is
+    /// checked at its seed densities.
     Input(ForceDensityInputError),
-    /// A [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
-    MalformedGroupSpec(GroupSpecDefect),
     /// The `D` the solve settled on is not a free-standing form: the explicit
     /// `q`'s, or the combined fixed point's at the equilibrium it reached.
     NotAForm(FormDefect),
@@ -141,25 +142,6 @@ pub struct FormDefect {
     pub components: usize,
 }
 
-/// Why a [`ForceDensitySpec::GroupRatios`] spec cannot seed the search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupSpecDefect {
-    /// `group_ids` is not parallel to `members`.
-    GroupIdsNotPerMember,
-    /// `group_ids[member]` names a group with no entry in `seed_ratios`.
-    UnseededGroup {
-        /// Position in `members` / `group_ids`.
-        member: usize,
-    },
-    /// `reference_group` names a group with no entry in `seed_ratios`.
-    UnseededReferenceGroup,
-    /// `seed_ratios[group]` is zero, so it fixes no tension / compression sense.
-    ZeroSeed {
-        /// Position in `seed_ratios`.
-        group: usize,
-    },
-}
-
 impl From<ForceDensityInputError> for FreeFormError {
     fn from(input: ForceDensityInputError) -> Self {
         FreeFormError::Input(input)
@@ -168,7 +150,7 @@ impl From<ForceDensityInputError> for FreeFormError {
 
 impl From<GroupSpecDefect> for FreeFormError {
     fn from(defect: GroupSpecDefect) -> Self {
-        FreeFormError::MalformedGroupSpec(defect)
+        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(defect))
     }
 }
 
@@ -230,27 +212,8 @@ fn seed_densities(
             seed_ratios,
             reference_group,
         } => {
-            let n_groups = seed_ratios.len();
-            if group_ids.len() != n_members {
-                return Err(GroupSpecDefect::GroupIdsNotPerMember);
-            }
-            if let Some(member) = group_ids.iter().position(|&g| g >= n_groups) {
-                return Err(GroupSpecDefect::UnseededGroup { member });
-            }
-            if *reference_group >= n_groups {
-                return Err(GroupSpecDefect::UnseededReferenceGroup);
-            }
-            if let Some(group) = seed_ratios.iter().position(|&r| r == 0.0) {
-                return Err(GroupSpecDefect::ZeroSeed { group });
-            }
-            let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
-            let group_mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
-            Ok(Cow::Owned(assemble_group_q(
-                n_members,
-                group_ids,
-                &group_sign,
-                &group_mag,
-            )))
+            let groups = GroupSpec::new(group_ids, seed_ratios, *reference_group, n_members)?;
+            Ok(Cow::Owned(groups.seed_densities().to_vec()))
         }
     }
 }
@@ -288,10 +251,8 @@ fn seed_densities(
 ///
 /// # Errors
 /// - [`FreeFormError::Input`] — the input violates the [`ForceDensityInputError`]
-///   contract (lengths, node indices, q or seed signs, σ tension, input
-///   triangles).
-/// - [`FreeFormError::MalformedGroupSpec`] — a `GroupRatios` spec cannot seed
-///   the search ([`GroupSpecDefect`]).
+///   contract (lengths, a `GroupRatios` spec that cannot seed the search, node
+///   indices, q or seed signs, σ tension, node coordinates, input triangles).
 /// - [`FreeFormError::DegenerateTriangle`] — a triangle degenerated at an iterate.
 /// - [`FreeFormError::NotAForm`] — the fixed point reached equilibrium, but the
 ///   combined `D` there is not a form ([`FormDefect`]): a disconnected piece,

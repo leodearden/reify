@@ -345,6 +345,28 @@ fn describe_non_finite(what: RealInput, index: usize) -> String {
     }
 }
 
+/// The cause shared by [`describe`] and [`describe_free`] for a `GroupRatios`
+/// spec that cannot seed the search — reachable only on the free-standing path.
+fn describe_group_spec(defect: GroupSpecDefect) -> &'static str {
+    match defect {
+        GroupSpecDefect::GroupIdsNotPerMember => {
+            "dimension mismatch — group_ids length does not match the member count \
+             (struts + cables)"
+        }
+        GroupSpecDefect::UnseededGroup { .. } => {
+            "dimension mismatch — a group_ids entry names a group past the end of \
+             seed_ratios; every group id needs a seed ratio"
+        }
+        GroupSpecDefect::UnseededReferenceGroup => {
+            "dimension mismatch — reference_group names a group past the end of seed_ratios"
+        }
+        GroupSpecDefect::ZeroSeed { .. } => {
+            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
+             strut groups < 0), so it cannot be zero"
+        }
+    }
+}
+
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
 fn describe(e: FormFindError) -> Cow<'static, str> {
@@ -389,6 +411,9 @@ fn describe(e: FormFindError) -> Cow<'static, str> {
         }
         FormFindError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
             DEGENERATE_MATERIAL_FRAME.into()
+        }
+        FormFindError::Input(ForceDensityInputError::MalformedGroupSpec(defect)) => {
+            describe_group_spec(defect).into()
         }
     }
 }
@@ -573,23 +598,8 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
         FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
             "dimension mismatch — the members and their kinds disagree in length".into()
         }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember) => {
-            "dimension mismatch — group_ids length does not match the member count \
-             (struts + cables)"
-                .into()
-        }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { .. }) => {
-            "dimension mismatch — a group_ids entry names a group past the end of \
-             seed_ratios; every group id needs a seed ratio"
-                .into()
-        }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup) => {
-            "dimension mismatch — reference_group names a group past the end of seed_ratios".into()
-        }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { .. }) => {
-            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
-             strut groups < 0), so it cannot be zero"
-                .into()
+        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(defect)) => {
+            describe_group_spec(defect).into()
         }
         FreeFormError::SearchDidNotConverge {
             defect: Some(defect),
