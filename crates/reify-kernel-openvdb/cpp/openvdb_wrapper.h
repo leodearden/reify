@@ -205,4 +205,14 @@ struct TbbParallelismLimit {
 std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi();
 size_t tbb_max_allowed_parallelism_ffi();
 
+// ---------------------------------------------------------------------------
+// Fog-volume copy of a level set: compiled into every build, but the only
+// Rust caller is the test-fixtures-gated
+// `OpenVdbKernel::register_fog_volume_for_test`.
+// ---------------------------------------------------------------------------
+
+/// A fresh fog-volume copy of the level set `h` (tools::sdfToFogVolume);
+/// `h` is only read.
+std::unique_ptr<OpenVdbGridHandle> level_set_to_fog_volume_ffi(const OpenVdbGridHandle& h);
+
 } // namespace reify_openvdb

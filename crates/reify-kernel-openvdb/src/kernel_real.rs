@@ -308,6 +308,29 @@ impl OpenVdbKernel {
         Ok(openvdb_ffi::grid_name(grid))
     }
 
+    /// Register a fog-volume copy of the registered level set `level_set`
+    /// (`tools::sdfToFogVolume`) as a new handle, leaving `level_set` intact.
+    ///
+    /// Lets integration tests hold a registered non-level-set grid, the
+    /// shape an imported density field takes. Gated behind the
+    /// `test-fixtures` Cargo feature like [`Self::open_vdb_grid_for_test`].
+    #[cfg(feature = "test-fixtures")]
+    pub fn register_fog_volume_for_test(
+        &mut self,
+        level_set: GeometryHandleId,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        let grid = self
+            .handles
+            .get(&level_set)
+            .ok_or(GeometryError::InvalidReference(level_set))?;
+        let fog = openvdb_ffi::level_set_to_fog_volume_ffi(grid).map_err(|e| {
+            GeometryError::OperationFailed(format!("level_set_to_fog_volume_ffi: {e}"))
+        })?;
+        let id = self.alloc_id();
+        self.handles.insert(id, fog);
+        Ok(id)
+    }
+
     /// Run marching cubes (`openvdb::tools::volumeToMesh`) on the registered
     /// grid and return the result as a [`Mesh`] (triangle soup).
     ///
@@ -434,12 +457,13 @@ impl Default for OpenVdbKernel {
 //     no bbox-cache call, no LUT lazy-init path touched.
 //
 // Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
-// `densify_grid_to_sampled`, `ingest_dense_sdf`, and `execute`'s voxel
-// Booleans via `voxel_boolean`) take `&mut self` and rely on Rust's borrow
-// checker for exclusive access, NOT on `Sync`.
+// `register_fog_volume_for_test`, `densify_grid_to_sampled`,
+// `ingest_dense_sdf`, and `execute`'s voxel Booleans via `voxel_boolean`)
+// take `&mut self` and rely on Rust's borrow checker for exclusive access,
+// NOT on `Sync`.
 // (`ingest_dense_sdf`'s C++ fill mutates only the fresh, unregistered grid;
-// the voxel Booleans' CSG and resample only read their registered inputs and
-// write a fresh, unregistered grid.)
+// the voxel Booleans' CSG and resample, and the fog-volume conversion, only
+// read their registered inputs and write a fresh, unregistered grid.)
 //
 // `densify_grid_to_sampled` uses `&mut self` rather than the PRD §7.1 `&self`
 // because it calls `grid_bbox_min` / `grid_bbox_max` / `grid_densify_to_buffer`,

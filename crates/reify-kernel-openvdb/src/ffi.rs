@@ -126,5 +126,12 @@ pub mod ffi {
         type TbbParallelismLimit;
         fn tbb_single_thread_limit_ffi() -> UniquePtr<TbbParallelismLimit>;
         fn tbb_max_allowed_parallelism_ffi() -> usize;
+
+        // Fog-volume copy of a level set: serves only the test-fixtures
+        // `OpenVdbKernel::register_fog_volume_for_test` (unconditional here
+        // for the same reason as the TBB entries above).
+        fn level_set_to_fog_volume_ffi(
+            h: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
     }
 }

@@ -12,6 +12,7 @@
 #include <openvdb/tools/Interpolation.h>
 #include <openvdb/tools/Composite.h>
 #include <openvdb/tools/GridTransformer.h>
+#include <openvdb/tools/LevelSetUtil.h>
 #include <openvdb/io/File.h>
 #include <openvdb/Grid.h>
 
@@ -606,6 +607,17 @@ std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi() {
 
 size_t tbb_max_allowed_parallelism_ffi() {
     return tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism);
+}
+
+// ---------------------------------------------------------------------------
+// Fog-volume copy of a level set (test-fixtures scope only)
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<OpenVdbGridHandle> level_set_to_fog_volume_ffi(const OpenVdbGridHandle& h) {
+    ensure_initialized_cpp_side();
+    openvdb::FloatGrid::Ptr fog = h.grid->deepCopy();
+    openvdb::tools::sdfToFogVolume(*fog);
+    return std::make_unique<OpenVdbGridHandle>(std::move(fog));
 }
 
 } // namespace reify_openvdb

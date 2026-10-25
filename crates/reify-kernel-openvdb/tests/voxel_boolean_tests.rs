@@ -341,6 +341,49 @@ fn voxel_boolean_rejects_mesh_handle_operand() {
     }
 }
 
+/// A fog volume (an imported density field, say) is not a level set, so the
+/// CSG refuses it on either side, naming the side and the grid class.
+#[cfg(has_openvdb)]
+#[test]
+fn voxel_boolean_rejects_fog_volume_operand() {
+    use fixture::*;
+    use reify_ir::{GeometryError, GeometryKernel, GeometryOp};
+    use reify_kernel_openvdb::OpenVdbKernel;
+
+    let mut kernel = OpenVdbKernel::new();
+    let (a, b) = overlapping_pair(&mut kernel);
+    let fog = kernel
+        .register_fog_volume_for_test(b)
+        .expect("register_fog_volume_for_test on a registered level set");
+
+    for (role, op) in [
+        (
+            "left",
+            GeometryOp::Union {
+                left: fog,
+                right: a,
+            },
+        ),
+        (
+            "right",
+            GeometryOp::Union {
+                left: a,
+                right: fog,
+            },
+        ),
+    ] {
+        match kernel.execute(&op) {
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                msg.contains(&format!("the {role} operand")) && msg.contains("fog volume"),
+                "the refusal must name the {role} operand and its grid class; got {msg:?}",
+            ),
+            other => panic!(
+                "expected Err(OperationFailed(_)) for a {role} fog-volume operand; got {other:?}"
+            ),
+        }
+    }
+}
+
 #[cfg(not(has_openvdb))]
 #[test]
 fn voxel_boolean_tests_skipped_without_cfg() {
