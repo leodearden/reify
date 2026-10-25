@@ -288,6 +288,30 @@ class JournalFixture:
         )
 
 
+def c2(event, **fields):
+    """One C2 event-channel record line (tests/infra/README.md "Verify event channel")."""
+    return json.dumps({"v": 1, "ts_ns": 1, "pid": 1, "event": event, **fields})
+
+
+def c2_member_finish(member, attempt, verdict, rc, queued_ns, started_ns, ended_ns):
+    return c2(
+        "member_finish",
+        member=member,
+        attempt=attempt,
+        rc=rc,
+        verdict=verdict,
+        duration_ms=None,
+        queued_ns=queued_ns,
+        started_ns=started_ns,
+        ended_ns=ended_ns,
+        fail_detail=[],
+        fail_detail_omitted=0,
+    )
+
+
+S = 1_700_000_000_000_000_000
+
+
 def ledger_records(ledger_dir):
     path = Path(ledger_dir) / "verify-runs.jsonl"
     if not path.exists():
@@ -379,6 +403,90 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(record["signal"], "TERM")
         self.assertEqual(record["steps"][0]["began_at"], 1000.0)
         self.assertIsNone(record["steps"][0]["ended_at"])
+
+    def test_step_file_records_fold_into_the_run_all_block(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        journal.run_steps(8)
+        lines = [
+            c2("run_start", run_id="ra-1", scope="all", branch="pool", discovered=3),
+            c2("member_start", member="test_a.sh", attempt=1, mode="capture"),
+            c2_member_finish("test_a.sh", 1, "PASS", 0, S, S + 500_000_000, S + 2_000_000_000),
+            c2("phase_finish", phase="pool", started_ns=S, ended_ns=S + 3_000_000_000),
+            c2_member_finish(
+                "test_b.sh", 2, "FLAKY_PASS", 0, None, S + 4_000_000_000, S + 4_250_000_000
+            ),
+            c2_member_finish("test_c.sh", 0, "SKIP", None, None, None, None),
+            c2("phase_finish", phase="serial", started_ns=S + 3_000_000_000, ended_ns=S + 3_500_000_000),
+            c2(
+                "slot_timeout",
+                reason="probe",
+                slots=1,
+                waited=1,
+                disposition="soft",
+                lock="/tmp/l",
+                emitter="run_all_pool",
+            ),
+            c2("phase_finish", phase="retry", started_ns=S + 3_500_000_000, ended_ns=S + 4_500_000_000),
+            c2("run_finish", discovered=3, failures=0, failed=[], flaky=["test_b.sh"],
+               skipped=["test_c.sh"], interrupted=False, names_omitted=0),
+            '{"v":1,"ev',
+            json.dumps({"v": 2, "ts_ns": 1, "pid": 1, "event": "member_finish", "member": "test_z.sh"}),
+        ]
+        (journal.dir / "step-0.run-all.jsonl").write_text("\n".join(lines) + "\n")
+        (journal.dir / "step-2.run-all.jsonl").write_text(
+            c2_member_finish("test_d.sh", 1, "PASS", 0, None, S, S) + "\n"
+        )
+        proc = journal.finalize(self.ledger, 0)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        (record,) = ledger_records(self.ledger)
+        steps = record["steps"]
+        self.assertEqual(
+            steps[0]["run_all"],
+            {
+                "summary": {
+                    "run_id": "ra-1",
+                    "branch": "pool",
+                    "discovered": 3,
+                    "phases": {
+                        "pool": {"began_at": 1700000000.0, "ended_at": 1700000003.0},
+                        "serial": {"began_at": 1700000003.0, "ended_at": 1700000003.5},
+                        "retry": {"began_at": 1700000003.5, "ended_at": 1700000004.5},
+                    },
+                },
+                "members": [
+                    {
+                        "name": "test_a.sh",
+                        "attempt": 1,
+                        "verdict": "PASS",
+                        "rc": 0,
+                        "queued_at": 1700000000.0,
+                        "started_at": 1700000000.5,
+                        "ended_at": 1700000002.0,
+                    },
+                    {
+                        "name": "test_b.sh",
+                        "attempt": 2,
+                        "verdict": "FLAKY_PASS",
+                        "rc": 0,
+                        "queued_at": None,
+                        "started_at": 1700000004.0,
+                        "ended_at": 1700000004.25,
+                    },
+                    {
+                        "name": "test_c.sh",
+                        "attempt": 0,
+                        "verdict": "SKIP",
+                        "rc": None,
+                        "queued_at": None,
+                        "started_at": None,
+                        "ended_at": None,
+                    },
+                ],
+            },
+        )
+        self.assertNotIn("run_all", steps[1])
+        self.assertIsNone(steps[2]["run_all"]["summary"])
+        self.assertEqual([m["name"] for m in steps[2]["run_all"]["members"]], ["test_d.sh"])
 
     def test_finalize_is_once_only(self):
         journal = JournalFixture(self, BASE_PLAN)
