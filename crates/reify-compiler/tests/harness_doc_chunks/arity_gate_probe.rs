@@ -173,7 +173,7 @@ fn parses_as_call(name: &str, arity: usize) -> bool {
 #[test]
 fn arg_count_rejection_is_detected_for_the_builtin_rotate_arity_gate() {
     let compiled = compile_source_with_stdlib(
-        "module functions_chunk_probe\n\
+        "module arity_gate_probe_control\n\
          \n\
          structure def ArgCountControl {\n\
          \x20   let bad = rotate(1mm, 1mm, 1mm)\n\
