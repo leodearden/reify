@@ -293,15 +293,8 @@ pub structure IdlerPulley {
 ///
 /// Sizing (D/d = 8): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
 /// max per-belt feed = X+Y travel = 500+800 = 1.3m → `active_turns` ≈ 8.62;
-/// helix angle ≈ 2.7°. Two DIFFERENT axial figures follow, each its own cell:
-///   - `band` = active_turns·lead ≈ 60.3mm — the departure tangent's migration
-///     over the full feed, i.e. what the fairlead collar tracks; CapstanUnit
-///     relays it as `band_stroke`;
-///   - `groove_len` = (active_turns + dead_total)·lead ≈ 88.3mm — the whole
-///     grooved extent, band plus the dead anchor wraps.
-/// dev_capstan.ri names a third, its shuttle's hand-set `Fairlead.stroke` (the
-/// band rounded up to a whole turn, 9·lead = 63mm). It has no counterpart here:
-/// this file's collar travel is derived from `band`, not hand-set.
+/// helix angle ≈ 2.7°. The two axial figures, `band` and `groove_len`, are
+/// cells, defined at their declarations below.
 pub structure Capstan {
     param rope_dia    : Length = 6mm
     /// D/d ratio
@@ -402,10 +395,10 @@ pub structure Capstan {
 /// XZ side plates outboard of the pulley planes, joined by two YZ end webs
 /// outboard of the vertical tendon runs; open top/bottom so the drum and all
 /// four verticals pass straight through. The collar translates along Z over
-/// the Capstan's `band` (lead·active_turns ≈ 60.3mm, NOT the 88.3mm
-/// `groove_len`), relayed by CapstanUnit as `band_stroke`. Pulley axles/bosses
-/// span the plate-to-pulley gap (not modelled — same idealization as the
-/// IdlerPulley axle bolts); the light guide rail that takes the ΔT-scale
+/// the Capstan's `band`, not its `groove_len`, relayed by CapstanUnit as
+/// `band_stroke`. Pulley axles/bosses span the plate-to-pulley gap (not
+/// modelled — same idealization as the IdlerPulley axle bolts); the light
+/// guide rail that takes the ΔT-scale
 /// dynamic residuals is not modelled yet.
 pub structure FairleadFrame {
     param half_x  : Length = 84mm   // collar half-width across X (80 → 84 with
@@ -563,11 +556,10 @@ pub structure CapstanUnit {
     /// constraint once member geometry reads compose through the sub's
     /// placement.
     param pulley_x : Length = 50mm
-    /// #6586 pin: == self.capstan.groove_len, the whole grooved extent — NOT
-    /// the Capstan's `band` (constraints below). The pair heights derive from
-    /// THIS so they can feed FairleadPair constructor args — a
-    /// self.<sub>.<member> read flowing into a constructor arg makes the
-    /// child's geometry silently never realize.
+    /// #6586 pin: == self.capstan.groove_len, not the Capstan's `band`
+    /// (constraints below). The pair heights derive from THIS so they can feed
+    /// FairleadPair constructor args — a self.<sub>.<member> read flowing into
+    /// a constructor arg makes the child's geometry silently never realize.
     param groove_len_m : Length = 88.346249mm
     // NOTE: this unit is the side +1 (IN pulleys on local −x) balanced
     // arrangement. The mirror twin lives in CapstanUnitMirrored below — a
@@ -588,8 +580,8 @@ pub structure CapstanUnit {
     /// constructor arg reads this, never the sub-derived cell.
     let cap_pitch_r_m = 24mm
     let unit_pin_slack = 0.002mm
-    /// Upper/lower winding centres: the two windings split `groove_len`, the
-    /// whole grooved extent, in half, so their centres sit at ± a quarter of it.
+    /// Upper/lower winding centres: the two windings split the Capstan's
+    /// `groove_len` in half, so their centres sit at ± a quarter of it.
     let winding_z   = groove_len_m / 4
     /// Nominal Z split of a winding's two rope-end exits: ± an eighth of
     /// groove_len, so the two exits sit half a winding's axial extent apart
@@ -646,7 +638,7 @@ pub structure CapstanUnit {
     /// hand-keeping mirrors).
     /// Axial migration of the active wrap point = the stroke this whole unit
     /// (collar + all four fairlead pulleys) translates along Z as the drum
-    /// reels: the Capstan's `band` (≈60.3mm), NOT its `groove_len`. Every
+    /// reels: the Capstan's `band`, not its `groove_len`. Every
     /// fairlead-vs-fixed clearance must hold across it.
     let band_stroke    = self.capstan.band
     let frame_web_half = self.frame.web_half_z
@@ -1269,7 +1261,7 @@ pub structure DriveTendons {
     /// the w2 rises were 31mm against a 42mm requirement.)
     let rise_min   = r_pitch * 2 + clear_min
     /// HALF the fairlead's axial migration. The whole drive unit translates
-    /// along Z as the drum reels (stroke = the active wrap band, ~60mm), so
+    /// along Z as the drum reels (stroke = the Capstan's `band`), so
     /// every below-entry pulley drops this far toward the fixed up-turn discs
     /// at the bottom of travel. Checking the rise rule only at the NOMINAL
     /// band position is what let unit B's w2_out pulley end up 20.7mm from
