@@ -169,7 +169,7 @@ tasks:
       kind: grep
       pattern: 'PDIAG'
       paths:
-      - crates/reify-audit/src/lib.rs
+      - crates/reify-audit/src/pdiag.rs
       expect: present
   - name: infra-gate-registered-same-diff
     binding: 'drift-guard (overlay rule, esc-4914-162 precedent) — the new tests/infra/test_reify_audit_pdiag.sh must carry its run-all-classification.manifest bucket row in the same diff'
