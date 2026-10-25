@@ -325,3 +325,108 @@ fn mismatched_return(
         format!("body produces `{produced}`"),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    //! The `Projection` arm of the bare-generic gate. A fn signature cannot name
+    //! an associated type (`x: P::Assoc` resolves to `Error`), so no `.ri` source
+    //! yields a `Projection`-typed input and the harness tables cannot express
+    //! this arm; it runs through `reconcile_fn_return` on hand-built inputs.
+    use reify_ast::{Expr, ExprKind, FnBody, FnDef, TypeExpr, TypeExprKind};
+    use reify_ir::BinOp;
+    use reify_test_support::compiled_function;
+
+    use super::*;
+
+    fn projection() -> Type {
+        Type::projection(Type::TypeParam("P".to_string()), "Assoc")
+    }
+
+    /// A reference to the param `x : P::Assoc` of `fn f`.
+    fn x_ref() -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("f", "x"), projection())
+    }
+
+    /// `x * x`, keeping its operand's type as arithmetic on a generic does.
+    fn x_squared() -> CompiledExpr {
+        CompiledExpr::binop(BinOp::Mul, x_ref(), x_ref(), projection())
+    }
+
+    fn real_annotation() -> TypeExpr {
+        TypeExpr {
+            kind: TypeExprKind::Named {
+                name: "Real".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    /// `fn f(x: P::Assoc) <return_type> { x }`: reconciliation reads only the
+    /// return annotation and the body's span.
+    fn fn_def(return_type: Option<TypeExpr>) -> FnDef {
+        FnDef {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params: vec![],
+            return_type,
+            body: Some(FnBody {
+                let_bindings: vec![],
+                result_expr: Expr {
+                    kind: ExprKind::Ident("x".to_string()),
+                    span: SourceSpan::new(0, 0),
+                },
+            }),
+            span: SourceSpan::new(0, 0),
+            content_hash: reify_core::ContentHash::of_str("f"),
+            annotations: vec![],
+        }
+    }
+
+    /// The compiled `fn f(x: P::Assoc) { body }`, returning `Real`: the
+    /// un-annotated default, and what an `-> Real` annotation resolves to.
+    fn compiled(body: CompiledExpr) -> CompiledFunction {
+        CompiledFunction {
+            return_type: Type::dimensionless_scalar(),
+            ..compiled_function("f", &[("x", projection())], vec![], body)
+        }
+    }
+
+    fn reported(fn_def: &FnDef, compiled: &CompiledFunction) -> Vec<DiagnosticCode> {
+        let mut diagnostics = Vec::new();
+        reconcile_fn_return(fn_def, FnOwner::Free, compiled, &mut diagnostics);
+        diagnostics.iter().filter_map(|d| d.code).collect()
+    }
+
+    #[test]
+    fn unannotated_fn_handing_back_a_projection_typed_input_is_reported() {
+        assert_eq!(
+            reported(&fn_def(None), &compiled(x_ref())),
+            [DiagnosticCode::FnReturnTypeUnannotated]
+        );
+    }
+
+    #[test]
+    fn annotated_fn_handing_back_a_projection_typed_input_is_reported() {
+        assert_eq!(
+            reported(&fn_def(Some(real_annotation())), &compiled(x_ref())),
+            [DiagnosticCode::FnReturnTypeMismatch]
+        );
+    }
+
+    #[test]
+    fn projection_typed_arithmetic_placeholder_is_not_judged() {
+        for (arm, declaration) in [
+            ("un-annotated", fn_def(None)),
+            ("annotated", fn_def(Some(real_annotation()))),
+        ] {
+            let codes = reported(&declaration, &compiled(x_squared()));
+            assert!(
+                codes.is_empty(),
+                "expected no report on the {arm} arm, got: {codes:?}"
+            );
+        }
+    }
+}

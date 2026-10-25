@@ -143,7 +143,8 @@ fn unannotated_fn_whose_body_agrees_with_real_is_silent() {
 
 /// Callers type an un-annotated fn as `Real`, but a body that hands back a
 /// type-param-typed input unchanged produces exactly that parameter, which an
-/// annotation can state.
+/// annotation can state. (A `Projection`-typed input cannot be written in a
+/// signature, so that arm is pinned by `fn_return_check`'s in-crate unit tests.)
 #[test]
 fn unannotated_generic_fn_whose_body_passes_its_type_param_through_warns() {
     for source in [
@@ -350,7 +351,7 @@ fn annotated_int_return_with_real_body_warns() {
 /// A body that hands back a generic-typed input unchanged contradicts a concrete
 /// annotation: the signature promises the annotated type for every `T`. Covers a
 /// type param and a dimension param, `Int` and `Scalar` annotations, and the
-/// let-relay and conditional shapes.
+/// let-relay, conditional and match shapes.
 #[test]
 fn annotated_return_contradicted_by_generic_passthrough_body_warns() {
     for source in [
@@ -359,6 +360,7 @@ fn annotated_return_contradicted_by_generic_passthrough_body_warns() {
         "fn f<Q: Dimension>(x: Scalar<Q>) -> Length { x }\n",
         "fn f<T>(x: T) -> Real { let y = x; y }\n",
         "fn f<T>(c: Bool, a: T, b: T) -> Real { if c then a else b }\n",
+        "enum Side { L, R }\nfn f<T>(s: Side, a: T, b: T) -> Real { match s { L => a, R => b } }\n",
     ] {
         let module = compile_source(source);
 
