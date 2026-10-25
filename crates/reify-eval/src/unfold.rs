@@ -1286,9 +1286,9 @@ fn eval_child_expr(
 ///
 /// Silent: phase 2 sees the same cell and owns the decline report, so reporting
 /// here would double every warning. Phase 1.5's overlay reaches phase 2's
-/// decision, and phase 1's scope may not, harmlessly; both are argued under
-/// "Why the two instance maps reach the SAME decision" on
-/// [`resolve_optimized_instance_cell`].
+/// decision. Phase 1's scope does not when the let reads a sub member, and what
+/// that costs is measured under "Why the two instance maps reach the SAME
+/// decision" on [`resolve_optimized_instance_cell`].
 ///
 /// The gate gets the RAW read trace, not phase 1.5's `node_traces`, which are
 /// normalised onto phase-1.5 node keys: the wrong set for a value comparison.

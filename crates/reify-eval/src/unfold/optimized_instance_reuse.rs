@@ -379,10 +379,23 @@ fn render_input_value(value: &Value) -> String {
 ///   NEITHER map: phase 2's BFS is seeded from `elaborated_sub_names`, which
 ///   excludes exactly the subs phase 1.5 skipped.
 ///
-/// Phase 1's scratch `scope` is a third map, and it CAN decide differently,
-/// because it holds no sub-member projections. That is harmless: it is silent,
-/// and it mirrors template scope's unified pass, which also runs before sub
-/// elaboration.
+/// Phase 1's scratch `scope` is a third map, and it DOES decide differently
+/// for a let that reads a sub member, because it holds no sub-member
+/// projections. The gate sees `(None, Some(_))`, declines without a report, and
+/// the call is body-inlined over the absent input. Phase 2 still reuses, so
+/// only the param defaults reading that let see the difference. Template scope
+/// evaluates those defaults before its subs too, with the call dispatched over
+/// the same absent input. MEASURED, in
+/// tests/harness_engine/instance_scope_param_default_order.rs:
+///
+/// * a trampoline that maps the absent input to Undef: the two scopes agree,
+///   with `p == Undef` at both
+///   (`param_default_reading_an_optimized_let_over_a_nested_sub_member_agrees_with_template`);
+/// * a trampoline that ignores its input: template `p == 777`, instance
+///   `p == Undef`, and no diagnostic
+///   (`known_divergence_param_default_reading_an_input_blind_optimized_let_over_a_sub_member`).
+///   Template scope's pre-sub value is overwritten by its post-sub pass, so
+///   there is nothing here to reuse. Tracked by #9498.
 pub(super) fn resolve_optimized_instance_cell<R>(
     expr: &reify_ir::CompiledExpr,
     optimized_names: &OptimizedNameIndex<'_>,

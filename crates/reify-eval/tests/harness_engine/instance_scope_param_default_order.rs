@@ -743,6 +743,207 @@ fn param_default_reading_a_let_over_a_nested_sub_member_agrees_with_template() {
     );
 }
 
+/// Doubles its one Int input, and maps any other input to Undef, as a
+/// trampoline that cannot act on a missing input does.
+fn double(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let result = match value_inputs.first() {
+        Some(Value::Int(n)) => Value::Int(n * 2),
+        _ => Value::Undef,
+    };
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// The scope boundary with an `@optimized` let: `c` dispatches over the sub
+/// member `self.k.off`, and `p` reads `c`. The `.ri` body returns 42, so 42
+/// anywhere below would mean a body-inlined sentinel.
+const OPTIMIZED_RELAY_OVER_SUB_MEMBER: &str = r#"
+    @optimized("test::relay")
+    fn relay_dispatch(x : Int) -> Int {
+        42
+    }
+
+    structure OptKid {
+        param off : Int = 7
+    }
+
+    structure OptRelayMid {
+        sub k = OptKid()
+        let c = relay_dispatch(self.k.off)
+        param p : Int = c
+    }
+
+    structure OptRelayTop {
+        sub m = OptRelayMid()
+    }
+"#;
+
+fn eval_optimized_relay_over_sub_member(trampoline: ComputeFn) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile_with_stdlib(OPTIMIZED_RELAY_OVER_SUB_MEMBER);
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::relay", trampoline);
+    engine.eval(&compiled)
+}
+
+/// SCOPE BOUNDARY, `@optimized` variant. Neither scope sees `self.k.off` when
+/// `p` is evaluated: template scope's unified pass runs before its subs, and
+/// phase 1's scratch `scope` holds no sub-member projections, so phase 1's
+/// reuse gate declines `c` (instance input absent, template input 7) and
+/// body-inlines it. With a trampoline that maps the missing input to Undef,
+/// both scopes give `p == Undef`, and only the post-sub `c` sees the member.
+///
+/// MEASURED on this branch: template and instance `c == 14`, `p == Undef`, and
+/// no diagnostic. Phase 1's decline is unreported by design (`eval_scratch_let`)
+/// and phase 2 reuses, so nothing may warn. For a trampoline that IGNORES its
+/// input the two scopes disagree: see
+/// `known_divergence_param_default_reading_an_input_blind_optimized_let_over_a_sub_member`.
+#[test]
+fn param_default_reading_an_optimized_let_over_a_nested_sub_member_agrees_with_template() {
+    let result = eval_optimized_relay_over_sub_member(double as ComputeFn);
+
+    assert_eq!(
+        result.values.get(&ValueCellId::new("OptRelayMid", "p")),
+        Some(&Value::Undef),
+        "template scope evaluates `p` before its subs, from a `c` dispatched \
+         with no `self.k.off`. If this is Int(14), template scope now \
+         re-evaluates params after subs, and phase 1 must follow"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("OptRelayTop.m", "p")),
+        result.values.get(&ValueCellId::new("OptRelayMid", "p")),
+        "instance scope must agree with template scope at OptRelayTop.m.p. \
+         Int(14) means phase 1's scratch let saw a sub-member projection that \
+         template scope's pre-sub pass does not; Int(42) means it returned the \
+         body sentinel"
+    );
+    for entity in ["OptRelayMid", "OptRelayTop.m"] {
+        assert_eq!(
+            result.values.get(&ValueCellId::new(entity, "c")),
+            Some(&Value::Int(14)),
+            "{entity}.c is the post-sub dispatch, 2 * 7"
+        );
+    }
+    let warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "phase 1's scratch decline is unreported and phase 2 reuses, so no site \
+         may warn. Got: {warnings:?}"
+    );
+    assert_no_error_diagnostics(&result, "an @optimized let over a sub member");
+}
+
+/// KNOWN DIVERGENCE, pinned so it cannot change unnoticed. This is NOT an
+/// agreement test. The shape is the same as the test above, but the trampoline
+/// ignores its input. Template scope's pre-sub dispatch then yields 777 for
+/// `c`, and `p` keeps it. Phase 1 declines and body-inlines the call over an
+/// absent `self.k.off`, which evaluates to Undef. The template's pre-sub `c` is
+/// overwritten by the post-sub pass, so instance scope has nothing to reuse,
+/// and reproducing it would need per-instance dispatch (#6592).
+///
+/// MEASURED on this branch: template `p == 777`, instance `p == Undef`, both
+/// `c == 777`, and no diagnostic. Before #7511, phase 1 never evaluated lets,
+/// so instance `p` read an absent `c` and was Undef here too. Tracked by #9498.
+/// When a fix lands, this test REDs. Re-point it at agreement; do not
+/// re-baseline it.
+#[test]
+fn known_divergence_param_default_reading_an_input_blind_optimized_let_over_a_sub_member() {
+    let result = eval_optimized_relay_over_sub_member(const777 as ComputeFn);
+
+    assert_eq!(
+        result.values.get(&ValueCellId::new("OptRelayMid", "p")),
+        Some(&Value::Int(777)),
+        "template `p` keeps the pre-sub dispatch of `c`"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("OptRelayTop.m", "p")),
+        Some(&Value::Undef),
+        "instance `p` reads phase 1's scratch `c`, body-inlined over an absent \
+         sub member. Anything else means this known divergence has moved"
+    );
+    for entity in ["OptRelayMid", "OptRelayTop.m"] {
+        assert_eq!(
+            result.values.get(&ValueCellId::new(entity, "c")),
+            Some(&Value::Int(777)),
+            "{entity}.c is the post-sub dispatch"
+        );
+    }
+    assert!(
+        result.diagnostics.is_empty(),
+        "the divergence is silent today. Got: {:?}",
+        result.diagnostics
+    );
+}
+
+/// NODE-RULE PARITY. Template scope's unified pass
+/// (`build_combined_param_let_graph`, engine_eval.rs) and instance scope's
+/// `phase1_walk` each state which cells join the dependency order: every
+/// Param, every Let with a default, never an Auto cell. This fixture has one
+/// cell per branch of that rule, plus a let no param reads. If either site's
+/// rule drifts, a param here reads a cell one scope evaluated and the other did
+/// not, and the two scopes disagree.
+///
+/// MEASURED on this branch: every member below agrees. `from_auto` is Undef at
+/// both scopes. The Auto cell `solved` itself is not compared, because instance
+/// scope does not materialise an unoverridden Auto cell at all
+/// (`KindsHolder.k.solved` is absent), and that is not this rule.
+#[test]
+fn every_kind_the_node_rule_distinguishes_agrees_with_template() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure Kinds { \
+            param solved : Int = auto \
+            param from_auto : Int = solved + 1 \
+            let unread = 5 \
+            let read = base * 2 \
+            param via_let : Int = read + 1 \
+            param base : Int = 3 \
+        } \
+        structure KindsHolder { \
+            sub k = Kinds() \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    for (member, expected) in [
+        ("from_auto", Value::Undef),
+        ("unread", Value::Int(5)),
+        ("read", Value::Int(6)),
+        ("via_let", Value::Int(7)),
+        ("base", Value::Int(3)),
+    ] {
+        let template_id = ValueCellId::new("Kinds", member);
+        let instance_id = ValueCellId::new("KindsHolder.k", member);
+        assert_eq!(
+            result.values.get(&template_id),
+            Some(&expected),
+            "template scope at Kinds.{member}"
+        );
+        assert_eq!(
+            result.values.get(&instance_id),
+            result.values.get(&template_id),
+            "instance scope must agree with template scope at KindsHolder.k.{member}"
+        );
+    }
+
+    assert_no_error_diagnostics(&result, "one cell per node-rule branch");
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // amendment: the Auto-precedence branch under the dependency-ordered loop
 // ──────────────────────────────────────────────────────────────────────────────

@@ -38,7 +38,8 @@ impl<'t> Phase1Step<'t> {
 ///
 /// - The node rule is template scope's (`build_combined_param_let_graph` in
 ///   engine_eval.rs): all Params, plus Lets with a default; Auto cells never.
-///   A let no param default reads is left out.
+///   A let no param default reads is left out. The two copies are held together
+///   by `every_kind_the_node_rule_distinguishes_agrees_with_template`.
 /// - A param named by `args` contributes no edge and pulls in no let: its
 ///   `default_expr` is never evaluated, so its reads would be invented.
 /// - [`topological_sort`] omits cycle members and everything downstream of
