@@ -352,19 +352,19 @@ fn mutually_referential_sibling_lets_terminate_instead_of_overflowing() {
     );
 }
 
-/// (b) Compound cross-sub keys are still not chased.
+/// (b) A `GeomRef::Sub` operand of a Boolean that the env declines collapses to
+/// the `all()` safe default, so `Union(declined, Box)` infers `bounded_only()`.
 ///
-/// `GeomRef::Sub` is overloaded: besides bare sibling names (#4668) it also
-/// carries `"<sub>.<member>"` for cross-sub `self.<sub>.<member>` references,
-/// whose referent lives on a DIFFERENT template. The consumer's `contains('.')`
-/// carve-out declines those, and a declined name collapses to the `all()` safe
-/// default here — so cross-sub references are never chased.
-///
-/// Op shape mirrors the lowering pinned by
-/// `harness_type_checking::boolean_arg_cross_sub_diagnostic_tests::
+/// The operand is the compound key `"inner.body"` that a cross-sub
+/// `self.<sub>.<member>` reference lowers to; the op shape mirrors the lowering
+/// pinned by `harness_type_checking::boolean_arg_cross_sub_diagnostic_tests::
 /// boolean_op_with_working_path_cross_sub_arg_lowers_without_diagnostic`.
+/// `StubSubRefEnv` declines it like every name but `"h"`, so this pins the
+/// walker's `None` → `all()` collapse, not the production env's decision to
+/// decline compound keys; that is unit-tested beside `SiblingSubEnv` in
+/// `conformance/realization_let_env.rs`.
 #[test]
-fn compound_cross_sub_key_declined_by_env_keeps_safe_default() {
+fn declined_sub_ref_on_boolean_operand_collapses_to_safe_default() {
     let ops = vec![
         CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -376,20 +376,22 @@ fn compound_cross_sub_key_declined_by_env_keeps_safe_default() {
             right: GeomRef::Step(0),
         },
     ];
-    // StubSubRefEnv declines every name but "h", standing in for the consumer
-    // declining every name containing a dot.
     assert_eq!(
         infer_traits_for_op_in_env(&ops, &StubSubRefEnv),
         InferredTraits::bounded_only(),
-        "a compound cross-sub key must collapse to all() (making Union(all, Box) = \
-         bounded_only), identical to the pre-#7060 behaviour — #7060 chases bare sibling \
-         names only and must not widen into cross-entity resolution"
+        "a Sub operand the env declines must collapse to all() (making Union(all, Box) = \
+         bounded_only), not leak a partial trait set into the Boolean"
     );
 }
 
 /// (b, end to end) The cross-sub source shape itself is behaviourally untouched:
 /// a `self.<sub>.<member>` geometry reference at a `Bounded` slot still emits no
-/// `GeometryUnbounded`, because its compound `GeomRef::Sub` key is not chased.
+/// `GeometryUnbounded`, because its compound `GeomRef::Sub` key resolves to
+/// nothing on the referring template.
+///
+/// This pins source-level behaviour only. It stays green without the env's
+/// compound-key carve-out, since `Top` holds no realization named
+/// `"inner.body"` for the lookup to find.
 #[test]
 fn cross_sub_geometry_reference_at_bounded_slot_is_unchanged_by_sub_chasing() {
     let source = r#"

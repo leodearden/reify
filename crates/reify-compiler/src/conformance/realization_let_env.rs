@@ -241,8 +241,10 @@ impl SubRefEnv for SiblingSubEnv<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EntityKind, RealizationDecl, ValueCellDecl, Visibility};
-    use reify_core::{ContentHash, SourceSpan, Type};
+    use crate::{
+        CompiledGeometryOp, EntityKind, PrimitiveKind, RealizationDecl, ValueCellDecl, Visibility,
+    };
+    use reify_core::{ContentHash, RealizationNodeId, SourceSpan, Type};
     use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction};
     use std::collections::HashSet;
 
@@ -297,6 +299,23 @@ mod tests {
             )),
             solver_hints: vec![],
             span: SourceSpan::empty(0),
+        }
+    }
+
+    /// Build a realization named `name` whose op-array is a single unbounded
+    /// `half_space` primitive.
+    fn half_space_realization(entity: &str, index: u32, name: &str) -> RealizationDecl {
+        RealizationDecl {
+            id: RealizationNodeId::new(entity, index),
+            name: Some(name.to_string()),
+            is_aux: false,
+            is_query_only: false,
+            list_binding: None,
+            operations: vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::HalfSpace,
+                args: vec![],
+            }],
+            span: SourceSpan::new(0, 0),
         }
     }
 
@@ -453,6 +472,44 @@ mod tests {
             Some(InferredTraits::bounded_only()),
             "non-cyclic chain g→h→difference(box,box) must propagate bounded_only(), \
              not short-circuit to all() via premature cycle-guard firing"
+        );
+    }
+
+    /// `SiblingSubEnv` declines a compound `"<sub>.<member>"` key even when the
+    /// template it searches holds a realization literally named that key.
+    ///
+    /// A compound key's referent lives on a different template, so a match on
+    /// the current one would be a false hit. The `"body"` control shows the same
+    /// unbounded realization IS resolved under a bare name, so the `None` here
+    /// comes from declining the key, not from a lookup miss.
+    #[test]
+    fn sibling_sub_env_declines_compound_key_even_when_a_realization_bears_it() {
+        let template = minimal_template(
+            "Top",
+            vec![],
+            vec![
+                half_space_realization("Top", 0, "inner.body"),
+                half_space_realization("Top", 1, "body"),
+            ],
+        );
+        let mut templates = HashMap::new();
+        templates.insert("Top".to_string(), &template);
+        let env = RealizationLetEnv::new(&templates);
+        let sub_env = SiblingSubEnv {
+            parent: &env,
+            entity: "Top",
+        };
+
+        assert_eq!(
+            sub_env.lookup_sub("body"),
+            Some(InferredTraits::unbounded_convex()),
+            "control: a bare sibling name resolves to its half_space realization"
+        );
+        assert_eq!(
+            sub_env.lookup_sub("inner.body"),
+            None,
+            "a compound cross-sub key must be declined before lookup, even though a \
+             same-template realization carries that exact name"
         );
     }
 }
