@@ -259,7 +259,7 @@ pub structure IdlerPulley {
 /// surface when this was copied (it works under kernel-backed `reify eval`,
 /// post-#4145, and since 2026-09-03's binary `check` computes it too —
 /// kernel-exact, probe probe_vol_check.ri) and the machining metric belongs
-/// to the sketch; its `band` cell is not carried yet, #7238). dev_capstan.ri is
+/// to the sketch). dev_capstan.ri is
 /// the ORIGINAL: this copy is held to it member by member by
 /// crates/reify-eval/tests/harness_sweep/capstan_copies_lockstep.rs, so a code
 /// edit to either copy must land in both. Helically-grooved
@@ -333,7 +333,11 @@ pub structure Capstan {
     let land_r     = seat_c
     let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
-    let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    let groove_len : Length = lead * (active_turns + dead_total)   // total grooved extent = band + dead anchor wraps
+    /// Axial migration of the departure tangent over the full `feed`, one `lead`
+    /// per active turn: what the fairlead collar tracks. NOT `groove_len`, which
+    /// is this band PLUS the `dead_total` anchor wraps.
+    let band       : Length = lead * active_turns
     let bore_r     = bore_dia / 2
 
     // The rope channel: a circular section of radius groove_r, posed normal to the
