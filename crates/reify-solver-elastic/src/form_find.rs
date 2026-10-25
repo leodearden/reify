@@ -2505,6 +2505,32 @@ mod tests {
         );
     }
 
+    // The geometry-level line behind the input check: a zero or NaN warp_dir
+    // has no in-plane projection to normalise, so it fixes no frame either.
+    #[test]
+    fn aniso_stencil_rejects_a_zero_or_nan_warp_direction_as_a_degenerate_frame() {
+        let pi = [0.0, 0.0, 0.0];
+        let pj = [1.0, 0.0, 0.0];
+        let pk = [0.0, 1.0, 0.0];
+        for warp_dir in [[0.0, 0.0, 0.0], [f64::NAN, 0.0, 0.0]] {
+            let spec = AnisotropicSurfaceStress {
+                warp_dir,
+                sigma_warp: 1.0,
+                sigma_weft: 1.0,
+            };
+            assert_eq!(
+                triangle_anisotropic_laplacian(pi, pj, pk, &spec).err(),
+                Some(AnisoFormFindError::DegenerateMaterialFrame),
+                "stencil, warp_dir = {warp_dir:?}"
+            );
+            assert_eq!(
+                recover_principal_stress(pi, pj, pk, &spec).err(),
+                Some(AnisoFormFindError::DegenerateMaterialFrame),
+                "principal stress, warp_dir = {warp_dir:?}"
+            );
+        }
+    }
+
     // ── ε step-5 RED: recover_principal_stress ─────────────────────────────────
 
     // For S = diag(σ_w, σ_f) in frame (e₁, e₂):
