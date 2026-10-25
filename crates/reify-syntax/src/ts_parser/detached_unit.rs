@@ -3,22 +3,56 @@
 //! PRD docs/prds/unit-expressions.md §3.1, the contiguity invariant: a unit must touch its
 //! number, and that is what keeps `5kg * m` a binary expression. The grammar therefore rejects
 //! `1000.0 N/m` on purpose, and the parser's job is to explain the fix rather than accept the
-//! spelling (task #7190). This module recognises the shape at a fault, so the diagnostic can name
-//! the unit, the binding it sits in and the attached spelling.
+//! spelling (task #7190). This module recognises the shape at a fault and words the remedy: the
+//! unit, the binding it sits in, and the attached spelling that replaces the detached one.
 //!
 //! Like its sibling `fault_diagnosis`, it reads only a bare `tree_sitter::Node` plus the source
-//! text and no lowering state; wording the diagnostic stays with `Lowering`.
+//! text and no lowering state. The caller passes in its bounded-excerpt rule, so the quoted
+//! tokens obey the same INV-SF-7 bound as every other diagnostic excerpt.
 
 use tree_sitter::Node;
 
+/// The remedy to append to the diagnostic for `fault` when it is a detached unit suffix:
+/// ``" — if `N` in `k` is a unit, it must follow its number with no whitespace: write `1000.0N`
+/// in place of `1000.0 N`"``. The ``in `k` `` clause is omitted when no binding holds the number.
+///
+/// The hint is conditional because the syntax layer has no unit registry: `2 x` with `x` a
+/// variable (a missing operator) has the same shape, and an unconditional "write `2x`" would
+/// steer that author into a quantity literal.
+///
+/// The ``in place of`` clause quotes the detached pair verbatim, gap included. A compound unit
+/// is named by its first word only, so without it "write `1000.0N`" reads as a replacement for
+/// the whole spelled value `1000.0 N/m` and silently drops `/m`.
+///
+/// Every quoted token goes through `excerpt`.
+pub(super) fn remedy_hint(
+    fault: Node<'_>,
+    source: &str,
+    excerpt: impl Fn(&str) -> String,
+) -> Option<String> {
+    let detached = detached_unit_suffix(fault, source)?;
+    let quote = |node: Node<'_>| excerpt(&source[node.byte_range()]);
+    let unit = quote(detached.unit);
+    let number = quote(detached.number);
+    let binding = detached
+        .binding_name
+        .map(|name| format!(" in `{}`", quote(name)))
+        .unwrap_or_default();
+    let detached_pair = excerpt(&source[detached.number.start_byte()..detached.unit.end_byte()]);
+    Some(format!(
+        " — if `{unit}`{binding} is a unit, it must follow its number with no whitespace: \
+         write `{number}{unit}` in place of `{detached_pair}`"
+    ))
+}
+
 /// A unit word separated from its number by spaces or tabs.
-pub(super) struct DetachedUnit<'t> {
+struct DetachedUnit<'t> {
     /// The `number_literal` the unit belongs to.
-    pub(super) number: Node<'t>,
+    number: Node<'t>,
     /// The first unit-shaped word after the gap: the fault's first leaf.
-    pub(super) unit: Node<'t>,
+    unit: Node<'t>,
     /// The `name` of the nearest binding whose value holds `number`, if there is one.
-    pub(super) binding_name: Option<Node<'t>>,
+    binding_name: Option<Node<'t>>,
 }
 
 /// Recognise `fault` as a detached unit suffix: an `ERROR` whose first leaf is a unit-shaped word
@@ -26,7 +60,7 @@ pub(super) struct DetachedUnit<'t> {
 ///
 /// A newline gap is deliberately not this shape. It is the absorbed-next-line shape, which has a
 /// different cause, and a wrong remedy is worse than none.
-pub(super) fn detached_unit_suffix<'t>(fault: Node<'t>, source: &str) -> Option<DetachedUnit<'t>> {
+fn detached_unit_suffix<'t>(fault: Node<'t>, source: &str) -> Option<DetachedUnit<'t>> {
     if !fault.is_error() {
         return None;
     }

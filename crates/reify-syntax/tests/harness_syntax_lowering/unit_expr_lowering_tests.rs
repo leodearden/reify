@@ -539,12 +539,23 @@ fn comment_after_a_middot_is_still_a_parse_error() {
 
 const HINT_MARK: &str = "must follow its number with no whitespace";
 
-/// The remedy suffix appended to a detached-unit diagnostic.
-fn detached_unit_hint(unit: &str, binding: &str, number: &str) -> String {
-    format!(" — if `{unit}` in `{binding}` is a unit, it {HINT_MARK}: write `{number}{unit}`")
+/// The remedy suffix appended to the diagnostic for `<number><gap><unit>` in
+/// `binding`.  It quotes the detached spelling it replaces, so the substitution
+/// is local to those two tokens.
+fn detached_unit_hint(binding: &str, number: &str, gap: &str, unit: &str) -> String {
+    format!(
+        " — if `{unit}` in `{binding}` is a unit, it {HINT_MARK}: \
+         write `{number}{unit}` in place of `{number}{gap}{unit}`"
+    )
 }
 
 /// The single diagnostic whose message starts with `prefix`.
+///
+/// Mirrors `harness_syntax/parse_error_lookup.rs::only_error_starting_with` over
+/// `parse_shape_spanned`'s tuples.  This binary includes nothing from outside its
+/// own module directory (see `harness_syntax_lowering.rs`), so it cannot share
+/// that copy.
+#[track_caller]
 fn only_error_starting_with(
     errors: &[(String, reify_core::SourceSpan)],
     prefix: &str,
@@ -586,7 +597,7 @@ fn connect_param_detached_unit_names_the_param_and_the_attached_spelling() {
         byte_of(source, " N/m", 1),
         "the diagnostic must point at the detached unit word `N`; got {message:?}"
     );
-    let hint = detached_unit_hint("N", "spring_rate", "1000.0");
+    let hint = detached_unit_hint("spring_rate", "1000.0", " ", "N");
     assert!(
         message.ends_with(&hint),
         "the diagnostic must name the param and the attached spelling;\n \
@@ -607,7 +618,7 @@ fn connect_param_detached_unit_is_hinted_for_any_horizontal_gap() {
             byte_of(&source, "mm", 0),
             "gap {gap:?}: the diagnostic must point at `mm`; got {message:?}"
         );
-        let hint = detached_unit_hint("mm", "neutral", "0.0");
+        let hint = detached_unit_hint("neutral", "0.0", gap, "mm");
         assert!(
             message.ends_with(&hint),
             "gap {gap:?}: expected suffix {hint:?}, got {message:?}"
@@ -626,7 +637,7 @@ fn detached_unit_inside_a_call_argument_names_the_enclosing_param() {
         byte_of(source, "mm", 0),
         "the diagnostic must point at `mm`; got {message:?}"
     );
-    let hint = detached_unit_hint("mm", "axis", "1.0");
+    let hint = detached_unit_hint("axis", "1.0", " ", "mm");
     assert!(
         message.ends_with(&hint),
         "the call's `name` field is not a binding — the hint must name the param \
@@ -636,7 +647,7 @@ fn detached_unit_inside_a_call_argument_names_the_enclosing_param() {
 
 #[test]
 fn param_default_and_sub_override_carry_the_same_hint() {
-    let hint = detached_unit_hint("N", "k", "1000.0");
+    let hint = detached_unit_hint("k", "1000.0", " ", "N");
     for (source, prefix) in [
         (
             "structure S { param k : TranslationalStiffness = 1000.0 N/m }",
@@ -668,7 +679,7 @@ fn fn_body_let_with_detached_unit_carries_the_hint() {
     let (_, _, errors) = parse_shape_spanned(source);
     let expected = format!(
         "syntax error in function definition{}",
-        detached_unit_hint("mm", "y", "5")
+        detached_unit_hint("y", "5", " ", "mm")
     );
     let mm_at = byte_of(source, "mm", 0);
     assert!(
@@ -688,7 +699,7 @@ fn structure_body_let_with_detached_unit_carries_the_hint() {
     let (_, _, errors) = parse_shape_spanned(source);
     let expected = format!(
         "syntax error in structure body{}",
-        detached_unit_hint("mm", "q", "5")
+        detached_unit_hint("q", "5", " ", "mm")
     );
     let mm_at = byte_of(source, "mm", 0);
     assert!(
@@ -712,7 +723,8 @@ fn structure_body_let_with_detached_unit_carries_the_hint() {
 /// ``in `B` `` clause is dropped and nothing stands in for it.
 #[test]
 fn detached_unit_outside_any_binding_omits_the_binding_clause() {
-    let hint = " — if `mm` is a unit, it must follow its number with no whitespace: write `5mm`";
+    let hint = " — if `mm` is a unit, it must follow its number with no whitespace: \
+                write `5mm` in place of `5 mm`";
     for (source, prefix) in [
         (
             "structure A { constraint 5 mm > 0mm }",
@@ -750,7 +762,24 @@ fn a_variable_after_a_number_gets_the_conditional_hint() {
     assert_eq!(
         message,
         "syntax error in structure body — if `x` in `y` is a unit, it must follow its \
-         number with no whitespace: write `2x`"
+         number with no whitespace: write `2x` in place of `2 x`"
+    );
+}
+
+/// The hint names only the first word of a compound unit, so it must say which
+/// text it replaces.  A bare "write `1000.0N`" reads as a replacement for the
+/// whole spelled value `1000.0 N/m`, and applying it that way silently drops
+/// `/m` — an unannotated `let` would never notice the changed dimension.
+#[test]
+fn compound_unit_hint_replaces_only_the_detached_pair() {
+    let source = "structure S { let k = 1000.0 N/m }";
+    let (_, _, errors) = parse_shape_spanned(source);
+    let (message, _) = only_error_starting_with(&errors, "invalid let: ");
+    let hint = " — if `N` in `k` is a unit, it must follow its number with no whitespace: \
+                write `1000.0N` in place of `1000.0 N`";
+    assert!(
+        message.ends_with(hint),
+        "expected suffix {hint:?}, got {message:?}"
     );
 }
 

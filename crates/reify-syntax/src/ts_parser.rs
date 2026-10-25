@@ -144,6 +144,28 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     }
 }
 
+/// A short, single-line excerpt of `text`, safe to interpolate into a diagnostic message.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+/// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
+/// the node in question can span an entire declaration. Truncates at the first newline,
+/// then to at most 40 characters, appending an ellipsis when anything was cut.
+///
+/// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
+/// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+fn bounded_excerpt(text: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let (first_line, had_newline) = match text.find('\n') {
+        Some(i) => (&text[..i], true),
+        None => (text, false),
+    };
+    match first_line.char_indices().nth(MAX_CHARS) {
+        Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
+        None if had_newline => format!("{first_line}…"),
+        None => first_line.to_string(),
+    }
+}
+
 /// Classification of an out-of-range numeric literal parse result.
 ///
 /// Used by [`Lowering::classify_number_range`] and consumed by
@@ -243,46 +265,23 @@ impl<'a> Lowering<'a> {
     /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
     /// (see [`Self::push_fault_error_with_excerpt`]).
     ///
-    /// When the anchor is a detached unit suffix, [`Self::detached_unit_hint`] is appended.
+    /// When the anchor is a detached unit suffix, [`Self::with_detached_unit_hint`] appends a
+    /// remedy.
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
         let message = self.with_detached_unit_hint(message.into(), anchor);
         self.push_error(message, self.span(anchor));
     }
 
-    /// `message` with [`Self::detached_unit_hint`] appended when `fault` is a detached unit
-    /// suffix, else `message` unchanged. The one append rule shared by every place a fault
-    /// becomes a message.
+    /// `message` with [`detached_unit::remedy_hint`] appended when `fault` is a unit detached
+    /// from its number (`1000.0 N/m`, rejected on purpose by docs/prds/unit-expressions.md
+    /// §3.1, task #7190), else `message` unchanged. The one append rule shared by every place
+    /// a fault becomes a message; the hint quotes through [`bounded_excerpt`].
     fn with_detached_unit_hint(&self, mut message: String, fault: tree_sitter::Node) -> String {
-        if let Some(hint) = self.detached_unit_hint(fault) {
+        if let Some(hint) = detached_unit::remedy_hint(fault, self.source, bounded_excerpt) {
             message.push_str(&hint);
         }
         message
-    }
-
-    /// The remedy for a fault that is a unit detached from its number (`1000.0 N/m`), which
-    /// the contiguity invariant rejects on purpose (docs/prds/unit-expressions.md §3.1, task
-    /// #7190): ``" — if `N` in `k` is a unit, it must follow its number with no whitespace:
-    /// write `1000.0N`"``. The ``in `k` `` clause is omitted when no binding holds the number.
-    ///
-    /// The hint is conditional because the syntax layer has no unit registry: `2 x` with `x`
-    /// a variable (a missing operator) has the same shape, and an unconditional "write `2x`"
-    /// would steer that author into a quantity literal.
-    ///
-    /// Every interpolated token goes through [`Self::snippet`], so the hint keeps INV-SF-7's
-    /// bounded-excerpt rule (#5392).
-    fn detached_unit_hint(&self, fault: tree_sitter::Node) -> Option<String> {
-        let detached = detached_unit::detached_unit_suffix(fault, self.source)?;
-        let unit = self.snippet(detached.unit);
-        let binding = detached
-            .binding_name
-            .map(|name| format!(" in `{}`", self.snippet(name)))
-            .unwrap_or_default();
-        let number = self.snippet(detached.number);
-        Some(format!(
-            " — if `{unit}`{binding} is a unit, it must follow its number with no whitespace: \
-             write `{number}{unit}`"
-        ))
     }
 
     /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
@@ -509,27 +508,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// A short, single-line excerpt of a node's source text, safe to interpolate into a
-    /// diagnostic message.
-    ///
-    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
-    /// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
-    /// the node in question can span an entire declaration. Truncates at the first newline,
-    /// then to at most 40 characters, appending an ellipsis when anything was cut.
-    ///
-    /// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
-    /// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+    /// diagnostic message: [`bounded_excerpt`] of the node's text.
     fn snippet(&self, node: tree_sitter::Node) -> String {
-        const MAX_CHARS: usize = 40;
-        let text = self.node_text(node);
-        let (first_line, had_newline) = match text.find('\n') {
-            Some(i) => (&text[..i], true),
-            None => (text, false),
-        };
-        match first_line.char_indices().nth(MAX_CHARS) {
-            Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
-            None if had_newline => format!("{first_line}…"),
-            None => first_line.to_string(),
-        }
+        bounded_excerpt(self.node_text(node))
     }
 
     /// Emit a diagnostic for an unexpected named child in a lowering context.
