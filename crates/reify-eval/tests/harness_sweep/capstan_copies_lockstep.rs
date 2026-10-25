@@ -7,18 +7,18 @@
 //! every failure here says to bring printer.ri to dev_capstan.ri.
 //!
 //! **Why member by member, not one template hash.** The sketch deliberately
-//! carries cells the copy must not ([`SKETCH_ONLY_CELLS`],
-//! [`NOT_YET_PORTED_CELLS`]), so the two `TopologyTemplate::content_hash`es
-//! differ by construction. What the compiler folds into that hash for this
-//! structure is each value cell's default-expression hash and each constraint's
-//! expression hash, plus collections that are empty in both copies (claim 0 of
+//! carries cells the copy must not ([`SKETCH_ONLY_CELLS`]), so the two
+//! `TopologyTemplate::content_hash`es differ by construction. What the compiler
+//! folds into that hash for this structure is each value cell's
+//! default-expression hash and each constraint's expression hash, plus
+//! collections that are empty in both copies (claim 0 of
 //! [`capstan_copies_declare_the_same_cells`] holds them empty). Comparing those
 //! same per-member hashes over the SHARED cells makes the template-hash claim
 //! restricted to what the copies share — span- and doc-independent — and names
 //! the cell or relation that forked instead of just the file.
 //!
-//! **What it licenses.** printer.ri's `Capstan` equals the sketch's minus the
-//! named omissions, and [`super::capstan_groove_e2e`] gates the sketch's copy
+//! **What it licenses.** printer.ri's `Capstan` equals the sketch's minus
+//! [`SKETCH_ONLY_CELLS`], and [`super::capstan_groove_e2e`] gates the sketch's copy
 //! (the DIN 15061 ratio, the `seat_c` identity, the mouth, the mesh and the
 //! removed volume), so printer.ri's drum inherits those gates. An edit applied
 //! to BOTH copies in lockstep keeps this module green; the sketch gates are
@@ -40,11 +40,6 @@ use super::idler_seat_e2e::{PRINTER_RI, printer_checked, printer_compiled};
 /// join `idler_seat_e2e`'s `PRINTER_VOLUME_UNRESOLVED`, and under a kernel they
 /// would cost two drum-volume evaluations per `CapstanUnit`.
 const SKETCH_ONLY_CELLS: &[&str] = &["blank_volume", "body_volume"];
-
-/// Sketch cells printer.ri has not ported yet. #7238 owns porting `band`
-/// together with printer.ri's stale 88 mm "groove band" Sizing prose; whoever
-/// ports it deletes the entry here in the same diff.
-const NOT_YET_PORTED_CELLS: &[&str] = &["band"];
 
 fn sketch_capstan() -> &'static TopologyTemplate {
     entity_template(dev_capstan_compiled(), DEV_CAPSTAN, CAPSTAN_ENTITY)
@@ -70,10 +65,6 @@ fn solver_hints(cell: &ValueCellDecl) -> impl Iterator<Item = (SolverHintKind, &
         .map(|h| (h.kind, h.collection.as_str()))
 }
 
-fn is_omitted(cell: &str) -> bool {
-    SKETCH_ONLY_CELLS.contains(&cell) || NOT_YET_PORTED_CELLS.contains(&cell)
-}
-
 /// The template collections the compiler folds into a structure's hash that
 /// this module does NOT compare, each paired with whether it is empty.
 fn uncompared_collections(t: &TopologyTemplate) -> [(&'static str, bool); 7] {
@@ -92,10 +83,10 @@ fn uncompared_collections(t: &TopologyTemplate) -> [(&'static str, bool); 7] {
 ///   0. coverage — both templates hold every collection this module does not
 ///      compare EMPTY, which is what makes the per-cell and per-constraint
 ///      comparisons in this module exhaustive over the structure's hash inputs;
-///   1. the omission lists are live — each entry is a sketch cell, so a stale
-///      entry cannot linger as a silent permission;
-///   2. exact inventory — printer.ri's cells are the sketch's minus the
-///      omission lists, in both directions.
+///   1. the omission list is live — each [`SKETCH_ONLY_CELLS`] entry is a
+///      sketch cell, so a stale entry cannot linger as a silent permission;
+///   2. exact inventory — printer.ri's cells are the sketch's minus
+///      [`SKETCH_ONLY_CELLS`], in both directions.
 #[test]
 fn capstan_copies_declare_the_same_cells() {
     for (file, template) in [
@@ -120,18 +111,20 @@ fn capstan_copies_declare_the_same_cells() {
     let sketch = cell_names(sketch_capstan());
     let stale: Vec<&str> = SKETCH_ONLY_CELLS
         .iter()
-        .chain(NOT_YET_PORTED_CELLS)
         .copied()
         .filter(|c| !sketch.contains(*c))
         .collect();
     assert!(
         stale.is_empty(),
-        "{stale:?} are listed as omissions but {DEV_CAPSTAN}'s `{CAPSTAN_ENTITY}` \
-         declares no such cell. A stale omission is a silent permission for \
-         printer.ri to diverge; delete it."
+        "{stale:?} are listed in SKETCH_ONLY_CELLS but {DEV_CAPSTAN}'s \
+         `{CAPSTAN_ENTITY}` declares no such cell. A stale omission is a \
+         silent permission for printer.ri to diverge; delete it."
     );
 
-    let expected: BTreeSet<String> = sketch.into_iter().filter(|c| !is_omitted(c)).collect();
+    let expected: BTreeSet<String> = sketch
+        .into_iter()
+        .filter(|c| !SKETCH_ONLY_CELLS.contains(&c.as_str()))
+        .collect();
     let printer = cell_names(printer_capstan());
     let missing: Vec<&String> = expected.difference(&printer).collect();
     let extra: Vec<&String> = printer.difference(&expected).collect();
@@ -139,12 +132,12 @@ fn capstan_copies_declare_the_same_cells() {
         missing.is_empty() && extra.is_empty(),
         "printer.ri's `{CAPSTAN_ENTITY}` has FORKED from dev_capstan.ri's, which is \
          the original: printer.ri must declare exactly the sketch's cells minus \
-         SKETCH_ONLY_CELLS {SKETCH_ONLY_CELLS:?} and NOT_YET_PORTED_CELLS \
-         {NOT_YET_PORTED_CELLS:?}.\n\
+         SKETCH_ONLY_CELLS {SKETCH_ONLY_CELLS:?}.\n\
          In dev_capstan.ri, missing from printer.ri: {missing:?}\n\
-         In printer.ri, not in dev_capstan.ri (or listed as omitted): {extra:?}\n\
-         Bring printer.ri to dev_capstan.ri. If you have just ported an omitted \
-         cell, delete its entry from the omission list in the same diff."
+         In printer.ri, not in dev_capstan.ri (or listed in SKETCH_ONLY_CELLS): \
+         {extra:?}\n\
+         Bring printer.ri to dev_capstan.ri: port each missing cell verbatim from \
+         dev_capstan.ri in the same diff, and delete each extra one."
     );
 }
 
