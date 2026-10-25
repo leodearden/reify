@@ -912,10 +912,10 @@ _ra_record_result() {
         if [ -n "$_retried" ]; then
             echo "  RESULT: PASS ($_name) [flaky: passed on serial retry]"
             flaky_names+=("$_name")
-            event_log_emit_member_finish "$_name" "$_attempt" "$_rc" FLAKY_PASS "$_duration_ms" 0
+            event_log_emit_member_finish "$_name" "$_attempt" "$_rc" FLAKY_PASS "$_duration_ms" "" "" "" 0
         else
             echo "  RESULT: PASS ($_name)"
-            event_log_emit_member_finish "$_name" "$_attempt" "$_rc" PASS "$_duration_ms" 0
+            event_log_emit_member_finish "$_name" "$_attempt" "$_rc" PASS "$_duration_ms" "" "" "" 0
         fi
         return 0
     fi
@@ -939,7 +939,7 @@ _ra_record_result() {
         fi
         _ra_fail_detail["$_name"]="$_text"
     fi
-    event_log_emit_member_finish "$_name" "$_attempt" "$_rc" FAIL "$_duration_ms" "$_omitted" \
+    event_log_emit_member_finish "$_name" "$_attempt" "$_rc" FAIL "$_duration_ms" "" "" "" "$_omitted" \
         "${_kept[@]+"${_kept[@]}"}"
     return 0
 }
@@ -976,7 +976,7 @@ _ra_record_subset_skip() {
     echo "--- Skipped (member-subset): $1 ---"
     echo "  RESULT: SKIP ($1)"
     member_subset_skipped+=("$1")
-    event_log_emit_member_finish "$1" 0 "" SKIP "" 0
+    event_log_emit_member_finish "$1" 0 "" SKIP "" "" "" "" 0
 }
 
 # _ra_emit_run_finish <interrupted> <failures> [failed-name...] -- the
