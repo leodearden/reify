@@ -82,9 +82,7 @@
 //! `reify-eval-fea-tests` has no harness: it is 30 standalone `tests/*.rs`
 //! binaries whose helpers are duplicated per file deliberately. The helpers
 //! below follow that convention and are not an oversight. The one exception is
-//! `backdate_mtime`, imported from `reify_eval::persistent_cache` through the
-//! `test-instrumentation` feature this crate's dev-dependency already enables,
-//! so there is no second copy to drift.
+//! `backdate_mtime`, imported from `reify_eval::persistent_cache`.
 //!
 //! ## Cost
 //!
