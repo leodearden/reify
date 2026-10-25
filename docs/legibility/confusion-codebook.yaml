@@ -3665,6 +3665,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Foreground bounded-wait watcher-rearm invocation at turn 117 exited 137 after the 3600s timeout. The digest shows the same foreground command being re-run rather than a switch to background waiting.
+  - date: '2026-10-24'
+    project: reify
+    session: 102d12f7-f7f0-42a6-8c07-485c2f2ac672
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Foreground watcher-rearm run with --timeout 1800 died at exit 137 (turn 142, the session's only tool_error). The entry describes this failure mode of the foreground bounded-wait re-arm. The digest does not show whether the agent then switched to background, so that part is unconfirmed.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260722-3
@@ -4572,6 +4578,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Bounded rearm wait re-issued identically three times (turns 95, 101, 109), each returning WATCHER_REARM_OUTCOME: CEILING exit=124, with no change in arguments or strategy between attempts.'
+  - date: '2026-10-24'
+    project: reify
+    session: 102d12f7-f7f0-42a6-8c07-485c2f2ac672
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'watcher-rearm.sh with --timeout 3600 hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) at turns 73, 79 and 125. The identical command was re-issued each time, matching the entry''s pattern of re-issuing a bounded rearm wait after its ceiling.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260726-8
@@ -9113,6 +9125,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: At turn 40 the agent ran `cat .task/plan.json` in warm lane _lane-50 and got 'No such file or directory' (exit 1), so the lane's task bootstrap did not provide plan.json. The digest does not show which phase the agent was in, so both phases stay unknown. The two later not-found signals (turns 520 and 589) have no detail and are not attributed.
+  - date: '2026-10-24'
+    project: reify
+    session: 3764f286-63af-4fbf-988d-f0a40b668edf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent inspects /worktrees/.task-meta/_lane-19/plan.json; the directory lists agent_session.json, metadata.json, reviews/, verdicts/ but no plan.json, and head fails with 'No such file or directory' (turn 387).
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-8
@@ -12035,6 +12053,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: Five sequential not-found errors on .task/metadata.json, .task/plan.json, .task/iterations.jsonl in worktree /home/leo/src/warm-lanes/worktrees/_lane-43; one df_guard trip; no self-correction; agent unable to load task context to proceed
+  - date: '2026-10-24'
+    project: reify
+    session: 3764f286-63af-4fbf-988d-f0a40b668edf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Same missing plan.json artifact in the warm-lane task-meta directory at bootstrap; the not-found error surfaces at turn 387 when the agent probes for it.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
