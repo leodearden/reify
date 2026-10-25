@@ -225,10 +225,12 @@ fn voxel_booleans_leave_their_operands_intact() {
 }
 
 /// Operands on different lattices: the right operand is resampled onto the
-/// left's transform, so the result lives on the left's lattice.
+/// left's transform, so each result lives on the left's lattice, and operand
+/// order survives the alignment. Difference is the order-sensitive op: a
+/// resample of the wrong operand, or a swap after alignment, shows up there.
 #[cfg(has_openvdb)]
 #[test]
-fn voxel_union_across_mismatched_lattices_resamples_right_onto_left() {
+fn voxel_booleans_across_mismatched_lattices_resample_right_onto_left() {
     use fixture::*;
     use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp};
     use reify_kernel_openvdb::OpenVdbKernel;
@@ -243,7 +245,7 @@ fn voxel_union_across_mismatched_lattices_resamples_right_onto_left() {
         |kernel: &mut OpenVdbKernel, id: GeometryHandleId, h: f64, what: &str| {
             let spacing = kernel
                 .densify_grid_to_sampled(id)
-                .expect("densify_grid_to_sampled on the union")
+                .expect("densify_grid_to_sampled on the Boolean result")
                 .spacing;
             for (axis, s) in spacing.iter().enumerate() {
                 assert!(
@@ -253,19 +255,40 @@ fn voxel_union_across_mismatched_lattices_resamples_right_onto_left() {
             }
         };
 
-    let ab = run(&mut kernel, &GeometryOp::Union { left: a, right: b });
-    assert_on_lattice(&mut kernel, ab, H, "union(a, b)");
-    for (name, p) in [
-        ("P_A_ONLY", P_A_ONLY),
-        ("P_LENS", P_LENS),
-        ("P_B_ONLY", P_B_ONLY),
+    // Whether each of P_A_ONLY, P_LENS, P_B_ONLY lies inside the result.
+    for (op, inside) in [
+        (GeometryOp::Union { left: a, right: b }, [true, true, true]),
+        (
+            GeometryOp::Difference { left: a, right: b },
+            [true, false, false],
+        ),
+        (
+            GeometryOp::Intersection { left: a, right: b },
+            [false, true, false],
+        ),
     ] {
-        let s = sdf_at(&kernel, ab, p);
-        assert!(s < 0.0, "{name} {p:?} lies inside union(a, b); sdf = {s}");
+        let what = format!("{}(a, b)", op.kind_name());
+        let result = run(&mut kernel, &op);
+        assert_on_lattice(&mut kernel, result, H, &what);
+        for ((name, p), inside) in [
+            ("P_A_ONLY", P_A_ONLY),
+            ("P_LENS", P_LENS),
+            ("P_B_ONLY", P_B_ONLY),
+        ]
+        .into_iter()
+        .zip(inside)
+        {
+            let s = sdf_at(&kernel, result, p);
+            if inside {
+                assert!(s < 0.0, "{name} {p:?} lies inside {what}; sdf = {s}");
+            } else {
+                assert!(s > 0.0, "{name} {p:?} lies outside {what}; sdf = {s}");
+            }
+        }
     }
 
     let ba = run(&mut kernel, &GeometryOp::Union { left: b, right: a });
-    assert_on_lattice(&mut kernel, ba, H_B, "union(b, a)");
+    assert_on_lattice(&mut kernel, ba, H_B, "Union(b, a)");
 }
 
 #[cfg(has_openvdb)]
