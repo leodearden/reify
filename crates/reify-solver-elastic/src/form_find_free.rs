@@ -206,9 +206,7 @@ fn free_spec(spec: &ForceDensitySpec, n_members: usize) -> Result<FreeSpec<'_>, 
 
 /// The line-only free-standing solve of a validated problem; its surfaces, if
 /// any, do not enter `D`.
-fn form_find_line_only(
-    problem: &ForceDensityProblem<'_>,
-) -> Result<FreeFormResult, FreeFormError> {
+fn form_find_line_only(problem: &ForceDensityProblem<'_>) -> Result<FreeFormResult, FreeFormError> {
     match problem.spec() {
         // Deterministic foundation: assemble D, classify nullity, recover
         // coordinates, compute forces.
@@ -1522,9 +1520,16 @@ mod tests {
         // connected structure.
         let q = generic_admissible_q(&kinds);
         let guess = perturbed_prism_guess();
-        let problem =
-            ForceDensityProblem::new(&guess, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
-            .expect("admissible q is valid input");
+        let problem = ForceDensityProblem::new(
+            &guess,
+            &members,
+            &kinds,
+            FreeSpec::Explicit(&q),
+            &[],
+            &[],
+            &[],
+        )
+        .expect("admissible q is valid input");
         assert_eq!(
             explicit_form(&problem).unwrap_err(),
             FreeFormError::NotAForm(FormDefect {
@@ -1656,9 +1661,16 @@ mod tests {
         let q = closed_form_q();
         // One dense EVD, shared between the nullity check and recovery.
         let prism = canonical_prism();
-        let problem =
-            ForceDensityProblem::new(&prism, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
-            .expect("closed-form prism q is valid input");
+        let problem = ForceDensityProblem::new(
+            &prism,
+            &members,
+            &kinds,
+            FreeSpec::Explicit(&q),
+            &[],
+            &[],
+            &[],
+        )
+        .expect("closed-form prism q is valid input");
         let form = explicit_form(&problem).expect("closed-form prism q is a form");
 
         // A mildly perturbed symmetric-prism guess (recovery should gauge-fix
@@ -1757,9 +1769,16 @@ mod tests {
         // the healthy-recovery test's input, so *only* the guess is degenerate
         // here, isolating the SingularRecovery guard.
         let prism = canonical_prism();
-        let problem =
-            ForceDensityProblem::new(&prism, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
-            .expect("closed-form prism q is valid input");
+        let problem = ForceDensityProblem::new(
+            &prism,
+            &members,
+            &kinds,
+            FreeSpec::Explicit(&q),
+            &[],
+            &[],
+            &[],
+        )
+        .expect("closed-form prism q is valid input");
         let form = explicit_form(&problem).expect("closed-form prism q is a form");
 
         // A *coplanar* (degenerate) guess: the canonical prism's x/y arrangement

@@ -1133,11 +1133,12 @@ fn build_material_frame(
     ];
 
     // Guard: the in-plane projection must exceed 1e-8 of |warp_dir|; it does
-    // not when warp_dir ∥ n. The negated comparison also rejects a zero
-    // warp_dir (0 vs 0) and a NaN one (every comparison false).
+    // not when warp_dir ∥ n. Rejecting unless it fixes a frame also rejects a
+    // zero warp_dir (0 vs 0) and a NaN one (every comparison false).
     let wip_norm_sq = v_dot(wip, wip);
     let wd_norm_sq = v_dot(warp_dir, warp_dir);
-    if !(wip_norm_sq > 1e-16 * wd_norm_sq) {
+    let fixes_frame = wip_norm_sq > 1e-16 * wd_norm_sq;
+    if !fixes_frame {
         return Err(AnisoFormFindError::DegenerateMaterialFrame);
     }
     let wip_norm = wip_norm_sq.sqrt();

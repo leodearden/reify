@@ -122,13 +122,19 @@ mod tests {
 
     #[test]
     fn densities_carry_each_groups_seed_sign_at_the_given_magnitude() {
-        assert_eq!(two_group_spec().densities(&[5.0, 7.0]), vec![-5.0, 7.0, 7.0]);
+        assert_eq!(
+            two_group_spec().densities(&[5.0, 7.0]),
+            vec![-5.0, 7.0, 7.0]
+        );
     }
 
     #[test]
     fn seed_densities_are_the_densities_at_the_seed_magnitudes() {
         let groups = two_group_spec();
         assert_eq!(groups.seed_densities(), [-2.0, 3.0, 3.0]);
-        assert_eq!(groups.densities(groups.seed_magnitudes()), groups.seed_densities());
+        assert_eq!(
+            groups.densities(groups.seed_magnitudes()),
+            groups.seed_densities()
+        );
     }
 }
