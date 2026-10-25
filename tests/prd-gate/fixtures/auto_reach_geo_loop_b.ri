@@ -1,0 +1,9 @@
+module auto_reach_geo_loop_b
+pub structure Leaf {
+    param w : Length = 5mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure GeoLoopB {
+    sub leaf = Leaf(w: auto)
+    constraint volume(self.leaf.body) == 10mm*10mm*10mm
+}

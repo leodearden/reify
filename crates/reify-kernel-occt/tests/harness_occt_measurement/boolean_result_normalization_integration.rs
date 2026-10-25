@@ -31,13 +31,13 @@
 //! Numbers below are direct measurements, not estimates — they are what makes
 //! RED distinguishable from GREEN without re-deriving anything:
 //!
-//! | quantity                                                  | RED (today) | GREEN (fixed) |
-//! |-----------------------------------------------------------|-------------|---------------|
-//! | `rounded_box(100,60,20,10)` fuse chain: faces / edges      | 50 / 88     | 10 / 24       |
-//! | edges selected at the top face (`edges_at_height` predicate)| 40          | 8             |
-//! | faces after a 1 mm fillet of that rim selection            | 66          | 18            |
-//! | cut-derived container → distance to a fully buried probe   | 90 mm       | 0 mm          |
-//! | two abutting 10 mm cubes fused: faces                      | 10          | 6             |
+//! | quantity                                                  | RED (pre-7054) | GREEN (fixed) |
+//! |-----------------------------------------------------------|----------------|---------------|
+//! | `rounded_box(100,60,20,10)` fuse chain: faces / edges      | 50 / 88        | 10 / 24       |
+//! | edges selected at the top face (`edges_at_height` predicate)| 40             | 8             |
+//! | faces after a 1 mm fillet of that rim selection            | 66             | 18            |
+//! | cut-derived container → distance to a fully buried probe   | 90 mm          | 0 mm          |
+//! | two abutting 10 mm cubes fused: faces                      | 10             | 6             |
 //!
 //! Two measured facts that constrain how these tests may be written:
 //!
@@ -53,12 +53,12 @@
 //!
 //! # Observability note
 //!
-//! `ffi::ffi::shape_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
+//! `ffi::ffi::body_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
 //! integration test cannot read the raw `TopAbs` name. The reachable
 //! equivalents, via `OcctKernel::repr_of` and `GeometryQuery::IsWatertight`:
 //!
 //!   * `"Solid"`    ⇔ `BRepKind::Solid` (only `"Solid"` maps to it —
-//!     `brep_kind_of_shape` at lib.rs:660 collapses `"CompSolid"`/`"Compound"`
+//!     `brep_kind_of_shape` collapses `"CompSolid"`/`"Compound"`
 //!     onto `BRepKind::Compound`).
 //!   * `"CompSolid"` ⇔ `BRepKind::Compound` **and** `IsWatertight == true`
 //!     (a bare `"Compound"` fails the `SOLID|COMPSOLID|SHELL` guard, so
@@ -77,9 +77,9 @@ use reify_kernel_occt::OcctKernel;
 fn cube(kernel: &mut OcctKernel, side: f64) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(side),
-            height: Value::Real(side),
-            depth: Value::Real(side),
+            size_x: Value::Real(side),
+            size_y: Value::Real(side),
+            size_z: Value::Real(side),
         })
         .expect("box creation should succeed")
         .id
@@ -119,7 +119,7 @@ fn real_query(kernel: &OcctKernel, q: GeometryQuery) -> f64 {
 }
 
 /// Assert that `id` is a genuinely closed single body: `BRepKind::Solid` (which
-/// only `shape_type_name == "Solid"` maps to) plus `IsWatertight` and
+/// only a `body_type_name` of `"Solid"` maps to) plus `IsWatertight` and
 /// `IsClosed`, both of which reject a bare COMPOUND at their
 /// `SOLID|COMPSOLID|SHELL` type guard.
 fn assert_watertight_solid(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
@@ -212,8 +212,8 @@ fn binary_fuse_of_disjoint_boxes_is_a_watertight_compsolid() {
         kernel.repr_of(fused),
         Some(BRepKind::Compound),
         "a disjoint multi-solid fuse must be stored as the multi-body \
-         BRepKind::Compound classified from the real shape, NOT the hardcoded \
-         BRepKind::Solid the binary boolean arms stamp today"
+         BRepKind::Compound classified from the real shape, NOT a hardcoded \
+         BRepKind::Solid (the pre-7054 behaviour)"
     );
     assert!(
         bool_query(&kernel, GeometryQuery::IsWatertight(fused)),
@@ -336,17 +336,17 @@ const RB_FILLETED_VOLUME: f64 = 118218.498221;
 fn rounded_box_fuse_chain(kernel: &mut OcctKernel) -> GeometryHandleId {
     let body_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(RB_WIDTH),
-            height: Value::Real(RB_DEPTH - 2.0 * RB_CORNER_R),
-            depth: Value::Real(RB_HEIGHT),
+            size_x: Value::Real(RB_WIDTH),
+            size_y: Value::Real(RB_DEPTH - 2.0 * RB_CORNER_R),
+            size_z: Value::Real(RB_HEIGHT),
         })
         .expect("rounded_box body A should build")
         .id;
     let body_b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(RB_WIDTH - 2.0 * RB_CORNER_R),
-            height: Value::Real(RB_DEPTH),
-            depth: Value::Real(RB_HEIGHT),
+            size_x: Value::Real(RB_WIDTH - 2.0 * RB_CORNER_R),
+            size_y: Value::Real(RB_DEPTH),
+            size_z: Value::Real(RB_HEIGHT),
         })
         .expect("rounded_box body B should build")
         .id;
@@ -571,10 +571,9 @@ fn fuse_with_history_on_abutting_boxes_records_indices_into_the_unified_result()
         .expect("fuse with history should succeed");
     let result = handle.id;
 
-    // The stored shape must be the unified SOLID, not the raw COMPOUND.
-    // `IsWatertight` is the discriminator here, NOT `repr_of`: the Rust
-    // with-history arms stamp a hardcoded `BRepKind::Solid` today, so the repr
-    // would agree even while the shape underneath is a COMPOUND.
+    // The stored shape must be the unified SOLID, not the raw COMPOUND:
+    // `IsWatertight` separates the two (a raw COMPOUND fails its guard).
+    // `repr_of` is asserted separately below.
     assert!(
         bool_query(&kernel, GeometryQuery::IsWatertight(result)),
         "the with-history result must be the normalized SOLID; a raw COMPOUND \
@@ -603,7 +602,7 @@ fn fuse_with_history_on_abutting_boxes_records_indices_into_the_unified_result()
     assert_eq!(
         n_faces, 6,
         "two abutting 10mm cubes fuse into a 20x10x10 prism: 6 faces \
-         (RED today: a COMPOUND with 10, the count topology_selectors_integration.rs \
+         (pre-7054: a COMPOUND with 10, the count topology_selectors_integration.rs \
          independently pinned before this fix)"
     );
     assert_eq!(n_edges, 12, "...and 12 edges");

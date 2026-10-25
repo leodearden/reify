@@ -377,7 +377,7 @@ fn remove_and_reinsert_via_edit_source_preserves_counter() {
     );
 
     // The pool entry was consumed by run_compute_dispatch's
-    // `checkout_with_lru_stamp` on the v3 dispatch — take semantics.
+    // `checkout` on the v3 dispatch — take semantics.
     assert!(
         !engine.warm_pool().contains(&NodeId::Compute(c_id_v1)),
         "warm_pool entry must be consumed (taken) by v3's run_compute_dispatch \

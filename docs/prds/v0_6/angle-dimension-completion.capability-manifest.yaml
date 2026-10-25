@@ -38,6 +38,7 @@ tasks:
       pattern: CURVATURE
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: no-corpus-migration
     binding: 'grep: zero `: Curvature` declarations in stdlib/examples/tests; zero
@@ -199,7 +200,7 @@ tasks:
   - name: angular-boundaries-enumerated
     binding: investigation table (PRD §2.6/D8) — STEP cone semi-angle raw radians
       under OCCT default unit (probe-verified); OCCT angle_rad FFI; SolveSpace angle_deg
-      degrees; MCP set_parameter inbound bare f64 → SI radians silently (mcp_context.rs:499-530);
+      degrees; MCP set_parameter inbound bare f64 → SI radians silently (mcp_context.rs:499-530) — CLI host deleted by bbfbc7dd29 (#6665);
       compliance_cell_f64 silent erasure (dynamics/eval.rs:98-110)
     verdict: PASS
     delivered_check:

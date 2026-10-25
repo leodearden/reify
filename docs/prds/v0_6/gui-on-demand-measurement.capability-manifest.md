@@ -243,6 +243,11 @@ exact. The three substantive findings are **A1** (the detectors are binary-crate
 extraction is a move, not a re-call), **A2** (the `--purpose` branch bypasses the arm entirely)
 and **A3** (`tessellate_snapshot` already captures).
 
+**[Amended 2026-10-22, υ #8775 BLK-1]** delivered check `reference-arm-sequence-is-wired-and-line-exact` (#6898, mirrored into its
+retired constituent #6740) re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `cmd_check`'s reference arm, with its
+`let has_geometric_conforms = module_has_geometric_conforms` line, moved to
+`crates/reify-cli/src/cmd/check.rs`.
+
 `refine`'s absence is bound as a G6 branch-4 vacuity check and holds strongly: every `refine` hit
 in `crates/reify-eval/src/` is trait refinement, FEA a-posteriori adaptive refinement, or FDM
 progressive refinement. The only repr-tolerance references are two forward-looking docstrings
@@ -385,3 +390,23 @@ filed task. Four invariants produced design additions rather than clean passes �
 | **G6** — premise validity | **PASS.** Every leaf's numeric/capability/rejection premise bound: the measured-verdict premises **probe-verified live on both polarities**; the refine-absence and GUI-never-measures vacuity halves grep-verified with positive controls; `has_openvdb` corrected from feature to cfg. **One anti-inversion repair (A14)** — ζ's BT-1 thickness row moved to its producer ε. No leaf asserts a numeric bound of its own, so branches 1 and 2 do not fire; the batch inherits precision-γ1's floor only where it inherits C-LOOP, which it does not. |
 | **G7** — design invariants | **PASS**, no waiver. Four design additions (INV-SF-2, INV-SF-4, INV-SF-5, INV-AD-4) written into their owning tasks. |
 | **Manifest** | **0 FAIL.** 58 bindings · 43 mechanical checks all executed at decompose · 16 binding amendments, each written verbatim into its filed task. |
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `gui-src-tauri-tests-cannot-be-heavy-excluded`: paths now `tests/infra/test_compute_trampoline_registration_wired.sh`, `tests/infra/test_verify_gui_feature_test_pass.sh`; pattern now `gui-feature pass carries no`.
+- `new-ri-fixtures-need-rust-coupled-registration`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `_RUST_COUPLED_RI_FIXTURES|pg-drift:allow`.
+
+## S2 path widening (2026-10-15)
+
+The S2 realization-pipeline decompose (`docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md` §10.6, Leo ruling R5) moves the placed walk out of geometry_ops.rs into `crates/reify-eval/src/placed_walk.rs` (S2 γ #9156). `bt4-capture-is-observation-only-by-construction` (`achieved_repr_tol\.insert\(`, present) keeps its geometry_ops.rs path and gains `crates/reify-eval/src/placed_walk.rs`; three writes: the `.yaml`, this twin and #6745's `metadata.delivered_checks`. The verdict on today's tree is unchanged. The reset-destructure checks (`capture_repr_tol: _`, `achieved_repr_tol\.clear\(\)`) move with S1 ε #9043, not S2; they are S1's to widen.
+
+## S1 ε path widening (2026-10-15)
+
+S1 ε #9043 moves `Engine::reset_per_build_state` into `crates/reify-eval/src/per_build_state.rs` as `PerBuildState::reset(BuildSurface)`. The two reset-destructure checks keep `crates/reify-eval/src/engine_build.rs` (the code is there until #9043 lands) and gain `crates/reify-eval/src/per_build_state.rs`; pattern unchanged, verdict on today's tree unchanged. Three writes: the `.yaml`, this twin, and the producer tasks' `metadata.delivered_checks`.
+
+| check | pattern | added path | producer tasks |
+|---|---|---|---|
+| reset-choke-point-must-absorb-the-new-flag | `capture_repr_tol: _` | `crates/reify-eval/src/per_build_state.rs` | #6740, #6898 |
+| session-measurement-store-cannot-be-achieved-repr-tol | `achieved_repr_tol\.clear\(\)` | `crates/reify-eval/src/per_build_state.rs` | #6741, #6898 |

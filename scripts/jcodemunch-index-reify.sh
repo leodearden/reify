@@ -64,7 +64,7 @@ DEFAULT_PROJECT_ROOT="/home/leo/src/reify"
 
 usage() {
     cat <<'USAGE'
-Usage: scripts/jcodemunch-index-reify.sh [--project-root DIR] [--dry-run] [--check-only]
+Usage: scripts/jcodemunch-index-reify.sh [--project-root DIR] [--dry-run] [--check-only] [--print-repo-id]
 
 Runs one bounded `watch --once` jcodemunch index pass over the canonical reify
 checkout, then asserts the resulting index is present, non-empty, and not
@@ -76,6 +76,10 @@ silently truncated by the max_folder_files cap.
   --dry-run           Print the exact indexer argv that would be run, exit 0.
   --check-only        Skip the indexer; run identity resolution and the index
                       assertions against the already-present DB only.
+  --print-repo-id     Print the index identity this script would index for
+                      --project-root (local/<basename>-<sha1[:8]>), then exit 0.
+                      Runs no indexer and reads no config or DB. Exclusive
+                      with --dry-run and --check-only.
   -h, --help          Show this help and exit.
 
 Refusal markers (stderr, always non-zero exit):
@@ -89,6 +93,7 @@ USAGE
 PROJECT_ROOT="$DEFAULT_PROJECT_ROOT"
 DRY_RUN=0
 CHECK_ONLY=0
+PRINT_REPO_ID=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -98,6 +103,7 @@ while [ "$#" -gt 0 ]; do
         --project-root=*) PROJECT_ROOT="${1#*=}"; shift ;;
         --dry-run)    DRY_RUN=1; shift ;;
         --check-only) CHECK_ONLY=1; shift ;;
+        --print-repo-id) PRINT_REPO_ID=1; shift ;;
         -h|--help)    usage; exit 0 ;;
         *)
             echo "jcodemunch-index-reify.sh: unknown argument '$1'" >&2
@@ -106,6 +112,12 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "$PRINT_REPO_ID" -eq 1 ] && { [ "$DRY_RUN" -eq 1 ] || [ "$CHECK_ONLY" -eq 1 ]; }; then
+    echo "jcodemunch-index-reify.sh: --print-repo-id cannot be combined with --dry-run or --check-only" >&2
+    usage >&2
+    exit 64
+fi
 
 say() { printf 'jcodemunch-index-reify: %s\n' "$*"; }
 die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
@@ -243,6 +255,12 @@ case "$REPO_ID" in
     local/?*) ;;
     *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from $REPO_ID_SOURCE" ;;
 esac
+
+# Consumed by scripts/smoke-jcodemunch-serve.sh for its default identity.
+if [ "$PRINT_REPO_ID" -eq 1 ]; then
+    printf '%s\n' "$REPO_ID"
+    exit 0
+fi
 
 REPO_NAME="${REPO_ID#local/}"
 CODE_INDEX_DIR="${CODE_INDEX_PATH:-$HOME/.code-index}"

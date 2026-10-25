@@ -35,8 +35,9 @@ use reify_solver_elastic::eigensolve::conservative_shift_provenance;
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
-    eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
-    modal_participation_mass, rayleigh_damping_ratio, total_damping_ratio,
+    eigenvalue_to_frequency_hz, frequency_hz_to_eigenvalue, is_rigid_body_mode,
+    mass_normalization_scale, modal_participation_mass, rayleigh_damping_ratio,
+    total_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
 use reify_stdlib::modal::transient::{
@@ -312,6 +313,36 @@ pub(crate) fn assemble_modal_km(
     }
 }
 
+/// The `W_ModalConvergence` warning for a solve that returned `n_returned` of
+/// `n_requested` modes, `residual_check_failures` of which failed the
+/// eigensolver's post-solve residual check — or `None` when every requested
+/// mode came back verified.
+///
+/// ONE template with two optional clauses (a count shortfall, unverified
+/// pairs), so the two facts cannot drift into two templates.  Uncoded, like
+/// every convergence warning before it.
+fn modal_convergence_warning(
+    n_returned: usize,
+    n_requested: usize,
+    residual_check_failures: usize,
+) -> Option<Diagnostic> {
+    let shortfall = (n_returned < n_requested).then(|| {
+        format!(
+            "eigensolver returned {n_returned} of {n_requested} requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes)."
+        )
+    });
+    let unverified = (residual_check_failures > 0).then(|| {
+        format!(
+            "{residual_check_failures} of the {n_returned} returned modes failed the \
+             eigensolver's post-solve residual check and are not verified eigenpairs."
+        )
+    });
+    let clauses: Vec<String> = shortfall.into_iter().chain(unverified).collect();
+    (!clauses.is_empty())
+        .then(|| Diagnostic::warning(format!("W_ModalConvergence: {}", clauses.join(" "))))
+}
+
 /// Eigensolve over a prebuilt [`ModalAssembly`]: project `K`/`M` to the free-DOF
 /// subspace, solve `K_free φ = λ M_free φ`, and scatter the mode shapes back to
 /// the full DOF space.
@@ -545,19 +576,19 @@ pub(crate) fn eigensolve_modal(
         }
     }
 
-    // Convergence shortfall: `eig.converged` is false iff fewer modes were
-    // returned than requested (holds for both the dense and shift-invert paths).
+    // Convergence: a shortfall in the returned count, unverified returned pairs
+    // (#7602), or both — `eig.converged` is false iff either holds.
     //
     // Suppressed on a REFUSED solve. A refusal returns no modes at all, so the
     // result is not "partial", and "raise max_iters/tol or lower n_modes" is the
     // wrong remedy for both faults above — it would stand beside the right one
     // and contradict it.
-    if !eig.converged && fault == ModalSolveFault::None {
-        diagnostics.push(Diagnostic::warning(format!(
-            "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
-             the result is partial (raise max_iters/tol or lower n_modes).",
-            n_modes_out, eigen_opts.n_modes,
-        )));
+    if fault == ModalSolveFault::None {
+        diagnostics.extend(modal_convergence_warning(
+            n_modes_out,
+            eigen_opts.n_modes,
+            eig.residual_check_failures,
+        ));
     }
 
     // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
@@ -997,6 +1028,11 @@ enum ModalSolveFault {
 /// well-posed model therefore pays nothing: same call, same factorization, same
 /// numbers.
 ///
+/// `Err(KNotSpd)` is not confined to σ = 0: with a non-identity mass and σ above a
+/// mode, `K_free − σM_free` is indefinite and the solver runs in the `K` inner
+/// product, so it measures `K_free` there too — a singular `K_free` with σ above
+/// its rigid-body modes arrives here the same way.
+///
 /// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
 /// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
 /// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
@@ -1045,13 +1081,15 @@ fn solve_generalized_eigen(
                     fault: ModalSolveFault::None,
                 };
             }
-            // K is not SPD: fall through to the under-constrained branch below,
-            // exactly as the former `None` did.
+            // K is not SPD — measured at σ = 0, or at σ ≠ 0 when M ≠ cI and σ
+            // lies above a mode: fall through to the under-constrained branch
+            // below, exactly as the former `None` did.
             Err(ShiftInvertFailure::KNotSpd) => {}
             // REACHABLE from ordinary `.ri` input — `ModalOptions` declares
-            // `param sigma : Real = 0.0` unconstrained and nothing on the path
-            // to here clamps it. It was inert only while the Lanczos path
-            // IGNORED σ; β (#7259) made σ live there, so this arm is live too.
+            // `param shift_frequency : Frequency = 0Hz` unconstrained, so any f
+            // whose (2π·f)² lands on an eigenvalue reaches here. It was inert
+            // only while the Lanczos path IGNORED σ; β (#7259) made σ live
+            // there, so this arm is live too.
             // `shift_landing_on_an_eigenvalue_is_returned_not_panicked` walks
             // the trace link by link.
             //
@@ -1066,6 +1104,7 @@ fn solve_generalized_eigen(
                         eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                         n_converged: 0,
                         converged: false,
+                        residual_check_failures: 0,
                         shift: sigma,
                         // Nothing was factored and no spectrum was computed, so
                         // C5 forbids ESTABLISHING `false` here — the same
@@ -1093,6 +1132,7 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                residual_check_failures: 0,
                 shift: opts.sigma,
                 // No spectrum was computed at all here, so `false` cannot be
                 // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
@@ -1239,11 +1279,6 @@ fn material_not_damped_outcome(material_type_name: &str) -> ComputeOutcome {
     }
 }
 
-/// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
-/// `type_name` is `"Part"`.  All four production echo sites emit this value
-/// for the `part` field until the Part registry is wired (task 4578).
-/// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
-/// other degenerate builders in this file.
 /// Returns the topology `Value` to embed in a ModalResult.
 ///
 /// Today the modal solver synthesizes a beam mesh with no B-rep attribution,
@@ -1257,6 +1292,12 @@ fn build_modal_topology_value() -> Value {
     Value::Undef
 }
 
+/// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
+/// `type_name` is `"Part"`.  Every production producer of a modal `.part`
+/// field emits this value until `.part` converges on the analysed body's
+/// `GeometryHandleRef` join key; that convergence is owned by #7097.
+/// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
+/// other degenerate builders in this file.
 fn placeholder_part() -> Value {
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),
@@ -1364,8 +1405,9 @@ pub(crate) struct ModalTrampolineRun {
 /// [1] length   : Length           (Scalar { LENGTH })
 /// [2] width    : Length           (Scalar { LENGTH })
 /// [3] height   : Length           (Scalar { LENGTH })
-/// [4] options  : ModalOptions     (StructureInstance — n_modes/tol/max_iters/sigma/
-///                                  damping/reference_direction/boundary_conditions)
+/// [4] options  : ModalOptions     (StructureInstance — n_modes/tol/max_iters/
+///                                  shift_frequency/damping/reference_direction/
+///                                  boundary_conditions)
 /// ```
 ///
 /// Reconstructs the beam mesh from length/width/height (no Part→trampoline
@@ -1515,11 +1557,12 @@ pub(crate) fn run_modal_analysis(
 
     // ── (5) cache lookup: reuse the assembled (K, M) on a key HIT ────────────
     // The key captures EXACTLY the (K, M)-determining inputs (geometry + material
-    // + element_order); n_modes / tol / sigma / max_iters / boundary_conditions /
-    // damping / reference_direction are excluded, so a call differing only in
-    // those HITs. On a miss (or no prior) assemble fresh. The cheap mesh + BCs
-    // above are rebuilt either way — a HIT still needs them to realize the
-    // Dirichlet BCs by coordinate; only the expensive (K, M) assembly is reused.
+    // + element_order); n_modes / tol / shift_frequency / max_iters /
+    // boundary_conditions / damping / reference_direction are excluded, so a
+    // call differing only in those HITs. On a miss (or no prior) assemble fresh.
+    // The cheap mesh + BCs above are rebuilt either way — a HIT still needs them
+    // to realize the Dirichlet BCs by coordinate; only the expensive (K, M)
+    // assembly is reused.
     let key = ModalCacheKey::new(
         length,
         width,
@@ -1963,6 +2006,99 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
     0.0
 }
 
+/// Build one lumped-model `Mode`. Field dispositions (INV-PD-2):
+///
+/// - `frequency`, `damping_ratio`: populated from the solve.
+/// - `shape`: degraded to `Undef`. The lumped eigenvector is one scalar
+///   generalized coordinate per spanning-tree body, so there is no per-node
+///   `Vector3` displacement field to report.
+/// - `participation_mass`: degraded to `Undef`. It is a projection onto
+///   `ModalOptions.reference_direction`, but the lumped DOFs carry no spatial
+///   direction that the solve uses.
+fn mechanism_mode_value(frequency_hz: f64, damping_ratio: f64) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        (
+            "frequency".to_string(),
+            Value::Scalar {
+                si_value: frequency_hz,
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("shape".to_string(), Value::Undef),
+        ("participation_mass".to_string(), Value::Undef),
+        ("damping_ratio".to_string(), Value::Real(damping_ratio)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Mode".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build the lumped-model `ModalResult`. Field dispositions (INV-PD-2):
+///
+/// - `part`: allowlisted to #7097, which owns replacing [`placeholder_part`].
+/// - `modes`: populated, one [`mechanism_mode_value`] per physical mode.
+/// - `boundary_conditions`: degraded to `Undef`. The joint tree, not a
+///   `Support`, constrains the lumped solve, so `[]` or an echo of the
+///   caller's list would misreport it.
+/// - `damping`: populated input-conditionally, as the echo of the caller's
+///   `ModalOptions.damping` descriptor (task #6875); `Undef` when the caller
+///   supplied none.
+/// - `mass_matrix_norm` / `stiffness_matrix_norm`: populated with the
+///   Frobenius norms of the physical lumped M and K, excluding the anchor DOF.
+/// - `topology`: an undeclared write owned by #7097; always `Undef` here
+///   ([`build_modal_topology_value`]).
+fn mechanism_modal_result_value(
+    modes: Vec<Value>,
+    damping: Value,
+    mass_matrix_norm: f64,
+    stiffness_matrix_norm: f64,
+) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), placeholder_part()),
+        ("modes".to_string(), Value::List(modes)),
+        ("boundary_conditions".to_string(), Value::Undef),
+        ("damping".to_string(), damping),
+        (
+            "mass_matrix_norm".to_string(),
+            Value::Real(mass_matrix_norm),
+        ),
+        (
+            "stiffness_matrix_norm".to_string(),
+            Value::Real(stiffness_matrix_norm),
+        ),
+        ("topology".to_string(), build_modal_topology_value()),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ModalResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// The lumped path's `W_ModalOptionUnsupported` Warning for a non-zero
+/// `ModalOptions.shift_frequency` (Hz) — `None` at the `0Hz` default. The
+/// lumped model always returns its lowest modes, so a requested shift would
+/// otherwise be dropped silently.
+fn mechanism_shift_unsupported_diagnostic(shift_hz: f64) -> Option<Diagnostic> {
+    (shift_hz != 0.0).then(|| {
+        Diagnostic::warning(format!(
+            "W_ModalOptionUnsupported: ModalOptions.shift_frequency = {shift_hz} Hz is \
+             declared but not yet honored by the mechanism_modal_analysis (lumped) \
+             trampoline (the lumped model always returns its lowest modes; #7263); \
+             solve falls back to the default 0 Hz",
+        ))
+        .with_code(DiagnosticCode::ModalOptionUnsupported)
+    })
+}
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -1979,10 +2115,12 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// `total_damping_ratio`: the modal-strain-energy term is undefined for a lumped
 /// model (see the `DampingKind::Material` arm below).
 /// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
-/// give ζ_i = 0.  `Mode.shape` stays an empty list and
-/// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
-/// has one scalar DOF per body and therefore no 3D mode shape to report (which
-/// is also why `ModalOptions.reference_direction` is unused here).
+/// give ζ_i = 0.
+///
+/// **Field dispositions (INV-PD-2)**, with their reasons, are recorded at
+/// [`mechanism_mode_value`] and [`mechanism_modal_result_value`]: `Mode.shape`
+/// and `Mode.participation_mass` are `Undef`, and the matrix norms are those
+/// of the physical lumped M and K.
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -1995,8 +2133,14 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 ///
 /// **`ModalOptions.n_modes` is respected**: the returned modes list is
 /// truncated to `n_modes` when `n_modes < n_physical_modes`.
+/// `ModalOptions.shift_frequency` is read and WARNED, not honored: a non-zero
+/// value carries [`mechanism_shift_unsupported_diagnostic`]'s Warning and the
+/// solve still returns the lowest modes (honoring it is #7263's).
 /// `ModalOptions.boundary_conditions` and `reference_direction` are unused
-/// (they are FEA-mesh concepts without meaning in the lumped model).
+/// (they are FEA-mesh concepts without meaning in the lumped model), so
+/// `ModalResult.boundary_conditions` is `Undef` rather than an echo. Any
+/// input-side warning for the two belongs to INV-PD-1
+/// (`docs/prds/v0_6/trampoline-param-drop-closure.md`).
 ///
 /// **Multi-body advisory**: for `n_dof ≥ 2` the model uses a strictly diagonal
 /// M and K (one uncoupled DOF per body), which ignores inertial cross-coupling.
@@ -2069,6 +2213,10 @@ fn run_mechanism_modal(
             };
         }
     };
+    // Norms of the PHYSICAL lumped M and K, taken before the step-(2) anchor
+    // pad for the same reason the anchor's mode is kept out of `modes`.
+    let mass_matrix_norm = frobenius_norm(&m_mat);
+    let stiffness_matrix_norm = frobenius_norm(&k_mat);
 
     // ── (1c) multi-body uncoupled-estimate advisory (suggestion: S1) ─────────
     // The lumped model uses a strictly diagonal M and K (one DOF per body),
@@ -2253,10 +2401,8 @@ fn run_mechanism_modal(
         DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
     };
 
-    // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
-    // The stdlib accessors first_frequency/mode_frequency read only
-    // Mode.frequency, so frequency-only modes fully satisfy the contract;
-    // `damping_ratio` additionally carries the Rayleigh ratio read from
+    // ── (5) shape Mode records ───────────────────────────────────────────────
+    // `damping_ratio` carries the Rayleigh ratio read from
     // `ModalOptions.damping` (task #6875).
     //
     // ω = 0 needs no extra guard here: `rayleigh_damping_ratio` floors at
@@ -2265,27 +2411,7 @@ fn run_mechanism_modal(
     // yields ζ = 0 rather than a 1/ω blow-up.
     let mut modes_list: Vec<Value> = frequencies
         .iter()
-        .map(|&f| {
-            let omega = 2.0 * PI * f;
-            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
-            let fields: PersistentMap<String, Value> = [
-                (
-                    "frequency".to_string(),
-                    Value::Scalar { si_value: f, dimension: DimensionVector::FREQUENCY },
-                ),
-                ("shape".to_string(), Value::List(Vec::new())),
-                ("participation_mass".to_string(), Value::Real(0.0)),
-                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
-            ]
-            .into_iter()
-            .collect();
-            Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
-                version: 1,
-                fields,
-            }))
-        })
+        .map(|&f| mechanism_mode_value(f, rayleigh_damping_ratio(alpha, beta, 2.0 * PI * f)))
         .collect();
 
     // ── (5b) honour ModalOptions.n_modes — truncate if caller requests fewer ──
@@ -2294,6 +2420,9 @@ fn run_mechanism_modal(
     // caller explicitly asked for fewer modes than we computed.
     // (`options` is bound at step (4c) above.)
     let (requested_n_modes, _, _, _) = extract_eigen_knobs(options);
+    diagnostics.extend(mechanism_shift_unsupported_diagnostic(
+        extract_shift_frequency_hz(options),
+    ));
     if requested_n_modes < modes_list.len() {
         diagnostics.push(Diagnostic::warning(format!(
             "I_MechanismModalNModesTruncated: ModalOptions.n_modes={requested_n_modes} \
@@ -2304,37 +2433,13 @@ fn run_mechanism_modal(
         modes_list.truncate(requested_n_modes);
     }
 
-    // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
-    // topology is always present (Value::Undef on the mechanism path — no B-rep
-    // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
-    //
-    // `damping` genuinely echoes the caller's `ModalOptions.damping` descriptor
-    // (task #6875) via the same [`field_or`] read the FEA path uses — it is no
-    // longer a placeholder. `Value::Undef` now means only "the caller supplied
-    // no descriptor", which is what a bare `ModalOptions()` produces, so an
-    // undamped solve is still reported as `Undef` exactly as before.
-    // `mass_matrix_norm` / `stiffness_matrix_norm` remain 0: the lumped
-    // generalized-coordinate model never forms the norms the FEA path reports.
-    let result_fields: PersistentMap<String, Value> = [
-        ("part".to_string(), placeholder_part()),
-        ("modes".to_string(), Value::List(modes_list)),
-        ("boundary_conditions".to_string(), Value::List(Vec::new())),
-        (
-            "damping".to_string(),
-            field_or(options, "damping", Value::Undef),
-        ),
-        ("mass_matrix_norm".to_string(), Value::Real(0.0)),
-        ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
-        ("topology".to_string(), build_modal_topology_value()),
-    ]
-    .into_iter()
-    .collect();
-    let result = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "ModalResult".to_string(),
-        version: 1,
-        fields: result_fields,
-    }));
+    // ── (6) shape ModalResult ────────────────────────────────────────────────
+    let result = mechanism_modal_result_value(
+        modes_list,
+        field_or(options, "damping", Value::Undef),
+        mass_matrix_norm,
+        stiffness_matrix_norm,
+    );
     ComputeOutcome::Completed {
         result,
         new_warm_state: None,
@@ -3241,49 +3346,17 @@ fn extract_loss_factor(val: &Value) -> Option<f64> {
 ///
 /// # σ is in EIGENVALUE (λ) space
 ///
-/// The returned σ is in the same space [`EigenSolverOptions::sigma`] and
-/// [`EigenSolverResult::shift`] document, whose rustdoc states that unit
-/// conversion is the CALLER's job — and this trampoline is that caller.
+/// The returned σ is in the space [`EigenSolverOptions::sigma`] and
+/// [`EigenSolverResult::shift`] document, whose rustdoc makes unit conversion
+/// the CALLER's job. The author writes `ModalOptions.shift_frequency` in Hz, so
+/// THIS is the declared Hz → λ crossing (INV-AD-4): σ =
+/// [`frequency_hz_to_eigenvalue`] of the value [`extract_shift_frequency_hz`]
+/// accepts.
 ///
-/// On this branch the conversion is the identity: `ModalOptions.sigma : Real` is
-/// ALREADY λ-space (`modal_analysis.ri`'s `sigma` field note — "spectral-shift
-/// origin (in eigenvalue units)"), so the read is a pass-through and there is NO
-/// unit crossing here. That is the surface-agnostic contract PRD §7.1 names:
-/// `EigenSolverOptions.sigma` receives λ-space, so leaves α and β never learn
-/// which author-facing surface fed them.
-///
-/// If #6097 later retypes the surface to `shift_frequency : Frequency`, the
-/// `λ = (2π·f)²` conversion belongs HERE, at the trampoline, via the declared
-/// inverse helper in `crates/reify-stdlib/src/modal/free_vibration.rs` — never
-/// as a bare inline `2.0 * PI * f` in this file, which INV-AD-4
-/// (`boundaries-declare-angle-convention`) makes a defect even when the number
-/// it computes is right.
-///
-/// # Which value shapes σ accepts, and which it refuses
-///
-/// A `Real`-typed `.ri` param does not arrive as one Rust variant: a literal
-/// `sigma: 2` arrives as [`Value::Int`], and a value that has been through the
-/// dimensional machinery arrives as a DIMENSIONLESS [`Value::Scalar`]. All
-/// three are accepted, the same `tolerated` discipline [`extract_loss_factor`]
-/// spells out one knob up. The shape list is kept EXPLICIT rather than widened
-/// to `Value::Scalar { .. }` because the dimension gate is the load-bearing
-/// part: [`read_scalar_si`] is dimension-BLIND.
-///
-/// The widening is scoped to σ, and `tol` — declared `param tol : Real` beside
-/// it — is the REMAINING instance of this class: a literal `tol: 1` arrives as
-/// [`Value::Int`] and silently becomes the 1e-9 default, exactly as `sigma: 2`
-/// did before this leaf. Left open deliberately (it is outside δ's scope) and
-/// named here so the next reader does not have to rediscover it; filed as a
-/// follow-up, which should also audit `n_modes`/`max_iters` for the
-/// mirror-image [`Value::Real`] spelling.
-///
-/// A DIMENSIONED `Scalar` — notably a `Scalar<Frequency>` — is refused and falls
-/// back to the default. That shape is #6097's future `shift_frequency` surface,
-/// and reading 300 Hz as `λ = 300` would be a silent 4π²-and-square error:
-/// strictly WORSE than dropping the value, because a wrong shift returns a
-/// plausible-looking spectrum from the wrong band rather than an obviously
-/// unshifted one. Converting it here would also duplicate #6097's scope and
-/// manufacture the INV-AD-4 crossing this branch deliberately does not have.
+/// `tol` — declared `param tol : Real` — reads [`Value::Real`] only: a literal
+/// `tol: 1` arrives as [`Value::Int`] and silently becomes the 1e-9 default.
+/// Left open deliberately and filed as a follow-up, which should also audit
+/// `n_modes`/`max_iters` for the mirror-image [`Value::Real`] spelling.
 fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
     let default_n_modes = 10_usize;
     let default_tol = 1e-9_f64;
@@ -3313,29 +3386,33 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
-    // Gate on the VARIANT (and, for `Scalar`, on the DIMENSION), then convert
-    // ONCE through `read_scalar_si` so the tolerated spellings cannot drift
-    // apart from it — the `tolerated` shape [`extract_loss_factor`] spells out
-    // one knob up, which also keeps the finite guard in a single copy rather
-    // than one per accepted shape. A non-finite σ still falls back: it would
-    // poison `K − σM`.
-    let sigma = match data.fields.get("sigma") {
-        Some(raw) => {
-            let tolerated = match raw {
-                Value::Real(_) | Value::Int(_) => true,
-                Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
-                _ => false,
-            };
-            let s = read_scalar_si(raw);
-            if tolerated && s.is_finite() {
-                s
-            } else {
-                default_sigma
-            }
-        }
-        None => default_sigma,
-    };
+    let sigma = frequency_hz_to_eigenvalue(extract_shift_frequency_hz(val));
     (n_modes, tol, max_iters, sigma)
+}
+
+/// The author's `ModalOptions.shift_frequency` in Hz — the SINGLE reader of that
+/// field. Only a `Scalar<Frequency>` whose λ = (2π·f)² is finite is accepted;
+/// anything else (missing field, non-StructureInstance, a bare `Real`/`Int`, a
+/// dimensionless or angular-velocity `Scalar`, a non-finite f, or a finite f
+/// whose square overflows) is the `0.0` default, so every σ this yields is
+/// finite. A bare number or a rad/s value is not Hz, so reading one would be a
+/// silent 2π / 4π² error that returns a plausible spectrum from the wrong band;
+/// the ctor gate already rejects those shapes at compile time.
+fn extract_shift_frequency_hz(options: &Value) -> f64 {
+    let Value::StructureInstance(data) = options else {
+        return 0.0;
+    };
+    match data.fields.get("shift_frequency") {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::FREQUENCY
+            && frequency_hz_to_eigenvalue(*si_value).is_finite() =>
+        {
+            *si_value
+        }
+        _ => 0.0,
+    }
 }
 
 /// Extract the unit excitation `reference_direction` (along which per-mode
@@ -4476,7 +4553,9 @@ mod tests {
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::dynamics::mass_props::resolve_density_strict;
-    use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
+    use reify_stdlib::modal::free_vibration::{
+        frequency_hz_to_eigenvalue, is_rigid_body_mode, rayleigh_damping_ratio,
+    };
     use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
     use reify_stdlib::modal::transient::uniform_time_grid;
 
@@ -4493,6 +4572,7 @@ mod tests {
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
         extract_loss_factor, extract_reference_direction, face_company, face_realization,
         frobenius_norm,
+        modal_convergence_warning,
         mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
@@ -5381,6 +5461,64 @@ mod tests {
         );
     }
 
+    /// #7602: `converged` can now be false with every requested mode returned
+    /// — a pair failed the eigensolver's post-solve residual check — and the
+    /// warning must say THAT, not "returned 2 of 2 … partial".
+    ///
+    /// (a) A shortfall alone keeps today's text verbatim.
+    #[test]
+    fn modal_convergence_warning_keeps_the_shortfall_text_verbatim() {
+        let d = modal_convergence_warning(1, 2, 0).expect("a shortfall warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert_eq!(
+            d.message,
+            "W_ModalConvergence: eigensolver returned 1 of 2 requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes).",
+        );
+    }
+
+    /// (b) Every mode returned, some unverified: name the residual-check
+    /// failure, and never call the result partial.
+    #[test]
+    fn modal_convergence_warning_names_unverified_modes_without_calling_them_partial() {
+        let d = modal_convergence_warning(2, 2, 1).expect("an unverified mode warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+        assert!(d.message.contains("not verified eigenpairs"), "{}", d.message);
+        assert!(!d.message.contains("partial"), "{}", d.message);
+        assert!(!d.message.contains("returned 2 of 2"), "{}", d.message);
+    }
+
+    /// (c) Both at once: one diagnostic carrying both facts.
+    #[test]
+    fn modal_convergence_warning_carries_both_facts_in_one_diagnostic() {
+        let d = modal_convergence_warning(2, 3, 1).expect("both conditions warn");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(d.message.contains("returned 2 of 3 requested modes"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+    }
+
+    /// (d) Neither: no warning.
+    #[test]
+    fn modal_convergence_warning_is_silent_on_a_verified_full_result() {
+        assert!(modal_convergence_warning(2, 2, 0).is_none());
+    }
+
     /// Amendment (suggestion 1 / robustness): an under-constrained model must NOT
     /// panic the engine, regardless of mesh size.
     ///
@@ -5820,13 +5958,13 @@ mod tests {
     ///
     /// Each link re-checked against this tree rather than assumed:
     ///
-    /// - `ModalOptions` declares `param sigma : Real = 0.0` as a deliberately
-    ///   UNCONSTRAINED, user-settable parameter
+    /// - `ModalOptions` declares `param shift_frequency : Frequency = 0Hz` as a
+    ///   deliberately UNCONSTRAINED, user-settable parameter
     ///   (`crates/reify-compiler/stdlib/modal_analysis.ri`, whose sibling note
     ///   records the "explicitly NOT constrained" discipline);
-    /// - [`extract_eigen_knobs`] returns any FINITE user value verbatim — pinned
-    ///   by `extract_eigen_knobs_reads_fields_and_falls_back`, which asserts
-    ///   `(7, 1e-7, 50, 2.5)` for a `sigma: 2.5` input;
+    /// - [`extract_eigen_knobs`] converts any FINITE `Scalar<Frequency>` to
+    ///   σ = (2π·f)² with no clamping — pinned by
+    ///   `extract_eigen_knobs_shift_frequency_value_shapes`;
     /// - that value is written straight into the `EigenSolverOptions` literal
     ///   [`run_modal_analysis`] builds, and reaches [`solve_generalized_eigen`]
     ///   with NO clamping anywhere on the path.
@@ -5836,12 +5974,6 @@ mod tests {
     /// today" comment this diff deletes recorded, correctly, at the time. β makes
     /// σ live on that path, and a live σ turns a dead field into a reachable
     /// failure.
-    ///
-    /// The value SHAPE matters too: a `.ri` integer literal (`sigma: 2`) arrives
-    /// as `Value::Int` and falls back to 0.0 — the trap
-    /// `buckling_option_unsupported.rs` already pins for the sibling knob — so
-    /// the reachable surface is a Real literal such as `sigma: 2.5`, which is the
-    /// shape the knobs test uses and the shape a user actually writes.
     #[test]
     fn shift_landing_on_an_eigenvalue_is_returned_not_panicked() {
         const N: usize = 80;
@@ -6971,9 +7103,12 @@ mod tests {
             ("n_modes".to_string(), Value::Int(7)),
             ("tol".to_string(), Value::Real(1e-7)),
             ("max_iters".to_string(), Value::Int(50)),
-            ("sigma".to_string(), Value::Real(2.5)),
+            ("shift_frequency".to_string(), frequency_scalar(100.0)),
         ]);
-        assert_eq!(extract_eigen_knobs(&opts), (7, 1e-7, 50, 2.5));
+        assert_eq!(
+            extract_eigen_knobs(&opts),
+            (7, 1e-7, 50, frequency_hz_to_eigenvalue(100.0))
+        );
 
         // Missing fields → defaults (10, 1e-9, 200, 0.0).
         assert_eq!(
@@ -6982,11 +7117,11 @@ mod tests {
         );
 
         // Malformed: non-positive n_modes clamps to ≥ 1; non-positive tol and
-        // non-finite sigma fall back to their defaults.
+        // non-finite shift_frequency fall back to their defaults.
         let bad = modal_options(vec![
             ("n_modes".to_string(), Value::Int(0)),
             ("tol".to_string(), Value::Real(-1.0)),
-            ("sigma".to_string(), Value::Real(f64::NAN)),
+            ("shift_frequency".to_string(), frequency_scalar(f64::NAN)),
         ]);
         assert_eq!(extract_eigen_knobs(&bad), (1, 1e-9, 200, 0.0));
 
@@ -6994,85 +7129,112 @@ mod tests {
         assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
     }
 
-    /// δ (#7261): the λ-space σ read must not silently become 0.0 for a value
-    /// shape a user actually writes.
+    /// A `Frequency` scalar (SI hertz), as `ModalOptions.shift_frequency` arrives.
+    fn frequency_scalar(hz: f64) -> Value {
+        Value::Scalar {
+            si_value: hz,
+            dimension: DimensionVector::FREQUENCY,
+        }
+    }
+
+    /// #6097: `ModalOptions.shift_frequency` is read ONLY as a finite
+    /// `Scalar<Frequency>` (Hz) and converted to λ-space through
+    /// `frequency_hz_to_eigenvalue`; every other shape is the 0.0 default.
     ///
-    /// A `Real`-typed `.ri` param does not arrive as one Rust variant. A
-    /// literal `sigma: 2` arrives as [`Value::Int`], and a value that has been
-    /// through the dimensional machinery arrives as a DIMENSIONLESS
-    /// [`Value::Scalar`] — the shape the `tolerated` idiom in
-    /// [`extract_loss_factor`] exists for, one knob up in this same file.
-    /// Reading only [`Value::Real`] drops both to the default, which is the
-    /// silent-drop class this PRD exists to close (`buckling.rs` documents and
-    /// handles exactly this trap for the sibling knob, and β's own rustdoc
-    /// records it by name).
+    /// A bare number or an angular rate is not Hz: reading one would be a silent
+    /// 2π / 4π² error — strictly WORSE than dropping the value, because a wrong
+    /// shift returns a plausible-looking spectrum from the wrong band. The ctor
+    /// gate already rejects those shapes at compile time; this pins the reader.
     ///
-    /// A FREQUENCY-dimensioned `Scalar` is deliberately NOT honored — see the
-    /// case below.
-    ///
-    /// Every row also asserts the other three knobs, so the widening is provably
-    /// scoped to σ: the table is over the σ shape ONLY, with `n_modes`/`tol`/
-    /// `max_iters` held at fixed non-default values that must come back
-    /// unchanged.
+    /// Every row also asserts the other three knobs, so the table is provably
+    /// scoped to σ: `n_modes`/`tol`/`max_iters` are held at fixed non-default
+    /// values that must come back unchanged.
     #[test]
-    fn extract_eigen_knobs_sigma_value_shapes() {
+    fn extract_eigen_knobs_shift_frequency_value_shapes() {
         /// The three non-σ knobs, held at non-default values so a regression in
         /// their handling cannot hide behind a default.
-        fn with_sigma(sigma: Option<Value>) -> Value {
+        fn with_shift(field: &str, shift: Option<Value>) -> Value {
             let mut fields = vec![
                 ("n_modes".to_string(), Value::Int(7)),
                 ("tol".to_string(), Value::Real(1e-7)),
                 ("max_iters".to_string(), Value::Int(50)),
             ];
-            if let Some(sigma) = sigma {
-                fields.push(("sigma".to_string(), sigma));
+            if let Some(shift) = shift {
+                fields.push((field.to_string(), shift));
             }
             modal_options(fields)
         }
-        let dimensionless = |si_value: f64| Value::Scalar {
+        let scalar = |si_value: f64, dimension: DimensionVector| Value::Scalar {
             si_value,
-            dimension: DimensionVector::DIMENSIONLESS,
+            dimension,
         };
 
-        let cases: Vec<(&str, Option<Value>, f64)> = vec![
-            // The regression floor: the shape that already worked.
-            ("Real", Some(Value::Real(2.5)), 2.5),
-            // A `.ri` integer literal `sigma: 2`. RED before the widening.
-            ("Int", Some(Value::Int(2)), 2.0),
-            // A dimensionless Scalar, NEGATIVE: `ModalOptions` declares σ
-            // "explicitly NOT constrained" because a negative shift targets the
-            // negative side of the spectrum, so the sign must round-trip rather
-            // than being clamped away. RED before the widening.
-            ("Scalar<dimensionless>", Some(dimensionless(-1.5)), -1.5),
-            // REFUSED, and the default is the right answer. That shape is
-            // #6097's future `shift_frequency : Frequency` surface; reading
-            // 300 Hz as λ = 300 would be a silent 4π²-and-square error —
-            // strictly WORSE than dropping the value, because a wrong shift
-            // returns a plausible-looking spectrum from the wrong band.
-            // Converting it here would also duplicate #6097's scope and
-            // manufacture the INV-AD-4 angle crossing this branch deliberately
-            // does not have.
+        let cases: Vec<(&str, &str, Option<Value>, f64)> = vec![
+            // THE FLIP: Hz is read and converted.
             (
                 "Scalar<frequency>",
-                Some(Value::Scalar {
-                    si_value: 300.0,
-                    dimension: DimensionVector::FREQUENCY,
-                }),
+                "shift_frequency",
+                Some(frequency_scalar(300.0)),
+                frequency_hz_to_eigenvalue(300.0),
+            ),
+            (
+                "Scalar<frequency>(0)",
+                "shift_frequency",
+                Some(frequency_scalar(0.0)),
                 0.0,
             ),
-            // The finite guard survives the widening: an infinite or NaN σ
-            // would poison `K − σM`.
-            ("Real(inf)", Some(Value::Real(f64::INFINITY)), 0.0),
-            ("Real(NaN)", Some(Value::Real(f64::NAN)), 0.0),
-            // Existing fallbacks, unchanged.
-            ("absent", None, 0.0),
+            // Squaring erases the sign.
+            (
+                "Scalar<frequency>(negative)",
+                "shift_frequency",
+                Some(frequency_scalar(-300.0)),
+                frequency_hz_to_eigenvalue(300.0),
+            ),
+            // rad/s is NOT Hz.
+            (
+                "Scalar<angular velocity>",
+                "shift_frequency",
+                Some(scalar(300.0, DimensionVector::ANGULAR_VELOCITY)),
+                0.0,
+            ),
+            (
+                "Scalar<dimensionless>",
+                "shift_frequency",
+                Some(scalar(1.5, DimensionVector::DIMENSIONLESS)),
+                0.0,
+            ),
+            ("Real", "shift_frequency", Some(Value::Real(2.5)), 0.0),
+            ("Int", "shift_frequency", Some(Value::Int(2)), 0.0),
+            // The finite guard: σ must be finite or it poisons `K − σM`, whether
+            // f itself is non-finite or a finite f's square overflows.
+            (
+                "Scalar<frequency>(1e200), λ overflows",
+                "shift_frequency",
+                Some(frequency_scalar(1e200)),
+                0.0,
+            ),
+            (
+                "Scalar<frequency>(inf)",
+                "shift_frequency",
+                Some(frequency_scalar(f64::INFINITY)),
+                0.0,
+            ),
+            (
+                "Scalar<frequency>(NaN)",
+                "shift_frequency",
+                Some(frequency_scalar(f64::NAN)),
+                0.0,
+            ),
+            // The pre-#6097 field name is no longer read.
+            ("legacy sigma", "sigma", Some(Value::Real(2.5)), 0.0),
+            ("absent", "shift_frequency", None, 0.0),
         ];
 
-        for (label, sigma, expected) in cases {
+        for (label, field, shift, expected) in cases {
             assert_eq!(
-                extract_eigen_knobs(&with_sigma(sigma)),
+                extract_eigen_knobs(&with_shift(field, shift)),
                 (7, 1e-7, 50, expected),
-                "sigma shape {label}: expected σ = {expected} with the other three \
+                "shift shape {label}: expected σ = {expected} with the other three \
                  knobs untouched",
             );
         }
@@ -12053,6 +12215,175 @@ mod tests {
                  guarantee for printer_z_compliant_mount.ri"
             );
         }
+    }
+
+    /// Drive the mechanism-modal trampoline to a `Completed` outcome with no
+    /// `Error` diagnostic and unwrap the `ModalResult` it built.
+    fn solved_mechanism_modal_result(mech: Value, options: Value) -> Box<StructureInstanceData> {
+        let outcome = solve_mechanism_modal_trampoline(
+            &[mech, options],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected Completed outcome");
+        };
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "must not produce Error diagnostics; got {diagnostics:?}",
+        );
+        match result {
+            Value::StructureInstance(d) if d.type_name == "ModalResult" => d,
+            other => panic!("expected a ModalResult StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Task #7012: the fields the lumped generalized-coordinate model cannot
+    /// define — `Mode.shape`, `Mode.participation_mass` and
+    /// `ModalResult.boundary_conditions` — are honest `Value::Undef`, while
+    /// the solved `frequency` / `damping_ratio` stay populated. The caller
+    /// supplies a non-empty support list and a non-default
+    /// `reference_direction`, the two inputs this path does not apply, so
+    /// neither the old `[]` / `0.0` fakes nor an echo of the caller's list can
+    /// pass.
+    #[test]
+    fn mechanism_modal_lumped_undefined_fields_are_honest_undef() {
+        let mech = two_body_mechanism(
+            mass_props_solid(2.0),
+            flexure_joint(1_000.0),
+            mass_props_solid(0.1),
+            flexure_joint(50_000.0),
+        );
+        let options = modal_options(vec![
+            (
+                "boundary_conditions".to_string(),
+                Value::List(vec![fixed_support("x_min")]),
+            ),
+            (
+                "reference_direction".to_string(),
+                Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+        ]);
+        let data = solved_mechanism_modal_result(mech, options);
+
+        let modes = match data.fields.get("modes") {
+            Some(Value::List(m)) => m,
+            other => panic!("modes must be a List; got {other:?}"),
+        };
+        assert_eq!(
+            modes.len(),
+            2,
+            "the n_dof = 2 solve must return both modes, or the per-mode Undef \
+             checks below are vacuous"
+        );
+        for (i, mode) in modes.iter().enumerate() {
+            let fields = match mode {
+                Value::StructureInstance(d) if d.type_name == "Mode" => &d.fields,
+                other => panic!("modes[{i}] must be a Mode; got {other:?}"),
+            };
+            assert!(
+                matches!(
+                    fields.get("frequency"),
+                    Some(Value::Scalar { si_value, dimension })
+                        if *dimension == DimensionVector::FREQUENCY
+                            && si_value.is_finite()
+                            && *si_value > 0.0
+                ),
+                "mode {i} frequency must stay a finite, positive Scalar<Frequency>; \
+                 got {:?}",
+                fields.get("frequency"),
+            );
+            assert!(
+                matches!(fields.get("damping_ratio"), Some(Value::Real(_))),
+                "mode {i} damping_ratio must stay a populated Real; got {:?}",
+                fields.get("damping_ratio"),
+            );
+            assert_eq!(
+                fields.get("shape"),
+                Some(&Value::Undef),
+                "mode {i} shape: the lumped model has no per-node displacement field"
+            );
+            assert_eq!(
+                fields.get("participation_mass"),
+                Some(&Value::Undef),
+                "mode {i} participation_mass: the lumped DOFs carry no direction to \
+                 project onto reference_direction"
+            );
+        }
+        assert_eq!(
+            data.fields.get("boundary_conditions"),
+            Some(&Value::Undef),
+            "ModalResult.boundary_conditions: the lumped solve applies no Support, \
+             so neither `[]` nor an echo of the caller's list is honest"
+        );
+    }
+
+    /// Task #7012: `ModalResult.mass_matrix_norm` / `stiffness_matrix_norm`
+    /// are the Frobenius norms of the PHYSICAL lumped M and K, excluding the
+    /// n_dof = 1 anchor DOF. Both matrices are diagonal and
+    /// ‖diag(d)‖_F = √(Σ d_i²) exactly, so each expectation is that closed
+    /// form and the 1e-12 relative band only absorbs fp associativity.
+    #[test]
+    fn mechanism_modal_reports_lumped_matrix_norms() {
+        fn norms(mech: Value) -> (f64, f64) {
+            let data = solved_mechanism_modal_result(mech, struct_instance("ModalOptions", vec![]));
+            let real = |name: &str| match data.fields.get(name) {
+                Some(Value::Real(v)) => *v,
+                other => panic!("{name} must be a Real; got {other:?}"),
+            };
+            (real("mass_matrix_norm"), real("stiffness_matrix_norm"))
+        }
+        fn assert_rel_close(label: &str, got: f64, expected: f64) {
+            let rel = (got - expected).abs() / expected;
+            assert!(
+                rel <= 1e-12,
+                "{label}: got {got}, expected {expected} (relative error {rel:.3e})"
+            );
+        }
+
+        // Case A — n_dof = 1, the anchor-pad path. The padded pencil's norms
+        // would be √(0.5² + 1²) ≈ 1.118 and ≈ 2e11 (λ_anchor = max(k/m, 1)·1e8).
+        let (mass_norm, stiffness_norm) = norms(one_body_mechanism(
+            mass_props_solid(0.5),
+            flexure_joint(1_000.0),
+        ));
+        assert_rel_close("Case A mass_matrix_norm", mass_norm, 0.5);
+        assert_rel_close("Case A stiffness_matrix_norm", stiffness_norm, 1_000.0);
+
+        // Case B — n_dof = 2, the direct solve.
+        let (mass_norm, stiffness_norm) = norms(two_body_mechanism(
+            mass_props_solid(2.0),
+            flexure_joint(1_000.0),
+            mass_props_solid(0.1),
+            flexure_joint(50_000.0),
+        ));
+        assert_rel_close(
+            "Case B mass_matrix_norm",
+            mass_norm,
+            (2.0_f64 * 2.0 + 0.1 * 0.1).sqrt(),
+        );
+        assert_rel_close(
+            "Case B stiffness_matrix_norm",
+            stiffness_norm,
+            (1_000.0_f64 * 1_000.0 + 50_000.0 * 50_000.0).sqrt(),
+        );
+
+        // Case C — a rigid joint stores no K entry, so ‖K‖ = 0 is measured,
+        // not a fake; ‖M‖ keeps the case from passing on an all-zero result.
+        let (mass_norm, stiffness_norm) =
+            norms(one_body_mechanism(mass_props_solid(0.5), rigid_joint()));
+        assert_rel_close("Case C mass_matrix_norm", mass_norm, 0.5);
+        assert_eq!(
+            stiffness_norm, 0.0,
+            "Case C: a rigid joint contributes no stiffness, so ‖K‖ must be exactly 0"
+        );
     }
 
     /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised

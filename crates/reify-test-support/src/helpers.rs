@@ -6,8 +6,8 @@
 //! inspects an already-compiled expression.
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -40,20 +40,35 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
-/// expressions and constraints without real geometry.
+/// expressions and constraints without real geometry. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine() -> reify_eval::Engine {
     let checker = MockConstraintChecker::new();
-    reify_eval::Engine::new(Box::new(checker), None)
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None)
 }
 
 /// Create a new `Engine` backed by the real `SimpleConstraintChecker` and no
 /// geometry kernel. Suitable for integration tests that need the real
 /// constraint semantics (Satisfied/Violated/Indeterminate) rather than the
-/// mock's tracking-only stub.
+/// mock's tracking-only stub. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_simple_engine() -> reify_eval::Engine {
-    reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None)
+}
+
+/// Create a new `Engine` backed by a fresh `MockConstraintChecker` and a fresh
+/// `MockGeometryKernel` — [`make_engine`] plus a mock kernel. Suitable for
+/// structural surfacing tests; the mock's `tessellate` returns a canned mesh,
+/// so it pins surface shape but cannot validate placement. Construct the
+/// engine inline instead when a test needs the kernel's `operations_ref()`,
+/// since this factory moves the kernel into the engine. Solver-free by contract.
+#[cfg(feature = "eval-helpers")]
+pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
+    reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(MockGeometryKernel::new())),
+    )
 }
 
 /// Parse, compile (asserting no errors), and evaluate `source` using a
@@ -260,23 +275,14 @@ pub fn prelude_backed_functions(
     merged
 }
 
-/// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
-/// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
-/// `diagnostics` list. Each parse error's span is attached as a label.
-fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnostic> {
-    parsed
-        .errors
-        .iter()
-        .map(|e| {
-            Diagnostic::error(e.message.clone())
-                .with_label(DiagnosticLabel::new(e.span, e.message.clone()))
-        })
-        .collect()
-}
-
-/// Parse and compile `source` WITHOUT asserting absence of parse errors,
-/// forwarding any parse-layer diagnostics into the returned module's
-/// `diagnostics` list (prepended ahead of compile-layer diagnostics).
+/// Parse and compile `source` WITHOUT asserting absence of parse errors.
+///
+/// The compiler itself forwards each parse error as one `Severity::Error`
+/// diagnostic ahead of the compile-layer diagnostics (`forward_parse_errors`,
+/// reify-compiler `compile_builder/pre_pass.rs`). This helper adds nothing, so
+/// the returned `diagnostics` are exactly what a production caller of
+/// `reify_compiler::compile` sees, and a test may COUNT them. Pinned by
+/// `crates/reify-test-support/tests/allow_parse_errors_helpers.rs`.
 ///
 /// Use this for tests that exercise rejection now emitted at the *parse*
 /// layer — e.g. out-of-range numeric literals, which task #4681 moved from a
@@ -289,26 +295,23 @@ fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnost
 /// produced, so downstream invariants like "the offending unit is NOT
 /// registered" remain observable.
 pub fn compile_source_allow_parse_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile(&reify_syntax::parse(source, ModulePath::single("test")))
 }
 
 /// Like [`compile_source_allow_parse_errors`] but parses with the stdlib
 /// prelude enum names pre-seeded and compiles with the full stdlib context
 /// (mirrors [`compile_source_with_stdlib`]).
+///
+/// Same contract: the returned `diagnostics` are exactly what a production
+/// caller of `reify_compiler::compile_with_stdlib` sees, each parse error
+/// forwarded once by the compiler as a `Severity::Error`.
 pub fn compile_source_with_stdlib_allow_parse_errors(
     source: &str,
 ) -> reify_compiler::CompiledModule {
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile_with_stdlib(&reify_compiler::parse_with_stdlib(
+        source,
+        ModulePath::single("test"),
+    ))
 }
 
 /// Parse and compile `source`, then extract the first template.
@@ -619,6 +622,25 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
+/// The phrase a compile-layer LENGTH-slot rejection carries right after the
+/// name of the slot it blames, as in `reify_compiler::builtin_signatures`'
+/// documented template `"box: size_x argument expects Length, got Int; …"`.
+///
+/// The compile layer exports no constant for this phrase (the module that
+/// emits it is private to `reify-compiler`), so this is the one place tests
+/// spell it. A rewording of the diagnostic surfaces as tests that read
+/// LENGTH-slot names suddenly finding none; update this constant, not the
+/// tests that read it.
+pub const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
+
+/// The slot name a LENGTH-slot rejection blames, or `None` if `message` is not
+/// one: the token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`], so
+/// `"box: size_x argument expects Length, got Int"` yields `size_x`.
+pub fn named_length_argument(message: &str) -> Option<&str> {
+    let (before, _) = message.split_once(LENGTH_SLOT_DIAGNOSTIC_MARKER)?;
+    before.split_whitespace().next_back()
+}
+
 /// Assert that some `Severity::Error` diagnostic carries `code`.
 ///
 /// `context` is a short label that appears in the panic message to identify
@@ -726,9 +748,9 @@ pub fn run_modify_pipeline(
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(20.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(20.0)),
+            ("size_x".into(), mm_literal(20.0)),
+            ("size_y".into(), mm_literal(20.0)),
+            ("size_z".into(), mm_literal(20.0)),
         ],
     };
 
@@ -752,7 +774,7 @@ pub fn run_modify_pipeline(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_no_error_diagnostics(&result.diagnostics, "run_modify_pipeline");
@@ -839,6 +861,7 @@ pub fn build_against_mock_kernel(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -862,25 +885,33 @@ pub fn build_against_mock_kernel(
 /// compiled default expression. Callers needing only the compiled default
 /// expression should prefer [`get_let_expr_in`], which delegates here.
 ///
-/// Resolution keys on `id.member` alone; `id.entity` is not considered. A
-/// template holding two value cells that share a member name under
-/// different entities cannot be resolved this way, and this function
-/// panics, naming the colliding entities (see # Panics). The realistic
-/// producer is a scoped sub/connect `Auto` cell (`id.entity =
-/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
-/// same-named cell — real `.ri` source produces this with zero diagnostics,
-/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
-/// If a specific entity's cell matters, disambiguate before calling, e.g.
-/// by searching `template.value_cells` directly for the desired
-/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
-/// walk and is subject to the identical ambiguity contract.
+/// Resolution keys on `id.member`:
+/// - A sole match is returned whatever its `id.entity`, a scoped sub/connect
+///   cell such as `Manifold.v.area` included: the own-cell preference below
+///   only breaks ties.
+/// - When several cells share the member under different entities, the
+///   template's own cell (`id.entity` equal to the template's name) wins,
+///   matching how `.ri` source names the member inside that template: the
+///   scoped override in `sub v : Vent { area = auto }` is `v.area`, so a parent
+///   `let area = ...` beside it resolves to the parent's own cell.
+/// - A tie the own cell cannot break panics naming the colliding entities
+///   (see # Panics): no colliding cell is the template's own, or more than one
+///   is. The realistic producer is two scoped sub/connect overrides of one
+///   member with no same-named parent cell — `sub v : Vent { area = auto }`
+///   beside `sub w : Vent { area = auto }` — and scoped cells are always
+///   defaultless `Auto` cells (`id.entity = "Parent.sub"`, `default_expr: None`).
+///
+/// If a specific entity's cell matters, disambiguate before calling, e.g. by
+/// searching `template.value_cells` directly for the desired full id
+/// (`vc.id == ValueCellId::new(entity, member)`). [`get_let_expr_in_template`]
+/// shares this same resolution walk and is subject to the identical contract.
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
-/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
-///   cell shares that member name, naming the colliding entities.
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if the member is
+///   ambiguous (see above), naming the colliding entities.
 #[track_caller]
 pub fn get_value_cell_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -895,16 +926,17 @@ pub fn get_value_cell_in<'a>(
 
 /// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
 /// [`get_let_expr_in_template`]: resolves `cell_name` against
-/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+/// `template.value_cells` by `id.member`.
 ///
-/// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
-/// the realistic producer of a collision and the disambiguation route.
+/// See [`get_value_cell_in`]'s rustdoc for the full resolution and ambiguity
+/// contract — which cell wins a collision, the realistic producer of one that
+/// stays ambiguous, and the disambiguation route.
 ///
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
 ///   cell matches — the panic lists the `entity.member` of every cell the template does carry.
-/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
-///   value cell shares that member name, naming the colliding `id.entity` values.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if the member is
+///   ambiguous (raised by [`resolve_member_collision`]).
 #[track_caller]
 fn lookup_value_cell<'a>(
     template: &'a TopologyTemplate,
@@ -928,14 +960,39 @@ fn lookup_value_cell<'a>(
             )
         }
         [only] => only,
-        many => {
-            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+        many => resolve_member_collision(template, cell_name, many),
+    }
+}
+
+/// Resolves a member collision among `colliding` (every cell of `template` sharing
+/// `cell_name`) to the template's own cell: the one whose `id.entity` is the template's name.
+///
+/// # Panics
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if the collision stays
+///   ambiguous (see [`get_value_cell_in`]), naming the colliding `id.entity` values.
+#[track_caller]
+fn resolve_member_collision<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+    colliding: &[&'a reify_compiler::ValueCellDecl],
+) -> &'a reify_compiler::ValueCellDecl {
+    let own: Vec<_> = colliding
+        .iter()
+        .copied()
+        .filter(|vc| vc.id.entity == template.name)
+        .collect();
+    match own.as_slice() {
+        [only_own] => only_own,
+        _ => {
+            let template_name = &template.name;
+            let colliding_count = colliding.len();
+            let entities: Vec<&str> = colliding.iter().map(|vc| vc.id.entity.as_str()).collect();
             panic!(
-                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
-                 member, under entities {entities:?}; this lookup resolves on id.member alone, \
-                 so disambiguate by searching `template.value_cells` for the desired id.entity",
-                template.name,
-                many.len()
+                "ambiguous cell name '{cell_name}' in template '{template_name}': \
+                 {colliding_count} value cells share this member, under entities {entities:?}; \
+                 the template's own entity '{template_name}' does not single one out, so \
+                 disambiguate by searching `template.value_cells` for the desired full id \
+                 (`vc.id == ValueCellId::new(entity, member)`)"
             )
         }
     }
@@ -975,8 +1032,8 @@ fn require_default_expr<'a>(
 /// # Panics
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
-/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
-///   cell shares that member name (see [`get_value_cell_in`]'s rustdoc for the hazard).
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if the member is
+///   ambiguous (see [`get_value_cell_in`]'s rustdoc for the contract).
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in_template<'a>(
@@ -998,8 +1055,8 @@ pub fn get_let_expr_in_template<'a>(
 ///   [`get_value_cell_in`]).
 /// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the cell
 ///   is absent (raised by [`get_value_cell_in`]).
-/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
-///   cell shares that member name (raised by [`get_value_cell_in`]).
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if the member is
+///   ambiguous (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in<'a>(
@@ -1036,6 +1093,41 @@ pub fn get_let_expr<'a>(
         .name
         .as_str();
     get_let_expr_in(module, template_name, name)
+}
+
+/// Retrieve the compiled function named `name` from `module`.
+///
+/// # Panics
+/// - `"no function named '{name}' in module '{module.path}'; has: [...]"` if no function has
+///   that name — the panic lists the name of every function the module does carry.
+/// - `"ambiguous function name '{name}' in module '{module.path}'"` if more than one overload
+///   shares that name, listing each overload's params.
+#[track_caller]
+pub fn get_function_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledFunction {
+    let matching: Vec<_> = module.functions.iter().filter(|f| f.name == name).collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+            panic!(
+                "no function named '{name}' in module '{}'; has: {available:?}",
+                module.path
+            )
+        }
+        [only] => only,
+        many => {
+            let params: Vec<_> = many.iter().map(|f| &f.params).collect();
+            panic!(
+                "ambiguous function name '{name}' in module '{}': {} overloads share this name, \
+                 with params {params:?}; this lookup resolves on name alone, so disambiguate by \
+                 searching `module.functions` for the desired params",
+                module.path,
+                many.len()
+            )
+        }
+    }
 }
 
 /// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
@@ -1828,6 +1920,33 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_make_engine_with_mock_kernel_surfaces_the_mock_kernels_canned_mesh() {
+        let compiled = super::parse_and_compile(
+            r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
+        );
+        let result = super::make_engine_with_mock_kernel().tessellate_realizations(&compiled);
+        let errors = super::collect_errors(&result.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "tessellating a dimensioned box must produce zero Error diagnostics; got: {errors:?}"
+        );
+        assert!(
+            !result.meshes.is_empty(),
+            "an engine with a geometry kernel must surface the `body` mesh; got none (a kernel-less engine returns empty meshes)"
+        );
+        let canned = super::mesh_aabb(&crate::mocks::minimal_valid_mesh(true));
+        for surface in &result.meshes {
+            assert_eq!(
+                super::mesh_aabb(&surface.mesh),
+                canned,
+                "surface {} must carry MockGeometryKernel's canned tetrahedron",
+                surface.entity_path
+            );
+        }
+    }
+
     /// Negative test: a constraint that is definitively false should produce
     /// `Satisfaction::Violated` under `SimpleConstraintChecker`, differentiating
     /// it from `MockConstraintChecker` (which only tracks, never really evaluates).
@@ -2549,6 +2668,24 @@ mod tests {
         super::get_value_cell_in(&module, "Bracket", "x");
     }
 
+    /// The module route to the same resolution as
+    /// `test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell`
+    /// (`get_let_expr_in` and `get_let_expr` reach it through this function): a
+    /// scoped sub cell colliding with the template's own cell resolves to the
+    /// own cell.
+    #[test]
+    fn test_get_value_cell_in_prefers_templates_own_cell_over_scoped_sub_cell() {
+        use reify_core::ValueCellId;
+
+        let module = super::compile_source(MANIFOLD_OWN_AND_SCOPED_AREA);
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+
+        let cell = super::get_value_cell_in(&module, "Manifold", "area");
+
+        assert_eq!(cell.id, ValueCellId::new("Manifold", "area"));
+        assert_eq!(cell.kind, reify_compiler::ValueCellKind::Let);
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
 
     /// get_let_expr_in_template should return the default_expr of the named
@@ -2570,6 +2707,16 @@ mod tests {
             expr.result_type
         );
     }
+
+    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
+    /// `value_cells` and a first-match resolver would pick the wrong one.
+    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
+        structure def Vent { param area : Length = 1mm }
+        structure def Manifold {
+            sub v : Vent { area = auto }
+            let area = 2mm
+        }
+    "#;
 
     /// Two value cells sharing member name "x" under different entities on
     /// one "Bracket" template — the ambiguity fixture shared by the two
@@ -2608,11 +2755,10 @@ mod tests {
     /// this layer would add coverage of the new entry point only, not of new
     /// behavior (task #5831 review).
     ///
-    /// What IS specific to this layer: `get_let_expr_in_template` matches on
-    /// `id.member` alone, so a template holding two value cells that share a
-    /// member name under different entities is unresolvable by member name
-    /// alone — there is no principled way to pick between them. This pins
-    /// that the lookup aborts rather than silently returning one of the two.
+    /// What IS specific to this layer: the ambiguity abort. This fixture's
+    /// colliding entities ("First", "Second") are neither the template's own
+    /// ("Bracket"), so the lookup must abort rather than silently return one
+    /// of the two.
     #[test]
     #[should_panic(expected = "ambiguous cell name")]
     fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
@@ -2631,35 +2777,120 @@ mod tests {
         let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
-    /// The realistic producer of a same-member collision is a scoped
-    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
-    /// None`) sitting alongside the parent's own same-named `let`/defaulted
-    /// `param` cell — real `.ri` source produces exactly this with zero
-    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
-    /// `let area = ...`. With the `sub` declared first, as below, the scoped
-    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
-    /// the ambiguity check must fire before the `default_expr` deref — not
-    /// after — or this fixture would report a missing default instead of an
-    /// ambiguity.
+    /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
+    /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
+    /// returned expression IS that cell's `default_expr`, not the scoped cell's
+    /// (which is defaultless) and not whichever cell comes first.
+    ///
+    /// The precondition pins the shape of the collision, so the test cannot
+    /// pass vacuously or by first-match resolution.
+    #[test]
+    fn test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell() {
+        use reify_core::ValueCellId;
+
+        let (template, diags) = super::compile_template(MANIFOLD_OWN_AND_SCOPED_AREA, "Manifold");
+        super::assert_no_diagnostics(&diags, "Vent/Manifold fixture");
+
+        let colliding_ids: Vec<ValueCellId> = template
+            .value_cells
+            .iter()
+            .filter(|vc| vc.id.member == "area")
+            .map(|vc| vc.id.clone())
+            .collect();
+        assert_eq!(
+            colliding_ids,
+            vec![
+                ValueCellId::new("Manifold.v", "area"),
+                ValueCellId::new("Manifold", "area"),
+            ],
+            "precondition: the scoped cell must collide with, and precede, the own cell"
+        );
+        let own_default = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id == ValueCellId::new("Manifold", "area"))
+            .expect("Manifold's own 'area' cell")
+            .default_expr
+            .as_ref()
+            .expect("Manifold's own 'area' is a `let`, so it carries a default expr");
+
+        let expr = super::get_let_expr_in_template(&template, "area");
+
+        assert!(
+            std::ptr::eq(expr, own_default),
+            "expected Manifold's own 'area' default expr, got {expr:?}"
+        );
+    }
+
+    /// With no same-named parent cell, two scoped sub `Auto` cells of one
+    /// member stay ambiguous: neither is the template's own. Both are
+    /// defaultless, so the ambiguity check must fire before the `default_expr`
+    /// deref — not after — or this fixture would report a missing default
+    /// instead of an ambiguity.
     ///
     /// The zero-diagnostics assertion below is a precondition guard: it
     /// keeps a fixture that stops compiling cleanly from being misread as
     /// this test failing to detect the ambiguity, rather than failing on the
     /// precondition with a message naming the actual diagnostics.
     #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
+    fn test_lookup_still_panics_when_no_colliding_cell_is_the_templates_own() {
         let source = r#"
             structure def Vent { param area : Length = 1mm }
             structure def Manifold {
                 sub v : Vent { area = auto }
-                let area = 2mm
+                sub w : Vent { area = auto }
             }
         "#;
         let module = super::compile_source(source);
-        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+        super::assert_no_diagnostics(&module.diagnostics, "two-subs Vent/Manifold fixture");
 
-        let _ = super::get_let_expr_in(&module, "Manifold", "area");
+        let message = panic_message(|| {
+            super::get_let_expr_in(&module, "Manifold", "area");
+        });
+
+        assert!(
+            message.contains("ambiguous cell name 'area'"),
+            "expected an ambiguity panic, got: {message}"
+        );
+        assert!(
+            message.contains("[\"Manifold.v\", \"Manifold.w\"]"),
+            "panic message should name the colliding entities, got: {message}"
+        );
+        assert!(
+            !message.contains("has no default expr"),
+            "ambiguity must be reported before the missing default, got: {message}"
+        );
+    }
+
+    /// Two cells both claiming the template's own entity (`Bracket`) stay
+    /// ambiguous: picking the first of them would be silently wrong.
+    ///
+    /// Builder-only fixture — the compiler never emits two cells with one id.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_lookup_panics_when_two_colliding_cells_claim_the_templates_own_entity() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "Bracket",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Bracket",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build();
+
+        let _ = super::get_let_expr_in_template(&template, "x");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
@@ -2800,6 +3031,72 @@ mod tests {
         let module = super::compile_source(source);
         let expr = super::get_let_expr(&module, "pi");
         assert_real_literal(expr, 1.5);
+    }
+
+    // ── get_function_in ───────────────────────────────────────────────────
+
+    const DOUBLE_TRIPLE_FNS: &str =
+        "fn double(x: Real) -> Real { x + x }\nfn triple(x: Real) -> Real { x + x + x }";
+
+    /// Looks up the second-declared fn, so a lookup that returns the first
+    /// function regardless of name is observable.
+    #[test]
+    fn test_get_function_in_returns_named_function() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let f = super::get_function_in(&module, "triple");
+        assert_eq!(f.name, "triple");
+        assert_eq!(
+            f.params,
+            vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
+        );
+    }
+
+    #[test]
+    fn test_get_function_in_missing_panic_names_module_and_lists_functions() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "quadruple");
+        });
+        for expected in [
+            "no function named 'quadruple'",
+            "fn_lookup",
+            "[\"double\", \"triple\"]",
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
+    }
+
+    /// Reify compiles same-named fns with distinct param types cleanly, so a
+    /// name-only lookup cannot pick one without silently pinning whichever
+    /// overload happens to be declared first.
+    #[test]
+    fn test_get_function_in_panics_on_overloaded_name() {
+        let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
+        let module = super::compile_source_named(source, "fn_lookup");
+        super::assert_no_diagnostics(&module.diagnostics, "overloaded convert fixture");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "convert");
+        });
+        let real_param = format!(
+            "{:?}",
+            ("x".to_string(), reify_core::Type::dimensionless_scalar())
+        );
+        let int_param = format!("{:?}", ("x".to_string(), reify_core::Type::Int));
+        for expected in [
+            "ambiguous function name 'convert'",
+            "fn_lookup",
+            "2 overloads",
+            real_param.as_str(),
+            int_param.as_str(),
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────
@@ -3055,5 +3352,39 @@ mod tests {
             "expected empty result for OptionNone; got {:?}",
             result_none
         );
+    }
+
+    /// Pinned on SYNTHETIC messages in the documented template, independently
+    /// of what the compiler emits today: if the live diagnostic diverges, the
+    /// consumers that read real messages go red while these stay green, which
+    /// says the wording moved rather than the gate breaking.
+    #[test]
+    fn named_length_argument_reads_the_argument_out_of_a_message() {
+        assert_eq!(
+            super::named_length_argument(
+                "box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"
+            ),
+            Some("size_x")
+        );
+        // A multi-word prefix must still yield the LAST token, not the first.
+        assert_eq!(
+            super::named_length_argument(
+                "linear_pattern: spacing argument expects Length, got Int"
+            ),
+            Some("spacing")
+        );
+    }
+
+    /// A message that is not a LENGTH-slot rejection yields `None` rather than
+    /// a bogus name, so a consumer never "recovers" a slot from a message it
+    /// did not actually parse — e.g. the eval layer's differently-worded
+    /// `missing or non-Length argument '<arg>' for <op>`.
+    #[test]
+    fn named_length_argument_rejects_a_message_without_the_marker() {
+        assert_eq!(
+            super::named_length_argument("missing or non-Length argument 'ox' for mirror"),
+            None
+        );
+        assert_eq!(super::named_length_argument(""), None);
     }
 }

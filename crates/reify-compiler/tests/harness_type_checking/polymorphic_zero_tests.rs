@@ -37,21 +37,10 @@
 //! `docs/notes/dimensioned-zero-coercion.md`.
 
 use reify_core::DiagnosticCode;
-use reify_test_support::{assert_no_error_diagnostics, collect_errors, compile_source_with_stdlib};
-
-/// Assert at least one error carries `code`, quoting `context` on failure.
-///
-/// Asserting the CODE, not merely "some error", matters: an unrelated future
-/// diagnostic on an unrelated line would keep a bare non-empty check green
-/// while the dimension guard rotted away. Mirrors the `assert_has_code` idiom
-/// in `comparison_operand_guard_tests.rs` (promoting the shared copy into
-/// `reify-test-support` is out of this task's file scope).
-fn assert_has_code(errors: &[&reify_core::Diagnostic], code: DiagnosticCode, context: &str) {
-    assert!(
-        errors.iter().any(|d| d.code == Some(code)),
-        "{context}: expected DiagnosticCode::{code:?}; got errors: {errors:#?}"
-    );
-}
+use reify_test_support::{
+    assert_error_code_present, assert_no_error_diagnostics, collect_errors,
+    compile_source_with_stdlib,
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Step-3 (b): comparison-position breadth
@@ -378,9 +367,8 @@ structure S {{
 }}
 "#
         ));
-        let errors = collect_errors(&compiled.diagnostics);
-        assert_has_code(
-            &errors,
+        assert_error_code_present(
+            &compiled.diagnostics,
             DiagnosticCode::DimensionMismatch,
             &format!("`mass {op} 1m` (Mass vs Length)"),
         );
@@ -438,9 +426,8 @@ structure S {
 }
 "#,
     );
-    let errors = collect_errors(&compiled.diagnostics);
-    assert_has_code(
-        &errors,
+    assert_error_code_present(
+        &compiled.diagnostics,
         DiagnosticCode::DimensionMismatch,
         "`resistivity < 0.0001` (ElectricResistivity vs dimensionless Real). If \
          this now passes cleanly, the `trait Conductive` note in \
@@ -503,9 +490,8 @@ structure S {
 }
 "#,
     );
-    let errors = collect_errors(&compiled.diagnostics);
-    assert_has_code(
-        &errors,
+    assert_error_code_present(
+        &compiled.diagnostics,
         DiagnosticCode::DimensionMismatch,
         "`material.density > 1m` (Density vs Length) — the member-access \
          dimension guard is not firing, which would make \
@@ -571,9 +557,8 @@ structure S {
 }
 "#,
     );
-    let errors = collect_errors(&compiled.diagnostics);
-    assert_has_code(
-        &errors,
+    assert_error_code_present(
+        &compiled.diagnostics,
         DiagnosticCode::DimensionMismatch,
         "`eig[0] > 1m` (MomentOfInertia vs Length) — the subscript-IndexAccess \
          dimension guard is not firing, which would make \
@@ -660,9 +645,8 @@ structure Widget : HasBody {
 }
 "#,
     );
-    let errors = collect_errors(&compiled.diagnostics);
-    assert_has_code(
-        &errors,
+    assert_error_code_present(
+        &compiled.diagnostics,
         DiagnosticCode::DimensionMismatch,
         "conformed trait-body `material.density > 1m` (Density vs Length) — \
          without this, trait_body_with_conformer_member_access_gt_zero_no_error \
@@ -720,9 +704,8 @@ structure Insulator : NonDegenerate {
 }
 "#,
     );
-    let errors = collect_errors(&compiled.diagnostics);
-    assert_has_code(
-        &errors,
+    assert_error_code_present(
+        &compiled.diagnostics,
         DiagnosticCode::DimensionMismatch,
         "conformed refining-trait `dielectric_strength > 1.0` \
          (DielectricStrength vs dimensionless Real)",

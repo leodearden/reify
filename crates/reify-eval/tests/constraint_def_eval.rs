@@ -445,6 +445,7 @@ impl ConstraintChecker for LabelEmittingChecker {
                     diagnostics: ConstraintDiagnostics {
                         messages: vec![diagnostic],
                     },
+                    indeterminate_reason: None,
                 }
             })
             .collect()
@@ -472,7 +473,7 @@ structure S {
 }
 "#;
     let compiled = parse_and_compile(source);
-    let mut engine = reify_eval::Engine::new(Box::new(LabelEmittingChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(LabelEmittingChecker), None);
     let result = engine.check(&compiled);
 
     let error_diags = error_diags(&result.diagnostics);
@@ -536,6 +537,7 @@ impl ConstraintChecker for NonEmbeddingChecker {
                 diagnostics: ConstraintDiagnostics {
                     messages: vec![Diagnostic::error("wall thickness below minimum")],
                 },
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -555,7 +557,7 @@ impl ConstraintChecker for NonEmbeddingChecker {
 #[test]
 fn non_embedding_checker_does_not_panic_on_labeled_constraint() {
     let compiled = parse_and_compile(MIN_WALL_SOURCE);
-    let mut engine = reify_eval::Engine::new(Box::new(NonEmbeddingChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(NonEmbeddingChecker), None);
     // Before the fix this panics with debug_assert! ("id format drift?").
     // After the fix it must return normally.
     let result = engine.check(&compiled);
@@ -625,7 +627,7 @@ fn drift_signal_fires_for_non_embedding_checker() {
     let debug_arc = counters[&tracing::Level::DEBUG].clone();
 
     let compiled = parse_and_compile(MIN_WALL_SOURCE);
-    let mut engine = reify_eval::Engine::new(Box::new(NonEmbeddingChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(NonEmbeddingChecker), None);
 
     tracing::subscriber::with_default(subscriber, || {
         let _ = engine.check(&compiled);

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { StatusBar } from '../panels/StatusBar';
-import type { EvaluationStatus, MeshData, ConstraintData, DiagnosticInfo } from '../types';
+import type { EvaluationStatus, MeshData, ConstraintData, ConstraintStatus, DiagnosticInfo } from '../types';
 
 function makeMesh(entityPath: string, numTriangles: number): MeshData {
   return {
@@ -12,7 +12,7 @@ function makeMesh(entityPath: string, numTriangles: number): MeshData {
   };
 }
 
-function makeConstraint(nodeId: string, status: string): ConstraintData {
+function makeConstraint(nodeId: string, status: ConstraintStatus): ConstraintData {
   return {
     node_id: nodeId,
     expression: 'x > 0',

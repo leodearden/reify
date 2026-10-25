@@ -244,11 +244,10 @@ fn middot_density_and_acceleration_lower_like_star_twins() {
 /// coverage via `thermal_conductivity_paren_unwrapped`; before this test the `·`
 /// spelling had none at any layer.
 ///
-/// It matters more than the `*` twin because the operator is not a field on the
-/// node — `lower_unit_expr` reads it as the SOURCE SLICE between the two operands
-/// (`source[left.end_byte()..right.start_byte()]`) and, since #5784, matches that
-/// slice EXACTLY rather than by `contains('*')`.  A paren moves the operand
-/// boundaries, so this is precisely where an exact-match read could go wrong.
+/// `lower_unit_expr` reads the operator from the CST `op` node, which is kind `*`
+/// for both spellings (`grammar.js` aliases the scanner token).  This pins that a
+/// paren group on either side of the `·` leaves that node, and so the `Mul`, in
+/// place.
 #[test]
 fn middot_with_parenthesised_operand_lowers_like_star_twin() {
     // `·` to the LEFT of the group: 5W·(m/K) → Mul(W, Div(m, K))
@@ -270,7 +269,7 @@ fn middot_with_parenthesised_operand_lowers_like_star_twin() {
 // This is the assertion that distinguishes "correct" from "silently dropped", and
 // it is the reason leaf κ is not just a one-token scanner edit.  Widening the
 // scanner alone makes the CST CLEAN while `lower_unit_expr` still fails to
-// recognise the `·` operator slice and returns `None`; that `None` propagates
+// recognise the `·` operator and returns `None`; that `None` propagates
 // through `lower_quantity_literal` and `lower_let` as a DROPPED member, and
 // `check_and_lower!` never fires because it keys off `is_error()`/`has_error()` on
 // a CST that no longer has an error.  The result is a structure with ZERO members
@@ -438,25 +437,19 @@ fn digit_after_middot_is_a_parse_error() {
 
 // ── Comments inside a unit expression ────────────────────────────────────────
 //
-// #5784 amendment pass.  Comments are parser `extras`, so one written between a
-// `unit_expr`'s operands lands INSIDE the source slice `lower_unit_expr` cuts out
-// to recover the operator (the `op` field aliases hidden external tokens, so the
-// slice is the only way to read it).  Measured — every source below parses with
-// `has_error() == false` and yields `unit_expr(left, block_comment…, right)`:
+// Comments are parser `extras`, so one written between a `unit_expr`'s operands
+// parses clean (`has_error() == false`) as a SIBLING of the `op` node:
 //
-//   5N/*c*/*m        slice `/*c*/*`         5N/*c*/·m   slice `/*c*/·`
-//   5N/*c*//m        slice `/*c*//`         5N/*a*//*b*/*m   slice `/*a*//*b*/*`
+//   5N/*c*/*m   →   unit_expr(left, block_comment, op `*`, right)
 //
-// The contract has moved twice.  Before κ, `op_text.contains('/')` lowered
-// `/*c*/*` to `Div` — a well-typed WRONG value from a clean parse, the INV-SF-7
-// `parse-is-value-faithful` shape exactly.  κ's exact match made it
-// `Unrecognized`, which was loud but rejected source the GRAMMAR ACCEPTED.  This
-// pass excises the comment spans first, so the residue classifies as the operator
-// the CST plainly shows and the lowered tree agrees with the parse.
+// `lower_unit_expr` reads the operator from the `op` node's kind, and that node
+// never contains a comment, so a commented expression must lower exactly like its
+// comment-free twin.  Provenance: the comment-strip pass that resolved #6952 first
+// fixed the value, by cutting comments out of a source-slice read of the
+// operator; reading the CST `op` node replaced that pass.
 //
 // A `line_comment` was never observed inside a `unit_expr` (`//…` ends the line,
-// and `5N//c⏎*m` reparses as a `binary_expression`), so it is not pinned here —
-// only `strip_unit_op_comments`' filter accepts the kind, defensively.
+// and `5N//c⏎*m` reparses as a `binary_expression`), so it is not pinned here.
 
 #[test]
 fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
@@ -469,15 +462,13 @@ fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
         ("5N/*c*/*m/*d*/*s", "5N*m*s"),
         // The right operand may still be a `Pow`.
         ("5N/*c*/*m^2", "5N*m^2"),
-        // PARENS × COMMENT — the intersection of the two risks this file pins
-        // separately.  `middot_with_parenthesised_operand_lowers_like_star_twin`
-        // above explains that a paren moves the operand BOUNDARIES, which is
-        // where an exact-match read of the slice could go wrong; the excision
-        // path is what recovers a slice that is not just the operator.  Only
-        // together do they exercise both at once — and `5(m)/*c*/*(s)` is the
-        // MEASURED case `lower_unit_expr`'s own comment cites as motivating.
+        // PARENS × COMMENT: a paren group on either side of a commented
+        // operator.  `5(m)/*c*/*(s)` is the #6952 witness.
         ("5(m)/*c*/*(s)", "5(m)*(s)"),
         ("5W/*c*/*(m/K)", "5W*(m/K)"),
+        // A comment INSIDE the left paren group: the one shape whose comment
+        // attaches below the outer `unit_expr` rather than beside its operator.
+        ("5(m/*c*/)*s", "5(m)*s"),
     ] {
         assert_eq!(
             unit_of(commented),
@@ -486,6 +477,20 @@ fn comment_between_unit_operands_lowers_like_its_comment_free_twin() {
              same UnitExpr as `{plain}` — a comment is an `extra`, not an operator"
         );
     }
+}
+
+/// The task's done-when witnesses, pinned to EXPLICIT trees: a twin equality alone
+/// stays green if both twins regress the same way.
+#[test]
+fn done_when_witnesses_lower_to_their_explicit_trees() {
+    assert_eq!(unit_of("5(m)/*c*/*(s)"), mul(bare("m"), bare("s")));
+    assert_eq!(unit_of("5(m)/*c*/*(s)"), unit_of("5(m)*(s)"));
+    assert_eq!(
+        unit_of("5N·m/rad"),
+        div(mul(bare("N"), bare("m")), bare("rad"))
+    );
+    assert_eq!(unit_of("5kg*m"), mul(bare("kg"), bare("m")));
+    assert_eq!(unit_of("5m/s"), div(bare("m"), bare("s")));
 }
 
 #[test]
@@ -498,6 +503,7 @@ fn comment_between_unit_operands_keeps_the_member_and_stays_diagnostic_free() {
         "structure def S { let x = 5N/*c*/*m }",
         "structure def S { let x = 5N/*c*/·m }",
         "structure def S { let x = 5N/*a*//*b*/*m }",
+        "structure def S { let q = 5(m)/*c*/*(s) }",
     ] {
         let (decls, members, errors) = parse_shape(source);
         assert!(
@@ -516,9 +522,9 @@ fn comment_between_unit_operands_keeps_the_member_and_stays_diagnostic_free() {
 
 #[test]
 fn comment_after_a_middot_is_still_a_parse_error() {
-    // The comment excision must not widen what the SCANNER accepts: `·` still
-    // requires a unit-start character immediately after it, and a comment is not
-    // one.  Measured: `5N·/*c*/m` yields `(ERROR … (UNEXPECTED 183))`, so this
-    // never reaches `classify_unit_op` at all.
+    // Accepting a comment BETWEEN operands does not widen what the SCANNER
+    // accepts: `·` still requires a unit-start character immediately after it,
+    // and a comment is not one.  Measured: `5N·/*c*/m` yields
+    // `(ERROR … (UNEXPECTED 183))`.
     assert_loud_middot_parse_error("structure def S { let x = 5N·/*c*/m }");
 }

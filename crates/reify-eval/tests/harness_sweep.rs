@@ -5,6 +5,8 @@
 //! unit to cut the merge-gate link count. Layout-only — no `#[test]` fn added or removed.
 //! Each former file is included as a stem-named module (explicit `#[path]`, required at a
 //! crate root) so its `<file>::<test>` module path resolves unchanged.
+#[path = "harness_sweep/capstan_copies_lockstep.rs"]
+mod capstan_copies_lockstep;
 #[path = "harness_sweep/capstan_groove_e2e.rs"]
 mod capstan_groove_e2e;
 #[path = "harness_sweep/design_fixture.rs"]
@@ -13,11 +15,15 @@ mod design_fixture;
 mod helix_sweep_e2e;
 #[path = "harness_sweep/idler_seat_e2e.rs"]
 mod idler_seat_e2e;
+#[path = "harness_sweep/loft_e2e.rs"]
+mod loft_e2e;
 #[path = "harness_sweep/sweep_api_smoke.rs"]
 mod sweep_api_smoke;
 #[path = "harness_sweep/sweep_e2e.rs"]
 mod sweep_e2e;
 #[path = "harness_sweep/sweep_guided_e2e.rs"]
 mod sweep_guided_e2e;
+#[path = "harness_sweep/sweep_pose_guard_e2e.rs"]
+mod sweep_pose_guard_e2e;
 #[path = "harness_sweep/swept_kind_classifier_e2e.rs"]
 mod swept_kind_classifier_e2e;

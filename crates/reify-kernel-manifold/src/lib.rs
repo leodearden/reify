@@ -25,10 +25,10 @@
 //!   `Some(self)`, opting Manifold into native attribute propagation through
 //!   the engine-side `reify_eval::propagate_via_kernel_attribute_hook`
 //!   dispatcher.
-//! - [`reify_types::KernelAttributeHook::propagate_attributes`] stays a
-//!   `Discarded`-with-WARN stub until persistent-naming-v2 PRD task 9 lands
-//!   the real `MeshGL` walk over `originalID` / `faceID` / merge vectors.
-//!   The trait surface is stable across that swap; only the body changes.
+//! - [`reify_types::KernelAttributeHook::propagate_attributes`] walks the
+//!   result's `MeshGL64` provenance (`originalID` / `faceID` runs) and
+//!   returns `Propagated`; see the impl rustdoc in `kernel.rs` for the
+//!   degenerate `Discarded` path.
 //! - Fidget / OpenVDB structurally inherit the
 //!   [`reify_types::GeometryKernel::attribute_hook`] `None` default and
 //!   therefore fall through to computed selectors per the PRD contract — no
@@ -39,13 +39,12 @@
 //! `crates/reify-kernel-occt/src/register.rs` — OCCT's registration pattern.
 //! `crates/reify-test-support/src/mocks.rs:889` — `FailingMockGeometryKernel`.
 //!
-//! # Manifold-face = mesh triangle (semantic gap)
+//! # Manifold faces are coalesced planar faces
 //!
-//! Topology selectors enumerate **mesh triangles/edges**, not BRep patches:
-//! `faces(mesh_box)` yields 12 sub-handles vs a BRep box's 6, and
-//! `adjacent_faces` / `shared_edges` index triangles. See the "Manifold
-//! mesh-face vs BRep-face semantic gap" section of the [`queries`] module doc
-//! (and PRD Open Question §10.5).
+//! `extract_faces` yields one sub-handle per coalesced planar face (6 for a
+//! box, matching a BRep box), and `AdjacentFaces` / `SharedEdges` index those
+//! faces and `extract_edges`' canonical mesh edges. See the "Manifold face
+//! semantics" section of the [`queries`] module doc.
 
 pub mod kernel;
 pub mod provenance;

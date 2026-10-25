@@ -2130,40 +2130,42 @@ impl EngineSession {
         out
     }
 
-    /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
+    /// Create a new EngineSession with the given solver posture, constraint
+    /// checker and optional geometry kernel.
     pub fn new(
+        posture: reify_eval::SolverPosture,
         checker: Box<dyn ConstraintChecker>,
         kernel: Option<Box<dyn GeometryKernel>>,
     ) -> Self {
-        Self::from_engine(Engine::new(checker, kernel))
+        Self::from_engine(Engine::new(posture, checker, kernel))
     }
 
     /// Create a new EngineSession using the inventory-based kernel registry.
     ///
-    /// This is the production-binary boot path. Reads the static
-    /// linker-collected set of [`reify_types::KernelRegistration`] records once
-    /// at construction, picks the lexicographically smallest entry, and
-    /// instantiates the geometry kernel via its registered factory — mirroring
-    /// [`Engine::with_registered_kernel`]'s contract exactly.
-    ///
-    /// When no kernel adapter has submitted a registration (stub-mode build,
-    /// `cfg(has_occt)` off), the underlying engine receives `None` as the
-    /// geometry kernel, matching `Engine::new(checker, None)` semantics.
+    /// This is the production-binary boot path. The engine holds:
+    /// - the single-pick default kernel of [`Engine::with_registered_kernel`]:
+    ///   its lex-min BRep-capable adapter, else its lex-min adapter of any
+    ///   kind, and `None` only when nothing is registered;
+    /// - the OpenVDB adapter via [`Engine::ensure_openvdb_kernel`], when it is
+    ///   registered, so plans that name openvdb (an `isosurface`) realize;
+    /// - the production solver (below).
     ///
     /// Unit tests that require a mock or failing kernel should continue to
-    /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
+    /// use `EngineSession::new(posture, checker, Some(Box::new(MockGeometryKernel::new())))` —
     /// the kernel-injection seam is preserved for that use-case.
     ///
     /// ## Production solver
     ///
-    /// The production solver set (`SolverRegistry::production()`: DimensionalSolver +
-    /// geometric SolveSpaceSolver) is installed here — the only place where the
-    /// documented production-binary boot path runs.  Deliberately NOT installed in
-    /// the shared `from_engine`/`EngineSession::new` path so that `new`-based unit
-    /// tests keep `solver = None` and are unperturbed.
+    /// The engine is constructed `SolverPosture::Solve(ResolutionProfile::FRESH)`,
+    /// which wires the production solver set (`SolverRegistry::production()`:
+    /// DimensionalSolver + geometric SolveSpaceSolver). `EngineSession::new` takes
+    /// its posture from the caller instead, so `new`-based unit tests name theirs.
     pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
-        let engine = Engine::with_registered_kernel(checker)
-            .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        let mut engine = Engine::with_registered_kernel(
+            reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            checker,
+        );
+        engine.ensure_openvdb_kernel();
         Self::from_engine(engine)
     }
 
@@ -4797,6 +4799,7 @@ impl EngineSession {
 
         // Phase 4: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
         let mut preview_engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(reify_constraints::SimpleConstraintChecker),
             None, // no geometry kernel — preview is values + constraints only
         );
@@ -5113,6 +5116,29 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Read a bare `Value::Int`/`Value::Real` held by a cell whose declared type
+/// is dimensioned as the `Value::Scalar` reify-eval's dimension wildcard makes
+/// of it: the number IS the canonical SI magnitude. Why such a value reaches a
+/// dimensioned cell at all: [`parse_value_string_for_cell`]'s doc. Every other
+/// value, and any value in an undimensioned cell, is returned as-is.
+fn value_as_declared(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> std::borrow::Cow<'_, Value> {
+    use std::borrow::Cow;
+    match (val, declared) {
+        (Value::Int(i), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *i as f64,
+            dimension,
+        }),
+        (Value::Real(r), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *r,
+            dimension,
+        }),
+        _ => Cow::Borrowed(val),
+    }
+}
+
 /// Format the four display fields a `ValueData` cell derives directly from its
 /// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
 /// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
@@ -5124,7 +5150,16 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
 /// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
 /// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
 /// exactly as `format_value` renders the value itself.
-fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+///
+/// `declared` is the cell's [`declared_scalar_dimension`]. A bare Int/Real in
+/// a declared-dimensioned cell is formatted as that dimension's SI magnitude
+/// (see [`value_as_declared`]), so the badge survives a bare-number edit.
+fn format_determined_cell(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> (String, String, Option<f64>, String) {
+    let val = value_as_declared(val, declared);
+    let val = val.as_ref();
     let (value, unit) = format_value(val);
     let (si_value, dim) = match display_scalar(val) {
         Some((s, d)) => (Some(s), Some(d)),
@@ -5132,6 +5167,20 @@ fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) 
     };
     let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
     (value, unit, si_value, dimension)
+}
+
+/// Every value cell of `module`, keyed by id, with its
+/// [`declared_scalar_dimension`] — one pass, so a caller formatting many cells
+/// pays one lookup per cell rather than a scan of every template.
+fn declared_dimension_index(
+    module: &CompiledModule,
+) -> HashMap<&ValueCellId, Option<DimensionVector>> {
+    module
+        .templates
+        .iter()
+        .flat_map(|t| &t.value_cells)
+        .map(|vc| (&vc.id, declared_scalar_dimension(&vc.cell_type)))
+        .collect()
 }
 
 fn build_values(
@@ -5143,7 +5192,13 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
+            let declared = declared_scalar_dimension(&cell.cell_type);
+            let (formatted_value, unit, si_value, dimension) =
+                format_determined_cell(&val, declared);
+            let declared_dimension = declared
+                .and_then(|d| d.canonical_name())
+                .unwrap_or("")
+                .to_string();
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -5166,12 +5221,13 @@ fn build_values(
             // the GUI displays the last good number, NOT the current
             // un-recomputed one (arch §8 prune-safety scenario 3 — "the displayed
             // number equals the last good value"). Computed ONLY for Pending
-            // cells; final/intermediate/failed cells carry `None`. Formatted via
-            // `format_value(..).0` (value part only), matching `value` above.
+            // cells; final/intermediate/failed cells carry `None`. Read through
+            // `value_as_declared` and formatted via `format_value(..).0` (value
+            // part only), matching `value` above.
             let last_substantive_value = if freshness == "pending" {
                 engine.and_then(|e| {
                     e.last_substantive_value(&NodeId::Value(cell.id.clone()))
-                        .map(|v| format_value(&v).0)
+                        .map(|v| format_value(&value_as_declared(&v, declared)).0)
                 })
             } else {
                 None
@@ -5212,6 +5268,7 @@ fn build_values(
                 last_substantive_value,
                 dimension,
                 si_value,
+                declared_dimension,
             });
         }
     }
@@ -5446,6 +5503,10 @@ fn surface_geometry_derived_cells(
     // tracked-pattern comment, since the curator assigns the task id asynchronously
     // and a cite must resolve to a live task to be valid.
     let mut dispatched_entities: Option<HashSet<String>> = None;
+    // Task #6962: the declared dimension each surfaced cell is formatted under,
+    // built LAZILY on the first surfaced cell for the same reason as
+    // `dispatched_entities`.
+    let mut declared_dimensions: Option<HashMap<&ValueCellId, Option<DimensionVector>>> = None;
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -5494,7 +5555,12 @@ fn surface_geometry_derived_cells(
                 }
             }
         };
-        let (value, unit, si_value, dimension) = format_determined_cell(&val);
+        let declared = declared_dimensions
+            .get_or_insert_with(|| declared_dimension_index(module))
+            .get(&id)
+            .copied()
+            .flatten();
+        let (value, unit, si_value, dimension) = format_determined_cell(&val, declared);
         cell.value = value;
         cell.unit = unit;
         cell.determinacy = format_determinacy(DeterminacyState::Determined);
@@ -6298,11 +6364,9 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
         "coupling" => JointBinding::CouplingDerived {
             source_joint: String::new(), // source detection deferred to ζ work
         },
-        "prismatic" | "revolute" => JointBinding::LiteralBound {
-            synth_param_name: format!("__joint_{joint_index}_v"),
-            initial_value_si: None,
-            scrubbable: true,
-        },
+        "prismatic" | "revolute" => {
+            JointBinding::literal_bound(format!("__joint_{joint_index}_v"), None)
+        }
         _ => JointBinding::FixedNoMotion, // conservative default for unknown kinds
     };
 
@@ -6594,11 +6658,10 @@ fn resolve_driving_params_from_ast(
                             // Refine the binding to LiteralBound using the joint cell name
                             // (not the index-based default) — first-wins guard.
                             if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
-                                jd.binding = JointBinding::LiteralBound {
-                                    synth_param_name: format!("__joint_{joint_cell_name}_v"),
+                                jd.binding = JointBinding::literal_bound(
+                                    format!("__joint_{joint_cell_name}_v"),
                                     initial_value_si,
-                                    scrubbable: true,
-                                };
+                                );
                             }
                         }
                     }
@@ -8011,6 +8074,23 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
     ty
 }
 
+/// The dimension a cell's DECLARED type requires of a supplied value: its
+/// [`unwrap_optional`] type, if that is a non-dimensionless `Type::Scalar`.
+///
+/// The one definition of "a dimensioned cell" — consumed by the bare-number
+/// gate in [`parse_value_string_for_cell`], by `build_values`'
+/// `ValueData.declared_dimension`, and by [`format_determined_cell`]'s reading
+/// of a bare number — so the panel's input gate and the backend's agree by
+/// construction (task #6962).
+/// `!is_dimensionless()` is explicit so a `param x : Real` (compiled to
+/// `Scalar { DIMENSIONLESS }`) is never treated as dimensioned.
+pub(crate) fn declared_scalar_dimension(cell_type: &reify_core::Type) -> Option<DimensionVector> {
+    match unwrap_optional(cell_type) {
+        reify_core::Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
+        _ => None,
+    }
+}
+
 /// Parse a value string for a SPECIFIC declared cell type (task #5757).
 ///
 /// The one thing the context-free [`parse_value_string`] cannot do: **refuse a
@@ -8041,8 +8121,12 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///
 /// Each conjunct, and what pins it:
 ///
-///   * `unwrap_optional` first, so an `Option<Length>` cell is gated like a
-///     `Length` one — `parse_value_string_for_cell_gates_through_an_option_wrapper`;
+///   * [`declared_scalar_dimension`] — the cell's declared, `Option`-peeled,
+///     non-dimensionless dimension, the same fact the panel's gate reads as
+///     `ValueData.declared_dimension`. An `Option<Length>` cell is gated like a
+///     `Length` one (`parse_value_string_for_cell_gates_through_an_option_wrapper`),
+///     and a `param x : Real` (`Scalar { DIMENSIONLESS }`) stays ungated even if
+///     a dimensionless quantity ever gains a curated ladder;
 ///   * only `Value::Int` / `Value::Real` are refused; every other variant falls
 ///     through to reify-eval's own `TypeKindMismatch` / `DimensionMismatch`,
 ///     notably `Value::Bool`, whose message an existing test depends on;
@@ -8051,12 +8135,7 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///     both ungated for the same reason, pinned together by
 ///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`
 ///     because keying on `canonical_name().is_some()` would read as an
-///     equivalent refactor and split them;
-///   * `!dimension.is_dimensionless()` is explicit even though every covered
-///     dimension is non-dimensionless by construction, so a future curated
-///     ladder for a dimensionless quantity cannot silently start gating every
-///     ratio slider. `param x : Real` compiles to
-///     `Type::Scalar { DIMENSIONLESS }` and falls on the permissive side.
+///     equivalent refactor and split them.
 ///
 /// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it can
 /// only name a rung this index parses — pinned across every curated ladder by
@@ -8080,10 +8159,9 @@ pub(crate) fn parse_value_string_for_cell(
     let s = s.trim();
     let value = parse_value_string(s)?;
 
-    if let reify_core::Type::Scalar { dimension } = unwrap_optional(cell_type)
-        && !dimension.is_dimensionless()
+    if let Some(dimension) = declared_scalar_dimension(cell_type)
         && matches!(value, Value::Int(_) | Value::Real(_))
-        && let Some((expected, rung)) = dimension_requires_unit(dimension)
+        && let Some((expected, rung)) = dimension_requires_unit(&dimension)
     {
         return Err(format!(
             "expects {expected}, got the bare number '{s}'; pass a dimensioned \
@@ -8254,56 +8332,35 @@ fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
 /// rename within one directory is atomic, so every reader sees the whole old
 /// file or the whole new one and that failure mode does not exist.
 ///
-/// Four details that are load-bearing rather than incidental:
+/// Contract:
 ///
-/// * **Symlinks are followed, not replaced.** `rename(2)` does NOT follow a
-///   symlink at its destination, so renaming straight over `path` would DELETE
-///   a symlinked `.ri` and leave a regular file in its place, while the file
-///   the link pointed at kept the pre-edit content forever — and the caller's
-///   divergence guard could not notice, because `fs::read_to_string` follows
-///   the link and would keep comparing against the (matching) target's bytes.
-///   `path` is therefore resolved through [`std::fs::canonicalize`] first and
-///   the write goes to the RESOLVED file, matching the write-through behaviour
-///   a plain `fs::write` would have had. A path that cannot be canonicalized
-///   (it does not exist yet, say) falls back to itself unchanged.
-/// * **Same directory.** `rename` is only atomic within a filesystem, so the
-///   temp lives beside the resolved target — not in `/tmp`, and not beside the
-///   symlink when those differ.
-/// * **`.tmp` suffix, plus pid AND a process-local sequence number.** The GUI's
-///   watcher filters on the `.ri` extension (`watcher.rs`), so a `.tmp` sibling
-///   never reads as a design file appearing in the project. The pid keeps two
-///   PROCESSES writing the same design off one temp path, and the sequence
-///   number does the same for two `EngineSession`s inside ONE process, which
-///   share a pid. The rename itself DOES fire a watch event for the resolved
-///   path — the watcher accepts `Modify(_)`, which covers inotify's
-///   rename-into-place — so hot reload still works; through a symlink the event
-///   lands on the target's directory rather than the link's, which the
-///   authoritative in-process recompile (D7) already covers.
-/// * **Permissions are carried over** from the file being replaced, so a
-///   design the user made read-only-for-group (or otherwise chmod'd) does not
-///   silently come back with the process umask's mode. Best-effort: a
-///   permission read/write failure is not worth failing the edit over.
-///
-/// The temp is removed on every failure path, so a failed write leaves no
-/// litter next to the user's design.
-///
-/// Contents are `sync_all`ed before the rename, and the containing DIRECTORY is
-/// synced after it, so the replacement survives a power loss rather than merely
-/// being atomic against concurrent readers. The directory sync is best-effort:
-/// not every filesystem permits opening a directory for sync, and a design edit
-/// that already reached the page cache is not worth failing over one.
+/// * **Symlinks are followed, not replaced.** `rename(2)` does not follow a
+///   symlink at its destination, so renaming over `path` would replace a
+///   symlinked `.ri` with a regular file and leave the link's target stale —
+///   invisibly to the caller's divergence guard, which reads through the link.
+///   `path` is resolved through [`std::fs::canonicalize`] and the write goes to
+///   the RESOLVED file; a path that cannot be resolved is used as given.
+/// * **The temp is a sibling of the resolved target** (rename is only atomic
+///   within one filesystem), named `<file>.<random>.tmp` and created
+///   exclusively, so no two writers ever share one. Its extension is never
+///   `ri`, so the GUI's watcher (`watcher.rs`) never mistakes it for a design;
+///   the rename itself still fires a `Modify` event for the target, so hot
+///   reload keeps working.
+/// * **The replaced file's permissions are carried over**, best-effort, onto
+///   the open temp. A fresh temp is created `0o600`, so without this every
+///   write-back would narrow the design's mode, not merely drop a user's chmod.
+/// * **No litter on failure.** `NamedTempFile`'s `Drop` removes the temp on
+///   every error path. It cannot after a SIGKILL between creating the temp and
+///   the rename (no destructor runs) — the same residual
+///   `reify_eval::persistent_cache::write_entry` documents.
+/// * **Durable.** Contents and mode are synced before the rename; the
+///   directory is synced after it, best-effort (not every filesystem permits
+///   it, and an edit already in the page cache is not worth failing over).
+/// * **It fails before the rename or not at all.** The caller's rollback relies
+///   on this: an `Err` means the design on disk is untouched.
 fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Disambiguates temp paths between two `EngineSession`s in ONE process,
-    /// which the pid alone cannot: they would otherwise race on the same name
-    /// and one would `create`-truncate the other's half-written temp.
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    // See the doc comment: rename(2) would otherwise destroy a symlinked `.ri`
-    // and orphan its target. Fall back to `path` when it cannot be resolved —
-    // there is then no link to follow and nothing this can improve on.
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     let file_name = target.file_name().ok_or_else(|| {
@@ -8312,55 +8369,37 @@ fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
             "path has no file name to write",
         )
     })?;
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp_path = target.with_file_name(tmp_name);
-
-    let write_and_rename = || -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp_path)?;
-        file.write_all(content.as_bytes())?;
-        // Order the contents before the rename: a rename that lands while the
-        // data is still only in the page cache would publish an empty or
-        // partial file to a reader that crosses the same crash.
-        file.sync_all()?;
-        drop(file);
-
-        // Best-effort mode preservation — see the doc comment. Deliberately
-        // ignores errors: failing an otherwise-good edit because a mode could
-        // not be copied would be the wrong trade.
-        if let Ok(meta) = std::fs::metadata(&target)
-            && meta.is_file()
-        {
-            let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
-        }
-
-        std::fs::rename(&tmp_path, &target)?;
-
-        // Durability, not atomicity: the rename is already atomic against a
-        // concurrent reader, but the DIRECTORY entry it rewrote can still be
-        // lost to a power cut until the directory itself is synced. Mirrors
-        // `reify_eval::persistent_cache::write_entry`. Best-effort by design —
-        // see the doc comment.
-        if let Some(parent) = target.parent()
-            && let Ok(dir) = std::fs::File::open(parent)
-        {
-            let _ = dir.sync_all();
-        }
-        Ok(())
+    // One directory for both the temp and the post-rename sync: a relative
+    // fallback path like `part.ri` has an EMPTY parent, which `File::open`
+    // cannot open.
+    let dir = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     };
 
-    let result = write_and_rename();
-    if result.is_err() {
-        // The rename is what consumes the temp, so any failure before it (or a
-        // failed rename itself) leaves the temp behind. Remove it rather than
-        // littering the user's project directory with one file per failure.
-        let _ = std::fs::remove_file(&tmp_path);
+    let mut prefix = file_name.to_os_string();
+    prefix.push(".");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    tmp.write_all(content.as_bytes())?;
+
+    // An fchmod on the open fd: unlike `Builder::permissions`, it is not
+    // filtered by the umask, and it lands before the sync below.
+    if let Ok(meta) = std::fs::metadata(&target)
+        && meta.is_file()
+    {
+        let _ = tmp.as_file().set_permissions(meta.permissions());
     }
-    result
+    tmp.as_file().sync_all()?;
+
+    tmp.persist(&target).map_err(|e| e.error)?;
+
+    if let Ok(dir_handle) = std::fs::File::open(dir) {
+        let _ = dir_handle.sync_all();
+    }
+    Ok(())
 }
 
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).

@@ -1,6 +1,6 @@
 # PRD: reify-audit PTODO detector — TODO-tracking-invariant enforcement
 
-**Status:** active — F-infra (audit cadence + tracking infrastructure), version-agnostic.
+**Status:** active — F-infra (audit cadence + tracking infrastructure), version-agnostic; gap-fill 2026-10-16: §20 (statuses through the task API, S24 ε #8811).
 **Date:** 2026-06-11. Phase C of the 2026-06-11 two-track audit (Leo-ratified).
 **Approach:** B + contract (citation grammar + violation taxonomy are normative; see §8/§9).
 
@@ -360,6 +360,25 @@ lanes DB-present on the main checkout and FILES healing tasks; the §6.6 ratchet
 DB-absent everywhere, the main checkout included, because the default path above resolves
 there and silently turned the hook-gated main-commit ratchet DB-present (§19 finding 2).
 
+**Amendment (task #7787) — the opt-in hard-require and the on-demand `*_live` gates; ruling:
+§19 (b)/(c).** `reify-audit --require-tasks-db` is the one deliberate exception to this
+section's fail-soft, for the caller that needs the DB-backed lanes to have run: the
+dark-factory 5796 cadenced sweep. It resolves the path through `ptodo::tasks_db_path`, so
+`REIFY_PTODO_TASKS_DB` is honoured identically. It is enforced on the run's own outcome: when
+PTODO reports its DB-backed lanes degraded (`ScanStats.tasks_db == Absent`), whether the path
+is missing or holds a file that opens but is not a tasks DB, the run exits **255** naming the
+resolved path and emits no findings array. A path that cannot be opened at all is refused the
+same way before any detector runs. "Never exit 125 for DB absence" still holds: 255 is not 125
+and lies outside the 1–254 High-count band. The flag guards the PTODO lanes only, so a run set
+without PTODO (`--pre-done`, or a `--pattern` that omits it) rejects it as an argument conflict
+(125) rather than accepting a requirement it cannot check. Without the flag nothing changes.
+`g_allow_repo_wide_hard_gate_live` and `engine_seam_g_allow_owner_cites_resolve_live_real_db`
+are now `#[ignore]`d on-demand checks (run with `--ignored`, `REIFY_PTODO_TASKS_DB` at the
+main checkout's DB). They fail loud on a DB they cannot read rather than skipping, and their
+hermetic siblings are the always-on assertions.
+
+**Amendment 2026-10-16 (§20).** The liveness, inverse and G-allow lanes and PDCHECK read task statuses through the task API (the bin's fused-memory client, one `get_statuses` per run), not `.taskmaster/tasks/tasks.db`; `REIFY_PTODO_TASKS_DB` is retired. The fail-soft and `--require-tasks-db` semantics above are unchanged in meaning; §20 is the single home for the change.
+
 ### 6.8 Allowlist — **path-prefix + inline escape; `.md` excluded entirely**
 
 Swept files: tracked files with extensions `.rs .ri .sh .py .ts .tsx .js` (~1900 of
@@ -468,6 +487,51 @@ noise — it resolves through the unchanged liveness lane to a **High `orphaned`
 and hard-fails the merge gate. Do not "simplify" this to a lowercased `contains` sweep;
 that reintroduces guard 1's class wholesale and walks back into the §14 regime.
 
+- **Owner-position prose cites (lane δ-C, task #7098; `//`-comment languages `.rs` `.ri`
+  `.ts` `.tsx` `.js`):** a trimmed line starting `//` (so `//`, `///` and `//!` alike) that
+  is not a `// G-allow:` marker body and carries at least one cite in **owner position**.
+  Cite forms: canonical `#NNNN` (§8.2, PRD-relative register excluded) and the legacy prose
+  spelling `task N` / `task-N` / `task_N` / `tasks N` (case-insensitive, word-bounded on both
+  sides, 1–5 digits, `N > 99`; §8.2). Each cite **occurrence** is classified on its own and
+  defaults to **provenance**. It is owner-position iff one of three rules holds:
+  - **(L) owner phrase on its left.** Strip trailing whitespace, then an optional `task(s)`
+    token, then an optional `(`; the text before the cite must then end with a phrase from
+    the closed lexicon `owned by` · `tracked by` · `tracked in` · `tracked under` ·
+    `deferred to` · `blocked on` · `pending` · `awaiting` · `waiting on` · `waits on`
+    (ASCII-case-insensitive). The byte before the phrase must be the line start, whitespace,
+    `(` or `/`. Alternatively, the last four words are the future passive
+    `will|to be <word> by|in|under`.
+  - **(R) future subject.** The cite, past one optional `)`, is followed by ` will` as a
+    whole word.
+  - **(S) landing clause.** The cite, past one optional `)`, is followed by ` land` /
+    ` lands` as a whole word, AND a whole-word `until` · `when` · `once` · `after` ·
+    `before` sits in its clause with at most four words between it and the cite (words are
+    runs of ASCII alphanumerics and `_`). The clause is the text since the last `.` `;` `:`
+    `!` `?` that is followed by whitespace. The four-word reach is §21's 2026-10-21 row.
+
+  The payload is `Cited(owner ids)` only, deduped. Through δ-C, a provenance cite on the same
+  line never reaches liveness: `introduced by #4578; growth owned by #7097` resolves #7097
+  alone.
+
+  Precedence: the lane is **appended last** (arm 8, after δ-B). Every earlier lane therefore
+  keeps its lines, and a δ-B line keeps δ-B's payload: ALL its canonical cites, provenance
+  included. So, unless δ-B claims the line (`.rs` only), the provenance exclusion holds; when
+  it does, the verdict depends on the extension. `// introduced by #2330; wiring is blocked
+  on task #2947` resolves both ids in a `.rs` file and #2947 alone in a `.ri` file (pinned by
+  `scan_file_delta_c_precedence`). The `ptodo:allow` escape wins, as everywhere.
+
+  Out of scope: trailing comments after code, `#`-comment languages (`.sh`/`.py`) and
+  JSDoc ` * ` continuation lines.
+
+  Phrase matching is case-INSENSITIVE, unlike δ-A/δ-B's guard 1, for two measured reasons.
+  The sentence-initial claims `Owned by #N` / `Deferred to #N` are genuine. And guard 1's
+  `Pending`-enum-variant class never sits immediately before a cite. The left-context
+  whitelist rejects identifiers, member paths, quotes and compounds by construction
+  (`mark_pending #N`, `self.pending #N`, `"blocked on #N"`).
+
+  The grammar lives in `crates/reify-audit/src/ptodo_promise.rs`. Measurements, false-positive
+  sites and the declined widenings are in §21.
+
 ### 8.2 Citation resolution
 
 A marker is **cited** iff a `#NNNN` token (`#` + 1–5 digits) appears: (comment
@@ -570,12 +634,27 @@ that applies to every widening — a fresh live-corpus enumeration, a hand-inspe
 and a dated §16 row — not by a one-line edit to the recogniser. `crates/reify-audit/src/
 ptodo.rs`'s `prd_relative_cite` rustdoc points here rather than restating it.
 
+**The legacy `task NNNN` spelling anchors liveness in lane δ-C only (task #7098).**
+
+- *Marker lanes: unchanged.* In a TODO marker the spelling is a citation DEFECT, because
+  CLAUDE.md mandates `#NNNN`. Those lanes keep reporting it as `malformed-cite`, through
+  `has_malformed_cite`'s pass 2, byte-unchanged.
+- *Why δ-C resolves it.* In ordinary prose no such mandate applies. The defect δ-C hunts, a
+  terminal owner, does not depend on the spelling: 37 of the 53 lines δ-C's live run would
+  report spell their owner this way (§21).
+- *The bound is shared.* δ-C reads the spelling through its own span recogniser,
+  `legacy_task_cite_occurrences`, under the SAME `N ≤ 99` bound as the PRD-relative
+  register. So `deferred to task 10` is no cite, just as `task #10` is not.
+- *Two contracts, two recognisers.* Pass 2 recognises a citation *attempt*: any digit, no
+  right boundary, no length cap. The δ-C scanner extracts a *resolvable* id: word-bounded
+  on both sides, 1–5 digits.
+
 ### 8.3 Violation taxonomy (finding `kind` values)
 
 | Kind | Trigger | Lane |
 |---|---|---|
 | `untracked` | marker with no citation, excluding `#[ignore]` reasons with no blocker-prose (see below); includes a δ-A allow-rationale that defers with no cite | structural |
-| `malformed-cite` | Greek-letter or PRD-relative cite ("task-5", "task δ", "task #5"), or legacy form ("task NNNN") — the `#N` spelling only in the `task(s) #N` register, never a bare `§7#5` / `invariant #2` document reference (§8.2) | structural |
+| `malformed-cite` | Greek-letter or PRD-relative cite ("task-5", "task δ", "task #5"), or legacy form ("task NNNN") on a marker lane — the `#N` spelling only in the `task(s) #N` register, never a bare `§7#5` / `invariant #2` document reference (§8.2). Lane δ-C resolves the legacy form instead (§8.2) | structural |
 | `phantom-tracking` | prose claims: "tracked separately", "tracked as a follow-up", "tracked in project memory", "follow-up task will" (case-insensitive) without a cite | structural |
 | `bare-ignore` | `#[ignore]` with no reason string | structural |
 | `unknown-id` | cite parses but id not in the task DB | liveness |
@@ -614,6 +693,20 @@ is not. That is exactly why §6.6's "seed the baseline with the task DB present"
 load-bearing for δ-B in a way it was not for δ-A — a δ-B lane seeded from a worktree run
 looks green locally and goes red on `main`.
 
+**Lane δ-C adds NO new kind, and no structural kind (task #7098).** It has the same shape as
+δ-B. It hands its owner-position ids to the **unchanged** liveness lane (→ `orphaned` /
+`unknown-id` / `parked-on-anchor`) and emits nothing of its own. `VALID_KINDS` /
+`STRUCTURAL_KINDS`, the §6.6 fingerprint grammar, `ptodo-baseline-gen` and the §8.4 severity
+map are all untouched. Under §19(a) the per-merge ratchet runs DB-absent, where the lane
+contributes nothing. It therefore adds **zero** baseline entries and cannot red a commit
+gate. Its real-tree findings are §19(b) sweep candidates (§21).
+
+**A discharged phantom-tracking line adds NO new kind (task #6816).** A `phantom-tracking`
+phrase on a line that ALSO carries a canonical `#NNNN` cite is discharged: it emits no
+structural kind and hands its on-line cites to the **unchanged** liveness lane (→ `orphaned` /
+`unknown-id` / `parked-on-anchor`), exactly as the comment-marker lane does. A `// G-allow:`
+line is left to its own lane. Ruling: §19(d).
+
 *Known divergence:* the `#[ignore]` γ lane has no `malformed-cite` branch — its reason
 policy is cite-first-then-blocker-prose and is byte-frozen (changing it would reclassify
 existing `#[ignore]` findings and perturb the §6.6 baseline). That is recorded here as a
@@ -633,6 +726,9 @@ As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
 `tests/infra` PTODO check hard-fails verify). `unknown-id` stays **Medium** (a
 DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
 advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
+
+Exit **255** is `--require-tasks-db`'s refusal when the PTODO lanes cannot use the task DB
+(§6.7 amendment, task #7787); it never collides with the High count, which is capped at 254.
 
 **Correction — the exit code is not the real-tree gate; the §6.6 ratchet is
 (2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous).** *This paragraph is
@@ -1433,6 +1529,8 @@ did not consider; §18.1 (set-equality is not a drain forcing function) still st
 not contradicted here. This section is the single home for the ruling; §6.6, §6.7 and §18
 carry pointers.
 
+**Amendment 2026-10-16 (§20).** The cadenced sweep's DB-dependent kinds now read statuses through the task API, not tasks.db; the split (structural per merge, liveness in the sweep) and the refusal semantics stand.
+
 **The question.** The ratchet drifts along three axes, and each had a task or an escalation
 treating it alone: (1) *live-but-not-in-baseline* — the oracle's own direction, caught per
 merge; (2) *baseline-but-no-longer-live* — uncaught, proposed by task #7001, declined by §18;
@@ -1520,7 +1618,7 @@ once #7001 empties the baseline; #7398 is rewritten as the **last manual** heali
 
 **(c) Liveness never reds a commit gate — corollary for the `*_live` cargo gates.** The
 main-checkout hard gates `g_allow_repo_wide_hard_gate_live` and
-`engine_seam_g_allow_cites_resolve_live_real_db` graceful-skip without a DB and therefore
+`engine_seam_g_allow_owner_cites_resolve_live_real_db` graceful-skip without a DB and therefore
 fire only on the hook-gated commit path (#7787's structural-defect analysis). Owner: reify
 **#7787**, extended — once 5796 owns liveness, those tests become on-demand (`#[ignore]`,
 run by the sweep or by hand), keeping their hermetic siblings as the always-on assertions.
@@ -1547,3 +1645,142 @@ Under (a) the baseline diff is empty; the six lines simply become sweep candidat
   reach on that entry must be stated in the seed commit.
 - The sweep's healing-task rate exceeds what the backlog absorbs: then the question is the
   citation convention (CLAUDE.md → TODO citation convention), not the ratchet.
+
+## 20. Gap-fill amendments (2026-10-16)
+
+- **K9-D9 B — the liveness status source becomes the task API** (`plans/gap-fill-deliberation-reify-20261016.md` §K9-D9, Leo 2026-10-16; finding fk-3dc9e2858c24, review-reify-20261015). PTODO's liveness, inverse and G-allow lanes and PDCHECK read task statuses through the bin's fused-memory client (one `get_statuses` call per run). S24 ε #8811 builds the status-source handle (`task_rows::StatusSource`) with D10's `Unavailable`/`DbUse` degradation; the sqlite open, `ptodo::tasks_db_path`/`open_tasks_db` and `REIFY_PTODO_TASKS_DB` are deleted.
+  - §6.7: "the task DB is absent / unreadable" now reads "statuses are unavailable" (fused-memory unreachable, or a `get_statuses` failure). The fail-soft breadcrumb, structural-lane behaviour and "never exit 125" are unchanged. The `REIFY_PTODO_TASKS_DB` path override and the `<repo-root>/.taskmaster/tasks/tasks.db` default are retired; task worktrees degrade because the lanes run DB-absent by construction (§6.6 forces it), not because the file is untracked.
+  - §19: `--require-tasks-db` keeps its meaning — refuse (exit 255) when statuses are unavailable — under the same or a renamed flag; a rename also changes the dark-factory 5796 sweep invocation. Liveness still never reds a commit gate, and the merge-gate ratchet stays DB-absent and hermetic.
+  - The `*_live` on-demand checks (`g_allow_repo_wide_hard_gate_live`, `engine_seam_g_allow_owner_cites_resolve_live_real_db`) read statuses the same way.
+  - CLAUDE.md §Memory & tasks is unchanged; the rule ("never reach around that API to tasks.db") now holds without exception.
+
+## 21. Assessment 2026-10-11 (task #7098): lane δ-C — owner-position prose cites ADOPTED
+
+**Premise.** A prose promise outside the marker grammar escaped every gate. The worked case
+is `modal_analysis.ri`'s `Part` block, which promised growth while citing #4578 for about
+11 weeks after #4578 closed. δ-B reaches none of the common shapes of this class: it is
+`.rs`-only, anchors only on canonical `#NNNN`, and keys on deferral prose. δ-C widens §8.1
+(grammar there), so this row is the evidence §16's standing rule demands.
+
+### Method (re-runnable)
+
+1. Build a synthetic all-terminal DB with the hermetic tests' schema:
+   ```sh
+   LD_LIBRARY_PATH="" sqlite3 alldone.db "CREATE TABLE tasks (tag TEXT NOT NULL DEFAULT 'master', id INTEGER NOT NULL, title TEXT, status TEXT NOT NULL, metadata TEXT, PRIMARY KEY (tag, id)); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 99999) INSERT INTO tasks(tag,id,status) SELECT 'master', i, 'done' FROM n;"
+   ```
+2. Run the release binary of the branch AND of its merge-base (`75944da60c`) over the same
+   tree, each as follows. Every `Cited` line of every lane then reports `orphaned`.
+   ```sh
+   REIFY_PTODO_TASKS_DB=alldone.db reify-audit --pattern PTODO --no-jcodemunch --project-root . --tasks-file <file holding []> --runs-db <empty file>
+   ```
+3. δ-C's population is the set of `orphaned` findings (path + summary) present in the branch
+   run and absent from the base run. Diff in BOTH directions: base − branch must be empty,
+   because appending last means no earlier lane loses a line.
+4. Resolve the population's owner ids through `get_statuses`, never a raw read of
+   `tasks.db`. A line *would fire* when all of its owner ids are terminal or absent.
+5. Hand-inspect every would-fire line.
+
+### Measurements (2026-10-11, branch tip `a65a789922` over main `75944da60c`; real detector)
+
+| Measure | Value |
+|---|---|
+| Tracked `//`-language files (`.rs .ri .ts .tsx .js`, `crates/reify-audit/` excluded) | 3251 |
+| Full-line `//` comment lines carrying a cite (Python approximation; denominator only) | ≈17,000 — `.rs` 15,328 · `.ri` 1,222 · TS/JS 507 |
+| All-terminal-DB findings, base → branch | 87 → 185; base − branch = **0** |
+| δ-C population (branch − base) | **98 lines**, one owner id each — 81 `.rs`, 17 `.ri`, **0** TS/JS; 61 canonical, 37 legacy spelling |
+| Distinct owner ids (real statuses) | 64 — 34 `done`, 2 `cancelled`, 23 `pending`, 4 `deferred`, 1 absent |
+| **Would fire** | **53** — 52 `orphaned` (High) + 1 `unknown-id` (Medium); 48 `.rs`, 5 `.ri`; 37 of 53 legacy spelling |
+| Hand-inspected: true positive (an outstanding-work claim naming a terminal or absent owner) | **45** — 11 are one idiom, `deferred to task 3477/3558` |
+| Hand-inspected: stale-tense conditional (`after`/`when #N lands`, true as written) | **4** |
+| Hand-inspected: false positive (the cite is in no owner role) | **4** |
+| FP rate | **4/53 ≈ 7.5%** strict; 8/53 ≈ 15% if the stale-tense conditionals count as FPs |
+
+The architect's pre-measurement used a Python approximation of the same grammar and found
+96 lines / 52 would-fire / ≈2 FPs. Its two FP sites are the first two rows below; the
+quoted contract and the PRD-local range are the two this run adds.
+
+**False positives, by line text, with the prescribed disposition** (order of preference
+as in §16's narrated-non-deferral block):
+
+| File | Line text | Class | Disposition |
+|---|---|---|---|
+| `crates/reify-cli/tests/fixtures/transform_exp_dimensionless_angular.ri` | `// angular classifier, and the linear convention is owned by #6126, not this` | descriptive scope attribution | 2 — re-word (`belongs to #6126's scope`) |
+| `crates/reify-compiler/tests/harness_mechanics/trajectory_stdlib_compile.rs` | `/// was deliberately split out of task 4577 — deferred to task 4122), so this` | past-tense narration (rule L is tense-blind) | 1 — truth-correct: #4122 is done, so state whether `LocationId = Real` still holds |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs` | `/// test's own contract ("update intentionally when task 4584 lands nominal` | quotes a contract that has already been discharged | 2 — paraphrase in past tense; 3 (`ptodo:allow`) only if the verbatim quote is worth keeping |
+| `crates/reify-mesh-morph/src/lib.rs` | `… Returns Err(MorphFailure::SolverError(...)) until PRD tasks #5–#9 land the engine` | PRD-local index: the range end `#9` falls outside §8.2's `task(s) #N` register | 1 — re-word without a bare `#N` (`PRD tasks 5–9`), and truth-correct the row if the engine has landed. Per §19, this becomes a §8.2 question only if it recurs |
+
+**Stale-tense conditionals** — the text is true as written, but the tense went stale when
+the task landed. Disposition 2 (re-word to past tense):
+`modal_options_validation_tests.rs` `… must produce ZERO Error-severity diagnostics after task 4584 lands.`;
+`crates/reify-eval/tests/forall_runtime_re_elaboration.rs` `… after task 2690 lands the Connect arm.`;
+`crates/reify-test-support/src/temp_dirs.rs` `This is the exact case that fires when #5639 lands and`;
+`gui/src-tauri/src/debug_server.rs` `// after engine wiring (PRD #2947-#2949) lands and production code paths`.
+
+### Forgone recall (architect's Python approximation, same corpus)
+
+| Out-of-grammar region | Sites | Note |
+|---|---|---|
+| Owner phrase and cite split across a line wrap | 9 | The grammar is per-line by design, like every lane (one entry per line) |
+| JSDoc ` * ` continuation lines | 0 | |
+| `#`-comment languages (`.sh` / `.py`) | 1 | Their `//`-prefixed lines are heredoc-embedded fixture data with fake ids, so the lane gates on `SweptLang` |
+| Trailing `//` after code | 9 | All 9 are already owned by δ-A |
+
+### Widenings measured and declined (architect's approximation; §16's standing rule governs any revival)
+
+| Widening | Measured | Why declined |
+|---|---|---|
+| Bare `until #N` as an L phrase | ≈110 cited lines; ≈17 of the terminal ones are past-tense narration (`was a second override until task 4168`, `until #6890 renamed it`) | §16's narrated-non-deferral class, at scale |
+| `#N lands` with no subordinator | 3 of 11 such `lands` hits are commit-style narration (`Task #6082 lands x.rs here`) | Rule S requires a subordinator |
+| Subordinator + any present-tense verb (`until task 2691 wires`) | ≈+25 lines; one measured FP (`… task 5623) comes`) | Needs a tense heuristic — §14's unbounded-vocabulary problem |
+| Trailing parenthetical cite on a future clause (`… grown in a later task (task N)`) | 18 hits, ≈4 FP (≈22%) | Above δ-B's 0% bar |
+| `owns` | ≈50/50 descriptive (`the one section task #6047 owns`) vs promissory | Coin-flip precision |
+| Uncited `a later / future task` | 40 occurrences, est. 40–50% FP | Would be a STRUCTURAL kind, i.e. visible to the merge gate |
+
+**What v1 would not have caught: the worked case itself.** The pre-#7103 `modal_analysis.ri`
+lines (removed in `aace08a598`) fall outside the grammar on both counts:
+
+- the promise was uncited: `will be grown … in a later task`;
+- every cite was provenance-shaped: `(task 4578, per …`, `cite task 4578`.
+
+Both shapes are declined widenings above. `docs/legibility/design-invariants.md` therefore
+SPLITS its census row rather than flipping it to gated. Owner-form promises are enforced
+(shipped). Promises outside the grammar stay convention-only, measured and declined here.
+
+**§19 posture.**
+
+- δ-C adds **zero** `ptodo-baseline.txt` entries: the ratchet runs DB-absent, where the lane
+  is silent.
+- The 53-line real-tree cohort belongs to dark-factory 5796's cadenced sweep (§19(b)). It is
+  never a merge-gate red. This task rewords no flagged source line, FPs included; the table
+  above is the healing tasks' brief.
+- The hermetic signal is infra scenario (h) in `tests/infra/test_reify_audit_ptodo.sh`: a
+  committed fixture plus a seeded DB makes `reify-audit` exit non-zero.
+
+**Revisit condition.**
+
+- **Precision of the healing record.** If the §19(b) healing tasks on this cohort show
+  a false-positive share well above this row's 7.5–15%, re-measure per rule (L / R / S)
+  and narrow whichever rule carries the excess.
+- **Recurring PRD-local range FP.** If the `#5–#9` shape recurs, take it to §8.2.
+- **Any widening.** A widening of `OWNER_PHRASES`, `SUBORDINATORS` or the cite forms arrives
+  with a fresh enumeration, a hand-inspected FP count and a dated row here — including a row
+  when the answer is no.
+
+### Narrowing 2026-10-21 (task #7098 review): rule (S) gets a four-word reach
+
+Rule (S) used to accept a subordinator ANYWHERE in the cite's clause, and a comma or dash
+does not break a clause. So a subordinator that governs some other verb also qualified:
+`// when the cache is cold the fallback in #4578 lands first` made #4578 an owner. The
+subordinator now has to sit within four words before the cite (`SUBORDINATOR_REACH`).
+
+Measured on the 2026-10-21 tree with the §21 method's file set, using a Python
+approximation of rule (S) with the PRD-relative filter off (so this is an upper bound):
+
+- 24 full-line `//` comment lines have a cite followed by ` land(s)` with a subordinator in
+  its clause.
+- Words between the subordinator and the cite: 0 on 20 lines; 1 on `until KCC-ζ (task 3845)
+  lands`; 2 on the PRD-relative `When PRD task #7 lands`; 3 on the PRD-relative
+  `until PRD tasks #5–#9 land`; 4 on `after engine wiring (PRD #2947-#2949) lands`.
+
+Effect: the bound drops **zero** measured lines, so §21's 53 / 45 / 4 / 4 counts stand. It
+is prospective FP control. Widening the reach falls under the "Any widening" rule above.

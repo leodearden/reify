@@ -3,8 +3,7 @@
 //! Task 2017: teach `Engine::eval()` to consult `self.param_overrides` for
 //! Param cells (with the same validation `edit_param` performs) so the CLI
 //! can drop its shadow `user_overrides` Vec and `reapply_user_overrides()`
-//! helper. These tests drive the engine-side refactor; the value-level CLI
-//! tests in `crates/reify-cli/src/mcp_context.rs` lock the outward behavior.
+//! helper. These tests drive the engine-side refactor.
 
 use reify_compiler::CompiledModule;
 use reify_core::{DimensionVector, Severity, ValueCellId};
@@ -18,7 +17,7 @@ use reify_test_support::parse_and_compile;
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.
 fn fresh_engine() -> Engine {
-    Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[])
 }
 
 /// Convenience: parse + compile a single-structure source string via the

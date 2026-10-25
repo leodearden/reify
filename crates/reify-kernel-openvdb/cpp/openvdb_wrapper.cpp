@@ -13,6 +13,8 @@
 #include <openvdb/io/File.h>
 #include <openvdb/Grid.h>
 
+#include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -100,6 +102,93 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
 
     if (!grid) {
         throw std::runtime_error("mesh_to_volume_ffi: meshToVolume returned null grid");
+    }
+
+    return std::make_unique<OpenVdbGridHandle>(std::move(grid));
+}
+
+// ---------------------------------------------------------------------------
+// Dense SDF → level set
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<OpenVdbGridHandle> dense_sdf_to_level_set_ffi(
+    rust::Slice<const float> data,
+    std::array<uint32_t, 3> dims,
+    std::array<double, 3> origin,
+    double voxel_size,
+    double band_half_width)
+{
+    ensure_initialized_cpp_side();
+
+    // Backstops: the Rust DenseSdfGrid / ImplicitOptions constructors already
+    // enforce all of these except the voxel budget, which they leave to the
+    // caller; a violation here would otherwise be an out-of-bounds read or an
+    // unbounded allocation.
+    const int64_t nx = dims[0];
+    const int64_t ny = dims[1];
+    const int64_t nz = dims[2];
+    if (nx == 0 || ny == 0 || nz == 0) {
+        throw std::runtime_error(
+            "dense_sdf_to_level_set_ffi: every axis needs at least one voxel; dims = (" +
+            std::to_string(nx) + ", " + std::to_string(ny) + ", " + std::to_string(nz) + ")");
+    }
+    if (!std::isfinite(voxel_size) || voxel_size <= 0.0) {
+        throw std::runtime_error(
+            "dense_sdf_to_level_set_ffi: voxel_size must be finite and > 0; got " +
+            std::to_string(voxel_size));
+    }
+    const float bg = static_cast<float>(band_half_width);
+    if (!std::isfinite(band_half_width) || !std::isfinite(bg) || bg <= 0.0f) {
+        throw std::runtime_error(
+            "dense_sdf_to_level_set_ffi: band_half_width must be finite and > 0 as f32; got " +
+            std::to_string(band_half_width));
+    }
+    if (!std::isfinite(origin[0]) || !std::isfinite(origin[1]) || !std::isfinite(origin[2])) {
+        throw std::runtime_error("dense_sdf_to_level_set_ffi: origin must be finite");
+    }
+    if (nx > GRID_DENSIFY_MAX_VOXELS / ny || nx * ny > GRID_DENSIFY_MAX_VOXELS / nz) {
+        throw std::runtime_error(
+            "dense_sdf_to_level_set_ffi: grid too large: (" + std::to_string(nx) + ", " +
+            std::to_string(ny) + ", " + std::to_string(nz) + ") exceeds budget " +
+            std::to_string(GRID_DENSIFY_MAX_VOXELS));
+    }
+    const int64_t total_voxels = nx * ny * nz;
+    if (static_cast<uint64_t>(total_voxels) != static_cast<uint64_t>(data.size())) {
+        throw std::runtime_error(
+            "dense_sdf_to_level_set_ffi: data holds " + std::to_string(data.size()) +
+            " samples but dims imply " + std::to_string(total_voxels));
+    }
+
+    // Every attribute is set on the fresh grid before it is wrapped and
+    // registered, so no registered grid is ever mutated (Sync audit, I-6).
+    auto grid = openvdb::FloatGrid::create(bg);
+    auto xform = openvdb::math::Transform::createLinearTransform(voxel_size);
+    xform->postTranslate(openvdb::Vec3d(origin[0], origin[1], origin[2]));
+    grid->setTransform(xform);
+    grid->setGridClass(openvdb::GRID_LEVEL_SET);
+    grid->setName("reify_implicit_sdf");
+    grid->insertMeta("units", openvdb::StringMetadata("m"));
+
+    // D-8 activation policy: setValueOn activates every voxel of the block,
+    // including those clamped to the background. copyFromDense (which leaves
+    // background-valued voxels inactive), prune and signedFloodFill are
+    // deliberately not used.
+    auto acc = grid->getAccessor();
+    for (int64_t ix = 0; ix < nx; ++ix) {
+        for (int64_t iy = 0; iy < ny; ++iy) {
+            for (int64_t iz = 0; iz < nz; ++iz) {
+                const float v = data[static_cast<size_t>((ix * ny + iy) * nz + iz)];
+                if (!std::isfinite(v)) {
+                    throw std::runtime_error(
+                        "dense_sdf_to_level_set_ffi: non-finite sample at (" +
+                        std::to_string(ix) + ", " + std::to_string(iy) + ", " +
+                        std::to_string(iz) + ")");
+                }
+                acc.setValueOn(
+                    openvdb::Coord(static_cast<int>(ix), static_cast<int>(iy), static_cast<int>(iz)),
+                    std::clamp(v, -bg, bg));
+            }
+        }
     }
 
     return std::make_unique<OpenVdbGridHandle>(std::move(grid));
@@ -417,6 +506,18 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h) {
     }
 
     return buf;
+}
+
+// ---------------------------------------------------------------------------
+// TBB parallelism limit (test-fixtures scope only)
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi() {
+    return std::make_unique<TbbParallelismLimit>();
+}
+
+size_t tbb_max_allowed_parallelism_ffi() {
+    return tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism);
 }
 
 } // namespace reify_openvdb

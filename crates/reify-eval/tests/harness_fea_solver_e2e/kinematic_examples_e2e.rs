@@ -297,7 +297,7 @@ fn dock_pickup_build_with_occt_resolves_clearance() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
+        reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
     let result = engine.build(compiled, ExportFormat::Step);
 
     // pairs must be an empty list (no collisions at home position).
@@ -370,7 +370,7 @@ fn dock_pickup_clearance_sweep() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
+        reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
     let result = engine.build(compiled, ExportFormat::Step);
 
     // Look up the swept clearances cell.

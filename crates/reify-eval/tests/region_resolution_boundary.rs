@@ -146,6 +146,7 @@ fn assert_cell_undef(build: &BuildResult, entity: &str, member: &str) {
 fn build_occt(compiled: &CompiledModule) -> BuildResult {
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(kernel)),
     );
@@ -171,13 +172,13 @@ fn build_manifold_stl(compiled: &CompiledModule) -> BuildResult {
         "manifold_capability_descriptor() must declare at least one capability \
          (linker anchor sanity check — if empty, Manifold registration is broken)"
     );
-    let mut engine = Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+    let mut engine = Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker));
     engine.build(compiled, ExportFormat::Stl)
 }
 
 /// Evaluate `compiled` kernel-free (no geometry kernel, symbolic result).
 fn eval_kernel_free(compiled: &CompiledModule) -> EvalResult {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     engine.eval(compiled)
 }
 
@@ -446,6 +447,7 @@ fn fail_closed_predicate_over_volume_mesh_produces_qns_error_and_undef() {
 
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(kernel)),
     );
@@ -580,6 +582,7 @@ fn selector_eval_vs_build_content_hash_equal() {
     let build_hash = {
         let kernel = MockGeometryKernel::new();
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(kernel)),
         );

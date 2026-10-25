@@ -317,9 +317,11 @@ fn audit_reports_stale_expected_indeterminate() {
 // ── corpus_files: flat corpus discovery (steps 5/6) ──────────────────────────
 
 /// Absolute path to `examples/best_practices/`, resolved at compile time from
-/// this crate's manifest directory (two levels up) — matches
-/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
-/// `EXAMPLES_DIR` and both sibling gates' `corpus_files`.
+/// this crate's manifest directory (two levels up) — the same corpus root as
+/// `reify_test_support::examples_corpus::examples_dir()` (the shared root
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// now walks), narrowed to the `best_practices/` subdirectory, and matching
+/// both sibling gates' `corpus_files`.
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
@@ -478,11 +480,11 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
         "discrete_choice.ri",
         0,
         "`constraint side * side == 1` — `DiscreteChoice.side` (an `auto(free)` param) is \
-         undefined on this check surface. discrete_choice.ri:49-60 documents the sharp \
-         edge: the solved root is only approximately +-1 (-0.9999999999999973, not \
-         -1.0), and `==` is exact float equality — accepted at solve time by the \
-         solver's own residual tolerance, which is why `reify eval` resolves this \
-         constraint cleanly even though this check surface cannot.",
+         undefined on this check surface. The SHARP EDGE paragraph of discrete_choice.ri \
+         documents it: the solved root is only approximately +-1 (-0.9999999999999973, \
+         not -1.0), and `==` on Real operands is toleranced, which is why `reify eval` \
+         (solver-wired) resolves this constraint cleanly even though this check surface \
+         cannot.",
     ),
 ];
 

@@ -4441,14 +4441,14 @@
         };
         CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
-            args: vec![arg("width"), arg("height"), arg("depth")],
+            args: vec![arg("size_x"), arg("size_y"), arg("size_z")],
         }
     }
 
     /// Contract C1's THREE-STATE mapping at every `box` length slot, asserted
     /// through `compile_geometry_op` — the sole IR-build funnel (contract C2).
     ///
-    /// Each of `width` / `height` / `depth` is exercised independently, so a
+    /// Each of `size_x` / `size_y` / `size_z` is exercised independently, so a
     /// gate applied to only one slot cannot pass this test.
     ///
     /// (i)  ACCEPTED — a LENGTH `Scalar` yields `Ok`, and the stored
@@ -4464,7 +4464,7 @@
     ///      well-meaning "but zero has no units" patch to carve out, and
     ///      carving it out reopens the hazard for `box(0, 0, 0)`.
     /// (iii) UNDEFINED — `Value::Undef` yields `Err` whose message is the
-    ///      EXISTING distinct `"argument 'width' for box is unresolved (Undef)"`
+    ///      EXISTING distinct `"argument 'size_x' for box is unresolved (Undef)"`
     ///      wording, NOT the "missing or non-Length" text, and pushes NO
     ///      rejection diagnostic (D10 / INV-SF-1: loud at the chokepoint, quiet
     ///      at `accept_arg`). During solver iteration an Undef cell is expected
@@ -4478,7 +4478,7 @@
     fn compile_geometry_op_box_length_slots_follow_the_three_state_contract() {
         let values = ValueMap::new();
 
-        for slot in ["width", "height", "depth"] {
+        for slot in ["size_x", "size_y", "size_z"] {
             // (i) ACCEPTED.
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
@@ -4493,17 +4493,17 @@
             let op = result
                 .unwrap_or_else(|e| panic!("{slot}: a LENGTH Scalar must be accepted, got: {e}"));
             let reify_ir::GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } = op
             else {
                 panic!("{slot}: expected GeometryOp::Box, got {op:?}");
             };
             let stored = match slot {
-                "width" => width,
-                "height" => height,
-                _ => depth,
+                "size_x" => size_x,
+                "size_y" => size_y,
+                _ => size_z,
             };
             assert_eq!(
                 stored,
@@ -7586,13 +7586,13 @@
         let step_handles: Vec<GeometryHandleId> = vec![];
         let values = ValueMap::new();
 
-        // Box with height and depth present, but 'width' deliberately omitted
+        // Box with size_y and size_z present, but 'size_x' deliberately omitted
         let op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
-                // width deliberately omitted
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
+                // size_x deliberately omitted
             ],
         };
 
@@ -7613,11 +7613,11 @@
             "compile_geometry_op should return None when a required arg is missing"
         );
 
-        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        // Exactly one diagnostic warning should have been emitted for the missing 'size_x'
         assert_eq!(
             diagnostics.len(),
             1,
-            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            "expected exactly one diagnostic for missing 'size_x', got: {:?}",
             diagnostics
         );
         assert_eq!(
@@ -7626,8 +7626,8 @@
             "expected Warning severity"
         );
         assert!(
-            diagnostics[0].message.contains("width"),
-            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message.contains("size_x"),
+            "diagnostic message should mention 'size_x', got: {}",
             diagnostics[0].message
         );
         assert!(
@@ -7701,9 +7701,9 @@
         let box_op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("width".into(), literal_length(0.10)),
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
+                ("size_x".into(), literal_length(0.10)),
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
             ],
         };
 
@@ -7791,6 +7791,43 @@
         }
     }
 
+    /// Compile `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare
+    /// direction, returning the eval-boundary result and its diagnostics.
+    ///
+    /// A Literal 3rd arg is not a ValueRef, so `resolve_parent_geometry_handle_arg`
+    /// returns None and the dispatch takes the direction-decode path.
+    fn compile_offset_curve_with_direction(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                (
+                    "third".into(),
+                    reify_ir::CompiledExpr::literal(
+                        bare_real_vector3(x, y, z),
+                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                    ),
+                ),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &ValueMap::new(),
+            &[GeometryHandleId(10)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
     /// (b) 3-arg `offset_curve(curve, distance, vec3(0,0,1))` — the 3rd arg is a
     /// `Value::Vector` → `direction: Some([0,0,1])`, `reference: None` (overload 3).
     ///
@@ -7798,40 +7835,7 @@
     /// `direction: None`.
     #[test]
     fn compile_geometry_op_offset_curve_3arg_vector_is_direction() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        // A literal vec3(0,0,1). resolve_parent_geometry_handle_arg returns None
-        // for a Literal (not a ValueRef), so the dispatch falls through to the
-        // direction-decode path; point3_components reads the 3 components.
-        let dir_expr = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-        );
-
-        let op = CompiledGeometryOp::Modify {
-            kind: reify_compiler::ModifyKind::OffsetCurve,
-            target: reify_compiler::GeomRef::Step(0),
-            args: vec![
-                ("distance".into(), literal_length(0.002)),
-                ("third".into(), dir_expr),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
+        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve {
                 reference,
@@ -7912,6 +7916,68 @@
             }
             other => panic!("expected Ok(OffsetCurve) with reference, got {:?}", other),
         }
+    }
+
+    /// A zero-magnitude offset_curve direction is rejected at the eval boundary
+    /// with an error naming the builtin, rather than reaching the kernel.
+    #[test]
+    fn compile_geometry_op_offset_curve_zero_direction_is_rejected() {
+        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 0.0);
+        match result {
+            Err(msg) => {
+                assert!(
+                    msg.contains("offset_curve"),
+                    "error must name offset_curve: {msg}"
+                );
+                assert!(
+                    msg.contains("zero-magnitude"),
+                    "error must attribute the failure to the direction: {msg}"
+                );
+            }
+            Ok(op) => panic!("expected Err for a zero direction, got Ok({op:?})"),
+        }
+    }
+
+    /// Assert `result` lowered to an `OffsetCurve` with no reference and a
+    /// direction within 1e-12 of `expected` in every component.
+    fn assert_offset_curve_direction(
+        result: Result<reify_ir::GeometryOp, String>,
+        expected: [f64; 3],
+    ) {
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                reference,
+                direction: Some(d),
+                ..
+            }) => {
+                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
+                for (axis, (got, want)) in d.iter().zip(expected).enumerate() {
+                    assert!(
+                        (got - want).abs() < 1e-12,
+                        "direction component {axis}: got {got}, want {want} (full {d:?})"
+                    );
+                }
+            }
+            other => panic!("expected Ok(OffsetCurve) with a direction, got {other:?}"),
+        }
+    }
+
+    /// A non-unit offset_curve direction is lowered as its unit vector, so the
+    /// IR is canonical for every magnitude of the same direction.
+    #[test]
+    fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
+        let (result, _) = compile_offset_curve_with_direction(3.0, 0.0, 4.0);
+        assert_offset_curve_direction(result, [0.6, 0.0, 0.8]);
+    }
+
+    /// A tiny but non-zero direction is a direction, not a degenerate one: it is
+    /// normalised, like an axis or plane direction. Its magnitude (1e-9) sits
+    /// above `GEOMETRY_EPSILON` but below the kernel's 1e-7 length tolerance,
+    /// which is the wrong kind of bound for a dimensionless vector.
+    #[test]
+    fn compile_geometry_op_offset_curve_tiny_direction_is_normalised_not_rejected() {
+        let (result, _) = compile_offset_curve_with_direction(1e-9, 0.0, 0.0);
+        assert_offset_curve_direction(result, [1.0, 0.0, 0.0]);
     }
 
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
@@ -22541,18 +22607,13 @@
     // Step-5 RED: these tests compile but FAIL until step-6 adds the
     // "curvature" → TopologySelectorHelper::Curvature arm to the dispatcher.
     // Modelled on the `normal` tests above (lines ~10006-10319).
-
-    // DimensionVector for curvature = 1/Length = Length^-1.
-    // Constructed directly (from_exps is private); index-0 is the LENGTH basis.
-    const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
-        let mut d = [reify_core::dimension::Rational::ZERO; 10];
-        d[0] = reify_core::dimension::Rational::new(-1, 1);
-        reify_core::dimension::DimensionVector(d)
-    };
+    // The next two tests are the production-tag drift pin (task #6179): each fails
+    // if a dispatch site tags anything other than `DimensionVector::CURVATURE`.
 
     /// `curvature(surface, point)` with a fake kernel staging a 2×2 nested-List
     /// [[kappa_max, 0], [0, kappa_min]] must yield `Some(Value::Matrix(...))` where
-    /// every cell is a `Value::Scalar` with dimension = 1/Length (Curvature), and
+    /// every cell is a `Value::Scalar` with dimension `DimensionVector::CURVATURE`
+    /// (rad·m⁻¹), and
     /// the matrix diagonal mean (trace/2) equals the expected curvature.
     #[test]
     fn try_eval_topology_selector_curvature_surface_returns_matrix() {
@@ -22606,11 +22667,11 @@
         // Expect a 2×2 Value::Matrix of curvature-dimensioned scalars.
         let expected_cell = reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         };
         let expected_zero = reify_ir::Value::Scalar {
             si_value: 0.0,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         };
         let expected = Some(reify_ir::Value::Matrix(vec![
             vec![expected_cell.clone(), expected_zero.clone()],
@@ -22618,7 +22679,8 @@
         ]));
         assert_eq!(
             result, expected,
-            "curvature(surface, point) must return Some(Value::Matrix([[κ,0],[0,κ]])); got {:?}",
+            "curvature(surface, point) must return Some(Value::Matrix([[κ,0],[0,κ]])) of \
+             DimensionVector::CURVATURE (rad·m⁻¹) cells; got {:?}",
             result
         );
         assert!(
@@ -22629,7 +22691,8 @@
     }
 
     /// `curvature(curve, point)` with a fake kernel staging `Value::Real(κ)` must
-    /// yield `Some(Value::Scalar{ si_value: κ, dimension: 1/Length })`.
+    /// yield `Some(Value::Scalar{ si_value: κ, dimension: DimensionVector::CURVATURE })`
+    /// (rad·m⁻¹).
     #[test]
     fn try_eval_topology_selector_curvature_curve_returns_scalar() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -22672,11 +22735,11 @@
 
         let expected = Some(reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         });
         assert_eq!(
             result, expected,
-            "curvature(curve, point) must return Some(Value::Scalar{{κ, 1/m}}); got {:?}",
+            "curvature(curve, point) must return Some(Value::Scalar{{κ, DimensionVector::CURVATURE (rad·m⁻¹)}}); got {:?}",
             result
         );
         assert!(
@@ -26513,34 +26576,7 @@
     /// reasons "this helper is the un-gated one, gate it everywhere".
     #[test]
     fn delta_scope_lock_offset_curve_direction_stays_dimensionless() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        let op = CompiledGeometryOp::Modify {
-            kind: reify_compiler::ModifyKind::OffsetCurve,
-            target: reify_compiler::GeomRef::Step(0),
-            args: vec![
-                ("distance".into(), literal_length(0.002)),
-                (
-                    "third".into(),
-                    reify_ir::CompiledExpr::literal(
-                        bare_real_vector3(0.0, 0.0, 1.0),
-                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                    ),
-                ),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
+        let (result, diagnostics) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve { direction, .. }) => {
                 assert_eq!(
@@ -28878,6 +28914,7 @@
 
         let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -28930,6 +28967,7 @@
 
         let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

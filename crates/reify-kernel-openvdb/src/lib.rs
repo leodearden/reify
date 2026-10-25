@@ -42,6 +42,11 @@ pub mod register;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 
+// Process-global TBB single-thread scope for run-twice determinism tests;
+// test-only like `test_fixtures`, and real-FFI-only.
+#[cfg(all(has_openvdb, any(test, feature = "test-fixtures")))]
+pub mod tbb_scope;
+
 pub use marching_cubes_options::MarchingCubesOptions;
 pub use mesh_to_voxel_options::{
     DENSIFY_BUDGET_VOXELS, MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions, VoxelResolutionError,

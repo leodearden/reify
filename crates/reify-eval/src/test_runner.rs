@@ -103,16 +103,15 @@ pub struct TestResult {
 /// is regular non-`#[cfg(test)]` library code reached from production
 /// `run_tests`, so it may not name `reify_mesh_morph::*` at all.
 ///
-/// # No `SolverRegistry`
+/// # Solver-free
 ///
-/// Unlike `configured_eval_engine`, this helper deliberately omits
-/// `.with_solver(Box::new(reify_constraints::SolverRegistry::production()))`.
-/// `reify-constraints` is a **dev-only** dependency of `reify-eval`; promoting
-/// it to a runtime dep would (a) break the crate's dependency boundary and
-/// (b) violate the `run_tests_with_auto_param_returns_indeterminate` contract —
-/// auto-params must remain `Indeterminate` when no solver is wired.
+/// Unlike `configured_eval_engine`, this helper constructs
+/// `SolverPosture::SolverFree`, not `SolverPosture::Solve(..)` (which wires the
+/// production registry), to keep the
+/// `run_tests_with_auto_param_returns_indeterminate` contract: auto-params
+/// remain `Indeterminate` when no solver is wired.
 fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
-    let mut engine = Engine::new(checker, None);
+    let mut engine = Engine::new(crate::SolverPosture::SolverFree, checker, None);
     engine.register_production_compute_fns(crate::compute_targets::MorphRegistration::Unavailable {
         reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744) — a normal dep back would cycle (reify-mesh-morph normal-deps reify-eval)",
     });
@@ -194,6 +193,7 @@ mod tests {
             id: ConstraintNodeId::new("E", 0),
             label: None,
             satisfaction: sat,
+            indeterminate_reason: None,
         }
     }
 

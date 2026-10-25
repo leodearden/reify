@@ -53,7 +53,7 @@ const OVER_CAP_AUTOS: usize = 20;
 
 /// Build a no-solver engine — the literal `reify check` entry point.
 fn no_solver_engine() -> Engine {
-    Engine::new(Box::new(MockConstraintChecker::new()), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
 }
 
 /// Count `W_COUPLING_APPROXIMATED` diagnostics in a result set.

@@ -1,9 +1,12 @@
 #pragma once
 #include "rust/cxx.h"
 #include <Precision.hxx>
+#include <TCollection_ExtendedString.hxx>
+#include <TDocStd_Document.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -88,6 +91,11 @@ struct StepGuardProbeResult;
 /// (underlying type spelled as cxx generates it) because the generated header
 /// includes THIS one before it defines the enum.
 enum class StepGuardFault : ::std::uint8_t;
+/// Outcome of `read_step_document`; defined by the cxx bridge (ffi.rs).
+/// Declared opaquely for the same reason as `StepGuardFault`.
+enum class StepReadStatus : ::std::uint8_t;
+/// Returned by `step_document_tree`; defined by the cxx bridge (ffi.rs).
+struct StepTreeRecords;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 struct VolumeMeasurement;
@@ -114,8 +122,8 @@ double precision_confusion();
 
 // --- Primitive construction ---
 
-/// Create a box centered at origin with given dimensions (in meters).
-std::unique_ptr<OcctShape> make_box(double width, double height, double depth);
+/// Create a box centered at origin; the arguments are its full X/Y/Z extents (in meters).
+std::unique_ptr<OcctShape> make_box(double size_x, double size_y, double size_z);
 
 /// Create a cylinder along Z axis (in meters).
 std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
@@ -189,15 +197,26 @@ void reset_boolean_pass_count();
 
 /// Read the calling thread's count of completed OCCT boolean passes — only the
 /// passes this thread performed itself.  Incremented once per successful Build()
-/// in boolean_fuse/boolean_cut/boolean_common and once per single-pass
+/// at the single Build() site every boolean goes through: once per binary
+/// fuse/cut/common, once per *_with_history sibling and once per single-pass
 /// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
 uint64_t boolean_pass_count();
 
-/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
-/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
-/// fuse/pattern result's real type rather than assuming Solid (task 5213).
-rust::String shape_type_name(const OcctShape& shape);
+/// Set whether the CALLING THREAD's BOP algorithms Build() in OCCT's parallel
+/// mode (task 7439).  Per-thread, like the pass counter; other threads' modes
+/// are untouched.
+void set_boolean_run_parallel(bool parallel);
+
+/// Read the calling thread's BOP parallelism mode.
+bool boolean_run_parallel();
+
+/// Read the calling thread's count of completed BOP Builds whose algorithm
+/// reported RunParallel() afterwards: what OCCT ran, not what was requested.
+uint64_t parallel_bop_build_count();
+
+/// The TopAbs name of `shape`'s body type after the single-body unwrap, so
+/// OCCT's 1-solid COMPOUND wrappers name "Solid"; throws on a null shape.
+rust::String body_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
@@ -212,7 +231,7 @@ rust::String shape_type_name(const OcctShape& shape);
 /// the topology-preserving type the result actually is — one solid → bare
 /// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
 /// Callers must therefore classify the stored repr from the real shape (see
-/// `shape_type_name`) rather than assuming Solid.
+/// `body_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -701,7 +720,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_fillet_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `fillet_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_fillet_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
     const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices);
@@ -720,7 +739,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_chamfer_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `chamfer_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_chamfer_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
     const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices);
@@ -758,11 +777,6 @@ rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHi
 /// Count of Modified/Generated children silently dropped because they could
 /// not be found in the result map. Zero for a well-formed fillet/chamfer.
 uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history);
-
-// --- Modifications ---
-
-std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);
-std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance);
 
 // --- Transforms ---
 
@@ -1693,6 +1707,67 @@ StepGuardProbeResult step_guard_probe_for_test(
 /// exports. For AP242, falls back to AP214DIS if the linked build rejects
 /// the token, reporting it via `ExportStepResult::ap242_fell_back`.
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema);
+
+// --- STEP import (XDE) ---
+
+/// One product of a read STEP document. Products are stored in DFS pre-order
+/// first-visit order over the free roots, which is the dedupe-index contract.
+struct OcctStepProduct {
+    TCollection_ExtendedString name;
+    bool is_assembly = false;
+    /// A part's solids in its local frame, in TopExp_Explorer SOLID order: the
+    /// order body indices address. Empty for an assembly.
+    std::vector<TopoDS_Shape> solids;
+    /// This product's components are `components[first_component ..
+    /// first_component + component_count]` of the owning document.
+    std::uint32_t first_component = 0;
+    std::uint32_t component_count = 0;
+};
+
+/// One occurrence of a product inside an assembly product. `rotation`
+/// (row-major, raw gp_Trsf linear part) and `translation` (metres) place the
+/// referenced product in its PARENT's frame.
+struct OcctStepComponent {
+    std::uint32_t product_index = 0;
+    TCollection_ExtendedString instance_name;
+    std::array<double, 9> rotation{};
+    std::array<double, 3> translation{};
+};
+
+/// An XCAF document read from a STEP file plus its flattened product walk,
+/// whose parts hold their solids for body access. `status` is meaningful on
+/// every instance; the walk vectors are populated only when it is
+/// `StepReadStatus::Read`.
+struct OcctStepDocument {
+    Handle(TDocStd_Document) document;
+    StepReadStatus status;
+    std::vector<OcctStepProduct> products;
+    std::vector<OcctStepComponent> components;
+    /// Free roots, as indices into `products`, in `GetFreeShapes` order.
+    std::vector<std::uint32_t> roots;
+};
+
+/// Read a STEP file through OCCT XDE, converting lengths to metres. Expected
+/// failures (unreadable file, no product roots, failed transfer) are reported
+/// in `status`, never thrown. Serialized on the process-global XSTEP state; the
+/// `xstep.cascade.unit` static is restored before returning.
+std::unique_ptr<OcctStepDocument> read_step_document(rust::Str path);
+
+/// The document's status and flat walk records, names converted to UTF-8.
+StepTreeRecords step_document_tree(const OcctStepDocument& doc);
+
+/// The `body_index`-th of product `product_index`'s `solids`, so in that
+/// product's local frame. Out-of-range indices throw a contract violation: the
+/// caller validates against the tree first.
+std::unique_ptr<OcctShape> step_document_body(
+    const OcctStepDocument& doc,
+    std::uint32_t product_index,
+    std::uint32_t body_index
+);
+
+/// Current value of the process-global `xstep.cascade.unit` static, read under
+/// the XSTEP mutex after registering the STEP statics. Test-only observability.
+rust::String xstep_cascade_unit_for_test();
 
 // --- BRep serialization ---
 

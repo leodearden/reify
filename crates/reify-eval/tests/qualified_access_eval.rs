@@ -57,7 +57,7 @@ structure def S : A {
     let compiled = parse_compile_check(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let y_id = ValueCellId::new("S", "y");
@@ -100,7 +100,7 @@ structure def S : A {
     let compiled = parse_compile_check(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     assert!(
@@ -141,7 +141,7 @@ structure def S : A {
     let compiled = parse_compile_check(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     assert!(
@@ -193,7 +193,7 @@ structure def Outer {
     let compiled = parse_compile_check(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let val_id = ValueCellId::new("Outer", "val");
@@ -252,7 +252,7 @@ structure def S : A + B {
     let compiled = parse_compile_check(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let a_id = ValueCellId::new("S", "a_size");

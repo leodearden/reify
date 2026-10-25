@@ -235,8 +235,10 @@ fn spawn_child_lacking_audit_prereqs(filters: &[&str], mark: ReplayMark) -> Outp
 /// bounded claim rather than a hole, since the tightening branches on the MARK
 /// and never on the cause. The work-tree cause is in particular NOT reachable
 /// by pointing the child's `current_dir` at a non-git tempdir:
-/// `run_orphan_audit` resolves `repo_root` at compile time from
-/// `env!("CARGO_MANIFEST_DIR")`, so the child's own cwd never enters it.
+/// `run_orphan_audit` resolves `repo_root` from the runtime
+/// `CARGO_MANIFEST_DIR` the replay child inherits
+/// (`reify_test_support::workspace_root`), which takes precedence over the
+/// cwd, so the child's own cwd never enters it.
 #[test]
 fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     // Same refusal, and for the same reason, as the sibling fixture below: this

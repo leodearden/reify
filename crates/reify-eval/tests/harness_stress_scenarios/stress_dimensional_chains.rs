@@ -39,7 +39,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
         errors
     );
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics

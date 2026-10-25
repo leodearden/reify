@@ -780,6 +780,48 @@ fn doc_stdlib_explicit_html_format_produces_html_pages() {
     assert_stdlib_render_succeeds("explicit-html", &["--format", "html"]);
 }
 
+/// `reify doc --stdlib` lowers each stdlib module against its own source, so
+/// param defaults render as their source text rather than a placeholder.
+#[test]
+fn doc_stdlib_param_defaults_render_their_source_text() {
+    let guard = stdlib_out_dir("defaults");
+    let out_dir = guard.path().to_path_buf();
+    let dir_str = out_dir.to_string_lossy().into_owned();
+    let (status, stdout, stderr) = run_doc(&["--stdlib", "--out", dir_str.as_str()]);
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "reify doc --stdlib --out <dir> must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let outside_source = reify_doc::expr_text::ExprText::Unavailable(
+        reify_doc::expr_text::UnavailableReason::SpanOutsideSource,
+    )
+    .to_string();
+    let pages = walkdir_html(&out_dir);
+    let mut renders_steel_default = false;
+    for page in &pages {
+        let html =
+            std::fs::read_to_string(page).unwrap_or_else(|e| panic!("read {page:?} failed: {e}"));
+        assert!(
+            !html.contains("&lt;default&gt;"),
+            "{page:?} still renders the `<default>` sentinel"
+        );
+        assert!(
+            !html.contains(&outside_source),
+            "{page:?} renders {outside_source:?}: a stdlib span was lowered against \
+             the wrong source"
+        );
+        renders_steel_default |= html.contains("<td><code>205GPa</code></td>");
+    }
+    assert!(
+        renders_steel_default,
+        "no page under {out_dir:?} renders Steel_AISI_1045's youngs_modulus default \
+         `205GPa` as code ({} pages scanned)",
+        pages.len()
+    );
+}
+
 /// Recursive walk helper: collect all .html files under `dir`.
 fn walkdir_html(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut results = Vec::new();

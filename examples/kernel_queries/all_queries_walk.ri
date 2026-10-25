@@ -19,7 +19,8 @@
 //   ├─────────────────────────────────────────────────────────────────────┤
 //   │  7 SUB-HANDLE-arg helpers (face/edge sub-handle arg) → Value::Undef │
 //   │  at DSL eval (selector→sub-handle chaining not yet supported,       │
-//   │  engine_build.rs:3942-3949, out of scope for KGQ-ρ).               │
+//   │  `post_process_topology_selectors` in                               │
+//   │  crates/reify-eval/src/engine_build.rs, out of scope for KGQ-ρ).    │
 //   │  Their compile-time types ARE pinned (grammar + units.rs).          │
 //   │  Runtime semantics pinned by DIRECT OcctKernelHandle queries in     │
 //   │  kernel_queries_integration.rs::multi_feature_part_sub_handle_queries_return_non_undef. │
@@ -42,7 +43,7 @@
 //
 // Pinning tests:
 //   crates/reify-eval/tests/kernel_queries_integration.rs (all tests in this file)
-//   crates/reify-compiler/tests/examples_smoke.rs (auto-discovered, compile-smoked)
+//   crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (auto-discovered, compile-smoked)
 
 structure def AllQueriesWalk {
 
@@ -134,8 +135,8 @@ structure def AllQueriesWalk {
 
     // ── 7 SUB-HANDLE-arg helpers (compile-type pinned; Value::Undef at DSL eval) ─
     //
-    // Pre-Phase-3 limitation (engine_build.rs:3942-3949):
-    //   post_process_topology_selectors is single-pass and does NOT chain
+    // Pre-Phase-3 limitation (crates/reify-eval/src/engine_build.rs):
+    //   `post_process_topology_selectors` is single-pass and does NOT chain
     //   through intermediate sub-handle cells. A `single(faces(b))` or
     //   `single(edges(b))` let-binding computes to Value::Undef before the
     //   helper that takes it as arg is dispatched, so these 7 helpers evaluate

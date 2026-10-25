@@ -71,6 +71,7 @@ pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
     use reify_constraints::SimpleConstraintChecker;
 
     crate::engine::EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(seeded_rigid_mass_props_kernel(1..=16))),
     )
@@ -151,7 +152,7 @@ pub(crate) fn rigid_mass_props_session_seeded_then_failing(
     let ceiling = *good_ids.end();
     let kernel = seeded_rigid_mass_props_kernel(good_ids).fail_after_n_dispatches(ceiling);
     let dispatch_log = kernel.operations_ref();
-    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     (session, dispatch_log)
 }
 
@@ -400,6 +401,7 @@ pub(crate) fn gui_state_with_values(values: &[(&str, &str)]) -> crate::types::Gu
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     crate::types::GuiState {
         values: values.iter().map(value).collect(),
@@ -604,6 +606,36 @@ impl ManualExecutor {
 /// test binary.
 pub(crate) const ANTI_WEDGE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Post `probe` to `sender`'s lane and wait, bounded by [`ANTI_WEDGE`], for the
+/// value it returns — the synchronous probe for a LANE property (its thread,
+/// name, stack, concurrency), observable through any submission seam.
+///
+/// It goes through [`crate::large_stack::post`] and inherits that seam's arms
+/// exactly. It never re-raises a probe's panic: `post` contains and logs it, so
+/// the reply channel disconnects and this fails loudly instead. Panic
+/// PROPAGATION and the reentrancy guard belong to the one WAITING seam,
+/// `dispatch_async`, and a test pinning either goes through that.
+pub(crate) fn post_and_wait<T: Send + 'static>(
+    sender: Option<&crate::large_stack::JobSender>,
+    probe: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::large_stack::post(
+        sender,
+        Box::new(move || {
+            let _ = tx.send(probe());
+        }),
+    )
+    .expect("posting a probe must succeed: no thread could be spawned to run it");
+    rx.recv_timeout(ANTI_WEDGE).unwrap_or_else(|e| {
+        panic!(
+            "the posted probe never reported ({e}): either the probe panicked \
+             (post contains and logs it), or it timed out after {ANTI_WEDGE:?} \
+             on a wedged lane"
+        )
+    })
+}
+
 /// A recursive frame that pins ~8 KiB of live stack per call and USES the
 /// recursive result (non-tail), defeating tail-call optimization and dead-frame
 /// elision. `#[inline(never)]` keeps each level a real call frame; the
@@ -661,4 +693,56 @@ pub(crate) fn deep_recurse_if_on_thread(
         ));
     }
     Ok(deep_recurse(depth))
+}
+
+// ── LSP bridge fixture, shared by the bridge and lane-routing tests ─────────
+
+/// Drive a bridge to an initialized session with one open document:
+/// `initialize`, `initialized`, and a `didOpen` of the shared bracket fixture
+/// at `uri`.
+pub(crate) async fn init_and_open(bridge: &crate::lsp_bridge::LspBridge, uri: &str) {
+    crate::lsp_bridge::lsp_request_impl(
+        bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    crate::lsp_bridge::lsp_request_impl(bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+    crate::lsp_bridge::lsp_request_impl(
+        bridge,
+        "textDocument/didOpen",
+        serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": reify_test_support::bracket_source()
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen");
+}
+
+// ── Task 6190: η RepresentationWithin export-refusal fixture ─────────────────
+
+/// `reify_test_support::bracket_source` plus a non-circular checker structure
+/// declaring the bound, so the DECLARED BOUND is the ONLY delta from that source:
+/// any difference in export outcome between the two is the bound's doing. This is
+/// the CLI's `representation_within_satisfied.ri` idiom (geometry-owning structure +
+/// a separate `structure XCheck { param subject : X  constraint
+/// RepresentationWithin(subject, <bound>) }`) grafted onto that source.
+///
+/// The `1mm` is not a threshold and must not be retuned against an achieved deviation:
+/// η refuses on module shape alone, before any deviation is measured, so it fires
+/// identically for any bound.
+pub(crate) fn bounded_bracket_source() -> String {
+    format!(
+        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
+        reify_test_support::bracket_source()
+    )
 }

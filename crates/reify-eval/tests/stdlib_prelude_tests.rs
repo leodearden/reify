@@ -14,7 +14,7 @@ use reify_test_support::{
 #[test]
 fn engine_has_non_empty_prelude() {
     let checker = MockConstraintChecker::new();
-    let engine = reify_eval::Engine::new(Box::new(checker), None);
+    let engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     assert!(
         !engine.prelude().is_empty(),
         "Engine prelude should be non-empty after new()"
@@ -41,7 +41,7 @@ fn eval_with_prelude_trait_conformance() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No error diagnostics from eval
@@ -170,7 +170,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);
@@ -246,7 +246,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);
@@ -353,7 +353,7 @@ structure S {
 
     let checker = MockConstraintChecker::new();
     let mut engine =
-        reify_eval::Engine::new(Box::new(checker), None).with_solver(Box::new(DimensionalSolver));
+        reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(checker), None).with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 
     // Only the auto(free) non-unique warning is expected; no errors.
@@ -457,7 +457,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // First eval
     let result1 = engine.eval(&compiled);
@@ -541,7 +541,7 @@ structure S {
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let check_result = engine.check(&compiled);
 
     let check_errors = collect_errors(&check_result.diagnostics);
@@ -608,7 +608,7 @@ structure def Bracket : Physical {
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let check_result = engine.check(&compiled);
 
     let check_errors = collect_errors(&check_result.diagnostics);
@@ -696,7 +696,7 @@ fn end_to_end_material_elastic_conformance() {
 
     // (2) eval returns values for all 5 params
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);
@@ -738,7 +738,7 @@ fn end_to_end_material_elastic_conformance() {
 #[test]
 fn engine_with_prelude_accepts_custom_slice() {
     let checker = MockConstraintChecker::new();
-    let engine = reify_eval::Engine::with_prelude(Box::new(checker), None, &[]);
+    let engine = reify_eval::Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(checker), None, &[]);
     assert!(
         engine.prelude().is_empty(),
         "Engine::with_prelude(&[]) should store an empty prelude, got {} modules",

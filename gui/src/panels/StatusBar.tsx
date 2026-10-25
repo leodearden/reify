@@ -1,5 +1,5 @@
 import { type Component, createMemo, Show } from 'solid-js';
-import type { EvaluationStatus, MeshData, ConstraintData, DiagnosticInfo } from '../types';
+import type { EvaluationStatus, MeshData, ConstraintData, ConstraintStatus, DiagnosticInfo } from '../types';
 import type { SessionStatus } from '../stores/claudeStore';
 import styles from './StatusBar.module.css';
 
@@ -59,11 +59,9 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
   });
 
   const constraintSummary = createMemo(() => {
-    const counts = { satisfied: 0, violated: 0, indeterminate: 0 };
+    const counts: Record<ConstraintStatus, number> = { satisfied: 0, violated: 0, indeterminate: 0 };
     for (const c of Object.values(props.constraints)) {
-      if (c.status === 'satisfied') counts.satisfied++;
-      else if (c.status === 'violated') counts.violated++;
-      else counts.indeterminate++;
+      counts[c.status]++;
     }
     return counts;
   });

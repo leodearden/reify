@@ -93,7 +93,7 @@ The decisive scoping question (which ops get a real `pub fn` body vs. a doc-only
 
 Append to `units.ri` (the existing `STANDARD_GRAVITY()` lives there), in the existing zero-arg `pub fn` idiom (Reify lacks top-level `const`):
 - `SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }` — exact, SI definition (c = 299792458 m/s).
-- `BOLTZMANN_CONSTANT() -> Energy / Temperature { 0.00000000000000000000001380649 * 1J / 1K }` — k_B = 1.380649e-23 J/K (2019 SI redefinition, exact). **Written in decimal form, NOT scientific notation** — `1.38e-23` does not parse in value position (verified §G3; convention documented at `modal_analysis.ri:32-33`).
+- `BOLTZMANN_CONSTANT() -> Energy / Temperature { 0.00000000000000000000001380649 * 1J / 1K }` — k_B = 1.380649e-23 J/K (2019 SI redefinition, exact). **Written in decimal form, NOT scientific notation** — `1.38e-23` does not parse in value position (verified §G3; convention documented in `modal_analysis.ri`'s header Encoding notes ("Number-literal grammar")).
 
 The spec §11.3 also names `pi` and `g`; `pi` is already a compiler builtin (`constants.rs` `BUILTIN_NAMES`), `g` is the existing `STANDARD_GRAVITY()`. No change needed for those — note it in the task.
 

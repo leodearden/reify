@@ -207,9 +207,9 @@ use reify_solver_elastic::{
     DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
     GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, ScalarElement,
     StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
-    apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
+    apply_patch_resultant, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    element_stress_p1, free_faces_within, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
     recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
     resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
     solve_cg_with_warm_state_progress, tet_volume_p1,
@@ -228,8 +228,16 @@ use super::shell_solve::{
 
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
+use super::fea_inputs::{
+    ComponentRead, extract_length_si, extract_material, isotropic_from_data, modulus_field,
+    ratio_field, spec_component,
+};
+use super::fea_loads::{
+    gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
+};
+use super::fea_value_shape::{FeaValueShapeError, failed_outcome, rejected_field_outcome};
 use reify_solver_elastic::{
-    FeaFailure, classify_convergence, classify_degenerate, thin_body_advisory,
+    DegenerateTet, FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
 };
 // Task 4802 (R3b-1): structured FEA diagnostic channel.
 use crate::StructuredComputeDetail;
@@ -277,7 +285,8 @@ pub(crate) struct CantileverFeaSolve {
     pub u: Arc<Vec<f64>>,
     /// Node coordinates (length n_nodes).
     pub coords: Vec<[f64; 3]>,
-    /// Indices of tip-face nodes (ix == nx) — for tip-deflection queries.
+    /// The loaded node set: the x_max face (synthetic `ix == nx`; realized by
+    /// coordinate) or a selector-resolved load set (task 4092).
     pub tip_nodes: Vec<usize>,
     /// Maximum von Mises stress across all elements (Pa).
     pub max_von_mises: f64,
@@ -358,7 +367,7 @@ const SYNTHETIC_CLAMP_FACE: &str = "root";
 /// field equal to `Value::String(face)`.
 ///
 /// A lightweight `.ri`-source-level check, NOT real topology selector
-/// resolution (deferred to P2 / task #4092): reads each support's raw
+/// resolution (owned by #5313): reads each support's raw
 /// `target` field as authored. The kernel-less trampoline (no BUILD-time
 /// `bc_resolve::resolve_selector_faces` pass) observes `target` as the
 /// original `Value::String`, never a resolved handle list.
@@ -520,18 +529,21 @@ pub fn solve_elastic_static_trampoline(
     // CONSTRUCTION and correctly sit outside the Result-ified gate; pinned by
     // `validate_all_inputs_gate_does_not_panic_on_malformed_options_field`
     // and `..._malformed_supports_field` in the test module below.
+    //
+    // A reader that can only refuse a field returns a bare `FieldRejection`,
+    // which names its own `<Struct>.<field>`, so its arm takes no arg label.
     macro_rules! gate_or_fail {
         ($result:expr, $arg:literal) => {
             match $result {
                 Ok(v) => v,
-                Err(e) => {
-                    return ComputeOutcome::Failed {
-                        diagnostics: vec![Diagnostic::error(format!(
-                            "solve_elastic_static_trampoline: {}: {e}",
-                            $arg
-                        ))],
-                        structured_detail: vec![],
-                    };
+                Err(e) => return failed_outcome("solve_elastic_static_trampoline", $arg, &e),
+            }
+        };
+        ($result:expr) => {
+            match $result {
+                Ok(v) => v,
+                Err(rejection) => {
+                    return rejected_field_outcome("solve_elastic_static_trampoline", &rejection);
                 }
             }
         };
@@ -546,30 +558,31 @@ pub fn solve_elastic_static_trampoline(
     let model = gate_or_fail!(classify_material(&value_inputs[0]), "material");
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = gate_or_fail!(extract_scalar_si(&value_inputs[1]), "length");
-    let width = gate_or_fail!(extract_scalar_si(&value_inputs[2]), "width");
-    let height = gate_or_fail!(extract_scalar_si(&value_inputs[3]), "height");
+    let length = gate_or_fail!(extract_length_si(&value_inputs[1]), "length");
+    let width = gate_or_fail!(extract_length_si(&value_inputs[2]), "width");
+    let height = gate_or_fail!(extract_length_si(&value_inputs[3]), "height");
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
     // Two load kinds are bridged here (task 4264), read in a single pass by
     // `extract_loads`:
     //
-    //   PointLoad   — `force: Real` → scalar tip_force (distributed as -Z point
-    //                 loads across the tip-face nodes via apply_point_load).
+    //   PointLoad   — `force` (FORCE, or the legacy bare Real) → tip_force
+    //                 (a resultant spread as a uniform traction over the tip
+    //                 face via apply_patch_resultant).
     //
-    //   PressureLoad — `magnitude: Real, face: String, direction: String` →
+    //   PressureLoad — `magnitude` (PRESSURE, or bare), `face`, `direction` →
     //                 face-traction assembled via apply_traction_load(f,
     //                 FaceOrder::P1Tri, …) into the same f vector.
     //                 Supported face selectors: x_min, x_max, y_min, y_max,
     //                 z_min, z_max. Unknown/empty face → silent no-op (v1).
     //
     // Both accumulate into disjoint targets and compose: a scene may mix
-    // PointLoad and PressureLoad in the same LoadCase.
-    let (tip_force, pressures, body_force) = gate_or_fail!(
-        extract_loads(&value_inputs[4], extract_density(&value_inputs[0])),
-        "loads"
-    );
+    // PointLoad and PressureLoad in the same LoadCase. Every magnitude is read
+    // by `fea_loads`, which rejects a wrong-dimension Scalar.
+    let density = gate_or_fail!(material_density(&value_inputs[0]));
+    let (tip_force, pressures, body_force) =
+        gate_or_fail!(extract_loads(&value_inputs[4], density), "loads");
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -652,7 +665,7 @@ pub fn solve_elastic_static_trampoline(
     // proceed. Unlike the empty-supports branch, a PRESENT support exists to
     // reference, so the diagnostic carries the first support's `.ri`
     // construction-site span. Selector RESOLUTION against real topology
-    // stays deferred to P2 (#4092) — this is a lightweight string check
+    // is owned by #5313 — this is a lightweight string check
     // (`any_support_targets`).
     //
     // No `structured_detail` push here (unlike the empty-supports branch):
@@ -678,7 +691,7 @@ pub fn solve_elastic_static_trampoline(
 
     // Heterogeneous-material + Gravity advisory (task ε/#4757).
     //
-    // `extract_density` returns 0.0 for any non-StructureInstance material value,
+    // `material_density` returns 0.0 for any non-StructureInstance material value,
     // so a Gravity load combined with an AsPrintedZones field silently produces
     // zero body-force (ρ=0 ⟹ ρ·g·V=0 for every element).  Emit a visible Warning
     // so the caller is not surprised by the zero body-force.
@@ -1006,7 +1019,7 @@ pub fn solve_elastic_static_trampoline(
         None
     };
 
-    let (fea, fresh_warm) = solve_cantilever_fea(
+    let (fea, fresh_warm) = match solve_cantilever_fea(
         &model,
         length,
         width,
@@ -1024,7 +1037,10 @@ pub fn solve_elastic_static_trampoline(
         // BC selection this single-shot solve used.
         bc_override.clone(),
         None,
-    );
+    ) {
+        Ok(solve) => solve,
+        Err(degenerate) => return degenerate_mesh_outcome(degenerate),
+    };
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
     //
@@ -1033,65 +1049,6 @@ pub fn solve_elastic_static_trampoline(
     // (per compute-node-contract §2 — no bogus partial result cached).
     if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
         return ComputeOutcome::Cancelled;
-    }
-
-    // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
-    //
-    // Near-degenerate element guard: scan tet volumes and emit a FeaSingularStiffness
-    // Error for the element with the smallest volume when it falls below `eps`.
-    //
-    // IMPORTANT SCOPE NOTE: this guard fires only in the narrow window where an
-    // element is near-degenerate yet the CG solver still completed without panicking.
-    // A *genuinely* singular stiffness matrix panics inside `solve_cantilever_fea`
-    // at the `p·Kp > 0` assertion in the CG loop (see the solver contract comment at
-    // ~line 1244 below); such a mesh never reaches this post-solve block.  This guard
-    // therefore does NOT convert all singular-stiffness failures into a clean Failed
-    // outcome — it handles only the marginal near-degenerate case.
-    //
-    // Full coverage (surface min-tet-vol from `CantileverFeaSolve` to avoid the
-    // redundant O(n_tets) scan) is deferred; the per-solve overhead is negligible
-    // for the coarse cantilever mesh used today.
-    {
-        let mut min_tet_vol = f64::INFINITY;
-        let mut min_tet_elem = 0usize;
-        for (elem_id, conn) in fea.tet_connectivity.iter().enumerate() {
-            let phys = [
-                fea.coords[conn[0]],
-                fea.coords[conn[1]],
-                fea.coords[conn[2]],
-                fea.coords[conn[3]],
-            ];
-            let vol = tet_volume_p1(&phys);
-            if vol < min_tet_vol {
-                min_tet_vol = vol;
-                min_tet_elem = elem_id;
-            }
-        }
-        if let Some(failure) = classify_degenerate(min_tet_vol, 1e-12, min_tet_elem) {
-            let sd = failure
-                .structured_detail()
-                .map(|d| vec![StructuredComputeDetail::Fea(d)])
-                .unwrap_or_default();
-            return ComputeOutcome::Failed {
-                diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
-                structured_detail: sd,
-            };
-        }
-    }
-
-    // Non-convergence advisory: CG did not converge within max_iter iterations.
-    // `SOLVER_MAX_ITER` is the shared const used by `solve_cantilever_fea`'s
-    // `CgSolverOptions`; referencing the same const here guarantees the diagnostic
-    // message ("did not converge after N/M iterations") is always consistent with
-    // the actual solver limit.  The residual is not surfaced by `CantileverFeaSolve`
-    // so `None` is passed.
-    // Advisory (Warning on Completed) — a partially-converged result is still
-    // returned; non-convergence is never .ri-triggerable for the well-conditioned
-    // fixed cantilever, so the classifier is covered by unit tests (step-1).
-    if let Some(non_conv) =
-        classify_convergence(fea.converged, fea.iterations, SOLVER_MAX_ITER, None)
-    {
-        route_diagnostics.push(fea_diagnostic_to_core(&non_conv, None));
     }
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
@@ -1105,9 +1062,6 @@ pub fn solve_elastic_static_trampoline(
     //                    path emits a real ShellStress here instead, via the §3b
     //                    early return above (task 3594/δ).
     // `cost_per_byte` is derived as 1/(warm-state size in bytes).
-    let n_iters = fea.iterations as i64;
-    let converged = fea.converged;
-    let warm_started = fea.warm_started;
     let size_bytes = fresh_warm.estimated_size_bytes();
     // cost_per_byte: reciprocal of warm-state size — a bigger state is pricier
     // to keep. Tuners should replace this with a profiling-derived estimate.
@@ -1118,7 +1072,10 @@ pub fn solve_elastic_static_trampoline(
     };
     let new_warm_state = Some(fresh_warm.into_opaque_state());
 
-    // ── (7a) Resample displacement + stress onto a Regular3D grid ────────────
+    // ── (7a) The Regular3D result grid, built from the SEED solve ────────────
+    //
+    // Every Sampled channel is resampled onto this grid, including an
+    // adaptive run's refined iterate and its error_indicator.
     //
     // Grid counts = solve-mesh element counts (nx × ny × nz); grid nodes =
     // counts + 1 per axis. Bounds = the per-axis AABB of the SOLVE mesh
@@ -1144,76 +1101,6 @@ pub fn solve_elastic_static_trampoline(
         counts: [fea.nx, fea.ny, fea.nz],
     };
 
-    // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
-    // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
-    let nodal_stress_flat = super::flatten_nodal_stress(&fea.nodal_stress);
-
-    // Project nodal_gradient → divergence = trace(∇u) = ∇u[0][0]+∇u[1][1]+∇u[2][2].
-    // Stored as stride-1 scalar per node; the full 3×3 tensor rides on
-    // fea.nodal_gradient for PRD task β (gradient/curl channels).
-    let nodal_divergence: Vec<f64> = fea
-        .nodal_gradient
-        .iter()
-        .map(|g| g[0][0] + g[1][1] + g[2][2])
-        .collect();
-
-    // task 4565/β: stride-9 gradient = row-major flatten of ∇u (same operation
-    // as stress flatten — reuse flatten_nodal_stress which is a pure 3×3 flatten).
-    let nodal_gradient_flat = super::flatten_nodal_stress(&fea.nodal_gradient);
-
-    // task 4565/β: stride-3 curl = antisymmetric part of ∇u per node.
-    let nodal_curl_flat: Vec<f64> = fea
-        .nodal_gradient
-        .iter()
-        .flat_map(curl_from_gradient)
-        .collect();
-
-    // Single geometry pass: locate the containing tet once per grid point,
-    // then interpolate displacement (stride 3), stress (stride 9), divergence
-    // (stride 1), gradient (stride 9), and curl (stride 3).
-    // One BVH query per grid node covers all five fields.
-    let mut sampled = resample_multi_nodal_to_grid(
-        &fea.coords,
-        &fea.tet_connectivity,
-        &[
-            (&fea.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
-            (&nodal_stress_flat, 9, "stress"),
-            (&nodal_divergence, 1, "divergence"),
-            (&nodal_gradient_flat, 9, "gradient"),
-            (&nodal_curl_flat, 3, "curl"),
-        ],
-        &grid,
-        1e-9,
-    );
-    debug_assert_eq!(
-        sampled.len(),
-        5,
-        "expected 5 sampled fields (displacement + stress + divergence + gradient + curl)"
-    );
-    let curl_sf = sampled.pop().unwrap(); // index 4
-    let grad_sf = sampled.pop().unwrap(); // index 3
-    let div_sf = sampled.pop().unwrap(); // index 2
-    let stress_sf = sampled.pop().unwrap(); // index 1
-    let disp_sf = sampled.pop().unwrap(); // index 0
-
-    let disp_field = super::sampled_disp_field(disp_sf);
-    let stress_field = super::sampled_stress_field(stress_sf);
-    let div_field = super::sampled_divergence_field(div_sf);
-    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
-    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
-    let shear_angles_field = super::sampled_shear_angles_field(
-        super::shear_angles_sf_from_gradient(&grad_sf)
-            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
-    );
-    let grad_field = super::sampled_gradient_field(grad_sf);
-    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
-    // here rather than resampled independently — note there is deliberately NO
-    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
-    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
-    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
-    let rotation_field = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
-    let curl_field = super::sampled_curl_field(curl_sf);
-
     // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
     // refinement — see `CantileverAdaptiveProblem`'s module docs + the plan
     // design decisions) ────────────────────────────────────────────────────
@@ -1227,11 +1114,10 @@ pub fn solve_elastic_static_trampoline(
     //     knob was set to a non-default value with no effect (step-17/18's
     //     silent-no-op guard).
     //
-    // The adaptive loop runs SEPARATELY from the single-shot `fea` solve
-    // above: `displacement`/`stress`/`max_von_mises`/etc. still reflect the
-    // INITIAL coarse solve (re-deriving them from the adaptively-refined mesh
-    // is out of v1 scope). Only the three a-posteriori fields below are
-    // threaded from the adaptive loop's outcome.
+    // Once the loop has refined, every solve-derived field reports its FINAL
+    // iterate, resampled onto the seed grid above (contract:
+    // docs/prds/v0_4/fea-result-model.md §4.1); a zero-refine run reports the
+    // seed `fea` solve.
     //
     // PERF NOTE (reviewer_comprehensive/performance, task 4902 amendment):
     // `CantileverAdaptiveProblem::new` below seeds `grid` to the exact same
@@ -1295,18 +1181,8 @@ pub fn solve_elastic_static_trampoline(
     // solve is interruptible at CG granularity (the gmsh remesh itself is an
     // FFI call and is not).
     let adaptive_params = extract_adaptive_params(options_vi);
-    let aposteriori_fields: [(String, Value); 3] =
+    let (aposteriori_fields, refined_solve): ([(String, Value); 3], Option<CantileverFeaSolve>) =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
-            // api_design note (reviewer_comprehensive, task 4902 amendment):
-            // surface the v1 result-bundle inconsistency (primary fields are
-            // coarse-mesh, a-posteriori fields are refined-loop) as an Info
-            // diagnostic rather than leaving it discoverable only via docs.
-            route_diagnostics.push(Diagnostic::info(
-                "adaptive refinement ran: displacement/stress/max_von_mises and the other \
-                 primary result fields reflect the INITIAL seed-resolution mesh, not the \
-                 adaptively-refined mesh; only convergence_status/global_relative_energy_error \
-                 reflect the refinement loop's outcome (v1 scope)",
-            ));
             let budget = RefinementBudget {
                 target_accuracy: adaptive_params.target_accuracy,
                 max_refinement_iterations: adaptive_params.max_refinement_iterations,
@@ -1404,8 +1280,14 @@ pub fn solve_elastic_static_trampoline(
             // The UNIFORM lane, verbatim 4902. Reached both when the localized
             // lane was never entered and when it failed at runtime, so both
             // paths land on identical, already-tested behaviour rather than
-            // two hand-copied bodies.
-            let run_uniform_lane = || {
+            // two hand-copied bodies. Its only failure is a refined synthetic
+            // grid failing the shared solve's degenerate-tet gate.
+            //
+            // It refines the dims box. On a REALIZED seed that box is not the
+            // body (#8248 removes this fallback), so its iterate is never
+            // reported in place of the realized seed's fields.
+            let uniform_lane_solves_the_seed_geometry = realized_handle.is_none();
+            let run_uniform_lane = || -> Result<AdaptiveLaneOutcome, DegenerateTet> {
                 let mut problem = CantileverAdaptiveProblem::new(
                     *iso,
                     length,
@@ -1416,8 +1298,7 @@ pub fn solve_elastic_static_trampoline(
                     body_force,
                     bc_override.clone(),
                 );
-                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
+                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)?;
                 // Perf-cost visibility (reviewer_comprehensive/performance,
                 // task 4902 amendment): `refine` uniformly doubles all three
                 // grid axes per iteration (~8x DOF growth), so an
@@ -1425,14 +1306,24 @@ pub fn solve_elastic_static_trampoline(
                 // the single-shot solve above with no caller-visible signal
                 // beyond this diagnostic.
                 let (nx, ny, nz) = problem.grid;
-                let diag = Diagnostic::info(format!(
+                let iterates = problem.iterates;
+                let diagnostic = Diagnostic::info(format!(
                     "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
-                    problem.last_n_dofs
+                    iterates.last_n_dofs
                 ));
-                (status, problem.last_global_indicator, diag)
+                Ok(AdaptiveLaneOutcome {
+                    status,
+                    global_relative_energy_error: iterates.last_global_indicator,
+                    refined_iterate: if uniform_lane_solves_the_seed_geometry {
+                        iterates.into_refined_iterate()
+                    } else {
+                        None
+                    },
+                    diagnostic,
+                })
             };
 
-            let (status, last_global_indicator, lane_diagnostic) = match realized_lane_seed {
+            let lane_outcome = match realized_lane_seed {
                 Some(mut problem) => {
                     let n_elements_before = problem.element_count();
                     match run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA) {
@@ -1461,14 +1352,15 @@ pub fn solve_elastic_static_trampoline(
                             // refine ran. Both wordings keep the same
                             // `elements N -> M` tail so the parse contract holds
                             // either way.
-                            let diag = Diagnostic::info(if problem.refine_count == 0 {
+                            let iterates = problem.iterates;
+                            let diagnostic = Diagnostic::info(if iterates.refine_count == 0 {
                                 format!(
                                     "adaptive refinement finished at {} DOFs; the gmsh-realized \
                                      LOCALIZED lane was selected but the budget terminated \
                                      before any mark-driven remesh ran (0 refinement \
                                      iterations): elements {n_elements_before} -> \
                                      {n_elements_after}",
-                                    problem.last_n_dofs
+                                    iterates.last_n_dofs
                                 )
                             } else {
                                 format!(
@@ -1479,10 +1371,15 @@ pub fn solve_elastic_static_trampoline(
                                      {n_elements_after}. Cost note: each refinement iteration \
                                      is a FULL remesh from the extracted boundary surface, not \
                                      an incremental subdivision",
-                                    problem.last_n_dofs, problem.refine_count
+                                    iterates.last_n_dofs, iterates.refine_count
                                 )
                             });
-                            (status, problem.last_global_indicator, diag)
+                            Ok(AdaptiveLaneOutcome {
+                                status,
+                                global_relative_energy_error: iterates.last_global_indicator,
+                                refined_iterate: iterates.into_refined_iterate(),
+                                diagnostic,
+                            })
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
@@ -1502,53 +1399,48 @@ pub fn solve_elastic_static_trampoline(
                 }
                 None => run_uniform_lane(),
             };
+            let AdaptiveLaneOutcome {
+                status,
+                global_relative_energy_error,
+                refined_iterate,
+                diagnostic,
+            } = match lane_outcome {
+                Ok(lane) => lane,
+                Err(degenerate) => return degenerate_mesh_outcome(degenerate),
+            };
             // Post-loop cancel check (reviewer_comprehensive amendment), the
             // exact shape of §6b above and for the same compute-node-contract
             // §2 reason: a cancel raised DURING the refinement loop makes every
             // CG solve from that point on bail early (BOTH lanes'
             // `solve_and_estimate` pass `ambient_cg_cancel_poll()` as their CG
-            // progress callback), so the a-posteriori triple below would be
+            // progress callback), so the reported fields below would be
             // computed from partial displacements. §6b fires before this branch and cannot see a
             // cancel raised after it. Returning `Cancelled` leaves the output VC
             // `Freshness::Pending` rather than caching a bogus partial result.
             if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
                 return ComputeOutcome::Cancelled;
             }
-            route_diagnostics.push(lane_diagnostic);
-            // task 4910: build the Pa-valued error_indicator Field from the
-            // COARSE seed solve (`fea` above — the SAME mesh that produced
-            // displacement/stress), resampled onto the SAME `grid`, so the
-            // result bundle stays grid-consistent (grids_equal invariant).
-            // Distinct from `global_relative_energy_error`, which reflects
-            // the REFINED loop's final iteration.
-            let coarse_elements =
-                isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, iso);
-            let coarse_vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-            let coarse_zz = compute_zz_indicator(&coarse_elements, &coarse_vmesh, iso);
-            let scalar_elements: Vec<ScalarElement<'_>> = coarse_elements
-                .iter()
-                .zip(coarse_zz.per_element_stress_error.iter())
-                .map(|(el, &value)| ScalarElement {
-                    connectivity: el.connectivity,
-                    value,
-                    volume: el.volume,
-                })
-                .collect();
-            let nodal_error_indicator =
-                recover_nodal_scalar_p1(fea.coords.len(), &scalar_elements);
-            let error_indicator_sf = resample_nodal_to_grid(
-                &fea.coords,
-                &fea.tet_connectivity,
-                &nodal_error_indicator,
-                1,
-                &grid,
-                "error_indicator",
-                1e-9,
-            );
-            let error_indicator_value = Value::Option(Some(Box::new(
-                super::sampled_error_indicator_field(error_indicator_sf),
-            )));
-            aposteriori_adaptive_fields(&status, last_global_indicator, error_indicator_value)
+            route_diagnostics.push(diagnostic);
+            // The error indicator describes the reported solve: the loop's
+            // refined iterate reuses the stress error its estimate already
+            // computed; only the seed's is computed here.
+            let (refined_solve, error_indicator) = match refined_iterate {
+                Some(EstimatedSolve {
+                    solve,
+                    per_element_stress_error,
+                }) => {
+                    let field = error_indicator_field(&solve, &per_element_stress_error, &grid);
+                    (Some(solve), field)
+                }
+                None => {
+                    let seed_stress_error = zz_indicator(&fea, iso).per_element_stress_error;
+                    (None, error_indicator_field(&fea, &seed_stress_error, &grid))
+                }
+            };
+            (
+                aposteriori_adaptive_fields(&status, global_relative_energy_error, error_indicator),
+                refined_solve,
+            )
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -1574,7 +1466,7 @@ pub fn solve_elastic_static_trampoline(
                 );
             }
             route_diagnostics.push(Diagnostic::warning(material_warning));
-            aposteriori_nonadaptive_default_fields()
+            (aposteriori_nonadaptive_default_fields(), None)
         } else {
             // Silent-no-op guard (step-17/18, RATIFIED requirement): a
             // budget knob set to a non-default value without `adaptive:
@@ -1590,12 +1482,28 @@ pub fn solve_elastic_static_trampoline(
                      adaptive: true to enable the a-posteriori refinement loop",
                 ));
             }
-            aposteriori_nonadaptive_default_fields()
+            (aposteriori_nonadaptive_default_fields(), None)
         };
 
+    // ── (7b) Resample the REPORTED solve onto the seed grid ──────────────────
+    //
+    // `reported` is the adaptive loop's final iterate when it refined, else
+    // the seed `fea`.
+    let (reported, convergence_advisory) = reported_solve(&fea, refined_solve.as_ref());
+    route_diagnostics.extend(convergence_advisory);
+    let SampledResultChannels {
+        displacement,
+        stress,
+        divergence,
+        gradient,
+        curl,
+        rotation,
+        shear_angles,
+    } = sampled_result_channels(reported, &grid);
+
     let fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(), disp_field),
-        ("stress".to_string(), stress_field),
+        ("displacement".to_string(), displacement),
+        ("stress".to_string(), stress),
         ("frame".to_string(), Value::Undef),
         // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
         // shell_channels=Undef (through-thickness data is undefined for solid
@@ -1604,28 +1512,34 @@ pub fn solve_elastic_static_trampoline(
         ("shell_channels".to_string(), Value::Undef),
         // task 4564/α: divergence = tr(ε) = volumetric strain, Sampled Field.
         // Shell path emits Undef (PRD §7: derivative channels out of scope for shells).
-        ("divergence".to_string(), div_field),
+        ("divergence".to_string(), divergence),
         // task 4565/β: displacement-gradient ∇u and curl ∇×u, both dimensionless.
         // Shell path emits Undef (PRD §7).
-        ("gradient".to_string(), grad_field),
-        ("curl".to_string(), curl_field),
+        ("gradient".to_string(), gradient),
+        ("curl".to_string(), curl),
         // ruling #6164: rotation = ∇×u / 2, the designated crossing where the
         // radian enters (Vector3<Angle>). Derived from the curl SampledField at
         // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
-        ("rotation".to_string(), rotation_field),
+        ("rotation".to_string(), rotation),
         // task #6183: Voigt engineering shears (Vector3<Angle>), derived from
         // the gradient SampledField the same way. Shell path emits Undef.
-        ("shear_angles".to_string(), shear_angles_field),
+        ("shear_angles".to_string(), shear_angles),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
-                si_value: fea.max_von_mises,
+                si_value: reported.max_von_mises,
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("converged".to_string(), Value::Bool(converged)),
-        ("iterations".to_string(), Value::Int(n_iters)),
-        ("warm_started".to_string(), Value::Bool(warm_started)),
+        ("converged".to_string(), Value::Bool(reported.converged)),
+        (
+            "iterations".to_string(),
+            Value::Int(reported.iterations as i64),
+        ),
+        (
+            "warm_started".to_string(),
+            Value::Bool(reported.warm_started),
+        ),
     ]
     .into_iter()
     // task 2998/4902: trivial non-adaptive defaults OR the real adaptive-loop
@@ -1665,6 +1579,159 @@ pub fn solve_elastic_static_trampoline(
     }
 }
 
+/// The solve an `ElasticResult` reports (`refined` when the adaptive loop
+/// produced one, else `seed`) with THAT solve's CG non-convergence advisory,
+/// so the Warning and the `converged` channel always describe one solve.
+///
+/// The advisory is a Warning on a still-Completed result (task 2929).
+/// `SOLVER_MAX_ITER` is the limit `solve_cantilever_fea` gives CG, so the
+/// "did not converge after N/M iterations" message matches the solver; the
+/// residual is not surfaced by `CantileverFeaSolve`.
+fn reported_solve<'a>(
+    seed: &'a CantileverFeaSolve,
+    refined: Option<&'a CantileverFeaSolve>,
+) -> (&'a CantileverFeaSolve, Option<Diagnostic>) {
+    let reported = refined.unwrap_or(seed);
+    let advisory = classify_convergence(
+        reported.converged,
+        reported.iterations,
+        SOLVER_MAX_ITER,
+        None,
+    )
+    .map(|non_conv| fea_diagnostic_to_core(&non_conv, None));
+    (reported, advisory)
+}
+
+/// The tet path's Sampled `ElasticResult` channels, all on one grid.
+struct SampledResultChannels {
+    displacement: Value,
+    stress: Value,
+    divergence: Value,
+    gradient: Value,
+    curl: Value,
+    rotation: Value,
+    shear_angles: Value,
+}
+
+/// Resample `solve`'s nodal fields onto `grid` as the result's Sampled
+/// channels.
+fn sampled_result_channels(solve: &CantileverFeaSolve, grid: &GridSpec) -> SampledResultChannels {
+    // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
+    // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
+    let nodal_stress_flat = super::flatten_nodal_stress(&solve.nodal_stress);
+
+    // Project nodal_gradient → divergence = trace(∇u) = ∇u[0][0]+∇u[1][1]+∇u[2][2].
+    // Stored as stride-1 scalar per node; the full 3×3 tensor rides on
+    // solve.nodal_gradient for PRD task β (gradient/curl channels).
+    let nodal_divergence: Vec<f64> = solve
+        .nodal_gradient
+        .iter()
+        .map(|g| g[0][0] + g[1][1] + g[2][2])
+        .collect();
+
+    // task 4565/β: stride-9 gradient = row-major flatten of ∇u (same operation
+    // as stress flatten — reuse flatten_nodal_stress which is a pure 3×3 flatten).
+    let nodal_gradient_flat = super::flatten_nodal_stress(&solve.nodal_gradient);
+
+    // task 4565/β: stride-3 curl = antisymmetric part of ∇u per node.
+    let nodal_curl_flat: Vec<f64> = solve
+        .nodal_gradient
+        .iter()
+        .flat_map(curl_from_gradient)
+        .collect();
+
+    // Single geometry pass: locate the containing tet once per grid point,
+    // then interpolate displacement (stride 3), stress (stride 9), divergence
+    // (stride 1), gradient (stride 9), and curl (stride 3).
+    // One BVH query per grid node covers all five fields.
+    let mut sampled = resample_multi_nodal_to_grid(
+        &solve.coords,
+        &solve.tet_connectivity,
+        &[
+            (&solve.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
+            (&nodal_stress_flat, 9, "stress"),
+            (&nodal_divergence, 1, "divergence"),
+            (&nodal_gradient_flat, 9, "gradient"),
+            (&nodal_curl_flat, 3, "curl"),
+        ],
+        grid,
+        1e-9,
+    );
+    debug_assert_eq!(
+        sampled.len(),
+        5,
+        "expected 5 sampled fields (displacement + stress + divergence + gradient + curl)"
+    );
+    let curl_sf = sampled.pop().unwrap(); // index 4
+    let grad_sf = sampled.pop().unwrap(); // index 3
+    let div_sf = sampled.pop().unwrap(); // index 2
+    let stress_sf = sampled.pop().unwrap(); // index 1
+    let disp_sf = sampled.pop().unwrap(); // index 0
+
+    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
+    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
+    let shear_angles = super::sampled_shear_angles_field(
+        super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
+    );
+    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
+    // here rather than resampled independently — note there is deliberately NO
+    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
+    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
+    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
+    let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
+    SampledResultChannels {
+        displacement: super::sampled_disp_field(disp_sf),
+        stress: super::sampled_stress_field(stress_sf),
+        divergence: super::sampled_divergence_field(div_sf),
+        gradient: super::sampled_gradient_field(grad_sf),
+        curl: super::sampled_curl_field(curl_sf),
+        rotation,
+        shear_angles,
+    }
+}
+
+/// task 4910: `solve`'s Pa-valued Z-Z stress error (one entry per tet, in
+/// `tet_connectivity` order), resampled onto `grid` and wrapped as the
+/// `Option<Field>` the `error_indicator` channel carries. Resampled onto the
+/// SAME grid as the other channels, so the result bundle stays
+/// grid-consistent (grids_equal invariant).
+fn error_indicator_field(
+    solve: &CantileverFeaSolve,
+    per_element_stress_error: &[f64],
+    grid: &GridSpec,
+) -> Value {
+    let coords = &solve.coords;
+    let scalar_elements: Vec<ScalarElement<'_>> = solve
+        .tet_connectivity
+        .iter()
+        .zip(per_element_stress_error)
+        .map(|(conn, &value)| ScalarElement {
+            connectivity: conn.as_slice(),
+            value,
+            volume: tet_volume_p1(&[
+                coords[conn[0]],
+                coords[conn[1]],
+                coords[conn[2]],
+                coords[conn[3]],
+            ]),
+        })
+        .collect();
+    let nodal_error_indicator = recover_nodal_scalar_p1(solve.coords.len(), &scalar_elements);
+    let error_indicator_sf = resample_nodal_to_grid(
+        &solve.coords,
+        &solve.tet_connectivity,
+        &nodal_error_indicator,
+        1,
+        grid,
+        "error_indicator",
+        1e-9,
+    );
+    Value::Option(Some(Box::new(super::sampled_error_indicator_field(
+        error_indicator_sf,
+    ))))
+}
+
 // ── Realized-VolumeMesh consumption (task 4091) ───────────────────────────────
 
 /// Solver mesh: node coordinates + P1 tetrahedral connectivity — produced by
@@ -1681,9 +1748,10 @@ type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
 type BcNodeSetOverride = Option<(Option<Vec<usize>>, Option<Vec<usize>>)>;
 
 /// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
-/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
-/// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
-/// Dirichlet-clamped AND tip-loaded, a physically meaningless over-constraint —
+/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip)
+/// face sets selected by `realized_cantilever_bc_node_sets` collapse into one —
+/// every DOF both Dirichlet-clamped AND tip-loaded, a physically meaningless
+/// over-constraint —
 /// so `realized_solver_mesh` rejects the mesh and the trampoline falls back to
 /// the synthetic box (task 4091 review #2; honest degradation,
 /// realization-read-api §3.2-5). 1e-9 sits orders of magnitude above the
@@ -1728,6 +1796,10 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 ///
 /// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
 /// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
+///
+/// Node ordering is passed through, not normalised. The producer must emit
+/// consistently oriented tets: the solve's degenerate-tet gate
+/// ([`find_degenerate_tet`]) rejects a tet ordered against the rest of the mesh.
 ///
 /// **Orphan compaction (task 5008 GAP B).** After the checks above, any
 /// vertex NOT referenced by at least one tet is DROPPED from `coords` and
@@ -2739,6 +2811,57 @@ fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
     (nx, ny, nz)
 }
 
+/// The realized cantilever's `(root, tip)` node sets: the nodes on the x_min
+/// face (clamped) and the x_max face (loaded) of `coords`' bounding box,
+/// selected by coordinate (task 4091 design_dec[2]).
+///
+/// The tolerance is relative to the x-extent, with a small absolute floor.
+/// `realized_solver_mesh` guarantees an x-extent of at least
+/// [`MIN_SOLVE_X_EXTENT`], so the two sets cannot overlap into one
+/// over-constrained set (task 4091 review #2).
+fn realized_cantilever_bc_node_sets(coords: &[[f64; 3]]) -> (Vec<usize>, Vec<usize>) {
+    let (aabb_min, aabb_max) = aabb(coords);
+    let x_tol = (aabb_max[0] - aabb_min[0]).max(1e-12) * 1e-6 + 1e-12;
+    let nodes_where = |on_face: &dyn Fn(f64) -> bool| -> Vec<usize> {
+        (0..coords.len())
+            .filter(|&n| on_face(coords[n][0]))
+            .collect()
+    };
+    (
+        nodes_where(&|x| x <= aabb_min[0] + x_tol),
+        nodes_where(&|x| x >= aabb_max[0] - x_tol),
+    )
+}
+
+/// The cantilever tip resultant `tip_force` as the uniform traction over the
+/// free faces spanned by `tip_nodes`, returned as a fresh `3 * coords.len()`
+/// load vector (task 7448). Its total and line of action (the tip-face
+/// centroid) do not depend on the mesh; a zero-area tip set (a vertex or edge
+/// selector target) keeps the equal nodal split.
+fn cantilever_tip_load(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    tip_nodes: &[usize],
+    tip_force: [f64; 3],
+) -> Vec<f64> {
+    let mut f = vec![0.0; 3 * coords.len()];
+    apply_patch_resultant(&mut f, coords, tets, tip_nodes, tip_force);
+    f
+}
+
+/// The `Failed` outcome for a mesh that [`solve_cantilever_fea`]'s degenerate-tet
+/// gate rejected: one FeaSingularStiffness Error plus the element to highlight.
+fn degenerate_mesh_outcome(degenerate: DegenerateTet) -> ComputeOutcome {
+    let failure = FeaFailure::SingularStiffness(degenerate);
+    ComputeOutcome::Failed {
+        diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+        structured_detail: failure
+            .structured_detail()
+            .map(|d| vec![StructuredComputeDetail::Fea(d)])
+            .unwrap_or_default(),
+    }
+}
+
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
 ///
@@ -2756,7 +2879,12 @@ fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
 ///   `element_stiffness_p1_with_field(&field)` (field samples centroid internally);
 ///   stress via `element_stress_anisotropic` at the SAME centroid for D-consistency.
 ///
-/// Returns `(CantileverFeaSolve, CgWarmState)`.
+/// # Returns
+///
+/// `Ok((CantileverFeaSolve, CgWarmState))`, or `Err` with the worst tet when the
+/// mesh (synthetic or realized) fails [`find_degenerate_tet`]'s shape-quality gate.
+/// The gate runs before assembly, so a degenerate mesh never reaches the
+/// element-stiffness Jacobian assert or the CG solve.
 // 10 args: the helper threads mesh geometry, tip load, pressures, gravity body
 // force, CG warm-state, and the task-2926 execution-mode knobs (`deterministic`,
 // `threads`) into a single cohesive solve; splitting them into a struct would not
@@ -2795,7 +2923,7 @@ pub(crate) fn solve_cantilever_fea(
     // `CantileverAdaptiveProblem::refine` (step-14) grow the mesh each adaptive
     // iteration without touching the realized-mesh path.
     grid_override: Option<(usize, usize, usize)>,
-) -> (CantileverFeaSolve, CgWarmState) {
+) -> Result<(CantileverFeaSolve, CgWarmState), DegenerateTet> {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
     // Layout: X-axis = beam length, Y-axis = width, Z-axis = height.
@@ -2851,24 +2979,7 @@ pub(crate) fn solve_cantilever_fea(
             let dz = ext[2].max(1e-9);
             let nx = ((ext[0] / dz * nz as f64).round() as usize).max(1);
             let ny = ((ext[1] / dz * nz as f64).round() as usize).max(1);
-            // Node sets by coordinate: x ≈ x_min → clamp, x ≈ x_max → tip.
-            // Relative tol on the x-extent plus a small absolute floor. The
-            // x-extent is guaranteed non-degenerate (≥ MIN_SOLVE_X_EXTENT) by
-            // `realized_solver_mesh`, so the two face sets cannot overlap into a
-            // single over-constrained set here (task 4091 review #2).
-            let x_tol = ext[0].max(1e-12) * 1e-6 + 1e-12;
-            let root_nodes: Vec<usize> = coords
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c[0] <= aabb_min[0] + x_tol)
-                .map(|(i, _)| i)
-                .collect();
-            let tip_nodes: Vec<usize> = coords
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c[0] >= aabb_max[0] - x_tol)
-                .map(|(i, _)| i)
-                .collect();
+            let (root_nodes, tip_nodes) = realized_cantilever_bc_node_sets(&coords);
             (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
@@ -2966,6 +3077,10 @@ pub(crate) fn solve_cantilever_fea(
         }
     }
 
+    if let Some(degenerate) = find_degenerate_tet(&coords, &tet_connectivity) {
+        return Err(degenerate);
+    }
+
     let n_nodes = coords.len();
 
     // ── Per-element stiffness matrices ────────────────────────────────────────
@@ -3053,30 +3168,19 @@ pub(crate) fn solve_cantilever_fea(
 
     let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
-    // ── Build load vector; distribute tip load over the tip-face nodes ────────
+    // ── Build load vector; spread the tip resultant over the tip face ─────────
     //
-    // `tip_nodes` was selected during mesh acquisition above (the x_max face on
-    // both the synthetic and realized paths). Force is distributed equally across
-    // them — the bending (-Z) direction for the canonical cantilever tip load.
-    let mut f = vec![0.0f64; 3 * n_nodes];
-    let n_tip = tip_nodes.len().max(1) as f64;
-    let force_per_tip = [
-        tip_force[0] / n_tip,
-        tip_force[1] / n_tip,
-        tip_force[2] / n_tip,
-    ];
-    for &tn in &tip_nodes {
-        apply_point_load(&mut f, tn, force_per_tip);
-    }
+    // Mesh-independent because the adaptive lanes re-derive `tip_nodes` on
+    // every remesh (task 7448).
+    let mut f = cantilever_tip_load(&coords, &tet_connectivity, &tip_nodes, tip_force);
 
     // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
     // PressureLoad face tractions are accumulated into the same `f` vector.
     // An empty `pressures` slice is a no-op, preserving the existing tip-only
     // path. Box-face pressures resolve face selectors against the synthetic box's
-    // [0,L]×[0,W]×[0,H] extents, so they are SKIPPED on the realized path —
-    // general face-selector BC assembly is owned downstream (P2 = #4092; task
-    // 4091 design_dec[2]).
+    // [0,L]×[0,W]×[0,H] extents, so they are SKIPPED on the realized path
+    // (task 4091 design_dec[2]); realized-path pressure assembly is #5313's.
     if !realized {
         assemble_box_face_pressures(
             &mut f,
@@ -3100,6 +3204,10 @@ pub(crate) fn solve_cantilever_fea(
     //
     // `root_nodes` was selected during mesh acquisition above (the x_min face on
     // both the synthetic and realized paths).
+    //
+    // The fully fixed root face is a deliberate modelling choice. Its perimeter
+    // is a re-entrant clamp singularity (stress unbounded at the clamp edges), so
+    // the Z-Z indicator and Dörfler marks concentrate there under refinement.
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -3155,8 +3263,8 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Detection predicate: `!converged && iterations < max_iter`
     //
-    // The cg_loop exit-condition contract (solver.rs:994-1045) maps to this
-    // predicate as follows:
+    // `reify_solver_elastic::solver::cg_loop`'s exit-condition contract maps to
+    // this predicate as follows:
     //   - Convergence                          → converged = true       (predicate false)
     //   - max_iter exhaustion                  → iterations == max_iter  (predicate false)
     //   - Degenerate system                    → panics on p·Kp > 0     (never reaches here)
@@ -3168,8 +3276,8 @@ pub(crate) fn solve_cantilever_fea(
     // The predicate is true for the overwhelmingly common cancel case.  A cancel
     // firing on the exact final iteration (iter + 1 == max_iter) makes
     // iterations == max_iter so the predicate is false — stress recovery runs
-    // on partial displacements, but the §6b post-solve cancel check
-    // (elastic_static.rs:~580) still returns ComputeOutcome::Cancelled so
+    // on partial displacements, but the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` still returns ComputeOutcome::Cancelled so
     // correctness is preserved.  The wasted stress-recovery work is accepted for
     // this rare edge case; it does not affect the common-case latency improvement.
     //
@@ -3177,13 +3285,13 @@ pub(crate) fn solve_cantilever_fea(
     // so it only reaches non-converged at iterations == max_iter — predicate
     // stays false there too, leaving the existing callers completely unaffected.
     //
-    // On the cancelled path the trampoline's §6b post-solve cancel check
-    // (elastic_static.rs:~580) returns ComputeOutcome::Cancelled and never reads
-    // stress fields, so a stress-less struct is correct.
+    // On the cancelled path the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` returns ComputeOutcome::Cancelled and
+    // never reads stress fields, so a stress-less struct is correct.
     let converged = cg_result.converged;
     let iterations = cg_result.iterations;
     if !converged && iterations < max_iter {
-        return (
+        return Ok((
             CantileverFeaSolve {
                 u: cg_result.into_shared_u(),
                 coords,
@@ -3200,7 +3308,7 @@ pub(crate) fn solve_cantilever_fea(
                 nz,
             },
             fresh_warm,
-        );
+        ));
     }
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
@@ -3365,7 +3473,7 @@ pub(crate) fn solve_cantilever_fea(
         ny,
         nz,
     };
-    (fea, fresh_warm)
+    Ok((fea, fresh_warm))
 }
 
 // ── CantileverAdaptiveProblem (task 4902) ────────────────────────────────────
@@ -3408,21 +3516,15 @@ fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vol
 /// [`element_stress_p1`], and compute the element volume via
 /// [`tet_volume_p1`]. Feeds `compute_zz_indicator`'s `&[StressElement]` input.
 ///
-/// Extracted (task 4902 amendment, reviewer_comprehensive/code_reuse) from
-/// what was a hand-duplicated copy of this same gather/recover/volume loop
-/// inside [`CantileverAdaptiveProblem::solve_and_estimate`] — now its ONLY
-/// call site. The single-shot tet path's own per-element loop (§ "Stress
-/// recovery" above, ~line 2516) is intentionally NOT converted to call this
-/// helper: that loop computes `stress_elements` / `gradient_elements` /
-/// `max_von_mises` together in a SINGLE pass across three material models
-/// (isotropic / anisotropic / heterogeneous), sharing one `tet_volume_p1`
-/// call per element with the gradient recovery. Splitting out just its
-/// isotropic branch would mean a second `tet_volume_p1` pass rather than a
-/// pure de-duplication, for a loop this helper cannot fully replace anyway
-/// (it has no anisotropic/heterogeneous or gradient/vM bookkeeping).
-/// `CantileverAdaptiveProblem` has none of that — it always solves an
-/// isotropic material and only ever needs the `StressElement` slice — so
-/// this helper cleanly captures its ENTIRE per-element recovery step.
+/// The single-shot tet path's own per-element loop (§ "Stress recovery"
+/// above) is intentionally NOT converted to call this helper: that loop
+/// computes `stress_elements` / `gradient_elements` / `max_von_mises`
+/// together in a SINGLE pass across three material models (isotropic /
+/// anisotropic / heterogeneous), sharing one `tet_volume_p1` call per element
+/// with the gradient recovery. Splitting out just its isotropic branch would
+/// mean a second `tet_volume_p1` pass rather than a pure de-duplication, for
+/// a loop this helper cannot fully replace anyway (it has no
+/// anisotropic/heterogeneous or gradient/vM bookkeeping).
 fn isotropic_stress_elements<'a>(
     coords: &[[f64; 3]],
     tet_connectivity: &'a [[usize; 4]],
@@ -3455,6 +3557,85 @@ fn isotropic_stress_elements<'a>(
         .collect()
 }
 
+/// `solve`'s Z-Z error indicator for an isotropic material.
+fn zz_indicator(
+    solve: &CantileverFeaSolve,
+    material: &IsotropicElastic,
+) -> reify_solver_elastic::ZzIndicator {
+    let elements =
+        isotropic_stress_elements(&solve.coords, &solve.tet_connectivity, &solve.u, material);
+    let vmesh = volume_mesh_from_solver_mesh(&solve.coords, &solve.tet_connectivity);
+    compute_zz_indicator(&elements, &vmesh, material)
+}
+
+/// A solved adaptive iterate with its per-element Z-Z stress error, so the
+/// `error_indicator` channel reuses the estimate the loop already computed.
+struct EstimatedSolve {
+    solve: CantileverFeaSolve,
+    per_element_stress_error: Vec<f64>,
+}
+
+/// What an adaptive problem remembers of its iterates. Both problems embed
+/// one, so "a refined iterate is reported only after at least one refine"
+/// has a single home.
+#[derive(Default)]
+struct IterateRecord {
+    /// The latest estimate's `global_relative_energy_error`. Set on every
+    /// solve, whatever the terminal `ConvergenceStatus`, because
+    /// `run_adaptive_refinement` always solves before any budget check.
+    last_global_indicator: f64,
+    /// The latest estimate's DOF count, surfaced in the lanes' post-loop
+    /// diagnostics as the achieved mesh cost.
+    last_n_dofs: usize,
+    /// How many times `refine` has run to completion. `run_adaptive_refinement`
+    /// can return without ever refining (`max_refinement_iterations: 0`, or a
+    /// first estimate already within `target_accuracy`).
+    refine_count: usize,
+    /// The latest SUCCESSFUL solve; neither a failed solve nor a failed
+    /// refine clears it.
+    last_iterate: Option<EstimatedSolve>,
+}
+
+impl IterateRecord {
+    /// Estimate `solve`'s Z-Z error, keep it as the latest iterate, and
+    /// return the estimate the refinement loop marks from.
+    fn record(
+        &mut self,
+        solve: CantileverFeaSolve,
+        material: &IsotropicElastic,
+    ) -> AdaptiveEstimate {
+        let zz = zz_indicator(&solve, material);
+        let n_dofs = 3 * solve.coords.len();
+        self.last_global_indicator = zz.global_relative_energy_error;
+        self.last_n_dofs = n_dofs;
+        self.last_iterate = Some(EstimatedSolve {
+            solve,
+            per_element_stress_error: zz.per_element_stress_error,
+        });
+        AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs,
+            qoi: None,
+        }
+    }
+
+    fn note_refine(&mut self) {
+        self.refine_count += 1;
+    }
+
+    /// The loop's final iterate, or `None` when no refine ran (the seed
+    /// solve stands). After `run_adaptive_refinement` returns `Ok`, the last
+    /// call was always a solve of the current mesh.
+    fn into_refined_iterate(self) -> Option<EstimatedSolve> {
+        if self.refine_count > 0 {
+            self.last_iterate
+        } else {
+            None
+        }
+    }
+}
+
 /// Drives the v1 mesh-free UNIFORM a-posteriori adaptive refinement loop over
 /// the coarse isotropic cantilever fixture (task 4902).
 ///
@@ -3462,7 +3643,9 @@ fn isotropic_stress_elements<'a>(
 /// bumped `(nx, ny, nz)` grid resolution each [`refine`](AdaptiveProblem::refine)
 /// call (via the step-10 `grid_override` seam) and recomputing the Z-Z
 /// energy-norm indicator via [`compute_zz_indicator`] on every
-/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate).
+/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate). Its
+/// [`IterateRecord`] surfaces the final iterate, so the trampoline reports
+/// the refined answer (task 8246).
 ///
 /// # v1 scope (RATIFIED esc-4902-83 option D)
 ///
@@ -3492,25 +3675,10 @@ pub(crate) struct CantileverAdaptiveProblem {
     /// single-shot (non-adaptive) tet-path solve uses — and doubled per axis
     /// on each `refine` call (step-14).
     grid: (usize, usize, usize),
-    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
-    /// — populated on EVERY call (both `Converged` and budget-capped
-    /// `NotConverged` outcomes alike, since `run_adaptive_refinement` always
-    /// solves at least once before any budget check), so
-    /// `aposteriori_adaptive_fields` can thread a populated
-    /// `global_relative_energy_error` regardless of the terminal
-    /// `ConvergenceStatus`.
-    pub(crate) last_global_indicator: f64,
-    /// The most recent `solve_and_estimate()`'s DOF count (`3 *
-    /// fea.coords.len()`, mirroring `AdaptiveEstimate.n_dofs`) — populated
-    /// alongside `last_global_indicator` on every call. Surfaced in a
-    /// post-loop diagnostic (reviewer_comprehensive/performance, task 4902
-    /// amendment) so a caller can see the achieved mesh cost of an
-    /// `adaptive: true` request without instrumenting the solve themselves —
-    /// each `refine` (uniform per-axis doubling) grows this roughly 8×, and
-    /// the default budget (`max_refinement_iterations: 5`) can reach several
-    /// million DOFs; `max_dofs` bounds it but was otherwise invisible to the
-    /// caller beyond the Info diagnostic already emitted before the loop ran.
-    pub(crate) last_n_dofs: usize,
+    /// Each `refine` (uniform per-axis doubling) grows the DOF count roughly
+    /// 8×, so the default budget can reach several million DOFs; the
+    /// post-loop diagnostic surfaces `last_n_dofs` for that reason.
+    iterates: IterateRecord,
 }
 
 impl CantileverAdaptiveProblem {
@@ -3539,17 +3707,16 @@ impl CantileverAdaptiveProblem {
             body_force,
             bc_override,
             grid,
-            last_global_indicator: 0.0,
-            last_n_dofs: 0,
+            iterates: IterateRecord::default(),
         }
     }
 }
 
 impl AdaptiveProblem for CantileverAdaptiveProblem {
-    /// The v1 uniform-refinement `refine` step cannot fail — mirrors the
-    /// task's stub-driver convention (`crate::adaptive`'s test suite uses the
-    /// same `Infallible` for its synthetic stubs).
-    type Error = std::convert::Infallible;
+    /// The v1 uniform-refinement `refine` step cannot fail; a solve fails only
+    /// when the synthetic grid fails `solve_cantilever_fea`'s degenerate-tet
+    /// gate (an absurdly thin forced-tet slab).
+    type Error = DegenerateTet;
 
     fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // The refinement loop is interruptible at CG granularity: a cancel
@@ -3583,33 +3750,9 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             progress_opt,
             self.bc_override.clone(),
             Some(self.grid),
-        );
+        )?;
 
-        // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator,
-        // via the shared `isotropic_stress_elements` helper (task 4902 amendment,
-        // reviewer_comprehensive/code_reuse — see its doc comment for why the
-        // single-shot tet path's own stress-recovery loop is not converted to
-        // share this same helper).
-        let elements = isotropic_stress_elements(
-            &fea.coords,
-            &fea.tet_connectivity,
-            &fea.u,
-            &self.material,
-        );
-
-        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
-
-        let n_dofs = 3 * fea.coords.len();
-        self.last_global_indicator = zz.global_relative_energy_error;
-        self.last_n_dofs = n_dofs;
-
-        Ok(AdaptiveEstimate {
-            relative_error: zz.global_relative_energy_error,
-            per_element: zz.per_element,
-            n_dofs,
-            qoi: None,
-        })
+        Ok(self.iterates.record(fea, &self.material))
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3626,9 +3769,22 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         // deferred to follow-up task 4909.
         let (nx, ny, nz) = self.grid;
         self.grid = (nx * 2, ny * 2, nz * 2);
+        self.iterates.note_refine();
         Ok(())
     }
 }
+
+/// What one adaptive lane hands back to the trampoline.
+struct AdaptiveLaneOutcome {
+    status: ConvergenceStatus,
+    global_relative_energy_error: f64,
+    /// The loop's final iterate when at least one refine ran and that
+    /// iterate solved the seed's geometry; `None` reports the seed solve.
+    refined_iterate: Option<EstimatedSolve>,
+    /// The lane's post-loop Info diagnostic.
+    diagnostic: Diagnostic,
+}
+
 /// A CG per-iteration callback that ONLY polls the ambient cancel handle.
 ///
 /// `None` when no cancel handle is installed in the current dispatch context,
@@ -3700,14 +3856,16 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 
 /// The **gmsh-realized** [`AdaptiveProblem`]: a-posteriori refinement that
 /// genuinely CONSUMES the Dörfler-marked element set, by remeshing the
-/// realized volume under a mark-driven size field.
+/// realized volume under a mark-driven size field. Its [`IterateRecord`]
+/// surfaces the final iterate, so the trampoline reports the remeshed answer
+/// (task 8246).
 ///
 /// # Sibling of, not replacement for, [`CantileverAdaptiveProblem`]
 ///
 /// Task 4902's uniform lane stays exactly as it is and remains the fallback.
 /// The two differ in every axis that matters — mesh source (realized
 /// `VolumeMesh` vs synthetic grid), refine mechanism (gmsh size-field remesh
-/// vs per-axis grid doubling), error type ([`RefineError`] vs `Infallible`),
+/// vs per-axis grid doubling), error type ([`RealizedLaneError`] vs [`DegenerateTet`]),
 /// and BC model (coordinate re-derivation per remesh vs stable node indices)
 /// — so folding them behind one struct would mean a runtime enum in every
 /// method and would put 4902's already-tested fallback behaviour at risk on a
@@ -3761,23 +3919,10 @@ pub(crate) struct RealizedAdaptiveProblem {
     tip_force: [f64; 3],
     pressures: Vec<PressureSpec>,
     body_force: [f64; 3],
-    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
-    /// — populated on EVERY call, so `aposteriori_adaptive_fields` can thread
-    /// a populated value regardless of the terminal `ConvergenceStatus`.
-    /// Mirrors [`CantileverAdaptiveProblem`]'s field of the same name.
-    pub(crate) last_global_indicator: f64,
-    /// The most recent `solve_and_estimate()`'s DOF count. Surfaced in the
-    /// post-loop diagnostic so a caller can see the achieved mesh cost.
-    pub(crate) last_n_dofs: usize,
-    /// How many times `refine` has run to completion.
-    ///
-    /// `run_adaptive_refinement` can return WITHOUT ever calling `refine` — a
-    /// `max_refinement_iterations: 0` budget (documented as legitimate: "one
-    /// solve, zero refinements"), or a first estimate already at or under
-    /// `target_accuracy`. The post-loop diagnostic reads this so it never
-    /// claims a mark-driven remesh that did not happen
-    /// (reviewer_comprehensive amendment).
-    pub(crate) refine_count: usize,
+    /// The post-loop diagnostic reads `refine_count` so it never claims a
+    /// mark-driven remesh that did not happen (reviewer_comprehensive
+    /// amendment).
+    iterates: IterateRecord,
 }
 
 impl RealizedAdaptiveProblem {
@@ -3840,9 +3985,7 @@ impl RealizedAdaptiveProblem {
             tip_force,
             pressures,
             body_force,
-            last_global_indicator: 0.0,
-            last_n_dofs: 0,
-            refine_count: 0,
+            iterates: IterateRecord::default(),
         })
     }
 
@@ -3860,13 +4003,42 @@ impl RealizedAdaptiveProblem {
     }
 }
 
+/// Why a [`RealizedAdaptiveProblem`] seam call failed. The wiring site treats
+/// both variants alike: it warns, naming this error, and re-runs on the
+/// uniform lane.
+#[derive(Debug)]
+pub(crate) enum RealizedLaneError {
+    /// The gmsh remesh failed, or produced a mesh this crate cannot widen.
+    Remesh(reify_solver_elastic::RefineError),
+    /// The current realized mesh failed the shared solve's degenerate-tet gate.
+    DegenerateMesh(DegenerateTet),
+}
+
+impl From<reify_solver_elastic::RefineError> for RealizedLaneError {
+    fn from(error: reify_solver_elastic::RefineError) -> Self {
+        Self::Remesh(error)
+    }
+}
+
+impl std::fmt::Display for RealizedLaneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remesh(error) => error.fmt(f),
+            Self::DegenerateMesh(degenerate) => write!(
+                f,
+                "the realized mesh failed the solve's degenerate-tet gate: {degenerate}"
+            ),
+        }
+    }
+}
+
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// a gmsh FFI error, or libgmsh absent from this build —
-    /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
-    /// distinct, already-modelled variants). The wiring site catches this and
-    /// re-runs on the uniform lane rather than failing the solve.
-    type Error = reify_solver_elastic::RefineError;
+    /// a gmsh FFI error, or libgmsh absent from this build), and the realized
+    /// mesh can fail the shared solve's degenerate-tet gate. The wiring site
+    /// catches either and re-runs on the uniform lane rather than failing the
+    /// solve.
+    type Error = RealizedLaneError;
 
     /// Solve on the CURRENT realized mesh and estimate the Z-Z error.
     ///
@@ -3929,27 +4101,10 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
             None,
             // Synthetic-grid override is meaningless on the realized path.
             None,
-        );
+        )
+        .map_err(RealizedLaneError::DegenerateMesh)?;
 
-        let elements = isotropic_stress_elements(
-            &fea.coords,
-            &fea.tet_connectivity,
-            &fea.u,
-            &self.material,
-        );
-        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
-
-        let n_dofs = 3 * fea.coords.len();
-        self.last_global_indicator = zz.global_relative_energy_error;
-        self.last_n_dofs = n_dofs;
-
-        Ok(AdaptiveEstimate {
-            relative_error: zz.global_relative_energy_error,
-            per_element: zz.per_element,
-            n_dofs,
-            qoi: None,
-        })
+        Ok(self.iterates.record(fea, &self.material))
     }
 
     /// Consume the Dörfler-marked set by remeshing the volume under a
@@ -4004,7 +4159,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
 
         self.current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
         self.volume_mesh = refined;
-        self.refine_count += 1;
+        self.iterates.note_refine();
         Ok(())
     }
 }
@@ -4145,7 +4300,7 @@ fn element_stress_anisotropic(
 /// Task D7 (compute-fea-hardening PRD): Result-ified — returns
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
 /// propagating every dependency-extractor call (`classify_material_as_printed_zones`,
-/// `scalar_si_field`, `real_field`, `extract_material`) via `?`, and its own
+/// `modulus_field`, `ratio_field`, `extract_material`) via `?`, and its own
 /// non-StructureInstance guard now returns `Err(ExpectedStructureInstance)`
 /// directly instead of panicking. The sole production call site
 /// (`solve_elastic_static_trampoline`'s validate-all-inputs gate, D9/task
@@ -4264,76 +4419,6 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
     Ok(MaterialModel::Heterogeneous(field))
 }
 
-/// Errors produced by the FEA `Value`-shape leaf extractors/classifiers when
-/// the input does not match the expected shape (PRD compute-fea-hardening
-/// §C3).
-///
-/// This module's extract/classify helpers were migrated (tasks D2-D9) from
-/// "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. D9 (task
-/// 5087) completed the migration: every production call site in
-/// `solve_elastic_static_trampoline` now runs through that fn's
-/// validate-all-inputs gate, which `match`es each `Result` and returns
-/// `ComputeOutcome::Failed` with a diagnostic naming the offending arg on the
-/// first `Err`, instead of panicking. The transitional `FeaShimExt::fea_shim`
-/// bridging shim (D2-D8) has been removed.
-#[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
-#[derive(Debug, Clone, PartialEq)]
-enum FeaValueShapeError {
-    /// Expected a `Value::StructureInstance`, got something else.
-    ExpectedStructureInstance { context: &'static str, got: String },
-    /// Expected a `Value::Scalar { .. }`, got something else.
-    ExpectedScalar { context: &'static str, got: String },
-    /// Expected a `Value::Real`, got something else.
-    ExpectedReal { context: &'static str, got: String },
-    /// Expected an ordered component sequence (`Value::List`/`Point`/`Vector`),
-    /// got something else, or the wrong arity.
-    ExpectedList { context: &'static str, got: String },
-    /// A required `StructureInstance` field was absent.
-    MissingField { context: &'static str, field: &'static str },
-    /// A present, defined `Value::Scalar` whose dimension is not the one this
-    /// reader position expects (task #7019). Distinct from `ExpectedScalar`,
-    /// which fires when the value is not a `Value::Scalar` at all: this
-    /// variant is for the wrong dimension on the RIGHT shape — e.g. a
-    /// LENGTH-dimensioned Scalar at a position that expects DIMENSIONLESS,
-    /// or vice versa. `expected` names the position's `ArgSpec::type_name`.
-    WrongDimension {
-        context: &'static str,
-        expected: &'static str,
-        got: String,
-    },
-}
-
-impl std::fmt::Display for FeaValueShapeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FeaValueShapeError::ExpectedStructureInstance { context, got } => write!(
-                f,
-                "expected Value::StructureInstance for {context}, got {got}"
-            ),
-            FeaValueShapeError::ExpectedScalar { context, got } => {
-                write!(f, "expected Value::Scalar for {context}, got {got}")
-            }
-            FeaValueShapeError::ExpectedReal { context, got } => {
-                write!(f, "expected Value::Real for {context}, got {got}")
-            }
-            FeaValueShapeError::ExpectedList { context, got } => write!(
-                f,
-                "expected a list-shaped Value (List/Point/Vector) for {context}, got {got}"
-            ),
-            FeaValueShapeError::MissingField { context, field } => {
-                write!(f, "missing field {field:?} for {context}")
-            }
-            FeaValueShapeError::WrongDimension {
-                context,
-                expected,
-                got,
-            } => {
-                write!(f, "expected {expected} for {context}, got {got}")
-            }
-        }
-    }
-}
-
 /// Shared arity + per-component extraction for
 /// `extract_point3_si`/`extract_vec3_si`, once the caller has matched `val`
 /// against `Value::Point`/`Value::Vector` and obtained the ordered component
@@ -4387,84 +4472,6 @@ fn extract_scalar_triple(
         ComponentRead::Rejected(e) => Err(e),
     };
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
-}
-
-/// The outcome of reading ONE component of a triple. Mirrors
-/// `reify_ir::arg_acceptance::Acceptance` 1:1, carrying this module's
-/// [`FeaValueShapeError`] in place of `ArgRejection`.
-///
-/// `Undefined` is surfaced rather than folded into `Rejected` because the
-/// right response to an unresolved value is the CALLER's to choose, not
-/// [`spec_component`]'s (task #7019 review [reviewer_comprehensive], fixing a
-/// regression where folding the two together made `read_direction_or_neg_z`
-/// hard-fail the whole solve on transient solver state instead of degrading
-/// quietly). `extract_scalar_triple`'s `comp` closure treats `Undefined` as a
-/// shape error — today's pre-existing behaviour, preserved out of this
-/// task's charter (follow-up #7793 is filed to decide, deliberately and with
-/// its own test coverage, whether to widen it) — while
-/// `read_direction_or_neg_z` degrades it quietly to `0.0`, per PRD
-/// `dimension-checked-readers.md` decision 2 ("`Undef` in => `Undef` out,
-/// quietly"). Dimension EXPECTATION (what `spec_component` classifies) and
-/// undef POLICY (what the caller decides) are orthogonal axes; this enum is
-/// what keeps a catch-all arm from fusing them back together.
-enum ComponentRead {
-    /// The value has the expected dimension; carries the SI f64.
-    Accepted(f64),
-    /// The value is `Value::Undef` — an unresolved cell, not a mistake. The
-    /// caller decides what that means at this position.
-    Undefined,
-    /// The value is defined but the wrong shape/dimension.
-    Rejected(FeaValueShapeError),
-}
-
-/// Shared spec-driven per-component classifier (task #7019): classifies `v`
-/// against `spec` via the canonical `reify_ir::arg_acceptance::accept_arg`,
-/// so [`dimensioned_component`]/[`dimensionless_component`] differ only in
-/// which `ArgSpec` they pass, not in a hand-written `match` over `Value`.
-///
-/// Returns [`ComponentRead`], not a `Result`: this function's job is to
-/// CLASSIFY `v` against `spec`, not to decide what an `Acceptance::Undefined`
-/// result means to its caller — see `ComponentRead`'s doc. The match below
-/// names all three `Acceptance` variants explicitly, with no catch-all, so a
-/// future fourth variant is a compile error here rather than a silent
-/// miscategorisation.
-///
-/// The `matches!(v, Value::Scalar { .. })` discriminator applies to the
-/// `Rejected` arms ONLY, and distinguishes two genuinely different faults: a
-/// `Value::Scalar` whose `dimension` is wrong
-/// ([`FeaValueShapeError::WrongDimension`]) vs. a value that is not a
-/// `Value::Scalar` at all (`ExpectedScalar`) — which is what keeps every
-/// non-Scalar, DEFINED value on today's exact `ExpectedScalar` path. Both
-/// arms reuse the `ArgRejection` that `accept_arg` already built (task #7019
-/// review [reviewer_comprehensive]) instead of re-deriving a second wording
-/// from `format!("{v:?}")`: `rej.got` is `value_short_label`'s rendering
-/// (e.g. `"Length Scalar"`) and `rej.expected` is `spec.type_name`, so a
-/// `WrongDimension` at a `dimensionless_spec` position reads "expected Real
-/// … got Length Scalar" instead of a raw `Value::Scalar { .. }` `Debug` dump
-/// that names the dimension but not in the same words the `expected` side
-/// uses.
-fn spec_component(
-    v: &Value,
-    spec: &crate::arg_acceptance::ArgSpec,
-    context: &'static str,
-) -> ComponentRead {
-    use crate::arg_acceptance::{Acceptance, accept_arg};
-
-    match accept_arg(v, spec) {
-        Acceptance::Accepted(x) => ComponentRead::Accepted(x),
-        Acceptance::Undefined => ComponentRead::Undefined,
-        Acceptance::Rejected(rej) if matches!(v, Value::Scalar { .. }) => {
-            ComponentRead::Rejected(FeaValueShapeError::WrongDimension {
-                context,
-                expected: rej.expected,
-                got: rej.got,
-            })
-        }
-        Acceptance::Rejected(rej) => ComponentRead::Rejected(FeaValueShapeError::ExpectedScalar {
-            context,
-            got: rej.got,
-        }),
-    }
 }
 
 /// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
@@ -4769,25 +4776,25 @@ fn law_from_value(
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1")?,
-                e2:   scalar_si_field(law_data, "e2")?,
-                e3:   scalar_si_field(law_data, "e3")?,
-                g12:  scalar_si_field(law_data, "g12")?,
-                g13:  scalar_si_field(law_data, "g13")?,
-                g23:  scalar_si_field(law_data, "g23")?,
-                nu12: real_field(law_data, "nu12")?,
-                nu13: real_field(law_data, "nu13")?,
-                nu23: real_field(law_data, "nu23")?,
+                e1:   modulus_field(law_data, "e1")?,
+                e2:   modulus_field(law_data, "e2")?,
+                e3:   modulus_field(law_data, "e3")?,
+                g12:  modulus_field(law_data, "g12")?,
+                g13:  modulus_field(law_data, "g13")?,
+                g23:  modulus_field(law_data, "g23")?,
+                nu12: ratio_field(law_data, "nu12")?,
+                nu13: ratio_field(law_data, "nu13")?,
+                nu23: ratio_field(law_data, "nu23")?,
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane")?,
-                e_axial:     scalar_si_field(law_data, "e_axial")?,
-                nu_in_plane: real_field(law_data, "nu_in_plane")?,
-                nu_axial:    real_field(law_data, "nu_axial")?,
-                g_axial:     scalar_si_field(law_data, "g_axial")?,
+                e_in_plane:  modulus_field(law_data, "e_in_plane")?,
+                e_axial:     modulus_field(law_data, "e_axial")?,
+                nu_in_plane: ratio_field(law_data, "nu_in_plane")?,
+                nu_axial:    ratio_field(law_data, "nu_axial")?,
+                g_axial:     modulus_field(law_data, "g_axial")?,
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
@@ -4836,19 +4843,21 @@ fn is_named_anisotropic_law(type_name: &str) -> bool {
 /// the isotropic shape — instead of just the field that happened to be
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
-/// inside the (six-variant as of task #7019) `FeaValueShapeError` taxonomy:
-/// `MissingField` and `WrongDimension` each get their own `reason` arm below
+/// inside the `FeaValueShapeError` taxonomy: `MissingField`, `Unresolved`,
+/// `WrongDimension` and `Rejected` each get their own `reason` arm below
 /// (`WrongDimension`'s folds in `expected` alongside `got`, since it has no
-/// `field` to report); the rest have no `got: String` distinct enough to
-/// need one and re-emit as `ExpectedScalar`, whose `got` is already a
-/// free-form diagnostic string elsewhere in this module (see
-/// `scalar_si_field`'s comment).
+/// `field` to report; `Rejected` is the shared rejection wording); the rest
+/// have no `got: String` distinct enough to need one and re-emit as
+/// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
+/// elsewhere in the FEA readers.
 fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
     let reason = match err {
         FeaValueShapeError::MissingField { field, .. } => format!("missing field {field:?}"),
+        FeaValueShapeError::Unresolved { field, .. } => format!("unresolved field {field:?}"),
         FeaValueShapeError::WrongDimension { expected, got, .. } => {
             format!("expected {expected}, got {got}")
         }
+        FeaValueShapeError::Rejected(field) => field.to_string(),
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
@@ -4860,130 +4869,6 @@ fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeE
             "law type_name {type_name:?} is neither OrthotropicMaterial nor \
              TransverseIsotropicMaterial, and is not isotropic-shaped ({reason})"
         ),
-    }
-}
-
-/// Read a `Value::Scalar { si_value, .. }` field from a StructureInstance.
-fn scalar_si_field(
-    data: &StructureInstanceData,
-    key: &'static str,
-) -> Result<f64, FeaValueShapeError> {
-    match data.fields.get(key) {
-        Some(Value::Scalar { si_value, .. }) => Ok(*si_value),
-        // `context` stays the fixed function-name label per the PRD §C3
-        // contract (`ExpectedScalar { context: &'static str, got: String }`,
-        // shared with D3/D5/D7/D8/D9); `got`'s wording is unpinned (open
-        // question 2), so the offending field key rides along in `got`
-        // instead so a `panic!("{e}")`/eventual D9 diagnostic can name it.
-        Some(other) => Err(FeaValueShapeError::ExpectedScalar {
-            context: "scalar_si_field",
-            got: format!("{other:?} (field {key:?})"),
-        }),
-        None => Err(FeaValueShapeError::MissingField {
-            context: "scalar_si_field",
-            field: key,
-        }),
-    }
-}
-
-/// Read a `Value::Real` field from a StructureInstance.
-fn real_field(
-    data: &StructureInstanceData,
-    key: &'static str,
-) -> Result<f64, FeaValueShapeError> {
-    match data.fields.get(key) {
-        Some(Value::Real(r)) => Ok(*r),
-        // See `scalar_si_field`'s comment above: `context` stays the fixed
-        // function-name label; the field key rides in `got` instead so it
-        // isn't lost for the eventual D9 diagnostic.
-        Some(other) => Err(FeaValueShapeError::ExpectedReal {
-            context: "real_field",
-            got: format!("{other:?} (field {key:?})"),
-        }),
-        None => Err(FeaValueShapeError::MissingField {
-            context: "real_field",
-            field: key,
-        }),
-    }
-}
-
-/// Read `youngs_modulus`/`poisson_ratio` off an already-destructured
-/// `StructureInstanceData` into `IsotropicElastic`. The data-taking core
-/// behind `extract_material` (below), and behind `law_from_value`'s
-/// isotropic fallback arm, which already holds the law's destructured
-/// `&StructureInstanceData` and calls straight in here — taking a second,
-/// independently-matched `&Value` there instead (as the pre-amendment
-/// `extract_material(law_val)` call did) would let a future caller pass a
-/// `law_data`/`val` pair describing two DIFFERENT `StructureInstance`s with
-/// no error, silently reading the wrong one's fields (task #7210 review
-/// round 2 suggestion 1).
-///
-/// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
-/// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
-/// (e.g. a length or dimensionless scalar would be silently accepted as a
-/// pressure). This is pre-existing behavior, not a D3 regression — dimension
-/// checking is deferred to a later D-step, if/when the `FeaValueShapeError`
-/// taxonomy grows a variant for it.
-fn isotropic_from_data(
-    data: &StructureInstanceData,
-) -> Result<IsotropicElastic, FeaValueShapeError> {
-    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
-    let poisson_ratio = real_field(data, "poisson_ratio")?;
-    Ok(IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
-    })
-}
-
-/// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`. Thin
-/// `&Value`-destructuring wrapper around `isotropic_from_data`.
-///
-/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
-/// the sole call site (`classify_material`'s isotropic fallback, D7) now
-/// propagates this `Result` directly via `?`; `classify_material`'s own sole
-/// production call site is the validate-all-inputs gate (D9/task 5087) in
-/// `solve_elastic_static_trampoline`.
-fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
-    let data = match val {
-        Value::StructureInstance(d) => d,
-        other => {
-            return Err(FeaValueShapeError::ExpectedStructureInstance {
-                context: "extract_material",
-                got: format!("{other:?}"),
-            })
-        }
-    };
-    isotropic_from_data(data)
-}
-
-/// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
-fn extract_scalar_si(val: &Value) -> Result<f64, FeaValueShapeError> {
-    match val {
-        Value::Scalar { si_value, .. } => Ok(*si_value),
-        other => Err(FeaValueShapeError::ExpectedScalar {
-            context: "extract_scalar_si",
-            got: format!("{other:?}"),
-        }),
-    }
-}
-
-/// Extract the `density` SI value (kg·m⁻³) from a material `Value::StructureInstance`.
-///
-/// Returns `0.0` when the material value is not a `StructureInstance`, or when
-/// the `density` field is absent or not a `Value::Scalar`.  This is intentionally
-/// non-panicking — every `ElasticMaterial` conformer declares `density`, so any
-/// missing/malformed density is a defensive fallback (matching `extract_loads`'
-/// silent-skip convention for unrecognised load items).
-fn extract_density(val: &Value) -> f64 {
-    let data = match val {
-        Value::StructureInstance(d) => d,
-        _ => return 0.0,
-    };
-    match data.fields.get("density") {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        _ => 0.0,
     }
 }
 
@@ -5061,44 +4946,35 @@ type ExtractedLoads = ([f64; 3], Vec<PressureSpec>, [f64; 3]);
 /// - `body_force` — per-axis `[f64; 3]` accumulated gravity body-force vector
 ///   `Σ ρ·magnitude·direction` (N·m⁻³) over all `Gravity` items, where `ρ`
 ///   is the material density passed as `density`.  The caller obtains `density`
-///   from `extract_density(&value_inputs[0])`.
+///   from `material_density(&value_inputs[0])`.
 ///
 /// Returns `Err(FeaValueShapeError::ExpectedList)` if `val` is not a
-/// `Value::List`.
+/// `Value::List`, and the `fea_loads` reader's `Err` for a magnitude of the
+/// wrong dimension.
 /// A scene may mix `PointLoad`, `PressureLoad`, and `Gravity`; all accumulate
 /// into their respective targets in a single pass.
 fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueShapeError> {
-    let items = match val {
-        Value::List(v) => v,
-        other => {
-            return Err(FeaValueShapeError::ExpectedList {
-                context: "extract_loads",
-                got: format!("{other:?}"),
-            });
-        }
-    };
+    let items = load_items(val, "extract_loads")?;
     let mut tip_force_vec = [0.0f64; 3];
     let mut pressures = Vec::new();
     let mut body_force = [0.0f64; 3];
     for item in items {
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
-                if let Some(Value::Real(f)) = data.fields.get("force") {
+                if let Some(force) = point_load_force(data)? {
                     let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                     for axis in 0..3 {
-                        tip_force_vec[axis] += f * dir[axis];
+                        tip_force_vec[axis] += force * dir[axis];
                     }
                 }
             } else if data.type_name == "PressureLoad" {
-                if let Some(spec) = parse_pressure_spec(data) {
+                if let Some(spec) = parse_pressure_spec(data)? {
                     pressures.push(spec);
                 }
             } else if data.type_name == "Gravity" {
                 // body_force_axis = ρ · magnitude · direction[axis]  (N·m⁻³)
-                let magnitude = match data.fields.get("magnitude") {
-                    Some(Value::Real(m)) => *m,
-                    Some(Value::Scalar { si_value, .. }) => *si_value,
-                    _ => continue,
+                let Some(magnitude) = gravity_magnitude(data)? else {
+                    continue;
                 };
                 let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                 for axis in 0..3 {
@@ -5163,8 +5039,9 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
 /// [`extract_pressure_loads`] so the two extractors share one copy of the
 /// per-field (magnitude/face/direction) shape logic and cannot drift.
 ///
-/// Returns `None` (skips the load) when:
-/// - `magnitude` is absent or is neither `Value::Real` nor `Value::Scalar`;
+/// Returns `Err` when `magnitude` is present but not a pressure (see
+/// `fea_loads::pressure_load_magnitude`), and `Ok(None)` (skips the load) when:
+/// - `magnitude` is absent or `Undef`;
 /// - `face` is absent, or is the `= none` default (`Value::Option(None)`): a
 ///   `PressureLoad` with no face applies no traction, and this is skipped
 ///   *quietly* — it is the field's post-migration default, not an error;
@@ -5177,11 +5054,11 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
 ///
 /// `direction` defaults to `"normal"` when absent or non-`String` (the only
 /// supported value in v1).
-fn parse_pressure_spec(data: &StructureInstanceData) -> Option<PressureSpec> {
-    let magnitude = match data.fields.get("magnitude") {
-        Some(Value::Real(m)) => *m,
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        _ => return None,
+fn parse_pressure_spec(
+    data: &StructureInstanceData,
+) -> Result<Option<PressureSpec>, FeaValueShapeError> {
+    let Some(magnitude) = pressure_load_magnitude(data)? else {
+        return Ok(None);
     };
     let face = match data.fields.get("face") {
         Some(face_val) => match extract_pressure_face_name(face_val) {
@@ -5201,48 +5078,44 @@ fn parse_pressure_spec(data: &StructureInstanceData) -> Option<PressureSpec> {
                          this pressure load",
                     );
                 }
-                return None;
+                return Ok(None);
             }
         },
-        None => return None,
+        None => return Ok(None),
     };
     let direction = match data.fields.get("direction") {
         Some(Value::String(s)) => s.clone(),
         _ => "normal".to_string(),
     };
-    Some(PressureSpec {
+    Ok(Some(PressureSpec {
         magnitude,
         face,
         direction,
-    })
+    }))
 }
 
 /// Extract all `PressureLoad` StructureInstances from a `Value::List`.
 ///
 /// Items that are not `PressureLoad` (e.g. `PointLoad`, `FixedSupport`) are
-/// silently skipped — the caller is responsible for handling them separately.
-///
-/// Returns an empty Vec if the list contains no `PressureLoad` items.
+/// skipped — the caller is responsible for handling them separately. Errs
+/// exactly where [`extract_loads`] does: a non-List `val`, or a magnitude of
+/// the wrong dimension.
 ///
 /// Production code uses the combined [`extract_loads`] (single pass over both
 /// `PointLoad` and `PressureLoad`).  This function is kept for targeted unit
 /// testing of the pressure-extraction path in isolation.
 #[cfg(test)]
-pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
-    let items = match val {
-        Value::List(v) => v,
-        _ => return vec![],
-    };
+fn extract_pressure_loads(val: &Value) -> Result<Vec<PressureSpec>, FeaValueShapeError> {
     let mut result = Vec::new();
-    for item in items.iter() {
+    for item in load_items(val, "extract_pressure_loads")? {
         if let Value::StructureInstance(data) = item
             && data.type_name == "PressureLoad"
-            && let Some(spec) = parse_pressure_spec(data)
+            && let Some(spec) = parse_pressure_spec(data)?
         {
             result.push(spec);
         }
     }
-    result
+    Ok(result)
 }
 
 /// Map a face-name string to `(axis, at_max, extent, inward_normal)`.
@@ -5278,10 +5151,10 @@ fn box_face_plane(
 /// - `extent` — physical coordinate of the plane.
 /// - `eps`    — point-on-plane tolerance (1e-9 recommended).
 ///
-/// For each tet's 4 triangular faces, a face is included if all 3 of its nodes
-/// satisfy the plane predicate (`coord[axis] >= extent - eps` for at_max,
-/// `coord[axis] <= eps` for lower).  A boundary face belongs to exactly one tet
-/// so there is no double-counting.
+/// Returns the free (boundary) tet faces whose 3 nodes all satisfy the plane
+/// predicate (`coord[axis] >= extent - eps` for at_max, `coord[axis] <= eps`
+/// for lower), via `free_faces_within`, so a face shared by two tets is never
+/// included.
 fn collect_box_face_triangles(
     coords: &[[f64; 3]],
     tets: &[[usize; 4]],
@@ -5290,9 +5163,6 @@ fn collect_box_face_triangles(
     extent: f64,
     eps: f64,
 ) -> Vec<[usize; 3]> {
-    // Four triangular faces of a tet [a, b, c, d]:
-    const FACE_IDX: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-
     // NOTE: `eps` is an **absolute** tolerance. For the current fixtures
     // (SI-metre beams, node spacing >> 1e-9 m) this is safe. If sub-millimetre
     // or sub-micron FEA geometries are ever supported, consider scaling eps
@@ -5306,19 +5176,7 @@ fn collect_box_face_triangles(
             coord <= eps
         }
     };
-
-    let mut result = Vec::new();
-    for tet in tets {
-        for fi in &FACE_IDX {
-            let n0 = tet[fi[0]];
-            let n1 = tet[fi[1]];
-            let n2 = tet[fi[2]];
-            if on_plane(n0) && on_plane(n1) && on_plane(n2) {
-                result.push([n0, n1, n2]);
-            }
-        }
-    }
-    result
+    free_faces_within(tets, on_plane)
 }
 
 /// Apply face-pressure tractions from `pressures` into the global force vector `f`.
@@ -5330,7 +5188,7 @@ fn collect_box_face_triangles(
 ///
 /// The traction vector is `magnitude · inward_normal`.  Only `"normal"` direction
 /// is supported in v1; other direction strings are treated as `"normal"`.
-/// Accumulates additively into `f` — composable with the existing tip point loads.
+/// Accumulates additively into `f` — composable with the tip load.
 ///
 /// **Performance note:** the full tet mesh is scanned once per `PressureSpec`
 /// (O(|pressures| × n_tets)).  For the current fixtures (≤ 2 specs, small meshes)
@@ -5605,8 +5463,8 @@ fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
 /// an opaque caller-supplied `Value` (this function does not construct it) —
 /// the caller passes `Value::Option(None)` when no field is available, or
 /// `Value::Option(Some(Box::new(Value::Field{..})))` (built via
-/// [`super::sampled_error_indicator_field`] from the coarse-mesh ZZ
-/// stress-error resample) on the isotropic adaptive path.
+/// [`error_indicator_field`] from the REPORTED solve's ZZ stress-error
+/// resample) on the isotropic adaptive path.
 fn aposteriori_adaptive_fields(
     status: &ConvergenceStatus,
     global_error: f64,
@@ -5672,8 +5530,8 @@ fn value_to_convergence_status(v: &Value) -> Option<ConvergenceStatus> {
 mod tests {
     use super::*;
     use reify_solver_elastic::{
-        AnisotropicMaterial, DORFLER_THETA, MaterialField, OrthotropicMaterial, RefinementBudget,
-        run_adaptive_refinement,
+        AnisotropicMaterial, DORFLER_THETA, MIN_TET_SHAPE_QUALITY, MaterialField,
+        OrthotropicMaterial, RefinementBudget, run_adaptive_refinement,
     };
 
     // Shared AsPrintedZones Value-fixture builders.  We cannot use
@@ -6023,7 +5881,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // (a) the solve ran on the realized mesh — counts == provided, NOT the
         // synthetic nx×1×6 box's counts for the same dims.
@@ -6070,7 +5929,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         let nz = 6usize;
         let nx = ((dims[0] / dims[2] * nz as f64).round() as usize).max(1);
         let syn_nodes = (nx + 1) * 2 * (nz + 1);
@@ -6101,14 +5961,14 @@ mod tests {
     /// A gmsh-realized tet mesh can carry a surface vertex with no incident
     /// tet. On the realized solve path, node sets are chosen by COORDINATE
     /// (the x_min face → clamp, x_max face → tip —
-    /// `solve_cantilever_fea`'s realized arm, ~L2420-2431), so an orphan
+    /// `solve_cantilever_fea`'s realized arm), so an orphan
     /// sitting on the x_min face gets coordinate-selected into the Dirichlet
     /// clamp set even though it belongs to no element. `assemble_global_stiffness`
     /// sizes K at `3 * coords.len()`, so an orphan's row/column are entirely
     /// zero. The CG solver's Jacobi preconditioner
     /// (`reify_solver_elastic::solver::extract_diag_jacobi`) unconditionally
     /// asserts a stored, non-zero diagonal at EVERY K row and panics
-    /// otherwise (documented panic, `solver.rs:303-304`) — so restricting
+    /// otherwise (documented in `solve_cg`'s `# Panics` section) — so restricting
     /// only BC *selection* to tet-referenced nodes is not enough; the orphan
     /// must never reach the solve mesh at all.
     ///
@@ -6191,7 +6051,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             fea.converged,
             "realized-mesh solve over the compacted (orphan-dropped) mesh must converge"
@@ -6360,7 +6221,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert_eq!(
             fea_default.coords.len(),
             default_nodes,
@@ -6388,7 +6250,8 @@ mod tests {
             None,
             None,
             Some((nx_default * 2, 1, nz_default * 2)),
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             fea_refined.coords.len() > fea_default.coords.len(),
             "Some(finer) override must produce strictly more nodes than the default: \
@@ -6443,7 +6306,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(
             est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
@@ -6467,7 +6330,7 @@ mod tests {
         );
 
         assert_eq!(
-            problem.last_global_indicator, est.relative_error,
+            problem.iterates.last_global_indicator, est.relative_error,
             "the problem must record the returned relative_error"
         );
     }
@@ -6513,7 +6376,7 @@ mod tests {
         };
 
         let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-            .expect("CantileverAdaptiveProblem::Error is Infallible");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         match status {
             ConvergenceStatus::NotConverged { reason } => {
@@ -6533,10 +6396,10 @@ mod tests {
             }
         }
 
+        let last_global_indicator = problem.iterates.last_global_indicator;
         assert!(
-            problem.last_global_indicator.is_finite() && problem.last_global_indicator >= 0.0,
-            "last_global_indicator must be finite and non-negative, got {}",
-            problem.last_global_indicator
+            last_global_indicator.is_finite() && last_global_indicator >= 0.0,
+            "last_global_indicator must be finite and non-negative, got {last_global_indicator}",
         );
 
         // `refine` ran at least once: a fresh solve_and_estimate at the
@@ -6544,7 +6407,7 @@ mod tests {
         // strictly more dofs than the initial resolution.
         let final_est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -6668,7 +6531,7 @@ mod tests {
     /// the resampled §7a bounds_max reveal which mesh drove the solve:
     ///   - body path (correct)  → `bounds_max ≈ [2.0, 0.5, 0.5]`
     ///   - misread-as-dims path → the GeometryHandle read as `length` via
-    ///     `extract_scalar_si` and the loads/supports `List`s read as
+    ///     `extract_length_si` and the loads/supports `List`s read as
     ///     width/height, which never reaches a well-formed solve on this mesh.
     ///
     /// RED today: the trampoline reads `value_inputs[1]` (the GeometryHandle) as
@@ -6757,6 +6620,229 @@ mod tests {
             }
             other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
         }
+    }
+
+    // ── task 8254: scale-aware oriented degenerate-tet gate ───────────────────
+
+    /// Body-overload `value_inputs` (`[material, body, loads, supports, options]`,
+    /// as in `trampoline_body_overload_consumes_realized_volume_mesh`) with one
+    /// tip `PointLoad` of `force_n`.
+    fn body_overload_value_inputs(force_n: f64) -> [Value; 5] {
+        [
+            shell9_make_isotropic_material(200e9, 0.3),
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+            shell9_make_point_loads(force_n),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ]
+    }
+
+    fn tet_indices_mut(vm: &mut VolumeMesh) -> &mut Vec<u32> {
+        match &mut vm.connectivity {
+            reify_ir::VolumeConnectivity::Tet { indices, .. } => indices,
+            other => panic!("expected tet connectivity, got {other:?}"),
+        }
+    }
+
+    fn solve_body_overload_on(vm: VolumeMesh) -> ComputeOutcome {
+        solve_elastic_static_trampoline(
+            &body_overload_value_inputs(1.0),
+            &[vm_read_handle(vm)],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// Asserts `outcome` is the degenerate-mesh `Failed` naming `element_id`, and
+    /// returns its one Error diagnostic's message.
+    fn expect_singular_stiffness_failure(outcome: ComputeOutcome, element_id: usize) -> String {
+        let (diagnostics, structured_detail) = match outcome {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => (diagnostics, structured_detail),
+            other => panic!("a degenerate mesh must yield ComputeOutcome::Failed, got {other:?}"),
+        };
+        let errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "exactly one Error diagnostic, got {diagnostics:?}"
+        );
+        assert_eq!(errors[0].code, Some(DiagnosticCode::FeaSingularStiffness));
+        assert_eq!(
+            structured_detail,
+            vec![StructuredComputeDetail::Fea(
+                reify_solver_elastic::FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![reify_solver_elastic::ElementId(element_id)],
+                }
+            )],
+        );
+        errors[0].message.clone()
+    }
+
+    /// Acceptance (a): a well-shaped body meshed at 0.1 mm (every tet volume
+    /// ≈ 1.7e-13 m³) must solve. The retired absolute 1e-12 m³ volume check
+    /// rejected it as degenerate.
+    #[test]
+    fn trampoline_body_solve_on_sub_mm_well_shaped_mesh_completes() {
+        let vm = make_box_tet_volume_mesh([2e-3, 4e-4, 4e-4], [20, 4, 4]);
+        let (coords, tets) = volume_mesh_to_solver_mesh(&vm).expect("usable P1 mesh");
+        assert_eq!((coords.len(), tets.len()), (525, 1920));
+        for tet in &tets {
+            let volume = tet_volume_p1(&tet.map(|n| coords[n]));
+            assert!(
+                volume < 1e-12,
+                "premise: every tet volume < 1e-12 m³, got {volume}"
+            );
+        }
+
+        let fields = shell9_result_fields(solve_body_overload_on(vm));
+
+        let realized_max = [2e-3_f64, 4e-4, 4e-4];
+        let bounds_max = match fields.get("displacement") {
+            Some(Value::Field { source, lambda, .. }) => {
+                assert!(matches!(source, FieldSourceKind::Sampled));
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.bounds_max.clone(),
+                    other => panic!("displacement lambda must be a SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("displacement must be a Value::Field, got {other:?}"),
+        };
+        for axis in 0..3 {
+            assert!(
+                ((bounds_max[axis] - realized_max[axis]) / realized_max[axis]).abs() < 1e-5,
+                "displacement bounds_max[{axis}] = {} must match the realized AABB {}",
+                bounds_max[axis],
+                realized_max[axis],
+            );
+        }
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, .. }) => assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "max_von_mises must be finite and > 0, got {si_value}"
+            ),
+            other => panic!("max_von_mises must be a Scalar, got {other:?}"),
+        }
+    }
+
+    /// Acceptance (c): a tet oriented against the rest of the mesh fails the
+    /// solve with a FeaSingularStiffness diagnostic that says it is inverted.
+    /// Assembly takes `|det J|`, so without the gate the solve completes.
+    #[test]
+    fn trampoline_rejects_inverted_tet_with_fea_singular_stiffness() {
+        let mut vm = make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]);
+        // Tet 5 occupies buffer positions 20..24; swapping its first two nodes
+        // inverts it.
+        tet_indices_mut(&mut vm).swap(20, 21);
+
+        let message = expect_singular_stiffness_failure(solve_body_overload_on(vm), 5);
+        assert!(
+            message.contains("inverted"),
+            "the diagnostic must say the tet is inverted, got: {message}"
+        );
+    }
+
+    /// The 12-tet `[2.0, 0.5, 0.5]` box (`reps = [2, 1, 1]`, so 3×2×2 nodes) with
+    /// a FLAT element 12 appended over hex (0,0,0)'s z = 0 bottom face, nodes
+    /// `[0, 1, 4, 3]`: det J = 0, and every node is already referenced.
+    fn box_mesh_with_flat_sliver() -> VolumeMesh {
+        let mut vm = make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]);
+        tet_indices_mut(&mut vm).extend([0, 1, 4, 3]);
+        vm
+    }
+
+    /// Acceptance (b): the gate runs BEFORE assembly. A zero-volume element
+    /// trips assembly's Jacobian assert, so only a pre-assembly gate turns it
+    /// into a clean `Failed`.
+    #[test]
+    fn trampoline_injected_flat_sliver_fails_fast_with_fea_singular_stiffness() {
+        let message = expect_singular_stiffness_failure(
+            solve_body_overload_on(box_mesh_with_flat_sliver()),
+            12,
+        );
+        assert!(
+            message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
+            "the diagnostic must name the threshold, got: {message}"
+        );
+    }
+
+    /// Acceptance (d), realized lane: the shared solve rejects a degenerate
+    /// mesh with an error the wiring site turns into a warning plus
+    /// uniform-lane fallback.
+    #[test]
+    fn realized_adaptive_problem_rejects_degenerate_mesh_before_solving() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        // `solve_and_estimate` never reads the surface; take it from the clean box.
+        let surface = reify_solver_elastic::boundary_surface_mesh(&make_box_tet_volume_mesh(
+            [2.0, 0.5, 0.5],
+            [2, 1, 1],
+        ))
+        .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            iso,
+            box_mesh_with_flat_sliver(),
+            surface,
+            reify_solver_elastic::MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+
+        match problem.solve_and_estimate() {
+            Err(RealizedLaneError::DegenerateMesh(degenerate)) => assert!(
+                degenerate.quality < MIN_TET_SHAPE_QUALITY,
+                "reported quality {} must fail the gate",
+                degenerate.quality
+            ),
+            other => panic!("expected the degenerate-tet gate's error, got {other:?}"),
+        }
+    }
+
+    /// Acceptance (d), uniform lane: an absurd forced-tet slab (1 m × 1 km ×
+    /// 1 mm, so the clamped synthetic grid has tets with q ≈ 3.6e-12) is
+    /// rejected by the shared solve.
+    #[test]
+    fn cantilever_adaptive_problem_rejects_degenerate_synthetic_grid_before_solving() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            1.0,
+            1e3,
+            1e-3,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+        let degenerate = problem
+            .solve_and_estimate()
+            .expect_err("a q ≈ 3.6e-12 synthetic grid must fail the degenerate-tet gate");
+        assert!(
+            degenerate.quality < MIN_TET_SHAPE_QUALITY,
+            "reported quality {} must fail the gate",
+            degenerate.quality
+        );
     }
 
     // ── task 4091: honest fallback to the synthetic box (step-9) ──────────────
@@ -6977,7 +7063,8 @@ mod tests {
             None,
             Some((Some(clamp_usize), Some(load_usize))),
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(fea.converged, "the selector-driven cantilever solve must converge");
         // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
         let mut tip = fea.tip_nodes.clone();
@@ -7019,7 +7106,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         let mut tip_coord = fea_coord.tip_nodes.clone();
         tip_coord.sort_unstable();
         assert_eq!(
@@ -7352,7 +7440,7 @@ mod tests {
 
         let loads = Value::List(vec![pressure_load, point_load]);
 
-        let specs = extract_pressure_loads(&loads);
+        let specs = extract_pressure_loads(&loads).expect("a bare magnitude reads");
 
         assert_eq!(
             specs.len(),
@@ -7365,7 +7453,8 @@ mod tests {
         assert_eq!(specs[0].direction, "normal");
 
         // Also assert that a bare empty list → empty Vec.
-        let empty_specs = extract_pressure_loads(&Value::List(vec![]));
+        let empty_specs =
+            extract_pressure_loads(&Value::List(vec![])).expect("an empty list reads");
         assert!(empty_specs.is_empty(), "empty list should return empty Vec");
     }
 
@@ -7421,7 +7510,7 @@ mod tests {
         let loads = Value::List(vec![pressure_load]);
 
         // (a) extract_pressure_loads — the isolated pressure path.
-        let specs = extract_pressure_loads(&loads);
+        let specs = extract_pressure_loads(&loads).expect("a bare magnitude reads");
         assert_eq!(
             specs.len(),
             1,
@@ -7500,7 +7589,8 @@ mod tests {
             Some("x_max"),
             "Option(Some(Selector(Named))) must recurse+unwrap to the face name"
         );
-        let specs = extract_pressure_loads(&make_pressure_list(wrapped));
+        let specs =
+            extract_pressure_loads(&make_pressure_list(wrapped)).expect("a bare magnitude reads");
         assert_eq!(
             specs.len(),
             1,
@@ -7517,11 +7607,52 @@ mod tests {
             None,
             "Option(None) is the `= none` default → no face name"
         );
-        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)));
+        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)))
+            .expect("a face-less load is skipped, not rejected");
         assert!(
             none_specs.is_empty(),
             "Option(None) face (the `= none` default) must skip the load, got {} spec(s)",
             none_specs.len()
+        );
+    }
+
+    /// task 6922 γ1: the isolated pressure path refuses a magnitude of the
+    /// wrong dimension exactly as `extract_loads` does, rather than dropping
+    /// the load.
+    #[test]
+    fn extract_pressure_loads_rejects_a_force_magnitude() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: 1.0e6,
+                    dimension: DimensionVector::FORCE,
+                },
+            ),
+            ("face".to_string(), Value::String("x_max".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let loads = Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_name: "PressureLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            },
+        ))]);
+
+        let isolated = extract_pressure_loads(&loads);
+        assert!(
+            matches!(isolated, Err(FeaValueShapeError::Rejected(_))),
+            "got {isolated:?}"
+        );
+        assert_eq!(
+            isolated.err(),
+            extract_loads(&loads, 0.0).err(),
+            "both pressure paths must reject the same way"
         );
     }
 
@@ -8016,7 +8147,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(result.converged, "FEA must converge under x_max pressure");
 
@@ -8036,6 +8168,111 @@ mod tests {
             result.max_von_mises.is_finite() && result.max_von_mises > 0.0,
             "max_von_mises must be finite > 0, got {}",
             result.max_von_mises
+        );
+    }
+
+    /// `[length, width, height]` (m) of the synthetic box the traction tests load.
+    const TRACTION_TEST_BOX: [f64; 3] = [1.0, 0.1, 0.1];
+    const TRACTION_TEST_PRESSURE: f64 = 1.0e6;
+
+    /// Solves `TRACTION_TEST_BOX` once under `TRACTION_TEST_PRESSURE` on `face`
+    /// and once under `tip_force` on the tip set `load_set` picks from the mesh
+    /// (`None`: the solve's own x_max face), and asserts the two displacement
+    /// fields agree to CG stopping noise: the tip force assembles as that
+    /// pressure.
+    fn assert_tip_force_loads_like_face_pressure(
+        case: &str,
+        grid_override: Option<(usize, usize, usize)>,
+        face: &str,
+        tip_force: [f64; 3],
+        load_set: impl Fn(&[[f64; 3]]) -> Option<Vec<usize>>,
+    ) {
+        let model = MaterialModel::Isotropic(IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
+        let [length, width, height] = TRACTION_TEST_BOX;
+        let solve = |tip_force, pressures: &[PressureSpec], bc_override| {
+            let (result, _warm) = solve_cantilever_fea(
+                &model,
+                length,
+                width,
+                height,
+                None,
+                tip_force,
+                None,
+                pressures,
+                [0.0; 3],
+                true,
+                None,
+                None,
+                bc_override,
+                grid_override,
+            )
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
+            assert!(result.converged, "{case}: solve did not converge");
+            result
+        };
+        let pressure = [PressureSpec {
+            magnitude: TRACTION_TEST_PRESSURE,
+            face: face.to_string(),
+            direction: "normal".to_string(),
+        }];
+        let by_pressure = solve([0.0; 3], &pressure, None);
+        let bc_override = load_set(&by_pressure.coords).map(|load| (None, Some(load)));
+        let by_tip_force = solve(tip_force, &[], bc_override);
+
+        let scale = by_pressure.u.iter().fold(0.0_f64, |m, u| m.max(u.abs()));
+        let gap = by_tip_force
+            .u
+            .iter()
+            .zip(by_pressure.u.iter())
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+        // Empirical: CG's tolerance bounds the residual, not this gap.
+        assert!(
+            gap <= 1e-6 * scale,
+            "{case}: tip-force and {face}-pressure solves differ by {gap:e} \
+             (max |u| = {scale:e})",
+        );
+    }
+
+    /// Task 7448: the tip force loads the synthetic x_max face as the uniform
+    /// traction of its resultant, on the default grid and on a grid the
+    /// uniform adaptive lane produces.
+    #[test]
+    fn tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face() {
+        let [_, width, height] = TRACTION_TEST_BOX;
+        let x_max_resultant = [-TRACTION_TEST_PRESSURE * width * height, 0.0, 0.0];
+        for grid_override in [None, Some((8, 2, 4))] {
+            assert_tip_force_loads_like_face_pressure(
+                &format!("grid {grid_override:?}"),
+                grid_override,
+                "x_max",
+                x_max_resultant,
+                |_| None,
+            );
+        }
+    }
+
+    /// Task 7448: a selector-resolved (task 4092) load set on a face other
+    /// than x_max also gets the uniform traction of the tip resultant.
+    #[test]
+    fn selector_resolved_load_set_gets_the_uniform_traction_of_its_resultant() {
+        let [length, width, height] = TRACTION_TEST_BOX;
+        let z_max_resultant = [0.0, 0.0, -TRACTION_TEST_PRESSURE * length * width];
+        let z_max_face_nodes = |coords: &[[f64; 3]]| {
+            Some(
+                (0..coords.len())
+                    .filter(|&n| coords[n][2] >= height - 1e-9)
+                    .collect(),
+            )
+        };
+        assert_tip_force_loads_like_face_pressure(
+            "z_max load set",
+            None,
+            "z_max",
+            z_max_resultant,
+            z_max_face_nodes,
         );
     }
 
@@ -8091,7 +8328,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Tip deflection = max |u_z| over tip-face nodes.
         let tip_deflection = result
@@ -8176,7 +8414,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso),
@@ -8193,7 +8432,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Both must converge.
         assert!(iso_result.converged, "isotropic solve must converge");
@@ -8310,7 +8550,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
         let sigma_analytic = 6.0 * tip_force * length / (width * height * height);
@@ -8475,7 +8716,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
         let nz_exp = 6usize;
@@ -9663,63 +9905,6 @@ mod tests {
         );
     }
 
-    /// Pins the non-panicking fallback of `extract_density`:
-    ///
-    /// - A `StructureInstance` with a well-formed `Scalar density` field returns
-    ///   the SI value.
-    /// - A `StructureInstance` missing the `density` field returns `0.0`.
-    /// - A non-`StructureInstance` value (e.g. `Value::Real`) returns `0.0`.
-    ///
-    /// This test makes the defensive fallback explicit so it is distinguishable
-    /// from a latent bug.  Every `ElasticMaterial` conformer declares `density`,
-    /// so the fallback paths arise only from malformed or absent material values.
-    #[test]
-    fn extract_density_fallback_returns_zero_when_field_absent() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        // (a) Well-formed material → correct SI density
-        let fields_a: PersistentMap<String, Value> = [(
-            "density".to_string(),
-            Value::Scalar {
-                si_value: 7850.0,
-                dimension: DimensionVector::MASS_DENSITY,
-            },
-        )]
-        .into_iter()
-        .collect();
-        let material_a = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "Steel_AISI_1045".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields: fields_a,
-        }));
-        assert!(
-            (extract_density(&material_a) - 7850.0).abs() < 1e-9,
-            "(a) well-formed material → density 7850.0"
-        );
-
-        // (b) StructureInstance with no density field → 0.0 (intentional silent fallback)
-        let fields_b: PersistentMap<String, Value> = [].into_iter().collect();
-        let material_b = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "NoFieldMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields: fields_b,
-        }));
-        assert_eq!(
-            extract_density(&material_b),
-            0.0,
-            "(b) absent density field → 0.0"
-        );
-
-        // (c) Non-StructureInstance value → 0.0
-        assert_eq!(
-            extract_density(&Value::Real(42.0)),
-            0.0,
-            "(c) non-StructureInstance → 0.0"
-        );
-    }
-
     /// Pins the density=0 + Gravity-present fallback: when `density` resolves to
     /// `0.0`, `extract_loads` silently returns a zero body-force vector.
     ///
@@ -9823,6 +10008,206 @@ mod tests {
         );
     }
 
+    // ── task 6922 γ1: load magnitudes are dimension-checked, bare still read ──
+
+    use crate::arg_acceptance::{
+        Acceptance, FieldRejection, accept_arg, density_spec, force_spec, read_field_or_bare,
+    };
+    use crate::compute_targets::{scalar, structure};
+
+    fn point_load_tip_force(force: Value) -> [f64; 3] {
+        let loads = Value::List(vec![structure("PointLoad", vec![("force", force)])]);
+        extract_loads(&loads, 0.0).unwrap().0
+    }
+
+    #[test]
+    fn extract_loads_reads_a_force_dimensioned_point_load_like_the_bare_spelling() {
+        let bare = point_load_tip_force(Value::Real(1000.0));
+        assert_eq!(bare, [0.0, 0.0, -1000.0]);
+        assert_eq!(
+            point_load_tip_force(scalar(1000.0, DimensionVector::FORCE)),
+            bare,
+            "a FORCE Scalar must apply exactly the force the bare spelling does"
+        );
+    }
+
+    #[test]
+    fn extract_loads_keeps_dimensioned_pressure_and_gravity_magnitudes() {
+        let pressure = structure(
+            "PressureLoad",
+            vec![
+                ("magnitude", scalar(5.0e6, DimensionVector::PRESSURE)),
+                ("face", Value::String("x_max".to_string())),
+            ],
+        );
+        let gravity = structure(
+            "Gravity",
+            vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
+        );
+        let (_, pressures, body) =
+            extract_loads(&Value::List(vec![pressure, gravity]), 1000.0).unwrap();
+        assert_eq!(pressures.len(), 1);
+        assert_eq!(pressures[0].magnitude, 5.0e6);
+        assert_eq!(body, [0.0, 0.0, -9800.0]);
+    }
+
+    /// Each load kind reads its magnitude at its own site in `extract_loads`;
+    /// every site must surface the `fea_loads` rejection, never skip the load.
+    #[test]
+    fn extract_loads_surfaces_a_magnitude_rejection_at_each_load_position() {
+        let cases = [
+            ("PointLoad", "force", DimensionVector::LENGTH),
+            ("PressureLoad", "magnitude", DimensionVector::FORCE),
+            ("Gravity", "magnitude", DimensionVector::FORCE),
+        ];
+        for (type_name, field, wrong) in cases {
+            let mut fields = vec![(field, scalar(2.0, wrong))];
+            if type_name == "PressureLoad" {
+                fields.push(("face", Value::String("x_max".to_string())));
+            }
+            let loads = Value::List(vec![structure(type_name, fields)]);
+            let res = extract_loads(&loads, 7850.0);
+            assert!(
+                matches!(
+                    &res,
+                    Err(FeaValueShapeError::Rejected(FieldRejection { path, .. }))
+                        if *path == format!("{type_name}.{field}")
+                ),
+                "{type_name}.{field}: a wrong-dimension Scalar must fail \
+                 extract_loads with Err(Rejected), got {res:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_loads_skips_an_undef_or_absent_force_quietly() {
+        assert_eq!(point_load_tip_force(Value::Undef), [0.0, 0.0, 0.0]);
+        let no_force = Value::List(vec![structure("PointLoad", vec![])]);
+        assert_eq!(extract_loads(&no_force, 0.0).unwrap().0, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn trampoline_fails_a_wrong_dimension_force_with_the_dimensioned_arg_code() {
+        let mut value_inputs = shell9_valid_inputs();
+        value_inputs[4] = Value::List(vec![structure(
+            "PointLoad",
+            vec![("force", scalar(2.0, DimensionVector::LENGTH))],
+        )]);
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+            unreachable!("a LENGTH force must fail the input gate, got {outcome:?}");
+        };
+        let Value::StructureInstance(load) = structure(
+            "PointLoad",
+            vec![("force", scalar(2.0, DimensionVector::LENGTH))],
+        ) else {
+            unreachable!("`structure` builds a StructureInstance");
+        };
+        let expected = read_field_or_bare(&load, "force", &force_spec())
+            .unwrap_err()
+            .to_error("solve_elastic_static_trampoline")
+            .message;
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+                    && d.message == expected
+            }),
+            "expected a DimensionedArgRejected Error {expected:?}, got {diagnostics:?}"
+        );
+    }
+
+    /// A box size of another dimension is refused, never read as metres.
+    #[test]
+    fn trampoline_fails_a_wrong_dimension_box_size_with_the_dimensioned_arg_code() {
+        for (index, arg) in [(1, "length"), (2, "width"), (3, "height")] {
+            let mut value_inputs = shell9_valid_inputs();
+            value_inputs[index] = scalar(0.1, DimensionVector::MASS);
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+                unreachable!("a MASS {arg} must fail the input gate, got {outcome:?}");
+            };
+            let prefix = format!("solve_elastic_static_trampoline: {arg}:");
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == reify_core::Severity::Error
+                        && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+                        && d.message.starts_with(&prefix)
+                        && d.message.contains("Length")
+                }),
+                "a MASS {arg} must yield a DimensionedArgRejected Error starting \
+                 {prefix:?} and expecting a Length, got {diagnostics:?}"
+            );
+        }
+    }
+
+    /// A refused `density` fails the solve even when no `Gravity` load would
+    /// read it: a present value the reader refuses is never read as absent.
+    #[test]
+    fn trampoline_fails_a_wrong_dimension_density_without_a_gravity_load() {
+        let mut value_inputs = shell9_valid_inputs();
+        let Value::StructureInstance(material) = &mut value_inputs[0] else {
+            unreachable!("shell9_valid_inputs builds a StructureInstance material");
+        };
+        material.fields.insert(
+            "density".to_string(),
+            scalar(7850.0, DimensionVector::PRESSURE),
+        );
+        let Value::List(loads) = &value_inputs[4] else {
+            unreachable!("shell9_valid_inputs builds a load list");
+        };
+        assert!(
+            loads.iter().all(|load| !matches!(
+                load,
+                Value::StructureInstance(d) if d.type_name == "Gravity"
+            )),
+            "anti-vacuity: the load list must carry no Gravity load"
+        );
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+            unreachable!("a PRESSURE density must fail the input gate, got {outcome:?}");
+        };
+        let Acceptance::Rejected(rejection) =
+            accept_arg(&scalar(7850.0, DimensionVector::PRESSURE), &density_spec())
+        else {
+            unreachable!("the strict density spec refuses a PRESSURE Scalar");
+        };
+        let expected = rejection.message(
+            "solve_elastic_static_trampoline",
+            "IsotropicElastic.density",
+        );
+        assert!(
+            expected.contains(reify_core::units::DENSITY_MIGRATION_HINT),
+            "anti-vacuity: the shared wording carries the density migration hint"
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+                    && d.message == expected
+            }),
+            "expected a DimensionedArgRejected Error {expected:?}, got {diagnostics:?}"
+        );
+    }
+
     // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
 
     /// step-1 RED (task 4366): when the progress closure returns
@@ -9867,7 +10252,8 @@ mod tests {
             }),
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(
             cancelled,
@@ -9909,7 +10295,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(fea_full.converged, "uncancelled solve must converge");
         assert!(
@@ -9956,7 +10343,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(result.converged, "directional Y-load solve must converge");
 
@@ -10436,7 +10824,7 @@ mod tests {
     /// must propagate a leaf extractor's `Err` through its `?`-threaded
     /// `"OrthotropicMaterial"` arm instead of panicking. A `StructureInstance`
     /// with `type_name: "OrthotropicMaterial"` and an empty `fields` map is
-    /// missing `e1` — the arm's first `scalar_si_field` read — so
+    /// missing `e1` — the arm's first `modulus_field` read — so
     /// `classify_material` must surface `Err(FeaValueShapeError::MissingField
     /// { field: "e1", .. })` rather than panicking, proving the arm's 9
     /// field reads genuinely propagate `Err` via `?` and are not left as
@@ -10537,7 +10925,8 @@ mod tests {
             let (sol, _) = solve_cantilever_fea(
                 model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
                 None,
-            );
+            )
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).
             sol.tip_nodes.iter()
@@ -11012,186 +11401,49 @@ mod tests {
     // 5087) later replaced every production call site with the
     // validate-all-inputs gate and removed the shim. ───────────────────────
 
-    /// step-1 RED: `extract_scalar_si` must reject a non-Scalar `Value` with
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
-    ///
-    /// RED: `extract_scalar_si` currently returns a bare `f64`, so matching
-    /// `Err(..)` fails to type-check until step-2 converts it to
-    /// `Result<f64, FeaValueShapeError>`.
+    /// step-1 RED (task #5080, on the reader `extract_length_si` replaced):
+    /// a non-Scalar `Value`, `Undef` included, is
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })`, never a panic.
     #[test]
-    fn extract_scalar_si_rejects_non_scalar() {
-        let res = extract_scalar_si(&Value::Real(3.0));
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a non-Scalar Value, got: {:?}",
-            res
+    fn extract_length_si_rejects_non_scalar() {
+        for value in [Value::Real(3.0), Value::Undef] {
+            let res = extract_length_si(&value);
+            assert!(
+                matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+                "expected Err(ExpectedScalar) for {value:?}, got: {res:?}"
+            );
+        }
+    }
+
+    /// Amendment (task #5080 review round 2, suggestion 1): a well-formed
+    /// `Scalar<Length>` reads as its SI value, locking the success path
+    /// alongside the error paths around it.
+    #[test]
+    fn extract_length_si_accepts_a_length_scalar() {
+        assert_eq!(
+            extract_length_si(&scalar(2.5, DimensionVector::LENGTH)),
+            Ok(2.5)
         );
     }
 
-    /// Amendment (task #5080 review round 2, suggestion 1): `extract_scalar_si`
-    /// must return `Ok` with the SI value for a well-formed `Value::Scalar`,
-    /// locking the success path alongside the error path above.
+    /// A `Scalar` of any other dimension, dimensionless included, is refused
+    /// as `WrongDimension` rather than read as metres.
     #[test]
-    fn extract_scalar_si_accepts_scalar() {
-        let val = Value::Scalar {
-            si_value: 2.5,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(extract_scalar_si(&val), Ok(2.5));
-    }
-
-    /// step-3 RED: `scalar_si_field` must reject a present-but-wrong-type
-    /// field with `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of
-    /// panicking.
-    ///
-    /// RED: `scalar_si_field` currently returns a bare `f64`, so matching
-    /// `Err(..)` fails to type-check until step-4 converts it to
-    /// `Result<f64, FeaValueShapeError>`.
-    #[test]
-    fn scalar_si_field_rejects_non_scalar_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [("e1".to_string(), Value::Real(1.0))]
-            .into_iter()
-            .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        let res = scalar_si_field(&data, "e1");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type field, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review, suggestion 1): `scalar_si_field` must
-    /// distinguish an absent key from a present-but-wrong-type field, reporting
-    /// `Err(FeaValueShapeError::MissingField { .. })` rather than
-    /// `ExpectedScalar` when the key itself is not in `fields`.
-    #[test]
-    fn scalar_si_field_rejects_missing_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields: PersistentMap::<String, Value>::new(),
-        };
-
-        let res = scalar_si_field(&data, "e1");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
-            "expected Err(MissingField) for an absent field key, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review round 2, suggestion 1): `scalar_si_field`
-    /// must return `Ok` with the SI value for a present, correctly-typed
-    /// field, locking the success path alongside the error/missing paths
-    /// above.
-    #[test]
-    fn scalar_si_field_returns_value_for_scalar_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [(
-            "e1".to_string(),
-            Value::Scalar {
-                si_value: 4.2,
-                dimension: DimensionVector::DIMENSIONLESS,
-            },
-        )]
-        .into_iter()
-        .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        assert_eq!(scalar_si_field(&data, "e1"), Ok(4.2));
-    }
-
-    /// step-5 RED: `real_field` must reject a present-but-wrong-type field
-    /// with `Err(FeaValueShapeError::ExpectedReal { .. })` instead of
-    /// panicking.
-    ///
-    /// RED: `real_field` currently returns a bare `f64`, so matching
-    /// `Err(..)` fails to type-check until step-6 converts it to
-    /// `Result<f64, FeaValueShapeError>`.
-    #[test]
-    fn real_field_rejects_non_real_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [(
-            "nu12".to_string(),
-            Value::Scalar { si_value: 0.3, dimension: DimensionVector::DIMENSIONLESS },
-        )]
-        .into_iter()
-        .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        let res = real_field(&data, "nu12");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
-            "expected Err(ExpectedReal) for a present-but-wrong-type field, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review, suggestion 1): `real_field` must
-    /// distinguish an absent key from a present-but-wrong-type field, reporting
-    /// `Err(FeaValueShapeError::MissingField { .. })` rather than
-    /// `ExpectedReal` when the key itself is not in `fields`.
-    #[test]
-    fn real_field_rejects_missing_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields: PersistentMap::<String, Value>::new(),
-        };
-
-        let res = real_field(&data, "nu12");
-        assert!(
-            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
-            "expected Err(MissingField) for an absent field key, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review round 2, suggestion 1): `real_field`
-    /// must return `Ok` with the value for a present, correctly-typed field,
-    /// locking the success path alongside the error/missing paths above.
-    #[test]
-    fn real_field_returns_value_for_real_field() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [("nu12".to_string(), Value::Real(0.3))]
-            .into_iter()
-            .collect();
-        let data = StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "OrthotropicMaterial".to_string(),
-            version: 1,
-            fields,
-        };
-
-        assert_eq!(real_field(&data, "nu12"), Ok(0.3));
+    fn extract_length_si_rejects_a_scalar_of_another_dimension() {
+        for dimension in [DimensionVector::DIMENSIONLESS, DimensionVector::MASS] {
+            let res = extract_length_si(&scalar(2.5, dimension));
+            assert!(
+                matches!(
+                    res,
+                    Err(FeaValueShapeError::WrongDimension {
+                        expected: "Length",
+                        ..
+                    })
+                ),
+                "expected Err(WrongDimension {{ expected: \"Length\", .. }}) for a \
+                 {dimension:?} Scalar, got: {res:?}"
+            );
+        }
     }
 
     /// step-7 RED: `extract_point3_si` must reject a non-Point `Value` with
@@ -11647,7 +11899,7 @@ mod tests {
     /// Amendment (task #5081 review, suggestion 1): also assert `context ==
     /// "extract_material"`. This is the leaf's own shape check (unlike the
     /// wrong-typed/missing-field tests below, which exercise `context`s
-    /// delegated from `scalar_si_field`/`real_field`), so it's the one place
+    /// delegated from `modulus_field`/`ratio_field`), so it's the one place
     /// where pinning `context` locks `extract_material`'s own error
     /// provenance rather than a helper's.
     #[test]
@@ -11694,33 +11946,40 @@ mod tests {
         )
     }
 
-    /// step-3: `extract_material` must reject a present-but-wrong-typed
-    /// `youngs_modulus` field with `Err(FeaValueShapeError::ExpectedScalar {
-    /// .. })`, routed through the reused `scalar_si_field` helper.
+    /// `extract_material` reads `youngs_modulus` under `pressure_spec`, the
+    /// as-printed reader's spec for the same field: a bare `Real` and a
+    /// `Scalar` of another dimension are both `Rejected`, naming the field. A
+    /// LENGTH modulus is refused rather than read as pascals.
     #[test]
     fn extract_material_rejects_wrong_typed_youngs_modulus() {
-        let fields: PersistentMap<String, Value> =
-            [("youngs_modulus".to_string(), Value::Real(1.0))]
-                .into_iter()
-                .collect();
+        for youngs_modulus in [Value::Real(1.0), scalar(1.0, DimensionVector::LENGTH)] {
+            let fields: PersistentMap<String, Value> = [
+                ("youngs_modulus".to_string(), youngs_modulus.clone()),
+                ("poisson_ratio".to_string(), Value::Real(0.3)),
+            ]
+            .into_iter()
+            .collect();
 
-        let res = extract_material(&isotropic_material(fields));
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type \
-             youngs_modulus field, got: {:?}",
-            res
-        );
+            let res = extract_material(&isotropic_material(fields));
+            assert!(
+                matches!(
+                    &res,
+                    Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                        if path == "IsotropicMaterial.youngs_modulus"
+                            && rejection.expected == "Pressure"
+                ),
+                "youngs_modulus {youngs_modulus:?} must be Err(Rejected) naming \
+                 IsotropicMaterial.youngs_modulus, got {res:?}"
+            );
+        }
     }
 
     /// Amendment (task #5081 review, suggestion 2): `extract_material` must
     /// route an absent `youngs_modulus` field to
-    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
-    /// `scalar_si_field` helper, rather than silently falling through.
-    /// `scalar_si_field`/`real_field` already have their own missing-field
-    /// tests; this pins that `extract_material` propagates the delegation
-    /// unchanged, directly locking the case noted by the review as only
-    /// transitively covered.
+    /// `Err(FeaValueShapeError::MissingField { .. })` rather than silently
+    /// falling through. An unresolved (`Undef`) one is no missing field: it
+    /// is `Unresolved`, so the diagnostic does not misdirect an
+    /// Undef-propagation investigation.
     #[test]
     fn extract_material_rejects_missing_youngs_modulus() {
         let res = extract_material(&isotropic_material(PersistentMap::new()));
@@ -11729,22 +11988,34 @@ mod tests {
             "expected Err(MissingField) for an absent youngs_modulus field, got: {:?}",
             res
         );
+        let unresolved: PersistentMap<String, Value> =
+            [("youngs_modulus".to_string(), Value::Undef)]
+                .into_iter()
+                .collect();
+        let res = extract_material(&isotropic_material(unresolved));
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::Unresolved {
+                    field: "youngs_modulus",
+                    ..
+                })
+            ),
+            "an unresolved youngs_modulus must be Unresolved, not missing, got: {res:?}"
+        );
     }
 
-    /// step-4: `extract_material` must reject a present-but-wrong-typed
-    /// `poisson_ratio` field with `Err(FeaValueShapeError::ExpectedReal {
-    /// .. })`, routed through the reused `real_field` helper. `youngs_modulus`
-    /// is well-formed so control reaches the `poisson_ratio` read.
+    /// `extract_material` reads `poisson_ratio` under `dimensionless_spec`, the
+    /// as-printed reader's spec for the same field: a dimensioned `Scalar` is
+    /// `Rejected`, naming the field. `youngs_modulus` is well-formed so
+    /// control reaches the `poisson_ratio` read.
     #[test]
     fn extract_material_rejects_wrong_typed_poisson_ratio() {
         let fields: PersistentMap<String, Value> = [
             valid_youngs_modulus_field(),
             (
                 "poisson_ratio".to_string(),
-                Value::Scalar {
-                    si_value: 0.3,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                },
+                scalar(0.3, DimensionVector::PRESSURE),
             ),
         ]
         .into_iter()
@@ -11752,22 +12023,48 @@ mod tests {
 
         let res = extract_material(&isotropic_material(fields));
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
-            "expected Err(ExpectedReal) for a present-but-wrong-type \
-             poisson_ratio field, got: {:?}",
-            res
+            matches!(
+                &res,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "IsotropicMaterial.poisson_ratio" && rejection.expected == "Real"
+            ),
+            "a PRESSURE poisson_ratio must be Err(Rejected) naming \
+             IsotropicMaterial.poisson_ratio, got {res:?}"
         );
+    }
+
+    /// Every dimensionless spelling of `poisson_ratio` reads, as it does in the
+    /// as-printed reader: a `Real`, an `Int` and a dimensionless `Scalar`.
+    #[test]
+    fn extract_material_reads_every_dimensionless_poisson_ratio_spelling() {
+        for poisson_ratio in [
+            Value::Real(0.0),
+            Value::Int(0),
+            scalar(0.0, DimensionVector::DIMENSIONLESS),
+        ] {
+            let fields: PersistentMap<String, Value> = [
+                valid_youngs_modulus_field(),
+                ("poisson_ratio".to_string(), poisson_ratio.clone()),
+            ]
+            .into_iter()
+            .collect();
+
+            assert_eq!(
+                extract_material(&isotropic_material(fields)),
+                Ok(IsotropicElastic {
+                    youngs_modulus: 2.0e9,
+                    poisson_ratio: 0.0,
+                }),
+                "poisson_ratio {poisson_ratio:?} must read as 0.0"
+            );
+        }
     }
 
     /// Amendment (task #5081 review, amendment round 2): `extract_material`
     /// must route an absent `poisson_ratio` field to
-    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
-    /// `real_field` helper, rather than silently falling through.
-    /// Mirrors `extract_material_rejects_missing_youngs_modulus`, restoring
-    /// the symmetry the review noted was missing: `youngs_modulus` already
-    /// had direct wrong-typed AND absent coverage, while `poisson_ratio` only
-    /// had a wrong-typed test (the absent case was only transitively covered
-    /// by `real_field`'s own test).
+    /// `Err(FeaValueShapeError::MissingField { .. })` rather than silently
+    /// falling through. Mirrors `extract_material_rejects_missing_youngs_modulus`,
+    /// so each field has direct wrong-typed AND absent coverage.
     #[test]
     fn extract_material_rejects_missing_poisson_ratio() {
         let fields: PersistentMap<String, Value> =
@@ -11811,9 +12108,10 @@ mod tests {
     // `Result<AnisotropicMaterial, FeaValueShapeError>`, mirroring D2's
     // compile-RED convention.
 
-    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
-    /// `e1` field on an `OrthotropicMaterial` law with
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    /// `anisotropic_material_from_value` must reject a LENGTH `e1` on an
+    /// `OrthotropicMaterial` law with `Err(FeaValueShapeError::Rejected(..))`
+    /// naming `OrthotropicMaterial.e1`, instead of reading it as pascals —
+    /// the same refusal an isotropic `youngs_modulus` gets.
     ///
     /// The wrapping `frame` field is a well-formed `het_material_frame`
     /// because the frame is parsed before the law inside
@@ -11822,7 +12120,7 @@ mod tests {
     /// this test targets. Only `e1` is wrong-typed; every other law field
     /// (`e2`/`e3`/`g12`/`g13`/`g23`/`nu12`/`nu13`/`nu23`) is set to a
     /// well-formed value (amendment, task #5084 review round 2, suggestion
-    /// 2), so the `Err(ExpectedScalar)` assertion isolates the `e1`
+    /// 2), so the `Err(Rejected)` assertion isolates the `e1`
     /// rejection and cannot be satisfied by an incidental `MissingField` on
     /// a later field — it no longer depends on the `OrthotropicMaterial
     /// { .. }` construction's struct-literal field evaluation order.
@@ -11835,7 +12133,7 @@ mod tests {
         let pressure_scalar =
             |si_value: f64| Value::Scalar { si_value, dimension: DimensionVector::PRESSURE };
         let law_fields: PersistentMap<String, Value> = [
-            ("e1".to_string(), Value::Real(1.0)), // wrong-typed: the field under test
+            ("e1".to_string(), scalar(1.0e9, DimensionVector::LENGTH)), // the field under test
             ("e2".to_string(), pressure_scalar(1.0e9)),
             ("e3".to_string(), pressure_scalar(1.0e9)),
             ("g12".to_string(), pressure_scalar(1.0e9)),
@@ -11869,15 +12167,20 @@ mod tests {
         // `AnisotropicMaterial` StructureInstance inline.
         let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type e1 field, got: {:?}",
+            matches!(
+                &res,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "OrthotropicMaterial.e1" && rejection.expected == "Pressure"
+            ),
+            "expected Err(Rejected) naming OrthotropicMaterial.e1 for a LENGTH e1, got: {:?}",
             res
         );
     }
 
-    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
-    /// `e_in_plane` field on a `TransverseIsotropicMaterial` law with
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    /// `anisotropic_material_from_value` must reject a bare `Real`
+    /// `e_in_plane` on a `TransverseIsotropicMaterial` law with
+    /// `Err(FeaValueShapeError::Rejected(..))` naming the field, instead of
+    /// panicking.
     ///
     /// Mirrors `anisotropic_material_from_value_rejects_malformed_orthotropic_law`
     /// for the sibling law arm — an independent code path in the same
@@ -11915,8 +12218,14 @@ mod tests {
         // `AnisotropicMaterial` StructureInstance inline.
         let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type e_in_plane field, got: {:?}",
+            matches!(
+                &res,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "TransverseIsotropicMaterial.e_in_plane"
+                        && rejection.expected == "Pressure"
+            ),
+            "expected Err(Rejected) naming TransverseIsotropicMaterial.e_in_plane for a \
+             bare Real, got: {:?}",
             res
         );
     }
@@ -11924,7 +12233,7 @@ mod tests {
     // ── task #5084 amendment (reviewer_comprehensive, suggestion 2) ───────────
     //
     // The two tests above only exercise `anisotropic_material_from_value`'s
-    // delegation to `scalar_si_field` (the `ExpectedScalar` path). The
+    // delegation to `modulus_field` (the `Rejected` path). The
     // structural `Err` branches this function constructs directly — a
     // non-`StructureInstance` `val`/`frame`/`law`, a missing `law`/`frame`
     // field, and a missing frame-axis field — were previously only covered
@@ -12765,7 +13074,7 @@ mod tests {
         assert_gate_rejects(value_inputs, "length");
     }
 
-    /// `width` and `height` share `length`'s `extract_scalar_si` call (only
+    /// `width` and `height` share `length`'s `extract_length_si` call (only
     /// the index/label literal differ), so a copy-pasted label swap between
     /// the two arms would go uncaught without a dedicated pin. [1] and [3]
     /// stay well-formed scalars (from `shell9_valid_inputs()`) so only the
@@ -12945,7 +13254,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert_eq!(
             est.per_element.len(),
@@ -12962,11 +13271,11 @@ mod tests {
             est.relative_error,
         );
         assert_eq!(
-            problem.last_global_indicator, est.relative_error,
+            problem.iterates.last_global_indicator, est.relative_error,
             "the problem must record the returned relative_error",
         );
         assert_eq!(
-            problem.last_n_dofs, est.n_dofs,
+            problem.iterates.last_n_dofs, est.n_dofs,
             "the problem must record the returned n_dofs",
         );
     }
@@ -13006,32 +13315,43 @@ mod tests {
         sizes[best]
     }
 
-    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is REAL GMSH
-    /// OUTPUT (remeshed from a hand-built box's extracted boundary) and whose
-    /// `surface` is that gmsh mesh's own extracted boundary.
+    /// The bit-stable gmsh options every realized-mesh test meshes with.
+    fn deterministic_meshing_options(mesh_size: f64) -> reify_solver_elastic::MeshingOptions {
+        reify_solver_elastic::MeshingOptions {
+            mesh_size: Some(mesh_size),
+            deterministic: true,
+            ..Default::default()
+        }
+    }
+
+    /// REAL GMSH OUTPUT for the fea_body_cantilever_adaptive.ri box
+    /// (1.0 × 0.1 × 0.1 m): a hand-built box's extracted boundary remeshed at
+    /// the uniform size `seed_size`.
     ///
     /// Reaches gmsh only through `reify_solver_elastic` re-exports — naming
     /// `reify_kernel_gmsh::*` from a reify-eval test binary would pull gmsh's
     /// `inventory::submit!` in and break OCCT-only registry assertions
     /// (reify-eval/Cargo.toml's dead-strip invariant).
-    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
-        let opts = reify_solver_elastic::MeshingOptions {
-            mesh_size: Some(seed_size),
-            deterministic: true,
-            ..Default::default()
-        };
+    fn gmsh_box_volume_mesh(seed_size: f64) -> reify_ir::VolumeMesh {
         let seed = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [8, 1, 1]);
         let seed_surface = reify_solver_elastic::boundary_surface_mesh(&seed)
             .expect("a P1 tet box has an extractable boundary");
         let (_, seed_tets) =
             volume_mesh_to_solver_mesh(&seed).expect("the hand-built seed is widenable");
-        let volume_mesh = reify_solver_elastic::refine_with_size_field(
+        reify_solver_elastic::refine_with_size_field(
             &seed_surface,
             &seed,
             &vec![seed_size; seed_tets.len()],
-            &opts,
+            &deterministic_meshing_options(seed_size),
         )
-        .expect("seeding a real gmsh volume from the box boundary must succeed");
+        .expect("seeding a real gmsh volume from the box boundary must succeed")
+    }
+
+    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is
+    /// [`gmsh_box_volume_mesh`] and whose `surface` is that gmsh mesh's own
+    /// extracted boundary.
+    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
+        let volume_mesh = gmsh_box_volume_mesh(seed_size);
         let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
             .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
 
@@ -13042,7 +13362,7 @@ mod tests {
             },
             volume_mesh,
             surface,
-            opts,
+            deterministic_meshing_options(seed_size),
             [0.0, 0.0, -1000.0],
             vec![],
             [0.0; 3],
@@ -13085,7 +13405,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
         assert!(
             !marked.is_empty(),
@@ -13149,7 +13469,7 @@ mod tests {
         let mut unmarked = gmsh_realized_problem(0.05);
         unmarked
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");
@@ -13164,12 +13484,139 @@ mod tests {
         );
     }
 
+    /// Task 7448: on the realized arm's tip set, the tip load keeps its
+    /// resultant and line of action (the tip-face centroid) across gmsh
+    /// remeshes that grade the tip face one-sidedly, so adaptive iterations
+    /// solve one boundary-value problem.
+    #[test]
+    fn realized_tip_load_keeps_its_resultant_and_line_of_action_across_remeshes() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+        const TIP_FORCE: [f64; 3] = [0.0, 0.0, -1000.0];
+        const SEED_SIZE: f64 = 0.05;
+        const REFINE_PASSES: usize = 2;
+        // Absorbs gmsh's f32 vertex rounding (~1e-7 m at x ≈ 1.0) should a
+        // tip-face vertex sit off the plane.
+        const CENTROID_TOL_M: f64 = 1e-6;
+        // Far above CENTROID_TOL_M, so the graded fixture tells an equal split
+        // from the traction.
+        const MIN_EQUAL_SPLIT_OFFSET_M: f64 = 1e-3;
+        let in_graded_region = |c: [f64; 3]| c[0] > 0.9 && c[1] < 0.05;
+
+        let seed = gmsh_box_volume_mesh(SEED_SIZE);
+        let surface = reify_solver_elastic::boundary_surface_mesh(&seed)
+            .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
+        let mut meshes = vec![seed];
+        for _ in 0..REFINE_PASSES {
+            let current = meshes.last().expect("the seed is pushed first");
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(current).expect("gmsh output is widenable");
+            let marked: Vec<usize> = (0..tets.len())
+                .filter(|&e| in_graded_region(tet_centroid_of(&coords, &tets[e])))
+                .collect();
+            let refined = reify_solver_elastic::refine_marked_elements(
+                &surface,
+                current,
+                &marked,
+                &characteristic_sizes_from_solver_mesh(&coords, &tets),
+                &deterministic_meshing_options(SEED_SIZE),
+            )
+            .expect("a mark-driven gmsh remesh of the box must succeed");
+            meshes.push(refined);
+        }
+
+        struct TipLoadReading {
+            n_tip: usize,
+            resultant: [f64; 3],
+            line_of_action: [f64; 3],
+            face_centroid: [f64; 3],
+            equal_split_line_of_action: [f64; 3],
+        }
+        let f_norm_sq: f64 = TIP_FORCE.iter().map(|c| c * c).sum();
+        let read_tip_load = |mesh: &reify_ir::VolumeMesh| {
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(mesh).expect("gmsh output is widenable");
+            let (_root_nodes, tip_nodes) = realized_cantilever_bc_node_sets(&coords);
+            let f = cantilever_tip_load(&coords, &tets, &tip_nodes, TIP_FORCE);
+            let mut resultant = [0.0; 3];
+            let mut line_of_action = [0.0; 3];
+            for (n, x) in coords.iter().enumerate() {
+                let f_n = [f[3 * n], f[3 * n + 1], f[3 * n + 2]];
+                let share = (0..3).map(|a| f_n[a] * TIP_FORCE[a]).sum::<f64>() / f_norm_sq;
+                for a in 0..3 {
+                    resultant[a] += f_n[a];
+                    line_of_action[a] += share * x[a];
+                }
+            }
+            let (lo, hi) = aabb(&coords);
+            let n_tip = tip_nodes.len();
+            TipLoadReading {
+                n_tip,
+                resultant,
+                line_of_action,
+                face_centroid: [hi[0], 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])],
+                equal_split_line_of_action: std::array::from_fn(|a| {
+                    tip_nodes.iter().map(|&n| coords[n][a]).sum::<f64>() / n_tip as f64
+                }),
+            }
+        };
+        let readings: Vec<TipLoadReading> = meshes.iter().map(read_tip_load).collect();
+
+        let seed_reading = &readings[0];
+        let last_reading = readings.last().expect("at least the seed was read");
+        for (pass, r) in readings.iter().enumerate() {
+            for (a, &force_a) in TIP_FORCE.iter().enumerate() {
+                assert!(
+                    (r.resultant[a] - force_a).abs() <= 1e-12 * f_norm_sq.sqrt(),
+                    "pass {pass}: tip-load resultant {:?} != {TIP_FORCE:?}",
+                    r.resultant,
+                );
+                assert!(
+                    (r.line_of_action[a] - r.face_centroid[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} is off the tip-face \
+                     centroid {:?}",
+                    r.line_of_action,
+                    r.face_centroid,
+                );
+                assert!(
+                    (r.line_of_action[a] - seed_reading.line_of_action[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} moved from the seed's {:?}",
+                    r.line_of_action,
+                    seed_reading.line_of_action,
+                );
+            }
+        }
+
+        assert!(
+            last_reading.n_tip > seed_reading.n_tip,
+            "fixture: the refine passes must re-triangulate the tip face: tip nodes \
+             {} -> {}",
+            seed_reading.n_tip,
+            last_reading.n_tip,
+        );
+        let equal_split_offset_y =
+            (last_reading.equal_split_line_of_action[1] - last_reading.face_centroid[1]).abs();
+        assert!(
+            equal_split_offset_y >= MIN_EQUAL_SPLIT_OFFSET_M,
+            "fixture: the graded tip face must move an equal split's line of action \
+             off the centroid in y, but it is only {equal_split_offset_y:e} m off",
+        );
+    }
+
     /// `ElasticOptions` with `adaptive: true`, `shell_force: Off` (forces the
     /// tet/solid path deterministically) and a budget that performs EXACTLY
     /// one refine: `target_accuracy` is deliberately unreachable and the
     /// iteration cap is 1, so the loop does one mark-driven refine and two
     /// solves. That bounds wallclock while still proving the refine ran.
     fn adaptive_options() -> Value {
+        adaptive_options_with_iterations(1)
+    }
+
+    /// [`adaptive_options`] with the iteration cap set to
+    /// `max_refinement_iterations`; `0` means one solve and no refine.
+    fn adaptive_options_with_iterations(max_refinement_iterations: i64) -> Value {
         let fields: PersistentMap<String, Value> = [
             (
                 "shell_force".to_string(),
@@ -13181,7 +13628,10 @@ mod tests {
             ),
             ("adaptive".to_string(), Value::Bool(true)),
             ("target_accuracy".to_string(), Value::Real(1.0e-6)),
-            ("max_refinement_iterations".to_string(), Value::Int(1)),
+            (
+                "max_refinement_iterations".to_string(),
+                Value::Int(max_refinement_iterations),
+            ),
             ("max_dofs".to_string(), Value::Int(2_000_000)),
         ]
         .into_iter()
@@ -13199,27 +13649,57 @@ mod tests {
     fn run_adaptive_trampoline(
         realization_inputs: &[RealizationReadHandle],
     ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        run_adaptive_trampoline_on([1.0, 0.1, 0.1], realization_inputs, adaptive_options())
+    }
+
+    /// The steel cantilever's isotropic material, as
+    /// [`run_adaptive_trampoline_outcome_on`] hands it to the trampoline.
+    const ADAPTIVE_STEEL: IsotropicElastic = IsotropicElastic {
+        youngs_modulus: 200e9,
+        poisson_ratio: 0.3,
+    };
+
+    /// Drive the trampoline on a `dims` cantilever (1000 N tip load, fixed
+    /// root) with the given realization inputs and `ElasticOptions` value,
+    /// returning the raw outcome.
+    fn run_adaptive_trampoline_outcome_on(
+        dims: [f64; 3],
+        realization_inputs: &[RealizationReadHandle],
+        options: Value,
+    ) -> ComputeOutcome {
         let value_inputs = [
-            shell9_make_isotropic_material(200e9, 0.3),
-            shell9_make_len(1.0),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
+            shell9_make_isotropic_material(
+                ADAPTIVE_STEEL.youngs_modulus,
+                ADAPTIVE_STEEL.poisson_ratio,
+            ),
+            shell9_make_len(dims[0]),
+            shell9_make_len(dims[1]),
+            shell9_make_len(dims[2]),
             // No `target` on any Load/Support, so `bc_override` stays `None`
             // and BC selection is coordinate-based - the only model that
             // survives a remesh.
             shell9_make_point_loads(1000.0),
             shell9_make_supports(),
-            adaptive_options(),
+            options,
         ];
         let cancellation = CancellationHandle::new();
-        let outcome = solve_elastic_static_trampoline(
+        solve_elastic_static_trampoline(
             &value_inputs,
             realization_inputs,
             &Value::Undef,
             None,
             &cancellation,
-        );
-        match outcome {
+        )
+    }
+
+    /// [`run_adaptive_trampoline_outcome_on`], unwrapped into
+    /// `(fields, diagnostics)`; panics unless the outcome is `Completed`.
+    fn run_adaptive_trampoline_on(
+        dims: [f64; 3],
+        realization_inputs: &[RealizationReadHandle],
+        options: Value,
+    ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        match run_adaptive_trampoline_outcome_on(dims, realization_inputs, options) {
             ComputeOutcome::Completed {
                 result,
                 diagnostics,
@@ -13351,7 +13831,9 @@ mod tests {
     /// the reachable trigger: it widens cleanly (P1, stride-4, in-range
     /// indices) so a handle IS selected, and only then does boundary
     /// extraction fail — which is the arm under test. x-extent is 1.0, well
-    /// above `MIN_SOLVE_X_EXTENT`.
+    /// above `MIN_SOLVE_X_EXTENT`. All three tets are positively oriented, so
+    /// the solve's degenerate-tet gate (which rejects a tet inverted against
+    /// the rest of the mesh) passes it.
     fn non_manifold_tet_mesh() -> reify_ir::VolumeMesh {
         reify_ir::VolumeMesh {
             #[rustfmt::skip]
@@ -13364,7 +13846,7 @@ mod tests {
                 1.0, 1.0,  1.0, // 5 third apex
             ],
             connectivity: reify_ir::VolumeConnectivity::Tet {
-                indices: vec![0, 1, 2, 3, 0, 1, 2, 4, 0, 1, 2, 5],
+                indices: vec![0, 1, 2, 3, 1, 0, 2, 4, 0, 1, 2, 5],
                 order: ElementOrderTag::P1,
             },
             normals: None,
@@ -13637,23 +14119,7 @@ mod tests {
     fn run_adaptive_trampoline_outcome(
         realization_inputs: &[RealizationReadHandle],
     ) -> ComputeOutcome {
-        let value_inputs = [
-            shell9_make_isotropic_material(200e9, 0.3),
-            shell9_make_len(1.0),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            shell9_make_point_loads(1000.0),
-            shell9_make_supports(),
-            adaptive_options(),
-        ];
-        let cancellation = CancellationHandle::new();
-        solve_elastic_static_trampoline(
-            &value_inputs,
-            realization_inputs,
-            &Value::Undef,
-            None,
-            &cancellation,
-        )
+        run_adaptive_trampoline_outcome_on([1.0, 0.1, 0.1], realization_inputs, adaptive_options())
     }
 
     /// The Warning marker a fallback case must carry IN THIS BUILD.
@@ -13772,11 +14238,494 @@ mod tests {
         assert!(
             matches!(
                 err,
-                reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+                RealizedLaneError::Remesh(
+                    reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+                )
             ),
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );
     }
+
+    // ── task 8246: an adaptive solve reports its FINAL iterate on the seed grid ──
+
+    /// The `(tip_force, pressures, body_force)` the trampoline extracts from
+    /// [`run_adaptive_trampoline_outcome_on`]'s load and material inputs.
+    fn adaptive_test_loads() -> ExtractedLoads {
+        let material = shell9_make_isotropic_material(
+            ADAPTIVE_STEEL.youngs_modulus,
+            ADAPTIVE_STEEL.poisson_ratio,
+        );
+        let density = material_density(&material).expect("the steel density is dimensioned");
+        extract_loads(&shell9_make_point_loads(1000.0), density)
+            .expect("a PointLoad list is a well-formed load list")
+    }
+
+    /// The result grid the trampoline builds from a seed solve: the solve
+    /// mesh's AABB at the solve's element counts.
+    fn seed_grid_of(seed: &CantileverFeaSolve) -> GridSpec {
+        let (bounds_min, bounds_max) = aabb(&seed.coords);
+        GridSpec {
+            bounds_min,
+            bounds_max,
+            counts: [seed.nx, seed.ny, seed.nz],
+        }
+    }
+
+    /// The `SampledField` behind a result channel, unwrapping the `Option`
+    /// that carries `error_indicator`.
+    fn result_sampled_field(fields: &PersistentMap<String, Value>, name: &str) -> SampledField {
+        match fields.get(name) {
+            Some(Value::Option(Some(inner))) => expect_sampled_field(inner, name),
+            Some(Value::Option(None)) => panic!("{name} must be populated, got none"),
+            Some(other) => expect_sampled_field(other, name),
+            None => panic!("ElasticResult must carry {name}"),
+        }
+    }
+
+    fn result_max_von_mises(fields: &PersistentMap<String, Value>) -> f64 {
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("max_von_mises must be a Scalar, got {other:?}"),
+        }
+    }
+
+    fn result_global_error(fields: &PersistentMap<String, Value>) -> f64 {
+        match fields.get("global_relative_energy_error") {
+            Some(Value::Option(Some(inner))) => match inner.as_ref() {
+                Value::Real(r) => *r,
+                other => panic!("global_relative_energy_error must wrap a Real, got {other:?}"),
+            },
+            other => panic!("global_relative_energy_error must be Some, got {other:?}"),
+        }
+    }
+
+    fn data_bits(sf: &SampledField) -> Vec<u64> {
+        sf.data.iter().map(|v| v.to_bits()).collect()
+    }
+
+    /// `actual` equals `expected` up to evaluation order: NaN (the
+    /// out-of-solid sentinel) at exactly the same indices, and every finite
+    /// value within `1e-12` of the channel's largest magnitude.
+    fn assert_nan_aware_close(actual: &[f64], expected: &[f64], what: &str) {
+        assert_eq!(actual.len(), expected.len(), "{what}: data length");
+        let scale = expected
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(0.0_f64, |m, v| m.max(v.abs()));
+        let tol = 1e-12 * scale;
+        for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(
+                a.is_nan(),
+                e.is_nan(),
+                "{what}[{i}]: NaN pattern differs ({a} vs {e})"
+            );
+            assert!(
+                e.is_nan() || (a - e).abs() <= tol,
+                "{what}[{i}]: {a:e} vs expected {e:e} (tol {tol:e})",
+            );
+        }
+    }
+
+    /// The result's displacement and stress are `solve`'s nodal fields
+    /// resampled onto `grid`.
+    fn assert_reports_solve_on_grid(
+        fields: &PersistentMap<String, Value>,
+        solve: &CantileverFeaSolve,
+        grid: &GridSpec,
+    ) {
+        let nodal_stress = super::super::flatten_nodal_stress(&solve.nodal_stress);
+        let expected = resample_multi_nodal_to_grid(
+            &solve.coords,
+            &solve.tet_connectivity,
+            &[(&solve.u, 3, "displacement"), (&nodal_stress, 9, "stress")],
+            grid,
+            1e-9,
+        );
+        for (name, expected) in ["displacement", "stress"].into_iter().zip(&expected) {
+            assert_nan_aware_close(
+                &result_sampled_field(fields, name).data,
+                &expected.data,
+                name,
+            );
+        }
+    }
+
+    /// The result's error_indicator is `solve`'s Z-Z stress error resampled
+    /// onto `grid`, bit for bit.
+    fn assert_error_indicator_describes_solve(
+        fields: &PersistentMap<String, Value>,
+        solve: &CantileverFeaSolve,
+        grid: &GridSpec,
+    ) {
+        let stress_error = zz_indicator(solve, &ADAPTIVE_STEEL).per_element_stress_error;
+        let expected = match error_indicator_field(solve, &stress_error, grid) {
+            Value::Option(Some(inner)) => expect_sampled_field(&inner, "error_indicator"),
+            other => panic!("error_indicator_field must wrap a Field, got {other:?}"),
+        };
+        assert_eq!(
+            data_bits(&result_sampled_field(fields, "error_indicator")),
+            data_bits(&expected),
+            "error_indicator must be the reported solve's Z-Z stress error",
+        );
+    }
+
+    /// Each named channel samples one grid in `a` and `b`, and it is `grid`.
+    fn assert_channels_share_grid(
+        a: &PersistentMap<String, Value>,
+        b: &PersistentMap<String, Value>,
+        grid: &GridSpec,
+        names: &[&str],
+    ) {
+        let node_counts: Vec<usize> = grid.counts.iter().map(|c| c + 1).collect();
+        for &name in names {
+            let (sa, sb) = (result_sampled_field(a, name), result_sampled_field(b, name));
+            assert!(
+                sa.grid_metadata_eq(&sb),
+                "{name}: the two results sample different grids"
+            );
+            assert_eq!(
+                sa.bounds_min, grid.bounds_min,
+                "{name}: bounds_min is not the seed grid's"
+            );
+            assert_eq!(
+                sa.bounds_max, grid.bounds_max,
+                "{name}: bounds_max is not the seed grid's"
+            );
+            let axis_lens: Vec<usize> = sa.axis_grids.iter().map(Vec::len).collect();
+            assert_eq!(
+                axis_lens, node_counts,
+                "{name}: axis node counts are not the seed grid's"
+            );
+        }
+    }
+
+    /// task 8246: once the uniform lane has refined, the result reports the
+    /// loop's FINAL iterate, resampled onto the SEED solve's grid.
+    ///
+    /// The final iterate is reproduced independently: the same problem run
+    /// through the same budget, then the lane's exact solve call at the grid
+    /// the loop ended on. A stubby 0.2 m beam keeps the doubled grids cheap
+    /// in a debug build; whether the loop stops after one refine (Stalled) or
+    /// two (MaxIterations) is read from the problem, never hard-coded.
+    #[test]
+    fn adaptive_uniform_lane_reports_the_final_refined_mesh_on_the_seed_grid() {
+        const DIMS: [f64; 3] = [0.2, 0.1, 0.1];
+        let (refined, _) =
+            run_adaptive_trampoline_on(DIMS, &[], adaptive_options_with_iterations(2));
+        let (seed_only, _) =
+            run_adaptive_trampoline_on(DIMS, &[], adaptive_options_with_iterations(0));
+
+        let (tip_force, pressures, body_force) = adaptive_test_loads();
+        let mut problem = CantileverAdaptiveProblem::new(
+            ADAPTIVE_STEEL,
+            DIMS[0],
+            DIMS[1],
+            DIMS[2],
+            tip_force,
+            pressures.clone(),
+            body_force,
+            None,
+        );
+        let budget = RefinementBudget {
+            target_accuracy: 1e-6,
+            max_refinement_iterations: 2,
+            max_dofs: 2_000_000,
+        };
+        run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("the stubby synthetic box solves at every grid");
+        let seed_counts = synthetic_grid_counts(DIMS[0], DIMS[2]);
+        assert_eq!(
+            seed_counts,
+            (12, 1, 6),
+            "fixture: the stubby beam's seed grid"
+        );
+        assert_ne!(
+            problem.grid, seed_counts,
+            "fixture: an unreachable target must buy at least one refine",
+        );
+
+        let solve_at = |grid_override| {
+            solve_cantilever_fea(
+                &MaterialModel::Isotropic(ADAPTIVE_STEEL),
+                DIMS[0],
+                DIMS[1],
+                DIMS[2],
+                None,
+                tip_force,
+                None,
+                &pressures,
+                body_force,
+                true,
+                None,
+                None,
+                None,
+                grid_override,
+            )
+            .expect("the stubby synthetic box is not degenerate")
+            .0
+        };
+        let final_solve = solve_at(Some(problem.grid));
+        let seed_grid = seed_grid_of(&solve_at(None));
+
+        let refined_max_von_mises = result_max_von_mises(&refined);
+        assert_eq!(
+            refined_max_von_mises.to_bits(),
+            final_solve.max_von_mises.to_bits(),
+            "(a) max_von_mises must be the FINAL iterate's: reported {refined_max_von_mises:e}, \
+             final mesh {:e}",
+            final_solve.max_von_mises,
+        );
+        assert_ne!(
+            refined_max_von_mises,
+            result_max_von_mises(&seed_only),
+            "(b) a refined run must not report the seed solve's max_von_mises",
+        );
+        assert_channels_share_grid(
+            &refined,
+            &seed_only,
+            &seed_grid,
+            &["displacement", "stress", "error_indicator"],
+        );
+        assert_reports_solve_on_grid(&refined, &final_solve, &seed_grid);
+        assert_eq!(
+            result_global_error(&refined).to_bits(),
+            problem.iterates.last_global_indicator.to_bits(),
+            "(e) global_relative_energy_error must describe the same final iterate",
+        );
+        assert_ne!(
+            data_bits(&result_sampled_field(&refined, "error_indicator")),
+            data_bits(&result_sampled_field(&seed_only, "error_indicator")),
+            "(f) error_indicator must describe the final iterate, not the seed solve",
+        );
+        assert_error_indicator_describes_solve(&refined, &final_solve, &seed_grid);
+    }
+
+    /// task 8246 guard: on a REALIZED seed the uniform fallback solves the
+    /// placeholder box (#8248), so its refined iterate must never replace the
+    /// realized seed's fields.
+    #[test]
+    fn adaptive_uniform_fallback_on_a_realized_seed_keeps_the_realized_seed_fields() {
+        const DIMS: [f64; 3] = [1.0, 0.1, 0.1];
+        let run = |iterations| {
+            run_adaptive_trampoline_on(
+                DIMS,
+                &[vm_read_handle(non_manifold_tet_mesh())],
+                adaptive_options_with_iterations(iterations),
+            )
+        };
+        let (one_refine, diags) = run(1);
+        let (zero_refine, _) = run(0);
+
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)
+                    && d.message.contains("120×2×12")),
+            "fixture: the uniform fallback must have run and refined the 60×1×6 box once, \
+             got: {diags:?}",
+        );
+        for name in [
+            "displacement",
+            "stress",
+            "max_von_mises",
+            "converged",
+            "iterations",
+        ] {
+            assert_eq!(
+                one_refine.get(name),
+                zero_refine.get(name),
+                "{name} must stay the realized seed's",
+            );
+        }
+    }
+
+    /// task 8246: once the gmsh-realized lane has remeshed, the result reports
+    /// the loop's FINAL iterate, resampled onto the SEED solve's grid.
+    ///
+    /// The final iterate is reproduced independently: the same problem re-run
+    /// through the same budget, then the lane's exact solve call on its final
+    /// mesh. Exact equality rests on determinism: the marks come from a serial
+    /// deterministic solve, and the remesher is pinned to one thread, which was
+    /// measured bit-identical across runs and processes (task 7411,
+    /// docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md). The re-run's
+    /// global error is therefore checked FIRST, so a reproduction that drifted
+    /// fails as such rather than as a wrong report.
+    #[test]
+    fn adaptive_realized_lane_reports_the_final_remeshed_iterate_on_the_seed_grid() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+        const DIMS: [f64; 3] = [1.0, 0.1, 0.1];
+        let vm = make_box_tet_volume_mesh(DIMS, [6, 1, 1]);
+        let run = |iterations| {
+            run_adaptive_trampoline_on(
+                DIMS,
+                &[vm_read_handle(vm.clone())],
+                adaptive_options_with_iterations(iterations),
+            )
+        };
+        let (refined, refined_diags) = run(2);
+        let (seed_only, _) = run(0);
+
+        let (tip_force, pressures, body_force) = adaptive_test_loads();
+        let surface = reify_solver_elastic::boundary_surface_mesh(&vm)
+            .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            ADAPTIVE_STEEL,
+            vm.clone(),
+            surface,
+            reify_solver_elastic::MeshingOptions::default(),
+            tip_force,
+            pressures.clone(),
+            body_force,
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+        let budget = RefinementBudget {
+            target_accuracy: 1e-6,
+            max_refinement_iterations: 2,
+            max_dofs: 2_000_000,
+        };
+        run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("the box remeshes and solves at every iteration");
+        let refine_count = problem.iterates.refine_count;
+        assert!(
+            refine_count >= 1,
+            "fixture: an unreachable target must buy at least one remesh",
+        );
+        let refines = format!(", {refine_count} refinement iteration(s)");
+        assert!(
+            refined_diags
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER) && d.message.contains(&refines)),
+            "the trampoline must have run the localized lane with the same {refine_count} \
+             remesh(es), got: {refined_diags:?}",
+        );
+
+        let solve_on = |mesh| {
+            solve_cantilever_fea(
+                &MaterialModel::Isotropic(ADAPTIVE_STEEL),
+                1.0,
+                1.0,
+                1.0,
+                Some(mesh),
+                tip_force,
+                None,
+                &pressures,
+                body_force,
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("the box meshes are not degenerate")
+            .0
+        };
+        let final_solve = solve_on(
+            volume_mesh_to_solver_mesh(&problem.volume_mesh)
+                .expect("the remesh is a widenable P1 tet mesh"),
+        );
+        let seed_grid = seed_grid_of(&solve_on(
+            volume_mesh_to_solver_mesh(&vm).expect("the seed box is a widenable P1 tet mesh"),
+        ));
+
+        assert_eq!(
+            result_global_error(&refined).to_bits(),
+            problem.iterates.last_global_indicator.to_bits(),
+            "the independent re-run must reproduce the trampoline's loop bit-for-bit",
+        );
+        let refined_max_von_mises = result_max_von_mises(&refined);
+        assert_eq!(
+            refined_max_von_mises.to_bits(),
+            final_solve.max_von_mises.to_bits(),
+            "max_von_mises must be the FINAL iterate's: reported {refined_max_von_mises:e}, \
+             final mesh {:e}",
+            final_solve.max_von_mises,
+        );
+        assert_ne!(
+            refined_max_von_mises,
+            result_max_von_mises(&seed_only),
+            "a remeshed run must not report the seed solve's max_von_mises",
+        );
+        assert_channels_share_grid(
+            &refined,
+            &seed_only,
+            &seed_grid,
+            &["displacement", "stress", "error_indicator"],
+        );
+        assert_reports_solve_on_grid(&refined, &final_solve, &seed_grid);
+        assert_error_indicator_describes_solve(&refined, &final_solve, &seed_grid);
+    }
+
+    /// A stand-in solve whose only meaningful fields are its CG outcome;
+    /// [`reported_solve`] reads nothing else.
+    fn solve_with_cg_outcome(converged: bool, iterations: usize) -> CantileverFeaSolve {
+        CantileverFeaSolve {
+            u: Arc::new(Vec::new()),
+            coords: Vec::new(),
+            tip_nodes: Vec::new(),
+            max_von_mises: 0.0,
+            converged,
+            iterations,
+            warm_started: false,
+            tet_connectivity: Vec::new(),
+            nodal_stress: Vec::new(),
+            nodal_gradient: Vec::new(),
+            nx: 0,
+            ny: 0,
+            nz: 0,
+        }
+    }
+
+    /// task 8246: the non-convergence Warning describes the solve the result
+    /// reports, never a seed solve the refined iterate replaced. CG
+    /// non-convergence cannot be provoked through the well-conditioned
+    /// cantilever, so the reported-solve choice is driven directly.
+    #[test]
+    fn reported_solve_carries_the_convergence_advisory_of_the_solve_it_reports() {
+        let stalled_seed = solve_with_cg_outcome(false, SOLVER_MAX_ITER);
+        let converged_refined = solve_with_cg_outcome(true, 17);
+        let (reported, advisory) = reported_solve(&stalled_seed, Some(&converged_refined));
+        assert!(
+            std::ptr::eq(reported, &converged_refined),
+            "a refined iterate is reported"
+        );
+        assert!(
+            advisory.is_none(),
+            "a converged refined iterate must not carry the replaced seed's Warning, got \
+             {advisory:?}",
+        );
+
+        let converged_seed = solve_with_cg_outcome(true, 17);
+        let stalled_refined = solve_with_cg_outcome(false, SOLVER_MAX_ITER);
+        let (reported, advisory) = reported_solve(&converged_seed, Some(&stalled_refined));
+        assert!(
+            std::ptr::eq(reported, &stalled_refined),
+            "a refined iterate is reported"
+        );
+        let advisory = advisory.expect("a non-converged refined iterate carries the Warning");
+        assert_eq!(advisory.severity, reify_core::Severity::Warning);
+        assert!(
+            advisory.message.contains(&format!(
+                "after {SOLVER_MAX_ITER}/{SOLVER_MAX_ITER} iterations"
+            )),
+            "the Warning must name the reported solve's iterations, got {:?}",
+            advisory.message,
+        );
+
+        let (reported, advisory) = reported_solve(&stalled_seed, None);
+        assert!(
+            std::ptr::eq(reported, &stalled_seed),
+            "with no refined iterate the seed stands"
+        );
+        assert!(
+            advisory.is_some(),
+            "a non-converged seed it reports carries the Warning"
+        );
+    }
+
     // ── ruling #6164: the `rotation` derivative channel ───────────────────────
     //
     // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the

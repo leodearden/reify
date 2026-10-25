@@ -16,6 +16,11 @@
 //! performing a real gmsh size-field remesh (deferred to follow-up task
 //! 4909). See `crates/reify-eval/src/compute_targets/elastic_static.rs`
 //! (`CantileverAdaptiveProblem`) for the full v1-scope rationale.
+//!
+//! Since task 8246 a run that refined at least once reports the loop's FINAL
+//! iterate, resampled onto the seed solve's grid; a zero-refine run reports
+//! the seed solve unchanged. `e2e_adaptive_dims_lane_reports_the_refined_mesh_on_the_seed_grid`
+//! pins both halves.
 
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{FieldSourceKind, SampledField, Value};
@@ -41,6 +46,12 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
 /// binding a `result` cell), assert no Error-severity diagnostics, and return
 /// the `result` cell's `Value`.
 fn eval_result_cell(source: &str, structure_name: &str) -> Value {
+    eval_result_cells(source, structure_name, &["result"]).remove(0)
+}
+
+/// Evaluate `source` ONCE, assert no Error-severity diagnostics, and return
+/// the named cells of `structure_name`, in order.
+fn eval_result_cells(source: &str, structure_name: &str, cells: &[&str]) -> Vec<Value> {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let mut engine = make_simple_engine();
@@ -59,12 +70,16 @@ fn eval_result_cell(source: &str, structure_name: &str) -> Value {
         errors
     );
 
-    let result_cell = ValueCellId::new(structure_name, "result");
-    eval_result
-        .values
-        .get(&result_cell)
-        .unwrap_or_else(|| panic!("cell {structure_name}.result not found in eval result"))
-        .clone()
+    cells
+        .iter()
+        .map(|&cell| {
+            eval_result
+                .values
+                .get(&ValueCellId::new(structure_name, cell))
+                .unwrap_or_else(|| panic!("cell {structure_name}.{cell} not found in eval result"))
+                .clone()
+        })
+        .collect()
 }
 
 /// Unpack a `Value::Enum` into `(type_name, variant, payload)`, panicking
@@ -123,7 +138,7 @@ fn expect_sampled_field(v: &Value, context: &str) -> (Type, SampledField) {
 
 /// Assert `error_indicator`'s `SampledField` (stride 1) is grid-consistent
 /// with `stress`'s `SampledField` (stride 9) — same grid geometry (task 4910:
-/// error_indicator is resampled from the SAME coarse mesh/grid as
+/// error_indicator is resampled from the SAME solve and grid as
 /// stress/displacement) — and that its values are physically sane: at least
 /// one finite (in-solid) value, every finite value non-negative (Frobenius
 /// norm), and NaN (out-of-solid sentinel, `resample.rs`) at exactly the same
@@ -248,6 +263,35 @@ structure FeaCantileverAdaptiveControl {
 }
 "#;
 
+/// (d) REFINED vs SEED (task 8246): one stubby 200 mm cantilever solved three
+/// ways — up to two refines, zero refines, and non-adaptive. The unreachable
+/// `target_accuracy: 0.001` guarantees the first refine. Each call's argument
+/// values are hashed into its own cache key, so the cells cannot alias.
+const STUBBY_CANTILEVER_REFINED_VS_SEED_SRC: &str = r#"
+structure FeaStubbyCantileverAdaptiveRefinedVsSeed {
+    param length : Length = 200mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let refined = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(adaptive: true, target_accuracy: 0.001, max_refinement_iterations: 2)
+    )
+    let seed_only = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(adaptive: true, target_accuracy: 0.001, max_refinement_iterations: 0)
+    )
+    let plain = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions()
+    )
+}
+"#;
+
 // ── step-15: RED until step-16 wires the adaptive branch into the tet path ────
 
 /// (a) ADAPTIVE CONVERGED.
@@ -288,7 +332,8 @@ fn e2e_adaptive_converged_threads_real_status_and_global_error() {
 
     // task 4910: on the adaptive+isotropic path, error_indicator is a REAL
     // Pa-valued Field resampled onto the SAME grid as stress/displacement
-    // (the coarse seed mesh) — no longer none.
+    // — no longer none. This target converges before any refine, so all
+    // three describe the seed solve.
     let error_indicator_field =
         extract_field(&result, "error_indicator").expect("ElasticResult must carry error_indicator");
     let error_indicator_value = expect_option(&error_indicator_field, "error_indicator")
@@ -349,8 +394,8 @@ fn e2e_adaptive_budget_capped_reports_notconverged_max_iterations() {
     );
 
     // task 4910: error_indicator is populated even on a budget-capped
-    // NotConverged outcome — the coarse-mesh ZZ stress-error resample runs
-    // regardless of whether the loop met its target_accuracy.
+    // NotConverged outcome — the reported solve's ZZ stress-error resample
+    // runs regardless of whether the loop met its target_accuracy.
     let error_indicator_field =
         extract_field(&result, "error_indicator").expect("ElasticResult must carry error_indicator");
     let error_indicator_value = expect_option(&error_indicator_field, "error_indicator")
@@ -401,4 +446,72 @@ fn e2e_non_adaptive_control_stays_trivial_default() {
         None,
         "non-adaptive control must keep global_relative_energy_error == none"
     );
+}
+
+/// (d) REFINED vs SEED (task 8246): a run that refined reports the refined
+/// mesh's answer on the seed grid; a zero-refine run reports the seed solve
+/// exactly as a non-adaptive run does.
+#[test]
+fn e2e_adaptive_dims_lane_reports_the_refined_mesh_on_the_seed_grid() {
+    let cells = eval_result_cells(
+        STUBBY_CANTILEVER_REFINED_VS_SEED_SRC,
+        "FeaStubbyCantileverAdaptiveRefinedVsSeed",
+        &["refined", "seed_only", "plain"],
+    );
+    let [refined, seed_only, plain] =
+        <[Value; 3]>::try_from(cells).expect("eval_result_cells returns one Value per cell");
+
+    let field = |result: &Value, name: &str| {
+        extract_field(result, name).unwrap_or_else(|| panic!("ElasticResult must carry {name}"))
+    };
+    let sampled = |result: &Value, name: &str| -> SampledField {
+        let value = match field(result, name) {
+            option @ Value::Option(_) => expect_option(&option, name)
+                .unwrap_or_else(|| panic!("{name} must be Some on the adaptive path")),
+            value => value,
+        };
+        expect_sampled_field(&value, name).1
+    };
+    let data_bits = |sf: &SampledField| sf.data.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+
+    assert_ne!(
+        field(&refined, "max_von_mises"),
+        field(&seed_only, "max_von_mises"),
+        "a refined adaptive solve must report the refined mesh's max_von_mises, not the seed's",
+    );
+    for name in ["displacement", "stress", "error_indicator"] {
+        let (r, s) = (sampled(&refined, name), sampled(&seed_only, name));
+        assert!(
+            r.grid_metadata_eq(&s) && r.data.len() == s.data.len(),
+            "{name}: a refined result must sample the seed result's grid (grids_equal)",
+        );
+    }
+    assert_ne!(
+        data_bits(&sampled(&refined, "displacement")),
+        data_bits(&sampled(&seed_only, "displacement")),
+        "a refined adaptive solve must report the refined mesh's displacement, not the seed's",
+    );
+    assert_grid_consistent_error_indicator(
+        &sampled(&refined, "error_indicator"),
+        &sampled(&refined, "stress"),
+    );
+
+    for name in [
+        "displacement",
+        "stress",
+        "divergence",
+        "gradient",
+        "curl",
+        "rotation",
+        "shear_angles",
+        "max_von_mises",
+        "converged",
+        "iterations",
+    ] {
+        assert_eq!(
+            field(&seed_only, name),
+            field(&plain, name),
+            "{name}: a zero-refine adaptive run must report the seed solve unchanged",
+        );
+    }
 }

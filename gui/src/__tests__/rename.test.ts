@@ -13,7 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
-import type { RenameClient, RenameSkewGuard, RenameUi } from '../editor/rename';
+import type { RenameClient, RenameUi } from '../editor/rename';
+import type { VersionSkewGuard } from '../editor/versionSkew';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
 
@@ -169,6 +170,8 @@ describe('applyTextEditsToString', () => {
 const ACTIVE_URI = 'file:///proj/main.ri';
 const OPEN_URI = 'file:///proj/lib.ri';
 const CLOSED_URI = 'file:///proj/other.ri';
+const SPACED_ACTIVE_URI = 'file:///proj/hello world.ri';
+const SPACED_ACTIVE_URI_ENCODED = 'file:///proj/hello%20world.ri';
 
 const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
 const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
@@ -261,6 +264,16 @@ describe('applyWorkspaceEditAcrossFiles', () => {
     expect(deps.isOpen).not.toHaveBeenCalledWith(ACTIVE_URI);
   });
 
+  it('routes the percent-encoded spelling of the active URI to applyActive', () => {
+    const edit: WorkspaceEdit = { changes: { [SPACED_ACTIVE_URI_ENCODED]: EDIT_A } };
+    const deps = makeDeps([SPACED_ACTIVE_URI_ENCODED]);
+    applyWorkspaceEditAcrossFiles(edit, SPACED_ACTIVE_URI, deps);
+    expect(deps.applyActive).toHaveBeenCalledOnce();
+    expect(deps.applyActive).toHaveBeenCalledWith(SPACED_ACTIVE_URI_ENCODED, EDIT_A);
+    expect(deps.applyOpenInactive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).not.toHaveBeenCalled();
+  });
+
   // Task 7118: once the client declares the documentChanges capability the
   // server stops sending `changes` entirely. An applier that only reads
   // `changes` would become a silent no-op — rename reporting success while
@@ -331,6 +344,30 @@ describe('applyWorkspaceEdit', () => {
     const view = makeMockView({ dispatch });
 
     const result = applyWorkspaceEdit(view, edit, URI);
+
+    expect(result).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 43, to: 48, insert: 'girth' }],
+      userEvent: 'rename',
+    });
+  });
+
+  it('finds the edits for uri when the server spells it percent-encoded', () => {
+    const edit: WorkspaceEdit = {
+      changes: {
+        [SPACED_ACTIVE_URI_ENCODED]: [
+          {
+            range: { start: { line: 2, character: 3 }, end: { line: 2, character: 8 } },
+            newText: 'girth',
+          },
+        ],
+      },
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    const result = applyWorkspaceEdit(view, edit, SPACED_ACTIVE_URI);
 
     expect(result).toBe(true);
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -560,7 +597,7 @@ function makeRenameDeps() {
   const syncServer = vi.fn((_view: EditorView): Promise<void> | null => null);
   const client = { prepareRename, rename } as unknown as RenameClient;
   const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
-  const guard: RenameSkewGuard = { currentVersion, syncServer };
+  const guard: VersionSkewGuard = { currentVersion, syncServer };
   return {
     client,
     ui,
@@ -983,7 +1020,7 @@ describe('renameCommand', () => {
     expect(applyEdit).not.toHaveBeenCalled();
   });
   // -------------------------------------------------------------------------
-  // version-skew guard (injected RenameSkewGuard) — step-13 tests
+  // version-skew guard (injected VersionSkewGuard) — step-13 tests
   // -------------------------------------------------------------------------
 
   const GUARD_TARGET = {
@@ -1263,7 +1300,46 @@ describe('renameCommand', () => {
     expect(showRenameFailed).not.toHaveBeenCalled();
   });
 
-  it('(i) version skew: the server is synced before the first request AND before the re-issue', async () => {
+  it('version skew: an edit typed while the rename was in flight, not yet sent, re-issues the rename', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, syncServer, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    // The document behaves like Editor's: a keystroke inside the didChange
+    // debounce bumps the version only when syncServer sends it.
+    let version = 1;
+    let unsent = false;
+    currentVersion.mockImplementation(() => version);
+    syncServer.mockImplementation(() => {
+      if (!unsent) return null;
+      unsent = false;
+      version += 1;
+      return Promise.resolve();
+    });
+    const fresh = stampedEdit(2);
+    rename
+      .mockImplementationOnce(() => {
+        unsent = true;
+        return Promise.resolve(stampedEdit(1));
+      })
+      .mockResolvedValueOnce(fresh);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    // The first edit agreed with the version last SENT, but not with the text
+    // on screen: only sending the pending edit exposes the disagreement.
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(i) version skew: the server is synced before and after every request, the re-issue included', async () => {
     const { client, ui, prepareRename, rename, promptNewName, currentVersion, syncServer, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
@@ -1293,7 +1369,7 @@ describe('renameCommand', () => {
 
     // The version comparison only sees text the server was SENT, so the
     // re-issue must not be answered from an edit still waiting to go out.
-    expect(order).toEqual(['synced', 'rename', 'synced', 'rename']);
+    expect(order).toEqual(['synced', 'rename', 'synced', 'synced', 'rename', 'synced']);
     expect(syncServer).toHaveBeenCalledWith(view);
     expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
   });

@@ -1,0 +1,15 @@
+module shell_route_pressure_thin_plate
+
+// PRD docs/prds/v0_6/elastic-modal-trampoline-factoring.md leaf μ (BT4). A
+// shell-classified dims plate (50 x 10 x 1 mm, aspect 0.02 < shell_threshold 0.2,
+// ShellForce Auto). At main 1b06f93151 the shell route ignores the PressureLoad silently: max_vm equals the tip-load-only solve (2.143e9 Pa) and no diagnostic names it. After μ: tet route plus FeaShellRouteInputFallback naming PressureLoad.
+structure P {
+    param length : Length = 50mm
+    param width  : Length = 10mm
+    param height : Length = 1mm
+    let material = Steel_AISI_1045()
+    let body = box(length, width, height)
+    let tip_load = PointLoad(point: "tip", force: 10.0)
+    let result = solve_elastic_static(material, length, width, height, [tip_load, PressureLoad(magnitude: 1.0e6, face: face(body, "z_max"), direction: "normal")], [FixedSupport(target: "root")], ElasticOptions())
+    let max_vm = result.max_von_mises
+}

@@ -1,0 +1,6 @@
+module auto_reach_geo_loop_a
+pub structure GeoLoopA {
+    param w : Length = auto
+    let part = box(w, 10mm, 10mm)
+    constraint volume(part) == 10mm*10mm*10mm
+}

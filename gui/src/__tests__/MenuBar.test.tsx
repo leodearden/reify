@@ -260,7 +260,8 @@ describe('MenuBar — interaction behaviors', () => {
     expect(screen.getByRole('menu')).not.toBeNull();
     // Dispatch a mousedown where target is a non-Node (e.g. null via Object.create)
     const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'target', { value: null, writable: false });
+    // configurable: solid's delegated handler redefines target while it dispatches, then restores it.
+    Object.defineProperty(event, 'target', { value: null, configurable: true });
     document.dispatchEvent(event);
     // Menu should remain open (guard skips when target is not a Node)
     expect(screen.getByRole('menu')).not.toBeNull();

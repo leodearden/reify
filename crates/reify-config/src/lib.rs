@@ -2,9 +2,8 @@
 //!
 //! This crate owns the schema for the project pin described in the v0.2
 //! multi-kernel PRD ("Resolved design decisions (2026-04-28)" → "Project pin").
-//! It is intentionally self-contained: no other workspace crate consumes it
-//! yet, but the binary entry points (CLI, GUI launcher, MCP server) and the
-//! future kernel registry will read the parsed pin from here.
+//! No shipped binary loads a `reify.toml`: see [`Manifest`] for the inert
+//! status that applies to every section below.
 //!
 //! # Schema
 //!
@@ -53,12 +52,16 @@
 //! - **Instance selector** — `Entity.member` (a single `.` with non-empty
 //!   halves); maps to the `Value` kind's `NodeId::Value(ValueCellId)`.
 //!
-//! No glob expansion is performed here; the consumer (`reify-runtime`) resolves
-//! the pattern against the concrete node graph. The three `commitment_policy`
-//! values mirror [`NodeCommitmentOverride`](reify_runtime) verbatim:
-//! `commit_if_slow`, `always_cancel_when_stale`, `only_run_on_final_inputs`.
-//! See `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
-//! precedence chain this config slot fills.
+//! Selectors are exact matches; no glob expansion is performed.
+//! `reify-runtime`'s `NodePolicyOverrides::from_config_overrides` maps each
+//! one to a kind or `Value` instance override without consulting any node
+//! graph. Beyond the inert status on [`Manifest`], nothing enforces the
+//! policy either (see `docs/notes/reify-toml-schema.md`). The
+//! three `commitment_policy` values mirror
+//! [`NodeCommitmentOverride`](reify_runtime) verbatim: `commit_if_slow`,
+//! `always_cancel_when_stale`, `only_run_on_final_inputs`. See
+//! `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
+//! precedence chain that places these entries.
 //!
 //! # Usage
 //!
@@ -113,10 +116,9 @@ pub mod cache;
 /// warning. The default of 6 is the load-bearing PRD constant — projects can
 /// override it via `[auto_type_params]\nmax_depth = N` in `reify.toml`.
 ///
-/// This constant is the single-source-of-truth: callers (the eventual
-/// compile-pipeline integration) MUST consume it via
-/// [`Manifest::auto_type_params`] rather than embedding the literal `6`
-/// elsewhere.
+/// This constant is the single source of truth for the default. The compiler
+/// reads it through [`AutoTypeParamsConfig::default`]; no manifest value
+/// reaches it (see [`Manifest`]).
 pub const DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH: usize = 6;
 
 /// Default cap on the size of the `auto:` type-parameter cross-product search
@@ -130,10 +132,9 @@ pub const DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH: usize = 6;
 /// 100,000 is the load-bearing PRD constant — projects can override it via
 /// `[auto_type_params]\nmax_cross_product_size = N` in `reify.toml`.
 ///
-/// This constant is the single-source-of-truth: callers (the eventual
-/// compile-pipeline integration) MUST consume it via
-/// [`Manifest::auto_type_params`] rather than embedding the literal
-/// `100_000` elsewhere.
+/// This constant is the single source of truth for the default. The compiler
+/// reads it through [`AutoTypeParamsConfig::default`]; no manifest value
+/// reaches it (see [`Manifest`]).
 pub const DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE: usize = 100_000;
 
 /// Commitment policy for a per-node override, as declared in `reify.toml`.
@@ -168,7 +169,8 @@ pub struct NodePolicyOverride {
 }
 
 /// Configuration for the warm-state pool memory budget
-/// (project-level, declared under `[warm_state]` in `reify.toml`).
+/// (project-level, declared under `[warm_state]` in `reify.toml`; inert, see
+/// [`Manifest`]).
 ///
 /// Fields:
 /// - `budget_bytes`: optional cap on the in-process warm-state pool in bytes.
@@ -188,7 +190,8 @@ pub struct WarmStateConfig {
 }
 
 /// Configuration for the `auto:` type-parameter resolution algorithm
-/// (project-level, declared under `[auto_type_params]` in `reify.toml`).
+/// (project-level, declared under `[auto_type_params]` in `reify.toml`; inert,
+/// see [`Manifest`]).
 ///
 /// Fields:
 /// - `max_depth`: cap on how many `auto:` type-parameters the v0.2 DFS
@@ -225,6 +228,14 @@ impl Default for AutoTypeParamsConfig {
 }
 
 /// Parsed project manifest.
+///
+/// **Inert today:** no shipped binary loads a `reify.toml`.
+/// [`Manifest::load_from_path`] and [`Manifest::from_toml_str`] have no
+/// production caller outside this crate, and the only production
+/// `reify_eval::Engine::with_registered_kernels_and_manifest` call (from
+/// `Engine::with_registered_kernels`) passes `None`. Every section
+/// (`[kernels]`, `[auto_type_params]`, `[warm_state]`, `[[node_overrides]]`)
+/// is therefore parsed and validated but ignored at runtime.
 ///
 /// Carries the set of pinned kernels declared by the project. The map is a
 /// `BTreeMap` so iteration order is deterministic and stable across runs —
@@ -343,8 +354,8 @@ impl Manifest {
     /// `[auto_type_params]` table, otherwise the [`Default`] value
     /// (`max_depth = `[`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`]`,
     /// max_cross_product_size = `[`DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE`]).
-    /// The eventual compile-pipeline integration MUST consume both fields
-    /// via this accessor rather than embedding the literal defaults elsewhere.
+    /// The compiler uses [`AutoTypeParamsConfig::default`] and does not call
+    /// this accessor; see [`Manifest`].
     pub fn auto_type_params(&self) -> &AutoTypeParamsConfig {
         &self.auto_type_params
     }
@@ -353,8 +364,9 @@ impl Manifest {
     /// `[[node_overrides]]` in `reify.toml`.
     ///
     /// Returns an empty slice when no `[[node_overrides]]` section is present.
-    /// The consumer (`reify-runtime`) converts this slice into a
-    /// `NodePolicyOverrides` object via `NodePolicyOverrides::from_config_overrides`.
+    /// `reify-runtime`'s `NodePolicyOverrides::from_config_overrides` can
+    /// convert this slice, but no production code calls it today; see
+    /// `docs/notes/reify-toml-schema.md` for the enforcement status.
     pub fn node_overrides(&self) -> &[NodePolicyOverride] {
         &self.node_overrides
     }
@@ -363,9 +375,9 @@ impl Manifest {
     /// `reify.toml`, or `None` when the section is absent or `budget_bytes`
     /// was not set.
     ///
-    /// The engine consumer calls this to populate
-    /// `WarmStatePool::from_config_or_env(budget)` so that env vars sit above
-    /// the manifest value in the precedence ladder (env > manifest > default).
+    /// `WarmStatePool::from_config_or_env(budget)` ranks env above this value
+    /// above the default, but no production code feeds it a manifest value, so
+    /// the manifest rung is never reached (see [`Manifest`]).
     pub fn warm_state_budget_bytes(&self) -> Option<u64> {
         self.warm_state.budget_bytes
     }

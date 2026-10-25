@@ -139,6 +139,7 @@ fn rounded_box_curated_rim_fillet_realizes_an_unfragmented_body() {
     // `edges_at_height` needs to resolve its selection at all.
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     );

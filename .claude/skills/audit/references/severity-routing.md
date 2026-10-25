@@ -10,9 +10,9 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 
 | Token | `Finding.pattern` value(s) | Default sweep | `Finding.task_id` carries | Routing notes |
 |---|---|---|---|---|
-| `P1` | `P1ProducerOrphan` | yes | task id | §2 P1 template |
+| `P1` | `P1ProducerOrphan`, `P1TaskUnexamined` | yes | task id; empty string for the run-level unexamined finding | §2 P1 template; §2 unexamined-task note |
 | `P2` | `P2ConsumerStub` | yes | task id | §2 P2 template |
-| `P5` | `P5PhantomDone`, `P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded` | yes | task id | §2 P5 note |
+| `P5` | `P5PhantomDone`, `P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`, `P5LivePathUnexamined` | yes | task id; empty string for the run-level unexamined finding | §2 P5 note; §2 unexamined-task note |
 | `PTODO` | `PTodo` | yes | repo path for the structural and liveness lanes, which include every High kind; task id for the inverse lane (`task-cites-deleted-path` / `task-cites-renamed-path`) | §2 PTODO |
 | `PDSSENTINEL` | `PDsSentinel` | yes | repo path | §2 PDSSENTINEL |
 | `PDEAD` | `PDeadCode` | no | empty string | §2 P-* note |
@@ -21,6 +21,9 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PDIAG` | `PDiag` | no | repo path: the swept file, or `crates/reify-audit/pdiag-baseline.txt` for baseline/census faults | §2 PDIAG |
 | `PDOCCOVER` | `PDocCover` | no | repo path: `crates/reify-compiler/src/units.rs`, `crates/reify-audit/pdoccover-baseline.txt`, or a `crates/reify-mcp/src/tools/chunks/*.md` | §2 PDOCCOVER (batched) |
 | `PDCHECK` | `PDeliveredCheckPath` | no | task id: the owning non-terminal task | §2 PDCHECK |
+| `PCITE` | `PManifestCite` | no | repo path: a `docs/prds/**/*.capability-manifest.md` | §2 PCITE |
+| `PPRDSTATUS` | `PPrdStatus` | no | repo path: the PRD (`docs/prds/**.md`) | §2 PPRDSTATUS (batched) |
+| `PLINECITE` | `PLineCite` | no | repo path: the citing file, or `crates/reify-audit/plinecite-baseline.txt` for ledger/scope findings | §2 PLINECITE (grouped per file) |
 
 ---
 
@@ -30,7 +33,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 |----------|--------|------|------------|
 | **High** | Escalate (advisory, non-blocking) | `mcp__escalation__escalate_info` | `task_id=<subject>` (see below), `agent_role="audit"`, `category="risk_identified"`, `summary="[<finding.pattern>] <finding.task_id>: <finding.summary>"`, `detail=<json of finding.evidence>`, `terminal_state_is_the_bug=True` |
 | **Medium** | File deferred follow-up task (with dedupe) | `mcp__fused-memory__submit_task` | `planning_mode=True` (synchronous, curator-bypassing); see §2 for title template and metadata |
-| **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **PTODO findings are severity-split by kind (task η, #4559):** a High kind escalates and every other kind files a task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See §2 for PTODO title template and per-kind routing. |
+| **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **`P1TaskUnexamined` and `P5LivePathUnexamined` are always Low** too, and likewise never filed or escalated (§2 unexamined-task note). **PTODO findings are severity-split by kind (task η, #4559):** a High kind escalates and every other kind files a task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See §2 for PTODO title template and per-kind routing. |
 
 ### High severity — escalation details
 
@@ -47,14 +50,14 @@ mcp__escalation__escalate_info(
 )
 ```
 
-**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG and PDOCCOVER is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
+**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG, PDOCCOVER and PPRDSTATUS is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
 
 - **The subject, not the raw `task_id`:** the escalation server mints the escalation id from `task_id` (`make_id` names its counter files `esc-<task_id>.seq…`), and a repo path cannot mint one. Measured 2026-09-23 against a scratch queue: `make_id('crates/reify-compiler/src/units.rs')` raises `FileNotFoundError`, while `make_id('audit')` mints `esc-audit-1`.
 - **`terminal_state_is_the_bug=True`:** without it the server auto-resolves, on arrival, any filing whose task is done or cancelled — and every `P5PhantomDone` is about a done task.
 
-PDOCCOVER is the one batched pattern: one escalation per run, not one per finding (§2).
+PDOCCOVER and PPRDSTATUS are the batched patterns: one escalation per run, not one per finding (§2).
 
-**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
+**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/model.rs`.
 
 The escalation lands in the same queue `/unblock` drains. The skill is **advisory** here — pre-done blocking is D-1 hook territory. High findings raise visibility without mutating task state.
 
@@ -97,8 +100,15 @@ mcp__fused-memory__submit_task(
 | **PDIAG** (codes-mandatory ratchet) — Medium `pdiag-baseline-stale` only | `Tighten pdiag baseline row (PDIAG pdiag-baseline-stale at <path>)` |
 | **PDOCCOVER** (registry ↔ chunk name drift) | _(High only: batched escalation, no Medium template)_ |
 | **PDCHECK** (`delivered_checks` dead path) — Medium `delivered-check-vacuous-absent-path` only | `Repair vacuous delivered_check <check_name> (PDCHECK on task <id>)` |
+| **PCITE** (capability-manifest cite) — Medium `fabricated-cite` | `Fix fabricated manifest cite (PCITE fabricated-cite <name> at <path>)` |
+| **PPRDSTATUS** (PRD status-prose drift) | _(High only: batched escalation via scripts/pprdstatus-escalate.py, no Medium template)_ |
+| **PLINECITE** (hard line cite) — Medium `line-cite` | `De-number line cites in <path> (PLINECITE line-cite)` |
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
+
+**Unexamined-task note (`P1TaskUnexamined`, `P5LivePathUnexamined`):** the P1 template applies to `P1ProducerOrphan` only. Each of these findings comes in two forms. The per-task form (a task id in `task_id`) means its detector (P1, or P5's H2 live-path pass) could not examine that done task because its `get_changed_symbols` query failed (the summary names the range and the failure). The run-level form (empty `task_id`) means the jcodemunch seam was unavailable from the start of the run — unreachable, handshake refused, or an unusable index — so the detector examined no task at all (the summary names the reason). H2 records it only when the run swept a task H2 would have examined (a cross-crate done task with a commit). Both are always Low and logged, never filed or escalated. The remedy is a re-run once the jcodemunch serve answers, not a `Wire <symbol> consumer` task: there is no symbol to wire. Their presence is what stops such a run from reading as a clean P1 or H2 sweep. `--no-jcodemunch` records neither form: skipping those passes is then declared, not discovered.
+
+**Expected volume:** a seam unavailable from the start of the run yields exactly one run-level finding per affected detector — one `P1TaskUnexamined` and one `P5LivePathUnexamined` at most — not one per task. Otherwise, one finding per task whose query failed. P1 queries every done task with a commit that survives its foundation and pending-consumer guards, and H2 every done cross-crate task with a commit, so a serve that stops answering mid-sweep yields one `P1TaskUnexamined` for each remaining P1 task plus one `P5LivePathUnexamined` for each remaining cross-crate task, each with its own stderr breadcrumb. A serve that hangs rather than refuses costs the client's HTTP timeout on every one of those queries. Read a run of them as ONE event, the serve going away, and re-run once; do not triage them per task.
 
 **P5 severity note:** P5 (phantom-done) findings are **High-only or Low** in the periodic sweep:
 - High: verified phantom-done (task status=done + missing metadata evidence).
@@ -125,9 +135,27 @@ P5 findings never reach Medium in the periodic sweep context, so no Medium title
 - `detail=json.dumps([{"path": f.task_id, "summary": f.summary} for f in pdoccover_findings])`;
 - `task_id="audit"`, with every other §1 parameter unchanged.
 
-Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `escalation_id`. Why batched: the findings are one census with one owner — #6931 seeds `crates/reify-audit/pdoccover-baseline.txt` and wires the gate — so a human makes one decision per run, not one per name. Per-finding escalation would queue one advisory per name in the backlog (measured in `references/modes.md` §4) for that one decision.
+Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `escalation_id`. Why batched: the findings are one census settled against one ledger, `crates/reify-audit/pdoccover-baseline.txt`, which the merge gate `tests/infra/test_reify_audit_pdoccover.sh` enforces — so a High on main means that gate was bypassed or skipped its ratchet scenario, and a human makes one decision per run (fix the chunks, or regenerate the ledger), not one per name.
 
 **PDCHECK note:** the High kind (`delivered-check-unsatisfiable-path`) escalates per finding with `task_id=finding.task_id`, the owning live task. The Medium kind (`delivered-check-vacuous-absent-path`) files a follow-up. Take `<check_name>` from the finding's `DeliveredCheck` evidence, which is also its dedupe symbol (§3). Either repair is a `metadata.delivered_checks` edit a human makes; §4 forbids the skill mutating tasks. A run whose stderr carries the `PDCHECK … lane skipped … NOT a clean bill of health` breadcrumb checked nothing, so its empty PDCHECK result is not evidence of health.
+
+**PCITE note:** both kinds are Medium, so PCITE never escalates and never moves the exit code. `fabricated-cite` files a follow-up with the §2 template; take `<name>` and `<path>` from the finding's `FileLine` evidence (`symbol` and `path`; `line` locates the row), never from the summary. The fix is to correct the manifest row, or — when the symbol legitimately lives outside this repo (dark-factory, OCCT) — to add `<!-- pcite:allow — <reason> -->` on that line. `allow-missing-reason` files `Add pcite:allow reason (PCITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from the same evidence (its `symbol` is null).
+
+**PLINECITE note:** every kind is Medium, so PLINECITE never escalates and never moves the exit code. Per kind:
+
+- `line-cite` — ONE follow-up per citing file: group the run's `line-cite` findings by `finding.task_id` and file the §2 template once per group (`<path>` = `finding.task_id`), listing each cite from its `FileLine` evidence's `symbol`. The fix is to cite the enclosing symbol, after checking that the symbol greps in the target; a deliberate dated cite gets `plinecite:allow — <reason>` on its line. Never re-number: a re-pointed number is reported as new debt.
+- `stale-baseline-entry` — ONE follow-up per run, titled `Regenerate PLINECITE ledger`, quoting the shrink-only command `cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . --write` (never a stdout redirect into the ledger: the shell truncates it before the generator reads its rows).
+- `allow-missing-reason` — one follow-up per finding, `Add plinecite:allow reason (PLINECITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from its `FileLine` evidence (its `symbol` is null).
+- `scope-empty` — the run checked nothing, so its result is not a clean bill of health. File no follow-up; re-run with `--project-root` at the git worktree.
+
+**PPRDSTATUS note:** every PPRDSTATUS finding is High (both kinds are listed in `references/modes.md` §4), and they are raised as **one batched escalation per run** by running the escalation script, never by calling `escalate_info` here:
+
+```bash
+"$REPO_ROOT/scripts/pprdstatus-escalate.py" --findings-file "$TMPFILE" \
+    --escalation-url http://127.0.0.1:8100/mcp
+```
+
+`$TMPFILE` is the captured stderr of this run's `--pattern PPRDSTATUS` invocation (`references/cli-invocation.md` §2), so route before that recipe's cleanup removes it. The script then raises exactly the findings the run artifact records, from the run's one task-corpus load. Pass a run of PPRDSTATUS alone: a mixed run that skipped PPRDSTATUS over an empty corpus still prints a findings array (`references/cli-invocation.md` §4.1), which the script cannot tell from a clean one. Outside the skill, `--reify-audit "$RELEASE_BIN" --project-root /home/leo/src/reify` in place of `--findings-file` makes the script run the detector itself. The script is the single source of that escalation's shape: subject `"audit"`, the finding count, the doc list and the sitting to run. So the skill must NOT also call `escalate_info` per finding, and must NOT rebuild the arguments by hand. It must NOT file follow-up tasks either: adjudication is a human docs-truth sitting (Leo's 2026-08-19 ruling), because each doc needs its own judgement — a still-active PRD whose prose needs correcting, a completed plan that needs a terminal stamp, or a dated snapshot that must not be edited. A filed escalation prints its record as one JSON object on stdout, `{"id", "status", "level", "finding_count"}`, and every PPRDSTATUS finding records `action_taken: "escalated"` with that object's `id`. An empty set prints nothing on stdout and files nothing. The script's exit codes are in its header: exit 0 means a findings array was read; exit 1 means the escalation was not filed; exit 125 means there was no parseable findings array, so nothing was checked or raised, whether the detector failed or refused an empty task corpus. Neither 1 nor 125 is a clean result. The recurring, unattended raise of this family (PPRDSTATUS with PCITE) is not this recipe but `scripts/docs-truth-sweep.py` on a weekly timer, which books one L2 sitting per novel finding set (`docs/notes/docs-truth-sweep.md`).
 
 ---
 
@@ -139,6 +167,8 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 - `audit_cluster` = `finding.pattern` (e.g. `"P1"`, `"P2"`, `"P5"`)
 - `symbol_or_path` = the primary symbol or file path from `finding.evidence` (first evidence string; use `finding.summary` as fallback)
 - For PDCHECK, `symbol_or_path` is the `DeliveredCheck` evidence's `check_name` (always its first evidence entry), so two stale rows on one task stay distinct.
+- For PCITE, `symbol_or_path` comes from the `FileLine` evidence (always its only evidence entry): its `symbol` for `fabricated-cite`, and `<path>:<line>` for `allow-missing-reason`, whose `symbol` is null. Keying on the manifest path alone would collide two phantom cites in one manifest.
+- For PLINECITE `line-cite`, `symbol_or_path` is `finding.task_id`, the citing file, not the cite in its evidence: that matches the per-file grouping in §2, so one file's cites share one key.
 
 **The key is kind-agnostic:** `audit_cluster` is the PATTERN (`"PTODO"`), not the finding kind, so two PTODO findings on the same task+path collide on one key regardless of kind. No change is needed for the two inverse kinds — `task-cites-deleted-path` and `task-cites-renamed-path` are mutually exclusive by construction (a cited path either resolves to a rename target still tracked at HEAD, or it does not), so they can never both be emitted for the same task+path. Stated here so a future reader does not have to re-derive it.
 

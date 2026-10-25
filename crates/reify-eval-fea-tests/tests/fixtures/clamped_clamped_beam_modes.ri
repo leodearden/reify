@@ -48,12 +48,10 @@
 // 1953.26]) instead of exactly one. The cost is nil, because the shift-invert
 // Krylov window is `max(2·n_modes, 32).max(64)` = 64 either way.
 //
-// AUTHORING TRAP — `ModalOptions` argument binding is POSITIONAL: the `name:`
-// labels are cosmetic and the parser binds by DECLARATION order (n_modes,
-// boundary_conditions, damping, sigma, tol, max_iters, reference_direction,
-// element_order). `element_order` is LAST, so every preceding param must be
-// spelled out or `ElementOrder.P2` lands in an earlier slot and the P1 bending
-// lock never lifts. Likewise `modal_analysis` declares
+// AUTHORING TRAP — ctor args bind BY NAME (task 4522), so a MISSPELLED label is
+// the hazard: a typo'd `element_order:` falls back to `ElementOrder.P1` and the
+// P1 bending lock never lifts (see the binding note in
+// examples/modal/cantilever_beam_modes.ri). Likewise `modal_analysis` declares
 // `material : ElasticMaterial`, so the material is wrapped as
 // `FEAMaterialInput(material: mat)` and passed as `mi.material`.
 
@@ -93,7 +91,7 @@ structure ClampedClampedBeamModes {
         n_modes: 4,
         boundary_conditions: [fix_min, fix_max],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),
@@ -103,7 +101,7 @@ structure ClampedClampedBeamModes {
         n_modes: 4,
         boundary_conditions: [pin_min, pin_max],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),
@@ -116,7 +114,7 @@ structure ClampedClampedBeamModes {
         n_modes: 4,
         boundary_conditions: [fix_min, pin_max],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

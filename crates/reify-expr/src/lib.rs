@@ -9,16 +9,20 @@ mod branch_signature;
 mod calculus;
 mod complex;
 mod dual;
+mod dual_builtin_rules;
+mod dual_env;
 mod dual_eval;
+mod dual_seeds;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
+mod non_differentiable;
 mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
-// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
 // modules are PRIVATE and these flat re-exports are the only path to them, so
 // `reify_expr::Tangent` is not merely the preferred spelling over
 // `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
@@ -30,10 +34,10 @@ pub use branch_signature::{
     RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
 };
 pub use dual::{DualValue, Tangent};
-pub use dual_eval::{
-    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
-    jacobian_row_with_env,
-};
+pub use dual_env::DualEnv;
+pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
+pub use dual_seeds::Seeds;
+pub use non_differentiable::NonDifferentiable;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +46,7 @@ use std::sync::Arc;
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
+use reify_core::scalar_tolerance::scalars_equal;
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -571,8 +576,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // `list`, expect each call to return a list, and concatenate
                 // the per-element results into a single flat list. Intercepted
                 // here (rather than in `reify_stdlib::eval_builtin`) because
-                // applying the lambda requires `EvalContext` — the same reason
-                // map/filter/fold are dispatched from `eval_method_call`.
+                // applying the lambda requires `EvalContext`.
                 //
                 // Convention: silent `Value::Undef` on type errors (non-list
                 // input, non-lambda second arg, lambda result not a list,
@@ -920,12 +924,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             method,
             args,
         } => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
                 return Value::Undef;
             }
-            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-            eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
+            eval_method_call(&obj, method, &expr.result_type)
         }
 
         CompiledExprKind::OptionNone => Value::Option(None),
@@ -1439,10 +1445,10 @@ fn eval_ad_hoc_selector(
 /// candidate. With `is_generic == false` the head tier's `heads_unifiable` arm
 /// is gated off and head genuinely IS a subset of wildcard — the same relation
 /// [`reify_core::overload`]'s module doc states. So tier 2 CAN drop a
-/// non-generic candidate: a concrete param facing an arg that CARRIES a type
-/// param without BEING a bare `Type::TypeParam` (e.g. `Option<T>`) passes tier
-/// 3's arg-side `type_carries_type_param` disjunct (D4) and fails tier 2's
-/// bare-`TypeParam` one. Being a filter over tier 3's survivors, tier 2 can
+/// non-generic candidate: a concrete same-head param facing an arg whose heads
+/// unify only through an R1 placeholder slot (e.g. `Result<Length, String>` vs
+/// `Result<Length, ?E>`) passes tier 3 and fails tier 2's bare-user-`TypeParam`
+/// disjunct. Being a filter over tier 3's survivors, tier 2 can
 /// still only ever narrow — never admit a candidate tier 3 rejected.
 ///
 /// The narrowing is per-CANDIDATE but its effect is per-SET, and the
@@ -1979,51 +1985,57 @@ fn interp_render(value: &Value) -> String {
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
 /// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
+/// geometry-builtin family (`geometry_diagnose`) / dynamics /
 /// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
 /// six classifiers returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
+///
+/// A classified `DimensionedArgRejected` also records that specific code as
+/// the cell's `UndefCause::OpContractFailed` (PRD-5 §7 I5), via
+/// [`push_op_contract_failure`].
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
-    if !matches!(result, Value::Undef) {
+    // The classifiers run when EITHER sink is attached: the undef-cause capture
+    // pass (`record_op_contract_failures`) re-evaluates with a cause sink and no
+    // diagnostics sink, and it is the pass that records the I5 cause below. With
+    // capture on, an Undef builtin cell is therefore classified once per pass.
+    if !matches!(result, Value::Undef) || (ctx.diagnostics.is_none() && ctx.undef_causes.is_none())
+    {
         return;
     }
-    let Some(sink) = ctx.diagnostics else {
-        return;
-    };
-    // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
-    if let Some(diag) = reify_stdlib::stackup_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
-    if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
-    // severity split by fault class, disjoint from the sibling hooks here.
-    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
-    if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Inverse-dynamics Undef: body has no resolvable mass.
-    if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
-    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
-    // Severity::Error instead of a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
-    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
-    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
-    // spelling, so this Severity::Error is the migration mechanism for that
-    // breaking change rather than a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as the five above.
-    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
+    let classified = [
+        // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
+        reify_stdlib::stackup_diagnose(name, args),
+        // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
+        reify_stdlib::fea_diagnose(name, args),
+        // Geometry-builtin diagnostics: one classifier with severity split by
+        // fault class. See `geometry_diagnose`'s own doc for the per-name breakdown.
+        reify_stdlib::geometry_diagnose(name, args),
+        // Dynamics: inverse-dynamics body mass / compliance, and the
+        // `mass_properties` / `point_mass` argument dimensions.
+        reify_stdlib::dynamics_diagnose(name, args),
+        // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+        // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+        // Severity::Error instead of a silent Undef.
+        reify_stdlib::tolerancing_diagnose(name, args),
+        // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+        // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+        // spelling, so this Severity::Error is the migration mechanism for that
+        // breaking change rather than a silent Undef.
+        reify_stdlib::orientation_diagnose(name, args),
+    ];
+    for diag in classified.into_iter().flatten() {
+        // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This
+        // runs before the generic `OpContractViolation` push in `eval_expr`'s
+        // `FunctionCall` arm, and the engine keeps the first `OpContractFailed`
+        // per cell, so the specific code is the one recorded.
+        if diag.code == Some(DiagnosticCode::DimensionedArgRejected) {
+            push_op_contract_failure(ctx, DiagnosticCode::DimensionedArgRejected);
+        }
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(diag);
+        }
     }
 }
 
@@ -2515,27 +2527,6 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     result
 }
 
-/// Shared positive-count core for BOTH `generate` forms — the free-function
-/// `eval_generate_dispatch` and the method-form `eval_method_call` `"generate"`
-/// arm (task 3994).  Applies `lambda` to the indices `0..count` (each passed as
-/// `Value::Int(idx)`) and collects the results into a `Value::List`
-/// (length-preserving — an `Undef` body result becomes an `Undef` element).
-///
-/// `(0..count)` is empty when `count <= 0`, so a non-positive `count` yields `[]`.
-/// The NEGATIVE-count POLICY therefore lives at each call site, NOT here: the
-/// free-function form rejects `count < 0` with `GenerateNegativeCount` BEFORE
-/// calling this, while the method form passes its count straight through and
-/// inherits the silent-`[]` empty-range semantics (a deliberate, documented
-/// divergence — see the two call sites).  Extracting the loop keeps the two forms
-/// from drifting apart on the shared apply-per-index behaviour.
-fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
-    Value::List(
-        (0..count)
-            .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
-            .collect(),
-    )
-}
-
 /// Evaluate the free-function `generate(n, |i| expr)` combinator (task 3994,
 /// structural-query ζ).  Applies the lambda to indices `0..n-1` in order and
 /// collects the results into a `Value::List`.
@@ -2555,14 +2546,9 @@ fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
 ///     `Undef` body result becomes an `Undef` element).  `n == 0` → `[]`.
 ///   - any other shape → `Value::Undef` (silent-Undef discipline, like `flat_map`).
 ///
-/// Models the positive-count loop on the existing method-form `generate` arm
-/// (`eval_method_call`, the `"generate"` case).
-///
 /// A negative count is a runtime contract failure (PRD §2.3): it emits the named
 /// `DiagnosticCode::GenerateNegativeCount` (a `Severity::Error` → CLI stderr +
-/// non-zero exit) and yields `Undef`.  This DIVERGES deliberately from the
-/// method-form arm, which silently yields `[]` for a negative count (`(0..neg)`
-/// is an empty range).
+/// non-zero exit) and yields `Undef`.
 #[inline(never)]
 fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
@@ -2586,9 +2572,12 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
                 );
                 return Value::Undef;
             }
-            // `(0..*n)` is empty for `n == 0` (→ `[]`). Shared with the method
-            // form via `generate_index_list` (the negative case is handled above).
-            generate_index_list(*n, lambda, ctx)
+            // `(0..*n)` is empty for `n == 0` (→ `[]`).
+            Value::List(
+                (0..*n)
+                    .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
+                    .collect(),
+            )
         }
         _ => Value::Undef,
     }
@@ -2918,6 +2907,12 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
 ///    short-circuit at lib.rs:206 already filtered out Undef args).
 /// 2. `eval_binop`, after the strict undef-propagation check (both operands
 ///    are determined at that point; an Undef result is a genuine contract failure).
+///
+/// Both push the generic `OpContractViolation`. The one SPECIFIC cause is
+/// `DimensionedArgRejected` (PRD-5 §7 I5, task 6922), pushed by
+/// `emit_undef_builtin_diagnostics` when a classifier rejects an argument's
+/// dimension; it runs before site 1, and the engine keeps the first
+/// `OpContractFailed` per cell, so the specific code wins.
 ///
 /// Uses an **empty placeholder span** (`SourceSpan::default()`) because
 /// `CompiledExpr` carries no span (spans are lost at compile). The engine's
@@ -3511,16 +3506,11 @@ fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
     }
 }
 
-/// Evaluate a method call on a collection value, or a datum-projection member
-/// access on a datum receiver (Axis/Plane/Frame/Direction → see
-/// [`eval_datum_projection`]).
-fn eval_method_call(
-    obj: &Value,
-    method: &str,
-    args: &[Value],
-    result_type: &Type,
-    ctx: &EvalContext,
-) -> Value {
+/// Evaluate a zero-argument member projection (collection, range, complex,
+/// tensor, or datum — see [`eval_datum_projection`]). Reify has no method-call
+/// syntax (GR-040), so the compiler never emits an argument-bearing `MethodCall`,
+/// and the `eval_expr` site refuses one before calling this.
+fn eval_method_call(obj: &Value, method: &str, result_type: &Type) -> Value {
     // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
     // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane`, `direction.x/.y/.z`.
     // Dispatched ONLY for datum receivers, so the collection/tensor arms below
@@ -3548,109 +3538,27 @@ fn eval_method_call(
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
-        "contains" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let needle = &args[0];
-            match obj {
-                Value::List(items) => Value::Bool(items.contains(needle)),
-                Value::Set(items) => Value::Bool(items.contains(needle)),
-                Value::Range {
-                    lower,
-                    upper,
-                    lower_inclusive,
-                    upper_inclusive,
-                } => {
-                    // Undef needle propagates immediately.
-                    if needle.is_undef() {
-                        return Value::Undef;
-                    }
-                    // Check lower bound (if present).
-                    if let Some(lo) = lower {
-                        let cmp_result = if *lower_inclusive {
-                            eval_cmp(lo, needle, |a, b| a <= b)
-                        } else {
-                            eval_cmp(lo, needle, |a, b| a < b)
-                        };
-                        match cmp_result {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => return Value::Bool(false),
-                            _ => return Value::Undef,
-                        }
-                    }
-                    // Check upper bound (if present).
-                    if let Some(hi) = upper {
-                        let cmp_result = if *upper_inclusive {
-                            eval_cmp(needle, hi, |a, b| a <= b)
-                        } else {
-                            eval_cmp(needle, hi, |a, b| a < b)
-                        };
-                        match cmp_result {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => return Value::Bool(false),
-                            _ => return Value::Undef,
-                        }
-                    }
-                    Value::Bool(true)
-                }
+        "lower" => match obj {
+            Value::Range { lower, .. } => match lower {
+                Some(lo) => Value::Option(Some(lo.clone())),
+                None => Value::Option(None),
+            },
+            _ => Value::Undef,
+        },
+        "upper" => match obj {
+            Value::Range { upper, .. } => match upper {
+                Some(hi) => Value::Option(Some(hi.clone())),
+                None => Value::Option(None),
+            },
+            _ => Value::Undef,
+        },
+        "span" => match obj {
+            Value::Range { lower, upper, .. } => match (lower, upper) {
+                (Some(lo), Some(hi)) => eval_sub(hi, lo),
                 _ => Value::Undef,
-            }
-        }
-        "lower" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { lower, .. } => match lower {
-                    Some(lo) => Value::Option(Some(lo.clone())),
-                    None => Value::Option(None),
-                },
-                _ => Value::Undef,
-            }
-        }
-        "upper" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { upper, .. } => match upper {
-                    Some(hi) => Value::Option(Some(hi.clone())),
-                    None => Value::Option(None),
-                },
-                _ => Value::Undef,
-            }
-        }
-        "span" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { lower, upper, .. } => match (lower, upper) {
-                    (Some(lo), Some(hi)) => eval_sub(hi, lo),
-                    _ => Value::Undef,
-                },
-                _ => Value::Undef,
-            }
-        }
-        "union" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.union(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
-        "intersection" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.intersection(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
+            },
+            _ => Value::Undef,
+        },
         "keys" => match obj {
             Value::Map(entries) => Value::List(entries.keys().cloned().collect()),
             _ => Value::Undef,
@@ -3659,24 +3567,6 @@ fn eval_method_call(
             Value::Map(entries) => Value::List(entries.values().cloned().collect()),
             _ => Value::Undef,
         },
-        "contains_key" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
-                _ => Value::Undef,
-            }
-        }
-        "difference" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.difference(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
@@ -3707,161 +3597,9 @@ fn eval_method_call(
             }
             _ => Value::Undef,
         },
-        "map" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let results: Vec<Value> = items
-                        .iter()
-                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item), ctx))
-                        .collect();
-                    Value::List(results)
-                }
-                _ => Value::Undef,
-            }
-        }
-        "all" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut has_undef = false;
-                    for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
-                            Value::Bool(false) => return Value::Bool(false),
-                            Value::Bool(true) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef,
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(true)
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "any" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut has_undef = false;
-                    for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
-                            Value::Bool(true) => return Value::Bool(true),
-                            Value::Bool(false) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef,
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(false)
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "fold" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let init = &args[0];
-            let lambda = &args[1];
-            // Validate lambda arity upfront (fold requires exactly 2 params: acc, item)
-            if let Value::Lambda { params, .. } = lambda
-                && params.len() != 2
-            {
-                return Value::Undef;
-            }
-            match obj {
-                Value::List(items) => {
-                    let mut acc = init.clone();
-                    for item in items {
-                        acc = apply_lambda(lambda, &[acc, item.clone()], ctx);
-                        if acc.is_undef() {
-                            return Value::Undef;
-                        }
-                    }
-                    acc
-                }
-                _ => Value::Undef,
-            }
-        }
-        "concat" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::List(a), Value::List(b)) => {
-                    let mut result = a.clone();
-                    result.extend(b.iter().cloned());
-                    Value::List(result)
-                }
-                _ => Value::Undef,
-            }
-        }
-        // Method-form `xs.generate(count, |i| …)` (receiver must be a `List`;
-        // contents ignored). It SHARES the positive-count core
-        // (`generate_index_list`) with the free-function `generate(n, |i| …)` form
-        // (`eval_generate_dispatch`), but DELIBERATELY DIVERGES on a negative
-        // count: the method form yields `[]` silently (the `(0..count)`
-        // empty-range), whereas the free function emits the named
-        // `GenerateNegativeCount` diagnostic (task 3994 / PRD §2.3). Reconciling
-        // the two negative-count policies is intentionally out of scope (a flagged
-        // follow-up); the free-function form is the spec deliverable. A user moving
-        // between the forms gets `[]` here vs. a diagnostic there for the same
-        // invalid count — both individually correct and tested.
-        "generate" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let count = match &args[0] {
-                Value::Int(n) => *n,
-                _ => return Value::Undef,
-            };
-            let lambda = &args[1];
-            match obj {
-                Value::List(_) => generate_index_list(count, lambda, ctx),
-                _ => Value::Undef,
-            }
-        }
-        "filter" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut results = Vec::new();
-                    for item in items {
-                        let pred = apply_lambda(lambda, std::slice::from_ref(item), ctx);
-                        match pred {
-                            Value::Bool(true) => results.push(item.clone()),
-                            Value::Bool(false) => {} // skip
-                            Value::Undef => results.push(item.clone()), // conservative: retain when predicate is unknown
-                            _ => return Value::Undef, // type error: non-Bool predicate
-                        }
-                    }
-                    Value::List(results)
-                }
-                _ => Value::Undef,
-            }
-        }
         // Complex number methods are in complex.rs.
         "magnitude" | "phase" | "conjugate" | "re" | "im" => {
-            match complex::eval_complex_method(obj, method, args) {
+            match complex::eval_complex_method(obj, method) {
                 Some(v) => v,
                 None => Value::Undef,
             }
@@ -4071,11 +3809,18 @@ fn scale_components(
     }
 }
 
+/// Int overflow (a `None` from a checked `i64` op) is `Undef`, never a panic
+/// or a wrapped value.
+#[inline]
+fn int_or_undef(checked: Option<i64>) -> Value {
+    checked.map_or(Value::Undef, Value::Int)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
     match v {
-        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Int(i) => int_or_undef(i.checked_neg()),
         Value::Real(r) => Value::Real(-r),
         Value::Scalar {
             si_value,
@@ -4224,7 +3969,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
 
 pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_add(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 + b)
@@ -4328,7 +4073,7 @@ pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_sub(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 - b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a - *b as f64),
@@ -4510,7 +4255,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
 
 pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_mul(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
@@ -4794,15 +4539,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => {
-            if *b == 0 {
-                Value::Undef
-            } else if a % b == 0 {
-                Value::Int(a / b)
-            } else {
-                Value::Real(*a as f64 / *b as f64)
-            }
-        }
+        (Value::Int(a), Value::Int(b)) => match a.checked_rem(*b) {
+            Some(0) => int_or_undef(a.checked_div(*b)),
+            Some(_) => Value::Real(*a as f64 / *b as f64),
+            None => Value::Undef,
+        },
         (Value::Real(a), Value::Real(b)) => Value::Real(a / b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 / b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a / *b as f64),
@@ -4942,7 +4683,9 @@ pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
             if *b == 0 {
                 Value::Undef
             } else {
-                Value::Int(a % b)
+                // A remainder always fits an i64; `wrapping_rem` is `%` made total
+                // for `i64::MIN % -1` (exactly 0, but `%` panics on it).
+                Value::Int(a.wrapping_rem(*b))
             }
         }
         (Value::Real(a), Value::Real(b)) => {
@@ -4975,14 +4718,21 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // so the wrapping is zero-cost for the common case.
     // (task-4106 step-6)
     let result = match (lv, rv) {
+        // Exponent domain is [i32::MIN, u32::MAX]: a non-negative exponent stays
+        // Int (exact, or Undef on overflow), a negative one is a Real reciprocal
+        // power, and anything wider is Undef rather than silently truncated.
         (Value::Int(base), Value::Int(exp)) => {
-            if *exp >= 0 && *exp <= i32::MAX as i64 {
-                Value::Int(base.pow(*exp as u32))
+            if let Ok(e) = u32::try_from(*exp) {
+                int_or_undef(base.checked_pow(e))
+            } else if let Ok(e) = i32::try_from(*exp) {
+                Value::Real((*base as f64).powi(e))
             } else {
-                Value::Real((*base as f64).powi(*exp as i32))
+                Value::Undef
             }
         }
-        (Value::Real(base), Value::Int(exp)) => Value::Real(base.powi(*exp as i32)),
+        (Value::Real(base), Value::Int(exp)) => {
+            i32::try_from(*exp).map_or(Value::Undef, |e| Value::Real(base.powi(e)))
+        }
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
         // Scalar ^ Int: raise value, multiply dimension exponents.
@@ -5007,7 +4757,11 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
+/// The language's `==` verdict on two evaluated operands. Scalar and Real
+/// operands compare through [`reify_core::scalar_tolerance`]; public so the
+/// DimensionalSolver's equality-row acceptance calls this same function
+/// (#6653) instead of re-deriving the dimension and Int dispatch.
+pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -5026,7 +4780,7 @@ pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
             if da != db {
                 Value::Bool(false)
             } else {
-                Value::Bool(a == b)
+                Value::Bool(scalars_equal(*a, *b, *da))
             }
         }
         // Enum-vs-Enum equality: same type → compare variant, different type → false
@@ -5068,7 +4822,9 @@ pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
         _ => {
             // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
-                (Some(a), Some(b)) => Value::Bool(a == b),
+                (Some(a), Some(b)) => {
+                    Value::Bool(scalars_equal(a, b, DimensionVector::DIMENSIONLESS))
+                }
                 _ => Value::Undef,
             }
         }

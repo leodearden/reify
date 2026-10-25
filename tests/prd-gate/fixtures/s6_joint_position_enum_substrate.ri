@@ -1,0 +1,25 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): named-field enum substrate for JointPosition (C4): bare variant heads, Map keyed by joint, match
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_joint_position_enum_substrate
+
+enum JointPosition {
+    PrismaticPosition { distance: Length },
+    RevolutePosition { angle: Angle },
+    CylindricalPosition { distance: Length, angle: Angle },
+    PlanarPosition { x: Length, y: Length, angle: Angle },
+    SphericalPosition { orientation: Orientation },
+}
+structure def P {
+    let a = RevolutePosition { angle: 45deg }
+    let b = PlanarPosition { x: 1mm, y: 2mm, angle: 0.5rad }
+    let j = revolute(vec3(0, 0, 1), 0rad .. 3rad)
+    let mp = map{j => a}
+    let got = mp[j]
+    let ang = match got {
+        RevolutePosition { angle: t } => t,
+        PrismaticPosition { distance: d } => 0rad,
+        CylindricalPosition { distance: d, angle: t } => t,
+        PlanarPosition { x: x, y: y, angle: t } => t,
+        SphericalPosition { orientation: o } => 0rad
+    }
+}

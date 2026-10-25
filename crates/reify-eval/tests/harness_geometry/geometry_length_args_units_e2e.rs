@@ -47,6 +47,7 @@ fn build_and_probe(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -314,10 +315,11 @@ fn nurbs_bare_pole_drops_op_dimensioned_builds() {
 /// build agree on a variadic PROFILE, a shape the R2 curve rows never exercise.
 ///
 /// Six args satisfies the compiler-side precondition (">= 6 args for 3 points",
-/// even count — `reify-compiler/src/geometry.rs:1631`), and the dimensioned
-/// control is byte-identical to the call already smoked by
-/// `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs:213`
-/// so the doc example and this signal cannot drift.
+/// even count — the `"polygon"` arm of `compile_geometry_call_inner` in
+/// `reify-compiler/src/geometry.rs`), and the dimensioned control matches the
+/// `polygon(...)` call in the `geometry.md` chunk's ```` ```reify ```` fence
+/// (compiled by
+/// `crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs::every_reify_tagged_fence_compiles_clean`).
 #[test]
 fn polygon_bare_vertex_drops_op_dimensioned_builds() {
     assert_length_gate(

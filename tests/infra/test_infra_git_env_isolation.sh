@@ -537,15 +537,17 @@ assert "E3: ... positioned between the timeout and the bash it wraps" \
 #      into a silent pass — F1/F4's floors only catch a DROP in visible sites,
 #      not a site the pattern was narrowed past.
 #
-# Both floors are floors, not equalities: run_all.sh gaining a seventh spawn
-# site must not red these arms, but losing the ability to SEE the sites (a
-# reshaped invocation the pattern no longer matches) must.
+# The spawn floor is 1: task 8681 routed every member spawn through
+# _ra_spawn_member, and the adoption-ratchet row member-spawn-site holds the
+# ceiling at 1. Both floors are floors, not equalities: run_all.sh gaining a
+# spawn site must not red these arms, but losing the ability to SEE the sites
+# (a reshaped invocation the pattern no longer matches) must.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- F: every run_all.sh member spawn and own git call carries the scrub ---"
 
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
-_F_SPAWN_FLOOR=6
+_F_SPAWN_FLOOR=1
 _F_GIT_FLOOR=7
 
 _F_LOGICAL="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$RUN_ALL" \

@@ -1,0 +1,11 @@
+// M-WASTE PRD baseline (docs/prds/v0_6/material-waste-cost-minimisation.md §2.3, §5 B1):
+// a continuous auto drives geometry that the objective reads.
+module mwaste_coupled_continuous
+
+structure def CoupledContinuous {
+    param w : Length = auto
+    constraint w >= 20mm
+    constraint w <= 60mm
+    let body = box(w, 30mm, 10mm)
+    minimize volume(body)
+}
