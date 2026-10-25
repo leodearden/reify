@@ -90,6 +90,11 @@ impl std::fmt::Display for SkipNote {
 /// language boundary — and it is the last resort, not the default: where a
 /// value CAN be single-sourced it should be, as [`sanitize`]'s own move into
 /// [`reify_git_env`] did.
+///
+/// The exclusion's premise — an excluded crate's publics are reached only from
+/// test code — is kept true by the `reify-test-support-is-dev-only` crate rule
+/// in `scripts/crate-strata.json`; `exclude_crates_are_dev_only_under_a_crate_strata_rule`
+/// ties every entry here to such a rule.
 const EXCLUDE_CRATES: &[&str] = &["reify-test-support"];
 
 /// True when `scope`'s crate segment (the path component immediately after
