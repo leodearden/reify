@@ -643,8 +643,9 @@ pub structure CapstanUnit {
     /// hand-keeping mirrors).
     /// Axial migration of the active wrap point = the stroke this whole unit
     /// (collar + all four fairlead pulleys) translates along Z as the drum
-    /// reels. Every fairlead-vs-fixed clearance must hold across it.
-    let band_stroke    = self.capstan.lead * self.capstan.active_turns
+    /// reels: the Capstan's `band` (≈60.3mm), NOT its `groove_len`. Every
+    /// fairlead-vs-fixed clearance must hold across it.
+    let band_stroke    = self.capstan.band
     let frame_web_half = self.frame.web_half_z
     let frame_half_x   = self.frame.half_x
     let frame_half_z   = self.frame.half_z
@@ -730,7 +731,7 @@ pub structure CapstanUnitMirrored {
     sub pair_w2 = FairleadPairMirrored() at transform3(rot_c2, vec3(0mm, 0mm, 0mm))
 
     sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
-    let band_stroke    = self.capstan.lead * self.capstan.active_turns
+    let band_stroke    = self.capstan.band
     let frame_web_half = self.frame.web_half_z
     let frame_half_x   = self.frame.half_x
     let frame_half_z   = self.frame.half_z
