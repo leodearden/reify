@@ -285,15 +285,25 @@ pub enum DiagnosticCode {
     /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
     /// - `"CpSatSolver: no satisfying assignment found for … auto params with … constraints"` (cpsat.rs, Severity::Error)
     ConstraintUnsatisfiable,
-    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`
-    ///          (strict-auto uniqueness verification path, `verify_uniqueness`).
-    /// Replaces canonical message:
-    /// `"strict auto parameter resolution is not uniquely determined — consider using auto(free) for exploration"`.
+    /// Origin: three producers, all carrying the shared "not uniquely determined" phrase:
+    /// - `crates/reify-constraints/src/solver.rs::verify_uniqueness`, perturbation re-solve
+    ///   (`Determinedness::NotDetermined`). Canonical message:
+    ///   `"strict auto parameter resolution is not uniquely determined — consider using auto(free) for exploration"`.
+    /// - the same file's per-param default-bound evidence path
+    ///   (`Determinedness::DefaultBoundsDetermined`, rendered by `finalise_uniqueness`), reached
+    ///   from both the γ `cost_robustness_tradeoff` bracketing branch and the
+    ///   `centrality_corner_picks` screen. Its message adds one clause per param, of the
+    ///   form: no constraint bounds `X` above (or below).
+    /// - the compile-time static arm,
+    ///   `crates/reify-compiler/src/compile_builder/post_passes/one_sided_auto.rs::phase_one_sided_auto_check`
+    ///   (Severity::Error), with the same per-param clause.
     ///
-    /// Semantically distinct from [`ConstraintUnsatisfiable`]: non-uniqueness means *multiple*
-    /// valid solutions exist (the system is underdetermined), not zero. A strictly-auto
-    /// parameter requires a unique solution; this code is emitted when perturbation-based
-    /// uniqueness checking finds a second distinct solution.
+    /// Why a one-sided strict auto reuses this code rather than a new one:
+    /// `docs/prds/v0_6/solver-driver-parity.md` §4.6 case 2 and §13 item 4.
+    ///
+    /// Semantically distinct from [`Self::ConstraintUnsatisfiable`]: non-uniqueness means
+    /// *multiple* valid solutions exist (the system is underdetermined), not zero. A
+    /// strictly-auto parameter requires a unique solution.
     ConstraintNonUnique,
     /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
     ///          (param-level argument type check, task 4546).
