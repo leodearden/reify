@@ -911,8 +911,6 @@ fn filter_diagnostics_for_file_matches_either_spelling() {
 // Neither commits new engine state, but both still route through the
 // shared seam so §6.2 invariant (a) holds UNIFORMLY across all five tools
 // and θ's structural anchor has no exceptions to enumerate.
-//
-// FAILS TO COMPILE until step-14 adds the two seams.
 
 #[tokio::test]
 async fn reify_save_file_writes_the_session_buffer() {

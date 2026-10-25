@@ -6,15 +6,19 @@ use reify_ir::ExportFormat;
 
 use crate::commands::{export_impl, parse_export_format};
 
-/// One accepted spelling per format. No wildcard arm: a new `ExportFormat`
-/// variant does not compile here until it is given a spelling.
-fn a_spelling_of(format: ExportFormat) -> &'static str {
-    match format {
-        ExportFormat::Step => "step",
-        ExportFormat::Stl => "stl",
-        ExportFormat::Obj => "obj",
-        ExportFormat::ThreeMF => "3mf",
-    }
+/// Expands ONE `Variant => "spelling"` list into the `(format, spelling)`
+/// pairs a test iterates AND a match over that same list with no wildcard
+/// arm: a new `ExportFormat` variant does not compile until it is listed,
+/// and a listed variant is always iterated.
+macro_rules! every_format_spelled {
+    ($($variant:ident => $spelling:literal),+ $(,)?) => {{
+        fn _lists_every_variant(format: ExportFormat) {
+            match format {
+                $(ExportFormat::$variant)|+ => {}
+            }
+        }
+        [$((ExportFormat::$variant, $spelling)),+]
+    }};
 }
 
 fn assert_written(path: &Path) {
@@ -25,13 +29,12 @@ fn assert_written(path: &Path) {
 
 #[test]
 fn parse_export_format_names_every_export_format() {
-    for format in [
-        ExportFormat::Step,
-        ExportFormat::Stl,
-        ExportFormat::Obj,
-        ExportFormat::ThreeMF,
-    ] {
-        let spelling = a_spelling_of(format);
+    for (format, spelling) in every_format_spelled!(
+        Step => "step",
+        Stl => "stl",
+        Obj => "obj",
+        ThreeMF => "3mf",
+    ) {
         assert_eq!(
             parse_export_format(spelling),
             Ok(format),
