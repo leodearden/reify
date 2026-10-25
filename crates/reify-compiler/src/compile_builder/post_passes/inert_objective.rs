@@ -17,6 +17,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet};
 
+// Every sub-to-template match here goes through `names_same_structure`, the
+// monomorph-aware rule `template_graph` owns: comparing names by equality alone
+// would miss a generic child compiled as `Generic$Arg` and let a genuine `auto`
+// override on it slip through as a false Inert.
+use super::template_graph::names_same_structure;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::types::{TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility};
 
@@ -124,22 +129,6 @@ fn declared_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCel
             .iter()
             .flat_map(|g| g.members.iter().chain(g.else_members.iter())),
     )
-}
-
-/// Does `template_name` denote the structure `structure_name`, allowing for
-/// monomorphisation?
-///
-/// A generic structure is compiled once per instantiation under the mangled
-/// name `Generic$Arg` (`types::mangle_monomorph_name`), while the sub
-/// declaration that instantiated it still records the *unmangled*
-/// `structure_name`. Comparing the two by equality alone would miss the link
-/// and let a genuine `auto` override on a generic child slip through as a
-/// false Inert.
-fn names_same_structure(template_name: &str, structure_name: &str) -> bool {
-    template_name == structure_name
-        || template_name
-            .strip_prefix(structure_name)
-            .is_some_and(|rest| rest.starts_with('$'))
 }
 
 /// Does this template declare an `auto` cell anywhere — top-level or guarded?

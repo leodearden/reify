@@ -8,17 +8,26 @@
 //! an `Indeterminate` or a silent 10 m.
 //!
 //! The proof mirrors today's eval semantics: an auto's solve scope is its
-//! owning template's own cells and constraints. Every population source that
-//! is not static or not local makes the pass ABSTAIN, leaving the case to the
-//! runtime arm in `reify-constraints`' `verify_uniqueness`. A missed refusal
-//! keeps today's behaviour; a false one rejects legal code, so the rules are
-//! skewed toward silence, as `E_OBJECTIVE_INERT`'s are.
+//! owning template's own cells and constraints. A template is judged only
+//! when that whole population is static and local. Every other source makes
+//! the pass ABSTAIN, leaving the case to the runtime arm in
+//! `reify-constraints`' `verify_uniqueness`:
+//! - an imported template, a template objective, or an objective-bearing
+//!   container that may pass its objective down;
+//! - forall templates, guarded groups holding constraints, match-arm groups,
+//!   relations and connections;
+//! - any purpose that is not bound-free (the module-wide check);
+//! - any opaque conjunct, and any auto mention outside `auto op e` /
+//!   `e op auto`;
+//! - `auto(free)`, non-Scalar autos and autos carrying a solver hint, which
+//!   are never judged.
+//!
+//! A missed refusal keeps today's behaviour; a false one rejects legal code,
+//! so the rules are skewed toward silence, as `E_OBJECTIVE_INERT`'s are.
 
 use std::collections::{BTreeSet, HashMap};
 
-use reify_core::{
-    Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, UnOp};
 
 use super::template_graph::{may_contain, names_same_structure};
@@ -185,7 +194,8 @@ impl<'t> TemplateCells<'t> {
             BinOp::Le | BinOp::Lt => Side::Above,
             _ => return None,
         };
-        let is_auto = |e: &CompiledExpr| matches!(&e.kind, CompiledExprKind::ValueRef(id) if id == auto);
+        let is_auto =
+            |e: &CompiledExpr| matches!(&e.kind, CompiledExprKind::ValueRef(id) if id == auto);
         let auto_free = |e: &CompiledExpr| self.reached_autos(e).is_some_and(|a| a.is_empty());
         if is_auto(left) && auto_free(right) {
             Some(auto_on_left)
@@ -246,7 +256,11 @@ fn template_findings(template: &TopologyTemplate) -> Vec<OneSidedAutoFinding> {
         }
     }
 
-    let mut judged: Vec<&ValueCellDecl> = template.value_cells.iter().filter(|d| is_judged_auto(d)).collect();
+    let mut judged: Vec<&ValueCellDecl> = template
+        .value_cells
+        .iter()
+        .filter(|d| is_judged_auto(d))
+        .collect();
     judged.sort_by(|a, b| a.id.cmp(&b.id));
 
     judged
@@ -315,7 +329,10 @@ fn render(finding: &OneSidedAutoFinding) -> Diagnostic {
         format!("no constraint bounds this auto {missing}"),
     ));
     finding.bounding_spans.iter().fold(diagnostic, |d, span| {
-        d.with_label(DiagnosticLabel::new(*span, format!("bounds it {bounded} only")))
+        d.with_label(DiagnosticLabel::new(
+            *span,
+            format!("bounds it {bounded} only"),
+        ))
     })
 }
 

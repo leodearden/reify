@@ -848,6 +848,16 @@ pub fn compile_with_prelude_context_checked_with_config(
     // obligation 0′.
     compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx, prelude_refs);
 
+    // Refuse strict autos the module provably bounds on one side only (#6692).
+    // Runs here for the same reasons as the pass above: the sub-override autos
+    // it judges are minted, and `compiled_purposes` already holds the merged
+    // prelude purposes, any of which could add a bound or an objective.
+    compile_builder::post_passes::phase_one_sided_auto_check(
+        &mut compile_ctx,
+        &compiled_purposes,
+        prelude_refs,
+    );
+
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 
