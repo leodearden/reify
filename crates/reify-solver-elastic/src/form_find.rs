@@ -52,13 +52,15 @@ pub enum MemberKind {
 }
 
 impl MemberKind {
-    /// Whether force density `q` carries this kind's sense: cables tension
-    /// (`q > 0`), struts compression (`q < 0`); NaN is never admitted.
+    /// Whether force density `q` is finite and carries this kind's sense:
+    /// cables tension (`q > 0`), struts compression (`q < 0`); NaN and ±inf
+    /// are never admitted.
     pub fn admits(self, q: f64) -> bool {
-        match self {
-            MemberKind::Cable => q > 0.0,
-            MemberKind::Strut => q < 0.0,
-        }
+        q.is_finite()
+            && match self {
+                MemberKind::Cable => q > 0.0,
+                MemberKind::Strut => q < 0.0,
+            }
     }
 }
 
@@ -99,14 +101,15 @@ pub enum ForceDensityInputError {
         len: usize,
     },
     /// The force density of `members[member]` is not admitted by its kind
-    /// ([`MemberKind::admits`]).
+    /// ([`MemberKind::admits`]): of the wrong sign, zero, NaN or infinite.
     SignViolation {
         /// Position in `members`.
         member: usize,
     },
     /// `surfaces` and the per-surface stresses disagree in length.
     SurfaceCountMismatch,
-    /// The stress of `surfaces[surface]` is not tension (`σ ≤ 0` or NaN).
+    /// The stress of `surfaces[surface]` is not a finite tension (`σ ≤ 0`, NaN
+    /// or infinite).
     NonTensionSurfaceStress {
         /// Position in `surfaces`.
         surface: usize,
@@ -170,7 +173,7 @@ pub(crate) trait TriangleStencil {
     type Stress;
     /// Why no local matrix exists at a geometry.
     type Error;
-    /// Whether `stress` is tension; NaN never is.
+    /// Whether `stress` is a finite tension; NaN and ±inf never are.
     fn is_tension(stress: &Self::Stress) -> bool;
     /// The triangle's symmetric, zero-row-sum local 3×3 at corners
     /// `pi, pj, pk`, rows/cols in corner order.
@@ -189,7 +192,7 @@ impl TriangleStencil for IsotropicStencil {
     type Stress = f64;
     type Error = ZeroAreaTriangle;
     fn is_tension(stress: &f64) -> bool {
-        *stress > 0.0
+        is_finite_tension(*stress)
     }
     fn local_matrix(
         pi: [f64; 3],
@@ -208,7 +211,7 @@ impl TriangleStencil for AnisotropicStencil {
     type Stress = AnisotropicSurfaceStress;
     type Error = AnisoFormFindError;
     fn is_tension(stress: &AnisotropicSurfaceStress) -> bool {
-        stress.sigma_warp > 0.0 && stress.sigma_weft > 0.0
+        is_finite_tension(stress.sigma_warp) && is_finite_tension(stress.sigma_weft)
     }
     fn local_matrix(
         pi: [f64; 3],
@@ -218,6 +221,12 @@ impl TriangleStencil for AnisotropicStencil {
     ) -> Result<[[f64; 3]; 3], AnisoFormFindError> {
         triangle_anisotropic_laplacian(pi, pj, pk, stress)
     }
+}
+
+/// The one surface-stress test: `stress` is a finite tension (`σ > 0`, not
+/// NaN, not infinite).
+fn is_finite_tension(stress: f64) -> bool {
+    stress > 0.0 && stress.is_finite()
 }
 
 /// A triangle whose corners are collinear or coincident, so it has no stencil:
@@ -239,7 +248,7 @@ impl From<ZeroAreaTriangle> for AnisoFormFindError {
 
 /// A force-density problem whose inputs satisfy the input contract: lengths
 /// agree, every node index is in range, every density is admitted by its kind,
-/// every surface stress is tension and no input triangle is degenerate. Only
+/// every surface stress is a finite tension and no input triangle is degenerate. Only
 /// [`ForceDensityProblem::new`] builds one, so solvers index it unguarded.
 pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil> {
     nodes: &'a [[f64; 3]],
