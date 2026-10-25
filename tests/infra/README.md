@@ -655,6 +655,7 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 |------|---------|
 | `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
 | `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
+| `run-all-member-budget-lib.sh` | Shared library: runs one member under its wall-clock budget in a process group of its own (`member_budget_run`) and attributes a timeout (`member_budget_exceeded`) |
 | `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
 | `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
 | `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
