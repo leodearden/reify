@@ -2172,6 +2172,21 @@ mod tests {
             f64::INFINITY,
             "an empty free set must reject, got {r_empty}"
         );
+
+        // (e) #7800 — a healthy, finite row (|row| = 17) whose NET FORCE is NaN
+        // because the free node itself sits at a NaN coordinate. `f64::max` is
+        // NaN-transparent, so folding that net force into the worst-row max
+        // would drop it and leave the other axes' finite ratio standing.
+        let nodes_nan = vec![[1.0, 1.0, 1.0], [f64::NAN, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let mut d_finite = Mat::<f64>::zeros(3, 3);
+        d_finite[(1, 0)] = 8.5;
+        d_finite[(1, 1)] = -8.5;
+        let r_nan_net = free_equilibrium_residual_relative(&d_finite, &nodes_nan, &[1]);
+        assert_eq!(
+            r_nan_net,
+            f64::INFINITY,
+            "a NaN net force on a free row must reject, got {r_nan_net}"
+        );
     }
 
     // (h) TASK 7046 — the singular-solve verdict must be identical at every
