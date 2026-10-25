@@ -1,10 +1,9 @@
 //! PLINECITE — hard line cites in source comments.
 //!
 //! A comment that cites a `.rs` or `.ri` file by line number (`cache.rs:617`,
-//! `entity.rs ~2145`, `lib.rs line 444`; the lead-ins are
-//! `LINE_NUMBER_LEADS`) rots silently: any edit above the target moves it and
-//! nothing re-checks the number. PLINECITE reports each such cite so the
-//! author cites the enclosing symbol instead.
+//! or any other lead-in in `LINE_NUMBER_LEADS`) rots silently: any edit above
+//! the target moves it and nothing re-checks the number. PLINECITE reports
+//! each such cite so the author cites the enclosing symbol instead.
 //!
 //! It reports and never certifies. The grammar (`line_cites`) is
 //! deliberately decline-only: prefix prose (`line N of foo.rs`), line-wrapped
