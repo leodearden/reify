@@ -106,6 +106,24 @@ fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
 }
 
+/// The kernel-map key serving a conversion stage sourced on `source`, or
+/// `None` when no entry serves it.
+///
+/// Narrower than [`resolve_owning_kernel_name`]: its default-kernel fallback
+/// is taken only for the default kernel's own identity, so a stage sourced on
+/// any other kernel missing from the map fails rather than running on an
+/// unrelated kernel's handle-id space.
+fn conversion_source_key<'a, V>(
+    kernels: &BTreeMap<String, V>,
+    source: KernelId,
+    default_kernel_name: &'a str,
+) -> Option<&'a str> {
+    let key = resolve_owning_kernel_name(kernels, source, default_kernel_name);
+    let serves_source = key == source.as_registry_name()
+        || source == kernel_id_for_registry_name(default_kernel_name);
+    serves_source.then_some(key)
+}
+
 /// Forward a solid-level `TopologyAttribute` entry across the OCCT->Manifold
 /// ingest seam (task #4636, LINK1).
 ///
@@ -8188,13 +8206,8 @@ impl Engine {
                                                  is Some"
                                             ),
                                         };
-                                    // `source_name` is the source kernel's identity
-                                    // (error texts); `source_key` is the
-                                    // map entry serving it, which under the
-                                    // single-pick constructor is the default-kernel
-                                    // sentinel rather than "occt".
                                     let source_name = source_kernel.as_registry_name();
-                                    let source_key = resolve_owning_kernel_name(
+                                    let source_key = conversion_source_key(
                                         kernels,
                                         source_kernel,
                                         default_kernel_name,
@@ -8225,12 +8238,15 @@ impl Engine {
                                     // per-parent loop since it does not depend on
                                     // `pid`.
                                     let options_hash = if from_marching_cubes {
-                                        kernels.get(source_key).map_or(NO_OPTIONS, |src| {
-                                            src.surface_options_content_hash(
-                                                surface_iso_level,
-                                                surface_adaptive,
-                                            )
-                                        })
+                                        source_key.and_then(|key| kernels.get(key)).map_or(
+                                            NO_OPTIONS,
+                                            |src| {
+                                                src.surface_options_content_hash(
+                                                    surface_iso_level,
+                                                    surface_adaptive,
+                                                )
+                                            },
+                                        )
                                     } else {
                                         NO_OPTIONS
                                     };
@@ -8352,7 +8368,9 @@ impl Engine {
                                         // different error types (`TessError` /
                                         // `GeometryError`), so each arm maps its error
                                         // to `String` before the two branches unify.
-                                        let mesh = match kernels.get(source_key) {
+                                        let mesh_source =
+                                            source_key.and_then(|key| kernels.get(key));
+                                        let mesh = match mesh_source {
                                             Some(src) => {
                                                 let produced = if from_marching_cubes {
                                                     src.realize_mesh_from_voxel(
@@ -8379,8 +8397,8 @@ impl Engine {
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
-                                                 '{source_name}' (map key '{source_key}') \
-                                                 absent from engine.geometry_kernels"
+                                                 '{source_name}' absent from \
+                                                 engine.geometry_kernels"
                                                 ));
                                                 break 'convert;
                                             }
@@ -14032,6 +14050,9 @@ mod populate_local_feature_tests;
 
 #[cfg(test)]
 mod dispatch_volume_mesh_tests;
+
+#[cfg(test)]
+mod conversion_source_key_tests;
 
 /// Produce an info-level diagnostic when a swept body is meshed with P1
 /// hex/wedge despite the user requesting `element_order = P2`.
