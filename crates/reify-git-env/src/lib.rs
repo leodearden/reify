@@ -139,6 +139,7 @@ pub fn command(root: &Path) -> Command {
 /// Removal (`env_remove`) rather than assignment is deliberate: there is no
 /// correct value to assign, and an inherited-but-empty var is not the same as
 /// an absent one to git.
+// G-allow: the sanitizer for shapes other than `git -C <root>`; its cross-crate callers are reify-test-support's orphan_audit spawn (excluded from this sweep) and integration tests
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
         cmd.env_remove(var);
@@ -155,6 +156,7 @@ pub fn sanitize(cmd: &mut Command) -> &mut Command {
 /// the encoding ever changes. `pub` rather than `#[cfg(test)]` for exactly that
 /// reason — a `cfg(test)` item is invisible to dependent crates, which would
 /// force a hand-copied twin in each of them.
+// G-allow: the single test-side reader of std's `env_remove` encoding; every caller is test code
 pub fn removed_vars(cmd: &Command) -> Vec<String> {
     cmd.get_envs()
         .filter(|(_, v)| v.is_none())
