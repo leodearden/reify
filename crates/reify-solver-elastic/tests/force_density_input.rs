@@ -4,8 +4,8 @@
 use reify_solver_elastic::{
     AnisoFormFindError, AnisotropicSurfaceStress, ForceDensityInputError, ForceDensitySpec,
     FormFindError, FreeFormError, GroupSpecDefect, IndexedInput, MemberKind, RealInput,
-    form_find_anchored, form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
-    form_find_free, form_find_free_surfaces,
+    SurfaceStressDefect, form_find_anchored, form_find_anchored_surfaces,
+    form_find_anchored_surfaces_aniso, form_find_free, form_find_free_surfaces,
 };
 use reify_test_support::tensegrity_fixtures::{TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS};
 
@@ -294,6 +294,61 @@ fn a_nan_seeded_free_node_is_a_non_finite_input_not_a_converged_nan_solve() {
             index: 5,
         }))
     );
+}
+
+#[test]
+fn anisotropic_surface_stress_new_admits_a_finite_tension_with_a_warp_direction() {
+    let stress = AnisotropicSurfaceStress::new([1.0, 0.0, 0.0], 2.0, 1.0)
+        .expect("a finite tension with a warp direction is admissible");
+    assert_eq!(
+        (stress.warp_dir, stress.sigma_warp, stress.sigma_weft),
+        ([1.0, 0.0, 0.0], 2.0, 1.0)
+    );
+}
+
+#[test]
+fn anisotropic_surface_stress_new_rejects_a_stress_that_is_not_a_finite_tension() {
+    for s in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for (sigma_warp, sigma_weft) in [(s, 1.0), (1.0, s)] {
+            assert_eq!(
+                AnisotropicSurfaceStress::new([1.0, 0.0, 0.0], sigma_warp, sigma_weft).err(),
+                Some(SurfaceStressDefect::NonTension),
+                "σ_w = {sigma_warp}, σ_f = {sigma_weft}"
+            );
+        }
+    }
+}
+
+#[test]
+fn anisotropic_surface_stress_new_rejects_a_warp_direction_that_fixes_no_frame() {
+    // The last direction is finite, but its squared norm overflows.
+    for warp_dir in [
+        [0.0, 0.0, 0.0],
+        [f64::NAN, 0.0, 0.0],
+        [0.0, f64::INFINITY, 0.0],
+        [1e200, 0.0, 0.0],
+    ] {
+        assert_eq!(
+            AnisotropicSurfaceStress::new(warp_dir, 1.0, 1.0).err(),
+            Some(SurfaceStressDefect::DegenerateMaterialFrame),
+            "warp_dir = {warp_dir:?}"
+        );
+    }
+}
+
+#[test]
+fn a_zero_or_nan_warp_direction_is_a_degenerate_material_frame_input_error() {
+    for warp_dir in [[0.0, 0.0, 0.0], [f64::NAN, 0.0, 0.0]] {
+        let mut case = FdAnchoredCase::valid();
+        case.aniso[0].warp_dir = warp_dir;
+        assert_eq!(
+            case.anisotropic(),
+            Err(AnisoFormFindError::Input(
+                ForceDensityInputError::DegenerateMaterialFrame { surface: 0 }
+            )),
+            "warp_dir = {warp_dir:?}"
+        );
+    }
 }
 
 #[test]
