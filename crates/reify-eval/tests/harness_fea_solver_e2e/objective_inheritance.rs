@@ -16,8 +16,8 @@ use reify_core::{ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{ObjectiveSense, ObjectiveSet};
 use reify_test_support::{
-    CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder, ge, gt, le, literal, mm,
-    value_ref,
+    CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder, and, ge, gt, le,
+    literal, lt, mm, value_ref,
 };
 
 fn solver_engine() -> Engine {
@@ -135,13 +135,29 @@ fn bt2_uncoupled_scopes_cross_order_value_equality() {
     let a = || {
         TopologyTemplateBuilder::new("A")
             .auto_param("A", "val", Type::length())
-            .constraint("A", 0, None, gt(value_ref("A", "val"), literal(mm(1.0))))
+            .constraint(
+                "A",
+                0,
+                None,
+                and(
+                    gt(value_ref("A", "val"), literal(mm(1.0))),
+                    lt(value_ref("A", "val"), literal(mm(3.0))),
+                ),
+            )
             .build()
     };
     let b = || {
         TopologyTemplateBuilder::new("B")
             .auto_param("B", "val", Type::length())
-            .constraint("B", 0, None, gt(value_ref("B", "val"), literal(mm(2.0))))
+            .constraint(
+                "B",
+                0,
+                None,
+                and(
+                    gt(value_ref("B", "val"), literal(mm(2.0))),
+                    lt(value_ref("B", "val"), literal(mm(4.0))),
+                ),
+            )
             .build()
     };
 
