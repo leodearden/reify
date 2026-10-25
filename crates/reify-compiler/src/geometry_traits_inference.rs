@@ -610,7 +610,13 @@ pub fn infer_traits_for_expr_in_env(
     }
 }
 
-/// Walk the inference table over a compiled geometry op-array.
+/// Walk the inference table over a compiled geometry op-array that has NO
+/// sibling scope.
+///
+/// This wrapper never resolves `GeomRef::Sub`: every such operand infers
+/// `all()`, so an unbounded sibling-let operand would satisfy `Bounded`. Use it
+/// only for an op-array with no enclosing template (e.g. a hand-built one); a
+/// caller that can name the template must use [`infer_traits_for_op_in_env`].
 ///
 /// This is the **inverse** of the `infer_traits_for_expr` FunctionCall arm —
 /// same dispatch table (same `combine_*` helpers and `infer_primitive` lookup)
@@ -626,9 +632,7 @@ pub fn infer_traits_for_expr_in_env(
 ///
 /// - Empty array → `InferredTraits::all()` (defensive; compiler never emits an
 ///   empty realization).
-/// - `GeomRef::Sub(_)` → `InferredTraits::all()`, because this env-less wrapper
-///   has no way to resolve the name. Call sites that can resolve sibling
-///   realizations use [`infer_traits_for_op_in_env`] instead.
+/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (see above).
 /// - Out-of-range `GeomRef::Step(idx)` → `InferredTraits::all()` (defensive;
 ///   well-formed IR never produces an out-of-range index).
 /// - Self-referential or forward-chain `GeomRef::Step(idx)` (`idx >=
