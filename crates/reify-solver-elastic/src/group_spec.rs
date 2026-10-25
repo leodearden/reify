@@ -80,3 +80,33 @@ impl GroupSpec {
         &self.seed_densities
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Members 0 and 1 in group 0, 2 in group 1, at seeds −2 and 3.
+    fn two_group_spec() -> GroupSpec {
+        GroupSpec::new(&[0, 1, 1], &[-2.0, 3.0], 1, 3).expect("a well-formed spec")
+    }
+
+    #[test]
+    fn free_groups_are_the_used_groups_other_than_the_reference() {
+        // Groups 1 and 3 are seeded but unused; group 2 is the reference.
+        let groups = GroupSpec::new(&[0, 0, 2, 2], &[-1.0, 1.0, 2.0, 3.0], 2, 4)
+            .expect("a well-formed spec");
+        assert_eq!(groups.free_groups(), vec![0]);
+    }
+
+    #[test]
+    fn densities_carry_each_groups_seed_sign_at_the_given_magnitude() {
+        assert_eq!(two_group_spec().densities(&[5.0, 7.0]), vec![-5.0, 7.0, 7.0]);
+    }
+
+    #[test]
+    fn seed_densities_are_the_densities_at_the_seed_magnitudes() {
+        let groups = two_group_spec();
+        assert_eq!(groups.seed_densities(), [-2.0, 3.0, 3.0]);
+        assert_eq!(groups.densities(groups.seed_magnitudes()), groups.seed_densities());
+    }
+}
