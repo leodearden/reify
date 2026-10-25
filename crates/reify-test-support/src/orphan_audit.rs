@@ -1062,6 +1062,60 @@ mod tests {
         );
     }
 
+    /// Ties [`EXCLUDE_CRATES`] to the gate that keeps its premise true: every
+    /// excluded crate must be named by a `scripts/crate-strata.json` crate rule
+    /// that forbids it from EVERY stratum. Matched on the rule's structure, not
+    /// its name, so renaming the rule cannot silence this.
+    #[test]
+    fn exclude_crates_are_dev_only_under_a_crate_strata_rule() {
+        use std::collections::BTreeSet;
+
+        let (_script, repo_root) = resolve_script_and_root();
+        let table_path = repo_root.join("scripts/crate-strata.json");
+        let table: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&table_path)
+                .unwrap_or_else(|e| panic!("read {table_path:?}: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("parse {table_path:?}: {e}"));
+
+        let names = |value: &serde_json::Value| -> BTreeSet<String> {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .collect()
+        };
+        let all_strata: BTreeSet<String> = table["strata"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `strata` must be an array"))
+            .iter()
+            .filter_map(|stratum| stratum["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !all_strata.is_empty(),
+            "{table_path:?} declares no strata — a vacuous `from` set would match"
+        );
+        let rules = table["crate_rules"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `crate_rules` must be an array"));
+
+        for crate_name in EXCLUDE_CRATES {
+            let gated = rules.iter().any(|rule| {
+                names(&rule["never"]["packages"]).contains(*crate_name)
+                    && names(&rule["from"]["strata"]) == all_strata
+            });
+            assert!(
+                gated,
+                "an EXCLUDE_CRATES crate's publics are reached only from test code, \
+                 so no stratum may take it as a normal/build dependency — but \
+                 {table_path:?} has no crate rule with `from.strata` = every \
+                 stratum {all_strata:?} and `never.packages` naming \
+                 `{crate_name}`. Rules seen: {rules:#?}"
+            );
+        }
+    }
+
     /// Table-driven coverage of [`scope_is_excluded_crate`] (review finding
     /// #1, task 5698 amendment pass) — the single predicate that decides
     /// between a graceful [`OrphanAudit::ExcludedScope`] skip and a hard

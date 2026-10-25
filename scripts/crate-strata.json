@@ -213,6 +213,27 @@
           "test-support"
         ]
       }
+    },
+    {
+      "name": "reify-test-support-is-dev-only",
+      "from": {
+        "strata": [
+          "spine",
+          "language",
+          "kernel",
+          "solver",
+          "analysis",
+          "engine",
+          "frontend",
+          "test-support",
+          "tooling"
+        ]
+      },
+      "never": {
+        "packages": [
+          "reify-test-support"
+        ]
+      }
     }
   ],
   "exceptions": [
