@@ -1,0 +1,11 @@
+[package]
+name = "reify-git-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The workspace's single constructor and sanitizer for git invocations that target a specific repository"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true

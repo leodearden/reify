@@ -11,6 +11,7 @@
         "reify-config",
         "reify-core",
         "reify-doc",
+        "reify-git-env",
         "reify-ir",
         "reify-syntax",
         "tree-sitter-reify"

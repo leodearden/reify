@@ -4520,6 +4520,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-git-env"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "reify-gui"
 version = "0.1.0"
 dependencies = [
