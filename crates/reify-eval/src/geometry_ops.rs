@@ -6872,30 +6872,12 @@ fn resolve_int_value_ref(
     }
 }
 
-/// Dimension-qualified label for a `Value::Scalar`, mirroring
-/// `arg_acceptance::value_short_label` so the `got` payload of task ε's
-/// non-scalar resolvers (int / point / vec3 / range / string) reports the
-/// SAME dimension-qualified Scalar wording as the density / scalar-dim paths
-/// that route through `accept_arg` — e.g. `"MASS_DENSITY Scalar"`,
-/// `"dimensionless Scalar"`, `"dimensioned Scalar"`. `value_short_label` is
-/// module-private to `arg_acceptance` (owned by task δ, not modified here), so
-/// the Scalar arm is replicated rather than shared.
-fn scalar_got_label(dimension: &reify_core::DimensionVector) -> String {
-    if dimension.is_dimensionless() {
-        "dimensionless Scalar".to_string()
-    } else if let Some(name) = dimension.canonical_name() {
-        format!("{name} Scalar")
-    } else {
-        "dimensioned Scalar".to_string()
-    }
-}
-
 /// Short human-readable label for a `Value` that failed Int classification,
 /// used as the `got` field of the rejection diagnostic (task ε).
 fn int_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::String(_) => "String".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -10377,7 +10359,7 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
         }
         reify_ir::Value::Point(_) => "Point with a non-Length or non-Scalar component".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -10583,7 +10565,7 @@ fn vec3_got_label(value: &reify_ir::Value) -> String {
             "Vector with a dimensioned or non-numeric component".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Point(_) => "Point".to_string(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
@@ -10818,7 +10800,7 @@ fn range_got_label(value: &reify_ir::Value) -> String {
             "Range with a wrong-dimension or non-Scalar bound".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -11830,7 +11812,7 @@ fn string_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -12389,24 +12371,6 @@ fn fold_pose_chain<'a>(poses: impl Iterator<Item = &'a reify_ir::Value>) -> reif
     })
 }
 
-/// Human-readable label for a [`reify_core::DimensionVector`], suitable for a
-/// user-facing diagnostic.
-///
-/// [`reify_core::DimensionVector::canonical_name`] deliberately excludes
-/// `DIMENSIONLESS` from its named-singleton table and returns `None` for it —
-/// which is precisely the case task 6099 is about — so the dimensionless check
-/// comes FIRST and yields the literal `"dimensionless"`. Unnamed composite
-/// dimensions (e.g. `MONEY/MASS`) fall through to the `Display` exponent form.
-fn dimension_label(d: reify_core::DimensionVector) -> String {
-    if d.is_dimensionless() {
-        return "dimensionless".to_string();
-    }
-    match d.canonical_name() {
-        Some(name) => name.to_string(),
-        None => format!("{d}"),
-    }
-}
-
 /// The translation dimension of a pose [`reify_ir::Value::Transform`], if it has one.
 ///
 /// Goes through the `translation` field on purpose: `Value::dimension()` called
@@ -12538,8 +12502,8 @@ pub(crate) fn diagnose_pose_composition_failure(
              cannot be composed, so `{sub_name}` would be placed at the origin. \
              Give the pose length-dimensioned components, e.g. \
              `vec3(5.0mm, 0.0mm, 0.0mm)`.",
-            dimension_label(sd),
-            dimension_label(pd),
+            sd.diagnostic_dimension_label(),
+            pd.diagnostic_dimension_label(),
         )));
     }
 

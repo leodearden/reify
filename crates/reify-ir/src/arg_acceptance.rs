@@ -844,15 +844,7 @@ fn accept_present_field(
 fn value_short_label(value: &crate::value::Value) -> String {
     match value {
         crate::value::Value::Real(_) => "Real".to_string(),
-        crate::value::Value::Scalar { dimension, .. } => {
-            if dimension.is_dimensionless() {
-                "dimensionless Scalar".to_string()
-            } else if let Some(name) = dimension.canonical_name() {
-                format!("{name} Scalar")
-            } else {
-                "dimensioned Scalar".to_string()
-            }
-        }
+        crate::value::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         crate::value::Value::Bool(_) => "Bool".to_string(),
         crate::value::Value::Int(_) => "Int".to_string(),
         crate::value::Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
