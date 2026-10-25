@@ -10,21 +10,21 @@ use reify_solver_elastic::{
 use reify_test_support::tensegrity_fixtures::{TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS};
 
 #[test]
-fn cable_admits_exactly_positive_densities() {
-    for q in [1.0, f64::MIN_POSITIVE, f64::INFINITY] {
+fn cable_admits_exactly_finite_positive_densities() {
+    for q in [1.0, f64::MIN_POSITIVE, f64::MAX] {
         assert!(MemberKind::Cable.admits(q), "a cable must admit q = {q}");
     }
-    for q in [0.0, -0.0, -1.0, f64::NAN] {
+    for q in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(!MemberKind::Cable.admits(q), "a cable must reject q = {q}");
     }
 }
 
 #[test]
-fn strut_admits_exactly_negative_densities() {
-    for q in [-1.0, -f64::MIN_POSITIVE, f64::NEG_INFINITY] {
+fn strut_admits_exactly_finite_negative_densities() {
+    for q in [-1.0, -f64::MIN_POSITIVE, -f64::MAX] {
         assert!(MemberKind::Strut.admits(q), "a strut must admit q = {q}");
     }
-    for q in [0.0, -0.0, 1.0, f64::NAN] {
+    for q in [0.0, -0.0, 1.0, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
         assert!(!MemberKind::Strut.admits(q), "a strut must reject q = {q}");
     }
 }
@@ -189,9 +189,11 @@ fn a_density_against_its_kind_is_one_sign_violation_on_every_anchored_entry() {
         (MemberKind::Cable, 0.0),
         (MemberKind::Cable, -1.0),
         (MemberKind::Cable, f64::NAN),
+        (MemberKind::Cable, f64::INFINITY),
         (MemberKind::Strut, 0.0),
         (MemberKind::Strut, 1.0),
         (MemberKind::Strut, f64::NAN),
+        (MemberKind::Strut, f64::NEG_INFINITY),
     ];
     for (kind, q) in violations {
         let mut case = FdAnchoredCase::valid();
@@ -219,7 +221,7 @@ fn surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
 #[test]
 fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
     let non_tension = ForceDensityInputError::NonTensionSurfaceStress { surface: 0 };
-    for sigma in [0.0, -1.0, f64::NAN] {
+    for sigma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let mut case = FdAnchoredCase::valid();
         case.sigma = vec![sigma];
         assert_eq!(
@@ -228,7 +230,12 @@ fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
             "σ = {sigma}"
         );
     }
-    for stress in [fd_aniso_stress(0.0, 1.0), fd_aniso_stress(1.0, f64::NAN)] {
+    for stress in [
+        fd_aniso_stress(0.0, 1.0),
+        fd_aniso_stress(1.0, f64::NAN),
+        fd_aniso_stress(f64::INFINITY, 1.0),
+        fd_aniso_stress(1.0, f64::INFINITY),
+    ] {
         let mut case = FdAnchoredCase::valid();
         case.aniso = vec![stress];
         assert_eq!(
@@ -422,9 +429,11 @@ fn an_explicit_density_against_its_kind_is_one_sign_violation_on_both_free_entri
         (MemberKind::Cable, 0.0),
         (MemberKind::Cable, -1.0),
         (MemberKind::Cable, f64::NAN),
+        (MemberKind::Cable, f64::INFINITY),
         (MemberKind::Strut, 0.0),
         (MemberKind::Strut, 1.0),
         (MemberKind::Strut, f64::NAN),
+        (MemberKind::Strut, f64::NEG_INFINITY),
     ];
     for (kind, q) in violations {
         let mut case = FdFreeCase::explicit();
@@ -436,9 +445,9 @@ fn an_explicit_density_against_its_kind_is_one_sign_violation_on_both_free_entri
 
 #[test]
 fn a_seed_against_its_group_kind_is_a_sign_violation_before_any_search() {
-    // Group 0 holds the struts, members 0..3: a tensile or NaN seed for it
-    // contradicts the first strut's kind.
-    for strut_seed in [1.0, f64::NAN] {
+    // Group 0 holds the struts, members 0..3: a tensile, NaN or infinite seed
+    // for it contradicts the first strut's kind.
+    for strut_seed in [1.0, f64::NAN, f64::NEG_INFINITY] {
         let mut case = FdFreeCase::group_ratios();
         if let ForceDensitySpec::GroupRatios { seed_ratios, .. } = &mut case.spec {
             seed_ratios[0] = strut_seed;
@@ -529,7 +538,7 @@ fn free_surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
 
 #[test]
 fn a_free_surface_stress_that_is_not_tension_is_rejected_including_nan() {
-    for sigma in [0.0, f64::NAN] {
+    for sigma in [0.0, f64::NAN, f64::INFINITY] {
         let mut case = FdFreeCase::explicit();
         case.sigma = vec![sigma];
         assert_eq!(
