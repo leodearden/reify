@@ -84,6 +84,13 @@ pub enum IndexedInput {
     },
 }
 
+/// The real-valued input a non-finite value was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealInput {
+    /// A coordinate of `nodes[index]`.
+    NodeCoordinate,
+}
+
 /// Why a force-density input is malformed: the one input vocabulary every
 /// form-finding entry (anchored, anisotropic, free-standing) reports, nested
 /// as `Input(..)` in each solver's own error enum.
@@ -118,6 +125,13 @@ pub enum ForceDensityInputError {
     DegenerateTriangle {
         /// Position in `surfaces`.
         surface: usize,
+    },
+    /// A value read from `what` is NaN or infinite.
+    NonFinite {
+        /// The input the value was read from.
+        what: RealInput,
+        /// Position in that input: the node, for [`RealInput::NodeCoordinate`].
+        index: usize,
     },
 }
 
@@ -248,7 +262,8 @@ impl From<ZeroAreaTriangle> for AnisoFormFindError {
 
 /// A force-density problem whose inputs satisfy the input contract: lengths
 /// agree, every node index is in range, every density is admitted by its kind,
-/// every surface stress is a finite tension and no input triangle is degenerate. Only
+/// every surface stress is a finite tension, every node coordinate is finite
+/// and no input triangle is degenerate. Only
 /// [`ForceDensityProblem::new`] builds one, so solvers index it unguarded.
 pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil> {
     nodes: &'a [[f64; 3]],
@@ -263,7 +278,7 @@ pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil>
 impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
     /// Checks the input contract; the first failure wins, in the order
     /// lengths, member endpoints, signs, surface count, surface tension,
-    /// surface corners, anchors, input-triangle degeneracy.
+    /// surface corners, anchors, node coordinates, input-triangle degeneracy.
     pub(crate) fn new(
         nodes: &'a [[f64; 3]],
         members: &'a [(usize, usize)],
@@ -298,6 +313,10 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         }
         for (anchor, &index) in anchors.iter().enumerate() {
             node_index_in_range(IndexedInput::Anchor { anchor }, index, n)?;
+        }
+        if let Some(index) = nodes.iter().position(|p| !p.iter().all(|c| c.is_finite())) {
+            let what = RealInput::NodeCoordinate;
+            return Err(ForceDensityInputError::NonFinite { what, index });
         }
         if let Some(surface) = surfaces
             .iter()

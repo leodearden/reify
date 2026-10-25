@@ -68,8 +68,8 @@ use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     ForceDensityInputError, ForceDensitySpec, FormDefect, FormFindError, FormFindSolve,
-    FreeFormError, GroupSpecDefect, MemberKind, SpectrumError, form_find_anchored_surfaces,
-    form_find_free, form_find_free_surfaces,
+    FreeFormError, GroupSpecDefect, MemberKind, RealInput, SpectrumError,
+    form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
 };
 use std::borrow::Cow;
 
@@ -328,37 +328,58 @@ fn build_result(solve: &FormFindSolve) -> Value {
 const INDEX_OUT_OF_RANGE: &str = "index out of range — a member endpoint, anchor or \
      surface corner indexes past the node list";
 
+/// The cause shared by [`describe`] and [`describe_free`] for a NaN or
+/// infinite input value, naming where it was read.
+fn describe_non_finite(what: RealInput, index: usize) -> String {
+    match what {
+        RealInput::NodeCoordinate => format!(
+            "non-finite node coordinate — nodes[{index}] has a NaN or infinite coordinate; \
+             every node needs finite coordinates"
+        ),
+    }
+}
+
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
-fn describe(e: FormFindError) -> &'static str {
+fn describe(e: FormFindError) -> Cow<'static, str> {
     match e {
         FormFindError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — every cable requires q > 0 (tension) and every strut requires q < 0 (compression)"
+                .into()
         }
         FormFindError::SingularReducedStiffness => {
             "singular reduced stiffness — the free-node system is rank-deficient \
              (a free node with no member path to an anchor, or a disconnected component)"
+                .into()
         }
         FormFindError::EmptyFreeSet => {
-            "every node is anchored — there is no free node to solve for"
+            "every node is anchored — there is no free node to solve for".into()
         }
         FormFindError::Input(ForceDensityInputError::DimensionMismatch) => {
-            "force_densities length does not match the member count (struts + cables)"
+            "force_densities length does not match the member count (struts + cables)".into()
         }
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
+        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
+            INDEX_OUT_OF_RANGE.into()
+        }
         FormFindError::DegenerateTriangle
         | FormFindError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
+                .into()
         }
         FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+                .into()
         }
         FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
+                .into()
+        }
+        FormFindError::Input(ForceDensityInputError::NonFinite { what, index }) => {
+            describe_non_finite(what, index).into()
         }
     }
 }
@@ -612,6 +633,9 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
                 .into()
+        }
+        FreeFormError::Input(ForceDensityInputError::NonFinite { what, index }) => {
+            describe_non_finite(what, index).into()
         }
     }
 }

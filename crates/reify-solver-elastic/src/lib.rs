@@ -841,8 +841,8 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // the one input vocabulary, nested as `Input(..)` in every form-find error enum.
 pub use form_find::{
     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, ForceDensityInputError,
-    FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, form_find_anchored,
-    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
+    FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, RealInput,
+    form_find_anchored, form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
 // Task 9273 (solver-crates-layering φ-ff): why a force-density or Gram matrix has
 // no dense spectrum, nested as `Spectrum(..)` in FreeFormError and StabilityError.
