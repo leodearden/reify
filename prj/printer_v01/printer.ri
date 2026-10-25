@@ -401,8 +401,9 @@ pub structure Capstan {
 /// Fairlead carrier frame — a light rectangular COLLAR around the drum: two
 /// XZ side plates outboard of the pulley planes, joined by two YZ end webs
 /// outboard of the vertical tendon runs; open top/bottom so the drum and all
-/// four verticals pass straight through. The collar translates along Z with
-/// the wrap band (stroke ≈ the Capstan band extent). Pulley axles/bosses
+/// four verticals pass straight through. The collar translates along Z over
+/// the Capstan's `band` (lead·active_turns ≈ 60.3mm, NOT the 88.3mm
+/// `groove_len`), relayed by CapstanUnit as `band_stroke`. Pulley axles/bosses
 /// span the plate-to-pulley gap (not modelled — same idealization as the
 /// IdlerPulley axle bolts); the light guide rail that takes the ΔT-scale
 /// dynamic residuals is not modelled yet.
@@ -562,11 +563,12 @@ pub structure CapstanUnit {
     /// constraint once member geometry reads compose through the sub's
     /// placement.
     param pulley_x : Length = 50mm
-    /// #6586 pin: == self.capstan.groove_len (constraints below). The pair
-    /// heights derive from THIS so they can feed FairleadPair constructor
-    /// args — a self.<sub>.<member> read flowing into a constructor arg
-    /// makes the child's geometry silently never realize.
-    param band_len : Length = 88.346249mm
+    /// #6586 pin: == self.capstan.groove_len, the whole grooved extent — NOT
+    /// the Capstan's `band` (constraints below). The pair heights derive from
+    /// THIS so they can feed FairleadPair constructor args — a
+    /// self.<sub>.<member> read flowing into a constructor arg makes the
+    /// child's geometry silently never realize.
+    param groove_len_m : Length = 88.346249mm
     // NOTE: this unit is the side +1 (IN pulleys on local −x) balanced
     // arrangement. The mirror twin lives in CapstanUnitMirrored below — a
     // forced DUPLICATE, because a per-instance `side` override would not
@@ -577,21 +579,22 @@ pub structure CapstanUnit {
     // Drum-coupled dimensions DERIVE from the capstan sub's own cells where
     // they feed placements and constraints (parent-reads-child-let, verified
     // 2026-07-23); values feeding CONSTRUCTOR ARGS come from the pinned
-    // band_len / cap_pitch_r_m mirrors instead (#6586, pins below). The SEATED
-    // rope's centreline rides AT the capstan's pitch_r under its DIN 15061 seat
-    // arc; the arc centre sits outboard at seat_c, which nothing here reads.
+    // groove_len_m / cap_pitch_r_m mirrors instead (#6586, pins below). The
+    // SEATED rope's centreline rides AT the capstan's pitch_r under its DIN 15061
+    // seat arc; the arc centre sits outboard at seat_c, which nothing here reads.
     let cap_pitch_r = self.capstan.pitch_r
     let flange_r    = self.capstan.flange_r
     /// #6586 pin: == cap_pitch_r (constraints below); the pairs' tangent_y
     /// constructor arg reads this, never the sub-derived cell.
     let cap_pitch_r_m = 24mm
     let unit_pin_slack = 0.002mm
-    /// Upper/lower winding-band centres: the two windings split the groove
-    /// band in half, so their centres sit at ± a quarter of it.
-    let winding_z   = band_len / 4
-    /// Nominal Z split of a winding's two rope-end exits (an eighth of the
-    /// band = half the winding: mid-migration positions of the two ends).
-    let lead_split  = band_len / 8
+    /// Upper/lower winding centres: the two windings split `groove_len`, the
+    /// whole grooved extent, in half, so their centres sit at ± a quarter of it.
+    let winding_z   = groove_len_m / 4
+    /// Nominal Z split of a winding's two rope-end exits: ± an eighth of
+    /// groove_len, so the two exits sit half a winding's axial extent apart
+    /// (the mid-migration positions of the two ends).
+    let lead_split  = groove_len_m / 8
 
     let y_rear    = 0mm - cap_pitch_r_m  // outboard tangent plane (w1's)
 
@@ -666,8 +669,8 @@ pub structure CapstanUnit {
     constraint flange_r > cap_pitch_r
     // #6586 pins: the mirrors this unit derives from equal the capstan's own
     // cells — a Capstan resize fails HERE instead of silently drifting.
-    constraint band_len < self.capstan.groove_len + unit_pin_slack
-    constraint band_len > self.capstan.groove_len - unit_pin_slack
+    constraint groove_len_m < self.capstan.groove_len + unit_pin_slack
+    constraint groove_len_m > self.capstan.groove_len - unit_pin_slack
     constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
     constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
     // #6592 pins: the pair realizes from its own DEFAULTS (ctor args never
@@ -707,7 +710,7 @@ pub structure CapstanUnit {
 pub structure CapstanUnitMirrored {
     param r_pitch  : Length = 18mm
     param pulley_x : Length = 50mm
-    param band_len : Length = 88.346249mm
+    param groove_len_m : Length = 88.346249mm
 
     sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
@@ -715,8 +718,8 @@ pub structure CapstanUnitMirrored {
     let flange_r    = self.capstan.flange_r
     let cap_pitch_r_m = 24mm
     let unit_pin_slack = 0.002mm
-    let winding_z   = band_len / 4
-    let lead_split  = band_len / 8
+    let winding_z   = groove_len_m / 4
+    let lead_split  = groove_len_m / 8
     let y_rear    = 0mm - cap_pitch_r_m
 
     let w1_in  = winding_z + lead_split + r_pitch
@@ -742,8 +745,8 @@ pub structure CapstanUnitMirrored {
     constraint winding_z > lead_split
     constraint cap_pitch_r > 0mm
     constraint flange_r > cap_pitch_r
-    constraint band_len < self.capstan.groove_len + unit_pin_slack
-    constraint band_len > self.capstan.groove_len - unit_pin_slack
+    constraint groove_len_m < self.capstan.groove_len + unit_pin_slack
+    constraint groove_len_m > self.capstan.groove_len - unit_pin_slack
     constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
     constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
     constraint self.pair_w1.w_in  < w1_in + unit_pin_slack
