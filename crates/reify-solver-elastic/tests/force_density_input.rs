@@ -3,9 +3,9 @@
 
 use reify_solver_elastic::{
     AnisoFormFindError, AnisotropicSurfaceStress, ForceDensityInputError, ForceDensitySpec,
-    FormFindError, FreeFormError, GroupSpecDefect, IndexedInput, MemberKind, form_find_anchored,
-    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso, form_find_free,
-    form_find_free_surfaces,
+    FormFindError, FreeFormError, GroupSpecDefect, IndexedInput, MemberKind, RealInput,
+    form_find_anchored, form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
+    form_find_free, form_find_free_surfaces,
 };
 use reify_test_support::tensegrity_fixtures::{TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS};
 
@@ -243,6 +243,57 @@ fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
             Err(AnisoFormFindError::Input(non_tension))
         );
     }
+}
+
+#[test]
+fn a_non_finite_node_coordinate_is_rejected_by_every_anchored_entry() {
+    for (index, axis, coordinate) in [(1, 2, f64::NAN), (3, 0, f64::INFINITY)] {
+        let mut case = FdAnchoredCase::valid();
+        case.nodes[index][axis] = coordinate;
+        case.assert_every_entry_rejects(ForceDensityInputError::NonFinite {
+            what: RealInput::NodeCoordinate,
+            index,
+        });
+    }
+}
+
+/// #7800: a free node seeded at NaN, tied by two cables to anchors beside a flat
+/// symmetric membrane tent, must be a located input error — not a converged
+/// solve that echoes the NaN coordinates back.
+#[test]
+fn a_nan_seeded_free_node_is_a_non_finite_input_not_a_converged_nan_solve() {
+    let nodes = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [f64::NAN, f64::NAN, f64::NAN],
+        [0.0, 0.0, -0.5],
+        [0.0, 0.0, 0.5],
+    ];
+    let surfaces = [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+    let surface_stresses = [2.0; 4];
+    let members = [(5, 6), (5, 7)];
+    let kinds = [MemberKind::Cable; 2];
+    let q = [1.0; 2];
+    let anchors = [1, 2, 3, 4, 6, 7];
+    let solve = form_find_anchored_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &q,
+        &surfaces,
+        &surface_stresses,
+        &anchors,
+    );
+    assert_eq!(
+        solve.map(|s| s.nodes),
+        Err(FormFindError::Input(ForceDensityInputError::NonFinite {
+            what: RealInput::NodeCoordinate,
+            index: 5,
+        }))
+    );
 }
 
 #[test]
@@ -548,6 +599,17 @@ fn a_free_surface_stress_that_is_not_tension_is_rejected_including_nan() {
             )),
             "σ = {sigma}"
         );
+    }
+}
+
+#[test]
+fn a_non_finite_node_guess_is_rejected_by_both_free_entries() {
+    for mut case in [FdFreeCase::explicit(), FdFreeCase::group_ratios()] {
+        case.nodes[0][1] = f64::NAN;
+        case.assert_both_entries_reject(ForceDensityInputError::NonFinite {
+            what: RealInput::NodeCoordinate,
+            index: 0,
+        });
     }
 }
 
