@@ -68,8 +68,8 @@ use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     ForceDensityInputError, ForceDensitySpec, FormDefect, FormFindError, FormFindSolve,
-    FreeFormError, GroupSpecDefect, MemberKind, form_find_anchored_surfaces, form_find_free,
-    form_find_free_surfaces,
+    FreeFormError, GroupSpecDefect, MemberKind, SpectrumError, form_find_anchored_surfaces,
+    form_find_free, form_find_free_surfaces,
 };
 use std::borrow::Cow;
 
@@ -581,6 +581,16 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
         FreeFormError::SingularRecovery => {
             "singular recovery — null-space coordinate recovery failed to produce a \
              3-D realisation; try a less degenerate initial node placement"
+                .into()
+        }
+        FreeFormError::Spectrum(SpectrumError::NonFinite { row, col }) => format!(
+            "non-finite force-density matrix — D[{row},{col}] is NaN or infinite, so D \
+             has no spectrum to classify; try smaller force densities"
+        )
+        .into(),
+        FreeFormError::Spectrum(SpectrumError::NoConvergence) => {
+            "force-density matrix D has no dense spectrum — its eigendecomposition did \
+             not converge; check for extreme or near-degenerate force densities"
                 .into()
         }
         FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {

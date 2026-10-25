@@ -40,12 +40,13 @@
 //! `form_find` signature, or the reify-eval trampoline (those remain anchored-T1a
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
+use crate::fd_matrix::{NULLITY_REL_TOL, SpectrumError, SymmetricSpectrum, assemble_d};
 use crate::form_find::{
     ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
-    free_equilibrium_residual_relative, member_axial_forces, scatter_line_members,
-    scatter_surface_stencils,
+    free_equilibrium_residual_relative, member_axial_forces, scatter_surface_stencils,
 };
-use faer::{Mat, Side};
+use faer::Mat;
+use faer::mat::MatRef;
 use std::borrow::Cow;
 
 /// How the per-member force densities `q` are specified for a free-standing
@@ -124,6 +125,8 @@ pub enum FreeFormError {
     /// corners) at a fixed-point iterate, where its cotangent weights
     /// `cot(θ) = (e_a·e_b)/(2·Area)` diverge. (δ / combined struts+cables+membrane.)
     DegenerateTriangle,
+    /// A force-density matrix `D` the solve classifies has no dense spectrum.
+    Spectrum(SpectrumError),
 }
 
 /// What a force-density matrix `D` that is not a free-standing form was
@@ -166,6 +169,12 @@ impl From<ForceDensityInputError> for FreeFormError {
 impl From<GroupSpecDefect> for FreeFormError {
     fn from(defect: GroupSpecDefect) -> Self {
         FreeFormError::MalformedGroupSpec(defect)
+    }
+}
+
+impl From<SpectrumError> for FreeFormError {
+    fn from(e: SpectrumError) -> Self {
+        FreeFormError::Spectrum(e)
     }
 }
 
@@ -296,6 +305,9 @@ fn seed_densities(
 ///   `tests/tensegrity_delta_combined_form_find.rs`. `defect` is `None` when
 ///   the budget or stall guard ended a valid form short of equilibrium.
 /// - [`FreeFormError::SingularRecovery`] — null-space basis is not 3-D.
+/// - [`FreeFormError::Spectrum`] — a `D` the solve classifies has a non-finite
+///   entry (e.g. densities large enough to overflow it), or its dense
+///   eigendecomposition did not converge ([`SpectrumError`]).
 pub fn form_find_free_surfaces(
     nodes_guess: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -415,7 +427,7 @@ pub fn form_find_free_surfaces(
         // iteration (only the surface term varies with geometry), so the line-only
         // CᵀQC matrix is hoisted once and each surface term is added to it — the
         // (2b) trial-residual check further down reuses this same `d_line`.
-        let d_line = assemble_force_density_matrix(n, members, &q);
+        let d_line = assemble_d(n, members, &q);
         let d_at_current = &d_line + &surface_mat;
         let resid = all_node_equilibrium_residual_relative(&d_at_current, &current);
 
@@ -553,16 +565,20 @@ pub fn form_find_free_surfaces(
     // downstream consumers that only inspect the result value (not `.converged`)
     // silently treat a failed combined solve as a valid equilibrium.
     if !converged {
-        return Err(FreeFormError::SearchDidNotConverge {
-            defect: certified.err(),
+        return Err(match certified {
+            Ok(_) => FreeFormError::SearchDidNotConverge { defect: None },
+            Err(FreeFormError::NotAForm(defect)) => FreeFormError::SearchDidNotConverge {
+                defect: Some(defect),
+            },
+            Err(other) => other,
         });
     }
     // Converged: the equilibrium was reached, so a `D` that fails certification
     // is not a form, whatever spec produced it.
-    let form = certified.map_err(FreeFormError::NotAForm)?;
+    let form = certified?;
 
     result.converged = true;
-    result.nullity = form.spectrum().nullity;
+    result.nullity = form.nullity();
     result.surface_stresses = surface_stresses.to_vec();
     Ok(result)
 }
@@ -612,7 +628,7 @@ fn combined_force_density_matrix(
     q: &[f64],
     surface_mat: &Mat<f64>,
 ) -> Mat<f64> {
-    assemble_force_density_matrix(surface_mat.nrows(), members, q) + surface_mat
+    assemble_d(surface_mat.nrows(), members, q) + surface_mat
 }
 
 /// ALL-node equilibrium residual — the free-standing fixed point's stop test:
@@ -642,8 +658,11 @@ fn form_find_explicit_combined_relaxed(
     surface_mat: &Mat<f64>,
 ) -> Result<Vec<[f64; 3]>, FreeFormError> {
     let d = combined_force_density_matrix(problem.members(), problem.q(), surface_mat);
-    let spectrum = SpectrumClassification::forced_nullity(&d, FREE_FORM_NULLITY);
-    recover_coordinates(nodes_guess, &spectrum)
+    let spectrum = SymmetricSpectrum::of(&d)?;
+    recover_coordinates(
+        nodes_guess,
+        spectrum.leading_eigenvectors(FREE_FORM_NULLITY),
+    )
 }
 
 /// Adaptive GroupRatios search operating on the COMBINED `D = CᵀQC + surface_mat`,
@@ -694,16 +713,19 @@ fn form_find_group_ratios_combined(
     // normalised_eig_gap: `reference_group` already gauge-fixes this search, so
     // there is no gauge factor to cancel, and normalising would perturb the
     // OBJ_TOL / coordinate-descent stop thresholds below for no benefit this
-    // path needs (task 6413 design decision).
+    // path needs (task 6413 design decision). A `D` with no spectrum scores +∞,
+    // rejecting the trial.
     let objective = |group_mag: &[f64]| -> f64 {
         let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
         let d = combined_force_density_matrix(members, &q, surface_mat);
-        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
-        spec.eigenvalues
-            .iter()
-            .take(FREE_FORM_NULLITY)
-            .map(|v| v * v)
-            .sum()
+        SymmetricSpectrum::of(&d).map_or(f64::INFINITY, |spectrum| {
+            spectrum
+                .eigenvalues()
+                .iter()
+                .take(FREE_FORM_NULLITY)
+                .map(|v| v * v)
+                .sum()
+        })
     };
 
     const MAX_ROUNDS: usize = 64;
@@ -790,8 +812,8 @@ fn form_find_group_ratios_combined(
 /// *affine family* of realisations. The membrane cotangent weights DO depend on
 /// geometry, so the combined `D` only reaches nullity 4 at the specific symmetric
 /// realisation. Driving this objective to zero over the node coordinates selects
-/// that realisation. A degenerate trial geometry (zero-area triangle) returns
-/// `+∞` so the line search rejects it.
+/// that realisation. A degenerate trial geometry (zero-area triangle), or a
+/// combined `D` with no spectrum, returns `+∞` so the line search rejects it.
 fn combined_eig_gap_objective(
     n: usize,
     members: &[(usize, usize)],
@@ -803,15 +825,16 @@ fn combined_eig_gap_objective(
     match assemble_surface_matrix(n, surfaces, surface_stresses, x) {
         Ok(surface_mat) => {
             let d = combined_force_density_matrix(members, q, &surface_mat);
-            normalised_eig_gap(&classify_spectrum(&d, NULLITY_REL_TOL))
+            SymmetricSpectrum::of(&d)
+                .map_or(f64::INFINITY, |spectrum| normalised_eig_gap(&spectrum))
         }
         Err(_) => f64::INFINITY,
     }
 }
 
 /// Sum of `(λ/max_mag)²` over the `FREE_FORM_NULLITY` smallest-|λ|
-/// eigenvalues of `spec` — the gauge-invariant score
-/// [`combined_eig_gap_objective`] reports. Dividing by `spec.max_mag` (which
+/// eigenvalues of `spectrum` — the gauge-invariant score
+/// [`combined_eig_gap_objective`] reports. Dividing by its `max_mag` (which
 /// scales by `λ` exactly as every other eigenvalue does under a uniform
 /// gauge change) cancels the `λ²` scaling a raw sum-of-squares would carry,
 /// so the finite-difference gradient taken of this score is gauge-invariant
@@ -828,14 +851,16 @@ fn combined_eig_gap_objective(
 /// NOT used by `form_find_group_ratios_combined`'s own eigenvalue-gap
 /// search, which deliberately keeps the un-normalised `Σλ²` form — see the
 /// comment on its `objective` closure for why.
-fn normalised_eig_gap(spec: &SpectrumClassification) -> f64 {
-    if spec.max_mag <= 0.0 {
+fn normalised_eig_gap(spectrum: &SymmetricSpectrum) -> f64 {
+    let max_mag = spectrum.max_mag();
+    if max_mag <= 0.0 {
         return 0.0;
     }
-    spec.eigenvalues
+    spectrum
+        .eigenvalues()
         .iter()
         .take(FREE_FORM_NULLITY)
-        .map(|v| (v / spec.max_mag) * (v / spec.max_mag))
+        .map(|v| (v / max_mag) * (v / max_mag))
         .sum()
 }
 
@@ -923,11 +948,10 @@ fn form_find_explicit(problem: &ForceDensityProblem<'_>) -> Result<FreeFormResul
 
     // The single dense EVD, shared by the certification and the recovery.
     let form = explicit_form(problem)?;
-    let spectrum = form.spectrum();
-    let nullity = spectrum.nullity;
+    let nullity = form.nullity();
 
     // Gauge-fixed coordinates from null(D), aligned to the caller's guess.
-    let nodes = recover_coordinates(problem.nodes(), spectrum)?;
+    let nodes = recover_coordinates(problem.nodes(), form.null_basis())?;
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the recovered geometry, in
     // struts-then-cables (input) order — mirrors the anchored kernel's force pass.
@@ -1015,19 +1039,22 @@ fn form_find_group_ratios(
         .collect();
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest-|λ| eigenvalues of
-    // `D(group_mag)`. `classify_spectrum` returns eigenvalues ascending by |λ|,
+    // `D(group_mag)`. [`SymmetricSpectrum`] orders eigenvalues ascending by |λ|,
     // so `take(4)` is exactly those. The smooth sum-of-squares (rather than the
     // bare 4th eigenvalue, which is V-shaped/kinked) keeps coordinate descent
-    // from stalling at the tolerance crossing.
+    // from stalling at the tolerance crossing. A `D` with no spectrum scores
+    // +∞, rejecting the trial.
     let objective = |group_mag: &[f64]| -> f64 {
         let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
-        let d = assemble_force_density_matrix(n, members, &q);
-        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
-        spec.eigenvalues
-            .iter()
-            .take(FREE_FORM_NULLITY)
-            .map(|v| v * v)
-            .sum()
+        let d = assemble_d(n, members, &q);
+        SymmetricSpectrum::of(&d).map_or(f64::INFINITY, |spectrum| {
+            spectrum
+                .eigenvalues()
+                .iter()
+                .take(FREE_FORM_NULLITY)
+                .map(|v| v * v)
+                .sum()
+        })
     };
 
     // Coordinate descent. Eigen-evals are cheap (n×n dense EVD, n = node count),
@@ -1168,131 +1195,6 @@ fn golden_section_min<F: Fn(f64) -> f64>(f: F, mut a: f64, mut b: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// Crate-internal numeric helpers (D assembly + spectral nullity classification)
-// ---------------------------------------------------------------------------
-
-/// Relative tolerance for nullity classification: an eigenvalue counts as a null
-/// direction when its magnitude is below this fraction of the largest-magnitude
-/// eigenvalue. The prism golden has a wide spectral gap (fifth eigenvalue 6 vs
-/// fourth ≈ 2.5e-15), so 1e-8 separates the null space from the rest of the
-/// spectrum without a brittle absolute threshold.
-const NULLITY_REL_TOL: f64 = 1e-8;
-
-/// Spectral classification of the force-density matrix `D`.
-#[derive(Debug)]
-struct SpectrumClassification {
-    /// Eigenvalues of `D`, sorted ascending by magnitude. Read directly by the
-    /// [`ForceDensitySpec::GroupRatios`] objective in [`form_find_group_ratios`]
-    /// (which drives the `FREE_FORM_NULLITY` smallest toward zero) and
-    /// asserted on by the spectral-gap unit tests. (The explicit path itself
-    /// reads only `nullity` / `eigenvectors`.)
-    eigenvalues: Vec<f64>,
-    /// Eigenvectors as columns, in the same order as `eigenvalues` (column `j`
-    /// is the eigenvector for `eigenvalues[j]`). The first `nullity` columns span
-    /// the null space used for coordinate recovery.
-    eigenvectors: Mat<f64>,
-    /// Number of eigenvalues whose magnitude is below the relative tolerance —
-    /// the nullity of `D`.
-    nullity: usize,
-    /// Largest eigenvalue magnitude in the spectrum (`max|λ|`) — the same
-    /// value used internally for the nullity threshold (`rel_tol · max_mag`).
-    /// Exposed so a caller that needs a gauge normaliser (e.g.
-    /// [`normalised_eig_gap`]) reads the identical number rather than
-    /// re-folding the spectrum, which could otherwise drift from the
-    /// threshold's own value.
-    max_mag: f64,
-}
-
-impl SpectrumClassification {
-    /// `d`'s spectrum with its `nullity` smallest-|λ| eigenvectors taken as the
-    /// null block whatever their eigenvalues: a FORCED width, not the observed
-    /// one.
-    fn forced_nullity(d: &Mat<f64>, nullity: usize) -> SpectrumClassification {
-        SpectrumClassification {
-            nullity,
-            ..classify_spectrum(d, NULLITY_REL_TOL)
-        }
-    }
-}
-
-/// Assemble the full `N×N` force-density matrix `D = Cᵀ Q C` for the whole
-/// (unanchored) structure.
-///
-/// Reuses the anchored kernel's rank-1 per-member accumulation
-/// ([`scatter_line_members`]): for a member `(j, k)` with force density `qᵢ`,
-/// add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and `D[k,j]`. Unlike
-/// the anchored case there is no free/anchor partition — the full `D` is what
-/// the eigenvalue / null-space form-finding operates on.
-///
-/// `pub(crate)` so the layer-3 prestress-stability kernel
-/// ([`crate::prestress_stability`], Task 3796) can reuse this exact assembly:
-/// the geometric/stress stiffness `K_G = D ⊗ I₃` and the super-stability
-/// `D`-spectrum test both build on the same `D = CᵀQC` (PRD
-/// `docs/prds/v0_6/tensegrity-structures.md` §5 "shares layer 2's core").
-pub(crate) fn assemble_force_density_matrix(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
-) -> Mat<f64> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    scatter_line_members(&mut d, members, q);
-    d
-}
-
-/// Classify the spectrum of the symmetric force-density matrix `D` via a dense
-/// self-adjoint eigendecomposition.
-///
-/// Returns the eigenpairs sorted ascending by `|λ|` together with the nullity
-/// (count of eigenvalues whose magnitude is below `rel_tol · max|λ|`). `D` is
-/// indefinite by construction (struts contribute negative `q`), so the sort is
-/// by magnitude, not algebraic value.
-fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
-    let n = d.nrows();
-
-    // Dense self-adjoint (symmetric standard) eigendecomposition. faer returns
-    // eigenvalues in ascending *algebraic* order with eigenvectors as columns of
-    // U. D is real symmetric by construction, so a failure here is a bug, not an
-    // infeasible-input condition — panic with a descriptive message (matching the
-    // eigensolve.rs `.expect` precedent) rather than threading an error.
-    let eig = d
-        .self_adjoint_eigen(Side::Lower)
-        .expect("force-density matrix D is real symmetric; self-adjoint EVD must succeed");
-    let s = eig.S();
-    let u = eig.U();
-
-    // D is indefinite (struts contribute negative q), so algebraic order is not
-    // magnitude order. Reorder the eigenpairs ascending by |λ| — the null
-    // directions are the smallest-magnitude ones, and recovery (step 6) takes the
-    // leading `nullity` columns.
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| s[a].abs().total_cmp(&s[b].abs()));
-
-    let eigenvalues: Vec<f64> = order.iter().map(|&i| s[i]).collect();
-
-    let mut eigenvectors = Mat::<f64>::zeros(n, n);
-    for (new_col, &src_col) in order.iter().enumerate() {
-        for r in 0..n {
-            eigenvectors[(r, new_col)] = u[(r, src_col)];
-        }
-    }
-
-    // Relative tolerance scaled by the largest-magnitude eigenvalue: a null
-    // direction is one whose |λ| sits at or below tol·max|λ|. Scaling by max|λ|
-    // keeps the threshold meaningful regardless of the overall force-density
-    // scale, and the prism's wide spectral gap (≈0 vs 6) makes the count robust.
-    let max_mag = eigenvalues.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-    let threshold = rel_tol * max_mag;
-    let nullity = eigenvalues.iter().filter(|v| v.abs() <= threshold).count();
-
-    SpectrumClassification {
-        eigenvalues,
-        eigenvectors,
-        nullity,
-        max_mag,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Free-standing form certification
 // ---------------------------------------------------------------------------
 
@@ -1329,37 +1231,46 @@ fn force_graph_components(d: &Mat<f64>) -> usize {
 /// A `D` certified as a 3-D free-standing form, carrying the spectrum its
 /// certification classified so coordinate recovery reuses that one dense EVD.
 #[derive(Debug)]
-struct FreeStandingForm(SpectrumClassification);
+struct FreeStandingForm(SymmetricSpectrum);
 
 impl FreeStandingForm {
     /// The single validity rule: `d` is a free-standing form when its force
     /// graph is ONE connected piece and it is rank-deficient by exactly
-    /// [`FREE_FORM_NULLITY`]; otherwise the observed [`FormDefect`]. Both
-    /// conditions are needed: every connected piece carries its own translation
-    /// mode, so a disconnected `D` can still show nullity 4.
-    fn certify(d: &Mat<f64>) -> Result<FreeStandingForm, FormDefect> {
-        let spectrum = classify_spectrum(d, NULLITY_REL_TOL);
+    /// [`FREE_FORM_NULLITY`]; otherwise [`FreeFormError::NotAForm`] with the
+    /// observed [`FormDefect`]. Both conditions are needed: every connected
+    /// piece carries its own translation mode, so a disconnected `D` can still
+    /// show nullity 4. [`FreeFormError::Spectrum`] when `d` has no spectrum.
+    fn certify(d: &Mat<f64>) -> Result<FreeStandingForm, FreeFormError> {
+        let spectrum = SymmetricSpectrum::of(d)?;
+        let nullity = spectrum.nullity(NULLITY_REL_TOL);
         let components = force_graph_components(d);
-        if components == 1 && spectrum.nullity == FREE_FORM_NULLITY {
+        if components == 1 && nullity == FREE_FORM_NULLITY {
             Ok(FreeStandingForm(spectrum))
         } else {
-            Err(FormDefect {
-                nullity: spectrum.nullity,
+            Err(FreeFormError::NotAForm(FormDefect {
+                nullity,
                 components,
-            })
+            }))
         }
     }
 
-    fn spectrum(&self) -> &SpectrumClassification {
-        &self.0
+    /// Nullity of the certified `D`: [`FREE_FORM_NULLITY`], by certification.
+    fn nullity(&self) -> usize {
+        self.0.nullity(NULLITY_REL_TOL)
+    }
+
+    /// Orthonormal basis of the certified `D`'s null space, as columns.
+    fn null_basis(&self) -> MatRef<'_, f64> {
+        self.0.null_basis(NULLITY_REL_TOL)
     }
 }
 
 /// Assemble a validated problem's `D` and certify it as a free-standing form
-/// ([`FreeFormError::NotAForm`] otherwise).
+/// ([`FreeFormError::NotAForm`] otherwise, [`FreeFormError::Spectrum`] when `D`
+/// has no spectrum).
 fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<FreeStandingForm, FreeFormError> {
-    let d = assemble_force_density_matrix(problem.nodes().len(), problem.members(), problem.q());
-    FreeStandingForm::certify(&d).map_err(FreeFormError::NotAForm)
+    let d = assemble_d(problem.nodes().len(), problem.members(), problem.q());
+    FreeStandingForm::certify(&d)
 }
 
 /// Recover gauge-fixed free-standing node coordinates from the null space of `D`.
@@ -1372,9 +1283,9 @@ fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<FreeStandingForm, 
 /// the least-squares affine alignment to the guess, the standard form-finding
 /// "refine a guess" convention.
 ///
-/// Because the eigenvectors from [`classify_spectrum`] are orthonormal, the
-/// projection is just `X = U₀ (U₀ᵀ G)`, where `U₀` is the leading-`nullity`
-/// eigenvector block and `G` the guess. The result lies exactly in `null(D)`, so
+/// `null_block`'s columns are orthonormal eigenvectors of `D`, so the
+/// projection is just `X = U₀ (U₀ᵀ G)`, where `U₀` is that null block and `G`
+/// the guess. The result lies exactly in `null(D)`, so
 /// `D · X = 0` (equilibrium), and is the closest such configuration to the guess
 /// (the all-ones direction inside `U₀` absorbs translation).
 ///
@@ -1382,12 +1293,11 @@ fn explicit_form(problem: &ForceDensityProblem<'_>) -> Result<FreeStandingForm, 
 /// to span 3-D (a rank-deficient realisation, e.g. a degenerate guess).
 fn recover_coordinates(
     nodes_guess: &[[f64; 3]],
-    spectrum: &SpectrumClassification,
+    null_block: MatRef<'_, f64>,
 ) -> Result<Vec<[f64; 3]>, FreeFormError> {
     let n = nodes_guess.len();
-    let nullity = spectrum.nullity;
-    // Leading `nullity` columns of the (ascending-|λ|) eigenvectors span null(D).
-    let u0 = &spectrum.eigenvectors;
+    let nullity = null_block.ncols();
+    let u0 = null_block;
 
     // Orthogonal projection of each guess coordinate axis onto null(D):
     //   coeff[k][axis] = Σ_r U₀[r,k] · G[r,axis]   (project onto basis column k)
@@ -1524,27 +1434,28 @@ mod tests {
     fn closed_form_prism_q_has_nullity_four_with_spectral_gap() {
         let (members, _kinds) = triplex_topology();
         let q = closed_form_q();
-        let d = assemble_force_density_matrix(6, &members, &q);
-        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+        let d = assemble_d(6, &members, &q);
+        let spec = SymmetricSpectrum::of(&d).expect("finite D");
 
         assert_eq!(
-            spec.nullity, 4,
+            spec.nullity(NULLITY_REL_TOL),
+            4,
             "closed-form prism q must give nullity 4 (3 coord modes + translation); eigenvalues = {:?}",
-            spec.eigenvalues,
+            spec.eigenvalues(),
         );
 
         // Eigenvalues are sorted ascending by magnitude: the fourth-smallest is
         // still in the null space (~0), and there is a wide gap to the fifth,
         // which sits at ~6.
         assert!(
-            spec.eigenvalues[3].abs() < 1e-9,
+            spec.eigenvalues()[3].abs() < 1e-9,
             "fourth-smallest |λ| must be ~0 (still null), got {}",
-            spec.eigenvalues[3],
+            spec.eigenvalues()[3],
         );
         assert!(
-            (spec.eigenvalues[4].abs() - 6.0).abs() < 1e-6,
+            (spec.eigenvalues()[4].abs() - 6.0).abs() < 1e-6,
             "fifth |λ| must be ~6 (spectral gap above the null space), got {}",
-            spec.eigenvalues[4],
+            spec.eigenvalues()[4],
         );
     }
 
@@ -1576,13 +1487,14 @@ mod tests {
         // nullity must be exactly 1 — distinguishing it from the special
         // closed-form prism q (nullity 4).
         let q = generic_admissible_q(&kinds);
-        let d = assemble_force_density_matrix(6, &members, &q);
-        let spec = classify_spectrum(&d, NULLITY_REL_TOL);
+        let d = assemble_d(6, &members, &q);
+        let spec = SymmetricSpectrum::of(&d).expect("finite D");
 
         assert_eq!(
-            spec.nullity, 1,
+            spec.nullity(NULLITY_REL_TOL),
+            1,
             "generic admissible q has only the all-ones translation mode in null(D); eigenvalues = {:?}",
-            spec.eigenvalues,
+            spec.eigenvalues(),
         );
     }
 
@@ -1591,23 +1503,23 @@ mod tests {
     #[test]
     fn certify_accepts_connected_nullity_four_d() {
         let (members, _kinds) = triplex_topology();
-        let d = assemble_force_density_matrix(6, &members, &closed_form_q());
+        let d = assemble_d(6, &members, &closed_form_q());
 
         let form = FreeStandingForm::certify(&d).expect("closed-form prism D is a form");
-        assert_eq!(form.spectrum().nullity, FREE_FORM_NULLITY);
+        assert_eq!(form.nullity(), FREE_FORM_NULLITY);
     }
 
     #[test]
     fn certify_names_the_nullity_of_a_connected_wrong_rank_d() {
         let (members, kinds) = triplex_topology();
-        let d = assemble_force_density_matrix(6, &members, &generic_admissible_q(&kinds));
+        let d = assemble_d(6, &members, &generic_admissible_q(&kinds));
 
         assert_eq!(
             FreeStandingForm::certify(&d).unwrap_err(),
-            FormDefect {
+            FreeFormError::NotAForm(FormDefect {
                 nullity: 1,
                 components: 1,
-            },
+            }),
         );
     }
 
@@ -1616,14 +1528,14 @@ mod tests {
         // Four disjoint unit cable pairs: one translation mode per pair makes
         // the nullity exactly 4, so the count alone certifies nothing.
         let members = [(0, 1), (2, 3), (4, 5), (6, 7)];
-        let d = assemble_force_density_matrix(8, &members, &[1.0; 4]);
+        let d = assemble_d(8, &members, &[1.0; 4]);
 
         assert_eq!(
             FreeStandingForm::certify(&d).unwrap_err(),
-            FormDefect {
+            FreeFormError::NotAForm(FormDefect {
                 nullity: 4,
                 components: 4,
-            },
+            }),
         );
     }
 
@@ -1640,15 +1552,15 @@ mod tests {
     #[test]
     fn certify_counts_an_isolated_node_as_a_component() {
         let (members, _kinds) = triplex_topology();
-        let prism_d = assemble_force_density_matrix(6, &members, &closed_form_q());
+        let prism_d = assemble_d(6, &members, &closed_form_q());
         let d = with_isolated_node(&prism_d);
 
         assert_eq!(
             FreeStandingForm::certify(&d).unwrap_err(),
-            FormDefect {
+            FreeFormError::NotAForm(FormDefect {
                 nullity: 5,
                 components: 2,
-            },
+            }),
         );
     }
 
@@ -1735,7 +1647,7 @@ mod tests {
         let q = closed_form_q();
         // Point a member at node 6 — out of range for the 6-node (0..=5) problem.
         // `D` is 6×6, so without the bounds guard this panics on the `d[(j, j)]`
-        // index in `assemble_force_density_matrix`; the guard turns it into a
+        // index in `assemble_d`; the guard turns it into a
         // clean indexed input error through the public entry point (no panic).
         members[0] = (0, 6);
         assert_eq!(
@@ -1841,12 +1753,12 @@ mod tests {
         // to it).
         let guess = perturbed_prism_guess();
 
-        let x = recover_coordinates(&guess, form.spectrum())
+        let x = recover_coordinates(&guess, form.null_basis())
             .expect("perturbed symmetric-prism guess must recover a 3-D realisation");
 
         // (1) Equilibrium: X lies in null(D), so the per-axis residual ‖D·X‖∞
         // must vanish to machine precision — the rock-solid correctness signal.
-        let d = assemble_force_density_matrix(6, &members, &q);
+        let d = assemble_d(6, &members, &q);
         let mut resid = 0.0_f64;
         for i in 0..6 {
             // (D·X) row i, a 3-vector across the coordinate axes.
@@ -1949,7 +1861,7 @@ mod tests {
             canonical_prism().iter().map(|p| [p[0], p[1], 0.0]).collect();
 
         assert_eq!(
-            recover_coordinates(&coplanar_guess, form.spectrum()).unwrap_err(),
+            recover_coordinates(&coplanar_guess, form.null_basis()).unwrap_err(),
             FreeFormError::SingularRecovery,
         );
     }
@@ -2756,7 +2668,7 @@ mod tests {
         const SOFT: f64 = 1.0;
         const STIFF: f64 = 1_048_576.0; // 2^20
         const OFFSET: f64 = 1.0 / 1_048_576.0; // 2^-20
-        let d = assemble_force_density_matrix(3, &[(0, 1), (1, 2)], &[SOFT, STIFF]);
+        let d = assemble_d(3, &[(0, 1), (1, 2)], &[SOFT, STIFF]);
         let nodes = vec![[1.0 + OFFSET, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]];
 
         let resid = all_node_equilibrium_residual_relative(&d, &nodes);

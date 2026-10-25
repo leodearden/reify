@@ -530,6 +530,9 @@ pub mod error_estimator;
 // functionals of the displacement field and their dual loads. PRD
 // docs/prds/v0_6/goal-oriented-error-estimation.md §5.1/§5.3, §6 C2–C6.
 pub mod qoi;
+// Task 9273 (solver-crates-layering φ-ff): the dense force-density matrix and
+// its spectrum, below form_find, form_find_free and prestress_stability.
+pub(crate) mod fd_matrix;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
@@ -841,6 +844,9 @@ pub use form_find::{
     FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, form_find_anchored,
     form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
+// Task 9273 (solver-crates-layering φ-ff): why a force-density or Gram matrix has
+// no dense spectrum, nested as `Spectrum(..)` in FreeFormError and StabilityError.
+pub use fd_matrix::SpectrumError;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline

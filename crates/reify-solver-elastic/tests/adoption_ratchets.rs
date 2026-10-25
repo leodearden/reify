@@ -170,7 +170,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "line-rank1-scatters",
-        home: "scatter_line_members in form_find.rs (solver-crates-layering D3, leaf η)",
+        home: "assemble_d in fd_matrix.rs (solver-crates-layering D3, leaf η; φ-ff)",
         baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "[(j, k)] -= qi",
@@ -218,6 +218,19 @@ const RATCHETS: &[Ratchet] = &[
             root: "tests/",
             shared_dir: "tests/common/",
         },
+    },
+    Ratchet {
+        name: "eigen-calls-outside-spectrum-module",
+        home: "SymmetricSpectrum::of in fd_matrix.rs (solver-crates-layering gap-fill φ-ff)",
+        baseline: 0,
+        measure: Measure::Occurrences(Pattern {
+            exclude: &["src/fd_matrix.rs"],
+            ..Pattern::whole_file(
+                ".self_adjoint_eigen(",
+                SRC,
+                "let eig = d.self_adjoint_eigen(Side::Lower);",
+            )
+        }),
     },
 ];
 

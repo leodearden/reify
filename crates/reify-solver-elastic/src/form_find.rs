@@ -37,6 +37,7 @@
 //! auto-scaling, the free-standing (unanchored) eigenvalue case, external loads,
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
+use crate::fd_matrix::assemble_d;
 use faer::Mat;
 use faer::linalg::solvers::Solve;
 
@@ -548,7 +549,7 @@ where
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
     // TODO(perf, scalability ceiling): each iteration re-allocates a fresh dense // ptodo:allow permanent perf note, no live owner task
-    // n×n `D` in `assemble_d` (via `Mat::zeros`) and re-factors a fresh nf×nf
+    // n×n `D` in `assemble_combined_d` (via `Mat::zeros`) and re-factors a fresh nf×nf
     // partial-pivot LU in `solve_reduced`. That is O(iters·n²) allocation churn
     // and O(iters·nf³) factorization — fine for the small DSL-level examples and
     // goldens here, but on a refined membrane mesh (where ~1–2k iterations are
@@ -557,7 +558,7 @@ where
     // across iterations (clear-and-refill instead of `zeros()`) and move to a
     // sparse assembly + factor-reuse strategy for large meshes.
     for _ in 0..max_iters {
-        let d = assemble_d::<S>(
+        let d = assemble_combined_d::<S>(
             n,
             problem.members,
             problem.q,
@@ -597,33 +598,9 @@ where
     })
 }
 
-/// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`
-/// with force density `qᵢ`, adds `+qᵢ` to the diagonal entries `D[j,j]`,
-/// `D[k,k]` and `−qᵢ` to the off-diagonal pairs `D[j,k]`, `D[k,j]`.
-///
-/// The one rank-1 FDM update, shared by [`assemble_d`] and `form_find_free`'s
-/// `assemble_force_density_matrix`.
-///
-/// Endpoints must index real nodes: callers build a [`ForceDensityProblem`]
-/// first, and debug builds assert it here, naming the offending member.
-pub(crate) fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
-    let n = d.nrows();
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        debug_assert!(
-            j < n && k < n,
-            "member ({j}, {k}) indexes past the {n}×{n} force-density matrix; \
-             ForceDensityProblem::new must run before scatter_line_members",
-        );
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
-}
-
 /// Scatter each surface triangle's local stencil `L_T` (at `nodes`) into `d` at
 /// the triangle's global node indices — the one surface-stencil scatter,
-/// shared by [`assemble_d`] and `form_find_free`'s surface matrix.
+/// shared by [`assemble_combined_d`] and `form_find_free`'s surface matrix.
 pub(crate) fn scatter_surface_stencils<S: TriangleStencil>(
     d: &mut Mat<f64>,
     surfaces: &[(usize, usize, usize)],
@@ -642,11 +619,11 @@ pub(crate) fn scatter_surface_stencils<S: TriangleStencil>(
     Ok(())
 }
 
-/// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
+/// Assemble the combined force-density matrix `D = CᵀQC` (line members) `+ Σ_T
 /// L_T` (surface stencils `S`, at the given geometry) into a dense `n×n` faer
-/// matrix: zeros, then [`scatter_line_members`], then
-/// [`scatter_surface_stencils`]. Propagates the stencil's error.
-fn assemble_d<S: TriangleStencil>(
+/// matrix: the line-member [`assemble_d`], then [`scatter_surface_stencils`].
+/// Propagates the stencil's error.
+fn assemble_combined_d<S: TriangleStencil>(
     n: usize,
     members: &[(usize, usize)],
     q: &[f64],
@@ -654,8 +631,7 @@ fn assemble_d<S: TriangleStencil>(
     surface_stresses: &[S::Stress],
     nodes: &[[f64; 3]],
 ) -> Result<Mat<f64>, S::Error> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    scatter_line_members(&mut d, members, q);
+    let mut d = assemble_d(n, members, q);
     scatter_surface_stencils::<S>(&mut d, surfaces, surface_stresses, nodes)?;
     Ok(d)
 }
@@ -1882,7 +1858,7 @@ mod tests {
     }
 
     // (c2) A surface triangle corner that indexes past `nodes` is infeasible
-    // input — `assemble_d` would panic on its `nodes[i]` index. PRD 8.1
+    // input — `assemble_combined_d` would panic on its `nodes[i]` index. PRD 8.1
     // promises a clean diagnostic, never a panic.
     #[test]
     fn surfaces_out_of_range_index_is_index_out_of_range() {
@@ -2079,7 +2055,7 @@ mod tests {
         const LAMBDA: f64 = 1_048_576.0; // 2^20
 
         let (nodes, surfaces, anchors) = tent_membrane();
-        // Note: `assemble_d` (unlike the public entry points) does not take
+        // Note: `assemble_combined_d` (unlike the public entry points) does not take
         // `kinds` — it has no sign contract to enforce — so no MemberKind
         // value is needed here.
         let members = [(0usize, 1usize)];
@@ -2093,14 +2069,14 @@ mod tests {
         }
         let free_indices: Vec<usize> = (0..nodes.len()).filter(|&i| !is_anchor[i]).collect();
 
-        let d_base = assemble_d::<IsotropicStencil>(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
+        let d_base = assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
             .expect("non-degenerate fixture");
         let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
 
         let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
         let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
         let d_scaled =
-            assemble_d::<IsotropicStencil>(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
+            assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
                 .expect("non-degenerate fixture");
         let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
 
@@ -2116,7 +2092,7 @@ mod tests {
     // rejection, since every comparison against NaN (including `<=`) is
     // false — the NaN row's ratio would then vanish into the NaN-transparent
     // max and could read as converged. Calls the private function directly
-    // with hand-built `Mat<f64>` inputs (no `assemble_d` involved), so both
+    // with hand-built `Mat<f64>` inputs (no `assemble_combined_d` involved), so both
     // branches are exercised in isolation.
     #[test]
     fn free_equilibrium_residual_relative_returns_infinity_on_zero_or_nan_free_row() {
@@ -2197,7 +2173,7 @@ mod tests {
 
         for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
             let q = [BASE_Q * lambda; 3];
-            let d = assemble_d::<IsotropicStencil>(4, &members, &q, &[], &[], &exact).expect("line-only D");
+            let d = assemble_combined_d::<IsotropicStencil>(4, &members, &q, &[], &[], &exact).expect("line-only D");
             assert!(
                 !is_singular_reduced_solve(&d, &exact, &free_indices, &anchor_indices),
                 "λ={lambda:e}: the exact chain solution must be accepted",
