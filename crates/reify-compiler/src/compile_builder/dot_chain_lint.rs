@@ -566,8 +566,8 @@ mod tests {
 
     /// Every recursion arm of `walk_expr_depth` forwards `depth + 1`, and the
     /// lint covers nesting up to the shared compile cap and stops silently past
-    /// it: a deep chain nested so it sits AT the cap is reported, one layer
-    /// further it is skipped. Runs on a 2 MiB stack, the GUI's compile stack.
+    /// it: a deep chain nested so it sits AT the cap is reported, one level
+    /// deeper it is skipped. Runs on a 2 MiB stack, the GUI's compile stack.
     #[test]
     fn deep_chain_is_linted_through_the_nesting_cap_and_skipped_past_it_for_every_arm() {
         /// `a.b.c.d.e`: chain length 5, one past DEEP_DOT_CHAIN_THRESHOLD.
@@ -589,34 +589,33 @@ mod tests {
             chain
         }
 
-        fn deep_dot_chain_count(arm: NestingArm, layers: usize) -> usize {
+        fn deep_dot_chain_count(arm: NestingArm, depth: usize) -> usize {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            walk_expr(&arm.nest(deep_chain(), layers), &mut diagnostics);
+            walk_expr(&arm.nest_at_depth(deep_chain(), depth), &mut diagnostics);
             assert!(
                 diagnostics
                     .iter()
                     .all(|d| d.code == Some(DiagnosticCode::DeepDotChain)),
-                "arm {arm:?} with {layers} layers emitted a non-DeepDotChain diagnostic: \
-                 {diagnostics:?}"
+                "arm {arm:?} with the chain at depth {depth} emitted a non-DeepDotChain \
+                 diagnostic: {diagnostics:?}"
             );
             diagnostics.len()
         }
 
         on_tokio_worker_stack(|| {
             for &arm in NestingArm::ALL {
-                let layers = arm.layers_within(CAP);
                 assert_eq!(
-                    deep_dot_chain_count(arm, layers),
+                    deep_dot_chain_count(arm, CAP),
                     1,
-                    "arm {arm:?}: a deep chain {layers} layers down sits at or inside \
-                     the cap and must be linted"
+                    "arm {arm:?}: a deep chain at depth {CAP} sits at the cap and must \
+                     be linted"
                 );
                 assert_eq!(
-                    deep_dot_chain_count(arm, layers + 1),
+                    deep_dot_chain_count(arm, CAP + 1),
                     0,
-                    "arm {arm:?}: a deep chain {} layers down sits past the cap and must \
-                     be skipped — a non-zero count means this arm did not forward depth + 1",
-                    layers + 1
+                    "arm {arm:?}: a deep chain at depth {} sits past the cap and must be \
+                     skipped — a non-zero count means this arm did not forward depth + 1",
+                    CAP + 1
                 );
             }
         });

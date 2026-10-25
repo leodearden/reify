@@ -1,11 +1,11 @@
 //! Test fixtures for walkers bounded by
 //! [`MAX_COMPILE_RECURSION_DEPTH`](super::MAX_COMPILE_RECURSION_DEPTH).
 //!
-//! [`NestingArm`] nests a probe expression N layers deep through ONE recursion
-//! arm of `ExprKind`. Placing the probe at the cap and one layer past it pins
-//! that a walker forwards `depth + 1` through that arm: an arm that forwarded
-//! `depth` would still reach the probe past the cap, and would recurse without
-//! bound on deep input.
+//! [`NestingArm`] nests a probe expression at a given depth through ONE
+//! recursion arm of `ExprKind`. Placing the probe at the cap and one level past
+//! it pins both the cap comparison and that a walker forwards `depth + 1`
+//! through that arm: an arm that forwarded `depth` would still reach the probe
+//! past the cap, and would recurse without bound on deep input.
 //!
 //! Every layer is lint-neutral: it holds no member-access chain longer than 2
 //! and binds no name that another layer binds, so whatever a walker reports
@@ -106,15 +106,20 @@ impl NestingArm {
         NestingArm::AutoSecondParam,
     ];
 
-    /// The most layers of this arm that keep a probe nested under them within
-    /// `budget` walker levels of the outermost layer; one more layer exceeds it.
-    pub(crate) fn layers_within(self, budget: usize) -> usize {
-        budget / self.depth_per_layer()
+    /// `probe` nested so it sits exactly `depth` walker levels below the returned
+    /// root, through as many layers of this arm as fit. When this arm's layers
+    /// cost more than one level, UnOp layers directly around `probe` fill the
+    /// remainder, so the probe lands on `depth` even when `depth` is not a whole
+    /// number of this arm's layers.
+    pub(crate) fn nest_at_depth(self, probe: Expr, depth: usize) -> Expr {
+        let per_layer = self.depth_per_layer();
+        let padded = NestingArm::UnOp.nest(probe, depth % per_layer);
+        self.nest(padded, depth / per_layer)
     }
 
     /// `probe` nested `layers` deep through this arm; the outermost layer is the
     /// returned root.
-    pub(crate) fn nest(self, probe: Expr, layers: usize) -> Expr {
+    fn nest(self, probe: Expr, layers: usize) -> Expr {
         let span = probe.span;
         (0..layers).fold(probe, |inner, layer| Expr {
             kind: self.wrap(inner, layer, span),

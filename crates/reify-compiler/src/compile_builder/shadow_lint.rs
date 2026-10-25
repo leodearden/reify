@@ -872,7 +872,7 @@ mod tests {
     /// Every recursion arm of `walk_expr_depth` forwards both `depth + 1` and the
     /// enclosing frames, and the lint covers nesting up to the shared compile cap
     /// and stops silently past it: a lambda shadowing an enclosing lambda's `x`,
-    /// nested so it sits AT the cap, is reported; one layer further it is
+    /// nested so it sits AT the cap, is reported; one level deeper it is
     /// skipped. Runs on a 2 MiB stack, the GUI's compile stack.
     #[test]
     fn shadowing_lambda_is_linted_at_the_nesting_cap_and_skipped_past_it_for_every_arm() {
@@ -892,42 +892,41 @@ mod tests {
         }
 
         /// `|x| <layers of arm> (|x| x)`: the outer lambda is the root at depth 0,
-        /// so the layers start at depth 1 and the shadowing lambda sits below them.
-        fn shadow_count(arm: NestingArm, layers: usize) -> usize {
+        /// so the layers start at depth 1 and the shadowing lambda sits at `depth`.
+        fn shadow_count(arm: NestingArm, depth: usize) -> usize {
             let shadowing = lambda_over_x(Expr {
                 kind: ExprKind::Ident("x".into()),
                 span: SourceSpan::empty(0),
             });
-            let root = lambda_over_x(arm.nest(shadowing, layers));
+            let root = lambda_over_x(arm.nest_at_depth(shadowing, depth - 1));
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             walk_expr(&root, None, &mut diagnostics);
             assert!(
                 diagnostics
                     .iter()
                     .all(|d| d.code == Some(DiagnosticCode::Shadowing)),
-                "arm {arm:?} with {layers} layers emitted a non-Shadowing diagnostic: \
-                 {diagnostics:?}"
+                "arm {arm:?} with the shadowing lambda at depth {depth} emitted a \
+                 non-Shadowing diagnostic: {diagnostics:?}"
             );
             diagnostics.len()
         }
 
         on_tokio_worker_stack(|| {
             for &arm in NestingArm::ALL {
-                let layers = arm.layers_within(CAP - 1);
                 assert_eq!(
-                    shadow_count(arm, layers),
+                    shadow_count(arm, CAP),
                     1,
-                    "arm {arm:?}: a shadowing lambda {layers} layers down sits at or \
-                     inside the cap and must be linted — zero means this arm lost the \
-                     enclosing frames or over-counted depth"
+                    "arm {arm:?}: a shadowing lambda at depth {CAP} sits at the cap and \
+                     must be linted — zero means this arm lost the enclosing frames or \
+                     over-counted depth"
                 );
                 assert_eq!(
-                    shadow_count(arm, layers + 1),
+                    shadow_count(arm, CAP + 1),
                     0,
-                    "arm {arm:?}: a shadowing lambda {} layers down sits past the cap \
-                     and must be skipped — a non-zero count means this arm did not \
-                     forward depth + 1",
-                    layers + 1
+                    "arm {arm:?}: a shadowing lambda at depth {} sits past the cap and \
+                     must be skipped — a non-zero count means this arm did not forward \
+                     depth + 1",
+                    CAP + 1
                 );
             }
         });
