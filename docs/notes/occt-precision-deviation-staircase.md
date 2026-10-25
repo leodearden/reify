@@ -54,11 +54,12 @@ sweep, whose established facts are PRD §2:
 - **Treads** follow an upper envelope near **~2.075×** the requested deflection.
 - The treads are punctuated by narrow **periodic downward teeth** near **~0.758×**.
   The teeth are **real and recurrent, not isolated exceptions** — they recur across
-  the range **above** the third branch's onset (`d/R` ≳ 2.57e-4), at a period that
+  the range **above** the teeth's last window (`d/R` ≳ 2.57e-4), at a period that
   tightens as the request gets finer (PRD §2 has the periods, widths and duty cycle).
 - A **third branch near ~1.49×** has its **onset** at `d/R` ≈ 2.52e-4, which is
-  ~0.252 mm on a 1 m-radius sphere. Below the onset the ~0.758× teeth are absent.
-  The treads continue, punctuated instead by narrow **downward** third-branch
+  ~0.252 mm on a 1 m-radius sphere. The teeth end just above it, so between
+  2.57e-4 and 2.52e-4 the model places treads only. Below the onset the treads
+  continue, punctuated instead by narrow **downward** third-branch
   windows that widen as `d/R` falls. So below the onset a reading may be a tread
   **or** a third-branch window: measure it, because the branch decides, not `d/R`.
 - Below a model-derived `d/R` ≈ 6.3e-5, a **`k = −3` state** appears whose readings
