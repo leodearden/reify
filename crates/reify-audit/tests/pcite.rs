@@ -349,7 +349,7 @@ fn findings_are_sorted_by_category_name_path_and_deterministic() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -388,7 +388,7 @@ fn pattern_pcite_reports_a_fabricated_cite_and_exits_zero() {
         .arg(&tasks_file)
         .arg("--runs-db")
         .arg(&runs_db);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     let out = cmd.output().expect("invoke reify-audit --pattern PCITE");
     let stderr = String::from_utf8_lossy(&out.stderr);
 

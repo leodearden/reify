@@ -27,10 +27,10 @@ fn git_available(check: &str) -> bool {
 }
 
 /// Run `git` in `root`, panicking on failure. Built through
-/// `reify_audit::git_env` so an ambient `GIT_INDEX_FILE` (exported by
+/// `reify_git_env` so an ambient `GIT_INDEX_FILE` (exported by
 /// `hooks/pre-commit`) cannot redirect staging into the parent repository.
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -85,7 +85,7 @@ fn with_ctx<R>(root: &Path, f: impl FnOnce(&AuditContext<'_>) -> R) -> R {
 fn run_generator(root: &Path, extra: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_pdoccover-baseline-gen"));
     cmd.arg("--project-root").arg(root).args(extra);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     cmd.output().expect("pdoccover-baseline-gen spawns")
 }
 
@@ -288,7 +288,7 @@ fn the_committed_baseline_is_tracked_and_carries_the_generated_header() {
     };
     let content = committed_ledger(&root);
 
-    let tracked = reify_audit::git_env::command(&root)
+    let tracked = reify_git_env::command(&root)
         .args(["ls-files", "--error-unmatch", BASELINE_PATH])
         .output()
         .expect("git ls-files spawns");

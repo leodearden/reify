@@ -331,12 +331,12 @@ fn workspace_root() -> std::path::PathBuf {
 ///
 /// `sanitize` strips the repo-redirect vars (`GIT_DIR`, `GIT_WORK_TREE`, …) so
 /// an ambient environment cannot point this `git -C <root>` at a different
-/// repository — the same precaution `reify_audit::git_env` requires of every
+/// repository — the same precaution `reify_git_env` requires of every
 /// repo-targeting call.
 fn tracked_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut command = std::process::Command::new("git");
     command.arg("-C").arg(root).args(["ls-files", "-z", "--", "*.ri"]);
-    let output = reify_test_support::git_env::sanitize(&mut command)
+    let output = reify_git_env::sanitize(&mut command)
         .output()
         .unwrap_or_else(|e| panic!("cannot run `git ls-files` in {}: {e}", root.display()));
     assert!(

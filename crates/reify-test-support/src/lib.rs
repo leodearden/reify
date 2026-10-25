@@ -12,7 +12,6 @@ pub mod design_files;
 pub mod examples_corpus;
 pub mod finite_difference;
 pub mod fixtures;
-pub mod git_env;
 pub mod helpers;
 pub mod ignore_hygiene;
 pub mod kernel_assertions;
@@ -46,7 +45,6 @@ pub mod workspace_sweep;
 // - `ctor_conformance_debt`
 // - `design_files`
 // - `examples_corpus`
-// - `git_env`
 // - `mesh_fixtures`
 // - `rust_fixture_scan`
 // - `stl_bytes`

@@ -22,6 +22,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # behind `default-features = false` so we don't pull native-tls — the only
 # endpoint is localhost (HTTP). See `crates/reify-audit/src/fused_memory_client.rs`.
 ureq = { version = "2.10", default-features = false, features = ["json"] }
+reify-git-env.workspace = true
 # reify-test-support: a deliberate PRODUCTION dependency, not a dev-dep that
 # drifted — its `test-support` NAME under-describes what this edge carries. Some
 # of its publics are reached from this crate's production path; which ones, and

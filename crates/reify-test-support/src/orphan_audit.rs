@@ -1,4 +1,4 @@
-use crate::git_env::sanitize;
+use reify_git_env::sanitize;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,7 +89,7 @@ impl std::fmt::Display for SkipNote {
 /// reaches for whenever a value genuinely cannot be single-sourced across a
 /// language boundary — and it is the last resort, not the default: where a
 /// value CAN be single-sourced it should be, as [`sanitize`]'s own move into
-/// `crate::git_env` did.
+/// [`reify_git_env`] did.
 const EXCLUDE_CRATES: &[&str] = &["reify-test-support"];
 
 /// True when `scope`'s crate segment (the path component immediately after
@@ -121,7 +121,7 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 /// [`sanitize`] is supposed to establish: that the child resolves the SAME
 /// repository the caller asked it to scan. That is why the probe still has
 /// teeth despite reusing the spawn's own sanitizer: it independently catches
-/// an incomplete [`crate::git_env::REPO_REDIRECT_VARS`] list, a `.git` file
+/// an incomplete [`reify_git_env::REPO_REDIRECT_VARS`] list, a `.git` file
 /// pointing at another checkout, a symlinked or embedded checkout, or a
 /// workspace-root resolution that lands on the wrong level — any
 /// of which would make the real script silently scan a different tree than
@@ -277,11 +277,11 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     }
 
     // Sanitize repo-redirect git env vars before spawning (via
-    // build_audit_command -> crate::git_env::sanitize): the script's first
+    // build_audit_command -> reify_git_env::sanitize): the script's first
     // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, so an ambient
     // redirect var, not this call's `repo_root`, would decide which checkout it
     // enumerates. Why such a var beats both cwd and an explicit `-C`, and what
-    // that costs: `crate::git_env`'s module doc, where the sanitizer is
+    // that costs: `reify_git_env`'s crate doc, where the sanitizer is
     // defined.
     let output = build_audit_command(script, scope, repo_root)
         .output()
@@ -375,7 +375,7 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
 }
 
 /// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
-/// program, argv, `current_dir`, and [`crate::git_env::sanitize`] already
+/// program, argv, `current_dir`, and [`reify_git_env::sanitize`] already
 /// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
 /// — no new resolution logic, no new argv — so it cannot fork from what
 /// production actually spawns.
@@ -390,10 +390,10 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
 /// # Composition contract
 ///
 /// The returned command is ALREADY sanitized. A caller that then adds
-/// `Command::env` for one of [`crate::git_env::REPO_REDIRECT_VARS`] is
+/// `Command::env` for one of [`reify_git_env::REPO_REDIRECT_VARS`] is
 /// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
 /// hazard synthetically — not working around a missing sanitize. See
-/// [`crate::git_env`] for what sanitization is for and why.
+/// [`reify_git_env`] for what sanitization is for and why.
 ///
 /// # Not a substitute for [`run_orphan_audit`]
 ///
@@ -1208,23 +1208,23 @@ mod tests {
 
     /// Asserts the constructed script-spawn `Command` records a removal
     /// (`env_remove` -> `(key, None)` in `get_envs()`) for every
-    /// [`crate::git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
+    /// [`reify_git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
     /// script spawn sanitizes from the SHARED definition, not from a
-    /// module-local copy. Uses [`crate::git_env::removed_vars`], the same
-    /// removal-collecting helper the definition site's own tests and
-    /// `reify_audit::git_env`'s tests use, so every assertion site in the
-    /// workspace reads the `(key, None)` encoding through one place.
+    /// module-local copy. Uses [`reify_git_env::removed_vars`], the same
+    /// removal-collecting helper the definition site's own tests use, so every
+    /// assertion site in the workspace reads the `(key, None)` encoding
+    /// through one place.
     ///
     /// This covers the WIRING only — that [`build_audit_command`] applies the
     /// sanitizer. That the sanitizer actually defeats an ambient redirect var
     /// against real git is proved once, at the definition site, by
-    /// `crate::git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
+    /// `reify_git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
     ///
     /// Unlike the two tests above, this one never spawns the script and needs
     /// neither `git` nor `python3` on `PATH` — it only inspects `Command`
     /// metadata, so the paths passed in are deliberately nonexistent. A
     /// regression that dropped [`sanitize`] from [`build_audit_command`], or
-    /// dropped an entry from [`crate::git_env::REPO_REDIRECT_VARS`], fails
+    /// dropped an entry from [`reify_git_env::REPO_REDIRECT_VARS`], fails
     /// this test even though the smoke tests above never poison the
     /// environment to notice.
     #[test]
@@ -1234,8 +1234,8 @@ mod tests {
             "crates/reify-audit/src",
             Path::new("/nonexistent/repo-root"),
         );
-        let removed = crate::git_env::removed_vars(&cmd);
-        for var in crate::git_env::REPO_REDIRECT_VARS {
+        let removed = reify_git_env::removed_vars(&cmd);
+        for var in reify_git_env::REPO_REDIRECT_VARS {
             assert!(
                 removed.iter().any(|r| r == var),
                 "build_audit_command must REMOVE `{var}` (env_remove -> \

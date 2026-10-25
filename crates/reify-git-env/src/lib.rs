@@ -1,4 +1,166 @@
-//! The workspace's single constructor and sanitizer for git invocations that target a specific repository.
+//! The workspace's single constructor and sanitizer for git invocations that
+//! target a specific repository.
+//!
+//! # The failure mode this prevents
+//!
+//! Git exports `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` into a hook's
+//! entire process tree, and those override an explicit `-C <root>`. For
+//! `git commit --only`, `GIT_INDEX_FILE` points at a *temporary* index built
+//! for that commit. So under `hooks/pre-commit` -> `hooks/project-checks` ->
+//! `scripts/verify.sh` -> the workspace test run, an unsanitized
+//! `git -C <tempdir> add .` writes the PARENT repository's temporary index
+//! instead of the tempdir's, and an unsanitized `git -C <tempdir> ls-files`
+//! reads that parent index — yielding a wrong file set rather than an error.
+//! Both observed signatures came from this: a divergent PTODO finding set
+//! (exit `Some(1)` where `Some(2)` was expected) from `reify-audit`'s
+//! production reader path, and `git ["add", "."] exited Some(128)` from a
+//! fixture helper colliding with the parent repo's `index.lock`.
+//!
+//! The redirect vars do not make git *fail* — they make it silently operate on
+//! a different repository. That asymmetry is why there is one shared
+//! definition rather than a per-site precaution.
+//!
+//! ## Measured
+//!
+//! An ambient redirect var beats BOTH cwd and an explicit `-C`:
+//! `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C /tmp/gwt_b
+//! rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the two vars prints
+//! `/tmp/gwt_b`. `sanitize_makes_dash_c_authoritative_against_real_git`, in this
+//! crate's tests, re-checks both halves of that against real git on every run
+//! rather than resting on this paragraph.
+//!
+//! Under this project's warm-lane topology the ambient case is routine, not
+//! hypothetical: tests execute inside `worktrees/_lane-NN` while a hook
+//! environment may name a different checkout entirely. The blast radius is
+//! whatever the caller does to the wrong repository — for a spawned script
+//! whose first action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, an
+//! audit silently enumerating the wrong tree rather than erroring.
+//!
+//! # The rule
+//!
+//! **Every git invocation that targets a specific repository is built through
+//! [`command`]**, so that `-C <root>` is authoritative regardless of an ambient
+//! environment. That covers production and test code alike: a fixture helper
+//! that shells `git init` into a tempdir is exactly as vulnerable as a shipped
+//! binary.
+//!
+//! A shape other than `git -C <root>` — a `current_dir` invocation, or a spawn
+//! of a program that runs git internally, where `-C <root>` is not the right
+//! shape — routes through [`sanitize`] directly instead, the same single
+//! sanitizer [`command`] applies.
+//!
+//! **Carve-out:** a bare `git --version` availability probe opens no
+//! repository, so no redirect var can reach it. That is the only exemption,
+//! and it rests on git's own semantics rather than on how a command happens to
+//! be used today — anything carrying `-C`, a repository path, or an implicit
+//! cwd repository is NOT exempt, including a `Command` that nothing currently
+//! spawns. "It is only read back through `get_envs()`" stops being true the
+//! day someone appends a `.status()`, so it is not a line worth drawing.
+//!
+//! The workspace's one deliberate breach is the HAZARD half of this crate's
+//! real-git test, which stays unsanitized precisely to demonstrate that an
+//! ambient redirect var still overrides `-C`. It is a premise check rather than
+//! a call site, and would have no teeth sanitized.
+//!
+//! ## Sweeping for new call sites
+//!
+//! Two shapes reach git and a sweep must consider both.
+//! `git grep -n 'Command::new("git")' -- '*.rs'` finds direct invocations; it
+//! does NOT find a spawn of a shell script that runs git internally, which is
+//! the shape of `reify-test-support`'s orphan-audit spawn. A site of either
+//! shape that is neither the `--version` carve-out nor routed through
+//! [`command`] or [`sanitize`] is a defect.
+//!
+//! Re-run that sweep when adding a call site rather than trusting a list here:
+//! an enumerated census of call sites in a doc comment rots the moment one is
+//! renamed, and silently reads as authoritative while it does.
+
+use std::path::Path;
+use std::process::Command;
+
+/// Git environment variables that redirect *which repository* a command
+/// operates on, and therefore can silently override an explicit `-C <root>`.
+///
+/// # Why an enumerated set, not a wholesale `GIT_*` clear
+///
+/// This set has a crisp defining criterion: these are exactly the vars that
+/// answer *"which repository am I operating on"* — the question `-C <root>` is
+/// supposed to answer authoritatively. Clearing all `GIT_*` would additionally
+/// drop `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` (which a
+/// harness may set precisely to *increase* isolation), `GIT_TRACE*`
+/// (debuggability) and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (commit determinism) —
+/// strictly more collateral for no gain against the failure mode the crate doc
+/// analyses. Those are left untouched.
+///
+/// Removed — not overwritten — by [`sanitize`].
+///
+/// # Deletion guard
+///
+/// `repo_redirect_vars_covers_the_removal_floor`, in this crate's tests, names
+/// each entry independently as a containment FLOOR, so this list may still GROW
+/// without a lockstep test edit, but an entry cannot be silently DELETED from
+/// it. That guard sits next to the definition it guards on purpose: every other
+/// test of this set iterates the set itself to assert the code removes what it
+/// lists, so all of them stay green through a deletion.
+pub const REPO_REDIRECT_VARS: &[&str] = &[
+    // Exported by git into a hook's process tree — the observed failure.
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    // Same class: each redirects part of "which repository / which objects".
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// A pre-sanitized `git -C <root>` command.
+///
+/// The path of least resistance for every repo-targeting call site — prefer
+/// this over hand-rolling `Command::new("git").arg("-C")`, which is how the
+/// failure mode [`sanitize`] prevents reaches a new helper.
+pub fn command(root: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root);
+    sanitize(&mut cmd);
+    cmd
+}
+
+/// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment.
+///
+/// For shapes other than `git -C <root>` (which [`command`] builds): a
+/// `current_dir` invocation, or a spawn of a program that runs git internally.
+/// Returns `&mut Command` so such callers can chain off it. A caller needing
+/// another shape reaches this sanitizer rather than re-deriving
+/// [`REPO_REDIRECT_VARS`] by hand, which is exactly how this class of bug
+/// reaches a new helper.
+///
+/// Removal (`env_remove`) rather than assignment is deliberate: there is no
+/// correct value to assign, and an inherited-but-empty var is not the same as
+/// an absent one to git.
+pub fn sanitize(cmd: &mut Command) -> &mut Command {
+    for var in REPO_REDIRECT_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+/// Collect the vars `cmd` has marked for REMOVAL. `std` encodes an `env_remove`
+/// as a `(key, None)` pair in `get_envs()`; an overwrite would be
+/// `(key, Some(value))`, and an untouched var does not appear at all.
+///
+/// The workspace's single reader of that encoding: every test asserting that a
+/// command was sanitized reads through here, so there is one place to fix if
+/// the encoding ever changes. `pub` rather than `#[cfg(test)]` for exactly that
+/// reason — a `cfg(test)` item is invisible to dependent crates, which would
+/// force a hand-copied twin in each of them.
+pub fn removed_vars(cmd: &Command) -> Vec<String> {
+    cmd.get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

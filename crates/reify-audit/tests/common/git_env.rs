@@ -12,7 +12,7 @@
 //! built on this plumbing lives in [`super::replay`].
 //!
 //! Nothing here duplicates a variable list: the *sanitized* set lives once in
-//! [`reify_audit::git_env::REPO_REDIRECT_VARS`], and the *poisoned* set lives
+//! [`reify_git_env::REPO_REDIRECT_VARS`], and the *poisoned* set lives
 //! once in [`hook_git_env`], which asserts it is a subset of the sanitized one.
 
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use tempfile::TempDir;
 /// A pre-sanitized `git -C <dir>` command for fixture-repo setup.
 ///
 /// Thin by design: the sanitized variable list lives once, in
-/// [`reify_audit::git_env::REPO_REDIRECT_VARS`]. A fixture helper that shells a
+/// [`reify_git_env::REPO_REDIRECT_VARS`]. A fixture helper that shells a
 /// bare `Command::new("git")` is exactly as vulnerable as production code was —
 /// an ambient `GIT_INDEX_FILE` overrides `-C <tempdir>`, so
 /// `git -C <tempdir> add .` writes the PARENT repository's index (observed as
@@ -30,7 +30,7 @@ use tempfile::TempDir;
 /// `index.lock`).
 #[allow(dead_code)]
 pub fn git_cmd(dir: &Path) -> Command {
-    reify_audit::git_env::command(dir)
+    reify_git_env::command(dir)
 }
 
 /// A throwaway repository standing in for the parent repo a hook would point
@@ -96,7 +96,7 @@ pub fn decoy_repo() -> DecoyRepo {
 /// pointed at `decoy`.
 ///
 /// The single home for the poisoned list on the test side. Every var here is
-/// asserted to be one [`reify_audit::git_env::sanitize`] removes, so adding a
+/// asserted to be one [`reify_git_env::sanitize`] removes, so adding a
 /// fourth var without teaching the sanitizer about it fails loudly here instead
 /// of silently reducing coverage.
 fn hook_git_env(decoy: &DecoyRepo) -> Vec<(&'static str, PathBuf)> {
@@ -108,11 +108,11 @@ fn hook_git_env(decoy: &DecoyRepo) -> Vec<(&'static str, PathBuf)> {
 
     for (name, _) in &vars {
         assert!(
-            reify_audit::git_env::REPO_REDIRECT_VARS.contains(name),
+            reify_git_env::REPO_REDIRECT_VARS.contains(name),
             "poisoning with `{}` proves nothing unless the sanitizer removes it — \
-             add it to reify_audit::git_env::REPO_REDIRECT_VARS; current set: {:?}",
+             add it to reify_git_env::REPO_REDIRECT_VARS; current set: {:?}",
             name,
-            reify_audit::git_env::REPO_REDIRECT_VARS,
+            reify_git_env::REPO_REDIRECT_VARS,
         );
     }
 

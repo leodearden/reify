@@ -161,7 +161,7 @@ assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn
 
 # ---------------------------------------------------------------------------
 # Arm D — DRIFT GUARD: REIFY_GIT_ENV_SCRUB_VARS is EXACTLY the
-# workspace's canonical Rust answer, crates/reify-test-support/src/git_env.rs's
+# workspace's canonical Rust answer, crates/reify-git-env/src/lib.rs's
 # REPO_REDIRECT_VARS.
 #
 # DERIVED from that source on every infra run, never a second hardcoded copy —
@@ -182,9 +182,9 @@ assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn
 echo ""
 echo "--- D: bash scrub list EQUALS Rust's REPO_REDIRECT_VARS (derive-from-source) ---"
 
-GIT_ENV_RS="$REPO_ROOT/crates/reify-test-support/src/git_env.rs"
+GIT_ENV_RS="$REPO_ROOT/crates/reify-git-env/src/lib.rs"
 
-assert "D0: crates/reify-test-support/src/git_env.rs exists (the derivation's source)" \
+assert "D0: crates/reify-git-env/src/lib.rs exists (the derivation's source)" \
     test -f "$GIT_ENV_RS"
 
 # Comment lines are stripped BEFORE the string capture so a future comment
@@ -367,7 +367,7 @@ assert "C5: ... and unchanged in size ($_C_IDX_SIZE_BEFORE -> ${_C_IDX_SIZE_AFTE
 echo ""
 echo "--- C-PRESERVE: the scrub leaves the non-redirect git vars alone ---"
 
-# The three classes git_env.rs's rationale names, spelled out in full:
+# The three classes reify-git-env's REPO_REDIRECT_VARS rationale names, in full:
 #   GIT_AUTHOR_* / GIT_COMMITTER_* — commit determinism (all six, not just NAME)
 #   GIT_CONFIG_*                   — harness isolation
 #   GIT_TRACE                      — debuggability
@@ -615,7 +615,7 @@ assert "F3b: NO scrubbed variable reached the member (got: ${_F3_REPORT_TEXT//$'
 # Benign today only because CWD happens to be REPO_ROOT and the relative
 # `.git/index` therefore names the same repo — not a property to rest on (under
 # `git commit --only` GIT_INDEX_FILE names a TEMPORARY index; see
-# crates/reify-test-support/src/git_env.rs's own analysis).
+# crates/reify-git-env/src/lib.rs's own analysis).
 #
 # The capture is ANY `git` word, not the `git -C "` shape the seven sites happen
 # to use today.  A narrower pattern would be blind in the DANGEROUS direction: a

@@ -563,7 +563,7 @@ fn re_spelling_a_ledgered_cite_is_new_debt_plus_a_stale_row() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -606,7 +606,7 @@ fn pattern_plinecite_reports_a_line_cite_and_exits_zero() {
     .arg(&tasks_file)
     .arg("--runs-db")
     .arg(&runs_db);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     let out = cmd
         .output()
         .expect("invoke reify-audit --pattern PLINECITE");

@@ -30,7 +30,6 @@
 //! filtering) without a real git repo, a real runs.db, or a real jcodemunch
 //! MCP server.
 
-pub mod git_env;
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
