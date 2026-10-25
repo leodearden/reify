@@ -100,9 +100,10 @@ fn unannotated_trait_static_fn_with_dimensioned_body_warns() {
 }
 
 /// A trait-static fn's body scope is named after its namespaced fn, and the
-/// exactness walk must still recognise the params minted under it. Trait
-/// signature resolution rejects the fn's own type param, so the fixture also
-/// carries an unrelated Error: only the reconciliation report is asserted.
+/// exactness walk must still recognise the params minted under it. Until #7866
+/// lands, trait signature resolution rejects the fn's own type param, so the
+/// fixture also carries an unrelated Error and only the reconciliation report is
+/// asserted; assert a clean compile once it does.
 #[test]
 fn unannotated_generic_trait_static_fn_whose_body_passes_its_type_param_through_warns() {
     let module = compile_source("trait Passes { fn id<T>(x: T) { x } }\n");
@@ -485,9 +486,9 @@ structure def Rod : Tagged { param d : Length = 5mm }
 
 /// A conformer's body scope is built by `compile_assoc_function`, a separate
 /// path from free fns, and the exactness walk must still recognise the params
-/// minted under it. Trait signature resolution rejects the fn's own type param,
-/// so the fixture also carries an unrelated Error: only the reconciliation report
-/// is asserted.
+/// minted under it. Until #7866 lands, trait signature resolution rejects the
+/// fn's own type param, so the fixture also carries an unrelated Error and only
+/// the reconciliation report is asserted; assert a clean compile once it does.
 #[test]
 fn conformer_default_generic_fn_whose_body_passes_its_type_param_through_warns() {
     let module = compile_source(
