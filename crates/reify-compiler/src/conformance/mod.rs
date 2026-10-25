@@ -2194,8 +2194,8 @@ fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
 /// RAII guard that pops the top entry from an in-flight Vec when dropped.
 ///
 /// Ensures the `push`–`pop` invariant around the two recursive calls in
-/// [`RealizationLetEnv::lookup`] — `infer_traits_for_op_in_env` on the
-/// realization arm and `infer_traits_for_expr_in_env` on the value_cells
+/// [`RealizationLetEnv::resolve_uncached`] — `infer_traits_for_op_in_env` on
+/// the realization arm and `infer_traits_for_expr_in_env` on the value_cells
 /// fallback — is upheld even if the inner call panics.
 /// Used only within `RealizationLetEnv::lookup`.
 struct InFlightGuard<'a> {
@@ -2295,6 +2295,17 @@ const MAX_SIBLING_CHASE_DEPTH: usize = 256;
 /// sibling-let chain recurses once per hop, so the same Vec's LENGTH is
 /// additionally bounded by [`MAX_SIBLING_CHASE_DEPTH`] — see that constant for
 /// why it is not the compiler's `MAX_COMPILE_RECURSION_DEPTH`.
+///
+/// # Memoisation
+///
+/// Each id is resolved at most once per env, and an env lives for exactly one
+/// geometry-trait leaf check. That keeps chasing linear when a let names a
+/// sibling more than once: `union(translate(x, ..), translate(x, ..))` reaches
+/// `x` twice per hop, so an unmemoised chase is exponential in chain length. A
+/// result computed while a cycle or depth cut fired lower in the stack is
+/// memoised too, because declining it re-opens the exponential under the cut;
+/// only the guards' own `None`s are not. Pinned by the `fan_out_*` and
+/// `cyclic_fan_out_*` tests in `geometry_traits_sibling_chase_tests.rs`.
 struct RealizationLetEnv<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
     /// In-flight visited set used to terminate cycles on both lookup paths
@@ -2305,32 +2316,23 @@ struct RealizationLetEnv<'a> {
     /// `Vec` (not `HashSet`) because typical recursion depth is 1–4; a linear
     /// scan is faster than hash overhead at this size, and avoids a new dep.
     in_flight: RefCell<Vec<ValueCellId>>,
+    /// Every completed resolution, keyed by id; see `# Memoisation`.
+    memo: RefCell<HashMap<ValueCellId, Option<InferredTraits>>>,
 }
 
-impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
-    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
-        let template = self.templates.get(id.entity.as_str())?;
+impl<'a> RealizationLetEnv<'a> {
+    fn new(templates: &'a HashMap<String, &'a TopologyTemplate>) -> Self {
+        Self {
+            templates,
+            in_flight: RefCell::new(Vec::new()),
+            memo: RefCell::new(HashMap::new()),
+        }
+    }
 
-        // Cycle guard: if `id` is already being resolved on the current call
-        // stack, return None. Both arms below recurse back into `lookup`, so
-        // the check and the RAII guard sit above both. The caller's
-        // `unwrap_or(InferredTraits::all())` converts None into the safe
-        // default, so a cyclic sibling-let pair or forward-referencing IR
-        // yields `all()` rather than a stack overflow.
-        //
-        // Depth guard: `in_flight.len()` IS the current chase depth, so the
-        // same Vec bounds an acyclic-but-long chain, which the cycle check
-        // above cannot see. Same `None` → `all()` collapse.
-        if self.in_flight.borrow().len() >= MAX_SIBLING_CHASE_DEPTH {
-            return None;
-        }
-        if self.in_flight.borrow().iter().any(|p| p == id) {
-            return None;
-        }
-        self.in_flight.borrow_mut().push(id.clone());
-        let _guard = InFlightGuard {
-            stack: &self.in_flight,
-        };
+    /// Resolve `id` from its template, with no memo and no guards; `lookup`
+    /// supplies both around this call.
+    fn resolve_uncached(&self, id: &ValueCellId) -> Option<InferredTraits> {
+        let template = self.templates.get(id.entity.as_str())?;
 
         // Geometry-let path: realization with matching name. Its op-array may
         // carry `GeomRef::Sub(sibling)` operands, resolved through the env.
@@ -2363,7 +2365,7 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
             // ValueRef nested inside a non-geometry let (e.g. a chained let
             // whose default_expr references a geometry binding) is resolved via
             // the env rather than silently safe-defaulting to all(). The
-            // in-flight guard above terminates any cycle in well-formed or
+            // in-flight guard in `lookup` terminates any cycle in well-formed or
             // malformed IR before a stack overflow can occur.
             let expr = cell.default_expr.as_ref()?;
             let result = infer_traits_for_expr_in_env(expr, self);
@@ -2371,6 +2373,40 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
         }
 
         None
+    }
+}
+
+impl LetBindingEnv for RealizationLetEnv<'_> {
+    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
+        let memoised = self.memo.borrow().get(id).copied();
+        if let Some(resolved) = memoised {
+            return resolved;
+        }
+
+        // Cycle guard: if `id` is already being resolved on the current call
+        // stack, return None. Both arms of `resolve_uncached` recurse back into
+        // `lookup`, so the check and the RAII guard sit above both. The caller's
+        // `unwrap_or(InferredTraits::all())` converts None into the safe
+        // default, so a cyclic sibling-let pair or forward-referencing IR
+        // yields `all()` rather than a stack overflow.
+        //
+        // Depth guard: `in_flight.len()` IS the current chase depth, so the
+        // same Vec bounds an acyclic-but-long chain, which the cycle check
+        // above cannot see. Same `None` → `all()` collapse.
+        if self.in_flight.borrow().len() >= MAX_SIBLING_CHASE_DEPTH {
+            return None;
+        }
+        if self.in_flight.borrow().iter().any(|p| p == id) {
+            return None;
+        }
+        self.in_flight.borrow_mut().push(id.clone());
+        let _guard = InFlightGuard {
+            stack: &self.in_flight,
+        };
+
+        let resolved = self.resolve_uncached(id);
+        self.memo.borrow_mut().insert(id.clone(), resolved);
+        resolved
     }
 }
 
@@ -2470,10 +2506,7 @@ fn check_leaf_trait_conformance(
             _ => None,
         };
         if let Some(trait_kind) = geom_trait {
-            let env = RealizationLetEnv {
-                templates: ctx.registries.templates,
-                in_flight: RefCell::new(Vec::new()),
-            };
+            let env = RealizationLetEnv::new(ctx.registries.templates);
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
                 // CARVE-OUT (task 5302 α): these two geometry-trait emit sites
@@ -6737,8 +6770,6 @@ mod tests {
     /// outer `lookup` wraps in `Some`.
     #[test]
     fn lookup_self_referential_let_returns_safe_default_without_overflow() {
-        use std::cell::RefCell;
-
         // let g : Real = ValueRef(g)  — direct self-reference
         let g_id = ValueCellId::new("E", "g");
         let template = minimal_template("E", vec![let_cell_with_ref(g_id.clone(), g_id.clone())]);
@@ -6746,10 +6777,7 @@ mod tests {
         let mut templates = HashMap::new();
         templates.insert("E".to_string(), &template);
 
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
+        let env = RealizationLetEnv::new(&templates);
 
         assert_eq!(
             env.lookup(&g_id),
@@ -6767,8 +6795,6 @@ mod tests {
     /// `Some(InferredTraits::all())`.
     #[test]
     fn lookup_chained_cycle_let_returns_safe_default_without_overflow() {
-        use std::cell::RefCell;
-
         // let g : Real = ValueRef(h)
         // let h : Real = ValueRef(g)
         let g_id = ValueCellId::new("E", "g");
@@ -6784,10 +6810,7 @@ mod tests {
         let mut templates = HashMap::new();
         templates.insert("E".to_string(), &template);
 
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
+        let env = RealizationLetEnv::new(&templates);
 
         assert_eq!(
             env.lookup(&g_id),
@@ -6817,8 +6840,6 @@ mod tests {
     /// returns `combine_difference(all(), all()) = bounded_only()`.
     #[test]
     fn lookup_chained_noncyclic_let_propagates_terminal_traits() {
-        use std::cell::RefCell;
-
         // box_expr: FunctionCall("box", [], Geometry) → InferredTraits::all()
         let box_expr = CompiledExpr {
             kind: CompiledExprKind::FunctionCall {
@@ -6866,10 +6887,7 @@ mod tests {
         let mut templates = HashMap::new();
         templates.insert("E".to_string(), &template);
 
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
+        let env = RealizationLetEnv::new(&templates);
 
         assert_eq!(
             env.lookup(&g_id),
