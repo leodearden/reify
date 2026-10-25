@@ -277,7 +277,7 @@ fn collect_cache_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         };
         for entry in read.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 stack.push(path);
             } else if matches!(
                 path.extension().and_then(|s| s.to_str()),
