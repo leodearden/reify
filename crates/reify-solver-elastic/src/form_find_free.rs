@@ -2096,7 +2096,7 @@ mod tests {
         );
     }
 
-    // ---- GroupRatios-mode group-spec guards (seed_densities) ----
+    // ---- GroupRatios-mode group-spec guards (GroupSpec::new) ----
 
     #[test]
     fn group_ratios_zero_seed_ratio_is_a_zero_seed() {
@@ -2111,7 +2111,9 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { group: 1 }),
+            FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
+                GroupSpecDefect::ZeroSeed { group: 1 }
+            )),
         );
     }
 
@@ -2128,7 +2130,9 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup),
+            FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
+                GroupSpecDefect::UnseededReferenceGroup
+            )),
         );
     }
 
@@ -2147,7 +2151,9 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { member: 0 }),
+            FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
+                GroupSpecDefect::UnseededGroup { member: 0 }
+            )),
         );
     }
 
@@ -2166,7 +2172,9 @@ mod tests {
         };
         assert_eq!(
             form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-            FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember),
+            FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
+                GroupSpecDefect::GroupIdsNotPerMember
+            )),
         );
     }
 

@@ -603,7 +603,9 @@ fn a_malformed_group_spec_names_its_defect_on_both_free_entries() {
             },
             ..FdFreeCase::explicit()
         };
-        let expected = Err(FreeFormError::MalformedGroupSpec(defect));
+        let expected = Err(FreeFormError::Input(
+            ForceDensityInputError::MalformedGroupSpec(defect),
+        ));
         assert_eq!(case.line_only(), expected, "line-only");
         assert_eq!(case.with_surfaces(), expected, "with surfaces");
     }
@@ -623,8 +625,8 @@ fn a_group_spec_with_no_seeds_has_an_unseeded_reference_group() {
         sigma: Vec::new(),
         ..FdFreeCase::explicit()
     };
-    let expected = Err(FreeFormError::MalformedGroupSpec(
-        GroupSpecDefect::UnseededReferenceGroup,
+    let expected = Err(FreeFormError::Input(
+        ForceDensityInputError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup),
     ));
     assert_eq!(case.line_only(), expected, "line-only");
     assert_eq!(case.with_surfaces(), expected, "with surfaces");
