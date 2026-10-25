@@ -121,6 +121,14 @@ pub enum ForceDensityInputError {
         /// Position in `surfaces`.
         surface: usize,
     },
+    /// The warp direction of `surfaces[surface]` is zero or non-finite, so it
+    /// fixes no material frame on any triangle. Distinct from the solver-time
+    /// [`AnisoFormFindError::DegenerateMaterialFrame`], where a valid warp
+    /// direction is parallel to a triangle's normal at an iterate.
+    DegenerateMaterialFrame {
+        /// Position in `surfaces`.
+        surface: usize,
+    },
     /// `surfaces[surface]` has collinear / zero-area corners in the input geometry.
     DegenerateTriangle {
         /// Position in `surfaces`.
@@ -133,6 +141,29 @@ pub enum ForceDensityInputError {
         /// Position in that input: the node, for [`RealInput::NodeCoordinate`].
         index: usize,
     },
+}
+
+/// Why one surface's prestress is inadmissible on its own, before any geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceStressDefect {
+    /// A stress is not a finite tension (`σ ≤ 0`, NaN or infinite).
+    NonTension,
+    /// The warp direction is zero or non-finite, so it fixes no material frame.
+    DegenerateMaterialFrame,
+}
+
+impl SurfaceStressDefect {
+    /// This defect as the input error of `surfaces[surface]`.
+    fn at(self, surface: usize) -> ForceDensityInputError {
+        match self {
+            SurfaceStressDefect::NonTension => {
+                ForceDensityInputError::NonTensionSurfaceStress { surface }
+            }
+            SurfaceStressDefect::DegenerateMaterialFrame => {
+                ForceDensityInputError::DegenerateMaterialFrame { surface }
+            }
+        }
+    }
 }
 
 /// Reason an anchored form-find solve is infeasible. Surfaced by the trampoline
@@ -180,15 +211,15 @@ pub struct FormFindSolve {
 
 // ── The validated force-density problem (solver-crates-layering D1, leaf η) ──
 
-/// A per-triangle membrane stencil: the prestress it takes, its tension rule
+/// A per-triangle membrane stencil: the prestress it takes, its admission rule
 /// and its local force-density matrix.
 pub(crate) trait TriangleStencil {
     /// Per-triangle prestress.
     type Stress;
     /// Why no local matrix exists at a geometry.
     type Error;
-    /// Whether `stress` is a finite tension; NaN and ±inf never are.
-    fn is_tension(stress: &Self::Stress) -> bool;
+    /// `Ok` when `stress` is admissible on its own, before any geometry.
+    fn check_stress(stress: &Self::Stress) -> Result<(), SurfaceStressDefect>;
     /// The triangle's symmetric, zero-row-sum local 3×3 at corners
     /// `pi, pj, pk`, rows/cols in corner order.
     fn local_matrix(
@@ -205,8 +236,12 @@ pub(crate) enum IsotropicStencil {}
 impl TriangleStencil for IsotropicStencil {
     type Stress = f64;
     type Error = ZeroAreaTriangle;
-    fn is_tension(stress: &f64) -> bool {
-        is_finite_tension(*stress)
+    fn check_stress(stress: &f64) -> Result<(), SurfaceStressDefect> {
+        if is_finite_tension(*stress) {
+            Ok(())
+        } else {
+            Err(SurfaceStressDefect::NonTension)
+        }
     }
     fn local_matrix(
         pi: [f64; 3],
@@ -224,8 +259,8 @@ pub(crate) enum AnisotropicStencil {}
 impl TriangleStencil for AnisotropicStencil {
     type Stress = AnisotropicSurfaceStress;
     type Error = AnisoFormFindError;
-    fn is_tension(stress: &AnisotropicSurfaceStress) -> bool {
-        is_finite_tension(stress.sigma_warp) && is_finite_tension(stress.sigma_weft)
+    fn check_stress(stress: &AnisotropicSurfaceStress) -> Result<(), SurfaceStressDefect> {
+        stress.check()
     }
     fn local_matrix(
         pi: [f64; 3],
@@ -262,8 +297,8 @@ impl From<ZeroAreaTriangle> for AnisoFormFindError {
 
 /// A force-density problem whose inputs satisfy the input contract: lengths
 /// agree, every node index is in range, every density is admitted by its kind,
-/// every surface stress is a finite tension, every node coordinate is finite
-/// and no input triangle is degenerate. Only
+/// every surface stress is admitted by its stencil, every node coordinate is
+/// finite and no input triangle is degenerate. Only
 /// [`ForceDensityProblem::new`] builds one, so solvers index it unguarded.
 pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil> {
     nodes: &'a [[f64; 3]],
@@ -277,7 +312,7 @@ pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil>
 
 impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
     /// Checks the input contract; the first failure wins, in the order
-    /// lengths, member endpoints, signs, surface count, surface tension,
+    /// lengths, member endpoints, signs, surface count, surface stresses,
     /// surface corners, anchors, node coordinates, input-triangle degeneracy.
     pub(crate) fn new(
         nodes: &'a [[f64; 3]],
@@ -303,8 +338,8 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         if surfaces.len() != surface_stresses.len() {
             return Err(ForceDensityInputError::SurfaceCountMismatch);
         }
-        if let Some(surface) = surface_stresses.iter().position(|s| !S::is_tension(s)) {
-            return Err(ForceDensityInputError::NonTensionSurfaceStress { surface });
+        for (surface, stress) in surface_stresses.iter().enumerate() {
+            S::check_stress(stress).map_err(|defect| defect.at(surface))?;
         }
         for (surface, &(i, j, k)) in surfaces.iter().enumerate() {
             for index in [i, j, k] {
@@ -879,14 +914,49 @@ fn triangle_area_vector(
 /// The stress tensor `S = diag(σ_w, σ_f)` is expressed in a per-triangle
 /// in-plane material frame: `e₁` is the normalised in-plane projection of
 /// `warp_dir` onto the triangle plane, `e₂ = n × e₁` (`n` = unit normal).
+///
+/// [`AnisotropicSurfaceStress::new`] validates a stress; every form-find entry
+/// re-checks each stress it is given by the same rule.
 #[derive(Debug, Clone)]
 pub struct AnisotropicSurfaceStress {
-    /// Warp direction hint (any non-zero vector; projected in-plane per triangle).
+    /// Warp direction hint (any finite non-zero vector; projected in-plane per
+    /// triangle).
     pub warp_dir: [f64; 3],
-    /// Warp (e₁) surface stress `σ_w > 0`.
+    /// Warp (e₁) surface stress, a finite `σ_w > 0`.
     pub sigma_warp: f64,
-    /// Weft (e₂) surface stress `σ_f > 0`.
+    /// Weft (e₂) surface stress, a finite `σ_f > 0`.
     pub sigma_weft: f64,
+}
+
+impl AnisotropicSurfaceStress {
+    /// A stress of finite tensions `sigma_warp`, `sigma_weft` along a finite
+    /// non-zero `warp_dir`; otherwise the [`SurfaceStressDefect`].
+    pub fn new(
+        warp_dir: [f64; 3],
+        sigma_warp: f64,
+        sigma_weft: f64,
+    ) -> Result<Self, SurfaceStressDefect> {
+        let stress = Self {
+            warp_dir,
+            sigma_warp,
+            sigma_weft,
+        };
+        stress.check()?;
+        Ok(stress)
+    }
+
+    /// The one anisotropic admission rule: both stresses finite tensions, and
+    /// a warp direction whose squared norm is positive and finite.
+    fn check(&self) -> Result<(), SurfaceStressDefect> {
+        if !(is_finite_tension(self.sigma_warp) && is_finite_tension(self.sigma_weft)) {
+            return Err(SurfaceStressDefect::NonTension);
+        }
+        let norm_sq = v_dot(self.warp_dir, self.warp_dir);
+        if !(norm_sq > 0.0 && norm_sq.is_finite()) {
+            return Err(SurfaceStressDefect::DegenerateMaterialFrame);
+        }
+        Ok(())
+    }
 }
 
 /// Reason an anisotropic anchored form-find solve is infeasible.

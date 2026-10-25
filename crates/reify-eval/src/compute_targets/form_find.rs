@@ -328,6 +328,12 @@ fn build_result(solve: &FormFindSolve) -> Value {
 const INDEX_OUT_OF_RANGE: &str = "index out of range — a member endpoint, anchor or \
      surface corner indexes past the node list";
 
+/// The cause shared by [`describe`] and [`describe_free`] for an anisotropic
+/// surface whose warp direction fixes no frame — unreachable on these isotropic
+/// trampolines.
+const DEGENERATE_MATERIAL_FRAME: &str = "degenerate material frame — a surface's warp \
+     direction is zero or non-finite, so it fixes no warp/weft axes";
+
 /// The cause shared by [`describe`] and [`describe_free`] for a NaN or
 /// infinite input value, naming where it was read.
 fn describe_non_finite(what: RealInput, index: usize) -> String {
@@ -380,6 +386,9 @@ fn describe(e: FormFindError) -> Cow<'static, str> {
         }
         FormFindError::Input(ForceDensityInputError::NonFinite { what, index }) => {
             describe_non_finite(what, index).into()
+        }
+        FormFindError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
+            DEGENERATE_MATERIAL_FRAME.into()
         }
     }
 }
@@ -636,6 +645,9 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
         }
         FreeFormError::Input(ForceDensityInputError::NonFinite { what, index }) => {
             describe_non_finite(what, index).into()
+        }
+        FreeFormError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
+            DEGENERATE_MATERIAL_FRAME.into()
         }
     }
 }
