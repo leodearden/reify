@@ -32,6 +32,8 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
+mod ignore_attribute;
+
 use crate::ptodo_promise::is_owner_position;
 use crate::scan_util::{contains_word, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
