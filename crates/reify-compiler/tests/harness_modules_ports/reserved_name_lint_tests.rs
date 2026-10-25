@@ -24,6 +24,20 @@ fn reserved_name_warnings<'a>(
         .collect()
 }
 
+/// Collect `ReservedTypeName` diagnostics from a compiled module at ANY
+/// severity, so a caller can count them and then assert the grading
+/// separately — a wrongly-graded emission then fails on the severity
+/// assertion rather than on a puzzling zero count.
+fn reserved_type_name_diagnostics(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<&reify_core::Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ReservedTypeName))
+        .collect()
+}
+
 /// Step-3 (RED): compiling `enum Direction { In, Out }` must emit exactly
 /// one `ReservedTypeName` warning because `Direction` is a builtin datum type.
 ///
@@ -338,21 +352,19 @@ structure Beam {
 //
 // `Orientation`/`Orientation3` resolve to builtin `Type::Orientation(3)`,
 // so like Frame/Direction above they shadow same-named user declarations.
-// The rationale (defect chain, shadowing trade, arity) lives in the
-// "Orientation type-name resolution" header of
+// The rationale lives in the "Orientation type-name resolution" header of
 // `crates/reify-compiler/src/type_resolution.rs`'s `mod tests`, next to
-// the pure resolver tests.
+// the pure resolver tests that pin the use-site half of the shadowing.
 
-/// The declaration-site half of the shadowing trade documented in
-/// type_resolution.rs's "Orientation type-name resolution" header (trade
-/// 2): each row asserts BOTH that the declaration draws exactly one
+/// The declaration-site half of the shadowing: a same-named user
+/// declaration keeps compiling, but every annotation naming it resolves to
+/// the builtin. Each row asserts BOTH that the declaration draws exactly one
 /// `ReservedTypeName` warning AND that the annotation still resolves to the
 /// builtin — the lint is advisory, so it must not let the user declaration
 /// win in type position. The Orientation counterpart of
 /// `structure_named_frame_emits_reserved_type_name_warning` and
 /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`
-/// above; the use-site half is pinned by the resolver unit tests in
-/// type_resolution.rs.
+/// above.
 #[test]
 fn orientation_declaration_draws_reserved_type_name_warning() {
     for (label, source) in [
@@ -368,10 +380,8 @@ fn orientation_declaration_draws_reserved_type_name_warning() {
         ),
         // The enum row is NOT redundant with the two above: an enum name
         // reaches type position through `resolve_enum_type`, a chain
-        // separate from the alias-registry / structure-name arms, so its
-        // shadowing is only assertable here (the arm comment claims all
-        // three declaration forms; this is what stops the enum third of
-        // that claim from being prose alone).
+        // separate from the alias-registry / structure-name arms, so the
+        // builtin's shadowing of an enum is only assertable here.
         (
             "enum Orientation { A, B }",
             "enum Orientation { A, B }\n\
@@ -384,15 +394,21 @@ fn orientation_declaration_draws_reserved_type_name_warning() {
         ),
     ] {
         let module = compile_source_with_stdlib(source);
-        let warnings = warnings_only(&module);
-        let reserved = reserved_name_warnings(&warnings);
+        let reserved = reserved_type_name_diagnostics(&module);
         assert_eq!(
             reserved.len(),
             1,
             "{label}: declaring a type named after the new builtin must draw \
-             exactly one W_RESERVED_TYPE_NAME warning (the predicate is \
+             exactly one W_RESERVED_TYPE_NAME diagnostic (the predicate is \
              `resolve_type_name(name).is_some()`).\nsource:\n{source}\n\
              reserved: {reserved:#?}"
+        );
+        assert_eq!(
+            reserved[0].severity,
+            Severity::Warning,
+            "{label}: W_RESERVED_TYPE_NAME must be graded Warning — the lint is \
+             advisory; got: {:?}",
+            reserved[0].severity
         );
 
         // The lint is ADVISORY: the builtin must still win in type position.
@@ -412,15 +428,10 @@ fn orientation_declaration_draws_reserved_type_name_warning() {
 
     // NON-VACUITY control: a structure whose name has no builtin arm must
     // draw NO ReservedTypeName warning, so the assertions above cannot pass
-    // by the lint firing indiscriminately. Filtered on the code alone, at ANY
-    // severity — unlike the per-row count above, which is warnings-only — so
-    // a wrongly-graded emission cannot slip past the control.
+    // by the lint firing indiscriminately. Counted at ANY severity, like the
+    // per-row count above, so a wrongly-graded emission cannot slip past it.
     let control = compile_source_with_stdlib("structure def Rotor {}");
-    let control_reserved: Vec<_> = control
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ReservedTypeName))
-        .collect();
+    let control_reserved = reserved_type_name_diagnostics(&control);
     assert!(
         control_reserved.is_empty(),
         "control: `structure def Rotor` binds no builtin name and must draw NO \
@@ -428,11 +439,11 @@ fn orientation_declaration_draws_reserved_type_name_warning() {
     );
 }
 
-/// Annotation-surface coverage end to end through a real compile: the
-/// resolver unit tests in type_resolution.rs call the resolver directly and
-/// the integration companions reach it only through a joint's `with` DOF
-/// record, so a regression confined to ordinary annotation positions would
-/// otherwise go unnoticed.
+/// Annotation-surface coverage end to end through a real compile: the pure
+/// resolver tests call the resolver directly and the joint-library
+/// integration tests reach it only through a joint's `with` DOF record, so a
+/// regression confined to ordinary annotation positions would otherwise go
+/// unnoticed.
 ///
 /// The resolved-type oracle is what makes the alias and `Orientation<3>`
 /// rows mean anything: zero-errors alone stays green if either resolves to
@@ -457,9 +468,9 @@ fn orientation_annotations_compile_clean() {
         // The documented spelling: docs/reify-language-spec.md and
         // docs/reify-stdlib-reference.md both write `Orientation<3>` /
         // `Orientation<N>`, so a user copying either lands on the
-        // argument-discarding path (Arity, in type_resolution.rs's
-        // Orientation header) rather than on a diagnostic. On record here,
-        // not left emergent.
+        // argument-discarding path (any N yields `Type::Orientation(3)`, as
+        // `Frame<7>` yields `Type::Frame(3)`) rather than on a diagnostic. On
+        // record here, not left emergent.
         (
             "documented parameterised spelling — the arg is discarded",
             "structure S {\n    param o : Orientation<3> = orient_identity()\n}",
@@ -488,9 +499,9 @@ fn orientation_annotations_compile_clean() {
     }
 
     // NON-VACUITY control: a zero-errors oracle proves something only where
-    // an UNRESOLVABLE name in the same position is loud. It is, in `param`
-    // position — but not in the joint `with` DOF position (fact 1 of that
-    // header).
+    // an UNRESOLVABLE name in the same position is loud. It is loud in
+    // `param` position (unlike a joint `with` DOF slot, where it degrades
+    // silently to `Type::Error`).
     let control =
         compile_source_with_stdlib("structure S {\n    param o : Blorp = orient_identity()\n}");
     let control_errors = errors_only(&control);

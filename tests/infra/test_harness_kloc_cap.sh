@@ -375,8 +375,8 @@ WARN_PCT=90
 # the warn line. Its rule (a) split is #9402. #9398 moves the root to
 # harness_syntax/main.rs and must re-path this row in the same diff.
 #
-# harness_modules_ports.rs measured 18063/20000 = 90% at task #7196 (root 90 +
-# 17582 across 30 module files + 391 external); bare main was already 17893,
+# harness_modules_ports.rs measured 18074/20000 = 90% at task #7196 (root 90 +
+# 17593 across 30 module files + 391 external); bare main was already 17893,
 # 107 under the warn line. Its rule (a) split is #9503. #9400 moves the root to
 # harness_modules_ports/main.rs and must re-path this row in the same diff.
 _KLOC_WARN_KNOWN=(
