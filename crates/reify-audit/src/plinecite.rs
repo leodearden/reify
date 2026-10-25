@@ -457,14 +457,15 @@ mod tests {
 
     #[test]
     fn the_esc_anchor_composes_with_every_lead() {
-        assert_eq!(
-            line_cites("// (units.ri esc-4026-121 ~80)"),
-            vec!["units.ri esc-4026-121 ~80"]
-        );
-        assert_eq!(
-            line_cites("// units.ri esc-4026-121:~80"),
-            vec!["units.ri esc-4026-121:~80"]
-        );
+        for lead in LINE_NUMBER_LEADS {
+            let lead = std::str::from_utf8(lead).expect("every lead is ASCII");
+            let cite = format!("units.ri esc-4026-121{lead}80");
+            assert_eq!(
+                line_cites(&format!("// see {cite}-91 precedent")),
+                vec![cite.as_str()],
+                "the esc anchor followed by {lead:?}"
+            );
+        }
     }
 
     #[test]
