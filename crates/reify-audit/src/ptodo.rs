@@ -35,9 +35,9 @@
 mod ignore_attribute;
 
 use crate::ptodo_promise::is_owner_position;
+use ignore_attribute::{IgnoreForm, extract_ignore_reason, ignore_attr};
 use crate::scan_util::{contains_word, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
-use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 // §8.4 terminal set and the §6.3 membership test now live in the shared
@@ -99,34 +99,6 @@ fn find_macro_stub(line: &str) -> bool {
         return false;
     }
     line.contains("todo!(") || line.contains("unimplemented!(")
-}
-
-/// The two §8.1 `#[ignore]` shapes the structural lane distinguishes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IgnoreForm {
-    /// `#[ignore]` — no reason string (α emits `bare-ignore`).
-    Bare,
-    /// `#[ignore = "..."]` — carries a reason (α defers the reason policy to γ).
-    WithReason,
-}
-
-/// §8.1 ignore attributes (`.rs` only — gating in [`scan_file`]): a trimmed
-/// line that starts with `#[ignore`. `///`/`//!` doc-comment prose mentioning
-/// the attribute does not fire. `]` immediately after → `Bare`; `=` →
-/// `WithReason`.
-fn ignore_attr(line: &str) -> Option<IgnoreForm> {
-    let t = line.trim_start();
-    if t.starts_with("///") || t.starts_with("//!") {
-        return None;
-    }
-    let rest = t.strip_prefix("#[ignore")?.trim_start();
-    if rest.starts_with(']') {
-        Some(IgnoreForm::Bare)
-    } else if rest.starts_with('=') {
-        Some(IgnoreForm::WithReason)
-    } else {
-        None
-    }
 }
 
 /// §8.1 δ-A anchor (`.rs` only — gating in [`scan_file`]): an
@@ -2557,20 +2529,6 @@ mod tests {
         assert!(!has_deferral_prose("PENDING"));
         assert!(has_deferral_prose("blocked on"));
         assert!(!has_deferral_prose("Blocked on"));
-    }
-
-    // -------------------------------------------------------------------
-    // §8.1 marker recognition — ignore attributes (.rs)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn ignore_attr_forms() {
-        assert_eq!(ignore_attr("#[ignore]"), Some(IgnoreForm::Bare));
-        assert_eq!(ignore_attr("#[ignore = \"r\"]"), Some(IgnoreForm::WithReason));
-        // Indented bare form still recognised (trimmed-line start).
-        assert_eq!(ignore_attr("    #[ignore]"), Some(IgnoreForm::Bare));
-        // Doc-comment prose mentioning the attribute must NOT fire.
-        assert_eq!(ignore_attr("/// #[ignore]"), None);
     }
 
     // -------------------------------------------------------------------

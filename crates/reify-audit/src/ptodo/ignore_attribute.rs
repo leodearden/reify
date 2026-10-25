@@ -1,3 +1,85 @@
+//! §8.1 `#[ignore]`-attribute line parsing for PTODO: which shape an attribute
+//! line has ([`ignore_attr`]) and the reason string a reason-bearing one
+//! carries ([`extract_ignore_reason`]). Both skip doc-comment prose through one
+//! predicate ([`is_doc_comment_line`]), so they agree on which lines are
+//! attributes at all.
+
+/// The two §8.1 `#[ignore]` shapes the structural lane distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IgnoreForm {
+    /// `#[ignore]` — no reason string (α emits `bare-ignore`).
+    Bare,
+    /// `#[ignore = "..."]` — carries a reason (α defers the reason policy to γ).
+    WithReason,
+}
+
+/// `///` (outer) or `//!` (inner) doc-comment line, after leading whitespace.
+/// Prose there that mentions the attribute is not an attribute.
+fn is_doc_comment_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("///") || t.starts_with("//!")
+}
+
+/// §8.1 ignore attributes (`.rs` only — the gating lives in the caller,
+/// `ptodo::scan_file`): a trimmed line that starts with `#[ignore`.
+/// `///`/`//!` doc-comment prose mentioning the attribute does not fire. `]`
+/// immediately after → `Bare`; `=` → `WithReason`.
+pub(super) fn ignore_attr(line: &str) -> Option<IgnoreForm> {
+    if is_doc_comment_line(line) {
+        return None;
+    }
+    let rest = line.trim_start().strip_prefix("#[ignore")?.trim_start();
+    if rest.starts_with(']') {
+        Some(IgnoreForm::Bare)
+    } else if rest.starts_with('=') {
+        Some(IgnoreForm::WithReason)
+    } else {
+        None
+    }
+}
+
+/// Extract the reason string from a single `#[ignore = "..."]` attribute line.
+///
+/// Returns `Some(reason)` for `#[ignore = "reason"]` and related non-canonical
+/// forms (optional whitespace around `=`, e.g. `#[ignore="reason"]`), where
+/// `reason` is the slice between the opening `"` and the next raw `"` byte.
+/// Returns `None` for:
+/// - bare `#[ignore]` attributes (no reason string)
+/// - non-`#[ignore]` lines
+/// - `///` and `//!` doc-comment lines (prose mentions of the attribute)
+///
+/// The parse mirrors [`ignore_attr`]'s trim-based approach so both functions
+/// agree on which forms carry a reason — closing the silent-escape hole where
+/// a hand-edited `#[ignore="blocked"]` (no spaces) would be classified
+/// `WithReason` by `ignore_attr` but yield `None` here.
+///
+/// **Note:** escaped quotes (`\"`) inside the reason are not handled — the
+/// reason is truncated at the first raw `"`. No current source file uses
+/// escaped quotes inside `#[ignore]` reasons.
+///
+/// This is the line-level reason extractor of PTODO's §8.3 γ lane, and it sits
+/// beside [`ignore_attr`] in PTODO. The format-vs-liveness split: PTODO owns
+/// extraction and citation-liveness (`has_canonical_cite`/`resolve_liveness`);
+/// `reify-test-support` keeps the format checks (`check_ignore_reasons`).
+pub(super) fn extract_ignore_reason(line: &str) -> Option<&str> {
+    // Skip doc-comment lines (`///`, `//!`) — prose mentions of the attribute
+    // inside doc comments must not fire, the same skip `ignore_attr` applies.
+    if is_doc_comment_line(line) {
+        return None;
+    }
+    // Mirror ignore_attr's trim-based parse: strip `#[ignore`, consume optional
+    // whitespace, `=`, optional whitespace, then the opening `"`.  This handles
+    // canonical `#[ignore = "..."]` and non-canonical `#[ignore="..."]` alike.
+    let t = line.trim_start();
+    let rest = t.strip_prefix("#[ignore")?;
+    let rest = rest.trim_start().strip_prefix('=')?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    // The reason is everything up to the first raw `"` (escaped-quote
+    // limitation documented in the function doc comment above).
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::{IgnoreForm, extract_ignore_reason, ignore_attr};
