@@ -1,13 +1,14 @@
 //! PLINECITE — hard line cites in source comments.
 //!
-//! A comment that cites code as `<file>.rs:<line>` or `<file>.ri:<line>`
-//! rots silently: any edit above the target moves it and nothing re-checks
-//! the number. PLINECITE reports each such cite so the author cites the
-//! enclosing symbol instead.
+//! A comment that cites a `.rs` or `.ri` file by line number (`cache.rs:617`,
+//! or any other lead-in in `LINE_NUMBER_LEADS`) rots silently: any edit above
+//! the target moves it and nothing re-checks the number. PLINECITE reports
+//! each such cite so the author cites the enclosing symbol instead.
 //!
 //! It reports and never certifies. The grammar (`line_cites`) is
-//! deliberately decline-only: prose, line-wrapped and string-literal cites go
-//! unseen, so a clean run does not prove a file free of line cites.
+//! deliberately decline-only: prefix prose (`line N of foo.rs`), line-wrapped
+//! and string-literal cites go unseen, so a clean run does not prove a file
+//! free of line cites.
 //!
 //! Every finding is [`Severity::Medium`], so the lane is report-only and
 //! exit-neutral. Kinds, carried as the summary prefix:
@@ -43,6 +44,11 @@ const EXCLUDED_PREFIXES: &[&str] = &["crates/reify-audit/"];
 /// The escalation anchor a cite may carry between its extension and its line
 /// number.
 const ESC_ANCHOR: &[u8] = b" esc-";
+
+/// The literal lead-ins a cite's line number may follow, each matched as
+/// written and followed directly by a digit — the closed set of
+/// `docs/prds/reify-audit-stale-line-cite-detector.md` §4.
+const LINE_NUMBER_LEADS: &[&[u8]] = &[b":", b":~", b" ~", b" (~", b" line ", b" lines "];
 
 /// Whether PLINECITE scans the tracked file `path` — the lane's single scope
 /// boundary: the bundled stdlib's `.ri` files, and every `.rs` under a
@@ -312,21 +318,30 @@ fn cite_at(bytes: &[u8], dot: usize, floor: usize) -> Option<(usize, usize)> {
 }
 
 /// Past the first digit run of the line number that follows an extension
-/// ending at `after`: either `:<digits>` or ` esc-<id>:<digits>`.
+/// ending at `after`: an optional ` esc-<id>` anchor, then one of
+/// [`LINE_NUMBER_LEADS`], then the digits.
 fn line_number_end(bytes: &[u8], after: usize) -> Option<usize> {
-    let rest = &bytes[after..];
-    let colon = if rest.starts_with(b":") {
-        after
-    } else if rest.starts_with(ESC_ANCHOR) {
-        let id_start = after + ESC_ANCHOR.len();
-        let id_end = run_end(bytes, id_start, |b| b.is_ascii_digit() || b == b'-');
-        (id_end > id_start && bytes.get(id_end) == Some(&b':')).then_some(id_end)?
-    } else {
+    let lead_start = esc_anchor_end(bytes, after).unwrap_or(after);
+    let rest = &bytes[lead_start..];
+    LINE_NUMBER_LEADS.iter().find_map(|lead| {
+        if !rest.starts_with(lead) {
+            return None;
+        }
+        let digits_start = lead_start + lead.len();
+        let digits_end = run_end(bytes, digits_start, |b| b.is_ascii_digit());
+        (digits_end > digits_start).then_some(digits_end)
+    })
+}
+
+/// Past the ` esc-<digits and hyphens>` anchor starting at `at`; `None` when
+/// there is none or its id is empty.
+fn esc_anchor_end(bytes: &[u8], at: usize) -> Option<usize> {
+    if !bytes[at..].starts_with(ESC_ANCHOR) {
         return None;
-    };
-    let digits_start = colon + 1;
-    let digits_end = run_end(bytes, digits_start, |b| b.is_ascii_digit());
-    (digits_end > digits_start).then_some(digits_end)
+    }
+    let id_start = at + ESC_ANCHOR.len();
+    let id_end = run_end(bytes, id_start, |b| b.is_ascii_digit() || b == b'-');
+    (id_end > id_start).then_some(id_end)
 }
 
 fn is_stem_byte(b: u8) -> bool {
@@ -397,6 +412,89 @@ mod tests {
             line_cites("// (units.ri esc-4026-121:80-91 precedent)"),
             vec!["units.ri esc-4026-121:80"]
         );
+    }
+
+    #[test]
+    fn a_tilde_lead_is_a_cite_reported_verbatim() {
+        assert_eq!(
+            line_cites("// The guards (graph.rs ~429, unfold.rs ~308)"),
+            vec!["graph.rs ~429", "unfold.rs ~308"]
+        );
+    }
+
+    #[test]
+    fn a_parenthesised_tilde_lead_is_a_cite() {
+        assert_eq!(
+            line_cites("// args lookup in entity.rs (~2726-2790):"),
+            vec!["entity.rs (~2726"]
+        );
+    }
+
+    #[test]
+    fn a_colon_tilde_lead_is_a_cite() {
+        assert_eq!(
+            line_cites("/// pre-pass (entity.rs:~531) and (guards.rs:~183)."),
+            vec!["entity.rs:~531", "guards.rs:~183"]
+        );
+    }
+
+    #[test]
+    fn line_and_lines_leads_are_cites() {
+        assert_eq!(
+            line_cites("/// The inline arm (lib.rs line 444) guards"),
+            vec!["lib.rs line 444"]
+        );
+        assert_eq!(
+            line_cites("/// (kernel.rs lines 178–215): x"),
+            vec!["kernel.rs lines 178"]
+        );
+        assert_eq!(
+            line_cites("// see units.ri line 12"),
+            vec!["units.ri line 12"]
+        );
+    }
+
+    #[test]
+    fn the_esc_anchor_composes_with_every_lead() {
+        for lead in LINE_NUMBER_LEADS {
+            let lead = std::str::from_utf8(lead).expect("every lead is ASCII");
+            let cite = format!("units.ri esc-4026-121{lead}80");
+            assert_eq!(
+                line_cites(&format!("// see {cite}-91 precedent")),
+                vec![cite.as_str()],
+                "the esc anchor followed by {lead:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn colon_and_spelled_cites_on_one_line_come_back_in_line_order() {
+        assert_eq!(
+            line_cites("// a.rs:1 then b.rs ~2 and c.rs line 3"),
+            vec!["a.rs:1", "b.rs ~2", "c.rs line 3"]
+        );
+    }
+
+    #[test]
+    fn spelled_near_misses_cite_nothing() {
+        for line in [
+            "// beam.rs (2)",
+            "// foo.rs ~ 12",
+            "// foo.rs~12",
+            "// foo.rs  ~12",
+            "// foo.rs, line 12",
+            "// foo.rs (line 12)",
+            "// foo.rs line ~12",
+            "// foo.rs line",
+            "// foo.rs lines of code",
+            "// foo.rs linear 3",
+            "// foo.rs ~",
+            "// foo.rs (~)",
+            "// foo.rs:~",
+            "// foo.rsx ~1",
+        ] {
+            assert_eq!(line_cites(line), NONE, "{line:?} carries no hard cite");
+        }
     }
 
     #[test]

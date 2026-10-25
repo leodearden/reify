@@ -3308,7 +3308,7 @@ structure Assembly {
             .await
             .unwrap();
 
-        // Should resolve to parts.ri line 0 (from editor content, not disk).
+        // Should resolve to parts.ri line 0 (from editor content, not disk). plinecite:allow — 0-based LSP position asserted below, in this test's in-memory parts.ri; not a code cite
         // Disk version doesn't have Plate, so this proves DocumentStore is used.
         let response = goto_result
             .expect("goto-def should resolve Plate from DocumentStore content, not disk");
