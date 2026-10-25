@@ -278,7 +278,7 @@ pub structure IdlerPulley {
 /// 2*groove_r == 1.06*rope_dia, so the rope is laid in RADIALLY (the departure
 /// tangent migrates axially across the band every revolution), and it leaves
 /// exactly half the swept section seated. The pin is a design choice, not a
-/// necessity: an oversize arc admits the rope across a band of land radii. The
+/// necessity: an oversize arc admits the rope across a range of land radii. The
 /// full argument is in dev_capstan.ri's Capstan doc. The wrap stays positive
 /// and zero-slip because both rope ends are ANCHORED to the drum.
 ///
@@ -292,8 +292,16 @@ pub structure IdlerPulley {
 /// drive's tangent planes and every hand-kept mirror of pitch_r unchanged.
 ///
 /// Sizing (D/d = 8): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
-/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
-/// groove band = lead·(active + dead turns) ≈ 88mm; helix angle ≈ 2.7°.
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → `active_turns` ≈ 8.62;
+/// helix angle ≈ 2.7°. Two DIFFERENT axial figures follow, each its own cell:
+///   - `band` = active_turns·lead ≈ 60.3mm — the departure tangent's migration
+///     over the full feed, i.e. what the fairlead collar tracks; CapstanUnit
+///     relays it as `band_stroke`;
+///   - `groove_len` = (active_turns + dead_total)·lead ≈ 88.3mm — the whole
+///     grooved extent, band plus the dead anchor wraps.
+/// dev_capstan.ri names a third, its shuttle's hand-set `Fairlead.stroke` (the
+/// band rounded up to a whole turn, 9·lead = 63mm). It has no counterpart here:
+/// this file's collar travel is derived from `band`, not hand-set.
 pub structure Capstan {
     param rope_dia    : Length = 6mm
     /// D/d ratio
@@ -343,8 +351,9 @@ pub structure Capstan {
     // The rope channel: a circular section of radius groove_r, posed normal to the
     // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
     // +Y) and stood off onto the helix start point at +seat_c, swept along the
-    // helical spine and re-centred on the band. The spine runs at the seat's ARC
-    // CENTRE — not at pitch_r, which is where the seated rope's centreline ends up.
+    // helical spine and re-centred on the drum mid-plane. The spine runs at the
+    // seat's ARC CENTRE — not at pitch_r, which is where the seated rope's
+    // centreline ends up.
     aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
     aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
