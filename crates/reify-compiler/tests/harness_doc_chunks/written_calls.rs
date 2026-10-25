@@ -3,17 +3,20 @@
 //!
 //! A call form is a lowercase name directly followed by a balanced `(…)` —
 //! either a call site or the head of a `fn` declaration — and its arity is the
-//! number of depth-0 arguments in that list (see [`count_parameters`]).
+//! number of depth-0 arguments in that list (see [`count_parameters`]). Text
+//! from `//` to the end of a line is a comment and is never read.
 //!
 //! # Limits
 //!
 //! - A `<` written WITHOUT spaces as a comparison (`x<lo`) is read as a
 //!   generic opener, so the separators after it go uncounted until its bracket
 //!   closes. Spaced comparisons (`x < lo`) are read correctly.
-//! - Brackets are counted as text: a bracket quoted inside a string literal is
-//!   counted like any other.
+//! - String literals are read as text: a bracket quoted inside one is counted
+//!   like any other, and a `//` inside one is read as the start of a comment.
+//! - A `/* … */` block comment is read as code, so a call written inside one is
+//!   read like any other.
 
-use crate::chunk_markdown::parse_fences;
+use crate::chunk_markdown::{Fence, parse_fences};
 use crate::doc_forms::unfenced_code_spans;
 
 /// One call form written in code text: a call site or a `fn` declaration head.
@@ -27,44 +30,90 @@ pub(crate) struct WrittenCall {
     pub(crate) text: String,
     /// 1-based line the name sits on.
     pub(crate) line: usize,
+    /// The kind of chunk text the form is written in.
+    pub(crate) source: CallSource,
 }
 
-/// The fence tags whose body a reader copies as accepted Reify — the vocabulary
-/// is `fence_gate.rs`'s "Tag vocabulary".
+/// The kind of chunk text a reader copies a call form out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CallSource {
+    /// An unfenced prose code span.
+    ProseSpan,
+    /// A ```` ```reify ```` fence: a complete module.
+    ReifyFence,
+    /// A ```` ```reify-fragment ```` fence: member-level Reify.
+    FragmentFence,
+    /// A ```` ```reify-schematic ```` signature listing.
+    SchematicListing,
+}
+
+/// Every fence tag a chunk may carry, each with the [`CallSource`] its body is
+/// read as — `None` for a body a reader never copies as accepted Reify. The
+/// vocabulary is `fence_gate.rs`'s "Tag vocabulary".
 ///
-/// A positive list, not an exempt list: a fence documenting a REJECTED form
-/// (`reify-invalid`, `reify-rejected`, `reify-rejected-at-eval`) shows exactly
-/// the call forms the compiler refuses, and a non-reify language (`ebnf`,
-/// `text`) writes none. A new tag stays unread until it is listed here.
-const COPYABLE_FENCE_TAGS: &[&str] = &["reify", "reify-fragment", "reify-schematic"];
+/// A fence documenting a REJECTED form (`reify-invalid`, `reify-rejected`,
+/// `reify-rejected-at-eval`) shows exactly the call forms the compiler refuses,
+/// and a non-reify language (`ebnf`, `text`) writes none.
+///
+/// CLOSED, unlike `fence_gate`'s open vocabulary: a fence whose tag is not
+/// listed, or that carries none, makes its chunk unreadable. A new tag is
+/// therefore a red that forces the copyable-or-not decision, never a silent
+/// hole in what [`chunk_written_calls`] reads.
+const FENCE_TAGS: &[(&str, Option<CallSource>)] = &[
+    ("reify", Some(CallSource::ReifyFence)),
+    ("reify-fragment", Some(CallSource::FragmentFence)),
+    ("reify-schematic", Some(CallSource::SchematicListing)),
+    ("reify-invalid", None),
+    ("reify-rejected", None),
+    ("reify-rejected-at-eval", None),
+    ("ebnf", None),
+    ("text", None),
+];
 
 /// Every call form `markdown` writes as copyable code — in its unfenced prose
-/// code spans and in the bodies of its [`COPYABLE_FENCE_TAGS`] fences — each at
+/// code spans and in the bodies of the fences [`FENCE_TAGS`] reads — each at
 /// the chunk line its name sits on. Prose first, then fences, each in document
 /// order.
 ///
 /// A whole fence body is cut at once, never line by line, so a call wrapped
 /// across lines is read. Maintainer notes and bare prose are never read. `Err`
-/// when the markup cannot be read (an unterminated fence or note), never a
-/// short list.
+/// when the markup cannot be read (an unterminated fence or note) or a fence's
+/// tag is not classified, never a short list.
 pub(crate) fn chunk_written_calls(markdown: &str) -> Result<Vec<WrittenCall>, String> {
-    let prose = unfenced_code_spans(markdown)?
+    let mut calls: Vec<WrittenCall> = unfenced_code_spans(markdown)?
         .into_iter()
-        .flat_map(|span| written_calls(&span.text, span.line));
-    let fences = parse_fences(markdown)?
-        .into_iter()
-        .filter(|fence| {
-            fence
-                .tag
-                .as_deref()
-                .is_some_and(|tag| COPYABLE_FENCE_TAGS.contains(&tag))
+        .flat_map(|span| written_calls(&span.text, span.line, CallSource::ProseSpan))
+        .collect();
+    for fence in parse_fences(markdown)? {
+        if let Some(source) = fence_source(&fence)? {
+            calls.extend(written_calls(&fence.body, fence.open_line + 1, source));
+        }
+    }
+    Ok(calls)
+}
+
+/// The [`CallSource`] `fence`'s body is read as, `None` for a body that is
+/// never copied, or `Err` when [`FENCE_TAGS`] does not classify its tag.
+fn fence_source(fence: &Fence) -> Result<Option<CallSource>, String> {
+    let tag = fence.tag.as_deref();
+    FENCE_TAGS
+        .iter()
+        .find(|(listed, _)| tag == Some(*listed))
+        .map(|(_, source)| *source)
+        .ok_or_else(|| {
+            format!(
+                "the fence opened at line {} carries {}, which written_calls.rs's FENCE_TAGS \
+                 does not classify, so whether a reader copies its body is unknown (tag the \
+                 fence from that table, or classify a new tag there as copyable or not)",
+                fence.open_line,
+                tag.map_or_else(|| "no tag".to_string(), |tag| format!("the tag `{tag}`"))
+            )
         })
-        .flat_map(|fence| written_calls(&fence.body, fence.open_line + 1));
-    Ok(prose.chain(fences).collect())
 }
 
 /// Every call form written in `code`, whose first line is `first_line`, in
-/// document order.
+/// document order, each recorded as written in `source`. Text from `//` to the
+/// end of a line is a comment and is never read.
 ///
 /// Every maximal identifier run is a candidate, wherever it sits — including
 /// inside another call's argument list, which is how a nested call is read in
@@ -78,7 +127,8 @@ pub(crate) fn chunk_written_calls(markdown: &str) -> Result<Vec<WrittenCall>, St
 /// - has an argument list that balances and elides nothing (`...` or `…`): an
 ///   elided list has no knowable arity, and inventing one would be worse than
 ///   reading none.
-pub(crate) fn written_calls(code: &str, first_line: usize) -> Vec<WrittenCall> {
+pub(crate) fn written_calls(code: &str, first_line: usize, source: CallSource) -> Vec<WrittenCall> {
+    let code = without_line_comments(code);
     let mut calls = Vec::new();
     let mut cursor = 0;
     while let Some(offset) = code[cursor..].find(is_identifier_char) {
@@ -87,20 +137,30 @@ pub(crate) fn written_calls(code: &str, first_line: usize) -> Vec<WrittenCall> {
             .find(|c: char| !is_identifier_char(c))
             .map_or(code.len(), |len| start + len);
         cursor = end;
-        if let Some(call) = call_form_at(code, start, end) {
-            calls.push(WrittenCall {
-                line: first_line + code[..start].matches('\n').count(),
-                ..call
-            });
-        }
+        calls.extend(call_form_at(&code, start, end, first_line, source));
     }
     calls
 }
 
-/// The call form whose name is the identifier run `code[start..end]`, or
-/// `None` when that run does not open one (see [`written_calls`]). Its `line`
-/// is left for the caller to frame.
-fn call_form_at(code: &str, start: usize, end: usize) -> Option<WrittenCall> {
+/// `code` with the text from each line's first `//` dropped, its line breaks
+/// kept so every call keeps its line.
+fn without_line_comments(code: &str) -> String {
+    code.split('\n')
+        .map(|line| line.find("//").map_or(line, |comment| &line[..comment]))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The call form whose name is the identifier run `code[start..end]` of code
+/// whose first line is `first_line`, written in `source` — or `None` when that
+/// run does not open one (see [`written_calls`]).
+fn call_form_at(
+    code: &str,
+    start: usize,
+    end: usize,
+    first_line: usize,
+    source: CallSource,
+) -> Option<WrittenCall> {
     let name = &code[start..end];
     let before = &code[..start];
     if !name.starts_with(|c: char| c.is_ascii_lowercase())
@@ -121,7 +181,8 @@ fn call_form_at(code: &str, start: usize, end: usize) -> Option<WrittenCall> {
         arity: count_parameters(arguments),
         declaration: is_declared_by(before),
         text: code[start..code.len() - after_call.len()].to_string(),
-        line: 0,
+        line: first_line + before.matches('\n').count(),
+        source,
     })
 }
 
@@ -248,9 +309,9 @@ fn close_through_angles(open: &mut Vec<char>, close: char) {
 }
 
 /// `(name, arity, declaration)` for every call form written in `code`, in
-/// document order.
+/// document order. The source is only passed through, so any one serves.
 fn forms(code: &str) -> Vec<(String, usize, bool)> {
-    written_calls(code, 1)
+    written_calls(code, 1, CallSource::FragmentFence)
         .into_iter()
         .map(|call| (call.name, call.arity, call.declaration))
         .collect()
@@ -315,6 +376,7 @@ fn a_fn_declaration_head_is_read_as_a_declaration_with_its_parameter_count() {
     let wrapped = written_calls(
         "// the head wraps\nfn wrapped(\n    a : Length,\n    b : Length,\n) -> Length { ... }",
         1,
+        CallSource::SchematicListing,
     );
     assert_eq!(
         wrapped,
@@ -324,6 +386,7 @@ fn a_fn_declaration_head_is_read_as_a_declaration_with_its_parameter_count() {
             declaration: true,
             text: "wrapped(\n    a : Length,\n    b : Length,\n)".to_string(),
             line: 2,
+            source: CallSource::SchematicListing,
         }],
         "a declaration WRAPPED across lines is read whole, at the line its name sits on, and a \
          trailing comma adds no parameter"
@@ -405,7 +468,11 @@ fn qualified_capitalised_unbalanced_and_elided_forms_are_not_read() {
 
 #[test]
 fn a_call_reports_the_line_its_name_sits_on_framed_by_first_line() {
-    let calls = written_calls("let a = 1mm\nlet b = 2mm\nlet c = sphere(a)\n", 10);
+    let calls = written_calls(
+        "let a = 1mm\nlet b = 2mm\nlet c = sphere(a)\n",
+        10,
+        CallSource::FragmentFence,
+    );
     assert_eq!(
         calls,
         vec![WrittenCall {
@@ -414,8 +481,36 @@ fn a_call_reports_the_line_its_name_sits_on_framed_by_first_line() {
             declaration: false,
             text: "sphere(a)".to_string(),
             line: 12,
+            source: CallSource::FragmentFence,
         }],
-        "a call on the third line of code whose first line is 10 sits on line 12"
+        "a call on the third line of code whose first line is 10 sits on line 12, recorded as \
+         written in the source it was cut from"
+    );
+}
+
+#[test]
+fn a_line_comment_is_never_read_and_keeps_every_later_line() {
+    assert_eq!(
+        forms("let s = sphere(r) // was cone(r1, r2, h)"),
+        vec![form("sphere", 1, false)],
+        "a call written in a `//` comment is not a written call"
+    );
+    assert_eq!(
+        forms("let w = wedge(a, // the width, in mm\n    b)"),
+        vec![form("wedge", 2, false)],
+        "a comment inside a wrapped argument list contributes no separators"
+    );
+    assert_eq!(
+        written_calls(
+            "// was torus(a)\nlet t = torus(a, b)",
+            5,
+            CallSource::FragmentFence
+        )
+        .into_iter()
+        .map(|call| (call.name, call.arity, call.line))
+        .collect::<Vec<_>>(),
+        vec![("torus".to_string(), 2, 6)],
+        "a dropped comment keeps its line break, so the call below it keeps its line"
     );
 }
 
@@ -431,7 +526,7 @@ ay)` when wrapped.
 
 ```reify
 structure def Demo {
-    let s = cylinder(1mm, 2mm)
+    let s = cylinder(1mm, 2mm) // was comment_call(a)
 }
 ```
 
@@ -468,28 +563,29 @@ text_call(x)
 
 #[test]
 fn chunk_written_calls_reads_prose_spans_and_copyable_fences_at_their_chunk_lines() {
-    let mut read: Vec<(String, usize, usize)> = chunk_written_calls(DEMO_CHUNK)
+    let mut read: Vec<(String, usize, usize, CallSource)> = chunk_written_calls(DEMO_CHUNK)
         .expect("the demo chunk is well-formed")
         .into_iter()
-        .map(|call| (call.name, call.arity, call.line))
+        .map(|call| (call.name, call.arity, call.line, call.source))
         .collect();
-    read.sort_by_key(|(_, _, line)| *line);
+    read.sort_by_key(|(_, _, line, _)| *line);
 
     assert_eq!(
         read,
         vec![
-            ("box".to_string(), 3, 3),
-            ("rotate".to_string(), 3, 4),
-            ("cylinder".to_string(), 2, 11),
-            ("torus".to_string(), 2, 18),
-            ("cone".to_string(), 3, 22),
+            ("box".to_string(), 3, 3, CallSource::ProseSpan),
+            ("rotate".to_string(), 3, 4, CallSource::ProseSpan),
+            ("cylinder".to_string(), 2, 11, CallSource::ReifyFence),
+            ("torus".to_string(), 2, 18, CallSource::FragmentFence),
+            ("cone".to_string(), 3, 22, CallSource::SchematicListing),
         ],
-        "read: a prose code span (box, line 3); a span wrapped across two lines, at the line its \
-         name sits on (rotate, line 4); a ```reify fence (cylinder), a ```reify-fragment fence on \
-         its THIRD body line (torus, open_line 15 + 3) and a ```reify-schematic listing (cone). \
-         NOT read: a bare un-backticked call in prose (sphere), a maintainer note (note_call), a \
-         fence documenting a REJECTED form (reify-invalid, reify-rejected, \
-         reify-rejected-at-eval) and a non-reify language (ebnf, text)"
+        "read, each recorded with its source kind: a prose code span (box, line 3); a span \
+         wrapped across two lines, at the line its name sits on (rotate, line 4); a ```reify \
+         fence (cylinder), a ```reify-fragment fence on its THIRD body line (torus, open_line \
+         15 + 3) and a ```reify-schematic listing (cone). NOT read: a bare un-backticked call in \
+         prose (sphere), a maintainer note (note_call), a `//` comment (comment_call), a fence \
+         documenting a REJECTED form (reify-invalid, reify-rejected, reify-rejected-at-eval) and \
+         a non-reify language (ebnf, text)"
     );
 }
 
@@ -505,16 +601,36 @@ fn chunk_written_calls_is_an_err_when_the_chunk_cannot_be_read() {
     for (defect, why) in [
         (
             "```reify-fragment\nlet c = torus(a, b)\n",
-            "an unterminated fence",
+            "an unterminated fence hides the rest of the chunk",
         ),
         (
             "<!-- an unterminated note\n",
-            "an unterminated HTML comment",
+            "an unterminated HTML comment hides the rest of the chunk",
+        ),
+        (
+            "```reify-example\nlet c = torus(a, b)\n```\n",
+            "a fence tag FENCE_TAGS does not classify leaves unknown whether its body is copied",
+        ),
+        (
+            "```\nlet c = torus(a, b)\n```\n",
+            "an untagged fence leaves unknown whether its body is copied",
         ),
     ] {
         assert!(
             chunk_written_calls(&format!("{span}{defect}")).is_err(),
-            "{why} hides the rest of the chunk, so it is an Err, never a short list of calls"
+            "{why}, so it is an Err, never a short list of calls"
+        );
+    }
+
+    let unclassified = chunk_written_calls(&format!(
+        "{span}```reify-example\nlet c = torus(a, b)\n```\n"
+    ))
+    .expect_err("an unclassified tag is an Err");
+    for expected in ["line 3", "`reify-example`", "FENCE_TAGS"] {
+        assert!(
+            unclassified.contains(expected),
+            "the error names the fence's line, its tag and the table to classify it in \
+             (`{expected}`); got {unclassified}"
         );
     }
 }

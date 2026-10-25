@@ -5,9 +5,9 @@
 //! signature listing — and the compiler resolves its bare name. When a builtin
 //! of that name rejects the written arity, the served documentation asserts a
 //! call the compiler refuses (task #6890's `rotate(geometry, axis, angle)`).
-//! What is read as copyable is `written_calls.rs`'s `COPYABLE_FENCE_TAGS` plus
-//! unfenced prose code spans; whether a builtin rejects a form is
-//! `arity_gate_probe.rs`'s, asked once for the whole corpus.
+//! What is read as copyable is unfenced prose code spans plus the fences
+//! `written_calls.rs`'s `FENCE_TAGS` classifies as copyable; whether a builtin
+//! rejects a form is `arity_gate_probe.rs`'s, asked once for the whole corpus.
 //!
 //! # What is NOT established
 //!
@@ -17,7 +17,7 @@
 //!   message, so they contribute nothing — and nor does a name that resolves to
 //!   nothing at all.
 //! - **An elided call.** `box(...)` has no arity to check.
-//! - **A fence whose tag is not listed** as copyable: it is unread until listed.
+//! - **A call in a `//` comment.** Comment text is never read.
 
 use std::collections::BTreeSet;
 
@@ -26,7 +26,7 @@ use reify_test_support::compile_source_with_stdlib;
 
 use crate::arity_gate_probe::{ArityRejection, arity_rejections};
 use crate::chunk_io::{all_chunks, chunk_label, report};
-use crate::written_calls::{WrittenCall, chunk_written_calls};
+use crate::written_calls::{CallSource, WrittenCall, chunk_written_calls};
 
 /// One chunk's written call forms, or why its markup could not be read.
 struct ChunkCalls<'a> {
@@ -251,6 +251,10 @@ fn an_unreadable_chunk_is_reported_never_skipped() {
             "an unterminated fence",
         ),
         ("<!-- an unterminated note\n", "an unterminated note"),
+        (
+            "```reify-example\nlet b = box(w, d)\n```\n",
+            "a fence tag written_calls.rs does not classify",
+        ),
     ] {
         let violations = demo_violations(markdown);
         assert_eq!(
@@ -272,20 +276,50 @@ fn an_unreadable_chunk_is_reported_never_skipped() {
 /// beside `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
 const MINIMUM_WRITTEN_CALL_FORMS: usize = 166;
 
-/// `(stem, name, documented arity, rejected arity)`: a form the chunk writes
-/// whose name the compiler rejects at another arity — so the live gate is
-/// proven, on live content, to reach each source kind AND to discriminate,
-/// rather than being green because nothing it reads is arity-gated.
-///
-/// One per source kind, each in a chunk that writes the form in that kind
-/// only: a ```` ```reify-fragment ```` (constraints), a
-/// ```` ```reify-schematic ```` listing (parameters), a ```` ```reify ```` fence
-/// (purposes) and a prose code span (stdlib).
-const SENTINELS: &[(&str, &str, usize, usize)] = &[
-    ("constraints", "determined", 1, 2),
-    ("parameters", "constrained", 1, 2),
-    ("purposes", "determined", 1, 2),
-    ("stdlib", "rotate", 5, 3),
+/// A form chunk `stem` writes at the `documented` arity in a `source`, whose
+/// name the compiler rejects at the `rejected` arity.
+struct Sentinel {
+    stem: &'static str,
+    source: CallSource,
+    name: &'static str,
+    documented: usize,
+    rejected: usize,
+}
+
+/// One [`Sentinel`] per source kind the live chunks are read from, each
+/// matched on the kind it is written in — so the live gate is proven, on live
+/// content, to reach every kind AND to discriminate there, rather than being
+/// green because nothing it reads is arity-gated. The gate reds on a kind read
+/// from live content that no sentinel covers.
+const SENTINELS: &[Sentinel] = &[
+    Sentinel {
+        stem: "constraints",
+        source: CallSource::FragmentFence,
+        name: "determined",
+        documented: 1,
+        rejected: 2,
+    },
+    Sentinel {
+        stem: "parameters",
+        source: CallSource::SchematicListing,
+        name: "constrained",
+        documented: 1,
+        rejected: 2,
+    },
+    Sentinel {
+        stem: "purposes",
+        source: CallSource::ReifyFence,
+        name: "determined",
+        documented: 1,
+        rejected: 2,
+    },
+    Sentinel {
+        stem: "stdlib",
+        source: CallSource::ProseSpan,
+        name: "rotate",
+        documented: 5,
+        rejected: 3,
+    },
 ];
 
 /// THE GATE over the live corpus. The sentinels' rejected forms join the
@@ -306,20 +340,36 @@ fn every_call_form_a_chunk_writes_passes_the_compiler_arity_gate() {
         forms.len()
     );
 
-    for (stem, name, documented, _) in SENTINELS {
+    let kinds_read: BTreeSet<CallSource> = read
+        .iter()
+        .flat_map(|chunk| chunk.calls.iter().flatten())
+        .map(|call| call.source)
+        .collect();
+    let kinds_sentinelled: BTreeSet<CallSource> =
+        SENTINELS.iter().map(|sentinel| sentinel.source).collect();
+    assert_eq!(
+        kinds_sentinelled, kinds_read,
+        "the sentinels must cover exactly the source kinds the live chunks are read from — add \
+         a sentinel for a newly read kind, or retire one whose kind is no longer read"
+    );
+
+    for sentinel in SENTINELS {
         let wrote = read.iter().any(|chunk| {
-            chunk.stem == *stem
-                && chunk
-                    .calls
-                    .iter()
-                    .flatten()
-                    .any(|call| call.name == *name && call.arity == *documented)
+            chunk.stem == sentinel.stem
+                && chunk.calls.iter().flatten().any(|call| {
+                    call.source == sentinel.source
+                        && call.name == sentinel.name
+                        && call.arity == sentinel.documented
+                })
         });
         assert!(
             wrote,
-            "sentinel: {} must write {name}/{documented} — re-pick a gated form from the same \
-             chunk and source kind if it moved",
-            chunk_label(stem)
+            "sentinel: {} must write {}/{} in a {:?} — re-pick a gated form from the same chunk \
+             and source kind if it moved",
+            chunk_label(sentinel.stem),
+            sentinel.name,
+            sentinel.documented,
+            sentinel.source
         );
     }
 
@@ -327,17 +377,19 @@ fn every_call_form_a_chunk_writes_passes_the_compiler_arity_gate() {
     probed.extend(
         SENTINELS
             .iter()
-            .map(|(_, name, _, rejected)| (name.to_string(), *rejected)),
+            .map(|sentinel| (sentinel.name.to_string(), sentinel.rejected)),
     );
     let probed: Vec<(String, usize)> = probed.into_iter().collect();
     let rejections = arity_rejections(&probed);
-    for (_, name, _, rejected) in SENTINELS {
+    for sentinel in SENTINELS {
         assert!(
             rejections
                 .iter()
-                .any(|r| r.name == *name && r.arity == *rejected),
-            "sentinel: the compiler must reject {name}/{rejected} on arity, or this gate no \
-             longer discriminates on live content; rejections: {rejections:#?}"
+                .any(|r| r.name == sentinel.name && r.arity == sentinel.rejected),
+            "sentinel: the compiler must reject {}/{} on arity, or this gate no longer \
+             discriminates on live content; rejections: {rejections:#?}",
+            sentinel.name,
+            sentinel.rejected
         );
     }
 
