@@ -1083,17 +1083,20 @@ fn has_deferral_prose(text: &str) -> bool {
 
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
-fn line_escaped(line: &str) -> bool {
+pub(crate) fn line_escaped(line: &str) -> bool {
     line.contains("ptodo:allow")
 }
+
+/// The detector's own crate: its pattern string-literals (`TODO`/`FIXME`/
+/// `HACK`, `task δ`, the phantom phrases, …) and the committed fixtures under
+/// `tests/fixtures/ptodo/` would otherwise self-match. Exempt from this sweep
+/// (an [`ALLOWLIST_PREFIXES`] entry) and from P2's.
+pub(crate) const AUDIT_CRATE_PREFIX: &str = "crates/reify-audit/";
 
 /// §6.8 allowlist path prefixes — paths starting with any entry are exempt
 /// from the sweep so the tool never flags its own machinery or test data.
 const ALLOWLIST_PREFIXES: &[&str] = &[
-    // The detector's own crate: its pattern string-literals (`TODO`/`FIXME`/
-    // `HACK`, `task δ`, the phantom phrases, …) and the committed fixtures
-    // under `tests/fixtures/ptodo/` would otherwise self-match.
-    "crates/reify-audit/",
+    AUDIT_CRATE_PREFIX,
     // The `#[ignore]`-reason extraction tool: carries `#[ignore]` markers and
     // reason strings as the data it operates on.
     "crates/reify-test-support/src/ignore_hygiene.rs",
