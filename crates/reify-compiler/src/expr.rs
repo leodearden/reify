@@ -3483,6 +3483,15 @@ fn compile_expr_guarded_with_expected_inner(
                         diagnostics,
                     );
 
+                    // Task 6249: a third diagnostic-only check, with the same
+                    // contract as the two above.
+                    math_signatures::check_forward_trig_arg_dimensions(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
