@@ -21,10 +21,9 @@ use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
 use reify_ir::value::LeafQuery;
-use reify_ir::{ExportFormat, Value};
+use reify_ir::{ExportFormat, GeometryHandleId, Value};
 use reify_test_support::{
-    MockGeometryKernel, assert_selector_leaf, assert_selector_leaf_targeting,
-    compile_source_with_stdlib,
+    MockGeometryKernel, assert_selector_leaf_targeting, compile_source_with_stdlib,
 };
 
 /// Fixture: Widget with a body (box), a let-bound direction + tolerance, and a
@@ -109,12 +108,11 @@ fn eval_and_build_selectors_are_content_hash_equal() {
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
 
-    // Confirm eval path gives a Selector (assert_selector_leaf handles the
-    // Undef → panic message).
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         Some(&eval_value),
         "eval Widget.top",
         SelectorKind::Face,
+        None,
         |_| {},
     );
 
@@ -135,11 +133,13 @@ fn eval_and_build_selectors_are_content_hash_equal() {
     );
     let build_value = build_result.values.get_or_undef(&cell_id);
 
-    // Build path must also give a Selector.
-    assert_selector_leaf(
+    // The mock kernel allocates GeometryHandleId(1) to `body`, the first
+    // realization op.
+    assert_selector_leaf_targeting(
         Some(&build_value),
         "build Widget.top",
         SelectorKind::Face,
+        Some(GeometryHandleId(1)),
         |_| {},
     );
 
