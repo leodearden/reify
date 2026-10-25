@@ -4,20 +4,22 @@
 //! the 10 m default-box edge. B5 and the F2 auto(free) twin are the
 //! discriminating negatives.
 
+use std::process::ExitStatus;
+
 use crate::common;
 
-fn prd_gate_fixture(name: &str) -> String {
-    common::workspace_root()
-        .join("tests/prd-gate/fixtures")
-        .join(name)
-        .to_string_lossy()
-        .into_owned()
+const ONE_SIDED: &str = "tests/prd-gate/fixtures/driver_parity_one_sided_auto.ri";
+const TWO_SIDED: &str = "tests/prd-gate/fixtures/driver_parity_two_sided_auto.ri";
+const ONE_SIDED_FREE: &str = "tests/prd-gate/fixtures/driver_parity_one_sided_auto_free.ri";
+
+fn run_on_fixture(subcommand: &str, fixture: &str) -> (ExitStatus, String, String) {
+    let path = common::workspace_root().join(fixture);
+    common::run_subcommand(subcommand, &path.to_string_lossy())
 }
 
 #[test]
 fn check_refuses_the_one_sided_strict_auto() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("check", &prd_gate_fixture("driver_parity_one_sided_auto.ri"));
+    let (status, stdout, stderr) = run_on_fixture("check", ONE_SIDED);
     let combined = format!("{stdout}{stderr}");
     assert!(
         !status.success(),
@@ -36,8 +38,7 @@ fn check_refuses_the_one_sided_strict_auto() {
 
 #[test]
 fn check_accepts_the_two_sided_strict_auto() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("check", &prd_gate_fixture("driver_parity_two_sided_auto.ri"));
+    let (status, stdout, stderr) = run_on_fixture("check", TWO_SIDED);
     assert!(
         status.success(),
         "B5: `reify check` must exit 0 on a two-sided strict auto.\n\
@@ -51,8 +52,7 @@ fn check_accepts_the_two_sided_strict_auto() {
 
 #[test]
 fn eval_resolves_the_two_sided_strict_auto_to_the_centre() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("eval", &prd_gate_fixture("driver_parity_two_sided_auto.ri"));
+    let (status, stdout, stderr) = run_on_fixture("eval", TWO_SIDED);
     assert!(
         status.success(),
         "B5: `reify eval` must succeed.\nstdout: {stdout}\nstderr: {stderr}"
@@ -66,10 +66,7 @@ fn eval_resolves_the_two_sided_strict_auto_to_the_centre() {
 
 #[test]
 fn check_accepts_the_one_sided_auto_free_twin() {
-    let (status, stdout, stderr) = common::run_subcommand(
-        "check",
-        &prd_gate_fixture("driver_parity_one_sided_auto_free.ri"),
-    );
+    let (status, stdout, stderr) = run_on_fixture("check", ONE_SIDED_FREE);
     assert!(
         status.success(),
         "F2: `reify check` must exit 0 on a one-sided auto(free).\n\

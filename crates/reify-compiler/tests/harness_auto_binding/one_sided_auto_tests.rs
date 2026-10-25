@@ -15,13 +15,12 @@ use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 const NOT_DETERMINED: &str = "not uniquely determined";
 
-fn fixture(name: &str) -> String {
-    let path = format!(
-        "{}/../../tests/prd-gate/fixtures/{name}.ri",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("could not read {path}: {e}"))
-}
+const ONE_SIDED: &str =
+    include_str!("../../../../tests/prd-gate/fixtures/driver_parity_one_sided_auto.ri");
+const TWO_SIDED: &str =
+    include_str!("../../../../tests/prd-gate/fixtures/driver_parity_two_sided_auto.ri");
+const ONE_SIDED_FREE: &str =
+    include_str!("../../../../tests/prd-gate/fixtures/driver_parity_one_sided_auto_free.ri");
 
 fn non_unique(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
     diagnostics
@@ -84,7 +83,7 @@ fn assert_silent(case: &str, diagnostics: &[Diagnostic]) {
 
 #[test]
 fn b4_one_sided_fixture_is_refused_at_compile_time() {
-    let compiled = compile_source_with_stdlib(&fixture("driver_parity_one_sided_auto"));
+    let compiled = compile_source_with_stdlib(ONE_SIDED);
     assert_fires(
         "B4 driver_parity_one_sided_auto.ri",
         &compiled.diagnostics,
@@ -94,7 +93,7 @@ fn b4_one_sided_fixture_is_refused_at_compile_time() {
 
 #[test]
 fn b5_two_sided_fixture_compiles_clean() {
-    let compiled = compile_source_with_stdlib(&fixture("driver_parity_two_sided_auto"));
+    let compiled = compile_source_with_stdlib(TWO_SIDED);
     assert!(
         non_unique(&compiled.diagnostics).is_empty(),
         "B5 driver_parity_two_sided_auto.ri: two-sided bounds must not draw the refusal; \
@@ -105,7 +104,7 @@ fn b5_two_sided_fixture_compiles_clean() {
 
 #[test]
 fn f2_one_sided_auto_free_fixture_compiles_clean() {
-    let compiled = compile_source_with_stdlib(&fixture("driver_parity_one_sided_auto_free"));
+    let compiled = compile_source_with_stdlib(ONE_SIDED_FREE);
     assert!(
         non_unique(&compiled.diagnostics).is_empty(),
         "F2 driver_parity_one_sided_auto_free.ri: auto(free) is never refused; \
