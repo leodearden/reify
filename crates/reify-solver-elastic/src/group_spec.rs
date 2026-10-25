@@ -54,19 +54,15 @@ impl GroupSpec {
         if let Some(group) = seed_ratios.iter().position(|&r| r == 0.0) {
             return Err(GroupSpecDefect::ZeroSeed { group });
         }
-        let signs: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
-        let seed_magnitudes: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
-        let seed_densities = group_ids
-            .iter()
-            .map(|&g| signs[g] * seed_magnitudes[g])
-            .collect();
-        Ok(Self {
+        let mut spec = Self {
             group_ids: group_ids.to_vec(),
-            signs,
-            seed_magnitudes,
+            signs: seed_ratios.iter().map(|r| r.signum()).collect(),
+            seed_magnitudes: seed_ratios.iter().map(|r| r.abs()).collect(),
             reference_group,
-            seed_densities,
-        })
+            seed_densities: Vec::new(),
+        };
+        spec.seed_densities = spec.densities(&spec.seed_magnitudes);
+        Ok(spec)
     }
 
     /// Per-member group id, parallel to `members`.
@@ -78,6 +74,32 @@ impl GroupSpec {
     /// contract: the search keeps each group's sign.
     pub(crate) fn seed_densities(&self) -> &[f64] {
         &self.seed_densities
+    }
+
+    /// Per-group seed magnitude `|seed_ratios[g]|`, indexed by group id.
+    pub(crate) fn seed_magnitudes(&self) -> &[f64] {
+        &self.seed_magnitudes
+    }
+
+    /// The groups the search varies: every group some member uses, except the
+    /// reference, ascending. An unused group never enters `D`.
+    pub(crate) fn free_groups(&self) -> Vec<usize> {
+        let mut used = vec![false; self.signs.len()];
+        for &g in &self.group_ids {
+            used[g] = true;
+        }
+        (0..used.len())
+            .filter(|&g| g != self.reference_group && used[g])
+            .collect()
+    }
+
+    /// Per-member density at per-group `magnitudes` (indexed by group id):
+    /// member `i`'s group's seed sign times that group's magnitude.
+    pub(crate) fn densities(&self, magnitudes: &[f64]) -> Vec<f64> {
+        self.group_ids
+            .iter()
+            .map(|&g| self.signs[g] * magnitudes[g])
+            .collect()
     }
 }
 

@@ -42,13 +42,13 @@
 
 use crate::fd_matrix::{NULLITY_REL_TOL, SpectrumError, SymmetricSpectrum, assemble_d};
 use crate::form_find::{
-    ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
-    free_equilibrium_residual_relative, member_axial_forces, scatter_surface_stencils,
+    ForceDensityInputError, ForceDensityProblem, FreeSpec, IsotropicStencil, MemberKind,
+    ZeroAreaTriangle, free_equilibrium_residual_relative, member_axial_forces,
+    scatter_surface_stencils,
 };
 use crate::group_spec::{GroupSpec, GroupSpecDefect};
 use faer::Mat;
 use faer::mat::MatRef;
-use std::borrow::Cow;
 
 /// How the per-member force densities `q` are specified for a free-standing
 /// form-find.
@@ -181,40 +181,42 @@ pub fn form_find_free(
     kinds: &[MemberKind],
     spec: &ForceDensitySpec,
 ) -> Result<FreeFormResult, FreeFormError> {
-    let q0 = seed_densities(spec, members.len())?;
-    let problem = ForceDensityProblem::new(nodes_guess, members, kinds, &q0, &[], &[], &[])?;
+    let free = free_spec(spec, members.len())?;
+    let problem = ForceDensityProblem::new(nodes_guess, members, kinds, free, &[], &[], &[])?;
+    form_find_line_only(&problem)
+}
+
+/// The densities `spec` leaves free to vary, validated: an explicit `q` as
+/// given, or a [`ForceDensitySpec::GroupRatios`] spec that can seed the search.
+fn free_spec(spec: &ForceDensitySpec, n_members: usize) -> Result<FreeSpec<'_>, GroupSpecDefect> {
     match spec {
-        // Deterministic foundation: assemble D, classify nullity, recover
-        // coordinates, compute forces.
-        ForceDensitySpec::Explicit(_) => form_find_explicit(&problem),
-        // Adaptive eigenvalue-minimisation search over relative group densities;
-        // on success it produces an admissible q and delegates to the explicit
-        // path.
+        ForceDensitySpec::Explicit(q) => Ok(FreeSpec::Explicit(q)),
         ForceDensitySpec::GroupRatios {
             group_ids,
             seed_ratios,
             reference_group,
-        } => form_find_group_ratios(&problem, group_ids, seed_ratios, *reference_group),
+        } => Ok(FreeSpec::GroupRatios(GroupSpec::new(
+            group_ids,
+            seed_ratios,
+            *reference_group,
+            n_members,
+        )?)),
     }
 }
 
-/// The densities `spec` fixes before any search, for the input contract: the
-/// explicit `q`, or the [`ForceDensitySpec::GroupRatios`] seed densities, whose
-/// signs the search keeps.
-fn seed_densities(
-    spec: &ForceDensitySpec,
-    n_members: usize,
-) -> Result<Cow<'_, [f64]>, GroupSpecDefect> {
-    match spec {
-        ForceDensitySpec::Explicit(q) => Ok(Cow::Borrowed(q)),
-        ForceDensitySpec::GroupRatios {
-            group_ids,
-            seed_ratios,
-            reference_group,
-        } => {
-            let groups = GroupSpec::new(group_ids, seed_ratios, *reference_group, n_members)?;
-            Ok(Cow::Owned(groups.seed_densities().to_vec()))
-        }
+/// The line-only free-standing solve of a validated problem; its surfaces, if
+/// any, do not enter `D`.
+fn form_find_line_only(
+    problem: &ForceDensityProblem<'_>,
+) -> Result<FreeFormResult, FreeFormError> {
+    match problem.spec() {
+        // Deterministic foundation: assemble D, classify nullity, recover
+        // coordinates, compute forces.
+        FreeSpec::Explicit(_) => form_find_explicit(problem),
+        // Adaptive eigenvalue-minimisation search over relative group densities;
+        // on success it produces an admissible q and delegates to the explicit
+        // path.
+        FreeSpec::GroupRatios(groups) => form_find_group_ratios(problem, groups),
     }
 }
 
@@ -280,12 +282,11 @@ pub fn form_find_free_surfaces(
     // The input contract, a degenerate INPUT triangle included, is checked
     // against the caller's own geometry — before the bootstrap below rewrites
     // `current` into a (non-degenerate) line-only equilibrium.
-    let q0 = seed_densities(spec, members.len())?;
     let problem = ForceDensityProblem::new(
         nodes_guess,
         members,
         kinds,
-        &q0,
+        free_spec(spec, members.len())?,
         &[],
         surfaces,
         surface_stresses,
@@ -293,7 +294,7 @@ pub fn form_find_free_surfaces(
 
     // Empty surfaces delegate to the line-only path with an empty echo.
     if surfaces.is_empty() {
-        let mut result = form_find_free(nodes_guess, members, kinds, spec)?;
+        let mut result = form_find_line_only(&problem)?;
         result.surface_stresses = Vec::new();
         return Ok(result);
     }
@@ -310,7 +311,7 @@ pub fn form_find_free_surfaces(
     // prism geometry, where the surface matrix has 3-fold symmetry and the combined
     // D can reach nullity 4.  Falls back to nodes_guess if the line-only solve
     // fails (e.g. infeasible Explicit q that has no line-only equilibrium).
-    let boot = form_find_free(nodes_guess, members, kinds, spec);
+    let boot = form_find_line_only(&problem);
     let mut current = boot
         .as_ref()
         .map(|r| r.nodes.clone())
@@ -325,20 +326,17 @@ pub fn form_find_free_surfaces(
     // starting magnitudes puts the search within the convergence basin of the
     // correct combined target (-√3·(1+w), 1, +√3·(1+w)), where coordinate
     // descent finds it in O(1) rounds.
-    let mut warm_group_mag: Vec<f64> = match spec {
-        ForceDensitySpec::GroupRatios { group_ids, seed_ratios, .. } => {
-            let n_groups = seed_ratios.len();
-            let mut mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
+    let mut warm_group_mag: Vec<f64> = match problem.spec() {
+        FreeSpec::GroupRatios(groups) => {
+            let mut mag = groups.seed_magnitudes().to_vec();
             if let Ok(ref b) = boot {
-                for (i, &g) in group_ids.iter().enumerate() {
-                    if g < n_groups {
-                        mag[g] = b.force_densities[i].abs().max(1e-10);
-                    }
+                for (i, &g) in groups.group_ids().iter().enumerate() {
+                    mag[g] = b.force_densities[i].abs().max(1e-10);
                 }
             }
             mag
         }
-        _ => vec![],
+        FreeSpec::Explicit(_) => vec![],
     };
 
     let mut converged = false;
@@ -360,23 +358,17 @@ pub fn form_find_free_surfaces(
         // (validated up front).  For GroupRatios, re-search q on the combined D at
         // this iteration's cotangent weights so the densities co-adapt with the
         // geometry; warm-start the next search from the magnitudes just found.
-        let q: Vec<f64> = match spec {
-            ForceDensitySpec::Explicit(_) => problem.q().to_vec(),
-            ForceDensitySpec::GroupRatios {
-                group_ids,
-                seed_ratios,
-                reference_group,
-            } => {
+        let q: Vec<f64> = match problem.spec() {
+            FreeSpec::Explicit(q) => q.to_vec(),
+            FreeSpec::GroupRatios(groups) => {
                 let searched_q = form_find_group_ratios_combined(
                     &problem,
+                    groups,
                     &current,
-                    group_ids,
-                    seed_ratios,
                     &warm_group_mag,
-                    *reference_group,
                     &surface_mat,
                 )?;
-                for (i, &g) in group_ids.iter().enumerate() {
+                for (i, &g) in groups.group_ids().iter().enumerate() {
                     warm_group_mag[g] = searched_q[i].abs().max(1e-10);
                 }
                 searched_q
@@ -436,7 +428,7 @@ pub fn form_find_free_surfaces(
         // today would catch this check being deleted. Kept because accepting a
         // residual-regressing trial changes the iterate (3)'s descent runs from, which could
         // destabilise a case not covered by this fixture even though none tried here do.
-        if matches!(spec, ForceDensitySpec::Explicit(_))
+        if matches!(problem.spec(), FreeSpec::Explicit(_))
             && let Ok(trial_nodes) =
                 form_find_explicit_combined_relaxed(&problem, &current, &surface_mat)
             && let Ok(trial_surface_mat) =
@@ -634,39 +626,28 @@ fn form_find_explicit_combined_relaxed(
 /// iterate is the validity gate.
 ///
 /// `initial_group_mag` are warm-start magnitudes (e.g. from a line-only bootstrap)
-/// that replace the `seed_ratios` absolute values as the starting point AND as the
+/// that replace the group spec's seed magnitudes as the starting point AND as the
 /// centre of the search bracket. Starting near the correct combined q avoids the
 /// stall-guard pitfall where coordinate descent at the wrong starting point can
 /// reach a fixed point before the objective hits the nullity-4 minimum.
 ///
-/// `problem` holds the validated seed densities and `nodes_guess` the current
-/// iterate.
+/// `problem` holds the validated seed densities, `groups` its group spec and
+/// `nodes_guess` the current iterate.
 fn form_find_group_ratios_combined(
     problem: &ForceDensityProblem<'_>,
+    groups: &GroupSpec,
     nodes_guess: &[[f64; 3]],
-    group_ids: &[usize],
-    seed_ratios: &[f64],
     initial_group_mag: &[f64],
-    reference_group: usize,
     surface_mat: &Mat<f64>,
 ) -> Result<Vec<f64>, FreeFormError> {
     let members = problem.members();
-    let n_groups = seed_ratios.len();
 
-    let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
     // Warm-start: use the provided initial magnitudes (e.g. from the line-only
-    // bootstrap) rather than the seed_ratios abs values. This ensures the search
+    // bootstrap) rather than the seed magnitudes. This ensures the search
     // starts near the correct combined q and avoids the coordinate-descent stall
     // at the original seeds that causes the stall guard to fire prematurely.
     let mut group_mag: Vec<f64> = initial_group_mag.to_vec();
-
-    let mut appears = vec![false; n_groups];
-    for &g in group_ids {
-        appears[g] = true;
-    }
-    let free_groups: Vec<usize> = (0..n_groups)
-        .filter(|&g| g != reference_group && appears[g])
-        .collect();
+    let free_groups = groups.free_groups();
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest eigenvalues of the
     // COMBINED D = line_D(q) + surface_mat. surface_mat is a fixed additive term.
@@ -677,7 +658,7 @@ fn form_find_group_ratios_combined(
     // path needs (task 6413 design decision). A `D` with no spectrum scores +∞,
     // rejecting the trial.
     let objective = |group_mag: &[f64]| -> f64 {
-        let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
+        let q = groups.densities(group_mag);
         let d = combined_force_density_matrix(members, &q, surface_mat);
         SymmetricSpectrum::of(&d).map_or(f64::INFINITY, |spectrum| {
             spectrum
@@ -730,7 +711,7 @@ fn form_find_group_ratios_combined(
         }
         let before = obj;
         for &g in &free_groups {
-            // Bracket centred on the current (warm) magnitude — not on seed_ratios.
+            // Bracket centred on the current (warm) magnitude — not on the seed.
             let lo = initial_group_mag[g] / SEARCH_BRACKET_FACTOR;
             let hi = initial_group_mag[g] * SEARCH_BRACKET_FACTOR;
             let best = minimize_on_coordinate(
@@ -750,7 +731,7 @@ fn form_find_group_ratios_combined(
         }
     }
 
-    let q = assemble_group_q(members.len(), group_ids, &group_sign, &group_mag);
+    let q = groups.densities(&group_mag);
 
     // The outer loop moves the geometry itself, so the recovered nodes are not
     // returned; a found `q` whose forced-nullity recovery cannot span 3-D is
@@ -974,30 +955,16 @@ const SEARCH_BRACKET_FACTOR: f64 = 20.0;
 /// a deliberate follow-up, out of scope for the 6-node target here.
 fn form_find_group_ratios(
     problem: &ForceDensityProblem<'_>,
-    group_ids: &[usize],
-    seed_ratios: &[f64],
-    reference_group: usize,
+    groups: &GroupSpec,
 ) -> Result<FreeFormResult, FreeFormError> {
     let members = problem.members();
-    let n_groups = seed_ratios.len();
     let n = problem.nodes().len();
 
-    // Per-group sign (fixed throughout) and current magnitude. The reference
-    // group's magnitude stays at its seed; free groups start there and are
-    // refined by the search.
-    let group_sign: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
-    let mut group_mag: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
-
-    // Free groups = every group that actually appears in `group_ids`, except the
-    // fixed reference. (Groups absent from `group_ids` do not enter `D`, so
-    // searching them would be wasted work.)
-    let mut appears = vec![false; n_groups];
-    for &g in group_ids {
-        appears[g] = true;
-    }
-    let free_groups: Vec<usize> = (0..n_groups)
-        .filter(|&g| g != reference_group && appears[g])
-        .collect();
+    // Current per-group magnitude (each group's sign is fixed by its seed). The
+    // reference group's magnitude stays at its seed; free groups start there
+    // and are refined by the search.
+    let mut group_mag = groups.seed_magnitudes().to_vec();
+    let free_groups = groups.free_groups();
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest-|λ| eigenvalues of
     // `D(group_mag)`. [`SymmetricSpectrum`] orders eigenvalues ascending by |λ|,
@@ -1006,7 +973,7 @@ fn form_find_group_ratios(
     // from stalling at the tolerance crossing. A `D` with no spectrum scores
     // +∞, rejecting the trial.
     let objective = |group_mag: &[f64]| -> f64 {
-        let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
+        let q = groups.densities(group_mag);
         let d = assemble_d(n, members, &q);
         SymmetricSpectrum::of(&d).map_or(f64::INFINITY, |spectrum| {
             spectrum
@@ -1039,8 +1006,8 @@ fn form_find_group_ratios(
         }
         let before = obj;
         for &g in &free_groups {
-            let lo = seed_ratios[g].abs() / SEARCH_BRACKET_FACTOR;
-            let hi = seed_ratios[g].abs() * SEARCH_BRACKET_FACTOR;
+            let lo = groups.seed_magnitudes()[g] / SEARCH_BRACKET_FACTOR;
+            let hi = groups.seed_magnitudes()[g] * SEARCH_BRACKET_FACTOR;
             let best = minimize_on_coordinate(
                 |m| {
                     let mut trial = group_mag.clone();
@@ -1068,31 +1035,13 @@ fn form_find_group_ratios(
     // Delegate to the explicit pipeline with the found `q`, whose certification
     // is the validity gate: a certified form form-finds, and a `D` that is not a
     // form becomes SearchDidNotConverge naming its defect.
-    let q = assemble_group_q(members.len(), group_ids, &group_sign, &group_mag);
+    let q = groups.densities(&group_mag);
     match form_find_explicit(&problem.with_densities(&q)?) {
         Err(FreeFormError::NotAForm(defect)) => Err(FreeFormError::SearchDidNotConverge {
             defect: Some(defect),
         }),
         other => other,
     }
-}
-
-/// Build the full per-member force-density vector from per-group magnitudes:
-/// member `i`'s `q` is its group's signed ratio `group_sign[g] · group_mag[g]`
-/// (sign fixed by the seed, magnitude searched). Struts-then-cables member order
-/// follows `group_ids` / `members`.
-fn assemble_group_q(
-    n_members: usize,
-    group_ids: &[usize],
-    group_sign: &[f64],
-    group_mag: &[f64],
-) -> Vec<f64> {
-    (0..n_members)
-        .map(|i| {
-            let g = group_ids[i];
-            group_sign[g] * group_mag[g]
-        })
-        .collect()
 }
 
 /// Minimise a single-coordinate objective over the positive interval `[lo, hi]`.
@@ -1573,7 +1522,8 @@ mod tests {
         // connected structure.
         let q = generic_admissible_q(&kinds);
         let guess = perturbed_prism_guess();
-        let problem = ForceDensityProblem::new(&guess, &members, &kinds, &q, &[], &[], &[])
+        let problem =
+            ForceDensityProblem::new(&guess, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
             .expect("admissible q is valid input");
         assert_eq!(
             explicit_form(&problem).unwrap_err(),
@@ -1706,7 +1656,8 @@ mod tests {
         let q = closed_form_q();
         // One dense EVD, shared between the nullity check and recovery.
         let prism = canonical_prism();
-        let problem = ForceDensityProblem::new(&prism, &members, &kinds, &q, &[], &[], &[])
+        let problem =
+            ForceDensityProblem::new(&prism, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
             .expect("closed-form prism q is valid input");
         let form = explicit_form(&problem).expect("closed-form prism q is a form");
 
@@ -1806,7 +1757,8 @@ mod tests {
         // the healthy-recovery test's input, so *only* the guess is degenerate
         // here, isolating the SingularRecovery guard.
         let prism = canonical_prism();
-        let problem = ForceDensityProblem::new(&prism, &members, &kinds, &q, &[], &[], &[])
+        let problem =
+            ForceDensityProblem::new(&prism, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
             .expect("closed-form prism q is valid input");
         let form = explicit_form(&problem).expect("closed-form prism q is a form");
 

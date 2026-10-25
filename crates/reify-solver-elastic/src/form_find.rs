@@ -38,7 +38,7 @@
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
 use crate::fd_matrix::assemble_d;
-use crate::group_spec::GroupSpecDefect;
+use crate::group_spec::{GroupSpec, GroupSpecDefect};
 use faer::Mat;
 use faer::linalg::solvers::Solve;
 
@@ -304,6 +304,27 @@ impl From<ZeroAreaTriangle> for AnisoFormFindError {
     }
 }
 
+/// Which force densities are free to vary: none ([`FreeSpec::Explicit`], every
+/// `q` given — the anchored family and explicit free-standing solves), or the
+/// non-reference group magnitudes ([`FreeSpec::GroupRatios`]), whose seed
+/// densities stand for `q` in the input contract.
+pub(crate) enum FreeSpec<'a> {
+    /// Every per-member density, as given.
+    Explicit(&'a [f64]),
+    /// A validated group spec, searched from its seeds.
+    GroupRatios(GroupSpec),
+}
+
+impl FreeSpec<'_> {
+    /// The per-member densities the input contract checks.
+    fn q(&self) -> &[f64] {
+        match self {
+            FreeSpec::Explicit(q) => q,
+            FreeSpec::GroupRatios(groups) => groups.seed_densities(),
+        }
+    }
+}
+
 /// A force-density problem whose inputs satisfy the input contract: lengths
 /// agree, every node index is in range, every density is admitted by its kind,
 /// every surface stress is admitted by its stencil, every node coordinate is
@@ -313,7 +334,7 @@ pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil>
     nodes: &'a [[f64; 3]],
     members: &'a [(usize, usize)],
     kinds: &'a [MemberKind],
-    q: &'a [f64],
+    spec: FreeSpec<'a>,
     anchors: &'a [usize],
     surfaces: &'a [(usize, usize, usize)],
     surface_stresses: &'a [S::Stress],
@@ -327,12 +348,13 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         nodes: &'a [[f64; 3]],
         members: &'a [(usize, usize)],
         kinds: &'a [MemberKind],
-        q: &'a [f64],
+        spec: FreeSpec<'a>,
         anchors: &'a [usize],
         surfaces: &'a [(usize, usize, usize)],
         surface_stresses: &'a [S::Stress],
     ) -> Result<Self, ForceDensityInputError> {
         let n = nodes.len();
+        let q = spec.q();
         if members.len() != kinds.len() || members.len() != q.len() {
             return Err(ForceDensityInputError::DimensionMismatch);
         }
@@ -372,7 +394,7 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
             nodes,
             members,
             kinds,
-            q,
+            spec,
             anchors,
             surfaces,
             surface_stresses,
@@ -391,7 +413,7 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
             self.nodes,
             self.members,
             self.kinds,
-            q,
+            FreeSpec::Explicit(q),
             self.anchors,
             self.surfaces,
             self.surface_stresses,
@@ -406,8 +428,14 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         self.members
     }
 
-    pub(crate) fn q(&self) -> &'a [f64] {
-        self.q
+    /// The per-member densities the contract checked: the given `q`, or a
+    /// group spec's seed densities.
+    pub(crate) fn q(&self) -> &[f64] {
+        self.spec.q()
+    }
+
+    pub(crate) fn spec(&self) -> &FreeSpec<'a> {
+        &self.spec
     }
 
     /// Node indices split into `(free, anchored)`, both ascending; an
@@ -569,7 +597,7 @@ pub fn form_find_anchored_surfaces(
         nodes,
         members,
         kinds,
-        q,
+        FreeSpec::Explicit(q),
         anchors,
         surfaces,
         surface_stresses,
@@ -633,7 +661,7 @@ where
         let d = assemble_combined_d::<S>(
             n,
             problem.members,
-            problem.q,
+            problem.q(),
             surfaces,
             problem.surface_stresses,
             &current,
@@ -1045,7 +1073,7 @@ pub fn form_find_anchored_surfaces_aniso(
         nodes,
         members,
         kinds,
-        q,
+        FreeSpec::Explicit(q),
         anchors,
         surfaces,
         surface_prestress,
