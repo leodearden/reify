@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
-import type { DiagnosticEntry } from '../panels';
+import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
+import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
   SAVE_CONFLICT_RELOAD_LABEL,
@@ -10,10 +10,10 @@ import {
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
+import { splitGridTracks } from './test_utils/gridTracks';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
-import { createEditorStore } from '../stores/editorStore';
 import { createViewportStore } from '../stores/viewportStore';
 
 // Mock Tauri APIs before any component imports
@@ -70,12 +70,13 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, and liveContentRef for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, liveContentRef, and onShowReferences for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
 let capturedEditorCompileDiagnostics: any = undefined;
 let capturedEditorLiveContentRef: ((getter: () => string | null) => void) | undefined = undefined;
+let capturedEditorOnShowReferences: ((results: ReferenceResult[]) => void) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
@@ -83,6 +84,7 @@ vi.mock('../editor/Editor', () => ({
     capturedEditorScrollToLocation = props.scrollToLocation;
     capturedEditorCompileDiagnostics = props.compileDiagnostics;
     capturedEditorLiveContentRef = props.liveContentRef;
+    capturedEditorOnShowReferences = props.onShowReferences;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -201,7 +203,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
+import App, { NEW_FILE_TEMPLATE, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -210,6 +212,7 @@ import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
+import { initDebugBridge as mockedInitDebugBridge } from '../debug';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -223,6 +226,7 @@ beforeEach(() => {
   capturedEditorScrollToLocation = undefined;
   capturedEditorCompileDiagnostics = undefined;
   capturedEditorLiveContentRef = undefined;
+  capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
@@ -685,9 +689,9 @@ describe('App async mount/cleanup race conditions', () => {
     // Flush macrotasks so setTimeout(0) callbacks execute
     await flushMacrotasks();
 
-    // After fix: the alive guard calls the composite unsub immediately,
-    // which calls all individual unlisten functions.
-    // With current code: unsub is assigned but never called → listeners LEAK
+    // The subscription set disposes the late composite unsub on arrival,
+    // which calls all individual unlisten functions; holding it instead would
+    // LEAK every listener.
     expect(meshUnlisten).toHaveBeenCalled();
     expect(valueUnlisten).toHaveBeenCalled();
     expect(constraintUnlisten).toHaveBeenCalled();
@@ -739,7 +743,7 @@ describe('App async mount/cleanup race conditions', () => {
     expect(bridge.onMeshUpdate).not.toHaveBeenCalled();
   });
 
-  it('unmount calls claudeEventUnsub cleanup function', async () => {
+  it('unmount detaches the Claude event listener', async () => {
     const claudeUnsub = vi.fn();
     vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValueOnce(claudeUnsub);
 
@@ -751,14 +755,14 @@ describe('App async mount/cleanup race conditions', () => {
     // Claude unsub should not have been called while component is alive
     expect(claudeUnsub).not.toHaveBeenCalled();
 
-    // Unmount — onCleanup should call claudeEventUnsub?.()
+    // Unmount — onCleanup disposes the subscription set, Claude listener included
     unmount();
 
     // Verify the Claude event unsubscribe was called during cleanup
     expect(claudeUnsub).toHaveBeenCalled();
   });
 
-  it('unmount calls sidecarCrashedUnsub cleanup function', async () => {
+  it('unmount detaches the sidecar-crashed listener', async () => {
     const sidecarCrashedUnlisten = vi.fn();
     vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValueOnce(sidecarCrashedUnlisten);
 
@@ -767,10 +771,10 @@ describe('App async mount/cleanup race conditions', () => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
 
-    // sidecarCrashedUnsub should not have been called while component is alive
+    // The sidecar-crashed unlisten should not have been called while component is alive
     expect(sidecarCrashedUnlisten).not.toHaveBeenCalled();
 
-    // Unmount — onCleanup should call sidecarCrashedUnsub?.()
+    // Unmount — onCleanup disposes the subscription set, sidecar-crashed listener included
     unmount();
 
     // Verify the sidecar-crashed unsubscribe was called during cleanup
@@ -796,15 +800,15 @@ describe('App async mount/cleanup race conditions', () => {
     // Unmount while subscribeToClaudeEvents is still pending
     unmount();
 
-    // Resolve the deferred subscribeToClaudeEvents — alive guard should fire
+    // Resolve the deferred subscribeToClaudeEvents — the handle arrives after disposal
     resolveClaudeSub(unlistenClaude);
 
     // Flush macrotasks so setTimeout(0) callbacks execute
     await flushMacrotasks();
 
-    // The alive guard (lines 260-263) calls unlistenClaude() and returns early,
-    // never assigning claudeEventUnsub. So onCleanup's claudeEventUnsub?.() is a no-op.
-    // The unlisten should be called exactly once — via the alive guard, not via onCleanup.
+    // The subscription set disposes a handle that arrives after its disposeAll on
+    // arrival and never holds it, so onCleanup's disposeAll cannot call it again.
+    // The unlisten should be called exactly once — on arrival, not via onCleanup.
     expect(unlistenClaude).toHaveBeenCalledTimes(1);
   });
 });
@@ -1000,6 +1004,8 @@ describe('App navigation wiring', () => {
       return () => {};
     });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
+    // testState opens no files, so the reveal must open the named one first.
+    vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '/project/bracket.ri', content: 'structure Bracket {}' });
 
     await renderAndWaitForReady();
 
@@ -1021,6 +1027,176 @@ describe('App navigation wiring', () => {
         end_column: 9,
       });
     });
+    expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+    expect(capturedEditorStore.state.activeFile).toBe('/project/bracket.ri');
+  });
+
+  function twoFileState(active: string, other: string): GuiState {
+    return {
+      ...emptyState,
+      files: [
+        { path: active, content: '' },
+        { path: other, content: '' },
+      ],
+    };
+  }
+
+  /** Renders App with both files open and `active` the active tab. */
+  async function renderWithTabs(active: string, other: string) {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(twoFileState(active, other)));
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore?.state.openFiles).toHaveLength(2));
+    capturedEditorStore.setActiveFile(active);
+  }
+
+  it('navigate-to-source for an open, non-active tab activates it without opening it again', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    await renderWithTabs('/project/bracket.ri', '/project/gear.ri');
+
+    capturedNavigateCb!({ file: '/project/gear.ri', line: 3, column: 2, end_line: 5, end_column: 7 });
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/project/gear.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/project/gear.ri', line: 3, column: 2, end_line: 5, end_column: 7,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('viewport click whose source is an open, non-active tab activates it, scrolls, and selects', async () => {
+    const span = { file_path: '/proj/b.ri', line: 4, column: 1, end_line: 9, end_column: 2 };
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue(span);
+    await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+
+    capturedDualViewportProps.onSelect('Bracket');
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/b.ri'));
+    await waitFor(() => expect(capturedEditorScrollToLocation?.()).toEqual(span));
+    expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+  });
+
+  it('viewport click whose source cannot be opened still selects, warns, and raises no toast', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+        file_path: '/proj/missing.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+      });
+      vi.mocked(bridge.openFile).mockRejectedValueOnce(new Error('No such file or directory'));
+      await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+
+      capturedDualViewportProps.onSelect('Bracket');
+
+      await waitFor(() =>
+        expect(warn.mock.calls.some((args) => args.join(' ').includes('missing.ri'))).toBe(true),
+      );
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+      expect(
+        screen.queryAllByTestId('toast').filter((t) => t.textContent?.includes('missing.ri')),
+      ).toHaveLength(0);
+      expect(capturedEditorStore.state.activeFile).toBe('/proj/a.ri');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a viewport reveal still opening its file does not override a newer navigate-to-source', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+      file_path: '/proj/slow.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+    });
+    const slowOpen = deferred<{ path: string; content: string }>();
+    vi.mocked(bridge.openFile).mockReturnValueOnce(slowOpen.promise);
+    await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+    const bSpan = { file_path: '/proj/b.ri', line: 3, column: 2, end_line: 5, end_column: 7 };
+
+    capturedDualViewportProps.onSelect('Bracket');
+    await waitFor(() => expect(bridge.openFile).toHaveBeenCalledWith('/proj/slow.ri'));
+    capturedNavigateCb!({ file: '/proj/b.ri', line: 3, column: 2, end_line: 5, end_column: 7 });
+    await waitFor(() => expect(capturedEditorScrollToLocation?.()).toEqual(bSpan));
+    slowOpen.resolve({ path: '/proj/slow.ri', content: '' });
+    await flushMacrotasks();
+
+    expect(capturedEditorStore.state.activeFile).toBe('/proj/b.ri');
+    expect(capturedEditorStore.state.openFiles.some((f: { path: string }) => f.path === '/proj/slow.ri')).toBe(false);
+    expect(capturedEditorScrollToLocation?.()).toEqual(bSpan);
+  });
+});
+
+describe('Find-uses panel navigation (task 9203)', () => {
+  const mainOnlyState: GuiState = {
+    ...emptyState,
+    files: [{ path: '/proj/main.ri', content: 'structure Main {}' }],
+  };
+
+  function reference(uri: string): ReferenceResult {
+    return { uri, line: 2, character: 4, endLine: 2, endCharacter: 9 };
+  }
+
+  /** Renders App with main.ri active; the returned function shows `results` and clicks the first row. */
+  async function renderWithReferences(results: ReferenceResult[]): Promise<() => Promise<void>> {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(mainOnlyState));
+    render(() => <App />);
+    await waitFor(() => expect(capturedEditorOnShowReferences).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore?.state.activeFile).toBe('/proj/main.ri'));
+    return async () => {
+      capturedEditorOnShowReferences!(results);
+      fireEvent.click(await waitFor(() => screen.getByTestId('find-use-row')));
+    };
+  }
+
+  it('cross-file, not open: opens the PATH (not the URI), activates it, and scrolls under its key', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/parts.ri')]);
+    vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '/proj/parts.ri', content: 'structure Part {}' });
+
+    await clickReference();
+
+    await waitFor(() => expect(bridge.openFile).toHaveBeenCalledWith('/proj/parts.ri'));
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/parts.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('find-uses-panel')).toBeNull());
+  });
+
+  it('cross-file, already open: activates the existing tab without opening it again', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/parts.ri')]);
+    capturedEditorStore.openFile({ path: '/proj/parts.ri', content: 'structure Part {}' });
+    capturedEditorStore.setActiveFile('/proj/main.ri');
+
+    await clickReference();
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/parts.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('same-file: scrolls under the path spelling without opening anything', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/main.ri')]);
+
+    await clickReference();
+
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/main.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(capturedEditorStore.state.activeFile).toBe('/proj/main.ri');
   });
 });
 
@@ -1043,6 +1219,27 @@ describe('App initialization loading state', () => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
     expect(screen.queryByTestId('app-loading')).toBeNull();
+  });
+
+  it('a pending kernel-status fetch delays none of the subscriptions ahead of the kernel-status row', async () => {
+    const kernelStatus = deferred<bridge.KernelStatus>();
+    vi.mocked(bridge.getKernelStatus).mockReturnValueOnce(kernelStatus.promise);
+
+    render(() => <App />);
+
+    await waitFor(() => expect(bridge.onFocusEntity).toHaveBeenCalledTimes(1));
+    expect(bridge.onMeshUpdate).toHaveBeenCalledTimes(1);
+    expect(bridge.onFileChanged).toHaveBeenCalledTimes(1);
+    expect(bridge.onFileRemoved).toHaveBeenCalledTimes(1);
+    expect(bridge.onSerializationError).toHaveBeenCalledTimes(1);
+    expect(bridge.onKernelStatus).not.toHaveBeenCalled();
+    expect(screen.getByTestId('app-loading')).toBeTruthy();
+
+    kernelStatus.resolve({ available: true, message: null });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    expect(bridge.onKernelStatus).toHaveBeenCalledTimes(1);
   });
 
   it('shows app-error with retry button when getInitialState rejects', async () => {
@@ -1838,6 +2035,7 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
           freshness: 'final',
           dimension: 'Volume',
           si_value: 0.00704500224,
+          declared_dimension: 'Volume',
         },
       ],
       constraints: [],
@@ -1986,6 +2184,7 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
       freshness: 'final',
       dimension: 'Money',
       si_value: 5,
+      declared_dimension: 'Money',
     });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(state));
     vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
@@ -2436,6 +2635,47 @@ describe('App pickSavePath error boundary', () => {
 });
 
 describe('App initApp concurrent execution guard', () => {
+  afterEach(() => {
+    vi.mocked(listen).mockResolvedValue(() => {});
+    vi.mocked(mockedInitDebugBridge).mockResolvedValue(() => {});
+  });
+
+  it('after an init failure and Retry exactly one debug-request listener is live (B7)', async () => {
+    const liveDebugListeners = new Set<object>();
+    vi.mocked(mockedInitDebugBridge).mockImplementation(initDebugBridge);
+    vi.mocked(listen).mockImplementation(async (event) => {
+      if (event !== 'debug-request') return () => {};
+      const token = {};
+      liveDebugListeners.add(token);
+      return () => {
+        liveDebugListeners.delete(token);
+      };
+    });
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    const debugRequestRegistrations = () =>
+      vi.mocked(listen).mock.calls.filter(([event]) => event === 'debug-request');
+    await waitFor(() => {
+      expect(debugRequestRegistrations().length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(liveDebugListeners.size).toBe(1);
+    expect(debugRequestRegistrations()).toHaveLength(1);
+
+    unmount();
+    expect(liveDebugListeners.size).toBe(0);
+  });
+
   it('rapid double-click on Retry does not start two concurrent initApp flights', async () => {
     // First getInitialState rejects → error state
     vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
@@ -2516,8 +2756,8 @@ describe('App initApp concurrent execution guard', () => {
     vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(newConstraintRmUnsub);
     vi.mocked(bridge.onFileChanged).mockResolvedValue(newFileUnsub);
 
-    // Unmount — cleanup should call both the composite unsub (which calls
-    // priorUnsub) and fileChangedUnsub (priorFileUnsub)
+    // Unmount — disposing the subscription set calls both the composite unsub
+    // (which calls priorUnsub) and the file-changed unlisten (priorFileUnsub)
     unmount();
 
     // All prior subscription cleanup functions should have been called
@@ -3634,13 +3874,13 @@ describe('App serialization-error subscription', () => {
     // Unmount while onSerializationError is still pending
     unmount();
 
-    // Resolve the deferred promise — alive guard should fire
+    // Resolve the deferred promise — the handle arrives after disposal
     resolve(unlistenSerialization);
 
-    // Flush so the alive guard's unlistenSerialization() call executes
+    // Flush so the on-arrival unlistenSerialization() call executes
     await flushMacrotasks();
 
-    // The alive guard (App.tsx:267-269) calls it once; onCleanup's serializationErrorUnsub?.() is a no-op.
+    // The subscription set disposes it once on arrival and never holds it, so onCleanup cannot call it again.
     expect(unlistenSerialization).toHaveBeenCalledTimes(1);
   });
 });
@@ -5527,6 +5767,63 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
     // Exactly one toast for this pair — no duplicate stacked.
     expect(screen.getAllByTestId('toast').length).toBe(1);
   });
+
+  // No-over-firing pin for the store-owned tree version (PRD §4.5 B8′): one
+  // idle refetch is one regeneration, so one demand push and one prompt.
+  it('(h) B8′: an idle refetch fires exactly one syncDemand and one rebind prompt per stale path', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // show → ghost COWs into a user view: the regeneration's user:* branch
+    // leaves `explicit` untouched, so only the tree version can re-fire the
+    // demand sync.
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+    await waitFor(() => screen.getByTestId('toast'));
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+
+    expect(screen.getAllByTestId('toast').length).toBe(1);
+    expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBe(before + 1);
+  });
+
+  // A prompt closed without an answer waits for the next tree update; an
+  // explicit change alone (an unrelated eye toggle) must not bring it back.
+  it('(i) a prompt closed with X re-surfaces on the next tree update, not on an eye toggle', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('Assembly.flange.geometry'),
+      makeNode('Assembly.shaft'),
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    const renamedTree = () => [makeNode('Assembly.bolt_flange.geometry'), makeNode('Assembly.shaft')];
+    await triggerTreeUpdate(evalRef.get()!, renamedTree(), 2);
+    await waitFor(() => screen.getByTestId('toast'));
+    fireEvent.click(within(screen.getByTestId('toast')).getByRole('button', { name: /^close$/i }));
+    await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
+
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.shaft'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('toast')).toBeNull();
+
+    await triggerTreeUpdate(evalRef.get()!, renamedTree(), 3);
+    await waitFor(() => expect(screen.getAllByTestId('toast').length).toBe(1));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5581,6 +5878,21 @@ describe('App persistence wiring — flush on file switch', () => {
 });
 
 // ── MechanismPanel integration (step-21) ─────────────────────────────────────
+
+/** One prismatic-joint mechanism: enough to mount MechanismPanel in the side panel. */
+function singleJointMechanism() {
+  return [
+    {
+      cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
+      joints: [{
+        joint_index: 0, kind: 'prismatic', dimension: 'length',
+        range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
+        driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
+        binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
+      }],
+    },
+  ];
+}
 
 describe('App MechanismPanel integration', () => {
   it('renders mechanism-panel inside the side panel', async () => {
@@ -5645,40 +5957,20 @@ describe('App MechanismPanel integration', () => {
   // container into a 4px slot and clipping its content under overflow:hidden.
   // Assert track count == direct-child count for the affected configurations.
   it('side-panel grid track count matches child count with mechanism + chat', async () => {
-    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
-      {
-        cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
-        joints: [{
-          joint_index: 0, kind: 'prismatic', dimension: 'length',
-          range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
-          driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
-          binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
-        }],
-      },
-    ]);
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue(singleJointMechanism());
 
     await renderAndWaitForReady();
     await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId('chat-panel')).toBeTruthy());
 
     const sidePanel = screen.getByTestId('side-panel') as HTMLElement;
-    const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
+    const tracks = splitGridTracks(sidePanel.style.gridTemplateRows).length;
     const children = sidePanel.children.length;
     expect(tracks).toBe(children);
   });
 
   it('side-panel grid track count matches child count with mechanism + no chat', async () => {
-    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
-      {
-        cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
-        joints: [{
-          joint_index: 0, kind: 'prismatic', dimension: 'length',
-          range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
-          driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
-          binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
-        }],
-      },
-    ]);
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue(singleJointMechanism());
 
     await renderAndWaitForReady();
     await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
@@ -5693,9 +5985,106 @@ describe('App MechanismPanel integration', () => {
 
     await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
 
-    const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
+    const tracks = splitGridTracks(sidePanel.style.gridTemplateRows).length;
     const children = sidePanel.children.length;
     expect(tracks).toBe(children);
+  });
+});
+
+// ─── Side-panel entry list: every child owns its own track (β #9063) ─────────
+
+describe('App side-panel entry list (β #9063)', () => {
+  /** The track of the side-panel child that is, or contains, the element with `testId`. */
+  function trackHolding(sidePanel: HTMLElement, testId: string): string {
+    const el = screen.getByTestId(testId);
+    const children = Array.from(sidePanel.children);
+    const index = children.findIndex((child) => child === el || child.contains(el));
+    expect(index).toBeGreaterThanOrEqual(0);
+    return splitGridTracks(sidePanel.style.gridTemplateRows)[index];
+  }
+
+  async function closeChat(): Promise<void> {
+    screen.getByTestId('claude-status').click();
+    await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
+  }
+
+  it('buckling + FEA + chat mounted: one track per child, chat in its minmax(160px, 1fr) track', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
+      ...emptyState,
+      fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'RotationZ'] }],
+    }));
+    let modeShapeCallback: ((f: any) => void) | undefined;
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(async (cb: (f: any) => void) => {
+      modeShapeCallback = cb;
+      return vi.fn();
+    });
+    // BucklingPanel probes getContext on mount; jsdom has no canvas backend.
+    const getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    try {
+      await renderAndWaitForReady();
+      await waitFor(() => expect(modeShapeCallback).toBeDefined());
+      modeShapeCallback!({ mode_index: 0, phase: 0.0, displaced_positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] });
+      modeShapeCallback!({
+        mode_index: 0,
+        phase: 1.0,
+        displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+        eigenvalue: 1000,
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('buckling-panel')).toBeTruthy();
+        expect(screen.getByTestId('fea-diagnostics-panel')).toBeTruthy();
+        expect(screen.getByTestId('chat-panel')).toBeTruthy();
+      });
+
+      const sidePanel = screen.getByTestId('side-panel');
+      expect(splitGridTracks(sidePanel.style.gridTemplateRows)).toHaveLength(sidePanel.children.length);
+      expect(trackHolding(sidePanel, 'chat-panel')).toBe('minmax(160px, 1fr)');
+      expect(trackHolding(sidePanel, 'splitter-constraint')).toBe('4px');
+      expect(trackHolding(sidePanel, 'buckling-panel')).toBe('auto');
+      expect(trackHolding(sidePanel, 'fea-diagnostics-panel')).toBe('auto');
+    } finally {
+      getContextSpy.mockRestore();
+    }
+  });
+
+  it('solver progress overlay renders outside the side-panel grid', async () => {
+    let progressCb: ((p: any) => void) | undefined;
+    vi.mocked((bridge as any).onSolverProgress).mockImplementation(async (cb: (p: any) => void) => {
+      progressCb = cb;
+      return () => {};
+    });
+    await renderAndWaitForReady();
+    await waitFor(() => expect(progressCb).toBeDefined());
+
+    vi.useFakeTimers();
+    try {
+      progressCb!({ solver_kind: 'cg', iter: 1, residual: 0.5 });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const overlay = screen.getByTestId('solver-progress-overlay');
+      const sidePanel = screen.getByTestId('side-panel');
+      expect(sidePanel.contains(overlay)).toBe(false);
+      expect(screen.getByTestId('app-layout').contains(overlay)).toBe(true);
+      expect(splitGridTracks(sidePanel.style.gridTemplateRows)).toHaveLength(sidePanel.children.length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('chat closed with no optional panel: the constraint panel absorbs the remaining height', async () => {
+    await renderAndWaitForReady();
+    await closeChat();
+
+    expect(screen.getByTestId('side-panel').style.gridTemplateRows).toMatch(/^\d+px 4px \d+px 4px 1fr$/);
+  });
+
+  it('chat closed with a mechanism mounted: no track absorbs the remaining height', async () => {
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue(singleJointMechanism());
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
+    await closeChat();
+
+    expect(screen.getByTestId('side-panel').style.gridTemplateRows).toMatch(/^\d+px 4px \d+px 4px \d+px auto$/);
   });
 });
 
@@ -6705,26 +7094,6 @@ describe('App save-conflict resolution clears the reload-prompt banner', () => {
   });
 });
 
-// Counts CSS grid tracks in a `grid-template-rows` value.
-// Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
-// keep their internal whitespace from being mistaken for a track boundary.
-function countGridTracks(template: string): number {
-  let depth = 0;
-  let inTrack = false;
-  let count = 0;
-  for (const ch of template) {
-    if (ch === '(') { depth++; inTrack = true; }
-    else if (ch === ')') { depth--; inTrack = true; }
-    else if (depth === 0 && /\s/.test(ch)) {
-      if (inTrack) { count++; inTrack = false; }
-    } else {
-      inTrack = true;
-    }
-  }
-  if (inTrack) count++;
-  return count;
-}
-
 // ── AutoResolvePanel integration (step-13) ────────────────────────────────────
 
 describe('App AutoResolvePanel integration', () => {
@@ -6790,7 +7159,7 @@ describe('App AutoResolvePanel integration', () => {
     // (5) While the panel is mounted, the side-panel grid must still have one
     // track per child — a desync collapses the chat pane into a 4px strip.
     const sidePanel = screen.getByTestId('side-panel');
-    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
+    expect(splitGridTracks(sidePanel.style.gridTemplateRows).length).toBe(sidePanel.children.length);
   });
 });
 
@@ -7137,14 +7506,14 @@ describe('App buckling mode-shape-frame subscription (task 6035)', () => {
   });
 
   it('(d) unmounting while the subscription is still in flight still detaches the late listener', async () => {
-    // Case (c) covers the settled subscription, where onCleanup detaches via
-    // the assigned `bucklingFrameUnsub`. This case covers the race the other
-    // side of that assignment: if the component unmounts while
-    // `await subscribeModeShapeFrames(...)` is still pending, the assignment
-    // never happens, so onCleanup has nothing to call — initApp's own
-    // `if (!alive) { unlistenBuckling(); return; }` guard (App.tsx:1673-1676)
-    // is the ONLY thing that can detach it. Deleting that guard leaks a live
-    // Tauri listener per mount, and case (c) would not notice.
+    // Case (c) covers the settled subscription, which onCleanup detaches by
+    // disposing the subscription set that holds it. This case covers the race
+    // on the other side of that hold: if the component unmounts while
+    // `subscribeModeShapeFrames(...)` is still pending, the handle is never
+    // held, so onCleanup has nothing to call — the set's dispose-on-arrival of
+    // a handle that outlived its disposeAll is the ONLY thing that can detach
+    // it. Losing that leaks a live Tauri listener per mount, and case (c)
+    // would not notice.
     const gate = deferred<() => void>();
     vi.mocked((bridge as any).onModeShapeFrame).mockImplementation((cb: (f: any) => void) => {
       modeShapeCallback = cb;
@@ -7152,7 +7521,7 @@ describe('App buckling mode-shape-frame subscription (task 6035)', () => {
     });
 
     // NOT renderAndWaitForReady(): initApp parks on the pending subscribe
-    // promise, so setInitPhase('ready') (App.tsx:1706) is downstream of the
+    // promise, so setInitPhase('ready') is downstream of the
     // very await this case suspends and `app-layout` would never appear.
     // Waiting on the subscribe call itself is the correct sync point here.
     const { unmount } = render(() => <App />);
@@ -7178,7 +7547,7 @@ describe('App buckling mode-shape-frame subscription (task 6035)', () => {
 // rejecting implementation of its own.
 describe('App buckling mode-shape-frame subscription — failure path (task 6035)', () => {
   it('a rejected subscription degrades gracefully: App still reaches ready, no BucklingPanel', async () => {
-    // Positive assertion on the catch arm at App.tsx:1678-1680. The buckling
+    // Positive assertion on the buckling row's onFailure in App.tsx. The buckling
     // subscription is best-effort: a bridge that cannot deliver mode-shape
     // frames must not abort initApp or wedge the App short of ready.
     //
@@ -7264,9 +7633,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
   // out-of-scope there: it failed for a live-code reason, not a mock-factory
   // one — the demand-sync selector took its first tracked read before the entity
   // tree loaded, hitting the same empty-tree short-circuit case (a) relies on,
-  // and so subscribed to nothing (esc-6045-1). Restored and re-attributed to task
-  // #6052, which threads tree-readiness into the selector; the full rationale is
-  // the `treeGeneration` @param on `createSelectiveDemandSync`.
+  // and so subscribed to nothing (esc-6045-1). Restored under task #6052; the
+  // selector now re-subscribes through viewStateStore's treeVersion, which every
+  // query reads before that short-circuit (PRD §4.5).
   it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published({
       ...emptyState,
@@ -7302,8 +7671,8 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
     // viewStateStore's `cycleCascading`: show -> ghost -> hidden.
     fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
     fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
-    // DesignTree renders aria-label from App's `effectiveVisibility` memo, so
-    // this also proves the click actually reached the view-state store.
+    // DesignTree renders aria-label from its row's getEffectiveVisibility memo,
+    // so this also proves the click actually reached the view-state store.
     expect(
       screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
     ).toBe('hidden');
@@ -7317,6 +7686,50 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
         expect(payload).not.toContain('Bracket#realization[0]');
         // Non-vacuity anchor: an implementation that pushed an EMPTY demand set
         // would satisfy the exclusion above on its own.
+        expect(payload).toContain('Bracket#realization[1]');
+      },
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+  });
+
+  // Unlike (b), the tree resolves only AFTER the layout has mounted, so the
+  // DesignTree rows and their eye memos exist before the store has a tree:
+  // the production slow-backend ordering (PRD §4.5 B8).
+  it('(c) B8: with the entity tree arriving after mount, the first eye toggle reaches the DesignTree eye and bridge.syncDemand', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
+      ...emptyState,
+      meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
+    }));
+    const tree = deferred<EntityTreeNode[]>();
+    vi.mocked(bridge.getEntityTree).mockImplementation(() => tree.promise);
+
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('eye-icon-Bracket#realization[0]')).toBeNull();
+
+    tree.resolve([
+      makeNode({ entity_path: 'Bracket#realization[0]', kind: 'realization', has_mesh: true }),
+      makeNode({ entity_path: 'Bracket#realization[1]', kind: 'realization', has_mesh: true }),
+    ]);
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Bracket#realization[0]')).toBeTruthy());
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+    // Quiescence before the baseline, for the same reason as (b).
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    expect(
+      screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
+    ).toBe('hidden');
+
+    await waitFor(
+      () => {
+        expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBeGreaterThan(before);
+        const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+        expect(payload).not.toContain('Bracket#realization[0]');
         expect(payload).toContain('Bracket#realization[1]');
       },
       { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
@@ -7723,7 +8136,7 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
     expect(sidePanel.contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(false);
 
     // Side-panel grid invariant: tracked children == template tracks (no 8px strip)
-    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
+    expect(splitGridTracks(sidePanel.style.gridTemplateRows).length).toBe(sidePanel.children.length);
   });
 
   it('DEBUG OFF: neither panel nor overlay renders in the layout', async () => {
@@ -7731,168 +8144,6 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
 
     expect(screen.queryByTestId('warm-pool-debug-panel')).toBeNull();
     expect(screen.queryByTestId('warm-pool-debug-overlay')).toBeNull();
-  });
-});
-
-// ── navigateToDiagnostic unit tests (task-4403 γ) ────────────────────────────
-
-function makeDiagnosticEntry(overrides: Partial<DiagnosticEntry> = {}): DiagnosticEntry {
-  return {
-    file_path: 'main.ri',
-    line: 5, column: 2, end_line: 5, end_column: 10,
-    severity: 'Error', message: 'test error', code: null, source: 'compile',
-    ...overrides,
-  };
-}
-
-describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
-  it('has_location===false → setScrollToLocation, bridge openFile, and store.setActiveFile are NOT called', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
-
-      const openFileSpy = vi.fn().mockResolvedValue({ path: 'main.ri', content: '' });
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      await navigateToDiagnostic(
-        makeDiagnosticEntry({ file_path: 'main.ri', has_location: false }),
-        { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy },
-      );
-
-      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
-      expect(openFileSpy).not.toHaveBeenCalled();
-      expect(setActiveFileSpy).not.toHaveBeenCalled();
-
-      dispose();
-    });
-  });
-
-  it('same-file diagnostic → setScrollToLocation called once with span; bridge openFile and store.setActiveFile NOT called', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
-
-      const openFileSpy = vi.fn();
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({
-        file_path: 'main.ri',
-        line: 7, column: 4, end_line: 7, end_column: 9,
-      });
-      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-
-      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
-      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
-        file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9,
-      });
-      expect(openFileSpy).not.toHaveBeenCalled();
-      expect(setActiveFileSpy).not.toHaveBeenCalled();
-
-      dispose();
-    });
-  });
-
-  it('cross-file, already open → store.setActiveFile called, bridge openFile NOT called, setScrollToLocation called once', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      // Open main.ri (active) then helper.ri (also open, but not active)
-      store.openFile({ path: 'main.ri', content: '' });
-      store.openFile({ path: 'helper.ri', content: '' });
-      // After openFile helper.ri, activeFile is helper.ri; make main.ri active
-      store.setActiveFile('main.ri');
-      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
-
-      const openFileSpy = vi.fn();
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({
-        file_path: 'helper.ri',
-        line: 10, column: 3, end_line: 10, end_column: 8,
-      });
-      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-
-      // Active file must have switched to helper.ri (canonical key)
-      expect(store.state.activeFile).toBe('helper.ri');
-      // Bridge openFile must NOT have been called (file was already in openFiles)
-      expect(openFileSpy).not.toHaveBeenCalled();
-      // setScrollToLocation must have been called exactly once with the helper.ri span
-      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
-      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
-        file_path: 'helper.ri', line: 10, column: 3, end_line: 10, end_column: 8,
-      });
-
-      dispose();
-    });
-  });
-
-  it('cross-file, NOT open → bridge openFile called, file loaded into store (active), setScrollToLocation called once', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-      // helper.ri is NOT in openFiles
-
-      const helperFileData = { path: 'helper.ri', content: 'structure Helper {}' };
-      const openFileSpy = vi.fn().mockResolvedValue(helperFileData);
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({
-        file_path: 'helper.ri',
-        line: 2, column: 1, end_line: 2, end_column: 15,
-      });
-      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-
-      // Bridge openFile must have been called with the diagnostic's file path
-      expect(openFileSpy).toHaveBeenCalledTimes(1);
-      expect(openFileSpy).toHaveBeenCalledWith('helper.ri');
-      // File must now be in the store and active
-      expect(store.state.openFiles.some(f => f.path === 'helper.ri')).toBe(true);
-      expect(store.state.activeFile).toBe('helper.ri');
-      // setScrollToLocation called once AFTER the open
-      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
-      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
-        file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15,
-      });
-
-      dispose();
-    });
-  });
-
-  it('open-failure → showToast called with error, setScrollToLocation NOT called, activeFile unchanged', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-
-      const diskError = new Error('disk read error');
-      const openFileSpy = vi.fn().mockRejectedValue(diskError);
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({ file_path: 'missing.ri' });
-
-      // In RED state, navigateToDiagnostic propagates the rejection.
-      // Catch it here so assertions can still run.
-      try {
-        await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-      } catch {
-        // Expected in RED state — step-8 wraps in try/catch so it won't throw.
-      }
-
-      expect(showToastSpy).toHaveBeenCalledTimes(1);
-      expect(showToastSpy).toHaveBeenCalledWith(
-        expect.stringContaining('missing.ri'),
-        'error',
-      );
-      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
-      expect(store.state.activeFile).toBe('main.ri');
-
-      dispose();
-    });
   });
 });
 

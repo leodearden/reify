@@ -40,10 +40,10 @@
 //! that has nothing to do with it; the skip is REPORTED, and pinned by name and cause in
 //! [`KNOWN_SKIPS`], so it can never grow into a silent hole.
 
-use crate::eval_gate_support;
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::Engine;
 use reify_ir::ExportFormat;
+use reify_test_support::examples_corpus::discover_ri_files;
 use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
 
 /// The `examples/` subtree whose contribution is asserted separately, so a reorg that
@@ -289,6 +289,7 @@ fn realize(rel: &str, compiled: &reify_compiler::CompiledModule) -> SweepOutcome
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(kernel)),
     );
@@ -317,9 +318,7 @@ fn examples_corpus() -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
     let root = manifest_dir.join("../..");
     let root = root.canonicalize().unwrap_or(root);
 
-    let mut files = Vec::new();
-    eval_gate_support::collect_ri_files(&root.join("examples"), &mut files);
-    files.sort();
+    let files = discover_ri_files(&root.join("examples"));
     (root, files)
 }
 
@@ -506,7 +505,7 @@ fn the_corpus_checker_fires_on_a_seeded_bare_length() {
         3,
         "a bare box draws one coded rejection per slot; got: {messages:?}"
     );
-    for slot in ["width", "height", "depth"] {
+    for slot in ["size_x", "size_y", "size_z"] {
         assert!(
             messages
                 .iter()

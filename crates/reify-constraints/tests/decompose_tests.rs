@@ -3,8 +3,8 @@
 //! Every call below passes an EMPTY `dependent_cells` (`&[]`), and that is
 //! itself an assertion, not boilerplate: PRD2 α's INVARIANT D1 requires models
 //! with no dependent cells to decompose BYTE-IDENTICALLY to pre-α. An empty
-//! slice yields an empty `dependent_cell_auto_reads` map, which makes
-//! `expand_refs_through_dependent_cells` insert nothing — so these expectations
+//! slice yields an empty `dependent_cell_auto_reads` map, from which
+//! `dependent_reads::reach_of` reaches nothing — so these expectations
 //! are exactly the pre-α ones and must never move. The transitive (non-empty
 //! `dependent_cells`) behaviour is pinned by the layer-2 units in
 //! `decompose.rs`'s own `mod tests`.

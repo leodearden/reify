@@ -51,6 +51,19 @@ scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 # pair at the bottom of this file. Without this row a --scope branch diff
 # touching only the .py selects no infra test at all.
 tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
+# Task 8678: the adoption-ratchet data table and engine select its wrapper.
+tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
+tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
+# Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
+docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_stats.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_sources.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_model.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py    tests/infra/test_e3_analysis.sh
+tests/infra/test_e3_analysis.py    tests/infra/test_e3_analysis.sh
+tests/infra/test_e3_sources.py    tests/infra/test_e3_analysis.sh
+tests/infra/test_e3_model.py    tests/infra/test_e3_analysis.sh
+tests/infra/e3_analysis_fixtures.py    tests/infra/test_e3_analysis.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
@@ -83,6 +96,28 @@ scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 # refusal path (Block I). The row above maps the artifact only to the pool
 # suite, so that assertion would not be selected on a branch-scope verify.
 scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base.sh
+# Task 9246: the fingerprint-consult liveness trim, shared by refresh-warm-base.sh
+# and the leo-laptop _merge-verify trim timer, pinned by its own .py suite and,
+# through the refresh that calls it, by test_refresh_warm_base.sh Block LIVE.
+scripts/prune-unconsulted-target.sh  tests/infra/test_prune_unconsulted_target.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_refresh_warm_base.sh
+tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted_target.sh
+# ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
+# 3b to that sibling (no second inline copy, no silent skip when it is missing).
+scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
+# respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape.
+scripts/gc-worktree-targets.sh       tests/infra/test_gc_worktree_targets.sh
+tests/infra/test_gc_worktree_targets.py  tests/infra/test_gc_worktree_targets.sh
+# Task 9246: leo-laptop's _merge-verify trim units, the deploy contract
+# dark_factory's install_laptop_merge_verify_trim.sh checks (it reads the prune
+# and gc scripts too), and the service's ExecStart run against a fixture.
+deploy/systemd/reify-merge-verify-trim.service    tests/infra/test_merge_verify_trim_units.sh
+deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_trim_units.sh
+tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
+scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
@@ -191,6 +226,9 @@ scripts/provision-warm-lane-fs.sh    tests/infra/test_warm_lane_sizing_lifecycle
 # through the full --scope all gate.
 tests/infra/run-all-classification.manifest    tests/infra/test_run_all_classification.sh
 tests/infra/run-all-classification-lib.sh      tests/infra/test_run_all_classification.sh
+# Task 9441: run_all.sh's per-member budget lib; every run_all*-driving suite
+# spawns its members through it.
+tests/infra/run-all-member-budget-lib.sh    tests/infra/test_run_all*.sh
 tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classification.sh
 
 # Task 5252 mechanical early gate: fail verify (naming the offending file) when
@@ -244,6 +282,7 @@ scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
 # (see that manifest's TRADEOFF BREADCRUMB). The pole fires only for tasks
 # touching that exact doc, bounded by the map's existing per-test timeout.
 docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_compile_gate.sh
+docs/notes/verify-pipeline-knobs.md                          tests/infra/test_verify_policy.sh
 docs/notes/verify-scope-throughput.md                        tests/infra/test_verify_throughput.sh
 docs/notes/linker-rustlld-vs-mold-bench.md                   tests/infra/test_linker_config.sh
 docs/notes/lean-debuginfo-bench.md                           tests/infra/test_lean_debuginfo_profile.sh
@@ -258,6 +297,9 @@ docs/notes/cargo-incremental-persistent-lane-bench.md        tests/infra/test_ca
 # scripts/verify.sh build_plan's DF_VERIFY_ROLE=merge gate).
 scripts/occt-scope-lib.sh            tests/infra/test_verify_*.sh
 scripts/affected-crates-lib.sh       tests/infra/test_verify_*.sh
+# The path-attribution and compile-closure home both libs above read (task 8662).
+scripts/reify_path_attribution.py    tests/infra/test_affected_crates_lib.sh
+scripts/reify_path_attribution.py    tests/infra/test_verify_*.sh
 scripts/release-scope-lib.sh         tests/infra/test_verify_*.sh
 scripts/cpu-admit.sh                 tests/infra/test_verify_*.sh
 # cpu-admit.sh also gets its own dedicated integration guard (task 5125
@@ -280,6 +322,17 @@ hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate
 # select_infra_tests() dedups globs by whole token, so both suites are selected.
 hooks/reference-transaction          tests/infra/test_stash_guard.sh
 hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
+# Task 8671: dark-factory's mark/unmark CLI and the yaml commands that name it
+# (test_reference_transaction_gate.sh's B8 runs both faces).
+scripts/main-gate-mark.sh            tests/infra/test_reference_transaction_gate.sh
+scripts/main-gate-mark.sh            tests/infra/test_land_*.sh
+dark-factory-orchestrator.yaml       tests/infra/test_reference_transaction_gate.sh
+# Task 8671: test_land_script.sh runs the real lib and reference-transaction
+# and asserts their bound-sanction log lines; test_reference_transaction_gate.sh
+# (B5') runs the real pre-commit as a mark site.
+hooks/main-gate-lib.sh               tests/infra/test_land_*.sh
+hooks/reference-transaction          tests/infra/test_land_*.sh
+hooks/pre-commit                     tests/infra/test_reference_transaction_gate.sh
 
 # Task 5259 (W4c): the ambient-isolation lib's hostile+baseline disambiguation
 # is guarded by BOTH the consumer (test_run_all_ambient_isolation.sh) and the
@@ -304,6 +357,19 @@ crates/reify-eval/src/test_runner.rs                tests/infra/test_compute_tra
 # the gate script selected zero infra tests. Mirrors the
 # check-compute-trampoline-registration.sh row above.
 scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
+
+# Task 6202: scripts/lib_rust_production_view.sh is the SINGLE copy of the Rust
+# literal/comment lexer, so it needs a row per CONSUMER — the
+# one-artifact-multiple-rows pattern scripts/lib_task_citation.sh uses below.
+# Its own unit suite plus all three consumers' suites, each of which
+# load-bears the lib: a lib-only diff that selected only the unit suite would
+# leave both gates' verdicts and the orphan audit's cfg(test) masking unrun on
+# the very edit that can break them. The .py row is the task 7044 pair shape.
+scripts/lib_rust_production_view.sh    tests/infra/test_rust_production_view_lib.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_compute_trampoline_registration_wired.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_audit_orphan_producers.sh
+tests/infra/test_rust_production_view_lib.py    tests/infra/test_rust_production_view_lib.sh
 
 # Task 6107 (β): the single `watch --once` index primitive. Its guard is
 # hermetic (temp CODE_INDEX_PATH, synthetic sqlite DBs, stub indexer), so it is
@@ -383,12 +449,15 @@ tests/infra/jcodemunch_pin_guard_lib.sh    tests/infra/test_jcodemunch_index_rei
 scripts/verify-pipeline-guard.sh     tests/infra/test_verify_pipeline_guard.sh
 scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
 
-# Task 6343: the OCCT presence/SONAME preflight arm of
+# Task 6343: the native-dep presence/SONAME preflight arms of
 # scripts/check-manifold-deps.sh. Same one-artifact-multiple-rows pattern as
 # check-infra-classification-manifest.sh above — the gate script itself, plus
-# each artifact whose content the guard's drift-pins mirror:
-#   - crates/reify-build-utils/src/lib.rs   (NativeDep::Occt candidate lists +
-#     sentinels; the bash block is a declared MIRROR, pinned equal order-wise)
+# each artifact whose content the guard reads or is pinned against:
+#   - crates/reify-build-utils/native-deps.toml (task 8634: the per-dep
+#     discovery table, one row per gate arm, which the build also decodes)
+#   - scripts/native_deps_table.py          (the stdlib reader the guard evals)
+#   - crates/reify-build-utils/src/lib.rs   (decodes the same table for the
+#     build's has_<dep> verdict)
 #   - scripts/setup-dev.sh                  (its dpkg OCCT expectation must be
 #     a member of OCCT_ACCEPTED_SONAMES)
 # check-manifold-deps.sh needs no scripts/verify-pipeline-paths.txt row: it is
@@ -399,7 +468,15 @@ scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
 # regardless.
 scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
 crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
+crates/reify-build-utils/native-deps.toml  tests/infra/test_occt_deps_preflight.sh
+scripts/native_deps_table.py            tests/infra/test_occt_deps_preflight.sh
 scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
+# Task 8654: the runtime loader-path helper. Its class outputs are pinned in the
+# ld-scope member; its launcher consumer (lib_gui_launch.sh) in run_gui_scripts.
+scripts/lib_native_ld_path.sh           tests/infra/test_verify_ld_library_path_scope.sh
+scripts/lib_native_ld_path.sh           tests/infra/test_run_gui_scripts.sh
+# The cargo runner's only behavioural guard is that member's Section H.
+.cargo/run-with-occt.sh                 tests/infra/test_verify_ld_library_path_scope.sh
 
 # Task 5888: the host-global systemd unit ExecStart pinning guard. The suite's
 # Part B EXTRACTS install_build_services() out of scripts/setup-dev.sh and runs
@@ -697,3 +774,87 @@ tests/infra/test_review_readme.py    tests/infra/test_review_readme.sh
 # script OR the .py selects the wrapper.
 scripts/cargo-test-tally.py    tests/infra/test_cargo_test_tally.sh
 tests/infra/test_cargo_test_tally.py    tests/infra/test_cargo_test_tally.sh
+# Task 6932: scripts/pprdstatus-escalate.py (the one-shot PPRDSTATUS escalation
+# raise) is pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+scripts/pprdstatus-escalate.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+tests/infra/test_reify_audit_pprdstatus_wiring.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+# Task 6347: scripts/docs-truth-sweep.py (the recurring docs-truth sweep that
+# books one L2 adjudication sitting) is pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape. The two modules it shares with
+# scripts/pprdstatus-escalate.py, and the shared test stubs, select BOTH
+# wrappers, since an edit to any of them can break either consumer.
+scripts/docs-truth-sweep.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/test_docs_truth_sweep.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/stub_escalation_mcp.py    tests/infra/test_docs_truth_sweep.sh
+scripts/escalation_mcp.py    tests/infra/test_docs_truth_sweep.sh
+scripts/reify_audit_findings.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/stub_escalation_mcp.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+scripts/escalation_mcp.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+scripts/reify_audit_findings.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+# Task 6347: the sweep's systemd --user deployment (units, installer, and the
+# shared installer library it introduces) is pinned by a .py suite behind a
+# thin .sh wrapper, same pair shape.
+deploy/systemd/reify-docs-truth-sweep.service    tests/infra/test_docs_truth_sweep_units.sh
+deploy/systemd/reify-docs-truth-sweep.timer    tests/infra/test_docs_truth_sweep_units.sh
+scripts/install-docs-truth-sweep-units.sh    tests/infra/test_docs_truth_sweep_units.sh
+scripts/lib_systemd_user_install.sh    tests/infra/test_docs_truth_sweep_units.sh
+tests/infra/test_docs_truth_sweep_units.py    tests/infra/test_docs_truth_sweep_units.sh
+# Task 6582: scripts/graph-task-conflation-census.py (the read-only census,
+# offline review and repair check of Task-N conflations on the reify Graphiti
+# graph) and its sibling grammar module scripts/task_reference_grammar.py are
+# pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+scripts/graph-task-conflation-census.py    tests/infra/test_graph_task_conflation_census.sh
+scripts/task_reference_grammar.py    tests/infra/test_graph_task_conflation_census.sh
+tests/infra/test_graph_task_conflation_census.py    tests/infra/test_graph_task_conflation_census.sh
+# Task 6059: scripts/hooks-armed-guard.sh (does git actually run the stash
+# guard in this worktree) is pinned by a .py suite behind a thin .sh wrapper,
+# same pair shape. seed-warm-lane.sh and setup-main-gate-worktree-config.sh
+# select it because the suite drives both for real (seed's --fresh-checkout
+# tail calls the guard; the guard's arm delegates to the setup script). The
+# hook rows are there because the suite runs the REAL hook copies.
+scripts/hooks-armed-guard.sh    tests/infra/test_hooks_armed_guard.sh
+tests/infra/test_hooks_armed_guard.py    tests/infra/test_hooks_armed_guard.sh
+scripts/seed-warm-lane.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/setup-main-gate-worktree-config.sh    tests/infra/test_hooks_armed_guard.sh
+hooks/reference-transaction    tests/infra/test_hooks_armed_guard.sh
+hooks/main-gate-lib.sh    tests/infra/test_hooks_armed_guard.sh
+# The pin's one definition, sourced by both the guard and the setup script, so
+# an edit to it selects both suites.
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_main_gate_worktree_config.sh
+# Task 7424: scripts/verify-ledger.py (the verify instrumentation ledger) is
+# pinned by three .py suites behind thin .sh wrappers, same pair shape. The two
+# verify-named wrappers are also selected by the scripts/verify.sh glob at the
+# top, and tests/infra/run_all.sh's test_run_all*.sh glob already selects the
+# run_all timing wrapper. seed-warm-lane.sh and agent-bin/cargo select the
+# lane-seed wrapper because its suite executes both for real.
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_cli.sh
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_e2e.sh
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_lane_seed.sh
+tests/infra/test_verify_ledger_cli.py    tests/infra/test_verify_ledger_cli.sh
+tests/infra/test_verify_ledger_e2e.py    tests/infra/test_verify_ledger_e2e.sh
+tests/infra/test_verify_ledger_lane_seed.py    tests/infra/test_verify_ledger_lane_seed.sh
+tests/infra/test_run_all_timing.py    tests/infra/test_run_all_timing.sh
+tests/infra/test_run_all_member_lifetime.py    tests/infra/test_run_all_member_lifetime.sh
+tests/infra/run_all_fixture.py    tests/infra/test_run_all_member_lifetime.sh
+scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
+scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
+
+# S18 α (#9095, PRD verify-structured-plan-and-role-table D14): the Python verify package.
+# The glob rows keep task-tier selection from narrowing as logic moves out of verify.sh; leaf τ replaces this map.
+scripts/verify.py    tests/infra/test_verify_*.sh
+scripts/verify.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/__init__.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/cli.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/invocation.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/knobs.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/policy.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/queries.py    tests/infra/test_verify_policy.sh
+tests/infra/test_verify_policy.py    tests/infra/test_verify_policy.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_policy.sh

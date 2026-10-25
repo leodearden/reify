@@ -40,6 +40,11 @@ use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by
 use crate::mechanism::is_world;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
+use reify_ir::arg_acceptance::{
+    ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
+    read_arg_or_bare, read_entry_or_bare, rotational_damping_spec, rotational_stiffness_spec,
+    translational_damping_spec, translational_stiffness_spec,
+};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use std::collections::BTreeMap;
 
@@ -51,14 +56,21 @@ use std::collections::BTreeMap;
 const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
-/// `Scalar`). Mirrors `dynamics_ops::cell_f64`; non-numeric cells yield `None`.
+/// `Scalar`); non-numeric cells yield `None`. The ONE dimension-erasing numeric
+/// cell reader of the dynamics surface, shared with `reify-eval`'s
+/// `dynamics_ops` and `dynamics_psd`.
 ///
 /// **This is where the dimension is ERASED.** The `Value::Scalar` arm takes
 /// `si_value` and DISCARDS the `DimensionVector` outright, so every `f64` this
 /// function returns is an undimensioned SI magnitude and the caller carries the
-/// dimensional meaning implicitly. See [`compliance_cell_f64`] for the full
-/// declaration of that contract and why it is not gated here (#6184).
-fn cell_f64(v: &Value) -> Option<f64> {
+/// dimensional meaning implicitly. A position whose dimension is chartered
+/// reads through `read_arg_or_bare` instead; see [`compliance_cell_f64`] for
+/// the positions that deliberately stay erased (#6184).
+///
+/// `#[doc(hidden)]`: public only so `reify-eval` can share it, not advertised
+/// as crate API.
+#[doc(hidden)]
+pub fn cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
         Value::Real(r) => Some(*r),
@@ -67,98 +79,34 @@ fn cell_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Extract an `f64` from a **mass** value cell.
-///
-/// Accepts dimensionless numerics (`Int`, `Real`) and `Scalar`s whose dimension
-/// is exactly [`DimensionVector::MASS`].  Rejects any `Scalar` with a different
-/// dimension (e.g. `Length`, `Angle`) — a caller passing `5 m` as a mass
-/// argument would otherwise be silently accepted and treated as `5 kg`,
-/// producing a physically-wrong `MassProperties` with no diagnostic.
-///
-/// This is intentionally stricter than the bare [`cell_f64`] used elsewhere:
-/// the mass field of a `MassProperties` is dimension-aware (it is stored as a
-/// `Scalar{dimension:MASS}`), so input validation must be too.  Dimensionless
-/// numerics are still accepted for ergonomics (`point_mass(2.5)` in unit-free
-/// test helpers), matching the sibling `dynamics_ops` behaviour.
-fn cell_mass_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, dimension } if *dimension == DimensionVector::MASS => {
-            Some(*si_value)
-        }
-        // Wrong dimension (e.g. Length, Angle): reject so the caller can
-        // surface Value::Undef rather than silently producing wrong mass.
-        Value::Scalar { .. } => None,
-        // Dimensionless Int/Real are accepted for test ergonomics.
-        other => cell_f64(other),
-    }
+/// Read `point_mass`'s **mass** argument: a `Scalar{MASS}` or a bare number.
+/// `Ok(None)` for an unresolved cell; `Err` for a cell the mass reader refuses
+/// (a `Scalar` of any other dimension, `5 m`, is not a mass). The one reader
+/// behind the `point_mass` builtin and its `diagnose` classifier.
+fn cell_mass_f64(v: &Value) -> Result<Option<f64>, ArgRejection> {
+    read_arg_or_bare(v, &mass_spec())
 }
 
-/// Extract an `f64` from a compliant-field value cell: handles the
-/// `Value::Option(Some(inner))` wrapper (recursing into `inner`) and
-/// `Value::Option(None)` (→ `None`), plus all the bare shapes that
-/// `cell_f64` accepts (`Int` / `Real` / dimensioned `Scalar`).
-/// Non-finite values are filtered to `None`.
-///
-/// This mirrors `flexures::common::scalar_si` but delegates to `cell_f64`
-/// for the dimension-stripping step, accepting `Int` and `Real` as well as
-/// `Scalar`. Used by `joint_compliance` to read `spring_rate`, `damping`,
-/// and `neutral` from a flexure joint Map in either the bare-Scalar shape
-/// that `make_flexure_joint` emits today or an Option-wrapped future shape —
-/// and by the RNEA link loop to read the joint coordinate `q` itself (both
-/// call sites are enumerated under "Dimension erasure" below).
+/// Extract an `f64` from a joint-coordinate value cell: unwraps
+/// `Value::Option(Some(inner))`, reads `Option(None)` as `None`, accepts the
+/// bare shapes [`cell_f64`] accepts, and filters non-finite values to `None`.
 ///
 /// # Dimension erasure — a declared, deliberate one (INV-AD-4; #6184)
 ///
-/// This reader takes the SI-coherent magnitude and DISCARDS the
-/// `DimensionVector` (the erasure itself happens in [`cell_f64`]). Every value
-/// it returns is an undimensioned SI `f64`, and each caller carries the
-/// dimensional meaning implicitly. There are TWO callers, not one, and they
-/// erase different things:
+/// It reads the two COORDINATE-dimensioned positions of the compliance
+/// bridge, and erases their dimension: a flexure joint's `neutral` (read by
+/// `joint_compliance`), and the per-body generalized coordinate `q` itself
+/// (read by the RNEA link loop in `snapshot_inverse_dynamics` and handed to
+/// `joint_compliance` as `position`). Both are an ANGLE for a revolute joint and
+/// a LENGTH for a prismatic one, and the spring term `−k·(q − neutral)` is only
+/// meaningful because they agree; under rad = 1 SI coherence the erased `f64`
+/// is numerically correct.
 ///
-/// 1. `joint_compliance` reads the flexure-joint Map — `spring_rate`,
-///    `damping`, `neutral`. Their dimensions are whatever the joint's own
-///    generalized coordinate implies.
-/// 2. The RNEA link-building loop in `snapshot_inverse_dynamics` reads the
-///    per-body generalized coordinate `q` ITSELF out of `positions`, and hands
-///    the bare `f64` straight to `joint_compliance` as its `position` argument.
-///    That site erases the COORDINATE's own dimension — an ANGLE for a revolute
-///    joint, a LENGTH for a prismatic one.
-///
-/// Site 2 is the one an audit of the erasure surface most needs to find, and it
-/// is what makes that surface more than just the spring/damping constants:
-/// `spring_rate` (possibly `ROTATIONAL_STIFFNESS`, carrying rad⁻²), `neutral`
-/// (an ANGLE) and `q` (the same ANGLE) are erased as a COHERENT SET, not as
-/// three unrelated scalars. The spring term `−k·(q − neutral)` is only
-/// meaningful because all three agree, and after this reader nothing in the
-/// types records that they do.
-///
-/// The ANGULAR cases are why this site is declared here rather than left
-/// implicit: for a ROTATIONAL PRB flexure joint, `spring_rate` may be
-/// `ROTATIONAL_STIFFNESS` (N·m/rad², i.e. carrying rad⁻²) and `neutral` is an
-/// ANGLE (this module's own tests use `neutral = π/12` with `position = π/6`).
-/// Under rad = 1 SI coherence the erased `f64` is NUMERICALLY CORRECT — the
-/// defect INV-AD-4 names is that nothing DECLARED it.
-///
-/// ## Contrast: the house declared-bridge pattern
-///
-/// The guarded sibling is `spring_rate_for_lumped_dof` in
-/// `crates/reify-eval/src/modal_ops.rs`, whose `StiffnessSkipKind` enum REFUSES
-/// `ROTATIONAL_STIFFNESS` outright (and refuses any other unexpected dimension
-/// rather than silently propagating an upstream labelling bug).
-///
-/// The two differ for a real reason, not by oversight: that model's eigenvalue
-/// is `λ = k / m_body`, which is only valid for ONE dimension, so it MUST gate —
-/// `k_θ / m` is dimensionally wrong and the correct eigenvalue there is
-/// `k_θ / I_body`. This reader instead hands each value on in whatever
-/// generalized coordinate the joint already declares, so a gate would need that
-/// coordinate's dimension threaded in at BOTH call sites above — and site 2 is
-/// the harder half, because `positions` carries a bare per-body value with no
-/// joint-type context at that point, so the joint's DECLARED coordinate
-/// dimension would have to be plumbed through to reach it. That is exactly the
-/// dimension-checked-readers work PRD 5 owns (see the PRD-5 reader-gating
-/// bookmark in `docs/prds/v0_6/angle-dimension-completion.md`). Adding a guard
-/// here today would be a behaviour change, which this declarations-only leaf
-/// deliberately does not make.
+/// The constants of that term are NOT read here: `spring_rate` and `damping`
+/// go through `read_arg_or_bare` with the joint kind's stiffness / damping
+/// spec (PRD `dimension-checked-readers.md` §6 decision 5). Gating `q` would
+/// need the joint's declared coordinate dimension threaded to a site where
+/// `positions` carries a bare per-body value, which is #6941's territory.
 fn compliance_cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Option(Some(inner)) => compliance_cell_f64(inner),
@@ -356,54 +304,94 @@ fn trajectory_sample(t: f64, q: f64, v: f64, a: f64) -> Value {
 // These are consumed by the open-chain dispatch (`snapshot_inverse_dynamics`,
 // step-6) and exercised directly by the step-4 unit tests.
 
-/// Extract three SI-unit components from a `Value::Point` / `Value::Vector` /
-/// `Value::List` of exactly three numeric cells (dimensions stripped via
-/// `si_value`). Returns `None` for any other shape or arity.
-fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
-    let comps = match v {
-        Value::Point(c) | Value::Vector(c) | Value::List(c) => c,
-        _ => return None,
-    };
-    if comps.len() != 3 {
-        return None;
+/// The three cells of a `Value::Point` / `Value::Vector` / `Value::List` of
+/// exactly three, or `None` for any other shape or arity.
+fn vec3_cells(v: &Value) -> Option<&[Value]> {
+    match v {
+        Value::Point(c) | Value::Vector(c) | Value::List(c) if c.len() == 3 => Some(c),
+        _ => None,
     }
-    Some([cell_f64(&comps[0])?, cell_f64(&comps[1])?, cell_f64(&comps[2])?])
 }
 
-/// Parse a 3×3 inertia matrix from a `Value::Matrix` (or nested `Value::List` /
-/// `Value::Vector`) of numeric cells. Re-spelled locally from
-/// `reify_eval::dynamics_psd::inertia_3x3_from_value` (that one lives in another
-/// crate). Returns `None` unless the value is exactly 3×3 and all-numeric.
-fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
-    fn row3(vals: &[Value]) -> Option<[f64; 3]> {
-        if vals.len() != 3 {
-            return None;
-        }
-        Some([cell_f64(&vals[0])?, cell_f64(&vals[1])?, cell_f64(&vals[2])?])
+/// The three rows of a 3×3 `Value::Matrix` (or nested `Value::List` of
+/// `List`/`Vector` rows), or `None` unless the value is exactly 3×3.
+fn matrix3_rows(v: &Value) -> Option<[&[Value]; 3]> {
+    fn row(cells: &[Value]) -> Option<&[Value]> {
+        (cells.len() == 3).then_some(cells)
     }
     match v {
-        Value::Matrix(rows) => {
-            if rows.len() != 3 {
-                return None;
-            }
-            Some([row3(&rows[0])?, row3(&rows[1])?, row3(&rows[2])?])
+        Value::Matrix(rows) if rows.len() == 3 => {
+            Some([row(&rows[0])?, row(&rows[1])?, row(&rows[2])?])
         }
-        Value::List(outer) => {
-            if outer.len() != 3 {
-                return None;
-            }
-            let parse_row = |r: &Value| -> Option<[f64; 3]> {
+        Value::List(outer) if outer.len() == 3 => {
+            fn nested(r: &Value) -> Option<&[Value]> {
                 match r {
-                    Value::List(row) | Value::Vector(row) => row3(row),
+                    Value::List(cells) | Value::Vector(cells) => row(cells),
                     _ => None,
                 }
-            };
-            Some([
-                parse_row(&outer[0])?,
-                parse_row(&outer[1])?,
-                parse_row(&outer[2])?,
-            ])
+            }
+            Some([nested(&outer[0])?, nested(&outer[1])?, nested(&outer[2])?])
         }
+        _ => None,
+    }
+}
+
+/// Extract three SI-unit components (dimensions stripped via [`cell_f64`])
+/// from a three-cell vector; see [`vec3_cells`] for the accepted shapes. Shared
+/// with Transform translations (`frame3_from_transform_value`).
+fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
+    let c = vec3_cells(v)?;
+    Some([cell_f64(&c[0])?, cell_f64(&c[1])?, cell_f64(&c[2])?])
+}
+
+/// Three cells read through `spec`: `Ok(None)` if any is unresolved, `Err` on
+/// the first one refused.
+fn dimensioned_row(cells: &[Value], spec: &ArgSpec) -> Result<Option<[f64; 3]>, ArgRejection> {
+    let x = read_arg_or_bare(&cells[0], spec)?;
+    let y = read_arg_or_bare(&cells[1], spec)?;
+    let z = read_arg_or_bare(&cells[2], spec)?;
+    Ok(x.zip(y).zip(z).map(|((x, y), z)| [x, y, z]))
+}
+
+/// `(mass, com, inertia)` in SI.
+type MassPropertiesSi = (f64, [f64; 3], [[f64; 3]; 3]);
+
+/// Read the three `MassProperties` fields through their specs — `mass` as a
+/// MASS, `com` as LENGTHs, `inertia` as MOMENT_OF_INERTIAs, each also taking
+/// the bare legacy spelling. `Ok(None)` for a malformed shape or an unresolved
+/// cell; `Err` names the first field holding a cell its reader refuses.
+/// The one reader behind the `mass_properties` builtin, every consumer
+/// ([`mass_properties_from_value`]) and the `diagnose` classifier.
+fn read_mass_properties(
+    mass: &Value,
+    com: &Value,
+    inertia: &Value,
+) -> Result<Option<MassPropertiesSi>, (&'static str, ArgRejection)> {
+    let mass = read_arg_or_bare(mass, &mass_spec()).map_err(|r| ("mass", r))?;
+    let com = match vec3_cells(com) {
+        Some(cells) => dimensioned_row(cells, &length_spec()).map_err(|r| ("com", r))?,
+        None => None,
+    };
+    let inertia = match matrix3_rows(inertia) {
+        Some(rows) => {
+            let spec = moment_of_inertia_spec();
+            let row = |cells| dimensioned_row(cells, &spec).map_err(|r| ("inertia", r));
+            let [r0, r1, r2] = [row(rows[0])?, row(rows[1])?, row(rows[2])?];
+            r0.zip(r1).zip(r2).map(|((r0, r1), r2)| [r0, r1, r2])
+        }
+        None => None,
+    };
+    Ok(mass.zip(com).zip(inertia).map(|((m, c), i)| (m, c, i)))
+}
+
+/// The `mass` / `com` / `inertia` fields of a `MassProperties` instance.
+fn mass_properties_fields(v: &Value) -> Option<[&Value; 3]> {
+    match v {
+        Value::StructureInstance(d) if d.type_name == "MassProperties" => Some([
+            d.fields.get("mass")?,
+            d.fields.get("com")?,
+            d.fields.get("inertia")?,
+        ]),
         _ => None,
     }
 }
@@ -413,19 +401,22 @@ fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
 /// Accepts the canonical `dynamics_ops::assemble_mass_properties` shape (mass: a
 /// Mass-scalar; com: a `Value::Point` of Length-scalars; inertia: a 3×3
 /// `Value::Matrix` of MomentOfInertia-dimensioned scalars, kg·m²) plus the
-/// equivalent list-shaped encodings a user-authored MassProperties may produce.
-/// The `com` Length dimension and inertia MomentOfInertia dimension are both
-/// stripped to raw SI f64 values via `cell_f64`. Returns `None` for any
-/// non-MassProperties value or a malformed/absent field.
-pub fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
-    let data = match v {
-        Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
-        _ => return None,
-    };
-    let mass = cell_f64(data.fields.get("mass")?)?;
-    let com = vec3_from_value(data.fields.get("com")?)?;
-    let inertia = inertia_3x3_from_value(data.fields.get("inertia")?)?;
-    Some((mass, com, inertia))
+/// equivalent list-shaped and bare-number encodings a user-authored
+/// MassProperties may produce. Each field is dimension-checked by
+/// [`read_mass_properties`]; returns `None` for any non-MassProperties value, a
+/// malformed/absent field, or a refused field ([`mass_properties_rejection`]
+/// names which).
+pub fn mass_properties_from_value(v: &Value) -> Option<MassPropertiesSi> {
+    let [mass, com, inertia] = mass_properties_fields(v)?;
+    read_mass_properties(mass, com, inertia).ok().flatten()
+}
+
+/// The field of a `MassProperties` value its reader refuses, named
+/// `MassProperties.<field>`, or `None` when every field reads.
+pub fn mass_properties_rejection(v: &Value) -> Option<FieldRejection> {
+    let [mass, com, inertia] = mass_properties_fields(v)?;
+    let (field, rejection) = read_mass_properties(mass, com, inertia).err()?;
+    Some(FieldRejection::new("MassProperties", field, rejection))
 }
 
 // ── resolve_body_mass — single mass read-path (task 4278) ────────────────────
@@ -470,14 +461,26 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 
 // ── dynamics diagnose hook (task 4278) ───────────────────────────────────────
 
-/// Undef-path diagnostic hook for `inverse_dynamics` intrinsics.
+/// Undef-path diagnostic hook for the dynamics builtins.
 ///
 /// Mirrors the `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose`
 /// pattern: called by `reify-expr`'s `emit_undef_builtin_diagnostics` after
-/// the builtin returns `Value::Undef`, re-derives the cause by inspecting the
-/// mechanism's spanning-tree bodies, and emits
+/// the builtin returns `Value::Undef`. It consults the SAME readers the
+/// builtins use (PRD-5 §7 I1), so a field they refuse is the field it names:
+///
+/// - `mass_properties` / `point_mass`: a refused argument
+///   (`mass_properties(2m, …)`) yields its `DimensionedArgRejected` Error.
+/// - `inverse_dynamics_lower` / `inverse_dynamics_at_snapshot_lower`: see
+///   below.
+///
+/// For the inverse-dynamics intrinsics it inspects the mechanism's
+/// spanning-tree bodies, and emits
 /// [`DiagnosticCode::DynamicsBodyMassUnresolved`] for the first body whose mass
 /// cannot be resolved via [`resolve_body_mass`].
+///
+/// A body whose mass DOES resolve but whose `MassProperties` field, or whose
+/// joint's `spring_rate` / `damping`, is refused yields that field's
+/// `DimensionedArgRejected` Error instead (task 6922).
 ///
 /// Returns `None` for non-dynamics names, non-mechanism args[0], or fully-
 /// resolvable mechanisms (no spurious fire). Closing-edge bodies are excluded
@@ -493,10 +496,25 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 /// is acceptable — the hook provides a best-effort hint, not an authoritative
 /// root-cause analysis.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
-    match name {
-        "inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower" => {}
-        _ => return None,
+    match (name, args) {
+        ("mass_properties", [mass, com, inertia]) => {
+            let (field, rejection) = read_mass_properties(mass, com, inertia).err()?;
+            Some(rejection.to_error(name, field))
+        }
+        ("point_mass", [mass]) => {
+            let rejection = cell_mass_f64(mass).err()?;
+            Some(rejection.to_error(name, "mass"))
+        }
+        ("inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower", _) => {
+            diagnose_inverse_dynamics(args)
+        }
+        _ => None,
     }
+}
+
+/// The inverse-dynamics arm of [`diagnose`]: the first spanning-tree body
+/// whose mass is unresolvable, or whose mass / joint compliance is rejected.
+fn diagnose_inverse_dynamics(args: &[Value]) -> Option<Diagnostic> {
     let mech = match args.first() {
         Some(Value::Map(m)) => m,
         _ => return None,
@@ -513,7 +531,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     };
     let n_tree = bodies.len().saturating_sub(n_lc);
     for body in &bodies[..n_tree] {
-        if resolve_body_mass(body).is_none() {
+        let Some(mass_properties) = resolve_body_mass(body) else {
             let id_str = match body {
                 Value::Map(bm) => match map_get(bm, "id") {
                     Some(Value::Int(k)) => k.to_string(),
@@ -528,6 +546,14 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
                 ))
                 .with_code(DiagnosticCode::DynamicsBodyMassUnresolved),
             );
+        };
+        // The same readers the RNEA uses (I1): a field they refuse is named.
+        let rejection = mass_properties_rejection(&mass_properties).or_else(|| match body {
+            Value::Map(bm) => joint_compliance(map_get(bm, "at")?, None).err(),
+            _ => None,
+        });
+        if let Some(rejection) = rejection {
+            return Some(rejection.to_error("inverse_dynamics"));
         }
     }
     None
@@ -544,9 +570,8 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
 ///   was a `Value::Real(0.0)` placeholder before the `origin : Frame3` field type)
 ///
 /// Inertia cells are MomentOfInertia-dimensioned scalars (kg·m²), matching the
-/// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook and
-/// `inertia_3x3_from_value` both read them unchanged via `cell_f64`, which strips
-/// `si_value` from any `Value::Scalar`.
+/// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook reads them
+/// via `cell_f64`, and [`read_mass_properties`] via `moment_of_inertia_spec`.
 fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
     let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
     let inertia_matrix = Value::Matrix(
@@ -581,25 +606,16 @@ fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Val
 
 /// Evaluate `mass_properties(mass, com, inertia)` — a full `MassProperties`
 /// with caller-supplied centre-of-mass and inertia tensor. Validates arity and
-/// field shapes; returns `Value::Undef` on any malformed input, including a
-/// mass argument whose dimension is not `MASS` (e.g. a `Length` scalar).
+/// reads the fields through [`read_mass_properties`]; returns `Value::Undef` on
+/// any malformed input or a field of the wrong dimension (e.g. a `Length` mass).
 fn eval_mass_properties(args: &[Value]) -> Value {
-    if args.len() != 3 {
+    let [mass, com, inertia] = args else {
         return Value::Undef;
+    };
+    match read_mass_properties(mass, com, inertia) {
+        Ok(Some((mass, com, inertia))) => make_mass_properties(mass, com, inertia),
+        _ => Value::Undef,
     }
-    let mass = match cell_mass_f64(&args[0]) {
-        Some(m) => m,
-        None => return Value::Undef,
-    };
-    let com = match vec3_from_value(&args[1]) {
-        Some(c) => c,
-        None => return Value::Undef,
-    };
-    let inertia = match inertia_3x3_from_value(&args[2]) {
-        Some(i) => i,
-        None => return Value::Undef,
-    };
-    make_mass_properties(mass, com, inertia)
 }
 
 /// Evaluate `point_mass(mass)` — a degenerate `MassProperties` with com at the
@@ -611,9 +627,8 @@ fn eval_point_mass(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let mass = match cell_mass_f64(&args[0]) {
-        Some(m) => m,
-        None => return Value::Undef,
+    let Ok(Some(mass)) = cell_mass_f64(&args[0]) else {
+        return Value::Undef;
     };
     make_mass_properties(mass, [0.0, 0.0, 0.0], [[0.0; 3]; 3])
 }
@@ -892,8 +907,10 @@ fn snapshot_inverse_dynamics(
         let joint_pos = positions
             .and_then(|p| p.get(bi))
             .and_then(compliance_cell_f64);
+        // A compliance constant of the wrong dimension is not read (I2): the
+        // whole dispatch is Undef, and `diagnose` names the field.
         let compliance = if subspaces[bi].len() == 1 {
-            joint_compliance(at_joints[bi], joint_pos)
+            joint_compliance(at_joints[bi], joint_pos).ok()?
         } else {
             None
         };
@@ -935,36 +952,40 @@ fn map_str<'a>(map: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a str> {
 }
 
 /// Build a [`JointCompliance`] from the compliant-field keys of a joint
-/// `Value::Map` (`spring_rate`, `damping`, `neutral`), or `None` for joints
+/// `Value::Map` (`spring_rate`, `damping`, `neutral`), or `Ok(None)` for joints
 /// that carry neither term (plain revolute / prismatic joints stay
 /// byte-identical to pre-ι behaviour, i.e. `compliance: None`).
+///
+/// `spring_rate` and `damping` are read through the joint KIND's specs (PRD
+/// `dimension-checked-readers.md` §6 decision 5): a revolute joint's must be
+/// rotational, a prismatic joint's translational, and a bare number is still
+/// the legacy spelling. A refused value is `Err` naming `<kind>.<field>`;
+/// any other kind has no compliance.
 ///
 /// `position` is the current joint coordinate `q`, required to apply the
 /// spring term `−k·(q − neutral)`.  When `position` is `None` (the
 /// `inverse_dynamics_at_snapshot` entry point cannot recover `q` from the
 /// snapshot because the snapshot body record does not retain the scalar
-/// coordinate), the `spring_rate` key is silently ignored; damping `−c·q̇`
-/// depends only on `q̇` and is applied on **both** entry points whenever the
-/// `damping` key is set.
-///
-/// Both bare-`Scalar` and `Value::Option(Some(Scalar))` shapes are accepted
-/// for all three compliant fields (via [`compliance_cell_f64`]), covering the
-/// shape `make_flexure_joint` emits today and any future wrapped form.
-fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointCompliance> {
-    let m = match joint {
-        Value::Map(m) => m,
-        _ => return None,
+/// coordinate), the spring term is dropped; damping `−c·q̇` depends only on
+/// `q̇` and is applied on **both** entry points whenever the `damping` key is
+/// set. Both bare and `Value::Option(Some(..))` shapes are accepted.
+fn joint_compliance(
+    joint: &Value,
+    position: Option<f64>,
+) -> Result<Option<JointCompliance>, FieldRejection> {
+    let Value::Map(m) = joint else {
+        return Ok(None);
     };
+    let Some((kind, stiffness_spec, damping_spec)) = compliance_specs(m) else {
+        return Ok(None);
+    };
+    let spring_rate = compliance_constant(m, kind, "spring_rate", &stiffness_spec)?;
+    let damping = compliance_constant(m, kind, "damping", &damping_spec)?;
     // Spring term requires a known joint coordinate.
-    let spring_rate = if position.is_some() {
-        map_get(m, "spring_rate").and_then(compliance_cell_f64)
-    } else {
-        None
-    };
-    let damping = map_get(m, "damping").and_then(compliance_cell_f64);
+    let spring_rate = spring_rate.filter(|_| position.is_some());
     // Neither term active → plain joint; return None (no regression).
     if spring_rate.is_none() && damping.is_none() {
-        return None;
+        return Ok(None);
     }
     // Neutral is only relevant for the spring term (`−k·(q − neutral)`).
     // Gate its read on `spring_rate` being present so that a malformed or
@@ -973,20 +994,47 @@ fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointComplia
     // malformed (e.g. NaN): fail-honest — the equilibrium is undefined, return
     // None rather than silently shifting it to 0.  Absent `neutral` with spring
     // active → 0.0 (sensible default, matches make_flexure_joint behaviour).
-    let neutral = if spring_rate.is_some() {
-        match map_get(m, "neutral") {
-            None => 0.0,
-            Some(v) => compliance_cell_f64(v)?,
-        }
-    } else {
-        0.0
+    let neutral = match (spring_rate, map_get(m, "neutral")) {
+        (Some(_), Some(v)) => match compliance_cell_f64(v) {
+            Some(neutral) => neutral,
+            None => return Ok(None),
+        },
+        _ => 0.0,
     };
-    Some(JointCompliance {
+    Ok(Some(JointCompliance {
         spring_rate,
         damping,
         neutral,
         position: position.unwrap_or(0.0),
-    })
+    }))
+}
+
+/// A joint's kind with its `(stiffness, damping)` specs, or `None` for a kind
+/// that carries no compliance. Only joints with a one-column motion subspace
+/// reach the compliance bridge, and those are exactly revolute and prismatic.
+fn compliance_specs(joint: &BTreeMap<Value, Value>) -> Option<(&str, ArgSpec, ArgSpec)> {
+    match map_str(joint, "kind")? {
+        kind @ "revolute" => Some((kind, rotational_stiffness_spec(), rotational_damping_spec())),
+        kind @ "prismatic" => Some((
+            kind,
+            translational_stiffness_spec(),
+            translational_damping_spec(),
+        )),
+        _ => None,
+    }
+}
+
+/// A compliance constant through `spec`, unwrapping `Option`: absent, `none`,
+/// unresolved or non-finite → `Ok(None)`; a refused value → `Err` naming
+/// `<kind>.<field>`.
+fn compliance_constant(
+    joint: &BTreeMap<Value, Value>,
+    kind: &str,
+    field: &str,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    let constant = read_entry_or_bare(kind, field, map_get(joint, field), spec)?;
+    Ok(constant.filter(|c| c.is_finite()))
 }
 
 /// The `kind` discriminant of a joint `Value::Map` (e.g. `"revolute"`).
@@ -3249,7 +3297,7 @@ mod tests {
         };
         let plain_joint = eval_builtin("revolute", &[axis_y, range]);
         assert!(
-            joint_compliance(&plain_joint, Some(PI / 6.0)).is_none(),
+            matches!(joint_compliance(&plain_joint, Some(PI / 6.0)), Ok(None)),
             "a plain revolute joint (no compliant keys) must return None"
         );
     }
@@ -3260,6 +3308,8 @@ mod tests {
         use std::f64::consts::PI;
         let joint = make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         let c = joint_compliance(&joint, Some(PI / 6.0))
+            .ok()
+            .flatten()
             .expect("compliant joint with position must return Some");
         assert!(
             (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
@@ -3277,7 +3327,7 @@ mod tests {
         use std::f64::consts::PI;
         let joint = make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         assert!(
-            joint_compliance(&joint, None).is_none(),
+            matches!(joint_compliance(&joint, None), Ok(None)),
             "spring-only compliant joint (damping=None) without position must return None"
         );
     }
@@ -3297,6 +3347,8 @@ mod tests {
         );
         let joint = Value::Map(m);
         let c = joint_compliance(&joint, None)
+            .ok()
+            .flatten()
             .expect("damping-only joint must return Some even without position");
         assert!(c.spring_rate.is_none(), "spring_rate must be None");
         assert!(
@@ -3329,6 +3381,8 @@ mod tests {
         );
         let joint = Value::Map(m);
         let c = joint_compliance(&joint, Some(PI / 6.0))
+            .ok()
+            .flatten()
             .expect("Option-wrapped spring_rate must unwrap and return Some");
         assert!(
             (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
@@ -3364,7 +3418,10 @@ mod tests {
         );
         let joint = Value::Map(m);
         assert!(
-            joint_compliance(&joint, Some(std::f64::consts::PI / 6.0)).is_none(),
+            matches!(
+                joint_compliance(&joint, Some(std::f64::consts::PI / 6.0)),
+                Ok(None)
+            ),
             "malformed (NaN) neutral must make joint_compliance return None"
         );
     }
@@ -3395,6 +3452,8 @@ mod tests {
         );
         let joint = Value::Map(m);
         let c = joint_compliance(&joint, None)
+            .ok()
+            .flatten()
             .expect("damping-only joint with malformed neutral must still return Some");
         assert!(c.spring_rate.is_none(), "spring_rate must be None");
         assert!(
@@ -3402,6 +3461,189 @@ mod tests {
             "damping must be 3.5"
         );
         assert_eq!(c.neutral, 0.0, "neutral defaults to 0.0 when spring_rate absent");
+    }
+
+    // ── task 6922 ε: compliance reads are gated by joint kind ─────────────────
+
+    fn joint_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String(kind.to_string()),
+        );
+        for (key, value) in fields {
+            m.insert(Value::String(key.to_string()), value);
+        }
+        Value::Map(m)
+    }
+
+    fn dimensioned(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    /// The rejected path of `joint_compliance` on a one-field joint.
+    fn rejected_compliance_path(kind: &str, field: &str, value: Value) -> String {
+        match joint_compliance(&joint_map(kind, vec![(field, value)]), Some(0.1)) {
+            Err(rejection) => rejection.path,
+            Ok(_) => unreachable!("{kind}.{field} must be rejected"),
+        }
+    }
+
+    #[test]
+    fn joint_compliance_gates_spring_rate_by_joint_kind() {
+        use DimensionVector as DV;
+        let rotational = (DV::ROTATIONAL_STIFFNESS, DV::TRANSLATIONAL_STIFFNESS);
+        let translational = (DV::TRANSLATIONAL_STIFFNESS, DV::ROTATIONAL_STIFFNESS);
+        for (kind, (right, wrong)) in [("revolute", rotational), ("prismatic", translational)] {
+            let joint = joint_map(kind, vec![("spring_rate", dimensioned(2.0, right))]);
+            let Ok(Some(c)) = joint_compliance(&joint, Some(0.1)) else {
+                unreachable!("{kind}: a {kind} spring rate must be accepted");
+            };
+            assert_eq!(c.spring_rate, Some(2.0), "{kind}: value unchanged");
+            assert_eq!(
+                rejected_compliance_path(kind, "spring_rate", dimensioned(2.0, wrong)),
+                format!("{kind}.spring_rate")
+            );
+        }
+    }
+
+    #[test]
+    fn joint_compliance_gates_damping_by_joint_kind() {
+        use DimensionVector as DV;
+        let joint = joint_map(
+            "revolute",
+            vec![("damping", dimensioned(3.5, DV::ROTATIONAL_DAMPING))],
+        );
+        let Ok(Some(c)) = joint_compliance(&joint, None) else {
+            unreachable!("a rotational damping must be accepted on a revolute joint");
+        };
+        assert_eq!(c.damping, Some(3.5));
+        assert_eq!(
+            rejected_compliance_path(
+                "revolute",
+                "damping",
+                dimensioned(3.5, DV::TRANSLATIONAL_DAMPING)
+            ),
+            "revolute.damping"
+        );
+        let prismatic = joint_map(
+            "prismatic",
+            vec![("damping", dimensioned(3.5, DV::TRANSLATIONAL_DAMPING))],
+        );
+        assert!(matches!(joint_compliance(&prismatic, None), Ok(Some(_))));
+    }
+
+    #[test]
+    fn joint_compliance_keeps_the_bare_and_none_spellings() {
+        let joint = joint_map(
+            "revolute",
+            vec![
+                ("spring_rate", Value::Real(2.0)),
+                ("damping", Value::Option(None)),
+            ],
+        );
+        let Ok(Some(c)) = joint_compliance(&joint, Some(0.1)) else {
+            unreachable!("a bare spring rate is the transitional legacy spelling");
+        };
+        assert_eq!(c.spring_rate, Some(2.0));
+        assert_eq!(c.damping, None, "Option(None) damping is absent");
+        let bare_damping = joint_map("revolute", vec![("damping", Value::Real(3.5))]);
+        assert!(matches!(joint_compliance(&bare_damping, None), Ok(Some(_))));
+    }
+
+    #[test]
+    fn a_non_numeric_compliance_constant_is_refused_not_dropped() {
+        let joint = joint_map("revolute", vec![("damping", Value::Bool(true))]);
+        let Err(rejection) = joint_compliance(&joint, None) else {
+            unreachable!("a Bool damping must be refused, not read as absent");
+        };
+        assert_eq!(rejection.path, "revolute.damping");
+    }
+
+    #[test]
+    fn diagnose_refuses_a_non_number_mass_like_a_wrong_dimension() {
+        let code = |mass: Value| diagnose("point_mass", &[mass]).map(|d| d.code);
+        for refused in [dimensioned(2.0, DimensionVector::LENGTH), Value::Bool(true)] {
+            assert_eq!(
+                code(refused),
+                Some(Some(DiagnosticCode::DimensionedArgRejected))
+            );
+        }
+        assert_eq!(code(dimensioned(2.0, DimensionVector::MASS)), None);
+    }
+
+    /// The RNEA applies compliance to exactly the joints whose motion subspace
+    /// has one column, so every such kind needs compliance specs: without
+    /// them its `spring_rate`/`damping` would be dropped silently.
+    #[test]
+    fn every_one_dof_joint_kind_has_compliance_specs() {
+        let axis = |x: f64, y: f64, z: f64| {
+            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+        };
+        for &kind in crate::joints::JOINT_KINDS {
+            let joint = joint_map(
+                kind,
+                vec![
+                    ("axis", axis(0.0, 0.0, 1.0)),
+                    ("axis_x", axis(1.0, 0.0, 0.0)),
+                    ("axis_y", axis(0.0, 1.0, 0.0)),
+                ],
+            );
+            let columns = motion_subspace_columns(&joint);
+            assert!(
+                columns.is_some() || !crate::joints::DRIVING_JOINT_KINDS.contains(&kind),
+                "the fixture must give the driving kind {kind} a motion subspace"
+            );
+            let one_dof = columns.is_some_and(|c| c.len() == 1);
+            let Value::Map(m) = &joint else {
+                unreachable!("joint_map builds a Map");
+            };
+            assert_eq!(
+                compliance_specs(m).is_some(),
+                one_dof,
+                "{kind}: compliance specs exist exactly for a 1-DOF kind"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_names_a_translational_spring_rate_on_a_revolute_joint() {
+        use crate::eval_builtin;
+
+        let Value::Map(mut joint) = make_compliant_revolute_joint(Some(2.0), None, 0.0) else {
+            unreachable!("make_compliant_revolute_joint returns a Map");
+        };
+        joint.insert(
+            Value::String("spring_rate".to_string()),
+            dimensioned(2.0, DimensionVector::TRANSLATIONAL_STIFFNESS),
+        );
+        let pm = eval_builtin("point_mass", &[dimensioned(1.0, DimensionVector::MASS)]);
+        let mech = eval_builtin(
+            "body",
+            &[eval_builtin("mechanism", &[]), pm, Value::Map(joint)],
+        );
+        let traj = motionless_trajectory(std::f64::consts::PI / 6.0);
+
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech.clone(), traj.clone()])
+            .expect("inverse_dynamics_lower is a recognised intrinsic");
+        assert!(
+            matches!(result, Value::Undef),
+            "a wrong-dimension spring rate must not be read, got {result:?}"
+        );
+        let diagnostic = diagnose("inverse_dynamics_lower", &[mech, traj])
+            .expect("the rejected spring rate must be diagnosed");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
+        assert!(
+            diagnostic.message.contains("revolute.spring_rate"),
+            "got {:?}",
+            diagnostic.message
+        );
     }
 
     // ── step-3 RED: end-to-end compliance torque tests ────────────────────────
@@ -4763,15 +5005,14 @@ mod tests {
 
     // ── step-5 (task 4494): numeric-identity round-trip for RNEA extraction ──────
     //
-    // Proves mass_properties_from_value is dimension-agnostic: a MassProperties
-    // whose inertia cells are Value::Scalar{MOMENT_OF_INERTIA} yields the same
-    // (mass, com, inertia) f64 triple as the equivalent Value::Real-celled fixture.
-    // GREEN immediately (cell_f64 already strips si_value from dimensioned scalars).
+    // A MassProperties whose inertia cells are Value::Scalar{MOMENT_OF_INERTIA}
+    // yields the same (mass, com, inertia) f64 triple as the equivalent bare
+    // Value::Real-celled fixture: both are accepted spellings of the inertia
+    // position (task 6922 gates the dimension, it does not change the value).
 
     /// mass_properties_from_value returns identical f64 triples whether the
-    /// inertia cells are plain Value::Real or Value::Scalar{MOMENT_OF_INERTIA}.
-    /// This confirms the RNEA extraction path is dimension-agnostic and that
-    /// RNEA τ output is byte-identical after the step-6 populate change.
+    /// inertia cells are plain Value::Real or Value::Scalar{MOMENT_OF_INERTIA},
+    /// so RNEA τ output is byte-identical after the step-6 populate change.
     #[test]
     fn mass_properties_from_value_round_trip_is_identical_for_dimensioned_inertia() {
         let mass = 3.0_f64;

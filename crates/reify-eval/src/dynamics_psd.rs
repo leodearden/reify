@@ -39,6 +39,7 @@
 //! *Communications of the ACM*, 4(4), 168.
 
 use reify_ir::Value;
+use reify_stdlib::dynamics::eval::cell_f64;
 
 /// Extract a `[[f64; 3]; 3]` from `v`, which may be either
 /// `Value::Matrix(rows)` (3 rows × 3 values each) or a nested
@@ -49,19 +50,6 @@ use reify_ir::Value;
 /// - any row has a length other than 3, or
 /// - any cell is not numeric (`Value::Real` or `Value::Scalar { si_value }`).
 pub fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
-    // Helper: extract f64 from a single cell.
-    // Handles Value::Int (whole-number literals like `0`, `1`, `-1`),
-    // Value::Real (floating-point literals like `0.0`, `1.5`), and
-    // Value::Scalar (dimensioned quantities, using their si_value).
-    fn cell_f64(cell: &Value) -> Option<f64> {
-        match cell {
-            Value::Int(n) => Some(*n as f64),
-            Value::Real(r) => Some(*r),
-            Value::Scalar { si_value, .. } => Some(*si_value),
-            _ => None,
-        }
-    }
-
     // Helper: extract a row of 3 f64 from a slice of Values.
     fn row_3(vals: &[Value]) -> Option<[f64; 3]> {
         if vals.len() != 3 {

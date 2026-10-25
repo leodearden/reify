@@ -140,7 +140,7 @@ field def phantom : Point3 -> Length {
 
     // Eval.
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Field cell must exist and its lambda must be Value::Undef (graceful failure).
@@ -294,7 +294,7 @@ field def cube_sdf : Point3 -> Length {{
     // Eval the module.
     // ---------------------------------------------------------------------------
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Assert no runtime errors.
@@ -463,7 +463,7 @@ field def hash_test : Point3 -> Length {{
 
     let compiled = compile_source_with_stdlib(&source);
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let _ = engine.eval(&compiled);
 
     // Hash must be recorded after eval.
@@ -576,7 +576,7 @@ field def cache_test : Point3 -> Length {{
 
     let compiled = compile_source_with_stdlib(&source);
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result_a = engine.eval(&compiled);
 
     // Assert no runtime errors from eval A.

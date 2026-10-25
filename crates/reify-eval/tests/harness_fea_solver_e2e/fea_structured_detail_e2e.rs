@@ -13,6 +13,12 @@
 //! RED at step-3: elastic_static.rs does not yet populate structured_detail
 //! (the accumulator is declared but the :416 emission site is not wired).
 //! GREEN after step-4 wires both emission sites.
+//!
+//! `fea_unconstrained_structured_detail_survives_a_warm_persistent_serve`
+//! (task 7345) pins the on-disk half: a second engine sharing the first one's
+//! persistent cache dir must replay the same payload. It takes two engines
+//! because a same-engine re-eval is served by the in-memory NodeCache and never
+//! reaches `run_compute_dispatch`, where the persistent lookup lives.
 
 use reify_eval::{
     StructuredComputeDetail,
@@ -66,4 +72,143 @@ fn fea_unconstrained_eval_and_check_carry_structured_detail() {
             check_result.structured_detail
         );
     }
+}
+
+/// A warm persistent serve must replay the structured detail the cold solve
+/// emitted: present, and not duplicated.
+#[test]
+fn fea_unconstrained_structured_detail_survives_a_warm_persistent_serve() {
+    let source = include_str!("../fixtures/fea_no_supports.ri");
+    let expected_detail = vec![StructuredComputeDetail::Fea(
+        FeaDiagnosticDetail::Unconstrained {
+            rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+        },
+    )];
+    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
+
+    // ── Engine A: cold solve, which writes the persistent entry ─────────────
+    let mut engine_a = make_simple_engine();
+    engine_a.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_a);
+    let cold = engine_a.eval(&parse_and_compile_with_stdlib(source));
+
+    assert_eq!(
+        cold.structured_detail, expected_detail,
+        "non-vacuity: the cold solve must emit the Unconstrained payload"
+    );
+    assert_eq!(
+        engine_a.persistent_hit_count(),
+        0,
+        "engine A is a cold solve and must not be served from disk"
+    );
+    fn has_bin_file(dir: &std::path::Path) -> bool {
+        std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                let p = e.path();
+                if p.is_dir() {
+                    has_bin_file(&p)
+                } else {
+                    p.extension().is_some_and(|x| x == "bin")
+                }
+            })
+    }
+    assert!(
+        has_bin_file(tmp.path()),
+        "the cold solve must have written a .bin entry under the cache dir"
+    );
+
+    // ── Engine B: warm serve from the same cache dir ────────────────────────
+    let mut engine_b = make_simple_engine();
+    engine_b.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_b);
+    let warm = engine_b.eval(&parse_and_compile_with_stdlib(source));
+
+    // >= 1 rather than == 1: a shell-classified body may also persist a
+    // shell-extract dispatch. miss == 0 is what proves no dispatch fell
+    // through to a solve.
+    assert_eq!(
+        engine_b.persistent_miss_count(),
+        0,
+        "engine B must not fall through to a solve"
+    );
+    assert!(
+        engine_b.persistent_hit_count() >= 1,
+        "engine B must be served from the on-disk cache"
+    );
+    assert_eq!(
+        warm.structured_detail, expected_detail,
+        "the warm serve must replay exactly the cold solve's structured detail"
+    );
+}
+
+/// Two `solve_load_cases` cases, one with `supports: []`.
+const MULTI_CASE_ONE_UNSUPPORTED_SOURCE: &str = r#"
+structure def MultiCaseUnsupportedFixture {
+    let lc_free   = LoadCase(
+        name:     "free",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [],
+    )
+    let lc_fixed  = LoadCase(
+        name:     "fixed",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_free, lc_fixed], ElasticOptions())
+}
+"#;
+
+/// The unsupported case's Unconstrained payload must survive the
+/// `solver::multi_case` trampoline to `eval_result.structured_detail`.
+#[test]
+fn fea_multi_case_unsupported_case_structured_detail_survives_to_eval_result() {
+    let compiled = parse_and_compile_with_stdlib(MULTI_CASE_ONE_UNSUPPORTED_SOURCE);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:?}"
+    );
+
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    assert!(
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .any(|(_, data)| data.target == "solver::multi_case"),
+        "non-vacuity: the payload must come through a solver::multi_case ComputeNode; \
+         found targets: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| d.target.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        eval_result.structured_detail,
+        vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            }
+        )],
+    );
 }

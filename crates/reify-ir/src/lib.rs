@@ -25,15 +25,19 @@ pub mod annotation;
 pub mod arg_acceptance;
 pub mod boundary_attachment;
 pub mod color;
+pub mod completeness;
 pub mod constraint;
+pub mod dense_sdf;
 pub mod expr;
 pub mod geometry;
 pub mod indeterminate;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
+pub mod product_tree;
 pub mod provenance;
 pub mod ranked;
+pub mod resolution_profile;
 pub mod ri_literal;
 pub mod sampled;
 pub mod structure_registry;
@@ -49,6 +53,7 @@ pub mod warm_registry;
 
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use color::Rgb8;
+pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
@@ -57,6 +62,7 @@ pub use constraint::{
     OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,
     TermContribution, dimension_of, objective_terms_coherent,
 };
+pub use resolution_profile::{IterationBudget, ResolutionProfile, StalenessPolicy};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
     CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
@@ -78,6 +84,7 @@ pub use geometry::{
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
+    unsupported_dense_sdf_ingest,
 };
 pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
 pub use kernel_validation::{
@@ -96,7 +103,11 @@ pub use kernel_validation::{
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
+pub use product_tree::{
+    Component, Placement, ProductKind, ProductNode, ProductRef, ProductTree, ProductTreeError,
+};
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
+pub use completeness::{Completeness, PartialReason, SolutionSet};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};

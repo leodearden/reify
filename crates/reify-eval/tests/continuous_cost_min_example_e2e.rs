@@ -3,7 +3,7 @@
 //!
 //! This test reads the actual shipped example from disk (not a test-fixture copy).
 //! Compile-level regressions in the shipped file are caught first by the bulk gate
-//! `crates/reify-compiler/tests/examples_smoke.rs` (auto-discovers every `examples/*.ri`);
+//! `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (auto-discovers every `examples/*.ri`);
 //! this test's compile check is a fast-fail precondition for the eval path below, not the
 //! primary regression detector for compile errors. The unique value of this test is the
 //! eval-layer diagnostic/off-boundary assertions that `examples_smoke` cannot cover.
@@ -72,7 +72,7 @@ fn continuous_cost_min_example_resolves_off_boundary_and_emits_info() {
     );
 
     // ── eval ───────────────────────────────────────────────────────────────────
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 

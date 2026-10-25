@@ -60,10 +60,11 @@ use crate::auto_type_param::{
 };
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
+use crate::name_env;
 use crate::type_resolution::{substitute_expr_result_types, substitute_type_params};
 use crate::types::{
-    AutoTypeSubstitution, EntityKind, SubComponentDecl, TopologyTemplate, ValueCellKind,
-    mangle_monomorph_name, monomorph_name_would_collide,
+    AutoTypeSubstitution, SubComponentDecl, TopologyTemplate, ValueCellKind, mangle_monomorph_name,
+    monomorph_name_would_collide,
 };
 
 /// A compile-time [`ConstraintChecker`] that returns
@@ -251,19 +252,13 @@ pub(crate) fn phase_auto_type_param_resolution(
     // index is captured at the request push site in `entity.rs` (where it
     // equals the about-to-be-pushed-position in the local `sub_components` vec).
     let (rewrites, subst_pairs, monomorph_clones, structure_name_rewrites) = {
-        // Template registry: prelude `structure def`s first, then local
-        // overrides — identical composition to `phase_pending_bound_checks`.
-        // Local templates are deliberately NOT kind-filtered: an occurrence is
-        // a valid owner and a valid `auto:` candidate here, so the seeding
-        // below accepts an explicitly-named one exactly as it accepts a
-        // resolver-chosen one.
-        let template_registry: HashMap<String, &TopologyTemplate> = prelude
-            .iter()
-            .flat_map(|m| m.templates.iter())
-            .filter(|t| t.entity_kind == EntityKind::Structure)
-            .map(|t: &TopologyTemplate| (t.name.clone(), t))
-            .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-            .collect();
+        // Local templates of every kind are members (see
+        // `ctor_template_registry`), so the seeding below accepts an
+        // explicitly-named occurrence exactly as it accepts a resolver-chosen
+        // one; pinned by
+        // `explicit_type_arg_naming_local_occurrence_seeds_like_a_resolved_candidate`.
+        let template_registry: HashMap<String, &TopologyTemplate> =
+            name_env::ctor_template_registry(&ctx.templates, prelude);
         let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
         let functions = ctx.resolution_functions.as_slice();
         let diagnostics = &mut ctx.diagnostics;

@@ -1,0 +1,10 @@
+// PRD 7.3 / B11 / B12: sdf_volume, sdf_clearance, sdf_penetration over two spheres.
+structure def SdfMeasure {
+    let a = sdf_sphere(10mm)
+    let b = sdf_transform(sdf_sphere(10mm), transform3(orient_identity(), vec3(18mm, 0mm, 0mm)))
+    let ext = vec3(60mm, 40mm, 40mm)
+    let vol = sdf_volume(a, ext, 2mm)
+    let vol_c = sdf_volume(a, ext, 2mm, point3(5mm, 0mm, 0mm))
+    let pen = sdf_penetration(a, b, ext, 2mm)
+    let clr = sdf_clearance(a, b, ext, 2mm, point3(5mm, 0mm, 0mm))
+}

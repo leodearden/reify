@@ -43,7 +43,7 @@ follow for every leaf that owns one of them:
 
 The machine pin for "this site still fails at δ" is the gate-resident
 `ctor_conformance_corpus_residual_entries_are_all_live`
-(`crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`).
+(`crates/reify-compiler/tests/harness_ctor_conformance_survey/disposition.rs`).
 Each owning leaf deletes its own `CTOR_CONFORMANCE_CORPUS_RESIDUAL` entries in
 its own diff.
 
@@ -129,3 +129,8 @@ The file was already red at decompose, on α's own `ParamDefaultTypeMismatch`.
 re-dimension of CURVATURE clears both, so α's check 1 → 0 flip survives δ as
 α's signal. α asserts exit 0 with BOTH codes gone, not merely the loss of
 `ParamDefaultTypeMismatch`.
+
+OUTCOME: the prediction held. After α (#6179) the fixture carries neither
+`ParamDefaultTypeMismatch` nor `ArgTypeMismatch` on `kc`, and its
+`CTOR_CONFORMANCE_CORPUS_RESIDUAL` waiver is retired. Held by
+`harness_units/curvature_dimension_tests.rs::prd_gate_fixture_curvature_rad_literal_compiles_clean`.

@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
+description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
 ---
 
 # Architecture Audit Sweep (`/audit`)
@@ -22,25 +22,26 @@ Pick from the user's invocation and context:
 | `/audit --pattern PTODO` | Run only the TODO-tracking invariant detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --pattern PDSSENTINEL` | Run only the ds-sentinel reintroduction guard (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --pattern PDEAD\|PUNTESTED\|PLAYER` | Run one advisory jcodemunch detector (opt-in, Severity Low, serve-dependent) | `references/modes.md` §4 |
-| `/audit --pattern PDIAG\|PDOCCOVER\|PDCHECK\|PCITE` | Run one opt-in structural detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
+| `/audit --pattern PDIAG\|PDOCCOVER\|PDCHECK\|PCITE\|PLINECITE` | Run one opt-in structural detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
+| `/audit --pattern PPRDSTATUS` | PRD status-prose drift: all-leaves-terminal PRDs whose Status header is not terminal, plus cites whose status parenthetical contradicts the task (reads the loaded task corpus; opt-in; High) | `references/modes.md` §4 |
 | `/audit --format markdown` | Any mode + emit a fenced markdown report in addition to the JSON artifact | `references/modes.md` §5 |
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
 **jcodemunch resilience — two arms, and they behave differently.**
 
-*Serve unreachable.* The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are all resilient. P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while every detector that does not query jcodemunch still runs normally. The sweep does **not** exit 125.
+*Serve unreachable.* The default sweep, `--pattern P1`, `--pattern P5` (which now attempts the handshake for its H2 pass) and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are all resilient: every pass that does not query jcodemunch still runs normally, and the sweep does **not** exit 125. One stderr breadcrumb names the cause and the affected detectors — `reify-audit: jcodemunch unreachable at '<url>'` when nothing answered, `reify-audit: jcodemunch handshake refused at '<url>'` when something answered but is not a live MCP serve (a 4xx/5xx, or a non-MCP body). P1 and P5's H2 pass do **not** read as clean: each records ONE Low run-level unexamined finding (`P1TaskUnexamined` / `P5LivePathUnexamined`, empty `task_id`) carrying that reason. H2's appears only when the run sweeps a cross-crate done task H2 would have examined. PDEAD/PUNTESTED/PLAYER still degrade to **zero findings**.
 
 *Serve reachable but the index is not usable.* After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs, and here the outcome splits on what `--pattern` selected:
 
 - An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr and emits **no JSON array**. Nothing in the run set could have survived, so nothing is salvaged.
-- A **mixed or pattern-less** run keeps fail-softing: the jcodemunch-backed detectors degrade to zero findings, every other selected detector still runs, and the findings array is still emitted.
+- A **mixed or pattern-less** run — including any set that selects `P5` — keeps fail-softing: the jcodemunch-backed passes run on the inert stub, P1 and P5's H2 pass each record one run-level unexamined finding carrying the marker token, PDEAD/PUNTESTED/PLAYER yield zero findings, every other selected detector still runs, and the findings array is still emitted.
 
 The refusal names its cause with an `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE` marker token — plus one deliberately token-less case, where HEAD itself could not be read and so nothing was learned about the index at all. The per-code remedies differ, and re-indexing is the wrong first move for two of the four; `references/cli-invocation.md` §4.1 holds the single normative table.
 
 **Exit 125 is overloaded — never read it as a single cause.** Inside `reify-audit` it spans infra/setup errors (malformed argv, a rejected `--pre-done` flag combination, an unloadable tasks source, an unopenable runs-db) and, since the freshness gate, an unusable index. It is **not** confined to those: a literal **125 High findings** collides with it, because `high_severity_exit_code` returns `count.min(254)` — which is why parsing the tempfile as a JSON array is mandatory *before* reading any 125 as infra (`references/cli-invocation.md` §3.1) — and on the D-1 pre-done path the predone wrapper's `E_AUDIT_BIN_STALE` / `E_AUDIT_BIN_MISSING` binary-freshness refusals exit 125 as well (§5, *`--pre-done` landing gate*). Take the complete list from `references/cli-invocation.md` §3.1, §4.1 and §5 — not from this paragraph. A serve that cannot be reached has **never** exited 125 — it fail-softs, per the *Serve unreachable* arm above. The marker token in stderr is the discriminator **when there is one** — a 125 whose message names freshness but carries no token is the unreadable-HEAD case above, not a dead serve.
 
-**The structural lanes are unaffected by jcodemunch outages**, but the two that read `tasks.db` degrade without it — and a skipped PDCHECK reports zero findings that mean "not checked", not "clean". Which lanes those are, their stderr breadcrumbs and the recovery: `references/cli-invocation.md` §4.1. Use `--no-jcodemunch` to force the inert stub and silence the jcodemunch breadcrumb.
+**The structural lanes are unaffected by jcodemunch outages**, but the two that read `tasks.db` degrade without it — and a skipped PDCHECK reports zero findings that mean "not checked", not "clean". Which lanes those are, their stderr breadcrumbs and the recovery: `references/cli-invocation.md` §4.1. Use `--no-jcodemunch` to force the inert stub and silence the jcodemunch breadcrumb: a declared scope reduction (the per-run artifact records the argv), so it records **no** unexamined finding.
 
 ## Advisory jcodemunch patterns (PDEAD / PUNTESTED / PLAYER)
 
@@ -54,14 +55,14 @@ Three opt-in detectors backed by jcodemunch — invoked only when named explicit
 
 **Severity and routing:** All three patterns emit Severity **Low** only — log-only, advisory, **never auto-filed** as a follow-up task, and never promoted to Medium. See `references/severity-routing.md` for the Low row routing details.
 
-**Serve prerequisite:** These patterns need two things to produce real findings. (1) A serve, for the duration of the run — there is no persistent unit; wrap the invocation in `scripts/with-jcodemunch-serve.sh`, which spawns one, readiness-polls it, runs the command, and tears it down on every exit path. When no serve answers, they degrade gracefully to zero findings (same fail-soft path as P1; P2/P5 are unaffected). (2) A **current index for this checkout**, kept warm by `scripts/jcodemunch-index-reify.sh` and the `reify-jcodemunch-index.timer` daily pass — a stale one is refused rather than answered, per the freshness arm above. See `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers.
+**Serve prerequisite:** These patterns need two things to produce real findings. (1) A serve, for the duration of the run — there is no persistent unit; wrap the invocation in `scripts/with-jcodemunch-serve.sh`, which spawns one, readiness-polls it, runs the command, and tears it down on every exit path. When no serve answers, they degrade gracefully to zero findings (the fail-soft path P1 and P5's H2 pass take, minus the unexamined record those two add; P2 is unaffected). (2) A **current index for this checkout**, kept warm by `scripts/jcodemunch-index-reify.sh` and the `reify-jcodemunch-index.timer` daily pass — a stale one is refused rather than answered, per the freshness arm above. See `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers.
 
 **Key flags:**
 
 - `--jcodemunch-url <url>` — default `$JCODEMUNCH_URL`, else `http://127.0.0.1:8901/mcp`.
 - `--jcodemunch-repo <id>` — **no default.** `reify-audit` DERIVES the per-path identity `local/<basename>-<sha1(abs project_root)[..8]>` from `--project-root`; for `/home/leo/src/reify` that is `local/reify-4ae45bbd`. The flag is retained purely as an explicit override. Why the identity is forced per-path instead of taken from git — and what collides if it is not — is owned by `docs/architecture-audit/jcodemunch-serve-activation.md` §"Why the identity is forced".
 - `--jcodemunch-index-dir <path>` — the directory the freshness gate probes. Resolution order: the flag, else `$JCODEMUNCH_INDEX_DIR`, else `$CODE_INDEX_PATH`, else `$HOME/.code-index`. The `CODE_INDEX_PATH` rung is load-bearing rather than decorative; `references/cli-invocation.md` §2 says why, and is the copy to correct if that ever changes.
-- `--no-jcodemunch` — force the inert stub (offline/test).
+- `--no-jcodemunch` — force the inert stub (offline/test); every jcodemunch-backed pass yields nothing and no unexamined finding is recorded.
 
 See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
 
@@ -94,9 +95,9 @@ Lanes added after η emit kinds this table does not list, `g-allow-orphaned` (Hi
 
 **Default-sweep membership:** PTODO High kinds (the current list is in `references/modes.md` §4 PTODO notes) drive a non-zero exit when violations are present. **Main is not a clean tree** (corrected 2026-08-27, esc-6088-2). Measured on main 2026-08-27: **65 findings, 11 High, exit code 11.** Composition — 10 `untracked` + 1 `orphaned` (High), 3 `malformed-cite`, 51 `task-cites-deleted-path` (ζ inverse lane; that measurement predates the renamed/deleted split — after #5654 the same ζ population splits between `task-cites-deleted-path` and `task-cites-renamed-path`, with the total and the exit code unchanged because the two kinds are mutually exclusive per cited path and both Medium). **Exit 11 is the steady state on main, not a regression signal**; do not treat a non-zero PTODO exit as evidence that something newly broke. Only the 14 path-keyed source-marker findings are ratcheted, collapsing to the 5 fingerprints in `ptodo-baseline.txt` (fingerprints drop line numbers, so the 8 identical `#[allow(dead_code)] // T12 layer-B seam …` markers in `engine_build.rs` are one baseline line). The 51 ζ findings are keyed by task ID, so `ptodo-baseline-gen`'s `is_swept_ext` filter excludes them from the baseline — they are outside the ratchet *and* exit-neutral, i.e. gated by nothing. To see what is actually new, diff live fingerprints against the baseline.
 
-## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PCITE
+## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PCITE, PPRDSTATUS, PLINECITE
 
-Five more deterministic detectors that, like PTODO, read the tracked tree (PDCHECK also reads `tasks.db`) and never contact jcodemunch:
+Seven more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the loaded task corpus (the fused-memory live loader, or `--tasks-file`), never `tasks.db`:
 
 | Pattern | Detects |
 |---|---|
@@ -105,8 +106,10 @@ Five more deterministic detectors that, like PTODO, read the tracked tree (PDCHE
 | `PDOCCOVER` | Name drift between the builtin registries and the MCP language chunks: undocumented and fabricated names |
 | `PDCHECK` | `metadata.delivered_checks` grep rows that name no tracked path. Needs `tasks.db` |
 | `PCITE` | Symbols a `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence that no tracked non-prose file contains. Medium only (report-only) |
+| `PPRDSTATUS` | PRD status-prose drift: PRDs whose decomposition leaves are all terminal but whose Status header is not, and `#NNNN` cites whose status parenthetical contradicts the cited task. Reads the loaded task corpus |
+| `PLINECITE` | Hard line cites (`foo.rs:12` and the other lead-ins of `docs/prds/reify-audit-stale-line-cite-detector.md` §4) in source comments (stdlib `.ri`, `crates/*/src` `.rs`). Medium only (report-only) |
 
-PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other four key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
+PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other six key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
 ## Severity ladder
 
@@ -122,7 +125,7 @@ The skill **never** calls `set_task_status`. State-mutation of the offending tas
 
 **PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
 
-**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PCITE):** route each finding by its own `severity` field, like every other pattern, with one exception: PDOCCOVER's findings go out as **one batched escalation per run**, not one per finding (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
+**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PCITE / PPRDSTATUS / PLINECITE):** route each finding by its own `severity` field, like every other pattern, with two exceptions, the batched patterns: PDOCCOVER's findings and PPRDSTATUS's findings each go out as **one batched escalation per run**, not one per finding. PPRDSTATUS's is filed by running `scripts/pprdstatus-escalate.py`, never by a hand-built `escalate_info`, and it files no follow-up tasks (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
 
 ## Outputs
 

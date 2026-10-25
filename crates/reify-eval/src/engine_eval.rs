@@ -42,8 +42,8 @@ use crate::{
 };
 
 /// Resolve a sub-component's `structure_name` against the user module's
-/// templates first (module definitions shadow the prelude), then fall back to
-/// the engine's compiled stdlib prelude modules.
+/// templates and the engine's prelude modules, by the NS-P1 rule in
+/// [`reify_compiler::name_env`].
 ///
 /// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
 /// `Engine::prelude` and are deliberately NOT merged into
@@ -56,15 +56,15 @@ use crate::{
 ///
 /// `pub(crate)` so the io-export δ occurrence-driven export driver
 /// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
-/// occurrence template through the SAME module-first/prelude-fallback rule the
-/// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
-/// live in the prelude, not `CompiledModule::templates`.
+/// occurrence template through the SAME rule the evaluator uses — stdlib
+/// `Output` occurrence templates (`STLOutput` et al.) live in the prelude, not
+/// `CompiledModule::templates`.
 /// This is a thin `&CompiledModule` adapter over
-/// [`crate::unfold::find_template_in_scope`], which is the single source of
-/// truth for the module-first/prelude-fallback rule. `unfold.rs` cannot call
-/// this overload — its recursion carries `&[TopologyTemplate]`, not the owning
-/// `CompiledModule` — so the rule lives there and this delegates. Keep it that
-/// way: the two sites diverging is exactly the defect esc-5360-9 reported (the
+/// [`crate::unfold::find_template_in_scope`], the evaluator's one entry to that
+/// rule. `unfold.rs` cannot call this overload — its recursion carries
+/// `&[TopologyTemplate]`, not the owning `CompiledModule` — so this delegates
+/// there. Keep it that way: the two sites diverging is exactly the defect
+/// esc-5360-9 reported (the
 /// instance-scope nesting recursion resolved module-only, so a prelude-typed
 /// nested sub was silently skipped AND then falsely reported "not found in this
 /// module").
@@ -274,6 +274,42 @@ pub(crate) fn compute_value_input_for_ref(
         }
         _ => None,
     }
+}
+
+/// task #6661: build a `ComputeNodeData::value_inputs` list from an `@optimized`
+/// call's args — a duplicate-free dependency SET, in first-occurrence order.
+///
+/// Shared by the two @optimized dispatch sites (primary and mirror), the same
+/// two callers as [`compute_value_input_for_ref`], to which each arg's
+/// classification is delegated verbatim so the type-based exclusion contract
+/// (graph-absent refs AND `Type::Geometry` cells) lives in exactly one place.
+///
+/// The `seen: HashSet` guard is the one the realization sibling
+/// [`Engine::build_compute_realization_inputs`](crate::Engine) has always had —
+/// which is exactly why the `realization_inputs` duplicate assert never fired
+/// while the value side, `filter_map`ing without a dedupe at both sites,
+/// aborted `reify eval` on a square cross-section
+/// (`solve_elastic_static(material, span, h, h, ...)`).
+///
+/// Why `value_inputs` is a SET, and where the multiplicity/position signal IS
+/// carried: `compute_cache_key`'s §"Missing-input and duplicate-input policy".
+pub(crate) fn build_compute_value_inputs(
+    graph: &crate::graph::EvaluationGraph,
+    args: &[reify_ir::CompiledExpr],
+) -> Vec<reify_core::ValueCellId> {
+    let mut inputs: Vec<reify_core::ValueCellId> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for arg in args {
+        if let reify_ir::CompiledExprKind::ValueRef(target_cell) = &arg.kind
+            && let Some(id) = compute_value_input_for_ref(graph, target_cell)
+            && seen.insert(id.clone())
+        {
+            inputs.push(id);
+        }
+    }
+
+    inputs
 }
 
 /// task γ / #4954 regression guard: downgrade SYMBOLIC (not-yet-kernel-backed)
@@ -6007,7 +6043,7 @@ impl Engine {
         //
         // `resolve_solver_for_module` consults `module.solver_pragma` against the
         // named-solver registry (`Engine::register_solver`, Task 2300) and falls
-        // back to `self.solver` if the named back-end isn't registered. It is
+        // back to the default solver if the named back-end isn't registered. It is
         // called once before the template loop so the "not registered" warning
         // is emitted at most once per eval call. The inner loop re-looks-up the
         // active solver via `lookup_solver_for_module` (no warning, single
@@ -6243,7 +6279,7 @@ impl Engine {
                 // routing without re-emitting the warning.
                 //
                 // Cost: per-iteration this is one `solver_pragma.as_ref()` match
-                // plus at most one `HashMap::get` plus an `or(self.solver.as_deref())`
+                // plus at most one `HashMap::get` plus an `or(self.default_solver())`
                 // — negligible relative to the `.solve(&problem)` call that follows.
                 // Hoisting the resolved name outside the loop would require either
                 // (a) a slimmer inner helper taking `Option<&str>`, or
@@ -6273,9 +6309,14 @@ impl Engine {
                 let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
                     if problem.objective.is_some() {
                         match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                            // `..` drops the `completeness` verdict deliberately:
+                            // the engine does not consume the completeness axis
+                            // yet. δ #6709 → #6901 is the leaf that reads it (the
+                            // §3.4 verdict policy).
                             RankedSolveResult::Ranked {
                                 mut candidates,
                                 optimality,
+                                ..
                             } => {
                                 assert!(
                                     !candidates.is_empty(),
@@ -6581,7 +6622,7 @@ impl Engine {
         // Inactive-branch Auto-cell policy: skip (preserve solver value).
         // Canonical rule documented on `engine_edit.rs`'s module-level `//!` doc
         // and `deactivate_if_not_auto`.
-        if self.solver.is_some() {
+        if self.solve_stage.is_some() {
             for template in &module.templates {
                 for group in &template.guarded_groups {
                     let guard_val = reify_expr::eval_expr(
@@ -7669,9 +7710,12 @@ impl Engine {
         let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
             if problem.objective.is_some() {
                 match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                    // `..` drops `completeness` for the reason given at the
+                    // per-template site in `eval()`.
                     RankedSolveResult::Ranked {
                         mut candidates,
                         optimality,
+                        ..
                     } => {
                         assert!(
                             !candidates.is_empty(),
@@ -10549,18 +10593,12 @@ impl Engine {
                                 // contract (excludes graph-absent refs AND
                                 // geometry-typed cells, which flow through
                                 // `realization_inputs` instead).
-                                let mut value_inputs: Vec<reify_core::ValueCellId> = args
-                                    .iter()
-                                    .filter_map(|arg| match &arg.kind {
-                                        reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                            compute_value_input_for_ref(
-                                                &snapshot.graph,
-                                                target_cell,
-                                            )
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect();
+                                // task #6661: `build_compute_value_inputs` applies
+                                // that classification and DEDUPES, so one cell
+                                // passed to two params of this call yields a set,
+                                // not a bag.
+                                let mut value_inputs: Vec<reify_core::ValueCellId> =
+                                    build_compute_value_inputs(&snapshot.graph, args);
 
                                 if let Some(feed) = shell_extract_feed {
                                     value_inputs.push(feed);
@@ -11578,15 +11616,11 @@ impl Engine {
                         // task #4726 / β: mirror of the primary dispatch site —
                         // see `compute_value_input_for_ref`'s doc comment for the
                         // type-based exclusion contract.
-                        let mut value_inputs: Vec<reify_core::ValueCellId> = args
-                            .iter()
-                            .filter_map(|arg| match &arg.kind {
-                                reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                    compute_value_input_for_ref(&snapshot.graph, target_cell)
-                                }
-                                _ => None,
-                            })
-                            .collect();
+                        // task #6661: `build_compute_value_inputs` applies that
+                        // classification and DEDUPES, so one cell passed to two
+                        // params of this call yields a set, not a bag.
+                        let mut value_inputs: Vec<reify_core::ValueCellId> =
+                            build_compute_value_inputs(&snapshot.graph, args);
 
                         // task 3594/δ step-12: on the shell route, the upstream
                         // `shell-extract::extract` node's synthetic output cell
@@ -12772,7 +12806,7 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     #[test]
     fn reeval_cone_cell_undef_records_undetermined_with_cone_reeval_provenance() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let vcid = ValueCellId::new("S", "cone_cell");
         let node_id = NodeId::Value(vcid.clone());
         let expr = CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar());
@@ -12808,7 +12842,7 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     #[test]
     fn reeval_cone_cell_non_undef_records_determined_with_cone_reeval_provenance() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let vcid = ValueCellId::new("S", "cone_cell");
         let node_id = NodeId::Value(vcid.clone());
         let expr = CompiledExpr::literal(Value::Real(2.5), Type::dimensionless_scalar());
@@ -14154,7 +14188,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     fn evaluate_let_bindings_main_let_provenance_and_freshness() {
         let module = two_cell_module();
         let template = &module.templates[0];
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let mut snapshot = Snapshot::from_compiled_module(&module);
 
         let e = "T";
@@ -14331,7 +14365,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     #[test]
     fn evaluate_let_bindings_non_migrated_subpaths_emit_paired_started_events() {
         let module = two_cell_module();
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let mut snapshot = Snapshot::from_compiled_module(&module);
 
         let a_id = ValueCellId::new("T", "a");
@@ -14527,7 +14561,7 @@ structure LetSiteProbe {
     /// is the declared posture rather than a defect.
     #[test]
     fn evaluate_let_bindings_unregistered_target_warns_on_an_empty_registry() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let diagnostics = drive_let_site(&mut engine);
 
@@ -14568,7 +14602,7 @@ structure LetSiteProbe {
     /// unconditional one.
     #[test]
     fn evaluate_let_bindings_unregistered_target_stays_an_error_on_a_nonempty_registry() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(NONEMPTY_REGISTRY_PROBE, probe_fn as ComputeFn);
 
         let diagnostics = drive_let_site(&mut engine);

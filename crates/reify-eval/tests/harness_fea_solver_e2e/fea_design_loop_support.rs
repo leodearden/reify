@@ -50,7 +50,7 @@ pub const INTERIOR_UPPER_THRESHOLD_SI: f64 = 1.0;
 /// `SolverRegistry::production()` — see `fea_in_the_loop_producer`'s module doc
 /// for why that is the narrower and more faithful seam for these tests.
 pub fn fea_loop_engine() -> Engine {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
         reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); the FEA \

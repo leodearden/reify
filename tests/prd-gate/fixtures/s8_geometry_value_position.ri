@@ -1,0 +1,17 @@
+module s8_geometry_value_position
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: eta (geometry calls are typed Geometry; a value-position call is a coded error).
+// Pins: an overload set over (Real | Geometry) called with an inline box(..)
+// and with a let-bound box. Today the inline argument is typed Real, picks
+// pick(x: Real) and evaluates undef silently; the let-bound one picks the
+// Geometry overload. Companion: s8_geometry_inline_overload_error.ri.
+
+fn pick(x: Real) -> Int { 1 }
+fn pick(g: Geometry) -> Int { 2 }
+
+structure def S8GeometryValuePosition {
+    let b = box(1mm, 1mm, 1mm)
+    let via_let = pick(b)
+    let via_inline = pick(box(1mm, 1mm, 1mm))
+}

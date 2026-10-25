@@ -13,9 +13,7 @@ use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use reify_kernel_gmsh::fill_metrics::{
     TetFillReport, enclosed_volume_of_surface, tet_fill_report, tet_signed_volume,
 };
-
-mod common;
-use common::{
+use reify_test_support::mesh_fixtures::{
     F32_STORAGE_REL, assert_rel, prismatic_box_mesh, unit_cube_mesh, unwelded_prismatic_box_mesh,
 };
 

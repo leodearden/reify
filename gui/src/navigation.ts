@@ -3,13 +3,106 @@
  * Pure functions that coordinate cross-panel navigation flows
  * with dependency-injected callbacks for testability.
  */
-import type { SourceLocation, ConstraintData, ValueData } from './types';
+import type { SourceLocation, ConstraintData, ValueData, FileData } from './types';
+import { isSameFile } from './utils/pathUtils';
+import { errorMessage } from './utils/errorClassifier';
+
+// ── Location → Editor navigation ────────────────────────────────────
+
+/** The slice of the editor store that location navigation reads and drives. */
+export interface NavigationEditorStore {
+  state: {
+    activeFile: string | null;
+    openFiles: Pick<FileData, 'path'>[];
+  };
+  setActiveFile: (path: string) => void;
+  openFile: (file: FileData) => void;
+}
+
+/** How a navigation reports a target file that could not be opened. */
+export type OpenFailureReporter = (message: string) => void;
+
+export interface LocationNavigatorDeps {
+  store: NavigationEditorStore;
+  openFile: (path: string) => Promise<FileData>;
+  setScrollToLocation: (location: SourceLocation) => void;
+}
+
+export type LocationNavigator = (
+  location: SourceLocation,
+  reportOpenFailure: OpenFailureReporter,
+) => Promise<void>;
+
+/** What one navigation carries through its disk read. */
+interface NavigationAttempt {
+  isCurrent: () => boolean;
+  reportOpenFailure: OpenFailureReporter;
+}
+
+/**
+ * Create the editor's location navigator. Each call reveals a source location:
+ * it activates the location's tab — opening the file from disk when no tab
+ * holds it — then scrolls. The scroll names the store key the tab is active
+ * under, so the Editor's same-file guard accepts it whatever spelling the
+ * producer used. When the file cannot be opened the failure goes to
+ * `reportOpenFailure` and nothing scrolls.
+ *
+ * The latest call wins: once a newer navigation starts, an older one —
+ * typically still reading its file — is dropped and from then on opens,
+ * activates, scrolls and reports nothing, so reads that finish out of order
+ * cannot pull the editor back to an older target.
+ */
+export function createLocationNavigator(deps: LocationNavigatorDeps): LocationNavigator {
+  let latestGeneration = 0;
+  return async (location, reportOpenFailure) => {
+    const generation = ++latestGeneration;
+    const attempt = { isCurrent: () => generation === latestGeneration, reportOpenFailure };
+    const key = await activateFile(location.file_path, deps, attempt);
+    if (key && attempt.isCurrent()) deps.setScrollToLocation({ ...location, file_path: key });
+  };
+}
+
+/** Make `path` the active tab; returns the active store key, or null if it was not activated. */
+async function activateFile(
+  path: string,
+  deps: LocationNavigatorDeps,
+  attempt: NavigationAttempt,
+): Promise<string | null> {
+  const { store } = deps;
+  const active = store.state.activeFile;
+  if (active && isSameFile(path, active)) return active;
+
+  const open = findOpenFile(store, path);
+  if (open) {
+    store.setActiveFile(open.path);
+    return store.state.activeFile;
+  }
+
+  let fileData: FileData;
+  try {
+    fileData = await deps.openFile(path);
+  } catch (err) {
+    if (attempt.isCurrent()) attempt.reportOpenFailure(`Could not open ${path}: ${errorMessage(err)}`);
+    return null;
+  }
+  if (!attempt.isCurrent()) return null;
+  // The producer's spelling may resolve to a tab that is already open; reopening
+  // it would reload a clean buffer or flag a dirty one as externally changed.
+  const reopened = findOpenFile(store, fileData.path);
+  if (reopened) store.setActiveFile(reopened.path);
+  else store.openFile(fileData);
+  return store.state.activeFile;
+}
+
+function findOpenFile(store: NavigationEditorStore, path: string): Pick<FileData, 'path'> | undefined {
+  return store.state.openFiles.find((f) => isSameFile(f.path, path));
+}
 
 // ── Viewport → Source navigation ────────────────────────────────────
 
 export interface NavigateToSourceDeps {
   getSourceLocation: (entityPath: string) => Promise<SourceLocation>;
-  scrollEditor: (location: SourceLocation) => void;
+  revealLocation: (location: SourceLocation) => void;
   selectEntity: (entityPath: string | null) => void;
 }
 
@@ -19,10 +112,11 @@ export interface NavigateToSourceDeps {
  * Selection is updated unconditionally — the entity is always selected
  * regardless of whether it has a resolvable source span.
  *
- * Editor source-scroll is best-effort: it is silently skipped when
- * getSourceLocation rejects (e.g. realized/derived geometry — boolean
- * results, patterns, auto-generated sub-entities — that has no 1:1
- * source span). A console.error is logged for diagnostic purposes.
+ * Revealing the source in the editor (which may open or activate its file)
+ * is best-effort: it is silently skipped when getSourceLocation rejects
+ * (e.g. realized/derived geometry — boolean results, patterns,
+ * auto-generated sub-entities — that has no 1:1 source span). A
+ * console.error is logged for diagnostic purposes.
  */
 export async function navigateToSource(
   entityPath: string,
@@ -30,11 +124,11 @@ export async function navigateToSource(
 ): Promise<void> {
   // selectEntity is a synchronous SolidJS store setter that cannot throw,
   // so it is intentionally outside the try — the fallible step is the
-  // getSourceLocation await + scrollEditor inside the try block below.
+  // getSourceLocation await + revealLocation inside the try block below.
   deps.selectEntity(entityPath);
   try {
     const location = await deps.getSourceLocation(entityPath);
-    deps.scrollEditor(location);
+    deps.revealLocation(location);
   } catch (err) {
     console.error('Failed to navigate to source:', err);
   }

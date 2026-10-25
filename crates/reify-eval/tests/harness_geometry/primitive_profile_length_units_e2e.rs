@@ -137,14 +137,14 @@ fn is_circle_profile(op: &GeometryOp) -> bool {
 /// its own argument, `Length` and the literal migration hint; and NO `Box` op
 /// reaches the kernel.
 ///
-/// ALL THREE SLOTS, not just `width` (reviewer amendment, task 5743): a box is
+/// ALL THREE SLOTS, not just `size_x` (reviewer amendment, task 5743): a box is
 /// written as one gesture, so a bare box is bare in every dimension. Reading
 /// the three fields through `?`-chained per-field calls would report only
-/// `width` and cost the author three edit-build cycles to fix one line — the
+/// `size_x` and cost the author three edit-build cycles to fix one line — the
 /// UX `required_length_values` exists to prevent. Needling the ANCHORED
 /// `"{slot} argument expects"` shape rather than the bare slot name is what
-/// makes this test able to see the difference: a single `width` rejection plus
-/// the op-compile Error would satisfy a loose `contains("height")`.
+/// makes this test able to see the difference: a single `size_x` rejection plus
+/// the op-compile Error would satisfy a loose `contains("size_y")`.
 #[test]
 fn bare_box_dimensions_drop_the_op_with_a_coded_error() {
     assert_rejected(
@@ -156,9 +156,9 @@ fn bare_box_dimensions_drop_the_op_with_a_coded_error() {
         "#,
         &[
             "box",
-            "width argument expects",
-            "height argument expects",
-            "depth argument expects",
+            "size_x argument expects",
+            "size_y argument expects",
+            "size_z argument expects",
             "Length",
             "pass a dimensioned length such as `5mm`",
         ],
@@ -197,17 +197,17 @@ fn dimensioned_box_builds_one_op_with_unchanged_si_dimensions() {
     );
 
     let GeometryOp::Box {
-        width,
-        height,
-        depth,
+        size_x,
+        size_y,
+        size_z,
     } = boxes[0]
     else {
         unreachable!("filtered to Box above")
     };
     for (name, value, expected) in [
-        ("width", width, 0.02),
-        ("height", height, 0.02),
-        ("depth", depth, 0.01),
+        ("size_x", size_x, 0.02),
+        ("size_y", size_y, 0.02),
+        ("size_z", size_z, 0.01),
     ] {
         let si = value
             .as_f64()
@@ -337,9 +337,8 @@ fn half_space_bare_normal_still_builds_with_a_dimensioned_point() {
 /// rejected here. If this test fails, the fix belongs in
 /// `crates/reify-compiler/src/geometry.rs` (α's file), NOT in this leaf.
 ///
-/// `rounded_box`'s arg order is width/depth/height/corner_r — DIFFERENT from
-/// `box`'s width/height/depth. Getting that wrong produces a confusing
-/// unrelated failure, so it is called out here.
+/// `rounded_box`'s arg order is width/depth/height/corner_r: `box`'s
+/// width/depth/height (the X/Y/Z extents) followed by the corner radius.
 #[test]
 fn desugared_primitives_build_clean() {
     for (label, source) in [
@@ -352,7 +351,7 @@ fn desugared_primitives_build_clean() {
             r#"structure def D { let body = cylinder_centered(5mm, 20mm) }"#,
         ),
         (
-            // width, depth, height, corner_r — NOT box's arg order.
+            // width, depth, height (X, Y, Z, as for box), then corner_r.
             "rounded_box",
             r#"structure def D { let body = rounded_box(40mm, 30mm, 10mm, 5mm) }"#,
         ),

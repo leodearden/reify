@@ -125,7 +125,7 @@ Every rejection reads the same way — one diagnostic per offending argument, so
 bare dimensions reports three:
 
 ```text
-box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`
+box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`
 ```
 
 The `pass a dimensioned length such as `5mm`` tail is `reify-core::units::LENGTH_MIGRATION_HINT`,

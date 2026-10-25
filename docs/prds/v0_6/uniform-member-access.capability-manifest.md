@@ -28,6 +28,7 @@ Grammar gate: **N/A batch-wide** — every target shape parses today (all probes
 | target is non-vacuous: let-instance member rejected today | probe: `member_geom_let_instance.ri` exit 1 + diagnostic observed; alias form `member_geom_alias.ri` identically | PASS |
 | mechanism gap located: geometry members absent from instance values | probe: `member_instance_geom_field.ri` eval → `Test.c = Cutter { d, half_d }` (no `body`); geometry lets have no value cell (`entity.rs:1327-1330`) | PASS |
 | elaboration machinery to generalize (D5 producer) | `elaborate_child_instance` `crates/reify-eval/src/unfold.rs:287`, ctor-override threading proven (task 3814, done) | PASS (wired) |
+| typed geometry alias kind (producer, added 2026-10-20 retro-critic follow-up, R4 B3) | grep `TypedGeometryAlias` present in `crates/reify-compiler/src` — red at main; the alias rule lands as S9 β #8731's named post-pass-2 refinement | PASS (producer) |
 | R3f no-clobber constraint honored (C3-vi) | `docs/design/symbolic-eval-nested-selector-resolution.md` §R3f; regression witness `restrict_field_b5_integration` | PASS (constraint recorded) |
 | numeric bound achievable: drilled volume within 1% of closed form | basis: task-325 volume-vs-closed-form precedent (sphere/box/Pappus); OCCT boolean volume accuracy ≫ 1% on prism∖cylinder; floor ≪ bound | PASS |
 | eval realizes geometry (the volume signal is observable under `reify eval`) | probe: `member_instance_geom_field.ri` eval emitted OCCT realization + `<Geometry: Cutter#realization[0]>` template value | PASS |

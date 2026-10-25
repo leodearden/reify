@@ -122,7 +122,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 |------|------|---------|
 | `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, …) |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
-| `get_layout_metrics` | `{selector}` | `{exists, width, height, overflow:{horizontal,vertical}}` |
+| `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
 ### R2 — Diagnostics & outline
 
@@ -135,35 +135,30 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown. Caveat: an UNSCOPED wait is not proof about any one pane in either direction — see [wait_for_selector: the unscoped-wait trap](#wait_for_selector-the-unscoped-wait-trap) below |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown. The wait covers every match in scope: `visible` needs ANY visible match, `gone` needs EVERY match hidden or absent — so an UNSCOPED green is not proof about any one pane; see [wait_for_selector: the unscoped-wait trap](#wait_for_selector-the-unscoped-wait-trap) below |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
 
 #### wait_for_selector: the unscoped-wait trap
 
-An unscoped wait resolves the testid to the FIRST element in document order and
-evaluates the state on THAT one — not on the first element that SATISFIES the
-wait. The selection happens BEFORE the state is consulted, which gives the trap
-three faces, one per arm of the predicate:
+A wait quantifies over EVERY match of the testid in its scope — document-wide
+when unscoped, inside the named pane when scoped. `state:'visible'` holds once
+SOME match is visible (and with `text`, that same match's trimmed text must
+equal it); `state:'gone'` holds once EVERY match is hidden or absent. Nothing is
+picked first, so a hidden copy early in document order neither blocks a
+`visible` wait nor satisfies a `gone` wait on its own.
 
-1. it goes green off a pane you did not mean, and the response carries no pane
-   keys to say which;
-2. `state:'visible'` times out on a hidden first match while a visible copy sits
-   in a LATER pane;
-3. `state:'gone'` goes green off a first match that is merely HIDDEN while a
-   visible copy is still mounted in a later pane — a teardown reported that did
-   not happen.
-
-Face 3 is the one to fear: face 2 fails loudly (a timeout the caller has to look
-at), while face 3 hands back a green for a teardown that never happened. Scope
+The one remaining trap: an unscoped green can come from a pane other than the
+one you act on next, and the response carries no pane keys to say which. A
+harness that waits unscoped and then acts scoped on a pane that is still
+mounting gets a green wait and then a `notFoundForViewport` on the action. Scope
 the wait whenever the follow-up action is scoped.
 
-This subsection is the canonical enumeration — the tool's own `viewportId` schema
-description and `buildSelectorPredicate` in `gui/src/debug/bridge.ts` each carry
-the one-line rule and point here. The three faces are pinned as behaviour by
-cases (h)/(i)/(j) of `gui/src/__tests__/waitFor.test.ts`. Known limitation rather
-than intended behaviour — the fix (quantify the unscoped predicate over ALL
-matches, on the observe path only; the drive tools stay first-match by #5891's
-back-compat contract) is tracked by #6564.
+This subsection is the canonical statement. The tool schemas carry a
+one-sentence version for agents; the code and test sites point here rather than
+restating it. The rule and the remaining trap are pinned by
+cases (h)–(l2) of `gui/src/__tests__/waitFor.test.ts`. The drive tools
+(`click_element` and friends) are a different question: they stay first-match
+plus a reported `viewportId`/`matchCount`, by #5891's back-compat contract.
 
 ### I1 — Editor interaction
 
@@ -349,16 +344,21 @@ design-facing subset of `tool_defs()`: tools to inspect the design, to change it
 (including the five AI write tools, §3 W) and to look at the result. That file
 is the list; it is not restated here.
 
-Every other tool stays callable, because `ALLOWED_TOOLS` in
-`gui/sidecar/src/session.ts` grants the whole `mcp__reify-debug__*` glob, but is
-deliberately not advertised.
+Every other tool stays callable, because the sidecar's `--allowed-tools` grant
+(`allowedTools` in `gui/sidecar/src/tool-surface.ts`) covers the whole
+`mcp__reify-debug__*` glob whenever the server is live, but is deliberately not
+advertised.
 
 `gui/src/__tests__/sidecarPromptParity.test.ts` enforces the split. A new
 `ToolDef` must get a row in the prompt's tool table or be added to that file's
 `NOT_ADVERTISED_TO_SIDECAR`, or the gui suite goes red (see the checklist in
 [debug-mcp-contract.md](debug-mcp-contract.md) §1 "Defining a new tool").
 
-**Reachability caveat.** The sidecar reaches these tools only while the GUI runs
-with `REIFY_DEBUG=1`, because `gui/src-tauri/src/main.rs` spawns the debug
-server only then. Release launches (`scripts/run-gui.sh`) have none, yet the
-prompt still advertises them. This is known and tracked by #7816.
+**Debug launches only.** The sidecar has these tools only while the GUI runs
+with `REIFY_DEBUG=1` and has bound its debug server: the host then passes the
+server's URL as `REIFY_DEBUG_MCP_URL`, and only with that URL does the sidecar
+register the `reify-debug` MCP entry, grant `mcp__reify-debug__*` and include
+the tool section in its prompt. Release launches (`scripts/run-gui.sh`,
+`reify gui`) do none of the three: the assistant edits the `.ri` files with its
+file tools, and the GUI reloads them. The rule and its guards:
+[debug-mcp-contract.md](debug-mcp-contract.md) §0 "AI write tools".

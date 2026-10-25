@@ -81,7 +81,7 @@ retargets cheap now — all verified on main 2026-07-24):
   stdlib DAG foundation (#4574).
 - **The struct-ctor conformance chokepoint exists** (struct-ctor-field-type-conformance
   PRD): named-arg ctor binding is not type-gated at bind time; the conformance checker
-  (α #5302, in-progress) validates it separately, and δ #5306 (pending) flips it
+  (α #5302) validates it separately, and δ #5306 flips it
   Warning→Error. Structure-field retargets get their loudness there.
 - **Trait-typed params are wildcards** (`type_carries_trait_object` short-circuits the
   overload filter; `ty.rs:161-163` records call-site conformance as deferred) — so marker
@@ -98,7 +98,7 @@ retargets cheap now — all verified on main 2026-07-24):
    across the workspace for no additional rejection power here); `DatumRef`-style alias
    onto `Type::Geometry` (would accept every geometry expression — too broad).
 2. **Flexure joints get `structure def FlexureJoint : DrivingJoint {}`** (flexures.ri),
-   and all 14 `prb_*` ctors (list: `flexures/diagnostics.rs:163-175`) get a compiler
+   and all 13 `prb_*` ctors (list: `flexures/diagnostics.rs::PRB_CTOR_NAMES`) get a compiler
    signature arm returning `StructureRef("FlexureJoint")`, structurally mirroring
    `joint_signatures.rs` (its own doc: the pattern is copied from `math_signatures.rs`).
    `flexure_compliance(joint: FlexureJoint)` then rejects every bare literal via
@@ -293,7 +293,7 @@ true`. Ordering (real `add_dependency` edges): α ∥ ζ ∥ (β after #5306); �
 
 - **α — FlexureJoint marker vertical slice** (headline leaf; consumer: every flexures
   author + BT1–BT3). `structure def FlexureJoint : DrivingJoint {}`; flexure ctor
-  signature arm (14 `prb_*` → `StructureRef("FlexureJoint")`, joint_signatures.rs
+  signature arm (13 `prb_*` → `StructureRef("FlexureJoint")`, joint_signatures.rs
   pattern); retarget `flexure_compliance(joint: FlexureJoint)` (+ the module's related
   `Length`-placeholder accessor params, same block); mint + tag `E_NO_MATCHING_OVERLOAD`;
   ensure check-time nonzero exit for the coded Error; committed negative fixture

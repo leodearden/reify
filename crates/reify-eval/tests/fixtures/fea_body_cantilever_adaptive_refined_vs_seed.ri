@@ -1,0 +1,44 @@
+// Test fixture for task 8246: an adaptive solve that REMESHED must report the
+// refined mesh's answer, not the seed's.
+//
+// A copy of `fea_body_cantilever_adaptive.ri` with two solves of ONE body:
+// `refined` allows up to two mark-driven remeshes, `seed` allows none. Both
+// consume the same realization, hence the same seed mesh, so their result
+// grids (built from the seed solve) must be identical while their answers
+// differ. The 1e-6 target is unreachable, so `refined` always remeshes at
+// least once.
+
+structure FeaBodyCantileverAdaptiveRefinedVsSeed {
+    let material = Steel_AISI_1045()
+
+    let body = box(1000mm, 100mm, 100mm)
+
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let refined = solve_elastic_static(
+        material,
+        body,
+        [tip_load],
+        [mount],
+        ElasticOptions(
+            adaptive: true,
+            target_accuracy: 1.0e-6,
+            max_refinement_iterations: 2,
+            max_dofs: 2000000,
+        )
+    )
+
+    let seed = solve_elastic_static(
+        material,
+        body,
+        [tip_load],
+        [mount],
+        ElasticOptions(
+            adaptive: true,
+            target_accuracy: 1.0e-6,
+            max_refinement_iterations: 0,
+            max_dofs: 2000000,
+        )
+    )
+}

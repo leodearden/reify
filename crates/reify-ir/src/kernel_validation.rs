@@ -88,7 +88,7 @@
 //! - `CircularPattern.angle` and `Draft.angle` — **ANGLE**, which is the
 //!   surface of PRD 3, not this one.
 //!
-//! Fidget's four sites (`Sphere.radius`, `Box.width`/`height`/`depth`) are all
+//! Fidget's four sites (`Sphere.radius`, `Box.size_x`/`size_y`/`size_z`) are all
 //! LENGTH-semantic, so it has no ungated site.
 //!
 //! `occt_non_length_fields_stay_ungated` is the anti-over-reach control that
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn formatters_are_parameterised_over_op_kind_and_field() {
         let pairs = [
-            ("Box", "width"),
+            ("Box", "size_x"),
             ("Fillet", "radius"),
             ("Extrude", "distance"),
             ("Shell", "thickness"),
@@ -609,7 +609,7 @@ mod tests {
 
         // Distinct pairs must produce distinct messages — a formatter that
         // ignores its arguments would collapse them.
-        let a = non_length_kernel_field_message("Box", "width", "Real");
+        let a = non_length_kernel_field_message("Box", "size_x", "Real");
         let b = non_length_kernel_field_message("Shell", "thickness", "Real");
         assert_ne!(a, b);
     }
@@ -709,8 +709,8 @@ mod tests {
     /// dimension for a dimensioned-but-wrong `Scalar`.
     #[test]
     fn violation_message_labels_the_observed_value() {
-        let real = check_length_field("Box", "width", &Value::Real(1.0)).unwrap();
-        let int = check_length_field("Box", "width", &Value::Int(1)).unwrap();
+        let real = check_length_field("Box", "size_x", &Value::Real(1.0)).unwrap();
+        let int = check_length_field("Box", "size_x", &Value::Int(1)).unwrap();
         assert_ne!(
             real, int,
             "Real and Int must not share a `got` label: {real}"
@@ -718,7 +718,7 @@ mod tests {
 
         let mass = check_length_field(
             "Box",
-            "width",
+            "size_x",
             &Value::Scalar {
                 si_value: 1.0,
                 dimension: DimensionVector::MASS,
@@ -904,7 +904,7 @@ mod tests {
     /// assertion cannot fail for ANY implementation, so it is gone.)
     #[test]
     fn shared_diagnostic_carries_no_kernel_identity() {
-        for (op_kind, field) in [("Sphere", "radius"), ("Box", "width")] {
+        for (op_kind, field) in [("Sphere", "radius"), ("Box", "size_x")] {
             let v = Value::Real(1.0);
             let msg = check_length_field(op_kind, field, &v).expect("a bare Real is a violation");
 

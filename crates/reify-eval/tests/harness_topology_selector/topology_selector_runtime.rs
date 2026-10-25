@@ -100,7 +100,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 fn engine_with_mock_kernel(setup: impl FnOnce(MockGeometryKernel) -> MockGeometryKernel) -> Engine {
     let kernel = setup(MockGeometryKernel::new());
     let checker = reify_constraints::SimpleConstraintChecker;
-    Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 // ── Happy-path mock-kernel tests (one per helper) ───────────────────────────
@@ -1083,7 +1083,7 @@ fn closest_point_on_box_via_occt_returns_plus_x_face_hit() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
@@ -1180,7 +1180,7 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 

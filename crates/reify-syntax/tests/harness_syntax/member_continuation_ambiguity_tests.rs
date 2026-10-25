@@ -1123,3 +1123,177 @@ fn member_list_containers_cover_every_member_repeat_in_the_grammar() {
         "these rules are both covered and excluded, which is incoherent: {both:?}"
     );
 }
+
+// ── (h) an indented `@` line is no longer a selector continuation (#8300) ───
+//
+// Since #8300 a selector `@` must share its base's line, so an `@name(...)`
+// row indented past the member column — once a legal continuation — now
+// starts an annotation member. That layout reads as a continuation, so it is
+// reported rather than silently re-read.
+
+const INDENTED_ANNOTATION: &str =
+    "structure S {\n    let top = body\n        @face(\"top\")\n    param y : Real = 1\n}\n";
+
+#[test]
+fn an_indented_annotation_after_a_valued_member_is_reported() {
+    let line = INDENTED_ANNOTATION.lines().nth(2).expect("fixture row 2");
+    let at_col = line.len() - line.trim_start().len();
+    assert!(
+        at_col > 4,
+        "fixture must indent the `@` past the member column 4, got {at_col}"
+    );
+    assert_one_member_continuation_error_at(
+        "indented annotation after a let",
+        INDENTED_ANNOTATION,
+        "@face",
+        "@",
+    );
+    assert_top_keeps_its_bare_value(INDENTED_ANNOTATION);
+}
+
+/// The report comes from clause 6, not clause 5: the `@` row was split off as
+/// its own member, so `let top` keeps its bare `body` value.
+fn assert_top_keeps_its_bare_value(source: &str) {
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    let top = parsed
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            reify_ast::Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                reify_ast::MemberDecl::Let(l) if l.name == "top" => Some(l),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("no `let top` member");
+    assert!(
+        matches!(&top.value.kind, reify_ast::ExprKind::Ident(n) if n == "body"),
+        "the `@` row was joined onto `top`: {:?}",
+        top.value.kind
+    );
+}
+
+/// With no following member, `lower_members` would drop the annotation with
+/// no diagnostic at all — the case that most needs the report.
+#[test]
+fn an_indented_trailing_annotation_is_reported() {
+    let source = "structure S {\n    let top = body\n        @face(\"top\")\n}\n";
+    assert_one_member_continuation_error_at("indented trailing annotation", source, "@face", "@");
+    assert_top_keeps_its_bare_value(source);
+}
+
+/// Clause 6 measures from the row where the predecessor ENDS.
+#[test]
+fn an_indented_annotation_after_a_multi_row_member_is_reported() {
+    let source = "structure S {\n    let xs = [\n        1,\n    ]\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n";
+    assert_one_member_continuation_error_at("after a multi-row let", source, "@deprecated", "@");
+}
+
+/// An annotation on the row where a multi-row predecessor ends is not
+/// detached, although it starts on a later row than the predecessor starts.
+#[test]
+fn an_annotation_on_a_multi_row_members_last_row_is_clean() {
+    let source = "structure S {\n    where enabled {\n        let a = 1mm\n    } @deprecated(\"x\")\n    param y : Real = 1\n}\n";
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+}
+
+/// Every consecutive pair is checked: the annotation at the member column is
+/// clean, and the one indented under it is reported.
+#[test]
+fn an_indented_annotation_stacked_under_another_is_reported() {
+    let source = "structure S {\n    let top = body\n    @deprecated(\"x\")\n        @face(\"top\")\n    param y : Real = 1\n}\n";
+    assert_one_member_continuation_error_at("stacked indented annotation", source, "@face", "@");
+}
+
+/// The rule is about layout, not about what the preceding member ends with.
+#[test]
+fn an_indented_annotation_is_reported_regardless_of_the_preceding_member_kind() {
+    let source = "structure S {\n    param x : Length = auto\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n";
+    assert_one_member_continuation_error_at(
+        "indented annotation after an auto param",
+        source,
+        "@deprecated",
+        "@",
+    );
+}
+
+#[test]
+fn an_annotation_at_the_member_column_is_clean() {
+    let cases = [
+        // #8300's repros, shared with the CLI e2e.
+        include_str!("../../../reify-cli/tests/fixtures/annotation_after_valued_param.ri"),
+        include_str!("../../../reify-cli/tests/fixtures/annotation_after_let_catalog.ri"),
+        include_str!("../../../reify-cli/tests/fixtures/annotation_after_constraint.ri"),
+        // First member: no preceding member to read it as a continuation of.
+        "structure S {\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n",
+        // Stacked annotations, both at the member column.
+        "structure S {\n    let top = body\n    @deprecated(\"x\")\n    @deprecated(\"y\")\n    param y : Real = 1\n}\n",
+    ];
+    for source in cases {
+        let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+        assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+        assert_no_member_continuation_error(source, source);
+    }
+}
+
+#[test]
+fn annotations_at_the_member_column_in_both_guarded_bodies_are_clean() {
+    let source = concat!(
+        "structure S {\n",
+        "    where enabled {\n",
+        "        let a = 1mm\n",
+        "        @deprecated(\"x\")\n",
+        "        param b : Length = auto\n",
+        "    } else {\n",
+        "        let c = 2mm\n",
+        "        @deprecated(\"y\")\n",
+        "        param d : Length = auto\n",
+        "    }\n",
+        "}\n",
+    );
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    assert_no_member_continuation_error("guarded-block annotations", source);
+}
+
+// ── (i) a block comment cannot carry a selector `@` across a line (#8300) ───
+//
+// The scanner cannot see a line break that a block comment opening the `@`'s
+// line sits after, so that layout still parses as a cross-line selector. It
+// is reported after the parse, wherever it occurs.
+
+#[test]
+fn a_selector_carried_across_a_line_by_a_block_comment_is_reported() {
+    let cases = [
+        (
+            "member",
+            "structure S {\n    let top = body\n    /* c */ @face(\"top\")\n    param y : Real = 1\n}\n",
+            "@face",
+        ),
+        (
+            "top level",
+            "unit foo : Length = 0.001\n/* c */ @deprecated(\"x\")\nstructure S {}\n",
+            "@deprecated",
+        ),
+        (
+            "argument list",
+            "structure S {\n    let y = f(body\n        /* c */ @face(\"top\"))\n}\n",
+            "@face",
+        ),
+        (
+            "multi-line comment",
+            "structure S {\n    let top = body /* a\n    b */ @face(\"top\")\n}\n",
+            "@face",
+        ),
+    ];
+    for (label, source, locator) in cases {
+        assert_one_member_continuation_error_at(label, source, locator, "@");
+    }
+}
+
+#[test]
+fn a_block_comment_before_a_same_line_selector_is_clean() {
+    let source = "structure S {\n    let top = body /* c */ @face(\"top\")\n}\n";
+    assert_no_member_continuation_error("same-line comment", source);
+}

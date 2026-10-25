@@ -9,7 +9,7 @@ use std::f64::consts::PI;
 
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
-use reify_test_support::fixtures::assert_rel;
+use reify_test_support::mesh_fixtures::assert_rel;
 
 const EXACT: f64 = 1e-9;
 
@@ -24,9 +24,9 @@ fn cube(kernel: &mut OcctKernel, side: f64) -> GeometryHandleId {
     execute(
         kernel,
         GeometryOp::Box {
-            width: Value::Real(side),
-            height: Value::Real(side),
-            depth: Value::Real(side),
+            size_x: Value::Real(side),
+            size_y: Value::Real(side),
+            size_z: Value::Real(side),
         },
     )
 }

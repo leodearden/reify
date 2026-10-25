@@ -28,7 +28,7 @@ module dcr_yield_stress_dimension_silent
 //   CHOKEPOINT: compile-time struct-ctor field conformance. This exit 1 is NOT
 //   β's signal. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
-//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   harness_ctor_conformance_survey/disposition.rs).
 //   The whole file fails to compile, so the positive half (`correct` / `j_ok`)
 //   is no longer evaluated here either.
 //   How β (#6941) reads B5 instead: docs/notes/ctor-conformance-flip-leaf-signals.md.

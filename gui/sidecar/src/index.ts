@@ -4,6 +4,7 @@ import { createPermissionServer } from './permission-server.js';
 import { SidecarSession } from './session.js';
 import { probeLandlockAsync } from './sandbox.js';
 import { buildSystemPrompt } from './system-prompt.js';
+import { resolveReifyDebugMcpUrl } from './tool-surface.js';
 import { errorMessage } from './utils.js';
 
 /**
@@ -49,7 +50,12 @@ export async function main(
   }
   landlockAvailable = probeResult.status === 'fulfilled' ? probeResult.value : false;
 
+  // Set by the Rust host only when its own reify-debug server is live; this one
+  // value decides both the prompt's tool section and the session's MCP surface.
+  const reifyDebugMcpUrl = resolveReifyDebugMcpUrl(process.env);
+
   const systemPrompt = buildSystemPrompt({
+    reifyDebugLive: reifyDebugMcpUrl !== undefined,
     workingDirectory: process.cwd(),
   });
 
@@ -64,6 +70,7 @@ export async function main(
     workspace,
     landlockExec,
     landlockAvailable,
+    reifyDebugMcpUrl,
   });
 
   // Wire session output to the writable stream

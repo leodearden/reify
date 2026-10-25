@@ -17,7 +17,7 @@
 //!   `MixedObjective` declares two same-sense `minimize` terms over incommensurable
 //!   dimensions (Money, Mass), producing a `DiagnosticCode::ObjectiveDimensionIncoherent`
 //!   Error naming both dimensions. This file intentionally fails `reify check` and
-//!   is listed in `crates/reify-compiler/tests/examples_smoke.rs::SKIP_SET`.
+//!   is listed in `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::SKIP_SET`.
 //!
 //! # Reuse
 //!
@@ -135,7 +135,7 @@ fn multi_aspect_objective_positive_resolves_and_is_dimension_coherent() {
     );
 
     // ── eval ───────────────────────────────────────────────────────────────
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 

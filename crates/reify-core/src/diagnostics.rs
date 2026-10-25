@@ -55,8 +55,9 @@ impl SourceSpan {
     /// - Both `reify_types::byte_offset_to_line_col` and the GUI/LSP fast path
     ///   (`gui::engine::offset_to_line_col_fast`) short-circuit the prelude
     ///   sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) to `(1, 1)` — the
-    ///   same "no user-file location" fallback used by `mcp_context::get_diagnostics`
-    ///   when no labels are present.  This prevents a `debug_assert` panic
+    ///   same "no user-file location" fallback the GUI's `diagnostics_to_info`
+    ///   (`gui/src-tauri/src/engine.rs`) uses when no labels are present.  This
+    ///   prevents a `debug_assert` panic
     ///   (debug builds) and a silent past-last-line mis-report (release builds).
     /// - Ad-hoc offset converters that do **not** route through one of those
     ///   helpers (e.g. `reify_lsp::convert::offset_to_position`) apply
@@ -116,8 +117,9 @@ impl Severity {
     /// (`#[cfg(feature = "serde")]`) is pinned by a unit test.
     ///
     /// Note: `Display` intentionally keeps lowercase (`"error"`, `"warning"`,
-    /// `"info"`) for CLI/human-readable output. Do not change `Display` to
-    /// PascalCase — that would silently alter the MCP CLI wire format.
+    /// `"info"`) for CLI/human-readable output (`reify check`/`build` print
+    /// `{severity}: {message}`); the MCP wire uses `as_wire_str` alone. The CLI
+    /// MCP transport that once put `Display` on the wire (#2638) was deleted by #6665.
     #[inline]
     pub fn as_wire_str(self) -> &'static str {
         match self {
@@ -403,6 +405,38 @@ pub enum DiagnosticCode {
     ///
     /// The human-readable mnemonic used in task prose is `E_FN_PARAM_DEFAULT_TYPE_MISMATCH`.
     FnParamDefaultTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/fn_return_check.rs::reconcile_fn_return`.
+    ///
+    /// Canonical message form:
+    /// `"function '<fn>' declares return type `<D>` but its body produces `<B>`"`.
+    ///
+    /// Emitted when a fn's EXPLICIT return annotation resolves to an `Int`/`Scalar{..}`
+    /// type that the compiled body's result type is not `type_compatible` with. Call
+    /// sites type the result from the signature, and evaluation returns the body value
+    /// unconverted, so the two must agree. Labels anchor the return annotation and the
+    /// body's result expression.
+    ///
+    /// Severity comes from `FN_RETURN_RECONCILE_SEVERITY`: `Warning` during the
+    /// warn-mode phase; the promotion to `Error` is #7007.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_FN_RETURN_TYPE_MISMATCH`.
+    FnReturnTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/fn_return_check.rs` (`reconcile_fn_return`
+    /// and `require_bodyless_return_annotation`).
+    ///
+    /// Canonical message form:
+    /// `"function '<fn>' has no return type annotation, so callers type its result as `Real`, but its body produces `<B>`; annotate its return type"`.
+    ///
+    /// Emitted when a fn has NO return annotation and either (a) its body's type
+    /// contradicts the `Real` the signature defaults to (call sites type from that
+    /// default), or (b) it is a bodyless required trait assoc fn, which has no body
+    /// that could ever reconcile it.
+    ///
+    /// Severity comes from `FN_RETURN_RECONCILE_SEVERITY`: `Warning` during the
+    /// warn-mode phase; the promotion to `Error` is #7007.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_FN_RETURN_TYPE_UNANNOTATED`.
+    FnReturnTypeUnannotated,
     /// Origin: `crates/reify-compiler/src/entity.rs::check_param_default_type`.
     ///
     /// Canonical message form:
@@ -526,6 +560,22 @@ pub enum DiagnosticCode {
     /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
     /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
     Shadowing,
+    /// Origin: `crates/reify-compiler/src/compile_builder/stdlib_shadow_lint.rs`.
+    /// Emitted once per `(kind, name)` when a module's own definition wins a
+    /// name that a std module also defines in the same kind (enum, structure or
+    /// occurrence, trait, function signature, type alias, constraint def,
+    /// purpose). The local definition binds; this reports the shadowing.
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' in module '<local module>' shadows '<name>' from std module '<std module>'; the local definition wins"`.
+    ///
+    /// Two labels: the local declaration (primary) and the prelude sentinel
+    /// span (`"defined in std module '<std module>'"`).
+    ///
+    /// Severity is `Warning` in the N0 interim; stdlib-namespace κ #5503
+    /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
+    /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
+    StdlibNameShadowed,
     /// Origin: `crates/reify-compiler/src/entity.rs` (trait_bound iteration).
     /// Canonical message form:
     /// `"geometry trait '<TraitName>' on '<EntityName>' is treated as a user assertion; runtime conformance check is suppressed"`.
@@ -582,6 +632,31 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
     /// (see `docs/prds/topology-selector-value-type.md` §11.2).
     SelectorKindMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs`, the
+    /// `OverloadResolution::NoMatch` arm (task 5476).
+    /// Emitted as `Severity::Error` when user functions with the called name exist
+    /// but none of their signatures accepts the argument types at the call site.
+    ///
+    /// Canonical message form:
+    /// `"no matching overload for {name}({arg_types}), candidates: {candidate_sigs}"`
+    /// Label at the call span: `"no matching overload"`.
+    ///
+    /// The diagnostic is pushed through `make_poison_literal`, so the call's result
+    /// type becomes a poison sentinel — the anti-cascade contract from
+    /// tasks 448/1912/1921 that stops one bad call from spraying follow-on errors.
+    ///
+    /// **Non-clobber rule.** This code tags only the GENERAL no-match case. When
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds — i.e. the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch — the
+    /// diagnostic keeps [`DiagnosticCode::SelectorKindMismatch`] instead, so the
+    /// composition path (BT1, `units.rs`) and the param-binding path (BT6) report
+    /// the same code (task 4581 / esc-4120-17). Message and label are identical in
+    /// both branches; only the code differs.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NO_MATCHING_OVERLOAD`
+    /// (severity convention: `E_*` → `Error`); see
+    /// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
+    NoMatchingOverload,
     /// Origin: `crates/reify-compiler/src/builtin_signatures.rs` (task 4493,
     /// type-hygiene ζ).
     /// Emitted as `Severity::Error` when a call site passes a statically-known
@@ -2636,12 +2711,20 @@ pub enum DiagnosticCode {
     /// Emitted as a `Severity::Warning` by the eval-time `flexure_diagnose`
     /// `__flexure_compliance_get` arm when the accessor's argument is NOT a joint
     /// `Value::Map` carrying the reserved hidden `__flexure_compliance` record
-    /// (e.g. a bare `Length`). The DSL `flexure_compliance(joint: Length)`
-    /// signature cannot distinguish a real PRB-ctor joint from any other `Length`
-    /// at compile time, so the intrinsic silently yields a sentinel-zero record;
-    /// this runtime warning surfaces that documented type-lie. A real joint
-    /// argument emits nothing. Full static enforcement rides the future
-    /// typed-joint work (out of scope here).
+    /// (e.g. a fabricated `FlexureJoint()`). A real joint argument emits nothing.
+    ///
+    /// RETAINED AS DEFENSE-IN-DEPTH, not superseded (task #5476, PRD
+    /// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.6). The DSL
+    /// accessor is now `flexure_compliance(joint: FlexureJoint)`, so the bare-
+    /// literal case this warning was originally written for — any `Length`, e.g.
+    /// `5mm`, silently matching the old `joint: Length` placeholder and yielding a
+    /// sentinel-zero record — is a hard compile Error carrying
+    /// [`DiagnosticCode::NoMatchingOverload`]. What remains is the narrower
+    /// residual hole the type cannot close: `FlexureJoint` must be spellable in
+    /// that public signature, so a bare `FlexureJoint()` fabrication is
+    /// statically legal while carrying no `__flexure_compliance` cache entry.
+    /// This warning is the arm that keeps that case loud — INV-SF-5 bans a
+    /// placeholder being both statically and dynamically silent.
     ///
     /// The PRD-prose mnemonic for this code is `W_FLEXURE_NON_JOINT_ARG`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
@@ -2879,6 +2962,20 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/modal_ops.rs` (`run_mechanism_modal`, the
+    /// lumped `mechanism_modal_analysis` trampoline —
+    /// `mechanism_shift_unsupported_diagnostic`).
+    ///
+    /// Canonical message form:
+    /// `"W_ModalOptionUnsupported: ModalOptions.<param> = <value> is declared but not yet honored by the mechanism_modal_analysis (lumped) trampoline (<note>; #7263); solve falls back to the default <default>"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic
+    /// `W_ModalOptionUnsupported`) when `shift_frequency` is present and
+    /// non-zero. The FEA `modal_analysis` path honors the shift and never emits
+    /// it. Owner #7263 (shift-invert leaf ζ,
+    /// `docs/prds/v0_6/shift-invert-eigensolve.md`) retires it by honoring the
+    /// shift on the lumped path. Advisory: the solve continues at the default.
+    ModalOptionUnsupported,
     /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
     /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
     /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
@@ -4940,7 +5037,7 @@ pub struct DiagnosticRef {
 ///
 /// This enum and [`hex_wedge_mesh_diagnostic`] are tested but not yet wired
 /// into the dispatcher (`dispatch_volume_mesh` in `reify-eval/src/engine_build.rs`)
-/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+/// — that wiring is owned by #4746 (hex/wedge Phase A activation), mirroring
 /// the accepted `#[allow(dead_code)]` status of `p2_substitution_diagnostic`
 /// (task #2991).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4995,7 +5092,7 @@ pub enum HexWedgeMeshOutcome {
 /// # Wiring note
 ///
 /// This function is `#[allow(dead_code)]` pending the live wiring of
-/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
+/// `dispatch_volume_mesh`'s hex/wedge arm (#4746).  That arm will
 /// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
 /// to obtain the diagnostic to push into `BuildResult.diagnostics`.
 ///
@@ -5005,7 +5102,7 @@ pub enum HexWedgeMeshOutcome {
 /// `reify-eval/src/engine_build.rs` next to its dispatcher), this function and
 /// `HexWedgeMeshOutcome` live here in `reify-core` because their inputs are
 /// pure primitives (`usize`, `bool`, `&str`) with no `reify-eval`/`reify-solver`
-/// dependency.  The future task #2947 call site in `dispatch_volume_mesh`
+/// dependency.  The future #4746 call site in `dispatch_volume_mesh`
 /// should reach into `reify_core::diagnostics::{HexWedgeMeshOutcome,
 /// hex_wedge_mesh_diagnostic}` rather than duplicating the mapping there.
 #[allow(dead_code)]
@@ -5018,7 +5115,7 @@ pub fn hex_wedge_mesh_diagnostic(
     // exclusive by stdlib constraint.  A ForceTet outcome therefore must never
     // arrive with require_hex_wedge=true.  The guard fires only in debug builds,
     // so the production code path remains unchanged; it surfaces the violation
-    // at the call site (task #2947) rather than relying solely on the upstream
+    // at the call site (#4746) rather than relying solely on the upstream
     // stdlib enforcement that is not yet wired.
     debug_assert!(
         !(require_hex_wedge && matches!(outcome, HexWedgeMeshOutcome::ForceTet)),
@@ -6845,6 +6942,20 @@ mod tests {
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
     }
 
+    // --- ModalOptionUnsupported (task 6097 — W_ModalOptionUnsupported) ---
+    // Pairs with `mechanism_shift_unsupported_diagnostic` in
+    // `crates/reify-eval/src/modal_ops.rs`. Only the wire identifier is pinned,
+    // for the reasons the BucklingOptionUnsupported block above records.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ModalOptionUnsupported`
+    /// serializes as `"ModalOptionUnsupported"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_modal_option_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ModalOptionUnsupported).unwrap();
+        assert_eq!(s, "\"ModalOptionUnsupported\"");
+    }
+
     // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---
     // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
     // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the
@@ -7840,6 +7951,46 @@ mod tests {
         let s =
             serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
         assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
+    }
+
+    // --- NoMatchingOverload tests (task 5476 — E_NO_MATCHING_OVERLOAD) ---
+    // Pairs with the `OverloadResolution::NoMatch` poison-literal arm in
+    // `crates/reify-compiler/src/expr.rs`. PRD
+    // `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::NoMatchingOverload` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` at `Severity::Error` — pinning the
+    /// documented-only `E_*` → Error convention, which is otherwise unenforced.
+    /// Also asserts the variant is distinct from `SelectorKindMismatch`, the code
+    /// the NoMatch arm must never clobber (task 4581 / esc-4120-17 BT1↔BT6 code
+    /// uniformity). Shape mirrors
+    /// `diagnostic_code_mechanism_nondriving_joint_with_code_round_trips`; a future
+    /// enum reorganisation that drops `NoMatchingOverload` is caught here.
+    #[test]
+    fn diagnostic_code_no_matching_overload_with_code_round_trips() {
+        use super::Severity;
+        assert_ne!(
+            DiagnosticCode::NoMatchingOverload,
+            DiagnosticCode::SelectorKindMismatch,
+            "NoMatchingOverload must be a distinct variant from SelectorKindMismatch — \
+             the NoMatch arm keeps SelectorKindMismatch on the selector-kind branch"
+        );
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::NoMatchingOverload);
+        assert_eq!(d.code, Some(DiagnosticCode::NoMatchingOverload));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::NoMatchingOverload`
+    /// serializes as `"NoMatchingOverload"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_no_matching_overload_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::NoMatchingOverload).unwrap();
+        assert_eq!(s, "\"NoMatchingOverload\"");
     }
 }
 

@@ -17,7 +17,7 @@ use reify_test_support::{
 // Helper: build a no-solver engine (mirrors `reify check` entry point).
 // ---------------------------------------------------------------------------
 fn no_solver_engine() -> Engine {
-    Engine::new(Box::new(MockConstraintChecker::new()), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ fn no_double_emit_for_unconstrained_auto_param_with_active_solver() {
     // solver attached.
     let solver = MockConstraintSolver::new_solved(std::collections::HashMap::new());
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     let result = engine.eval(&module);
 
     // W_UNDERDETERMINED must still fire — detect_underdetermined is outside the
@@ -293,7 +293,7 @@ fn no_double_emit_for_unconstrained_auto_free_param_with_unique_false_solver() {
         unique: false,
     }]);
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     let result = engine.eval(&module);
 
     let under_count = underdetermined_diags(&result.diagnostics).len();

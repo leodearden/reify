@@ -16,7 +16,7 @@ use reify_compiler::{
 };
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
-use reify_test_support::fixtures::assert_rel;
+use reify_test_support::mesh_fixtures::assert_rel;
 use reify_test_support::*;
 
 // ─── zone_cylinder (step 1 RED / step 2 GREEN) ───────────────────────────────
@@ -86,7 +86,7 @@ fn zone_cylinder_structural_lowers_to_line_segment_and_pipe() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _ = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -146,7 +146,7 @@ fn zone_cylinder_volume_matches_formula() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let tess_result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = tess_result
@@ -177,7 +177,7 @@ fn zone_cylinder_volume_matches_formula() {
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let mut planner2 = reify_geometry::SingleKernelHolder::new();
     planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
+    let mut engine2 = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(planner2)));
     let build_result = engine2.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -329,7 +329,7 @@ fn zone_annulus_structural_lowers_to_four_ops() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _ = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -413,7 +413,7 @@ fn zone_annulus_volume_matches_formula() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let tess_result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = tess_result
@@ -444,7 +444,7 @@ fn zone_annulus_volume_matches_formula() {
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let mut planner2 = reify_geometry::SingleKernelHolder::new();
     planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
+    let mut engine2 = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(planner2)));
     let build_result = engine2.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -612,7 +612,7 @@ fn zone_profile_structural_lowers_to_four_ops() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _ = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -663,6 +663,7 @@ fn occt_engine() -> reify_eval::Engine {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(planner)),
     )

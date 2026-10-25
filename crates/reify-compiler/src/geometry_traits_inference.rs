@@ -529,11 +529,11 @@ impl LetBindingEnv for EmptyLetEnv {
 ///
 /// # Geometry-arg recursion
 ///
-/// For combinators, recurse on every argument that has `result_type ==
-/// Type::Geometry` (boolean ops take two geometry args, transforms/modify/
-/// pattern take one as the first geometry-typed arg, sweeps take a list
-/// of profiles plus a path). Non-geometry args are skipped — their
-/// inferred traits don't participate in the combine.
+/// For combinators, recurse on the geometry operands per
+/// [`is_geometry_operand`]: boolean ops take the first two, variadic booleans
+/// fold all of them, and transforms/modify/pattern/sweeps take the first.
+/// Non-geometry args are skipped — their inferred traits don't participate in
+/// the combine.
 ///
 /// # Default-Bounded fallback
 ///
@@ -927,12 +927,12 @@ fn infer_traits_for_function_call_in_env(
     try_infer_traits_for_function_call_in_env(name, args, env).unwrap_or(InferredTraits::all())
 }
 
-/// Find the first geometry-typed argument and recurse with the env, defaulting
-/// to `InferredTraits::all()` if no geometry arg is present (defensive — a
-/// well-formed call site always has one).
+/// Find the first geometry operand (per [`is_geometry_operand`]) and recurse
+/// with the env, defaulting to `InferredTraits::all()` if none is present
+/// (defensive — a well-formed call site always has one).
 fn first_geometry_arg_in_env(args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
     args.iter()
-        .find(|a| a.result_type == reify_core::Type::Geometry)
+        .find(|a| is_geometry_operand(a))
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all())
 }
@@ -1071,15 +1071,14 @@ fn is_geometry_operand(expr: &CompiledExpr) -> bool {
         )
 }
 
-/// Find the first two geometry-typed arguments and recurse on each with the
-/// env, defaulting to `InferredTraits::all()` if either is missing.
+/// Find the first two geometry operands (per [`is_geometry_operand`]) and
+/// recurse on each with the env, defaulting to `InferredTraits::all()` if
+/// either is missing.
 fn first_two_geometry_args_in_env(
     args: &[CompiledExpr],
     env: &dyn LetBindingEnv,
 ) -> (InferredTraits, InferredTraits) {
-    let mut iter = args
-        .iter()
-        .filter(|a| a.result_type == reify_core::Type::Geometry);
+    let mut iter = args.iter().filter(|a| is_geometry_operand(a));
     let a = iter
         .next()
         .map(|a| infer_traits_for_expr_in_env(a, env))

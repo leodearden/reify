@@ -17,22 +17,27 @@
 // `std.flexures.types` + `std.flexures` (esc-3851-32 workaround — now
 // retired).
 //
-// Module placement: registered in `stdlib_loader.rs` after `std.fdm.*`
-// modules. Depends on language primitives (Real, Pressure, Length, Bool)
-// and the standard prelude units (Pa, N, m, etc.) from `std.units` and
-// `std.si_units`. Zero cross-module dependencies on materials / structural
-// / solver modules.
+// Module placement: registered in `stdlib_loader.rs` after `std.kinematic`
+// (task #5476 — `structure def FlexureJoint : DrivingJoint` names the
+// `DrivingJoint` trait, which is resolved through the loader's growing
+// sequential prelude, so registration order IS visibility order). Depends on
+// language primitives (Real, Pressure, Length, Bool) and the standard prelude
+// units (Pa, N, m, etc.) from `std.units` and `std.si_units`. Zero
+// cross-module dependencies on materials / structural / solver modules.
 //
-// Encoding notes (placeholder retargets):
-//   `flexure_compliance(joint: Real)` uses `Real` for the joint parameter
-//   because `Joint` is not yet a typed structure — current joints are
-//   runtime `Value::Map` per `reify-stdlib/src/joints.rs`, and per-kind
-//   structures (Revolute, Prismatic, etc.) land in KCC-ζ (task 3845,
-//   in-progress). Same placeholder posture as
-//   `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real` with
-//   TODO(mechanism-type) — retargets to `DrivingJoint` trait (or // ptodo:allow type-placeholder awaiting future type-system PRD
-//   `Joint` marker) when KCC-ζ lands. See TODO(joint-type) on the // ptodo:allow type-placeholder awaiting future type-system PRD
-//   accessor's joint parameter.
+// Joint parameter typing (placeholder ERADICATED — task #5476,
+// docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.2/§3.3):
+//   `flexure_compliance(joint: FlexureJoint)` is nominally typed against the
+//   `structure def FlexureJoint : DrivingJoint` marker declared below, and the
+//   13 `prb_*` ctors type their call sites as `StructureRef("FlexureJoint")`
+//   via `reify-compiler/src/flexure_signatures.rs`. The parameter was
+//   PREVIOUSLY typed `Length` — a placeholder that let any bare `5mm`
+//   overload-match and silently yield a sentinel-zero record. It no longer
+//   does: a non-joint argument is now a hard compile Error carrying
+//   `DiagnosticCode::NoMatchingOverload` (mnemonic `E_NO_MATCHING_OVERLOAD`).
+//   The RUNTIME representation is unchanged — joints are still `Value::Map`,
+//   and PRD §7.1's rejection of the joints→typed-StructureInstance migration
+//   is NOT reopened. See the marker's own comment below for the full argument.
 //
 // Cache-on-joint convention (consumed by λ — task 3821):
 //   The PRB ctors (γ / δ / ε / ζ / η / θ) will store the populated
@@ -180,6 +185,43 @@ structure def FlexureCompliance {
     constraint yield_margin <= 1
 }
 
+// ── FlexureJoint marker ───────────────────────────────────────────────────
+
+// FlexureJoint — the nominal STATIC-LAYER marker for a joint produced by a
+// PRB-emitting `prb_*` ctor. Placeholder-ratchet α, task #5476; PRD
+// docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.1 / §3.2.
+//
+// Empty by design — it carries no fields, and that emptiness is load-bearing:
+// the RUNTIME representation of a flexure joint is an untouched `Value::Map`
+// (the `prb_*` ctors in `reify-stdlib/src/flexures/` are unchanged by α). PRD
+// §7.1 keeps the joints→typed-StructureInstance migration REJECTED, exactly as
+// KCC-ζ (task 3845, esc-3845-91) left it. Giving this marker fields would start
+// that declined migration; it is a type-layer tag only. Precedent for the empty
+// form: `structure def Spherical : DrivingJoint { }` in kinematic.ri.
+//
+// `: DrivingJoint` so the #4310 compile-time bound checks on `bind` / `sweep` /
+// `dim` treat a flexure joint uniformly with every other driving joint — to the
+// mechanism layer "it is just a Revolute". Without the bound, retyping the
+// `prb_*` ctors would make previously-accepted `bind(prb_notch_circular(…), …)`
+// call sites fail the bound check.
+//
+// Non-matchability comes free from the compiler's EXACT-EQUALITY overload
+// filter (`type_compat.rs::resolve_function_overload`): once
+// `flexure_compliance` declares `joint: FlexureJoint` (step-12), a bare `5mm`
+// is `Scalar[LENGTH]`, does not equal `StructureRef("FlexureJoint")`, and is
+// rejected as a hard compile Error. No new `Type` variant and no new grammar
+// are required (PRD §3.1) — this is a plain `structure def`.
+//
+// `pub`-visible by necessity, not by preference: it names the parameter type in
+// `flexure_compliance`'s public signature, so user code must be able to spell
+// it. That makes a bare `FlexureJoint()` fabrication statically legal — a
+// deliberate residual hole. It stays DYNAMICALLY loud via the eval-time
+// `W_FLEXURE_NON_JOINT_ARG` classifier (task 4547 Disposition 5), which is
+// RETAINED as defense-in-depth precisely for this case (PRD §3.6): a fabricated
+// marker carries no `__flexure_compliance` cache entry, so the classifier still
+// fires. Statically-silent AND dynamically-silent is what INV-SF-5 bans.
+structure def FlexureJoint : DrivingJoint { }
+
 // ── flexure_compliance accessor ───────────────────────────────────────────
 
 // flexure_compliance(joint) — the PRD §4.2 FREE-function accessor that
@@ -209,31 +251,45 @@ structure def FlexureCompliance {
 // as `pub fn STANDARD_GRAVITY()` in `units.ri` and `pub fn
 // standard_bolt_lengths()` in `standard_stock.ri`.
 //
-// TODO(joint-type): the `joint` parameter is typed `Length` purely so the // ptodo:allow type-placeholder awaiting future type-system PRD
-// accessor overload-matches a PRB-ctor result — a constructed joint is a
-// runtime `Value::Map`, but the compiler infers a bare-builtin call's return
-// type from its first `Length` argument, so `Length` is the only static type
-// that resolves `flexure_compliance(prb_*(...))` today. This is a KNOWN
-// type-system placeholder lie: ANY `Length` value (e.g. a bare `5mm`) also
-// silently overload-matches and yields the sentinel-default record instead of
-// a type error — a non-joint argument is statically indistinguishable from a
-// real joint. As of task 4547 (Disposition 5) the eval-time `flexure_diagnose`
-// classifier surfaces this misuse with `W_FlexureNonJointArg` (Warning) when the
-// accessor's argument is not a joint `Value::Map` carrying `__flexure_compliance`;
-// full STATIC enforcement still awaits the typed-joint migration noted below.
-// Same placeholder posture as
-// `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`
-// (TODO(mechanism-type)). // ptodo:allow type-placeholder awaiting future type-system PRD
+// Joint parameter typing — the `Length` placeholder is GONE (task #5476,
+// docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.2/§3.3/§3.6):
 //
-// Retarget to a real joint type (the `DrivingJoint` marker trait, or a
-// per-kind `Joint` structure) once joints carry a static type. NOTE: KCC-ζ
-// (task 3845, LANDED) declared the `DrivingJoint` trait + per-kind structures
-// but deliberately KEPT joints as runtime `Value::Map` (PRD §7.1, "Value::Map
-// representations remain"), so a joint carries no `type_name` for the type
-// layer to match on and 3845 does NOT remove this `Length` placeholder. The
-// retarget is contingent on a future joints→typed-StructureInstance migration
-// that PRD §7.1 currently rejects and that no task yet owns; until it lands the
-// `Length` placeholder is the accepted v0.3 debt.
-pub fn flexure_compliance(joint: Length) -> FlexureCompliance {
+// `joint` is NOMINALLY typed as the `structure def FlexureJoint : DrivingJoint`
+// marker declared above. The 13 `prb_*` flexure constructors type their call
+// sites as `StructureRef("FlexureJoint")` (compiler-side signature family:
+// `reify-compiler/src/flexure_signatures.rs`), so a real PRB-ctor result
+// overload-matches and nothing else does.
+//
+// What this changed, concretely: the parameter used to be typed `Length` purely
+// so the accessor would overload-match a PRB-ctor result, because with no
+// signature arm the compiler inferred a bare-builtin call's return type from its
+// first `Length` argument. That made ANY `Length` — a bare `5mm` — match too,
+// yielding the sentinel-default record instead of a type error. A non-joint
+// argument was statically indistinguishable from a real joint. It no longer is:
+// the compiler's EXACT-EQUALITY overload filter
+// (`type_compat.rs::resolve_function_overload`) sees `Scalar[LENGTH]` !=
+// `StructureRef("FlexureJoint")` and emits a hard compile Error carrying
+// `DiagnosticCode::NoMatchingOverload` (PRD-prose mnemonic
+// `E_NO_MATCHING_OVERLOAD`). Boundary tests: PRD §7.3 BT1/BT2 —
+// `reify-cli/tests/harness_cli/cli_check.rs` (the user-observable exit-code
+// flip) and `reify-compiler/tests/harness_mechanics/flexures_stdlib_compile.rs`
+// (the typed code).
+//
+// What this did NOT change: the RUNTIME representation. Joints are still
+// `Value::Map` per `reify-stdlib/src/joints.rs`. PRD §7.1's rejection of the
+// joints→typed-StructureInstance migration stands and is NOT reopened here —
+// `FlexureJoint` is a static-layer nominal tag over an untouched runtime value,
+// which is why no new `Type` variant and no grammar change were needed.
+//
+// Residual hole, deliberately left open and deliberately covered: because
+// `FlexureJoint` must be spellable in this public signature, a bare
+// `FlexureJoint()` fabrication is statically legal. The eval-time
+// `W_FLEXURE_NON_JOINT_ARG` classifier (task 4547 Disposition 5,
+// `reify-stdlib/src/flexures/diagnostics.rs`) is therefore RETAINED as
+// defense-in-depth, NOT superseded (PRD §3.6): a fabricated marker carries no
+// `__flexure_compliance` cache entry, so the classifier still fires at eval
+// time. Statically-silent AND dynamically-silent is what INV-SF-5 bans; keeping
+// both arms is what makes this a ratchet rather than a swap.
+pub fn flexure_compliance(joint: FlexureJoint) -> FlexureCompliance {
     __flexure_compliance_get(joint)
 }

@@ -191,7 +191,7 @@ fn ci_example_compiles_clean_and_evaluates_green() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // §10 row 6: `let d = material.density; let i = moment_of_inertia(b, d)` →
@@ -320,7 +320,7 @@ structure def MoiRejection {
     // Build with MockGeometryKernel so density-arg resolution runs (OCCT-independent).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // The runtime Warning must contain "expects Density" AND the "7850kg/m^3" hint.
@@ -362,7 +362,7 @@ structure def BmpPressure {
     let compiled = compile_source_with_stdlib(SRC);
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let pressure_warn = result
@@ -415,7 +415,7 @@ structure def BmpNoMaterial {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // §10 row 9 invariant (post-task-4498 flip): EXACTLY ONE DynamicsNoDensity error.
@@ -613,7 +613,7 @@ fn row_14_rnea_numerically_identical_post_kappa() {
     // Kernel-independent: inverse_dynamics reads mass from MassProperties solid.
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Extract PendulumIdyn.forces.

@@ -1,0 +1,14 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): duplicate_solid and world_parented_closure (T11)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_mechanism_errors
+
+// Probe (seat L, S6): how the two mechanism error discriminators reach users.
+structure def Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let m1  = body(mechanism(), "solidA", j_a, j_b)
+    let m_wpc = body(m1, "solidB", j_a, world())     // closing edge parented to world
+    let s_wpc = snapshot(m_wpc, [])
+    let m_dup = body(m1, "solidA", j_b)               // duplicate solid
+    let s_dup = snapshot(m_dup, [])
+}

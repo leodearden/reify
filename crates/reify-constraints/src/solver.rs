@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::dependent_reads::{CellReads, DependentCellReads};
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::{
@@ -10,14 +11,25 @@ use reify_core::{
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult,
-    TAG_CONDITIONAL, Value, ValueMap,
+    TAG_CONDITIONAL, Value, ValueMap, dimension_of,
 };
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
 
-/// Residual threshold below which we consider constraints satisfied.
+/// Absolute acceptance slack for INEQUALITY rows, and the bound under which
+/// the early exit treats a seed as already converged. EQUALITY rows are
+/// accepted by the `==` verdict itself (`reify_expr::eval_eq`, i.e.
+/// `reify_core::scalar_tolerance`; task #6653), see [`RowResidual`].
 const FEASIBILITY_THRESHOLD: f64 = 1e-12;
+
+// `NM_SD_TOLERANCE` guarantees only that a converged residual reaches
+// `FEASIBILITY_THRESHOLD`, so an equality floor below it could reject an
+// equality the solver has converged on.
+const _: () = assert!(
+    FEASIBILITY_THRESHOLD <= reify_core::scalar_tolerance::DEFAULT_ABSOLUTE_FLOOR,
+    "every dimension's equality floor must admit the solver's reachable residual"
+);
 
 /// Penalty weight for constraint violations when optimizing an objective.
 /// Large enough to strongly enforce constraints while allowing the objective
@@ -48,8 +60,8 @@ const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 /// Because the cost is quadratic in the linear residual `d`, a cost-SD floor of `S`
 /// corresponds to a **linear residual floor** of approximately `√S`. To guarantee
 /// that the linear residual (`max_constraint_residual`, compared against
-/// `FEASIBILITY_THRESHOLD = 1e-12` at the final feasibility check) can actually reach
-/// the threshold, we need:
+/// `FEASIBILITY_THRESHOLD = 1e-12` for inequality rows and at the early exit) can
+/// actually reach the threshold, we need:
 ///
 /// ```text
 ///   √(NM_SD_TOLERANCE) ≲ FEASIBILITY_THRESHOLD   →   NM_SD_TOLERANCE ≲ 1e-24
@@ -101,14 +113,6 @@ struct SolveMeta {
 /// the cost combines the objective value with a weighted penalty term.
 pub struct DimensionalSolver;
 
-/// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
-fn dimension_of(ty: &Type) -> DimensionVector {
-    match ty {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    }
-}
-
 /// Build the solved-values HashMap from auto params and their f64 solutions.
 ///
 /// Each param is mapped to a Value::Scalar with the correct SI value
@@ -157,12 +161,60 @@ pub(crate) fn ctx_with<'a>(
     }
 }
 
-/// Build a ValueMap from a base map with trial auto-param values inserted,
-/// then recompute the cluster's dependent cells AT that trial point.
+/// The solve-invariant inputs that turn a trial vector `x` into the
+/// [`ValueMap`] the solver evaluates at.  The solver's own trial-point builder
+/// and [`JacobianModel`](crate::JacobianModel) both read it, so a Jacobian is
+/// taken at the point the solver stands on.
+#[derive(Clone, Copy)]
+pub struct TrialModel<'a> {
+    /// The autos `x` binds, positionally: `x[i]` is `auto_params[i]`.
+    pub auto_params: &'a [AutoParam],
+    /// Every non-auto cell's value, carried through unchanged unless it is a
+    /// dependent cell.
+    pub base_values: &'a ValueMap,
+    /// Cluster cells that must be recomputed at every trial point (task #5189
+    /// β). Empty for every non-clustered solve, which is what keeps the legacy
+    /// cost surface bit-identical.
+    pub dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    /// User-defined functions available to every expression evaluated at the
+    /// trial point.
+    pub functions: &'a [CompiledFunction],
+    /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
+    /// path, which evaluates in a plain `EvalContext::new`. `Some(d)`
+    /// lets an `@optimized` call (e.g. `solve_elastic_static(..)`) resolve to a
+    /// REAL value at every trial point instead of body-evaluating to
+    /// `Value::Undef`.
+    ///
+    /// `reify_ir::ComputeDispatch: Send + Sync`, so a `TrialModel` is
+    /// `Send + Sync`, as argmin's `Executor` requires of the cost function
+    /// holding one.
+    pub dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+}
+
+impl<'a> TrialModel<'a> {
+    /// The trial model of `problem`: its autos, current values, dependent cells
+    /// and functions, evaluated through `dispatch`.
+    pub fn from_problem(
+        problem: &'a ResolutionProblem,
+        dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    ) -> Self {
+        Self {
+            auto_params: &problem.auto_params,
+            base_values: &problem.current_values,
+            dependent_cells: &problem.dependent_cells,
+            functions: &problem.functions,
+            dispatch,
+        }
+    }
+}
+
+/// Build a ValueMap from the model's base map with the trial point `x`
+/// inserted for its autos, then recompute the model's dependent cells AT that
+/// trial point.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
-/// Maps params directly to avoid the intermediate HashMap allocation that
+/// Maps the autos directly to avoid the intermediate HashMap allocation that
 /// `build_solved_values` would create — this is the hot path called on
 /// every Nelder-Mead iteration.
 ///
@@ -171,9 +223,10 @@ pub(crate) fn ctx_with<'a>(
 /// In a whole-model joint drive the objective typically does not read the auto
 /// directly — it reads a DERIVED cell that is a function of the auto (the
 /// stdlib `Costed` trait's `line_cost = unit_cost * quantity_produced` is the
-/// canonical case). Those derived cells are non-auto values living in `base`,
-/// so without this fold every trial point re-reads their STALE base value: the
-/// objective is constant in the auto and Nelder-Mead has no gradient to follow.
+/// canonical case). Those derived cells are non-auto values living in
+/// `base_values`, so without this fold every trial point re-reads their STALE
+/// base value: the objective is constant in the auto and Nelder-Mead has no
+/// gradient to follow.
 ///
 /// `dependent_cells` is consumed IN STORED ORDER, and the `EvalContext` is
 /// rebuilt against the RUNNING map each iteration so an earlier dependent cell
@@ -195,16 +248,20 @@ pub(crate) fn ctx_with<'a>(
 ///   evaluated. A collision is a membership BUG, so debug builds trip a
 ///   `debug_assert!` naming the offending cell; release builds skip the entry
 ///   and keep the trial point intact.
-pub(crate) fn build_trial_values(
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> ValueMap {
-    let mut values = base.clone();
-    for (param, &val) in params.iter().zip(x.iter()) {
+///
+/// # Panics
+///
+/// If `x.len() != model.auto_params.len()`. The mapping is positional, so an
+/// `x` of any other length names no point at all; silently truncating it would
+/// stand the solve at a point it never named.
+pub(crate) fn build_trial_values(model: &TrialModel<'_>, x: &[f64]) -> ValueMap {
+    assert_eq!(
+        model.auto_params.len(),
+        x.len(),
+        "auto_params and x must have the same length — the mapping is positional"
+    );
+    let mut values = model.base_values.clone();
+    for (param, &val) in model.auto_params.iter().zip(x.iter()) {
         values.insert(
             param.id.clone(),
             Value::Scalar {
@@ -218,10 +275,10 @@ pub(crate) fn build_trial_values(
     // expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot path.
     fold_dependent_cells(
         &mut values,
-        dependent_cells,
-        functions,
-        |id| params.iter().any(|p| &p.id == id),
-        dispatch,
+        model.dependent_cells,
+        model.functions,
+        |id| model.auto_params.iter().any(|p| &p.id == id),
+        model.dispatch,
     );
     values
 }
@@ -264,12 +321,15 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// Debug builds trip a `debug_assert!` naming the cell; release builds skip the
 /// entry and keep the solver's own value.
 ///
-/// An empty `dependent_cells` returns without touching `values` OR running any
-/// of the guard work — that skip is what keeps every non-clustered solve
+/// An empty `dependent_cells` runs the loop zero times, so it touches neither
+/// `values` nor any of the guard work — which keeps every non-clustered solve
 /// byte-identical to its pre-joint-drive BEHAVIOUR (PRD §6.2).  What the
-/// #5721 split's returned vector does and does not cost on that skip is
-/// accounted for on [`fold_dependent_cells_skipping_collisions`]; it is no
-/// longer a claim about identical codegen.
+/// #5721 split's returned vector costs there is accounted for on
+/// [`fold_dependent_cells_skipping_collisions`].
+///
+/// `dependent_cells` is any stored-order view of the list — a SUBSEQUENCE of
+/// the stored order, never a reordering — so a caller that must fold only some
+/// cells can filter without cloning them.
 ///
 /// # Hot-path cost model (task #5720)
 ///
@@ -306,9 +366,10 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///
 /// 1. `build_trial_values` — the DimensionalSolver residual/cost hot path.
 /// 2. `build_scoring_values` — post-solve objective scoring.
-/// 3. `cpsat::backtrack` — the CP-SAT forward-check, which must materialise
-///    dependent cells per trial assignment or a constraint reading only a
-///    dependent cell evaluates to a non-`Bool` and is never able to prune.
+/// 3. `cpsat::backtrack_all` — the CP-SAT forward-check, which must
+///    materialise dependent cells per trial assignment or a constraint reading
+///    only a dependent cell evaluates to a non-`Bool` and is never able to
+///    prune. It passes only the cells not yet exact at its depth.
 ///
 /// A fourth (ζ's mixed outer loop) is expected. Do NOT copy this body into a
 /// caller: the two invariants a copy silently loses are consumption in STORED
@@ -339,9 +400,9 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///   `debug_assert!` unwinds, and `values` is a `&mut` borrow the caller drops
 ///   on unwind, so no partially-folded map can escape.
 #[inline]
-pub(crate) fn fold_dependent_cells(
+pub(crate) fn fold_dependent_cells<'c>(
     values: &mut ValueMap,
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    dependent_cells: impl IntoIterator<Item = &'c (ValueCellId, CompiledExpr)>,
     functions: &[CompiledFunction],
     is_solver_owned: impl Fn(&ValueCellId) -> bool,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -385,16 +446,13 @@ pub(crate) fn fold_dependent_cells(
 ///
 /// # What the returned vector costs on the hot path
 ///
-/// The empty-`dependent_cells` early return is preserved: it still touches
-/// neither `values` nor any of the guard work, which is what keeps every
-/// non-clustered solve behaviourally unchanged (PRD §6.2).  What it is no
-/// longer, strictly, is byte-identical CODEGEN — the skip now constructs and
-/// drops a `Vec`.  `Vec::new()` does not allocate, so a clean fold — the
-/// overwhelmingly common case — still allocates nothing, but the construct and
-/// its drop branch are not literally nothing, and in release the
-/// `debug_assert!` that consumes the vector is compiled out entirely.  Both
-/// this function and its wrapper therefore carry `#[inline]`, so the empty
-/// round trip reliably vanishes instead of depending on LLVM to inline an
+/// An empty `dependent_cells` still touches neither `values` nor any of the
+/// guard work, which is what keeps every non-clustered solve behaviourally
+/// unchanged (PRD §6.2).  It does construct and drop an empty `Vec`, which does
+/// not allocate, so a clean fold — the overwhelmingly common case — allocates
+/// nothing; in release the `debug_assert!` that consumes the vector is compiled
+/// out entirely.  Both this function and its wrapper carry `#[inline]`, so the
+/// empty round trip reliably vanishes instead of depending on LLVM to inline an
 /// unannotated call on the Nelder-Mead path.
 ///
 /// On a genuinely DRIFTED list a release build now does one `id.clone()` plus
@@ -402,17 +460,14 @@ pub(crate) fn fold_dependent_cells(
 /// the degraded mode, not the steady state, and it is what buys the release
 /// profile the observable seam its half of the contract is asserted through.
 #[inline]
-fn fold_dependent_cells_skipping_collisions(
+fn fold_dependent_cells_skipping_collisions<'c>(
     values: &mut ValueMap,
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    dependent_cells: impl IntoIterator<Item = &'c (ValueCellId, CompiledExpr)>,
     functions: &[CompiledFunction],
     is_solver_owned: impl Fn(&ValueCellId) -> bool,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Vec<ValueCellId> {
     let mut collisions = Vec::new();
-    if dependent_cells.is_empty() {
-        return collisions;
-    }
     for (id, expr) in dependent_cells {
         if is_solver_owned(id) {
             collisions.push(id.clone());
@@ -550,10 +605,91 @@ fn extract_initial_point(
         .collect()
 }
 
+/// The residual of a constraint row at a candidate point, and of the part of
+/// it the solver REJECTS there. Rejection is never inferred from `magnitude`:
+/// equality rows are judged by the `==` verdict (`reify_expr::eval_eq`),
+/// inequality rows against [`FEASIBILITY_THRESHOLD`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowResidual {
+    /// Over every row, accepted ones included: what convergence is judged on.
+    magnitude: f64,
+    /// The worst residual among the rejected rows, `None` when every row is
+    /// accepted: what an Infeasible report quotes. A NaN here is kept, never
+    /// folded away, so a rejected row cannot report as a zero residual.
+    rejected: Option<f64>,
+}
+
+impl RowResidual {
+    fn accepted(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            rejected: None,
+        }
+    }
+
+    fn rejected(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            rejected: Some(magnitude),
+        }
+    }
+
+    fn judged(magnitude: f64, accepted: bool) -> Self {
+        if accepted {
+            Self::accepted(magnitude)
+        } else {
+            Self::rejected(magnitude)
+        }
+    }
+
+    /// A NaN magnitude (from a NaN operand) is not a violation, exactly as the
+    /// pre-#6653 `f64::max` fold treated it: inequality acceptance is unchanged.
+    fn inequality(magnitude: f64) -> Self {
+        Self::judged(
+            magnitude,
+            magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD,
+        )
+    }
+
+    fn is_accepted(&self) -> bool {
+        self.rejected.is_none()
+    }
+
+    /// Accepted, with every row as tight as the inequality slack.
+    fn is_converged(&self) -> bool {
+        self.is_accepted() && self.magnitude <= FEASIBILITY_THRESHOLD
+    }
+
+    /// Both rows must hold (`And`, and every constraint of a set).
+    fn all(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) if a.is_nan() || b.is_nan() => Some(f64::NAN),
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (one, other) => one.or(other),
+        };
+        Self {
+            magnitude: self.magnitude.max(other.magnitude),
+            rejected,
+        }
+    }
+
+    /// Either row suffices (`Or`).
+    fn any(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            _ => None,
+        };
+        Self {
+            magnitude: self.magnitude.min(other.magnitude),
+            rejected,
+        }
+    }
+}
+
 /// Compute the absolute (L1) residual for a single comparison expression.
 ///
-/// Returns the absolute distance by which the constraint is violated,
-/// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
+/// The magnitude is the absolute distance by which the comparison misses, or
+/// 0.0 for a satisfied inequality. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
 fn comparison_residual(
     op: BinOp,
@@ -562,48 +698,27 @@ fn comparison_residual(
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+) -> RowResidual {
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
+    let (Some(l), Some(r)) = (lv.as_f64(), rv.as_f64()) else {
+        return RowResidual::rejected(1.0);
+    };
 
-    match (lhs, rhs) {
-        (Some(l), Some(r)) => match op {
-            BinOp::Gt => {
-                if l > r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Ge => {
-                if l >= r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Lt => {
-                if l < r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Le => {
-                if l <= r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Eq => {
-                let d = (l - r).abs();
-                if d < 1e-15 { 0.0 } else { d }
-            }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
-            _ => 1.0,
-        },
-        _ => 1.0,
+    match op {
+        BinOp::Gt => RowResidual::inequality(if l > r { 0.0 } else { r - l }),
+        BinOp::Ge => RowResidual::inequality(if l >= r { 0.0 } else { r - l }),
+        BinOp::Lt => RowResidual::inequality(if l < r { 0.0 } else { l - r }),
+        BinOp::Le => RowResidual::inequality(if l <= r { 0.0 } else { l - r }),
+        BinOp::Eq => RowResidual::judged(
+            (l - r).abs(),
+            reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
+        ),
+        BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => {
+            RowResidual::accepted(0.0)
+        }
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -621,10 +736,11 @@ fn comparison_violation(
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
 
-    match (lhs, rhs) {
+    match (lv.as_f64(), rv.as_f64()) {
         (Some(l), Some(r)) => match op {
             // For l > r: violation when l <= r, magnitude = (r - l)
             BinOp::Gt => {
@@ -663,7 +779,7 @@ fn comparison_violation(
                 let d = l - r;
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
+            BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => 0.0,
             // Not a comparison
             _ => 1.0,
         },
@@ -675,46 +791,42 @@ fn comparison_violation(
 /// Compute the absolute (L1) residual for a single constraint expression.
 ///
 /// Same decomposition structure as `constraint_violation` but returns
-/// absolute residual values. For And composites, returns the max of
-/// sub-residuals (both must hold). For Or, returns the min (one suffices).
+/// absolute residual values. An And composite needs both sub-rows
+/// ([`RowResidual::all`]); an Or composite needs one ([`RowResidual::any`]).
 fn constraint_residual(
     expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            match op {
-                BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_residual(*op, left, right, values, functions, dispatch)
-                }
-                BinOp::And => {
-                    // AND: worst case (max) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.max(rr)
-                }
-                BinOp::Or => {
-                    // OR: best case (min) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.min(rr)
-                }
-                _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-                    Value::Bool(true) => 0.0,
-                    Value::Bool(false) => 1.0,
-                    Value::Undef => 10.0,
-                    _ => 1.0,
-                },
+        CompiledExprKind::BinOp { op, left, right } => match op {
+            BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
+                comparison_residual(*op, left, right, values, functions, dispatch)
             }
-        }
-        _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-            Value::Bool(true) => 0.0,
-            Value::Bool(false) => 1.0,
-            Value::Undef => 10.0,
-            _ => 1.0,
+            BinOp::And => constraint_residual(left, values, functions, dispatch)
+                .all(constraint_residual(right, values, functions, dispatch)),
+            BinOp::Or => constraint_residual(left, values, functions, dispatch)
+                .any(constraint_residual(right, values, functions, dispatch)),
+            _ => boolean_row_residual(expr, values, functions, dispatch),
         },
+        _ => boolean_row_residual(expr, values, functions, dispatch),
+    }
+}
+
+/// Residual of a row the solver cannot decompose into a comparison: its
+/// evaluated truth value, with an undefined row weighted heaviest.
+fn boolean_row_residual(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> RowResidual {
+    match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
+        Value::Bool(true) => RowResidual::accepted(0.0),
+        Value::Bool(false) => RowResidual::rejected(1.0),
+        Value::Undef => RowResidual::rejected(10.0),
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -771,19 +883,19 @@ fn constraint_violation(
 
 /// Compute the maximum absolute residual across all constraints (L1 feasibility).
 ///
-/// Returns the worst-case per-constraint absolute residual. Zero means
-/// all constraints are satisfied. Used for binary feasibility decisions
+/// The magnitude is the worst-case per-constraint absolute residual; the set
+/// is accepted only when every row is. Used for binary feasibility decisions
 /// instead of sum-of-squares (which can mask small violations).
 fn max_constraint_residual(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     constraints
         .iter()
         .map(|(_, expr)| constraint_residual(expr, values, functions, dispatch))
-        .fold(0.0_f64, f64::max)
+        .fold(RowResidual::accepted(0.0), RowResidual::all)
 }
 
 /// Compute the total violation across all constraints.
@@ -1120,7 +1232,7 @@ fn worst_unmet_floor_term(
 ///      evaluation to be told so again.  That is why rung 1 is live for the
 ///      ORIGINALS target only: the floored call comes from an emit site reached
 ///      exactly when the residual against `effective_constraints` ALREADY
-///      exceeds `FEASIBILITY_THRESHOLD`, so offering it that same point would be
+///      fails acceptance, so offering it that same point would be
 ///      a guaranteed-false re-computation of a value in hand.
 ///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
 ///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
@@ -1153,8 +1265,7 @@ fn constraints_witness(
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Option<ValueMap> {
     let satisfies_target = |values: &ValueMap| {
-        max_constraint_residual(target, values, &problem.functions, dispatch)
-            <= FEASIBILITY_THRESHOLD
+        max_constraint_residual(target, values, &problem.functions, dispatch).is_accepted()
     };
 
     // ── rung 1: a point the caller already holds (free) ──────────────────────
@@ -1223,22 +1334,16 @@ fn constraints_witness(
         .iter()
         .map(|p| values.get(&p.id).and_then(Value::as_f64))
         .collect::<Option<_>>()?;
-    let witness = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        &xs,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let witness = build_trial_values(&TrialModel::from_problem(problem, dispatch), &xs);
     satisfies_target(&witness).then_some(witness)
 }
 
 /// The `RobustnessFloorInfeasible` diagnostic for a solve that failed WITH the
 /// synthesised floor applied (tasks #5618 step-10, #5714).
 ///
-/// `final_max_residual` is measured against `effective_constraints`, i.e. the
-/// user's constraints PLUS the floor.  On its own it cannot tell the three
+/// `worst_rejected_residual` is the worst residual among the rows of
+/// `effective_constraints`, i.e. the user's constraints PLUS the floor, that
+/// fail acceptance at `final_values`.  On its own it cannot tell the three
 /// situations below apart, and the message used to assert the worst of them in
 /// all cases.  For a tight-but-satisfiable bracket that is simply false, and it
 /// was the original report's sharpest complaint: the diagnostic sent the user
@@ -1282,12 +1387,12 @@ fn floor_infeasible_diagnostic(
     problem: &ResolutionProblem,
     effective_constraints: &[(ConstraintNodeId, CompiledExpr)],
     final_values: &ValueMap,
-    final_max_residual: f64,
+    worst_rejected_residual: f64,
     sd_tolerance: f64,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> reify_core::Diagnostic {
-    // `converged: None` — this function is reached only when `final_max_residual`
-    // against `effective_constraints` already exceeds `FEASIBILITY_THRESHOLD`, so
+    // `converged: None` — this function is reached only when the final residual
+    // against `effective_constraints` already fails acceptance, so
     // offering `final_values` as a floored candidate would re-derive a value
     // already in hand and known to fail.  Rung 1 is live for the ORIGINALS search
     // below, where the answer is genuinely unknown.
@@ -1299,10 +1404,10 @@ fn floor_infeasible_diagnostic(
         // BOTH halves of the claim below are proved at one concrete point — no
         // inference.  Offer NONE of class 2's remedies: nothing is
         // over-constrained and there is no cost/robustness conflict to trade
-        // off, so all three would be wrong advice.  `final_max_residual` is
+        // off, so all three would be wrong advice.  `worst_rejected_residual` is
         // reported because it describes the point the solve actually REACHED —
-        // at the witness it is 0.0, which would tell the user nothing about the
-        // failure.
+        // at the witness no row is rejected, which would tell the user nothing
+        // about the failure.
         //
         // TODO(#7632): the witness is a verified feasible point and is thrown
         // away — the user gets a hard `Infeasible` on a model this function is
@@ -1318,7 +1423,7 @@ fn floor_infeasible_diagnostic(
              absolute residual at the point it reached: {:.2e}); this is \
              a solver convergence limit, not an over-constrained design",
             REL_MARGIN * 100.0,
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     }
@@ -1338,7 +1443,7 @@ fn floor_infeasible_diagnostic(
             "infeasible under robustness floor: the floored feasible \
              region is empty (max absolute residual: {:.2e}); relax \
              opposing constraints or widen the tolerance margin",
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     };
@@ -1536,33 +1641,28 @@ impl StrictBound {
 /// Built once per derivation walk by the two entry points, which are the only
 /// members holding `auto_params`; every inner member takes `&DerivationCtx`.
 ///
-/// COST: `auto_reads` and `cell_ids` are pure functions of
-/// `(dependent_cells, auto_params)`, neither of which changes across a
-/// resolution — yet both are rebuilt at every entry-point call, which over one
-/// resolution is `extract_initial_point` + [`derived_seed_box`] + one per
-/// `solve_core_with_sd_tolerance` across the multistart points + two in
-/// `verify_uniqueness`. A model with NO dependent cells pays nothing
-/// (`dependent_cell_auto_reads` early-returns an empty map and the `cell_ids`
-/// collect is over an empty slice), and otherwise the reachability DFS is
-/// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
-/// overlooked. Hoisting the pair to once per resolution means threading a
-/// prebuilt context through all four consumers, which is task #7728 rather
-/// than part of the fix this context exists to carry.
+/// COST: `auto_reads` is a pure function of `(dependent_cells, auto_params)`,
+/// neither of which changes across a resolution — yet it is rebuilt at every
+/// entry-point call, which over one resolution is `extract_initial_point` +
+/// [`derived_seed_box`] + one per `solve_core_with_sd_tolerance` across the
+/// multistart points + two in `verify_uniqueness`. A model with NO dependent
+/// cells pays nothing (`dependent_cell_auto_reads` early-returns an empty
+/// map), and otherwise the reachability DFS is dwarfed by the Nelder-Mead fold
+/// it precedes — so this is priced, not overlooked. Hoisting it to once per
+/// resolution means threading a prebuilt context through all four consumers,
+/// which is task #7728 rather than part of the fix this context exists to
+/// carry.
 struct DerivationCtx<'a> {
     /// Position of each auto param within `auto_params` — the index every
     /// `DerivedInterval` buffer in the family is addressed by, and the family's
     /// test for "is this ref an auto?".
     auto_index: HashMap<ValueCellId, usize>,
-    /// Per dependent cell, the autos it reads TRANSITIVELY —
-    /// [`crate::decompose::dependent_cell_auto_reads`] verbatim, reused rather
-    /// than reimplemented. A constant-only cell is present with an EMPTY set, a
-    /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
-    /// only reader and owns what each of those means here.
-    auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
-    /// Every dependent-cell id, including the cycle-tainted ones `auto_reads`
-    /// omits. This is what tells an omission apart from an ordinary value:
-    /// both are absent from the map, and only one of them varies.
-    cell_ids: HashSet<ValueCellId>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY and whether a fold
+    /// derives it — [`crate::dependent_reads::dependent_cell_auto_reads`]
+    /// verbatim, reused rather than reimplemented.
+    /// [`DerivationCtx::varies_with_solve`] is the only reader and owns what
+    /// each [`CellReads`] answer means here.
+    auto_reads: DependentCellReads,
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -1582,8 +1682,10 @@ impl<'a> DerivationCtx<'a> {
                 .enumerate()
                 .map(|(i, p)| (p.id.clone(), i))
                 .collect(),
-            auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
-            cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
+            auto_reads: crate::dependent_reads::dependent_cell_auto_reads(
+                dependent_cells,
+                auto_params,
+            ),
             values,
             functions,
             dispatch,
@@ -1593,13 +1695,15 @@ impl<'a> DerivationCtx<'a> {
     /// Does a ref to `id` MOVE when the solver moves?
     ///
     /// True for an auto param itself, and for a dependent cell that either
-    /// transitively reads one or has UNKNOWN auto dependence. All of them are
-    /// finite numbers in the map the family evaluates against —
+    /// transitively reads one or is UNFOLDABLE (on or downstream of a cycle).
+    /// All of them are finite numbers in the map the family evaluates against —
     /// `build_trial_values` binds the autos and folds every cell — so
     /// evaluating is no evidence of constancy, and this is the only question
     /// that separates a bound from a snapshot.
     ///
-    /// Unknown resolves to "varies" because the caller is a GUARD, where the
+    /// An unfoldable cell varies whatever it reads: its folded value is an
+    /// artefact of fold order, not a function of its reads. Resolving it to
+    /// "varies" is the safe direction because the caller is a GUARD, where the
     /// cost of the two errors is not symmetric: treating a constant as varying
     /// only widens a box, while treating a varying cell as constant returns a
     /// wrong answer silently.
@@ -1607,13 +1711,10 @@ impl<'a> DerivationCtx<'a> {
         if self.auto_index.contains_key(id) {
             return true;
         }
-        match self.auto_reads.get(id) {
-            Some(reads) => !reads.is_empty(),
-            // Absent from the map and a known cell id ⇒ cycle-tainted, auto
-            // dependence UNKNOWN. Absent and not a cell id at all ⇒ an ordinary
-            // value or param, which nothing makes vary. Both are absences, so
-            // membership in `cell_ids` is what tells them apart.
-            None => self.cell_ids.contains(id),
+        match self.auto_reads.lookup(id) {
+            CellReads::Foldable(reads) => !reads.is_empty(),
+            CellReads::Unfoldable(_) => true,
+            CellReads::NotACell => false,
         }
     }
 
@@ -1657,16 +1758,10 @@ impl<'a> DerivationCtx<'a> {
 /// transitive auto reads. A cell that reads NO auto (a named alias for a
 /// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
 ///
-/// A CYCLE-TAINTED cell is treated as varying too, which resolves — for THIS
-/// consumer, locally — the residual `decompose_into_components_with_reads`
-/// flags ("Closing it properly means returning the omitted-id set alongside the
-/// map … larger than a doc correction and outside task #5467's lock set"). Such
-/// a cell is omitted from the map rather than published with a partial set,
-/// which is the fail-safe direction for that map's drop-side filter and the
-/// UNSAFE one here; `DerivationCtx::cell_ids` recovers the distinction without
-/// widening `dependent_cell_auto_reads`' interface or changing its semantics.
-/// The CONNECTIVITY consumer's copy of the same residual is untouched and
-/// stays open.
+/// An UNFOLDABLE cell (on or downstream of a cycle) is treated as varying too.
+/// The reads map classifies such a cell rather than omitting it, and each
+/// consumer names its own safe direction: the registry's fold filter drops it,
+/// decomposition couples through it, and this guard refuses to mine it.
 ///
 /// The `floor_applied` gate that decides whether a CLAMP box is built at all is
 /// a separate question, settled by task #5711 — not re-litigated here.
@@ -2050,8 +2145,8 @@ fn seed_box_from_intervals(
 /// and the γ path reports `ConstraintNonUnique` — the same class of §11.6 false
 /// negative #6146 removed, in the mirror direction.
 ///
-/// Widening it is NOT a doc-sized change: `decompose::expand_refs_through_dependent_cells`
-/// exists and would supply the reach, but it needs the cycle-tainted treatment
+/// Widening it is NOT a doc-sized change: `dependent_reads::reach_of` exists
+/// and would supply the reach, but it needs the cycle-tainted treatment
 /// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
 /// models from erroring to `Solved` — a §11.6 verdict change that wants its own
 /// regression sweep rather than a ride-along. Tracked as task #7727.
@@ -2464,29 +2559,13 @@ pub fn build_centrality_objective(
 /// Evaluates constraint violations (and optionally an objective) given
 /// a parameter vector of f64 SI values.
 struct ConstraintCostFunction<'a> {
-    auto_params: &'a [AutoParam],
+    trial: TrialModel<'a>,
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
-    base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
-    functions: &'a [CompiledFunction],
-    /// Clamp box, one entry per `auto_params` entry, from [`resolve_bounds`]
-    /// (task #5618). Was `effective_bounds(param)` computed inline, which for a
-    /// dimensionless Real is the useless `(-1e6, 1e6)`.
+    /// Clamp box, one entry per `trial.auto_params` entry, from
+    /// [`resolve_bounds`] (task #5618). Was `effective_bounds(param)` computed
+    /// inline, which for a dimensionless Real is the useless `(-1e6, 1e6)`.
     bounds: &'a [(f64, f64)],
-    /// Cluster cells that must be recomputed at every trial point — see
-    /// [`build_trial_values`]. Empty for every non-clustered solve, which is
-    /// what keeps the legacy cost surface bit-identical.
-    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
-    /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
-    /// path, which makes [`ctx_with`] degenerate to `EvalContext::new` and the
-    /// cost surface byte-identical to pre-#4880. `Some(d)` lets an `@optimized`
-    /// call inside a constraint / objective expression (e.g.
-    /// `solve_elastic_static(..)`) resolve to a REAL value at every Nelder-Mead
-    /// trial point instead of body-evaluating to `Value::Undef`.
-    ///
-    /// `reify_ir::ComputeDispatch: Send + Sync`, so `&dyn ComputeDispatch` keeps
-    /// `ConstraintCostFunction` `Send + Sync` as argmin's `Executor` requires.
-    dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
 /// Why [`eval_objective_set`] could not produce an orderable score.
@@ -2652,22 +2731,20 @@ impl CostFunction for ConstraintCostFunction<'_> {
             clamped.push(cv);
         }
 
-        let values = build_trial_values(
-            self.base_values,
-            self.auto_params,
-            &clamped,
-            self.dependent_cells,
-            self.functions,
-            self.dispatch,
+        let values = build_trial_values(&self.trial, &clamped);
+        let violation = compute_total_violation(
+            self.constraints,
+            &values,
+            self.trial.functions,
+            self.trial.dispatch,
         );
-        let violation =
-            compute_total_violation(self.constraints, &values, self.functions, self.dispatch);
 
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value = eval_objective_set(obj, &values, self.functions, self.dispatch)
-                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                let obj_value =
+                    eval_objective_set(obj, &values, self.trial.functions, self.trial.dispatch)
+                        .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -2887,10 +2964,10 @@ fn solve_core_with_sd_tolerance(
     // floor constraint was added; used below to emit the distinct diagnostic.
     //
     // ORDERING INVARIANT (load-bearing): `effective_constraints` MUST be built
-    // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
+    // BEFORE the seed is judged.  A floor-infeasible box that is
     // feasible without the floor must be seen as infeasible at the initial-point
-    // check, so the `initially_feasible` drift fallback below (in the
-    // `final_max_residual > FEASIBILITY_THRESHOLD` branch) does NOT mask the
+    // check, so the `seed_accepted` drift fallback below (in the
+    // rejected-final-residual branch) does NOT mask the
     // infeasibility by falling back to Solved.
     //
     // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
@@ -2909,14 +2986,8 @@ fn solve_core_with_sd_tolerance(
     // fallback objective validation when the optimizer drifts infeasible.
     // Building it here before the floor block eliminates the redundant second
     // call that was previously inside the floor synthesis branch.
-    let trial_values = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        initial,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let trial_model = TrialModel::from_problem(problem, dispatch);
+    let trial_values = build_trial_values(&trial_model, initial);
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
@@ -3028,8 +3099,8 @@ fn solve_core_with_sd_tolerance(
         // `bounds: None` shape `effective_bounds` is only
         // `default_bounds_for(Length) = [1µm, 10m]`, so without this box nothing
         // snaps the penalty minimiser's finite undershoot past the strict bound
-        // back: `final_max_residual` exceeds `FEASIBILITY_THRESHOLD`, the
-        // `initially_feasible` fallback below fires, and the blend reports THE
+        // back: the strict-bound row fails acceptance, the
+        // `seed_accepted` fallback below fires, and the blend reports THE
         // SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
         SolveRegime::TradeoffBlend => derived_clamp_box(StrictBound::SteppedInside),
@@ -3046,12 +3117,19 @@ fn solve_core_with_sd_tolerance(
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective_set(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let initially_feasible = max_constraint_residual(
+    let seed_residual = max_constraint_residual(
         &effective_constraints,
         &trial_values,
         &problem.functions,
         dispatch,
-    ) <= FEASIBILITY_THRESHOLD;
+    );
+    // The early exit and the warm-start budget need a CONVERGED seed: returning
+    // one whose equality rows are merely within tolerance would let
+    // `verify_uniqueness` compare it against a re-solve converged ~1e-16 away
+    // and report a false `ConstraintNonUnique`. The drift fallback needs only
+    // what the final gate needs of any answer, so it takes an ACCEPTED seed.
+    let seed_converged = seed_residual.is_converged();
+    let seed_accepted = seed_residual.is_accepted();
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
     // inequality constraints but no explicit user objective (PRD η).  The synthetic
@@ -3077,7 +3155,7 @@ fn solve_core_with_sd_tolerance(
     // Pure feasibility + already feasible → return immediately.
     // Gate on the EFFECTIVE objective so a centrality scope optimises instead of
     // short-circuiting to the first feasible boundary point.
-    if initially_feasible && effective_objective.is_none() {
+    if seed_converged && effective_objective.is_none() {
         let n_params = problem.auto_params.len();
         tracing::debug!(
             n_params,
@@ -3096,9 +3174,9 @@ fn solve_core_with_sd_tolerance(
     // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
     // the budget proportionally to give higher-dimensional problems enough
     // iterations to converge.
-    // After the early-return above for `initially_feasible && effective_objective.is_none()`,
-    // reaching here with `initially_feasible=true` implies `effective_objective.is_some()`.
-    let max_iters = if initially_feasible {
+    // After the early-return above for `seed_converged && effective_objective.is_none()`,
+    // reaching here with `seed_converged=true` implies `effective_objective.is_some()`.
+    let max_iters = if seed_converged {
         debug_assert!(
             effective_objective.is_some(),
             "warm-start budget path reached without objective — early-return invariant violated"
@@ -3110,14 +3188,10 @@ fn solve_core_with_sd_tolerance(
     };
 
     let cost_fn = ConstraintCostFunction {
-        auto_params: &problem.auto_params,
+        trial: trial_model,
         constraints: &effective_constraints,
-        base_values: &problem.current_values,
         objective: effective_objective,
-        functions: &problem.functions,
         bounds: &bounds,
-        dependent_cells: &problem.dependent_cells,
-        dispatch,
     };
 
     // Build simplex from the provided initial point
@@ -3157,7 +3231,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed; hit iteration limit — objective may be suboptimal"
         );
@@ -3167,7 +3242,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed"
         );
@@ -3200,25 +3276,18 @@ fn solve_core_with_sd_tolerance(
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        &clamped,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
-    let final_max_residual = max_constraint_residual(
+    let final_values = build_trial_values(&trial_model, &clamped);
+    let final_residual = max_constraint_residual(
         &effective_constraints,
         &final_values,
         &problem.functions,
         dispatch,
     );
-    if final_max_residual > FEASIBILITY_THRESHOLD {
+    if let Some(worst_rejected_residual) = final_residual.rejected {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
         // rather than reporting a false Infeasible.
-        if initially_feasible {
+        if seed_accepted {
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
@@ -3245,7 +3314,7 @@ fn solve_core_with_sd_tolerance(
             let fallback = build_solved_values(&problem.auto_params, initial);
             tracing::debug!(
                 n_params,
-                final_max_residual,
+                worst_rejected_residual,
                 "optimizer drifted infeasible while chasing objective; \
                  falling back to initial feasible point"
             );
@@ -3264,14 +3333,14 @@ fn solve_core_with_sd_tolerance(
                         problem,
                         &effective_constraints,
                         &final_values,
-                        final_max_residual,
+                        worst_rejected_residual,
                         sd_tolerance,
                         dispatch,
                     )
                 } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
-                        final_max_residual
+                        worst_rejected_residual
                     ))
                     .with_code(DiagnosticCode::ConstraintUnsatisfiable)
                 }],
@@ -4489,6 +4558,9 @@ fn rank_single(
                     unique,
                 }],
                 optimality,
+                // DimensionalSolver does not reason about the solution set at
+                // task α — `unique` still comes from the perturbation probe.
+                completeness: reify_ir::Completeness::not_attempted(),
             }
         }
         // Infeasible and NoProgress are structurally identical to the default
@@ -4735,6 +4807,10 @@ impl DimensionalSolver {
                     optimality: OptimalityStatus::BestFound {
                         reason: best_found_reason(winner_iter_limited),
                     },
+                    // Best-of-K multistart establishes nothing about the set: the
+                    // K candidates are NOT deduplicated, so their count is not a
+                    // solution count (C5 basin identity arrives at ζ #6711 → #6902).
+                    completeness: reify_ir::Completeness::not_attempted(),
                 }
             }
             non_solved => non_solved
@@ -4764,6 +4840,22 @@ mod tests {
             free: false,
         }];
         (id, params)
+    }
+
+    /// A [`super::TrialModel`] with no user functions and no compute dispatch —
+    /// the shape the `build_trial_values` and cost-function tests need.
+    fn trial_model<'a>(
+        base: &'a ValueMap,
+        params: &'a [reify_ir::AutoParam],
+        cells: &'a [(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+    ) -> super::TrialModel<'a> {
+        super::TrialModel {
+            auto_params: params,
+            base_values: base,
+            dependent_cells: cells,
+            functions: &[],
+            dispatch: None,
+        }
     }
 
     /// The pre-#5618 reflection box: each param's own [`super::effective_bounds`].
@@ -4891,7 +4983,7 @@ mod tests {
             free: false,
         }];
 
-        let trial = build_trial_values(&base, &params, &[0.005], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
 
         // Auto param should be inserted with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -4955,7 +5047,7 @@ mod tests {
             },
         ];
 
-        let trial = build_trial_values(&base, &params, &[0.005, 1.2], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &params, &[]), &[0.005, 1.2]);
 
         // First auto param: length with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -5443,7 +5535,7 @@ mod tests {
         );
 
         // Empty params slice — should return base unchanged
-        let trial = build_trial_values(&base, &[], &[], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &[], &[]), &[]);
 
         // Base value preserved
         let width = trial.get(&width_id).expect("width should be preserved");
@@ -6819,8 +6911,10 @@ mod tests {
             ConstraintNodeId::new("Part", 0),
             CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
         )];
-        let values =
-            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+        let values = super::build_trial_values(
+            &trial_model(&ValueMap::new(), &params, &cells),
+            &[0.0, 0.0025],
+        );
 
         let intervals =
             super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
@@ -7533,7 +7627,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
@@ -7562,7 +7656,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
     }
 
@@ -7588,7 +7682,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 0.005).abs() < 1e-15,
             "Lt violated by 0.005 should have residual 0.005, got {}",
@@ -7617,7 +7711,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Le with l<r should be satisfied");
     }
 
@@ -7642,7 +7736,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-6).abs() < 1e-12,
             "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
@@ -7676,7 +7770,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&expr, &values, &[], None);
+        let res = constraint_residual(&expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "single Gt constraint_residual should delegate correctly, got {:.2e}",
@@ -7729,7 +7823,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&and_expr, &values, &[], None);
+        let res = constraint_residual(&and_expr, &values, &[], None).magnitude;
         // max(1e-7, 1e-5) = 1e-5
         assert!(
             (res - 1e-5).abs() < 1e-10,
@@ -7783,7 +7877,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&or_expr, &values, &[], None);
+        let res = constraint_residual(&or_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
     }
 
@@ -7840,7 +7934,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert!(
             (res - 1e-5).abs() < 1e-10,
             "should return worst violation ~1e-5, got {:.2e}",
@@ -7875,7 +7969,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "all satisfied should return 0.0");
     }
 
@@ -7885,8 +7979,47 @@ mod tests {
 
         let constraints = vec![];
         let values = ValueMap::new();
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "empty constraints should return 0.0");
+    }
+
+    #[test]
+    fn max_constraint_residual_keeps_a_nan_rejected_residual() {
+        use super::max_constraint_residual;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
+
+        let length = |si_value| {
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Type::length(),
+            )
+        };
+        let nan_equality = (
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Eq, length(f64::NAN), length(0.01), Type::Bool),
+        );
+        let false_row = (
+            ConstraintNodeId::new("Part", 1),
+            CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        );
+        let values = ValueMap::new();
+        for (label, constraints) in [
+            ("NaN equality alone", vec![nan_equality.clone()]),
+            (
+                "NaN equality beside a rejected row",
+                vec![nan_equality, false_row],
+            ),
+        ] {
+            let res = max_constraint_residual(&constraints, &values, &[], None);
+            assert!(
+                res.rejected.is_some_and(f64::is_nan),
+                "{label}: the rejected residual must stay NaN, got {res:?}"
+            );
+        }
     }
 
     #[test]
@@ -7898,13 +8031,13 @@ mod tests {
         let values = ValueMap::new();
 
         let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(constraint_residual(&t, &values, &[], None,), 0.0);
+        assert_eq!(constraint_residual(&t, &values, &[], None,).magnitude, 0.0);
 
         let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        assert_eq!(constraint_residual(&f, &values, &[], None,), 1.0);
+        assert_eq!(constraint_residual(&f, &values, &[], None,).magnitude, 1.0);
 
         let u = CompiledExpr::literal(Value::Undef, Type::Bool);
-        assert_eq!(constraint_residual(&u, &values, &[], None,), 10.0);
+        assert_eq!(constraint_residual(&u, &values, &[], None,).magnitude, 10.0);
     }
 
     #[test]
@@ -7917,7 +8050,7 @@ mod tests {
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
     }
 
@@ -7950,16 +8083,12 @@ mod tests {
         let base_values = ValueMap::new();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base_values, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base_values,
             objective: None,
-            functions: &[],
             // Task #5618: the clamp box is now supplied by the caller
             // (`resolve_bounds`) rather than read from `AutoParam.bounds` inline.
             bounds: &[(0.0, 0.010)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         // In bounds: x=0.005
@@ -8024,14 +8153,10 @@ mod tests {
         let base_values = ValueMap::new();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base_values, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base_values,
             objective: Some(&objective),
-            functions: &[],
             bounds: &[(0.0, 0.010)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         cost_fn
@@ -8926,6 +9051,7 @@ mod tests {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                ..
             } => {
                 assert_eq!(
                     candidates.len(),
@@ -9076,8 +9202,8 @@ mod tests {
     /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
     /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
     /// branches of the objective-validation tail of `solve_core_with_sd_tolerance`:
-    /// the `initially_feasible` drift fallback in the
-    /// `final_max_residual > FEASIBILITY_THRESHOLD` branch (its undefined-objective
+    /// the `seed_accepted` drift fallback in the
+    /// rejected-final-residual branch (its undefined-objective
     /// and Solved arms) plus the post-solve objective check at the solution point.
     #[test]
     fn defined_objective_at_fallback_returns_solved() {
@@ -10051,7 +10177,7 @@ mod tests {
                 },
             );
         }
-        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
+        let values = super::build_trial_values(&trial_model(&prior, &params, cells), &trial);
         super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
     }
 
@@ -10212,22 +10338,17 @@ mod tests {
         );
     }
 
-    /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
-    /// `dependent_cell_auto_reads` rather than published with the partial set
-    /// its DFS accumulated (`if incomplete[i] { continue; }`, decompose.rs).
-    /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
-    /// registry's drop-side subset filter — but it is the UNSAFE direction for a
-    /// guard deciding "does this operand vary?", because an absent entry reads
-    /// as "no autos" and the bogus bound is mined anyway.
+    /// A CYCLE-TAINTED cell is never mined as a bound. `dependent_cell_auto_reads`
+    /// reports it `Unfoldable`, which the guard reads as "varies"; were it read
+    /// as "not a cell" (an absent entry), the bogus bound would be mined.
     ///
     /// `p = q + c` and `q = p` are both cycle-tainted AND transitively read auto
     /// `c`. Reaching `derive_param_intervals` directly is what makes this
     /// testable: reify-eval's `build_dependent_cells` pre-drops cycles, which is
-    /// the only reason the hole is unreachable in production — and decompose.rs
-    /// says so itself, that the masking "is a property of the CALLER, though,
-    /// not of anything enforced here, so a future producer that stops
-    /// pre-dropping cycles re-opens it with no compile error and no test
-    /// failure". This test is that missing failure.
+    /// the only reason the shape is unreachable in production. That is a
+    /// property of the CALLER, not of anything enforced here, so a producer
+    /// that stops pre-dropping cycles would get no compile error; this test is
+    /// the failure it gets instead.
     #[test]
     fn derive_intervals_rejects_a_cycle_tainted_dependent_cell_far_operand() {
         use reify_core::{Type, ValueCellId};
@@ -10260,10 +10381,9 @@ mod tests {
         assert_eq!(
             ivs[0].lo, None,
             "`a >= p` with `p = q + c` and `q = p` must derive NO lower bound: \
-             `p` is cycle-tainted, so `dependent_cell_auto_reads` OMITS it — and \
-             a non-empty-set test reads that absence as `no autos` and mines the \
-             bound. For this consumer an unknown auto dependence must be treated \
-             as a varying one; absence is the UNSAFE direction here"
+             `p` is cycle-tainted, so `dependent_cell_auto_reads` reports it \
+             Unfoldable, and this guard must read that as varying. Reading it \
+             as not-a-cell mines a bound that moves with `c`"
         );
     }
 
@@ -11081,8 +11201,8 @@ mod tests {
             joint_drive_dependent_cell_fixture();
 
         // ---- half 1: the helper folds, so the objective moves ----
-        let lo = build_trial_values(&base, &auto_params, &[2.0], &dependent_cells, &[], None);
-        let hi = build_trial_values(&base, &auto_params, &[8.0], &dependent_cells, &[], None);
+        let lo = build_trial_values(&trial_model(&base, &auto_params, &dependent_cells), &[2.0]);
+        let hi = build_trial_values(&trial_model(&base, &auto_params, &dependent_cells), &[8.0]);
 
         let obj_lo = eval_objective_set(&objective, &lo, &[], None)
             .expect("objective must be numeric at q=2 once line_cost is folded");
@@ -11117,19 +11237,15 @@ mod tests {
         // Pinning only the helper would leave `cost()` free to keep calling an
         // unfolded variant, which is precisely the divergence β must prevent.
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base, &auto_params, &dependent_cells),
             constraints: &constraints,
-            base_values: &base,
             objective: Some(&objective),
-            functions: &[],
             // Task #5618: the clamp box is supplied by the caller. This is what
             // `resolve_bounds` yields for the fixture's lone `q >= 1.0` composed
             // against the dimensionless default box — so q=2 and q=8 are both
             // strictly inside it and contribute no bound penalty, keeping the
             // objective the only varying term this test is measuring.
             bounds: &[(1.0, 1e6)],
-            dependent_cells: &dependent_cells,
-            dispatch: None,
         };
         let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
         let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
@@ -11152,6 +11268,159 @@ mod tests {
             cost_lo < UNDEF_OBJECTIVE_PENALTY,
             "cost must not be the Undef sentinel; got {cost_lo}"
         );
+    }
+
+    /// `TrialModel::from_problem` must wire the problem's autos, current values
+    /// and `dependent_cells`: a model that dropped the cells would hand back
+    /// `line_cost`'s stale base value (999.0) at every trial point. The other two
+    /// inputs, `functions` and `dispatch`, are pinned by the next test.
+    #[test]
+    fn trial_model_from_problem_folds_the_problems_dependent_cells_at_the_trial_point() {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
+
+        let (auto_params, constraints, base, dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+        let q_id = auto_params[0].id.clone();
+        let line_cost_id = dependent_cells[0].0.clone();
+        let problem = ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: base.clone(),
+            objective: Some(objective),
+            functions: vec![].into(),
+            dependent_cells,
+        };
+        let model = TrialModel::from_problem(&problem, None);
+
+        let mut line_costs = Vec::new();
+        for q in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&model, &[q]);
+
+            assert_eq!(
+                values.get(&q_id),
+                Some(&Value::Scalar {
+                    si_value: q,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }),
+                "the auto must hold the trial scalar with its declared dimension"
+            );
+            for (id, v) in base.iter() {
+                if id != &line_cost_id {
+                    assert_eq!(
+                        values.get(id),
+                        Some(v),
+                        "base-only cell {id:?} must pass through"
+                    );
+                }
+            }
+            assert_eq!(values.len(), base.len() + 1, "only the auto may be added");
+
+            // line_cost = unit_cost * q, with unit_cost = 0.5 USD in the fixture.
+            let want = 0.5 * q;
+            match values.get(&line_cost_id) {
+                Some(&Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => {
+                    assert!(
+                        (si_value - want).abs() < 1e-12,
+                        "line_cost at q={q} must be recomputed as 0.5*q = {want}, got \
+                         {si_value} (999.0 means `from_problem` dropped the dependent cells)"
+                    );
+                    assert_eq!(dimension, DimensionVector::MONEY);
+                    line_costs.push(si_value);
+                }
+                other => panic!("expected a Scalar at line_cost, got {other:?}"),
+            }
+        }
+        assert_ne!(
+            line_costs[0], line_costs[1],
+            "the dependent cell must differ between the two trial points"
+        );
+    }
+
+    /// `TrialModel::from_problem` must also wire the problem's `functions` and
+    /// the caller's `dispatch`. The dependent cell here is `stress(t)`, an
+    /// `@optimized` stub whose body is `Undef`: it folds to `K / t` only when the
+    /// call finds `stress` among the functions AND the dispatcher answers its
+    /// target. A model that dropped either input folds `Undef` instead.
+    #[test]
+    fn trial_model_from_problem_evaluates_dependent_cells_with_the_problems_functions_and_dispatch()
+    {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, Value};
+        use std::sync::atomic::AtomicUsize;
+
+        let (t_id, mut problem) = fea_binding_problem();
+        let stress_id = ValueCellId::new("Bracket", "stress");
+        problem.current_values.insert(
+            stress_id.clone(),
+            Value::Scalar {
+                si_value: 999.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        problem.dependent_cells = vec![(
+            stress_id.clone(),
+            CompiledExpr::user_function_call(
+                "stress".to_string(),
+                vec![CompiledExpr::value_ref(t_id, Type::length())],
+                Type::dimensionless_scalar(),
+            ),
+        )];
+        let dispatch = CountingDispatch {
+            calls: AtomicUsize::new(0),
+            k: 1.0,
+        };
+        let model = TrialModel::from_problem(&problem, Some(&dispatch));
+
+        for t in [0.25_f64, 0.5_f64] {
+            let want = 1.0 / t;
+            match build_trial_values(&model, &[t]).get(&stress_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - want).abs() < 1e-12,
+                    "stress at t={t} must fold to K/t = {want}, got {si_value} \
+                     (999.0 means `from_problem` dropped the dependent cells)"
+                ),
+                other => panic!(
+                    "stress at t={t} must fold to the dispatched Scalar {want}, got \
+                     {other:?} (Undef means `from_problem` dropped `functions` or \
+                     `dispatch`)"
+                ),
+            }
+        }
+    }
+
+    /// The x ↔ auto_params mapping is positional, so an `x` of the wrong
+    /// length names no point at all: it must be refused, not truncated to
+    /// whichever autos happen to have a coordinate.
+    #[test]
+    #[should_panic(expected = "the mapping is positional")]
+    fn build_trial_values_refuses_an_x_that_does_not_match_auto_params() {
+        use super::build_trial_values;
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
+
+        let params = vec![
+            AutoParam {
+                id: ValueCellId::new("Bracket", "thickness"),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+            AutoParam {
+                id: ValueCellId::new("Bracket", "angle"),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
+            },
+        ];
+        let base = ValueMap::new();
+
+        let _ = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
     }
 
     /// Assert two `ValueMap`s hold exactly the same keys bound to exactly the
@@ -11234,14 +11503,14 @@ mod tests {
         );
 
         assert_same_value_map(
-            &build_trial_values(&base, &params, &[0.005, 1.2], &[], &[], None),
+            &build_trial_values(&trial_model(&base, &params, &[]), &[0.005, 1.2]),
             &expected,
             "multi-param, empty dependent_cells",
         );
 
         // Empty params AND empty dependent_cells: the base map, untouched.
         assert_same_value_map(
-            &build_trial_values(&base, &[], &[], &[], &[], None),
+            &build_trial_values(&trial_model(&base, &[], &[]), &[]),
             &base,
             "empty params, empty dependent_cells",
         );
@@ -11264,17 +11533,13 @@ mod tests {
             joint_drive_dependent_cell_fixture();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base,
             objective: Some(&objective),
-            functions: &[],
             // Task #5618: same clamp box as the sibling test above — see there
             // for why (1.0, 1e6) is the production-faithful value for this
             // fixture, and why it must not clamp q=2 or q=8.
             bounds: &[(1.0, 1e6)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
@@ -11469,7 +11734,7 @@ mod tests {
 
         let (_q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
-        let _ = build_trial_values(&base, &auto_params, &[2.0_f64], &hostile, &[], None);
+        let _ = build_trial_values(&trial_model(&base, &auto_params, &hostile), &[2.0_f64]);
     }
 
     /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
@@ -11499,7 +11764,7 @@ mod tests {
         let (q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
         for trial in [2.0_f64, 8.0_f64] {
-            let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[], None);
+            let values = build_trial_values(&trial_model(&base, &auto_params, &hostile), &[trial]);
             match values.get(&q_id) {
                 Some(&Value::Scalar { si_value, .. }) => assert!(
                     (si_value - trial).abs() < 1e-12,
@@ -11583,8 +11848,10 @@ mod tests {
         )];
 
         for trial in [2.0_f64, 8.0_f64] {
-            let values =
-                build_trial_values(&base, &auto_params, &[trial], &dependent_cells, &[], None);
+            let values = build_trial_values(
+                &trial_model(&base, &auto_params, &dependent_cells),
+                &[trial],
+            );
 
             match values.get(&dispatched_id) {
                 Some(&Value::Scalar { si_value, .. }) => assert!(

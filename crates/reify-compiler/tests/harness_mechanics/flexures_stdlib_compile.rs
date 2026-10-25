@@ -22,6 +22,7 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -671,24 +672,36 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         func.params[0].0
     );
 
-    // Joint param is `Length` — the λ task (3871) retargeted the β `Real`
-    // placeholder so the accessor typechecks against a real PRB-ctor joint.
-    // A native-builtin PRB ctor (e.g. `prb_cantilever_beam`) has its return
-    // type inferred as its first arg's type, which is the LENGTH segment
-    // length, so the accessor's joint param must resolve to the same
-    // `Scalar { LENGTH }` for the call to overload-match (expr.rs first-arg
-    // inference + type_compat exact equality). Still a placeholder —
-    // `TODO(joint-type)` retargets to `DrivingJoint` / `Joint` when KCC-ζ // ptodo:allow doc reference to a placeholder marker - not tracked debt
-    // lands (task 3845).
+    // Joint param is the nominal `FlexureJoint` marker (task #5476,
+    // placeholder-ratchet α; PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+    // §3.2/§3.3).
+    //
+    // HISTORY of this assertion, because it has now been retargeted twice and
+    // the previous two values were BOTH placeholders:
+    //   β  (task 3861) — `Real`.   Pure stand-in; no joint type existed.
+    //   λ  (task 3871) — `Length`. Chosen so the accessor would overload-match a
+    //                    PRB-ctor result, whose type the compiler inferred from
+    //                    its first (LENGTH) argument via the expr.rs first-arg
+    //                    fallback. Side effect: a bare `5mm` matched too, so the
+    //                    misuse degraded to a sentinel-zero record + a warning.
+    //   α  (task 5476) — `StructureRef("FlexureJoint")`. NOT a stand-in: the
+    //                    13 `prb_*` ctors now type their call sites as this
+    //                    nominal marker (flexure_signatures.rs), so the exact-
+    //                    equality overload filter accepts a real joint and
+    //                    rejects `Scalar[LENGTH]` with a hard compile Error
+    //                    (DiagnosticCode::NoMatchingOverload). The runtime
+    //                    representation stays `Value::Map` (PRD §7.1).
+    //
+    // Pinning this param type is what makes the ratchet non-reversible: loosening
+    // it back to any structural type re-opens the bare-literal hole INV-SF-5 bans.
     assert_eq!(
         func.params[0].1,
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-        "flexure_compliance.joint param type should be Length (λ task 3871 \
-         retargeted the β `Real` placeholder so the accessor overload-matches \
-         a PRB-ctor joint, whose native-builtin return type is inferred as its \
-         first LENGTH arg); got: {:?}",
+        Type::StructureRef("FlexureJoint".to_string()),
+        "flexure_compliance.joint param type should be the nominal \
+         StructureRef(\"FlexureJoint\") marker (task #5476 placeholder-ratchet α). \
+         A `Scalar[LENGTH]` here is the RETIRED λ-era placeholder — it lets a bare \
+         `5mm` overload-match and silently yield a sentinel-zero compliance \
+         record instead of a type error; got: {:?}",
         func.params[0].1
     );
 
@@ -706,18 +719,25 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
     // directly) — robust against future `let`-binding refactors per the
     // standard_stock_tests / standard_gravity_tests precedent.
     //
-    // The probe arg must carry a LENGTH `result_type`: `eval_user_function_call`
-    // → `find_matching_compiled_function` selects the overload by exact arg-
-    // `result_type` ↔ param-type equality, and λ retyped the `joint` param to
-    // `Length` (see (a) above). A `Type::dimensionless_scalar()` arg (the β probe) would miss the
-    // overload and eval to `Undef`. A zero-length `0m` is still a non-joint
-    // value (not a Map carrying `__flexure_compliance`), so the
-    // `__flexure_compliance_get` intrinsic returns the sentinel default record.
+    // The probe arg must carry a `StructureRef("FlexureJoint")` `result_type`:
+    // `eval_user_function_call` → `find_matching_compiled_function` selects the
+    // overload by exact arg-`result_type` ↔ param-type equality, and task #5476
+    // retyped the `joint` param to the nominal `FlexureJoint` marker (see (a)
+    // above). The earlier probe types — `Type::dimensionless_scalar()` (β) and
+    // `Scalar[LENGTH]` (λ) — would now miss the overload and eval to `Undef`.
+    //
+    // The VALUE stays a deliberate non-joint `0m`. That mismatch between the
+    // static tag and the runtime value is not sloppiness — it is precisely the
+    // PRD §3.6 fabrication case (`FlexureJoint()` is statically legal, so a
+    // marker-typed expression may carry no `__flexure_compliance` cache entry),
+    // and it is what makes this an eval-SHAPE probe: `__flexure_compliance_get`
+    // sees a non-Map value and returns the sentinel default record, whose
+    // seven-field shape is what the assertions below pin. The eval-time
+    // `W_FLEXURE_NON_JOINT_ARG` arm that fires on exactly this case is covered
+    // separately (task 4547; reify-stdlib/src/flexures/diagnostics.rs).
     let joint_arg = CompiledExpr::literal(
         Value::length(0.0),
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
+        Type::StructureRef("FlexureJoint".to_string()),
     );
     let call_expr = CompiledExpr::user_function_call(
         "flexure_compliance".to_string(),
@@ -949,4 +969,306 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
             other
         ),
     }
+}
+
+// ─── FlexureJoint marker (task 5476, placeholder-ratchet α) ──────────────────
+
+/// `structure def FlexureJoint : DrivingJoint { }` — the α static-layer marker
+/// that gives `flexure_compliance` its nominal parameter type, in place of the
+/// pre-α `Length` placeholder.
+///
+/// Three properties, each load-bearing:
+///
+/// 1. **It exists in `std/flexures`.** The marker has to be declared in the same
+///    module as the accessor whose signature names it.
+/// 2. **It is empty — no value cells at all.** PRD §7.1: the typed-joints
+///    migration stays rejected, so the RUNTIME joint representation is still an
+///    untouched `Value::Map`. The marker is a static-layer tag only; giving it
+///    fields would start exactly the migration the PRD declined. Asserted on
+///    `value_cells` (not just `param_cells`) so a stray `let` is caught too.
+/// 3. **It conforms to `DrivingJoint`.** This keeps the #4310 compile-time bound
+///    checks on `bind`/`sweep`/`dim` uniform — to the mechanism layer a flexure
+///    joint "is just a Revolute". Mirrors the accessor used by
+///    `kinematic_stdlib_compile.rs::conforming_joints_have_driving_joint_bound`
+///    (`template.trait_bounds`), rather than inventing a new one.
+///
+/// COUPLED TO PRELUDE ORDER. The `: DrivingJoint` clause only resolves because
+/// `stdlib_loader.rs` registers `std.flexures` AFTER `std.kinematic`. The stdlib
+/// prelude is built by growing sequential registration (no `.ri` file declares
+/// an `import`), so registration order IS visibility order: move `std.flexures`
+/// back before `std.kinematic` and `DrivingJoint` is not yet in scope when
+/// flexures.ri compiles. That failure does not surface here — it surfaces as a
+/// resolution Error through the `std_flexures_module_loads_with_no_errors`
+/// canary above, which is deliberately left untouched so it can catch it. If
+/// this test fails on `trait_bounds` while that canary is red too, fix the
+/// module order, not the declaration.
+#[test]
+fn std_flexures_declares_flexure_joint_marker() {
+    let template = find_structure("FlexureJoint");
+
+    assert!(
+        template.value_cells.is_empty(),
+        "FlexureJoint must be an EMPTY marker — no params, no lets (PRD §7.1: \
+         joints stay Value::Map at runtime; the marker is static-layer only). \
+         Got value cells: {:?}",
+        template
+            .value_cells
+            .iter()
+            .map(|vc| (&vc.id.member, &vc.kind))
+            .collect::<Vec<_>>(),
+    );
+
+    assert!(
+        template.trait_bounds.contains(&"DrivingJoint".to_owned()),
+        "FlexureJoint must declare conformance to DrivingJoint so the #4310 \
+         compile-time bind/sweep/dim bound checks treat it like any other \
+         driving joint; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── prb_* ctor call-site typing (task 5476, placeholder-ratchet α) ──────────
+
+/// Compile `source` against the production stdlib and return the `cell_type` of
+/// the named `let` cell inside the named structure.
+///
+/// Uses `compile_source_with_stdlib` (reify-test-support, already a dev-dep of
+/// this crate) so the call site is typed by the exact production ladder.
+fn user_let_cell_type(source: &str, structure: &str, member: &str) -> Type {
+    let module = compile_source_with_stdlib(source);
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == structure && t.entity_kind == EntityKind::Structure)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `structure def {structure}` in the compiled user module; \
+                 got: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `let {member}` in `structure def {structure}`; got cells: {:?}",
+                template
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        })
+        .cell_type
+        .clone()
+}
+
+/// A `prb_*` ctor call site must type as the nominal `StructureRef("FlexureJoint")`,
+/// NOT as whatever its first argument happens to be.
+///
+/// This is held up by the `is_flexure_typed_fn` arm in `expr.rs`'s
+/// builtin-typing ladder. Remove or mis-order that arm and the failure mechanism
+/// is precisely the one PRD §2 names as the root cause of the placeholder: with
+/// no signature arm, the call falls through the `NoUserFunctions` ladder to the
+/// FIRST-ARG FALLBACK and inherits its first argument's type — `Scalar[LENGTH]`,
+/// from `notch_radius = 1mm` / `length = 20mm`. That is exactly why a bare `5mm`
+/// used to overload-match `flexure_compliance` and yield a sentinel record
+/// instead of a type error. A failure here therefore means the arm is gone, is
+/// positioned after the fallback, or no longer covers the probed ctor.
+///
+/// Two ctors from two DIFFERENT family modules are covered
+/// (`prb_notch_circular` — notch.rs; `prb_parallelogram_flexure` — compound.rs)
+/// so the arm is shown to fire family-wide rather than for one hard-coded name.
+///
+/// WHY THE `!= Scalar[LENGTH]` ASSERTION IS THE DISCRIMINATING ONE. The ideal
+/// probe would be a ctor whose first arg is NOT a Length, so that name-dispatch
+/// and first-arg fallback could not coincidentally agree. No such ctor exists:
+/// every one of the 13 takes a Length first (`length` or `notch_radius`;
+/// verified against the signature doc comments on each `prb_*` fn in beam.rs /
+/// notch.rs / hinge.rs / prismatic.rs / compound.rs). The explicit
+/// `!= Scalar[LENGTH]` assertion below is therefore the signal that the arm —
+/// not the fallback — produced the type. At the unit level the discrimination
+/// is structural rather than asserted: `flexure_signatures::flexure_joint_type()`
+/// takes no arguments at all, so it cannot consult a first-arg type.
+#[test]
+fn prb_ctor_call_cell_type_is_flexure_joint() {
+    let source = r#"
+module prb_cell_type_probe
+
+structure def PrbCellType {
+    let steel = Steel_AISI_1045()
+    let j_notch = prb_notch_circular(1mm, 0.2mm, 5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+    let j_compound = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+}
+"#;
+
+    let expected = Type::StructureRef("FlexureJoint".to_string());
+    // The first-arg-fallback type each call would inherit without the arm.
+    let fallback = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    for member in ["j_notch", "j_compound"] {
+        let actual = user_let_cell_type(source, "PrbCellType", member);
+
+        assert_ne!(
+            actual, fallback,
+            "`{member}` must NOT be typed {fallback:?} — that is the first-arg \
+             fallback (expr.rs) inheriting the ctor's leading Length argument, \
+             which is the placeholder PRD §2 eradicates. Wire the \
+             `is_flexure_typed_fn` arm into the builtin-typing ladder BEFORE that \
+             fallback."
+        );
+        assert_eq!(
+            actual, expected,
+            "`{member}` (a prb_* ctor call) must type as \
+             StructureRef(\"FlexureJoint\"); got {actual:?}"
+        );
+    }
+}
+
+// ─── BT1, library half: the typed diagnostic code (task 5476) ────────────────
+
+/// `flexure_compliance(5mm)` must produce a `Severity::Error` diagnostic
+/// carrying `DiagnosticCode::NoMatchingOverload` (PRD-prose mnemonic
+/// `E_NO_MATCHING_OVERLOAD`).
+///
+/// This is the library half of PRD §7.3 BT1; the user-observable half (the
+/// exit-code flip) is
+/// `reify-cli/tests/harness_cli/cli_check.rs::check_flexure_compliance_non_joint_exits_failure`.
+///
+/// The split is forced, not stylistic: `DiagnosticCode` has no `Display`,
+/// `code_str()` or `as_str()` anywhere in the workspace — the `E_*`/`W_*`
+/// mnemonics live only in doc-comment prose — and this task contractually
+/// freezes the no-matching-overload message text, so the mnemonic is never
+/// rendered and a CLI substring assertion cannot reach it.  The typed code is
+/// therefore asserted here with the house `d.code == Some(...)` idiom (cf.
+/// `expr.rs`'s `no_matching_overload_error_carries_no_matching_overload_code`),
+/// and the CLI test carries the §G2 exit flip.
+///
+/// FAILURE READING. Zero Error diagnostics (rather than a wrongly-coded one)
+/// means `flexure_compliance` has regressed to a parameter type that `5mm`
+/// overload-MATCHES — the pre-α `joint: Length` placeholder being the canonical
+/// case: it produces no `NoMatch` at all and the accessor silently returns a
+/// sentinel-zero compliance record. One Error with `code: None` instead means
+/// the `NoMatchingOverload` tagging in `expr.rs` was dropped.
+#[test]
+fn flexure_compliance_on_bare_length_emits_no_matching_overload_code() {
+    let source = r#"
+module flexure_compliance_bare_length_probe
+
+structure def FlexureComplianceBareLength {
+    let c = flexure_compliance(5mm)
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+    let errors: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "flexure_compliance(5mm) must be a hard Error — a bare Length is not a \
+         flexure joint (PRD §7.3 BT1, task #5476). Zero Error diagnostics means \
+         the `joint: Length` placeholder signature still matches `5mm` in \
+         crates/reify-compiler/stdlib/flexures.ri, so the accessor silently \
+         returns a sentinel-zero compliance record. All diagnostics: {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message, &d.code))
+            .collect::<Vec<_>>()
+    );
+
+    let coded: Vec<&&Diagnostic> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::NoMatchingOverload))
+        .collect();
+
+    assert_eq!(
+        coded.len(),
+        1,
+        "expected exactly one Error carrying DiagnosticCode::NoMatchingOverload \
+         (INV-SF-6); got errors: {:?}",
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        coded[0]
+            .message
+            .contains("no matching overload for flexure_compliance"),
+        "the coded Error must be the flexure_compliance call-site NoMatch, and its \
+         message text is contractually unchanged by this task (the mnemonic is NOT \
+         baked into the message); got: {}",
+        coded[0].message
+    );
+}
+
+/// A SIBLING `DrivingJoint` conformer is rejected too: `flexure_compliance` is
+/// matched by NOMINAL EXACT EQUALITY on `FlexureJoint`, not by the
+/// `DrivingJoint` trait bound.
+///
+/// This pins the boundary that actually distinguishes the α design from a
+/// trait-based one, and it is counter-intuitive precisely because the marker is
+/// declared `structure def FlexureJoint : DrivingJoint { }` — a reader seeing
+/// that bound may reasonably assume any `DrivingJoint` matches. It does not:
+/// `type_compat.rs::resolve_function_overload` compares parameter types by exact
+/// equality, so `Spherical()` (`structure def Spherical : DrivingJoint { }` in
+/// kinematic.ri) is as rejected as a bare `5mm`.
+///
+/// The bound on the marker does real work, just not HERE — it is what keeps the
+/// #4310 compile-time `bind`/`sweep`/`dim` bound checks accepting a flexure
+/// joint (pinned by `std_flexures_declares_flexure_joint_marker` above and by
+/// the BT3 corpus walk in reify-eval-fea-tests). Two independent mechanisms,
+/// two separate pins.
+///
+/// If a future change widens the overload filter to accept trait-bound-compatible
+/// arguments, this test fails — which is the point. Reopening
+/// `flexure_compliance(<any DrivingJoint>)` would be a variant of the very hole
+/// task #5476 closed, and it must be a deliberate, visible decision rather than
+/// a silent side effect.
+#[test]
+fn flexure_compliance_on_sibling_driving_joint_emits_no_matching_overload_code() {
+    let source = r#"
+module flexure_compliance_sibling_joint_probe
+
+structure def FlexureComplianceSiblingJoint {
+    let c = flexure_compliance(Spherical())
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+    let coded: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.code == Some(DiagnosticCode::NoMatchingOverload))
+        .filter(|d| {
+            d.message
+                .contains("no matching overload for flexure_compliance")
+        })
+        .collect();
+
+    assert_eq!(
+        coded.len(),
+        1,
+        "flexure_compliance(Spherical()) must be a hard NoMatchingOverload Error: \
+         accessor matching is nominal exact equality on FlexureJoint, NOT \
+         conformance to the DrivingJoint bound that both structures carry. Zero \
+         such Errors means the overload filter started accepting trait-bound-\
+         compatible arguments — a deliberate widening, or an accidental reopening \
+         of the placeholder hole (PRD §3.2, task #5476). All diagnostics: {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message, &d.code))
+            .collect::<Vec<_>>()
+    );
 }

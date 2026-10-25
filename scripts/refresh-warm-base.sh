@@ -12,9 +12,11 @@
 #
 # Options:
 #   --landed-commit SHA      (Required for normal refresh) Assert that the
-#                            advancing target's git worktree HEAD == SHA.
+#                            advancing target's git worktree HEAD == SHA AND
+#                            that SHA is an ancestor of refs/heads/main.
 #                            Provenance guard (inv.9): refuses WIP lanes
-#                            (uncommitted tracked changes) and mismatched HEADs.
+#                            (uncommitted tracked changes), mismatched HEADs
+#                            and unlanded commits.
 #                            Not used by --check-frag.
 #   --check-frag             Read-only defrag check: print verdict token (ok |
 #                            reseed-due) + max per-file extent count to stdout;
@@ -33,43 +35,19 @@
 #
 # Refresh mechanics:
 #   1. Provenance guard (inv.9): refuse if advancing worktree is dirty (uncommitted
-#      tracked changes) or --landed-commit <sha> is absent / mismatched vs HEAD.
+#      tracked changes), --landed-commit <sha> is absent / mismatched vs HEAD,
+#      or <sha> is not an ancestor of refs/heads/main.
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
-#   2b.Prune superseded hash-generations: within <base_dir>.gen.<N>.partial's
-#      debug/deps, group depth-1 regular files by cargo's hashed-artefact
-#      STEM (stripping a trailing `-<16 hex>` extra-filename suffix) and
-#      rank each stem's HASHES — never its (stem, ext) files independently —
-#      newest-first by the max mtime over every extension that hash has;
-#      keep the newest _PRUNE_KEEP_GENERATIONS (=2) hashes per stem and
-#      delete every file of a losing hash, on every extension it has.
-#      Ranking by hash (not per-extension) keeps a kept "fallback
-#      generation" COMPLETE: rustc writes a hash's .rmeta (pipelining) and
-#      .rlib (end of codegen) at different times, so per-extension ranking
-#      could keep one extension of a hash while pruning another — a
-#      fallback that is only partially present is not a fallback. N=2, not
-#      N=1: N=1 reclaims more but leaves no fallback generation, so a lane
-#      whose fingerprint misses the single survivor rebuilds cold — the
-#      exact cost the warm base exists to avoid. mtime, not .fingerprint:
-#      .fingerprint is a strict superset of deps (cargo GCs neither tree),
-#      so a fingerprint-keyed filter cannot remove anything BY CONSTRUCTION
-#      — do not reinstate that rule. LOAD-BEARING PRECONDITION: mtime is
-#      only a valid ordering signal because nothing stamps artefact mtimes
-#      today (seed-warm-lane.sh's bulk stamp targets sources, not target/;
-#      this script stamps no artefacts either) — if that ever changes,
-#      re-measure the live base's mtime spread before trusting this rule
-#      again. debug/.fingerprint is NOT pruned in lockstep (116 MB against
-#      204 GiB; pruning it restores no liveness signal). Sited BEFORE the
-#      partial→gen rename below, so a failed prune costs only the
-#      .partial, which the EXIT trap already sweeps. Scope: base only
-#      (never a task lane, never _merge-verify); debug/deps only —
-#      release/ and debug/build are untouched. The logged `victim_bytes=`
-#      figure is the victims' APPARENT size, not disk actually reclaimed:
-#      this staging copy is a reflink, so the same extents stay referenced
-#      by the advancing source (and, refreshing over an existing base, by
-#      the retired gen until Step 6's reader-refcount GC) — real reclaim
-#      lags by at least one more refresh-and-reseed cycle plus that GC.
+#   2b.Prune unconsulted units from the staging copy: one call to the sibling
+#      scripts/prune-unconsulted-target.sh on <base_dir>.gen.<N>.partial/debug
+#      (debug only, 7-day window, atime probed on the advancing dir). A failed
+#      prune, or a missing sibling, aborts the refresh before the partial→gen
+#      rename. Rule, skips and exit codes: that script's header. Its
+#      victim_bytes is apparent here: reflinked extents stay shared with the
+#      advancing source until that drops them too.
+#      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -113,6 +91,8 @@
 
 set -euo pipefail
 
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
@@ -133,8 +113,10 @@ Usage: $(basename "$0") <advancing_target_dir> <base_dir> [OPTIONS]
 
   Options:
     --landed-commit SHA      (Required for refresh) Assert advancing worktree
-                             HEAD == SHA; refuses WIP lanes (uncommitted tracked
-                             changes) and head mismatches. Not used by --check-frag.
+                             HEAD == SHA and that SHA has landed (is an ancestor
+                             of ${LANDED_REF}); refuses WIP lanes (uncommitted
+                             tracked changes), head mismatches and unlanded
+                             commits. Not used by --check-frag.
     --check-frag             Read-only: print "ok N" or "reseed-due N" (extent count).
     --frag-threshold N       Extent threshold for --check-frag (default: 64).
     --rustflags VALUE        RUSTFLAGS stamp written after swap (default: \${RUSTFLAGS:-}).
@@ -154,6 +136,7 @@ FRAG_THRESHOLD=64
 RUSTFLAGS_VAL="${RUSTFLAGS:-}"
 INVOCATION_VAL=""
 LANDED_COMMIT=""
+readonly LANDED_REF="refs/heads/main"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -273,6 +256,8 @@ BASE_DIR="$(cd "$(dirname "$BASE_DIR")" && pwd)/$(basename "$BASE_DIR")"
 #      orchestrator dirty-start semantics from CLAUDE.md)
 #   4. Refuse if --landed-commit is absent
 #   5. Refuse if git rev-parse HEAD != the asserted sha (head mismatch)
+#   6. Refuse if $LANDED_REF does not resolve, or the asserted sha is not an
+#      ancestor of it (committed-but-unlanded work)
 _prov_wt="$(dirname "$ADVANCING_DIR")"
 if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "Provenance guard: <advancing_target_dir> is not inside a git worktree: $ADVANCING_DIR"
@@ -303,10 +288,10 @@ if [ -n "$_prov_status" ]; then
 fi
 if [ -z "$LANDED_COMMIT" ]; then
     err "Provenance guard: --landed-commit <sha> is required (provenance assertion missing)."
-    err "  Pass the confirmed landed HEAD sha:"
-    err "    --landed-commit \$(git -C <lane_worktree> rev-parse HEAD)"
+    err "  Pass the sha of a commit already on $LANDED_REF that is also the advancing worktree's HEAD:"
+    err "    --landed-commit <sha>    (check: git merge-base --is-ancestor <sha> $LANDED_REF)"
     err "This assertion prevents task-lane WIP and ensures the advancing HEAD is known."
-    err "Only the merge lane (at confirmed landed HEAD) may advance the base."
+    err "Only a clean worktree at a commit already landed on $LANDED_REF may advance the base."
     exit 1
 fi
 _prov_head="$(git -C "$_prov_wt" rev-parse HEAD 2>/dev/null)"
@@ -318,18 +303,42 @@ if [ "$_prov_head" != "$LANDED_COMMIT" ]; then
     err "HEAD mismatch: pass the correct landed commit sha via --landed-commit."
     exit 1
 fi
-info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
+_prov_main="$(git -C "$_prov_wt" rev-parse --verify --quiet "${LANDED_REF}^{commit}" 2>/dev/null || true)"
+if [ -z "$_prov_main" ]; then
+    err "Provenance guard: $LANDED_REF does not resolve in the advancing worktree's repository."
+    err "  Worktree: $_prov_wt"
+    err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
+    exit 1
+fi
+_prov_ancestry_rc=0
+git -C "$_prov_wt" merge-base --is-ancestor "$LANDED_COMMIT" "$_prov_main" || _prov_ancestry_rc=$?
+if [ "$_prov_ancestry_rc" -gt 1 ]; then
+    err "Provenance guard: could not evaluate whether --landed-commit is an ancestor of $LANDED_REF (git rc=$_prov_ancestry_rc)."
+    err "  --landed-commit: $LANDED_COMMIT"
+    err "  $LANDED_REF: $_prov_main"
+    err "  Worktree: $_prov_wt"
+    err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
+    exit 1
+fi
+if [ "$_prov_ancestry_rc" -eq 1 ]; then
+    err "Provenance guard: --landed-commit has not landed: it is not an ancestor of $LANDED_REF (inv.9)."
+    err "  --landed-commit: $LANDED_COMMIT"
+    err "  $LANDED_REF: $_prov_main"
+    err "  Worktree: $_prov_wt"
+    err "Only a commit already landed on $LANDED_REF may advance the base;"
+    err "committed-but-unlanded lane work must not. Refusing to swap."
+    exit 1
+fi
+info "Provenance guard: OK (worktree clean, HEAD=$_prov_head, landed on $LANDED_REF)"
 
 # ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
 # State variables set during the swap; used by the trap for targeted recovery.
 _SWAP_PRIOR_LINK=""     # prior symlink target (if base was a symlink pre-swap)
 _SWAP_BOOTSTRAP_DIR=""  # if bootstrap renamed a real base dir to a gen dir
-_PRUNE_SUMMARY_FILE=""  # Step 3b's summary temp file, if one was created
 
 _cleanup_on_exit() {
     local exit_code=$?
     [ $exit_code -eq 0 ] && return
-    [ -n "${_PRUNE_SUMMARY_FILE:-}" ] && rm -f "$_PRUNE_SUMMARY_FILE" 2>/dev/null || true
     if [ -n "${BASE_DIR:-}" ]; then
         # Restore prior base state on failure:
         if [ -n "${_SWAP_BOOTSTRAP_DIR:-}" ] \
@@ -403,159 +412,12 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
 
-# Step 3b: prune superseded cargo hash-generations from the staging copy.
-#
-# Groups depth-1 files under debug/deps by cargo's hashed-artefact STEM
-# (stripping a trailing `-<16 lowercase hex>` extra-filename suffix) and
-# ranks each stem's HASHES — never its (stem, ext) files independently —
-# newest-first by the max mtime over every extension that hash has; keeps
-# the newest _PRUNE_KEEP_GENERATIONS and deletes every file of a losing
-# hash, on every extension it has. Ranking per-hash (not per-extension) is
-# what keeps a kept generation COMPLETE: rustc writes a hash's .rmeta
-# (pipelining) and .rlib (end of codegen) at different times, so ranking
-# each extension independently could keep hash B's .rlib while pruning
-# hash B's .rmeta — a "fallback generation" only partially present, which
-# defeats the point of keeping one. libfoo-<hash>.rlib and
-# libfoo-<hash>.rmeta therefore rise and fall together; a split-debuginfo
-# shard like axum-<hash>.axum.<hash>-cgu.09.rcgu.dwo never matches at all
-# (its stem-before-last-dot does not end in `-<16hex>`) so it is never a
-# candidate. Reclaims the bulk of the warm base's bytes (mostly
-# extensionless test/bench binaries); N=2 rather than N=1 is a deliberate
-# ruling that keeps a fallback generation so a lane whose fingerprint misses
-# the single newest survivor does not rebuild cold — not a tunable, so no CLI
-# flag or env override.
-#
-# Sited on the .partial STAGING dir (never the live base, never the final gen
-# dir) — a failure here is covered for free by the existing EXIT trap's
-# `.gen.*.partial` sweep above, with no new cleanup code needed.
-#
-# The `victim_bytes=` figure logged below is the victims' APPARENT size, not
-# disk actually reclaimed: the staging copy is a reflink of the advancing
-# source, so the same extents stay referenced by the advancing target (and,
-# refreshing over an existing base, by the retired gen until Step 6's
-# reader-refcount GC reaps it) — real reclaim lags by at least one more
-# refresh-and-reseed cycle plus that GC. A still-uplifted cargo hardlink
-# (debug/<bin>, debug/build/<pkg>-<hash>/build-script-build) overstates it
-# further: cp -a preserves hardlinks, so unlinking the deps copy of a file
-# still linked elsewhere frees nothing at all.
-readonly _PRUNE_KEEP_GENERATIONS=2
-# _prune_deps is the ONE place the prune's reach is written (SPOT) — every
-# find/cd/rm below reads only this local, never a second path expression, so
-# the scope of the sweep is a single line to audit.
-_prune_deps="${_new_gen_partial}/debug/deps"
-if [ -d "$_prune_deps" ]; then
-    info "Pruning superseded hash-generations under $_prune_deps (keep newest ${_PRUNE_KEEP_GENERATIONS}) ..."
-    # -maxdepth 1 -type f confines the sweep to regular files directly in
-    # deps/, excluding the nested dir (e.g. deps/rustc*/), its contents, and
-    # any symlink — never descended into, never followed.
-    #
-    # The victim-count/victim-bytes summary crosses from awk back into this
-    # shell via a temp file (never stdout, which xargs below consumes as the
-    # NUL-delimited deletion list) so it can be logged through the real
-    # info() helper — reusing it rather than re-implementing its formatting
-    # a second time inside the awk program (SPOT).
-    _prune_summary_file="$(mktemp)"
-    _PRUNE_SUMMARY_FILE="$_prune_summary_file"  # let the EXIT trap reclaim it on a mid-prune failure
-    # The total order (mtime desc, then hash string desc as an explicit
-    # tiebreak) is expressed ONCE, in the hash_newer() comparator below, and
-    # is applied per HASH rather than per file — the one normative ranking
-    # for the whole stage (SPOT). No shell `sort` stage feeds this: ranking
-    # is keyed on hash, not on incoming line order, so pre-sorting the raw
-    # `find` stream would establish an order this program never reads.
-    find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%s\t%f\n' \
-        | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" -v summary_file="$_prune_summary_file" '
-            function hash_newer(mt_a, h_a, mt_b, h_b) {
-                # True when (mt_a, h_a) ranks strictly ahead of (mt_b, h_b):
-                # mtime desc, then hash string desc as an explicit tiebreak.
-                # Numeric mtime compare (never lexical: %T@ carries
-                # sub-second precision, so "...9" must not sort before
-                # "...10"). The hash alphabet is fixed to [0-9a-f] by the
-                # grammar match below, so the string tiebreak is stable
-                # across locales without needing LC_ALL here.
-                if (mt_a != mt_b) return mt_a > mt_b
-                return h_a > h_b
-            }
-            BEGIN { ORS = "\0" }
-            {
-                fmtime = $1 + 0
-                fsize  = $2
-                fname  = $3
-                # Split on the FINAL dot only (last dot, never the first,
-                # never a greedy multi-dot extension): ext = ".<suffix>"
-                # when fname contains a dot, else "". This is the one
-                # normative copy of the hashed-artefact grammar (SPOT) —
-                # the stem must match ^(.+)-<16 lowercase hex>$ exactly,
-                # anchored both ends, so a short/long/uppercase pseudo-hash
-                # never matches. The hash is spelled out as 16 repeated
-                # [0-9a-f] classes rather than a {16} interval expression:
-                # interval expressions are unsupported by mawk < 1.3.4 and
-                # busybox awk, under which {16} is literal text, no
-                # filename would ever match, and this whole stage would
-                # silently become a no-op (files=0) — no error, no failing
-                # assertion, just a quietly disabled mechanism.
-                base_no_ext = fname
-                sub(/\.[^.]*$/, "", base_no_ext)
-                ext = substr(fname, length(base_no_ext) + 1)
-                if (base_no_ext !~ /^.+-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$/) next
-                stem = substr(base_no_ext, 1, length(base_no_ext) - 17)
-                hash = substr(base_no_ext, length(base_no_ext) - 15)
-
-                n++
-                rec_stem[n] = stem
-                rec_hash[n] = hash
-                rec_name[n] = fname
-                rec_size[n] = fsize
-
-                # Rank by HASH, not by (stem, ext) independently — see the
-                # comment above this pipeline for why. The rank key for a
-                # hash is the MAX mtime over every file of that hash,
-                # regardless of extension, so a losing hash loses on every
-                # extension it has, together.
-                hkey = stem SUBSEP hash
-                if (!(hkey in hash_mtime) || fmtime > hash_mtime[hkey]) hash_mtime[hkey] = fmtime
-                if (!((stem, hash) in stem_hash_seen)) {
-                    stem_hash_seen[stem, hash] = 1
-                    stem_hash_count[stem]++
-                    stem_hash_list[stem, stem_hash_count[stem]] = hash
-                }
-            }
-            END {
-                # Per stem, rank its distinct hashes with hash_newer() and
-                # keep the newest `keep`. cargo hash-generation counts per
-                # unit are small (mean ~1.9, max ~30 measured on the live
-                # warm base), so a plain insertion sort is plenty — no
-                # gawk-only asort()/asorti() needed.
-                for (stem in stem_hash_count) {
-                    cnt = stem_hash_count[stem]
-                    for (i = 1; i <= cnt; i++) order[i] = stem_hash_list[stem, i]
-                    for (i = 2; i <= cnt; i++) {
-                        v = order[i]
-                        j = i - 1
-                        while (j >= 1 && hash_newer(hash_mtime[stem, v], v, hash_mtime[stem, order[j]], order[j])) {
-                            order[j + 1] = order[j]
-                            j--
-                        }
-                        order[j + 1] = v
-                    }
-                    for (i = 1; i <= cnt && i <= keep; i++) kept[stem, order[i]] = 1
-                }
-                total_files = 0
-                total_bytes = 0
-                for (i = 1; i <= n; i++) {
-                    if ((rec_stem[i], rec_hash[i]) in kept) continue
-                    print rec_name[i]
-                    total_files++
-                    total_bytes += rec_size[i]
-                }
-                printf "files=%d victim_bytes=%d\n", total_files, total_bytes > summary_file
-            }
-        ' \
-        | (cd "$_prune_deps" && xargs -r -0 rm -f --)
-    info "prune deps=$_prune_deps $(cat "$_prune_summary_file") (apparent victim size — real reclaim lags until the advancing source is reseeded and Step 6 reaps the retired gen)"
-    rm -f "$_prune_summary_file"
-else
-    info "No debug/deps under staging copy — skipping hash-generation prune (files=0)."
-fi
+# Step 3b: prune unconsulted units from the staging copy (header item 2b).
+# Called plainly, with no `if` or `||`, so set -e aborts on any failure (a
+# missing sibling included) before the rename below; the EXIT trap then drops
+# the partial.
+"$_SCRIPT_DIR/prune-unconsulted-target.sh" --window-days 7 \
+    --atime-probe "$ADVANCING_DIR" "${_new_gen_partial}/debug"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"

@@ -159,6 +159,7 @@ fn build_step_routes_union_to_pragma_kernel_occt() {
 
     let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         build_test_kernels(Arc::clone(&log)),
         build_test_registry(),
@@ -231,6 +232,7 @@ structure PragmaOverrideUnion {
 
     let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         build_test_kernels(Arc::clone(&log)),
         build_test_registry(),

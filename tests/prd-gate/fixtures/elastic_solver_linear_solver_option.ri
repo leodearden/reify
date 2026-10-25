@@ -1,0 +1,13 @@
+module elastic_solver_linear_solver_option
+
+// PRD evidence: docs/prds/v0_6/elastic-static-solver-performance.md §3 (grammar row) and C6.
+// The `linear_solver` option's enum and constructor-argument shape, on a local stand-in for
+// ElasticOptions (the real param lands with leaf β), so it parses and checks on main today.
+enum LinearSolver { Auto, Direct, Iterative }
+structure def Opts {
+    param max_iter : Int = 1000
+    param linear_solver : LinearSolver = LinearSolver.Auto
+}
+structure P {
+    let o = Opts(linear_solver: LinearSolver.Iterative, max_iter: 50)
+}

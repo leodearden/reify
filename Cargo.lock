@@ -4272,7 +4272,11 @@ dependencies = [
 name = "reify-build-utils"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
+ "serde",
+ "syn 2.0.117",
  "tempfile",
+ "toml 0.8.2",
 ]
 
 [[package]]
@@ -4287,6 +4291,7 @@ dependencies = [
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reify-build-utils",
  "reify-compiler",
  "reify-config",
@@ -4301,7 +4306,6 @@ dependencies = [
  "reify-kernel-occt",
  "reify-kernel-openvdb",
  "reify-lsp",
- "reify-mcp",
  "reify-mesh-morph",
  "reify-runtime",
  "reify-stdlib",
@@ -4377,7 +4381,6 @@ dependencies = [
  "reify-core",
  "reify-expr",
  "reify-ir",
- "reify-stdlib",
  "reify-test-support",
  "tracing",
 ]
@@ -4508,8 +4511,10 @@ version = "0.1.0"
 name = "reify-geometry"
 version = "0.1.0"
 dependencies = [
+ "reify-core",
  "reify-ir",
  "reify-test-support",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4517,6 +4522,7 @@ name = "reify-gui"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "notify",
  "reify-ast",
  "reify-build-utils",
@@ -4528,6 +4534,7 @@ dependencies = [
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
  "reify-mesh-morph",
@@ -4568,9 +4575,12 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-kernel-conformance",
+ "reify-kernel-fidget",
  "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
+ "strum 0.26.3",
 ]
 
 [[package]]
@@ -4739,6 +4749,7 @@ dependencies = [
  "reify-build-utils",
  "reify-ir",
  "reify-kernel-gmsh",
+ "reify-solver-elastic",
  "reify-test-support",
  "tracing",
 ]

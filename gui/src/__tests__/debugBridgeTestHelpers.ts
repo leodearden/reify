@@ -4,9 +4,11 @@
  * through it. One copy each, so a change to a store shape or to the response
  * envelope is one edit rather than one per test file.
  */
-import { vi, expect } from 'vitest';
+import { vi, expect, onTestFinished } from 'vitest';
+import { createRoot } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import type { ViewStateStore } from '../stores/viewStateStore';
+import { createLayoutStore, type LayoutStore } from '../stores/layoutStore';
 import type { DebugStores } from '../debug/types';
 
 /**
@@ -27,8 +29,21 @@ export function makeViewStateStoreMock(): ViewStateStore {
 }
 
 /**
- * A minimal DebugStores: idle engine, empty editor and selection. Enough for a
- * debug-bridge test whose handlers drive the DOM rather than a store.
+ * A real layout store whose root is disposed when the current test finishes,
+ * so its persistence effect and pending debounce timer never outlive the test.
+ * Call from a test body or a beforeEach (onTestFinished needs a current test).
+ */
+export function makeLayoutStore(): LayoutStore {
+  return createRoot((dispose) => {
+    onTestFinished(dispose);
+    return createLayoutStore();
+  });
+}
+
+/**
+ * A minimal DebugStores: idle engine, empty editor and selection, and a real
+ * layout store. Enough for a debug-bridge test whose handlers drive the DOM
+ * rather than a store.
  */
 export function makeDebugStores(): DebugStores {
   return {
@@ -77,20 +92,7 @@ export function makeDebugStores(): DebugStores {
       },
     },
     viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout: makeLayoutStore(),
   };
 }
 
