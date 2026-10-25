@@ -426,12 +426,15 @@ impl DimensionVector {
     }
 
     /// Names this DIMENSION for a diagnostic that has already named the value
-    /// (`"… must be Vector3<Length>; got {label}"`): the canonical name, else
-    /// the `Display` exponents (so `DIMENSIONLESS` renders `"dimensionless"`).
+    /// (`"… must be Vector3<Length>; got {label}"`): `"dimensionless"`, else
+    /// the canonical name, else the `Display` exponents.
     ///
     /// Intentionally separate from [`Self::diagnostic_scalar_label`] — do not
     /// merge; `diagnostic_dimension_label_names_the_dimension` pins the difference.
     pub fn diagnostic_dimension_label(&self) -> String {
+        if self.is_dimensionless() {
+            return "dimensionless".to_string();
+        }
         self.canonical_name()
             .map(str::to_string)
             .unwrap_or_else(|| self.to_string())
