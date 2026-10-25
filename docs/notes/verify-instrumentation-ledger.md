@@ -73,7 +73,7 @@ run leaves that stderr line instead of a record.
 | `REIFY_VERIFY_LEDGER_DIR` | Ledger directory (default `<main checkout>/data/verify-logs`, which refuses a run beneath the infra harness). |
 | `REIFY_VERIFY_LEDGER_LANE_DIR` | Lane whose seed stamp the record reads (default: the running checkout). |
 | `REIFY_VERIFY_RUN_ID` | Internal. Inheriting it marks a run as nested. |
-| `REIFY_RUN_ALL_TIMING_OUT` | Internal. Exported around each plan step; `run_all.sh` consumes it, unsets it, and writes its timing there. |
+| `REIFY_RUN_ALL_TIMING_OUT` | Internal. Exported around each plan step; `run_all.sh` consumes it, unsets it, and copies its event records there (`scripts/lib_event_log.sh`'s `EVENT_LOG_COPY_TO` sink). |
 | `REIFY_VERIFY_LEDGER_PROC_ROOT` | Test hook: the `/proc` the concurrency scan and the harness check read. |
 
 While a run is in flight, its journal lives in
@@ -119,7 +119,7 @@ One JSON object per line.
 | `sccache` | `{before, after}`, raw `sccache --show-stats --stats-format=json` objects. Present on cargo-bearing steps only. When the wrapper is not sccache, or the call fails, the value is `{available: false, reason}` instead. |
 | `concurrency` | `{before, after}`, one per sccache snapshot. Contents are described below. |
 | `nextest` | The JUnit split, on nextest steps only. |
-| `run_all` | `run_all.sh`'s timing, on any step whose process tree ran it (normally `infra_pool`). |
+| `run_all` | `run_all.sh`'s run, phase and member timing, folded from the event records it copied to the step file. Present on any step whose process tree ran it (normally `infra_pool`). |
 
 **Phases.** The normative definition is `Phase` / `PHASE_RULES` in
 `scripts/verify-ledger.py`. The first matching rule wins.
@@ -165,20 +165,30 @@ no-junit | stale-junit | unparseable-junit}`.
 
 ### `run_all` block
 
-`{summary, members}`, written by `tests/infra/run_all.sh`.
+`{summary, members}`. `tests/infra/run_all.sh` copies its C2 event records to
+the step's `step-<i>.run-all.jsonl`, and `scripts/verify-ledger.py` folds
+them, parsed by `scripts/verify_events_lib.py`. The record schema is
+`tests/infra/README.md` "Verify event channel". A step that wrote no step file
+has no `run_all` key.
 
-`summary` is `{kind: "summary", path, run_id}`, where `path` is `pool`,
-`host-infra`, `member-subset` or `legacy-serial`, and `run_id` is
-run_all.sh's own `<epoch>-<pid>`. On the pool path the summary also has:
+`summary` is `{run_id, branch, discovered, phases}`, from the first
+`run_start` and the `phase_finish` records, or `null` when there is no
+`run_start`. `run_id` is run_all.sh's own `<epoch>-<pid>`, and `branch` is
+`pool`, `serial`, `subset` or `host-infra`. `phases` is
+`{<phase>: {began_at, ended_at}}`: `pool`, `serial` and `retry` on the pool
+branch, and `serial` on every serial branch.
 
-- `phases`: `{pool, serial, retry}`, each `{began_at, ended_at}`;
-- `totals`: `{members, pool, serial, retried}`.
+`members` lists one row per `member_finish`, in record order:
+`{name, attempt, verdict, rc, queued_at, started_at, ended_at}`, times in
+epoch seconds, `null` when unknown.
 
-`members` lists one row per attempt:
-`{kind: "member", name, phase: pool|serial|retry, queued_at, started_at,
-ended_at, rc}`. `queued_at` is set on pool attempts only and marks the moment
-before the slot wait. The serial-phase wall is
-`phases.serial.ended_at − phases.serial.began_at`.
+- `queued_at` is set only on a pool member's attempt 1, at the moment before
+  its slot wait.
+- A retried member's row times its retry (attempt 2).
+- A member the subset branch skipped has attempt 0, verdict `SKIP` and every
+  time `null`.
+
+The serial-phase wall is `phases.serial.ended_at − phases.serial.began_at`.
 
 ### `lane_seed` block and the `reify.lane-seed/1` stamp
 
@@ -293,8 +303,12 @@ anything in it.
 - **Node lane:** it runs in the background between `gui_node_launch` and
   `gui_node_join`, so `join.ended_at − launch.began_at` is an upper bound on
   the vitest block, not its wall.
-- **Non-pool `run_all.sh` paths** (`host-infra`, `member-subset`,
-  `legacy-serial`) write a summary but no member timing.
+- **A retried member's first attempt** has only its `member_start` event
+  record. Its `members` row times the retry.
+- **An interrupted `run_all.sh`** (TERM, or the worktree-gone exit) writes no
+  `phase_finish` for the phase in flight and no `member_finish` for a member
+  whose verdict was not yet recorded (on the pool branch, every member until
+  Phase 3), so neither appears in the block.
 - **A run killed with SIGKILL** (or any kill that skips the traps) leaves no
   record.
 - **Fingerprint scan scope:** only `target/debug` and `target/release`;
@@ -307,8 +321,9 @@ anything in it.
 These sizes are estimates.
 
 - **Merge-gate record: about 50–60 KB.** The merge plan has 22 entries, 7 of
-  them cargo-bearing, giving 14 sccache objects of about 1.2 KB each. About
-  200 `run_all` member rows add about 150 B each.
+  them cargo-bearing, giving 14 sccache objects of about 1.2 KB each. The
+  `run_all` block holds one row per member, about 200 of them at about
+  170 B each.
 - **Task-scope record: about 5–20 KB.**
 - **At the study's volumes** (24–51 acquires/day, a few verifies each, plus
   merge gates), that is a few MB/day, or roughly 100–150 MB per 30 days.
@@ -338,7 +353,7 @@ python3 -c 'import json,sys,statistics as st; N=[s["nextest"] for r in map(json.
 **E1: infra pool serial-phase wall and the three slowest members per gate:**
 
 ```bash
-python3 -c 'import json,sys; [print(r["run_id"], round(p["serial"]["ended_at"]-p["serial"]["began_at"], 1), sorted((round(m["ended_at"]-m["started_at"], 1), m["name"]) for m in a["members"] if m["started_at"] and m["ended_at"])[-3:]) for r in map(json.loads, open(sys.argv[1])) if r["role"]=="merge" for s in r["steps"] for a in [s.get("run_all") or {}] for p in [(a.get("summary") or {}).get("phases")] if p and p["serial"]["began_at"] and p["serial"]["ended_at"]]' "$L"
+python3 -c 'import json,sys; [print(r["run_id"], round(q["ended_at"]-q["began_at"], 1), sorted((round(m["ended_at"]-m["started_at"], 1), m["name"]) for m in a.get("members") or [] if m.get("started_at") and m.get("ended_at"))[-3:]) for r in map(json.loads, open(sys.argv[1])) if r["role"]=="merge" for s in r["steps"] for a in [s.get("run_all") or {}] for q in [((a.get("summary") or {}).get("phases") or {}).get("serial") or {}] if q.get("began_at") and q.get("ended_at")]' "$L"
 ```
 
 **E1 / E12: sccache hit rate by concurrency bucket (ruling D10):**
