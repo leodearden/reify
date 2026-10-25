@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type};
+use reify_core::{
+    Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type, ValueCellId,
+};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 use crate::conformance::diag_at;
@@ -63,7 +65,7 @@ pub(crate) fn reconcile_fn_return(
         return;
     }
     let declared = &compiled.return_type;
-    let Some(produced) = judged_body_type(&fn_def.name, compiled) else {
+    let Some(produced) = judged_body_type(compiled) else {
         return;
     };
     let body_span = body.result_expr.span;
@@ -189,12 +191,10 @@ fn annotation_is_reconciled(declared: &Type) -> bool {
 /// A bare generic static type is trusted only when the body hands back an input
 /// of that type unchanged: arithmetic on a type parameter keeps the parameter's
 /// type whatever the true result (`x * x` is T², `a / b` is dimensionless).
-/// `scope_entity` is the fn's name, which both fn compile paths build the body
-/// scope under; nested binders mint other entities, so they never alias a param.
-fn judged_body_type(scope_entity: &str, compiled: &CompiledFunction) -> Option<Type> {
+fn judged_body_type(compiled: &CompiledFunction) -> Option<Type> {
     let static_type = &compiled.body.result_expr.result_type;
     if is_bare_generic(static_type) {
-        exact_body_type(scope_entity, compiled)
+        exact_body_type(compiled)
     } else {
         Some(static_type.clone())
     }
@@ -207,55 +207,57 @@ fn is_bare_generic(ty: &Type) -> bool {
     )
 }
 
-/// Each name in scope that is exactly one of the fn's inputs (a param, or a let
-/// that returns one unchanged), with that input's type. Any other name is absent.
-type ExactBindings<'a> = HashMap<&'a str, Type>;
+/// The id a reference in the body to the fn's param or let `name` carries.
+///
+/// Both fn compile paths build the body scope under the fn's own name, which is
+/// `compiled.name`; #8239 will hand the reconciler the scope's entity instead of
+/// assuming it. A nested binder (match arm, lambda, quantifier) mints another
+/// entity, so a reference to one never aliases a param of the same name.
+fn binding_id(compiled: &CompiledFunction, name: &str) -> ValueCellId {
+    ValueCellId::new(&compiled.name, name)
+}
+
+/// The fn's inputs a body can hand back unchanged (a param, or a let that returns
+/// one unchanged), keyed by the id a reference to each carries, with its type.
+type ExactBindings = HashMap<ValueCellId, Type>;
 
 /// The type of the input a body hands back unchanged, if it does.
 ///
 /// Lets are folded in order, so a let that shadows a param (or an earlier let)
 /// replaces its binding, and drops it when the let is not itself exact.
-fn exact_body_type(scope_entity: &str, compiled: &CompiledFunction) -> Option<Type> {
-    let mut bindings: ExactBindings<'_> = compiled
+fn exact_body_type(compiled: &CompiledFunction) -> Option<Type> {
+    let mut bindings: ExactBindings = compiled
         .params
         .iter()
-        .map(|(name, ty)| (name.as_str(), ty.clone()))
+        .map(|(name, ty)| (binding_id(compiled, name), ty.clone()))
         .collect();
     for (name, value) in &compiled.body.let_bindings {
-        match exact_type(value, scope_entity, &bindings) {
+        let id = binding_id(compiled, name);
+        match exact_type(value, &bindings) {
             Some(ty) => {
-                bindings.insert(name.as_str(), ty);
+                bindings.insert(id, ty);
             }
             None => {
-                bindings.remove(name.as_str());
+                bindings.remove(&id);
             }
         }
     }
-    exact_type(&compiled.body.result_expr, scope_entity, &bindings)
+    exact_type(&compiled.body.result_expr, &bindings)
 }
 
 /// The type of the input `expr` evaluates to unchanged: a param or let
 /// reference, or a conditional or match whose every branch is one and all agree.
-fn exact_type(
-    expr: &CompiledExpr,
-    scope_entity: &str,
-    bindings: &ExactBindings<'_>,
-) -> Option<Type> {
+fn exact_type(expr: &CompiledExpr, bindings: &ExactBindings) -> Option<Type> {
     match &expr.kind {
-        CompiledExprKind::ValueRef(id) if id.entity == scope_entity => {
-            bindings.get(id.member.as_str()).cloned()
-        }
+        CompiledExprKind::ValueRef(id) => bindings.get(id).cloned(),
         CompiledExprKind::Conditional {
             then_branch,
             else_branch,
             ..
-        } => agreed(
-            [then_branch, else_branch].map(|branch| exact_type(branch, scope_entity, bindings)),
-        ),
-        CompiledExprKind::Match { arms, .. } => agreed(
-            arms.iter()
-                .map(|arm| exact_type(&arm.body, scope_entity, bindings)),
-        ),
+        } => agreed([then_branch, else_branch].map(|branch| exact_type(branch, bindings))),
+        CompiledExprKind::Match { arms, .. } => {
+            agreed(arms.iter().map(|arm| exact_type(&arm.body, bindings)))
+        }
         _ => None,
     }
 }
