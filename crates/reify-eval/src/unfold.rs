@@ -1353,9 +1353,11 @@ fn elaborate_child_params_only<'f>(
     diagnostics: &mut Vec<Diagnostic>,
     optimized_names: &OptimizedNameIndex<'f>,
 ) -> ValueMap {
-    let mut child_values = ValueMap::new();
-    // What defaults are evaluated against: `child_values` plus the scratch lets.
+    // What defaults are evaluated against: the params so far plus the scratch
+    // lets. The scratch lets are removed before return, so the caller gets
+    // params only and phase 2 stays the sole committer of every let.
     let mut scope = ValueMap::new();
+    let mut scratch_lets: Vec<&ValueCellId> = Vec::new();
     // runtime_sink is required by `cell_eval_ctx`; its contents are
     // discarded rather than surfaced — pre-migration this path never surfaced
     // eval-time diagnostics, and the `diagnostics` param added by the #6662
@@ -1380,6 +1382,7 @@ fn elaborate_child_params_only<'f>(
                     &runtime_sink,
                 );
                 scope.insert(key.clone(), v);
+                scratch_lets.push(key);
                 continue;
             }
         };
@@ -1400,11 +1403,10 @@ fn elaborate_child_params_only<'f>(
             .map(|(_, det)| *det == DeterminacyState::Auto)
             .unwrap_or(false)
         {
-            // Still populate child_values from the snapshot so that
-            // downstream let-bindings that reference this member see a
-            // consistent value (Undef for now; the solver will resolve it).
+            // Still populate the scope from the snapshot so that downstream
+            // cells that reference this member see a consistent value (Undef
+            // for now; the solver will resolve it).
             if let Some((val, _)) = snapshot.values.get(&scoped_id) {
-                child_values.insert(cell.id.clone(), val.clone());
                 scope.insert(cell.id.clone(), val.clone());
             }
             continue;
@@ -1511,7 +1513,6 @@ fn elaborate_child_params_only<'f>(
             Value::Undef
         };
 
-        child_values.insert(cell.id.clone(), val.clone());
         scope.insert(cell.id.clone(), val.clone());
 
         // TraceSource::GuardedGroup: the PRD (§0, §8) treats this
@@ -1535,7 +1536,10 @@ fn elaborate_child_params_only<'f>(
         );
     }
 
-    child_values
+    for key in scratch_lets {
+        scope.remove(key);
+    }
+    scope
 }
 
 /// Phase 2: Evaluate and store the let-binding cells for a child instance.

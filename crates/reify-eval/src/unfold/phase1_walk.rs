@@ -66,10 +66,16 @@ pub(super) fn phase1_walk<'t>(
         .collect();
 
     // This runs for EVERY instance, collection elements included, so the cheap
-    // exits come first: fewer than two cells admit no edge and need no
-    // expression walk, and no param reading a sibling means declaration order
-    // already is a dependency order. Only the remaining path pays for
-    // `topological_sort`.
+    // exits come first: with no param there is nothing to walk, fewer than two
+    // cells admit no edge and need no expression walk, and no param reading a
+    // sibling means declaration order already is a dependency order. Only the
+    // remaining path pays for `topological_sort`.
+    let has_param = cells
+        .iter()
+        .any(|step| matches!(step, Phase1Step::Param(_)));
+    if !has_param {
+        return Vec::new();
+    }
     if cells.len() < 2 {
         return params_only(cells);
     }
@@ -137,14 +143,18 @@ pub(super) fn phase1_walk<'t>(
     let node_traces: HashMap<NodeId, DependencyTrace> =
         nodes.iter().cloned().zip(walked_traces).collect();
 
+    // Each node id's FIRST walked slot. `topological_sort` yields a node id at
+    // most once, so one sorted node consumes one declaration slot.
+    let mut slot_of: HashMap<&NodeId, usize> = HashMap::with_capacity(nodes.len());
+    for (w, nid) in nodes.iter().enumerate() {
+        slot_of.entry(nid).or_insert(w);
+    }
+
     let sorted = topological_sort(&node_ids, &node_traces);
     let mut placed = vec![false; walked.len()];
     let mut ordered: Vec<Phase1Step<'t>> = Vec::with_capacity(walked.len());
     for nid in &sorted {
-        // First not-yet-placed cell carrying this node id, so one sorted node
-        // consumes one declaration slot.
-        let next = (0..walked.len()).find(|w| !placed[*w] && &nodes[*w] == nid);
-        if let Some(w) = next {
+        if let Some(&w) = slot_of.get(nid) {
             placed[w] = true;
             ordered.push(cells[walked[w]]);
         }
