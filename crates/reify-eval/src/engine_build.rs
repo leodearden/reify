@@ -12297,7 +12297,6 @@ impl Engine {
                 &moved,
                 &state.reverse_index,
                 &state.snapshot.graph,
-                &state.trace_map,
             )
         };
 

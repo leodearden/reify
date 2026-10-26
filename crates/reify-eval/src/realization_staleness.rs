@@ -163,23 +163,22 @@ pub(crate) struct HashGateVerdict {
 /// realizations and those whose own input-cone fold `moved`.
 ///
 /// Staleness is the edit seam's: `moved` seeds the realization dirty cone. A
-/// stale demanded realization must run along with its transitive `GeomRef::Sub`
-/// producers, which it can only resolve from this pass's steps; every other
-/// demanded realization is exempt. Sole caller:
-/// `Engine::refresh_and_gate_demanded_realizations`.
+/// stale demanded realization must run along with every realization each of
+/// its `GeomRef::Sub` operands may name, transitively, since it can only
+/// resolve an operand from this pass's steps; every other demanded realization
+/// is exempt. Sole caller: `Engine::refresh_and_gate_demanded_realizations`.
 pub(crate) fn hash_gate_verdict(
     demanded: &HashSet<RealizationNodeId>,
     moved: &HashSet<RealizationNodeId>,
     index: &crate::deps::ReverseDependencyIndex,
     graph: &EvaluationGraph,
-    traces: &HashMap<NodeId, crate::deps::DependencyTrace>,
 ) -> HashGateVerdict {
     let seeds = realization_cone_seeds(moved, false, graph);
     let cone =
         crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), &seeds, index, graph);
     let stale: HashSet<RealizationNodeId> = realizations_in(&seeds, &cone).cloned().collect();
     let reruns: HashSet<RealizationNodeId> = stale.intersection(demanded).cloned().collect();
-    let must_run = with_sub_producers(&reruns, traces);
+    let must_run = with_sub_producers(&reruns, graph);
     HashGateVerdict {
         exempt: demanded.difference(&must_run).cloned().collect(),
         evict_entities: stale_realization_entities(&seeds, [], &cone),
@@ -187,22 +186,24 @@ pub(crate) fn hash_gate_verdict(
     }
 }
 
-/// `roots` together with every realization they transitively read through a
-/// resolved `GeomRef::Sub` operand.
+/// `roots` together with every realization each of their `GeomRef::Sub`
+/// operands may name, transitively.
 fn with_sub_producers(
     roots: &HashSet<RealizationNodeId>,
-    traces: &HashMap<NodeId, crate::deps::DependencyTrace>,
+    graph: &EvaluationGraph,
 ) -> HashSet<RealizationNodeId> {
+    let candidates = SubOperandCandidates::of(graph);
     let mut visited = roots.clone();
     let mut worklist: Vec<RealizationNodeId> = roots.iter().cloned().collect();
     while let Some(rid) = worklist.pop() {
-        let producers = traces
-            .get(&NodeId::Realization(rid))
-            .map(|trace| trace.realization_reads.as_slice())
-            .unwrap_or_default();
-        for producer in producers {
-            if visited.insert(producer.clone()) {
-                worklist.push(producer.clone());
+        let Some(node) = graph.realizations.get(&rid) else {
+            continue;
+        };
+        for operand in sub_operands(node) {
+            for producer in candidates.named_by(operand, &rid.entity) {
+                if visited.insert(producer.clone()) {
+                    worklist.push(producer.clone());
+                }
             }
         }
     }
@@ -223,47 +224,66 @@ fn realizations_in<'a>(
 }
 
 /// The realizations owning a `GeomRef::Sub` operand that the reverse
-/// dependency index cannot resolve, and so never links to its producer.
-///
-/// This mirrors the index's resolver (`deps::resolve_geom_sub_edge`), which
-/// resolves an operand by geometry member name alone. A dotted
-/// `"<sub>.<member>"` operand resolves only when exactly one realization of
-/// ANOTHER entity exports `<member>`; a bare sibling operand only when exactly
-/// one realization of the consumer's OWN entity does. Two entities exporting
-/// `body`, or no exporter at all, leave the operand without an edge.
-/// `the_dropped_operand_rule_agrees_with_the_reverse_index` pins this mirror to
-/// the index itself.
+/// dependency index cannot resolve, and so never links to its producer: an
+/// operand that does not have exactly one [candidate](SubOperandCandidates).
+/// `the_dropped_operand_rule_agrees_with_the_reverse_index` pins this to the
+/// index itself.
 fn sub_consumers_the_reverse_index_drops(graph: &EvaluationGraph) -> HashSet<RealizationNodeId> {
-    let mut exporters: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (rid, node) in graph.realizations.iter() {
-        if let Some(cell) = &node.geometry_cell {
-            exporters
-                .entry(cell.member.as_str())
-                .or_default()
-                .push(rid.entity.as_str());
-        }
-    }
-    let resolves = |operand: &str, consumer: &str| {
-        let (member, own_entity) = match operand.split_once('.') {
-            Some((_, member)) => (member, false),
-            None => (operand, true),
-        };
-        exporters.get(member).is_some_and(|entities| {
-            let candidates = entities.iter().filter(|e| (**e == consumer) == own_entity);
-            candidates.count() == 1
-        })
-    };
+    let candidates = SubOperandCandidates::of(graph);
     graph
         .realizations
         .iter()
         .filter(|(rid, node)| {
-            node.operations
-                .iter()
-                .flat_map(crate::engine_build::sub_refs_in_op)
-                .any(|operand| !resolves(operand, &rid.entity))
+            sub_operands(node).any(|operand| candidates.named_by(operand, &rid.entity).count() != 1)
         })
         .map(|(rid, _)| rid.clone())
         .collect()
+}
+
+fn sub_operands(node: &RealizationNodeData) -> impl Iterator<Item = &str> {
+    node.operations
+        .iter()
+        .flat_map(crate::engine_build::sub_refs_in_op)
+}
+
+/// Every realization a `GeomRef::Sub` operand may name: the reverse index's
+/// resolution rule (`deps::resolve_geom_sub_edge`) without its uniqueness
+/// requirement. Operands resolve by geometry member name alone. A dotted
+/// `"<sub>.<member>"` operand may name any realization of ANOTHER entity
+/// exporting `<member>`; a bare sibling operand, any realization of the
+/// consumer's OWN entity exporting it. The index links an operand exactly when
+/// it has one candidate.
+struct SubOperandCandidates<'g> {
+    exporters: HashMap<&'g str, Vec<&'g RealizationNodeId>>,
+}
+
+impl<'g> SubOperandCandidates<'g> {
+    fn of(graph: &'g EvaluationGraph) -> Self {
+        let mut exporters: HashMap<&str, Vec<&RealizationNodeId>> = HashMap::new();
+        for (rid, node) in graph.realizations.iter() {
+            if let Some(cell) = &node.geometry_cell {
+                exporters.entry(cell.member.as_str()).or_default().push(rid);
+            }
+        }
+        Self { exporters }
+    }
+
+    fn named_by<'a>(
+        &'a self,
+        operand: &'a str,
+        consumer_entity: &'a str,
+    ) -> impl Iterator<Item = &'g RealizationNodeId> + 'a {
+        let (member, own_entity) = match operand.split_once('.') {
+            Some((_, member)) => (member, false),
+            None => (operand, true),
+        };
+        self.exporters
+            .get(member)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |rid| (rid.entity == consumer_entity) == own_entity)
+    }
 }
 
 #[cfg(test)]
@@ -474,15 +494,14 @@ mod tests {
         );
     }
 
-    /// Runs the gate verdict over `graph` with its own reverse index and trace map.
+    /// Runs the gate verdict over `graph` with its own reverse index.
     fn verdict_over(
         graph: &EvaluationGraph,
         demanded: &HashSet<RealizationNodeId>,
         moved: &HashSet<RealizationNodeId>,
     ) -> super::HashGateVerdict {
         let index = crate::deps::ReverseDependencyIndex::build_from_graph(graph);
-        let traces = crate::deps::build_trace_map_and_fields(graph, &[]);
-        super::hash_gate_verdict(demanded, moved, &index, graph, &traces)
+        super::hash_gate_verdict(demanded, moved, &index, graph)
     }
 
     /// A sibling `GeomRef::Sub` consumer's own fold never moves with its producer's.

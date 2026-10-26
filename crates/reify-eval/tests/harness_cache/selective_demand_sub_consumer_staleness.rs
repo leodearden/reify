@@ -75,7 +75,7 @@ pub structure Assy {
     operand: "a.body",
 };
 
-fn decl<'m>(compiled: &'m CompiledModule, (entity, name): Body) -> &'m RealizationDecl {
+fn decl(compiled: &CompiledModule, (entity, name): Body) -> &RealizationDecl {
     compiled
         .templates
         .iter()
