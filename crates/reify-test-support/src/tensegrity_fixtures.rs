@@ -29,9 +29,10 @@
 //! Copies elsewhere in the workspace are still being collapsed onto this module.
 //! Each remaining one is inventoried by exact path in the task that closes it —
 //! #7721 for the `#[cfg(test)]`-internal triplex copies, #8106 for the tent
-//! mirror in the `harness_fea_solver_e2e` T1a suite, and #8152 for the triplex
+//! mirror in the `harness_fea_solver_e2e` T1a suite, #8152 for the triplex
 //! member-topology, group-id, guess-table and closed-form-q copies in
-//! reify-solver-elastic’s `tests/`.
+//! reify-solver-elastic’s `tests/`, and #8153 for that directory’s zero-twist
+//! prism in `common/mod.rs` and the ε suite’s catenoid-tube builder.
 //!
 //! Two axes on which the superseded triplex copies genuinely differed are preserved
 //! rather than normalised away, because both are load-bearing inputs to a solve:
