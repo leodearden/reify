@@ -37,8 +37,9 @@ fn errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
 }
 
 /// Asserts the module carries exactly one one-sided refusal, an Error naming
-/// `clause`, anchored on a non-empty primary label.
-fn assert_fires(case: &str, diagnostics: &[Diagnostic], clause: &str) {
+/// `clause` and the template whose constraints make up the auto's solve,
+/// anchored on a non-empty primary label.
+fn assert_fires(case: &str, diagnostics: &[Diagnostic], clause: &str, solve_scope: &str) {
     let refusals = non_unique(diagnostics);
     assert_eq!(
         refusals.len(),
@@ -54,6 +55,12 @@ fn assert_fires(case: &str, diagnostics: &[Diagnostic], clause: &str) {
     assert!(
         refusal.message.contains(NOT_DETERMINED) && refusal.message.contains(clause),
         "{case}: message must carry {NOT_DETERMINED:?} and {clause:?}; got {:?}",
+        refusal.message
+    );
+    let scope = format!("Only the constraints declared in `{solve_scope}` take part in its solve");
+    assert!(
+        refusal.message.contains(&scope),
+        "{case}: message must name the solve scope {scope:?}; got {:?}",
         refusal.message
     );
     let primary = refusal
@@ -88,6 +95,7 @@ fn b4_one_sided_fixture_is_refused_at_compile_time() {
         "B4 driver_parity_one_sided_auto.ri",
         &compiled.diagnostics,
         "no constraint bounds `OneSided.rod.length` above",
+        "OneSided",
     );
 }
 
@@ -115,8 +123,8 @@ fn f2_one_sided_auto_free_fixture_compiles_clean() {
 
 // ── Inline rows, compiled WITHOUT the prelude ───────────────────────────────
 
-/// (name, source, missing side) rows the pass must refuse.
-const FIRES: &[(&str, &str, &str)] = &[
+/// (name, source, missing-side clause, solve scope) rows the pass must refuse.
+const FIRES: &[(&str, &str, &str, &str)] = &[
     (
         "upper-only bound",
         "structure T {
@@ -124,6 +132,7 @@ const FIRES: &[(&str, &str, &str)] = &[
             constraint x <= 12mm
         }",
         "no constraint bounds `T.x` below",
+        "T",
     ),
     (
         "private template, lower-only bound",
@@ -132,6 +141,7 @@ const FIRES: &[(&str, &str, &str)] = &[
             constraint x >= 8mm
         }",
         "no constraint bounds `T.x` above",
+        "T",
     ),
     (
         "pub template with its own auto (not a sub override)",
@@ -140,6 +150,7 @@ const FIRES: &[(&str, &str, &str)] = &[
             constraint x >= 8mm
         }",
         "no constraint bounds `T.x` above",
+        "T",
     ),
     (
         "far operand is a non-auto let",
@@ -149,6 +160,7 @@ const FIRES: &[(&str, &str, &str)] = &[
             constraint x >= lo
         }",
         "no constraint bounds `T.x` above",
+        "T",
     ),
     (
         "objective-less container does not rescue its child",
@@ -160,6 +172,35 @@ const FIRES: &[(&str, &str, &str)] = &[
             sub t = T()
         }",
         "no constraint bounds `T.x` above",
+        "T",
+    ),
+    // An auto's solve is its owning template's constraints alone, as in eval
+    // today, so a bound written in another template does not complete it.
+    (
+        "a container's bound is outside its child's solve",
+        "structure T {
+            param x : Length = auto
+            constraint x >= 8mm
+        }
+        structure A {
+            sub t = T()
+            constraint t.x <= 12mm
+        }",
+        "no constraint bounds `T.x` above",
+        "T",
+    ),
+    (
+        "a child template's bound is outside a sub-override auto's solve",
+        "structure Rod {
+            param length : Length = 5mm
+            constraint length <= 12mm
+        }
+        structure P {
+            sub rod = Rod(length: auto)
+            constraint self.rod.length >= 8mm
+        }",
+        "no constraint bounds `P.rod.length` above",
+        "P",
     ),
 ];
 
@@ -293,9 +334,9 @@ const SILENT: &[(&str, &str)] = &[
 
 #[test]
 fn one_sided_strict_autos_are_refused() {
-    for (name, source, clause) in FIRES {
+    for (name, source, clause, solve_scope) in FIRES {
         let compiled = compile_source(source);
-        assert_fires(name, &compiled.diagnostics, clause);
+        assert_fires(name, &compiled.diagnostics, clause, solve_scope);
     }
 }
 

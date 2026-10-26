@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::dependent_reads::{CellReads, DependentCellReads};
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
+use reify_core::diagnostics::{BoundSide, UnboundedSide, unbounded_auto_clause};
 use reify_core::{
     ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash,
 };
@@ -2266,26 +2267,34 @@ impl DefaultBoundedParam {
     }
 
     /// The user-facing clause naming this param, each side no constraint
-    /// bounded, and the solver-internal bound used there.
+    /// bounded, and the solver-internal bound used there, in the wording the
+    /// compile-time arm shares ([`unbounded_auto_clause`]).
     ///
-    /// ONE rendering path for one, two or both sides — the invariant above makes
-    /// `sides` non-empty, so there is no empty-list case to special-case. Each
-    /// bound renders through `Value`'s `Display`, the same `Value::Scalar` shape
+    /// The invariant above makes the side list non-empty. Each bound renders
+    /// through `Value`'s `Display`, the same `Value::Scalar` shape
     /// [`build_solved_values`] reports a resolved value in, so the unit label is
     /// the one the user sees on every other value.
     fn clause(&self) -> String {
-        let quantity = |si_value: f64| Value::Scalar {
-            si_value,
-            dimension: self.dimension,
+        let quantity = |si_value: f64| {
+            Value::Scalar {
+                si_value,
+                dimension: self.dimension,
+            }
+            .to_string()
         };
-        let mut sides = Vec::with_capacity(2);
-        if let Some(lo) = self.default_lo {
-            sides.push(format!("below (solver default {})", quantity(lo)));
-        }
-        if let Some(hi) = self.default_hi {
-            sides.push(format!("above (solver default {})", quantity(hi)));
-        }
-        format!("no constraint bounds `{}` {}", self.id, sides.join(" or "))
+        let unbounded: Vec<UnboundedSide> = [
+            (BoundSide::Below, self.default_lo),
+            (BoundSide::Above, self.default_hi),
+        ]
+        .into_iter()
+        .filter_map(|(side, default)| {
+            default.map(|bound| UnboundedSide {
+                side,
+                solver_default: Some(quantity(bound)),
+            })
+        })
+        .collect();
+        unbounded_auto_clause(&self.id, &unbounded)
     }
 }
 

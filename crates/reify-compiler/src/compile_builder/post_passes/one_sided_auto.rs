@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use reify_core::diagnostics::{BoundSide, UnboundedSide, unbounded_auto_clause};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, UnOp};
 
@@ -34,35 +35,12 @@ use super::template_graph::{imported_template_names, may_contain, names_same_str
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::types::{CompiledPurpose, TopologyTemplate, ValueCellDecl, ValueCellKind};
 
-/// Which side of a strict auto the module's constraints bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Side {
-    Below,
-    Above,
-}
-
-impl Side {
-    fn opposite(self) -> Self {
-        match self {
-            Side::Below => Side::Above,
-            Side::Above => Side::Below,
-        }
-    }
-
-    fn word(self) -> &'static str {
-        match self {
-            Side::Below => "below",
-            Side::Above => "above",
-        }
-    }
-}
-
 /// A proof that strict auto `auto` is bounded on `bounded` only.
 #[derive(Debug, Clone)]
 struct OneSidedAutoFinding {
     template_name: String,
     auto: ValueCellId,
-    bounded: Side,
+    bounded: BoundSide,
     decl_span: SourceSpan,
     bounding_spans: Vec<SourceSpan>,
 }
@@ -185,13 +163,13 @@ impl<'t> TemplateCells<'t> {
     /// The side `conjunct` bounds `auto` on, when it has the recognised shape
     /// `auto op e` / `e op auto` with `op` an inequality and `e` reaching no
     /// auto.
-    fn bounded_side(&self, conjunct: &CompiledExpr, auto: &ValueCellId) -> Option<Side> {
+    fn bounded_side(&self, conjunct: &CompiledExpr, auto: &ValueCellId) -> Option<BoundSide> {
         let CompiledExprKind::BinOp { op, left, right } = &conjunct.kind else {
             return None;
         };
         let auto_on_left = match op {
-            BinOp::Ge | BinOp::Gt => Side::Below,
-            BinOp::Le | BinOp::Lt => Side::Above,
+            BinOp::Ge | BinOp::Gt => BoundSide::Below,
+            BinOp::Le | BinOp::Lt => BoundSide::Above,
             _ => return None,
         };
         let is_auto =
@@ -266,7 +244,7 @@ fn template_findings(template: &TopologyTemplate) -> Vec<OneSidedAutoFinding> {
     judged
         .into_iter()
         .filter_map(|decl| {
-            let mut sides: Vec<Side> = Vec::new();
+            let mut sides: Vec<BoundSide> = Vec::new();
             let mut bounding_spans = Vec::new();
             for (leaf, span, autos) in &conjuncts {
                 if !autos.contains(&decl.id) {
@@ -312,15 +290,24 @@ fn one_sided_auto_findings(
         .collect()
 }
 
+/// The refusal names the solve scope: a bound written in a containing or child
+/// template reads as if it should count, but takes no part in this auto's solve.
 fn render(finding: &OneSidedAutoFinding) -> Diagnostic {
-    let missing = finding.bounded.opposite().word();
-    let bounded = finding.bounded.word();
+    let missing = finding.bounded.opposite();
+    let bounded = finding.bounded;
+    let clause = unbounded_auto_clause(
+        &finding.auto,
+        &[UnboundedSide {
+            side: missing,
+            solver_default: None,
+        }],
+    );
     let diagnostic = Diagnostic::error(format!(
-        "strict auto parameter resolution is not uniquely determined: no constraint \
-         bounds `{auto}` {missing}. It is bounded only {bounded}, so a solve could only \
-         return the edge of the solver's internal default domain — add the missing \
-         bound, give `{template}` an objective, or declare it `auto(free)`",
-        auto = finding.auto,
+        "strict auto parameter resolution is not uniquely determined: {clause}. Only \
+         the constraints declared in `{template}` take part in its solve, and they bound \
+         it only {bounded}, so a solve could only return the edge of the solver's \
+         internal default domain — add the missing bound in `{template}`, give \
+         `{template}` an objective, or declare it `auto(free)`",
         template = finding.template_name,
     ))
     .with_code(DiagnosticCode::ConstraintNonUnique)

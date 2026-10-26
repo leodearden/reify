@@ -1,5 +1,8 @@
 use std::fmt;
 
+mod unbounded_auto;
+pub use unbounded_auto::{BoundSide, UnboundedSide, unbounded_auto_clause};
+
 /// A byte-offset span in source code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SourceSpan {
@@ -292,8 +295,8 @@ pub enum DiagnosticCode {
     /// - the same file's per-param default-bound evidence path
     ///   (`Determinedness::DefaultBoundsDetermined`, rendered by `finalise_uniqueness`), reached
     ///   from both the γ `cost_robustness_tradeoff` bracketing branch and the
-    ///   `centrality_corner_picks` screen. Its message adds one clause per param, of the
-    ///   form: no constraint bounds `X` above (or below).
+    ///   `centrality_corner_picks` screen. Its message adds one clause per param, rendered by
+    ///   [`unbounded_auto_clause`].
     /// - the compile-time static arm,
     ///   `crates/reify-compiler/src/compile_builder/post_passes/one_sided_auto.rs::phase_one_sided_auto_check`
     ///   (Severity::Error), with the same per-param clause.
