@@ -13,11 +13,12 @@
 //! 3. Every fence tagged EXACTLY ```` ```reify-invalid ```` genuinely FAILS to
 //!    compile. The inverse of 1, over the one exempt tag that makes a
 //!    falsifiable claim.
-//! 4. Every `chunks/*.md` file on disk is reachable through the
-//!    `reify_language_reference` MCP tool — i.e. its exact content is what
-//!    `get_chunk` serves for some topic `available_topics()` enumerates. The
-//!    gate reads that through `reify_mcp::tools::language_chunks`'s public
-//!    registry, never by parsing `language_chunks.rs`.
+//! 4. Every `chunks/<stem>.md` file on disk is reachable through the
+//!    `reify_language_reference` MCP tool — i.e. `available_topics()`
+//!    enumerates `<stem>` and `get_chunk("<stem>")` serves exactly the file's
+//!    content. The gate reads that through
+//!    `reify_mcp::tools::language_chunks`'s public registry, never by parsing
+//!    `language_chunks.rs`.
 //!
 //! # Tag vocabulary
 //!
@@ -332,37 +333,50 @@ fn check_markdown(path: &str, content: &str, check: FenceCheck) -> Vec<String> {
 // Check 4 — every chunk is reachable through the MCP tool
 // ---------------------------------------------------------------------------
 
-/// Every on-disk chunk whose exact content is not among the `served` chunks,
-/// one message each naming the file.
+/// Every on-disk chunk that is not served, under the topic named after its
+/// stem, with exactly its content — one message each naming the file.
 ///
-/// Reachability is decided by CONTENT, through the same public registry calls
-/// the `reify_language_reference` tool makes, so a file is reachable exactly
-/// when the tool can hand its bytes to a caller. Equality is exact: a served
+/// `served` is `(topic, chunk)` pairs read through the same public registry
+/// calls the `reify_language_reference` tool makes, so `<stem>.md` is reachable
+/// exactly when asking the tool for topic `<stem>` hands back its bytes. Keying
+/// on the stem as well as the content means a byte-identical copy of a served
+/// chunk under another name is still reported. Equality is exact: a served
 /// chunk that merely contains the file, or a stale copy of it, is not the file.
 /// Each file is checked against the registry rather than the other way round,
 /// so an empty registry reports the whole corpus instead of nothing.
-fn reachability_violations(on_disk: &[(String, String)], served: &[&str]) -> Vec<String> {
+fn reachability_violations(on_disk: &[(String, String)], served: &[(&str, &str)]) -> Vec<String> {
     on_disk
         .iter()
-        .filter(|(_, content)| !served.contains(&content.as_str()))
+        .filter(|(stem, content)| !served.contains(&(stem.as_str(), content.as_str())))
         .map(|(stem, _)| {
+            let row = format!("(\"{stem}\", include_str!(\"chunks/{stem}.md\"))");
+            let remedy = if served.iter().any(|(topic, _)| *topic == stem.as_str()) {
+                format!(
+                    "topic `{stem}` serves different bytes — its \
+                     `reify_mcp::tools::language_chunks::CHUNKS` row must be `{row}`"
+                )
+            } else {
+                format!(
+                    "no `{stem}` topic in `available_topics()` — add a `{row}` row \
+                     to `reify_mcp::tools::language_chunks::CHUNKS`"
+                )
+            };
             format!(
-                "{} is on disk but UNREACHABLE: no topic in `available_topics()` \
-                 serves its content, so `reify_language_reference` hands it to \
-                 nobody — add a `(\"{stem}\", include_str!(\"chunks/{stem}.md\"))` \
-                 row to `reify_mcp::tools::language_chunks::CHUNKS`",
+                "{} is on disk but UNREACHABLE, so `reify_language_reference` hands \
+                 it to nobody: {remedy}",
                 chunk_label(stem)
             )
         })
         .collect()
 }
 
-/// Every chunk the `reify_language_reference` tool can serve: what `get_chunk`
-/// returns for each topic `available_topics()` enumerates.
-fn served_chunks() -> Vec<&'static str> {
+/// Every `(topic, chunk)` pair the `reify_language_reference` tool can serve:
+/// each topic `available_topics()` enumerates, with what `get_chunk` returns
+/// for it.
+fn served_chunks() -> Vec<(&'static str, &'static str)> {
     available_topics()
         .iter()
-        .filter_map(|topic| get_chunk(topic))
+        .filter_map(|topic| get_chunk(topic).map(|chunk| (*topic, chunk)))
         .collect()
 }
 
@@ -961,7 +975,8 @@ fn check_three_never_reports_a_fence_under_any_other_tag() {
 // Check 4 — every chunk is reachable through the MCP tool
 //
 // Hermetic: the fixtures below are a synthetic on-disk corpus of
-// (stem, content) pairs plus a synthetic served set. Nothing on disk is read.
+// (stem, content) pairs plus synthetic served (topic, chunk) pairs. Nothing on
+// disk is read.
 // ---------------------------------------------------------------------------
 
 /// A synthetic on-disk corpus, in the `(stem, markdown)` shape
@@ -980,7 +995,7 @@ fn on_disk(entries: &[(&str, &str)]) -> Vec<(String, String)> {
 fn a_chunk_file_whose_content_no_topic_serves_is_reported_naming_the_file() {
     let disk = on_disk(&[("syntax", "S"), ("units", "U"), ("ghost", "G")]);
 
-    let violations = reachability_violations(&disk, &["S", "U"]);
+    let violations = reachability_violations(&disk, &[("syntax", "S"), ("units", "U")]);
 
     assert_eq!(violations.len(), 1, "got {violations:#?}");
     assert!(
@@ -1001,11 +1016,48 @@ fn a_chunk_file_whose_content_no_topic_serves_is_reported_naming_the_file() {
 fn a_corpus_whose_every_file_is_served_is_clean() {
     let disk = on_disk(&[("syntax", "S"), ("units", "U")]);
 
-    let violations = reachability_violations(&disk, &["U", "S"]);
+    let violations = reachability_violations(&disk, &[("units", "U"), ("syntax", "S")]);
 
     assert!(
         violations.is_empty(),
         "a fully served corpus must be clean, got {violations:#?}"
+    );
+}
+
+/// A file is reachable only under the topic named after it. A byte-identical
+/// copy of a served chunk (a copy-then-edit in progress, a duplicate stub) has
+/// no topic of its own, so the tool hands it to nobody even though its bytes
+/// are served under another name.
+#[test]
+fn a_byte_identical_copy_of_a_served_chunk_is_unreachable_under_its_own_name() {
+    let disk = on_disk(&[("syntax", "S"), ("ghost", "S")]);
+
+    let violations = reachability_violations(&disk, &[("syntax", "S")]);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains(&chunk_label("ghost")),
+        "the unserved copy must be the one reported, got: {}",
+        violations[0]
+    );
+}
+
+/// A topic named after the file that serves OTHER bytes — a row whose
+/// `include_str!` points at the wrong file — leaves the file unreachable, and
+/// the remedy names the row it should be rather than asking for a new one.
+#[test]
+fn a_topic_named_after_the_file_serving_other_bytes_is_reported() {
+    let disk = on_disk(&[("syntax", "S"), ("units", "U")]);
+
+    let violations = reachability_violations(&disk, &[("syntax", "S"), ("units", "S")]);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains(&chunk_label("units"))
+            && violations[0].contains("serves different bytes")
+            && violations[0].contains(r#"include_str!("chunks/units.md")"#),
+        "the violation must name the file and the row it needs, got: {}",
+        violations[0]
     );
 }
 
@@ -1015,15 +1067,17 @@ fn a_corpus_whose_every_file_is_served_is_clean() {
 /// corpus clean while the file itself was served to nobody.
 #[test]
 fn reachability_is_exact_equality_not_containment() {
-    let contained =
-        reachability_violations(&on_disk(&[("types", "types")]), &["prototypes and types"]);
+    let contained = reachability_violations(
+        &on_disk(&[("types", "types")]),
+        &[("types", "prototypes and types")],
+    );
     assert_eq!(
         contained.len(),
         1,
         "`types` must NOT be satisfied by a served chunk containing it; got {contained:#?}"
     );
 
-    let trimmed = reachability_violations(&on_disk(&[("units", "U\n")]), &["U"]);
+    let trimmed = reachability_violations(&on_disk(&[("units", "U\n")]), &[("units", "U")]);
     assert_eq!(
         trimmed.len(),
         1,
@@ -1375,8 +1429,8 @@ fn every_chunk_is_reachable_through_the_mcp_tool() {
 
     report(
         "chunk files that are unreachable through `reify_language_reference`. A \
-         chunk whose exact bytes no enumerated topic serves ships in the repo to \
-         nobody, which is the drift a reader never sees",
+         chunk that no enumerated topic of its own name serves byte-for-byte \
+         ships in the repo to nobody, which is the drift a reader never sees",
         &reachability_violations(&on_disk, &served_chunks()),
     );
 }
