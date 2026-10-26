@@ -26,7 +26,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import verify_events  # noqa: E402  (imported after sys.path manipulation)
+from verify_events_lib import read_events  # noqa: E402
 from run_all_fixture import run_all_env, write_executable  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -154,10 +156,10 @@ class RunAllTimingTests(unittest.TestCase):
         for label, flags, manifest, knobs, _ in SERIAL_BRANCHES:
             channel = fx.root / f"channel-{label}.jsonl"
             result = fx.run(*flags, manifest=getattr(fx, manifest), channel=channel, **knobs)
-            cls.serial_runs[label] = (result, verify_events.read_events(channel))
+            cls.serial_runs[label] = (result, read_events(channel))
 
     def events(self):
-        return verify_events.read_events(self.channel)
+        return read_events(self.channel)
 
     def test_the_timed_pool_run_passes_with_the_flaky_retry(self):
         self.assertEqual(self.timed.returncode, 0, self.timed.stdout + self.timed.stderr)
@@ -210,7 +212,7 @@ class RunAllTimingTests(unittest.TestCase):
         channel_lines = sorted(self.channel.read_bytes().split(b"\n"))
         self.assertGreater(len(channel_lines), 1)
         self.assertEqual(step_lines, channel_lines)
-        step = verify_events.read_events(self.step_file)
+        step = read_events(self.step_file)
         self.assertEqual(step.skipped_lines, 0)
         self.assertEqual([r for r in step.records if "kind" in r], [])
 

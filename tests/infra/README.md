@@ -569,11 +569,12 @@ python3 -I tests/infra/verify_events.py wait PATH [--event E] [--where K=V ...] 
 
 `summary` prints `key=value` scalars, `query` prints matching records as JSON
 lines, and `wait` exits 0 once enough records match or 1 when the timeout
-passes. Imported, the module offers `read_events(path)` (a frozen `Events`
-with `records`, `skipped_lines` and `channel_present`), `select`, `summarize`
-and `wait_for`. It applies C3 rule 1: a line that is not a v1 JSON object (it
-fails `json.loads`, or its `v` is not the integer 1) is skipped and counted,
-and a file with no `run_start` is "channel absent".
+passes. Imported, `verify_events_lib` offers `read_events(path)` (a frozen
+`Events` with `records`, `skipped_lines` and `channel_present`), and
+`verify_events` offers `select`, `summarize` and `wait_for` over it. The
+parser applies C3 rule 1: a line that is not a v1 JSON object (it fails
+`json.loads`, or its `v` is not the integer 1) is skipped and counted, and a
+file with no `run_start` is "channel absent".
 
 ### Isolation (C4)
 

@@ -8,10 +8,10 @@ tests/infra/README.md "Verify event channel".
 
 Stdlib only, and safe under `python3 -I`: the one module it imports beyond
 the stdlib is the parser it shares with scripts/verify-ledger.py,
-scripts/verify_events_lib.py, by absolute path. It is an importable module
-(read_events, summarize, select, wait_for) and a CLI whose output is
-`key=value` scalars or JSON lines, so a bash caller reads scalars and never
-parses JSON:
+scripts/verify_events_lib.py (read_events, Events), by absolute path. Over
+those records it is an importable query module (summarize, select,
+wait_for) and a CLI whose output is `key=value` scalars or JSON lines, so a
+bash caller reads scalars and never parses JSON:
 
     verify_events.py summary PATH
     verify_events.py query PATH [--event E] [--where K=V ...] [--count]

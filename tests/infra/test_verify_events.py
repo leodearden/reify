@@ -3,8 +3,9 @@
 test_verify_events.py — the REIFY_VERIFY_EVENT_LOG verify event channel
 (PRD docs/prds/v0_6/run-all-runner-infra-harness.md §4, task 8685).
 
-ReaderTests drive tests/infra/verify_events.py, the stdlib reader and CLI,
-over channel files written by hand. EncoderTests drive the writer,
+ReaderTests drive the stdlib reader over channel files written by hand: the
+parser scripts/verify_events_lib.py and the query module and CLI
+tests/infra/verify_events.py. EncoderTests drive the writer,
 scripts/lib_event_log.sh, from bash and read its output back with that reader.
 SlotTimeoutRecordTests force real finite-WAIT deadlines through
 scripts/lib_slot_acquire.sh and every wrapper that calls it (PRD §9 R-1).
@@ -39,7 +40,9 @@ from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
+sys.path.insert(0, str(INFRA_DIR.parents[1] / "scripts"))
 import verify_events  # noqa: E402  (imported after sys.path manipulation)
+from verify_events_lib import read_events  # noqa: E402
 from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -208,7 +211,7 @@ class ReaderTests(unittest.TestCase):
             + ONE_RUN[2:],
             tail=b'{"v":1,"ts_ns":1,"pid":1,"event":"run_fin',
         )
-        events = verify_events.read_events(path)
+        events = read_events(path)
         self.assertEqual(
             [r["event"] for r in events.records],
             ["run_start", "member_start", "member_finish", "slot_timeout", "run_finish"],
@@ -218,12 +221,12 @@ class ReaderTests(unittest.TestCase):
 
     def test_records_without_run_start_are_channel_absent(self):
         path = self.files.write("no-start.jsonl", ONE_RUN[1:])
-        events = verify_events.read_events(path)
+        events = read_events(path)
         self.assertEqual(len(events.records), 4)
         self.assertFalse(events.channel_present)
 
     def test_missing_file_is_an_empty_absent_channel(self):
-        events = verify_events.read_events(self.files.dir / "never-written.jsonl")
+        events = read_events(self.files.dir / "never-written.jsonl")
         self.assertEqual(events.records, ())
         self.assertEqual(events.skipped_lines, 0)
         self.assertFalse(events.channel_present)
@@ -235,14 +238,14 @@ class ReaderTests(unittest.TestCase):
             b'"waited":0,"disposition":"fatal","lock":"' + raw_lock + b'","emitter":"x"}'
         )
         path = self.files.write("bytes.jsonl", [run_start(0), line])
-        events = verify_events.read_events(path)
+        events = read_events(path)
         self.assertEqual(events.skipped_lines, 0)
         (timeout,) = verify_events.select(events, event="slot_timeout")
         self.assertEqual(timeout["lock"].encode("utf-8", "surrogateescape"), raw_lock)
 
     def test_summarize_aggregates_every_run_in_file_order(self):
         path = self.files.write("two-runs.jsonl", TWO_RUNS + ["garbage"])
-        summary = verify_events.summarize(verify_events.read_events(path))
+        summary = verify_events.summarize(read_events(path))
         self.assertEqual(
             summary,
             {
@@ -262,7 +265,7 @@ class ReaderTests(unittest.TestCase):
 
     def test_summarize_an_absent_channel(self):
         summary = verify_events.summarize(
-            verify_events.read_events(self.files.dir / "never-written.jsonl")
+            read_events(self.files.dir / "never-written.jsonl")
         )
         self.assertEqual(summary["channel"], "absent")
         self.assertEqual(summary["runs"], 0)
@@ -270,7 +273,7 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(summary["interrupted"])
 
     def test_select_compares_non_strings_by_their_json_spelling(self):
-        events = verify_events.read_events(self.files.write("two-runs.jsonl", TWO_RUNS))
+        events = read_events(self.files.write("two-runs.jsonl", TWO_RUNS))
         cases = [
             ({"event": "member_finish", "where": {"member": "test_a.sh", "rc": "1"}}, 1),
             ({"event": "member_finish", "where": {"rc": "0"}}, 1),
@@ -476,7 +479,7 @@ class EncoderTests(unittest.TestCase):
         self.env = channel_env(self.channel)
 
     def read(self):
-        return verify_events.read_events(self.channel)
+        return read_events(self.channel)
 
     def physical_lines(self):
         return self.channel.read_bytes().split(b"\n")[:-1]
@@ -722,7 +725,7 @@ class EncoderTests(unittest.TestCase):
                     )
                     self.assert_strict_run_continues(result)
                     if written is not None:
-                        events = verify_events.read_events(written)
+                        events = read_events(written)
                         self.assertEqual(
                             ([r["event"] for r in events.records], events.skipped_lines),
                             (ALL_EMITTER_NAMES, 0),
@@ -748,7 +751,7 @@ class EncoderTests(unittest.TestCase):
         assert_channel_unset(self, env)
         result = lib_bash_with_copy(ALL_EMITTERS_ONCE, copy, env=env, cwd=cwd, strict=True)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-        events = verify_events.read_events(copy)
+        events = read_events(copy)
         self.assertEqual(
             ([r["event"] for r in events.records], events.skipped_lines), (ALL_EMITTER_NAMES, 0)
         )
@@ -912,7 +915,7 @@ class SlotTimeoutRecordTests(unittest.TestCase):
         self.locks.mkdir()
 
     def timeouts(self):
-        return verify_events.select(verify_events.read_events(self.channel), event="slot_timeout")
+        return verify_events.select(read_events(self.channel), event="slot_timeout")
 
     def assert_one_timeout(self, lock, **fields):
         records = self.timeouts()
@@ -1145,7 +1148,7 @@ class RunAllFixture:
             test.assertEqual(run([*git, *args]).returncode, 0, args)
 
     def events(self):
-        return verify_events.read_events(self.channel)
+        return read_events(self.channel)
 
 
 # (run_start.branch, extra run_all flags, knobs) for the B1 member set.
