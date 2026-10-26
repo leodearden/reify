@@ -34,12 +34,12 @@ use reify_lsp::server::{NoOpSink, NotificationSink};
 /// Every `lsp_request` is dispatched on a large-stack lane
 /// ([`lsp_request_on_worker`]), so the thread polling `handle_request` IS the
 /// stack the parser and compiler need. The bridge therefore builds its server
-/// with [`BlockingWorkPlacement::CallingThread`], giving `definition`,
-/// `prepareRename`, `rename` and `references` the lane's stack too, instead of
-/// a ~2 MiB blocking-pool thread. The one cost: in the degraded no-lane arm
-/// (`dispatch_async(None, ..)` awaits in place), those four now run inline on a
-/// Tauri tokio worker and occupy it for the request — as `didOpen` /
-/// `didChange`'s compile always has there.
+/// with [`BlockingWorkPlacement::CallingThread`], giving every query's
+/// parse/compile work the lane's stack too, instead of a ~2 MiB blocking-pool
+/// thread. The one cost: in the degraded no-lane arm
+/// (`dispatch_async(None, ..)` awaits in place), every query's parse/compile
+/// work runs inline on a Tauri tokio worker and occupies it for the request —
+/// as `didOpen` / `didChange`'s compile always has there.
 pub struct LspBridge {
     lsp: InProcessLsp,
 }
