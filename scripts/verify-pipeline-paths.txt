@@ -123,7 +123,9 @@ scripts/verify-ledger.py
 #   verify-ledger.py rather than sourcing it, and a Python import is invisible
 #   to both of verify-pipeline-guard.sh's auto-derivation clauses, so an edit
 #   here would otherwise take the config fast-path while changing what every
-#   ledger record says about run_all.
+#   ledger record says about run_all. verify-ledger.py imports it at module
+#   top level, so any copy of verify-ledger.py (a fixture, a copy list) must
+#   ship this sibling with it: without it every subcommand fails on import.
 scripts/verify_events_lib.py
 #
 # scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
