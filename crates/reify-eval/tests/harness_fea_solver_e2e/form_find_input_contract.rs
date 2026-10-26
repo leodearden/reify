@@ -1,7 +1,7 @@
 //! The force-density input contract (solver-crates-layering η₂, #9271) seen
-//! through the `solver::form_find` trampoline: an input the kernel rejects
-//! surfaces as a located `E_FormFindInfeasible` diagnostic, never a completed
-//! solve.
+//! through the `solver::form_find` and `solver::form_find_free` trampolines: an
+//! input the kernel rejects surfaces as a located `E_FormFindInfeasible`
+//! diagnostic, never a completed solve.
 //!
 //! Deliberately not named `tensegrity_*`, so the `-- tensegrity` filter keeps
 //! selecting exactly the tensegrity modules.
@@ -44,6 +44,35 @@ fn call_form_find(value_inputs: &[Value]) -> ComputeOutcome {
     )
 }
 
+/// Invoke the free-standing trampoline with no realization and no warm state.
+fn call_form_find_free(value_inputs: &[Value]) -> ComputeOutcome {
+    let no_realization: &[RealizationReadHandle] = &[];
+    let no_warm_state: Option<&OpaqueState> = None;
+    reify_eval::compute_targets::form_find::solve_form_find_free_trampoline(
+        value_inputs,
+        no_realization,
+        &Value::Undef,
+        no_warm_state,
+        &CancellationHandle::new(),
+    )
+}
+
+/// The free trampoline's four inputs: `structure`, one group id per member,
+/// then `seed_ratios` and `reference_group`.
+fn free_inputs(
+    structure: Value,
+    group_ids: &[i64],
+    seed_ratios: &[f64],
+    reference_group: i64,
+) -> Vec<Value> {
+    vec![
+        structure,
+        Value::List(group_ids.iter().copied().map(Value::Int).collect()),
+        Value::List(seed_ratios.iter().copied().map(Value::Real).collect()),
+        Value::Int(reference_group),
+    ]
+}
+
 /// The outcome is `Failed` with an `E_FormFindInfeasible` diagnostic naming
 /// every one of `needles`.
 fn assert_failed_infeasible(outcome: ComputeOutcome, needles: &[&str]) {
@@ -83,5 +112,41 @@ fn trampoline_non_finite_node_coordinate_is_failed_naming_the_node() {
     assert_failed_infeasible(
         call_form_find(&value_inputs),
         &["non-finite node coordinate", "nodes[0]"],
+    );
+}
+
+/// A free-standing cable net whose node 2 is seeded at NaN, under a well-formed
+/// one-group spec: the free trampoline reports the node, not a solve.
+#[test]
+fn free_trampoline_non_finite_node_coordinate_is_failed_naming_the_node() {
+    let nodes = vec![
+        point3(0.0, 0.2, 0.4),
+        point3(1.0, 0.0, 0.0),
+        point3(-1.0, f64::NAN, 0.0),
+        point3(0.0, 1.0, 1.0),
+        point3(0.0, -1.0, 1.0),
+    ];
+    let structure = cable_net(nodes, &[(0, 1), (0, 2), (0, 3), (0, 4)]);
+    assert_failed_infeasible(
+        call_form_find_free(&free_inputs(structure, &[0, 0, 0, 0], &[1.0], 0)),
+        &["non-finite node coordinate", "nodes[2]"],
+    );
+}
+
+/// A `GroupRatios` spec with a zero seed is a malformed group spec, worded as
+/// its own cause rather than as a members-vs-kinds dimension mismatch.
+#[test]
+fn free_trampoline_zero_seed_ratio_is_failed_as_a_malformed_group_spec() {
+    let nodes = vec![
+        point3(0.0, 0.2, 0.4),
+        point3(1.0, 0.0, 0.0),
+        point3(-1.0, 0.0, 0.0),
+        point3(0.0, 1.0, 1.0),
+        point3(0.0, -1.0, 1.0),
+    ];
+    let structure = cable_net(nodes, &[(0, 1), (0, 2), (0, 3), (0, 4)]);
+    assert_failed_infeasible(
+        call_form_find_free(&free_inputs(structure, &[0, 0, 1, 1], &[1.0, 0.0], 0)),
+        &["zero seed ratio"],
     );
 }
