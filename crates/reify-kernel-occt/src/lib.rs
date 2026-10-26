@@ -7146,8 +7146,9 @@ mod tests {
     /// `tessellation_fallback == false`.
     ///
     /// TOLERANCE BASES (do not retune): 1e-9 is what the gate-passing
-    /// `torus_execute_volume` uses for an analytic primitive, whose in-file
-    /// comment records a measured rel_err of ~1.8e-16; the box's 20·10·5
+    /// `torus_execute_volume` uses for an analytic primitive (its comment in
+    /// `crates/reify-kernel-occt/tests/harness_occt_kernel/primitives_profiles.rs`
+    /// records a measured rel_err of ~1.8e-16); the box's 20·10·5
     /// product is additionally exact in binary f64. 2e-2 is copied verbatim
     /// from the gate-passing `revolve_circle_face_full_volume`, which builds
     /// this identical revolved torus.

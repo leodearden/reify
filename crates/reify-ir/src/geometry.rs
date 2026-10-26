@@ -833,8 +833,9 @@ pub enum GeometryOp {
     /// parameterisation rather than by an explicit angle argument — so a full
     /// circle is `2.0 * PI`, not 360. Pinned end to end by
     /// `export_step_declares_si_radians_for_wireframe_curve_parameters`
-    /// (`reify-kernel-occt/src/handle.rs`), which reads the two angles back out
-    /// of the exported STEP `TRIMMED_CURVE` as its `PARAMETER_VALUE` bounds.
+    /// (`crates/reify-kernel-occt/tests/harness_occt_kernel/handle_step_export.rs`),
+    /// which reads the two angles back out of the exported STEP `TRIMMED_CURVE` as
+    /// its `PARAMETER_VALUE` bounds.
     /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
     ///
     /// **Why these two carry no `_rad` suffix.** These are crate-local Rust
@@ -910,7 +911,8 @@ pub enum GeometryOp {
     /// **Helix is not on the wireframe STEP angle path AS EXERCISED TODAY**;
     /// [`GeometryOp::Arc`] is. #6184's wireframe pin
     /// (`export_step_declares_si_radians_for_wireframe_curve_parameters`,
-    /// `reify-kernel-occt/src/handle.rs`) is fixtured on an arc, and no test in
+    /// `crates/reify-kernel-occt/tests/harness_occt_kernel/handle_step_export.rs`) is
+    /// fixtured on an arc, and no test in
     /// the tree exports a helix handle. That is a statement about the FIXTURES,
     /// not a property of the system: `OcctKernel::export`
     /// (`reify-kernel-occt/src/lib.rs`) is shape-type agnostic — it resolves

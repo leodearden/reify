@@ -8635,7 +8635,8 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     //
     // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
     // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
-    // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+    // TRIMMED_CURVE), both in
+    // crates/reify-kernel-occt/tests/harness_occt_kernel/handle_step_export.rs. They
     // quantify over EVERY unit context — a compound emits one per
     // representation_context, three for a two-cone union — rather than
     // grepping for one ".RADIAN." token, so a partial flip fails.

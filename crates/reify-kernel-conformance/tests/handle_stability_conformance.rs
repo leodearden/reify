@@ -37,8 +37,8 @@
 //! handles). That invalidation contract is INV-GEO-3 (warm-start drift
 //! guards, §12), not this file's INV-GEO-2, and is not currently exercised
 //! for `extract_faces`/`extract_edges` anywhere in the workspace —
-//! `reify-kernel-occt/src/lib.rs`'s
-//! `extract_vertices_invalidates_cache_on_warm_state` unit test is the
+//! `crates/reify-kernel-occt/tests/harness_occt_kernel/lifecycle.rs`'s
+//! `extract_vertices_invalidates_cache_on_warm_state` test is the
 //! existing template such coverage would follow for the sibling
 //! `extracted_vertices` cache, but no analogous `extract_faces`/
 //! `extract_edges` test exists yet and no task currently tracks adding one.

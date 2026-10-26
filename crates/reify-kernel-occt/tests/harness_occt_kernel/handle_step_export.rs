@@ -379,7 +379,7 @@ fn assert_plane_angle_units_are_si_radians(audit: &PlaneAngleAudit, write_path: 
 /// for `SI_UNIT(*,.RADIAN.)` fails immediately.
 ///
 /// No runtime `OCCT_AVAILABLE` skip: inside this member's `#![cfg(has_occt)]`
-/// gate such a check is tautological (`lib.rs`'s module docs, #6343), and
+/// gate such a check is tautological (`src/lib.rs`'s module docs, #6343), and
 /// build-time OCCT presence is gated before any compile by the OCCT arm of
 /// `scripts/check-manifold-deps.sh`.
 #[test]
