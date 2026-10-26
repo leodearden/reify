@@ -41,11 +41,11 @@ fn error_messages(source: &str) -> Vec<String> {
         .collect()
 }
 
-/// The Error messages with every element indexer erased, so the resolved
-/// form's per-element names and the deferred form's bound-element name
-/// compare equal.
-fn endpoint_errors(source: &str) -> BTreeSet<String> {
-    error_messages(source)
+/// The distinct Error messages with every element indexer erased, so the
+/// resolved form's per-element names and the deferred form's bound-element
+/// name compare equal.
+fn endpoint_errors(messages: &[String]) -> BTreeSet<String> {
+    messages
         .iter()
         .map(|message| erase_element_index(message))
         .collect()
@@ -91,8 +91,9 @@ fn deferred_form_reports_the_endpoint_errors_the_resolved_form_reports() {
         "connect vents[0].outlet -> v.inlet",
     ];
     for connect_line in connect_lines {
-        let resolved = endpoint_errors(&fixture(RESOLVED, connect_line));
-        let deferred = endpoint_errors(&fixture(DEFERRED, connect_line));
+        let resolved = endpoint_errors(&error_messages(&fixture(RESOLVED, connect_line)));
+        let deferred_messages = error_messages(&fixture(DEFERRED, connect_line));
+        let deferred = endpoint_errors(&deferred_messages);
         assert!(
             !resolved.is_empty(),
             "`{connect_line}`: the resolved form reports no error, so this row compares nothing"
@@ -100,6 +101,11 @@ fn deferred_form_reports_the_endpoint_errors_the_resolved_form_reports() {
         assert_eq!(
             deferred, resolved,
             "`{connect_line}`: deferred form errors {deferred:?} differ from resolved form errors {resolved:?}"
+        );
+        assert_eq!(
+            deferred_messages.len(),
+            resolved.len(),
+            "`{connect_line}`: the deferred form must report each distinct error once, got {deferred_messages:?}"
         );
     }
 }
