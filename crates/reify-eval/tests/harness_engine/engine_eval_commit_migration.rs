@@ -111,16 +111,9 @@ const STRUCTURAL_QUERY_SRC: &str = r#"
     }
 "#;
 
-/// A `Let` whose default_expr is a self-datum projection (`self.xy_plane`) —
-/// drives the self-datum projection post-pass (engine_eval.rs, ~@3984-3993).
-/// A sibling `let` probes `determined(..)` on it (see the doc comment on
-/// `structural_query_post_pass_cache_skip_audit` for why this probe reads
-/// the PRE-post-pass main-pass state, not the post-pass's own commit).
-/// Kernel-free: `self.xy_plane` resolves to the intrinsic identity-frame
-/// `xy` plane constant with no geometry kernel needed.
-///
-/// Verified (scratch run, prerequisite pre-1): compiles+evals cleanly with
-/// `p` = a concrete `Value::Plane { .. }` (not `Undef`) and no diagnostics.
+/// A `Let` whose default_expr is a self-datum projection (`self.xy_plane`), a
+/// pure value since task #6100: the main pass evaluates it, kernel-free, to the
+/// identity frame's `xy` plane. A sibling `let` probes `determined(..)` on it.
 const SELF_DATUM_SRC: &str = r#"
     structure S {
         let p = self.xy_plane
@@ -350,7 +343,8 @@ fn eval_cached_let_miss_provenance_and_determinacy() {
 /// first.
 ///
 /// Needed specifically for post-pass provenance assertions (structural-query
-/// / self-datum / annotation-args): a post-pass site's whole purpose is to
+/// / annotation-args), and to prove a cell has NO post-pass overwrite
+/// (self-datum): a post-pass site's whole purpose is to
 /// OVERWRITE a cell the main eval pass already wrote via
 /// `evaluate_params_and_lets_unified` / `evaluate_let_bindings` — the
 /// dominant, freshness-propagating let/param evaluators that are themselves
@@ -399,9 +393,8 @@ fn last_started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
 /// (`determined(ms)`) does not itself contain a structural query, so it is
 /// evaluated exactly ONCE, by the main pass, BEFORE the structural-query
 /// post-pass runs — reading `ms`'s PRE-expansion state, which is
-/// `(Value::Undef, Determined)` (the same main-pass short-circuit
-/// `self.xy_plane`-style behaviour documented at the self-datum post-pass
-/// below), so `ms_det` is `Bool(false)` — `Determined && !is_undef()` is
+/// `(Value::Undef, Determined)` (the pure evaluator has no `__self` cell to
+/// expand), so `ms_det` is `Bool(false)` — `Determined && !is_undef()` is
 /// false because the value is `Undef` — and stays `false` regardless of
 /// what the post-pass later does to `ms`. This is verified empirically
 /// (unaffected by this migration either way) and pinned below as its own
@@ -479,24 +472,15 @@ fn structural_query_post_pass_cache_skip_audit() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// test-5: self-datum projection post-pass explicit CacheLeg::Skip audit
+// test-5: a self-datum projection commits once, in the main pass
 // ─────────────────────────────────────────────────────────────────────────
 
-/// RED: self-datum projection post-pass explicit `CacheLeg::Skip` audit.
-/// Mirrors `structural_query_post_pass_cache_skip_audit`'s shape exactly —
-/// same reasoning applies for both `last_started_payload` (the self-datum
-/// post-pass also runs after the main pass's own unmigrated evaluation of
-/// the same Let cell) and `p_det` (also evaluated once, early, against `p`'s
-/// PRE-projection-rewrite state).
-///
-/// RED today: the self-datum post-pass (engine_eval.rs, ~@3984-3993) writes
-/// `values`/`snapshot.values` directly and emits NO journal event of its
-/// own, so the LAST `Started` event recorded for `p` is still the main
-/// pass's `None`-payload one. GREEN after impl-5 migrates the commit onto
-/// `commit_cell_result` with `TraceSource::PostPassOverwrite` and
-/// `CacheLeg::Skip("self-datum projection overwrite")`.
+/// `self.xy_plane` is a pure value (task #6100), so the main pass evaluates
+/// `p` to its Plane and commits it once, under its own `cold-eval`
+/// provenance, with no later overwrite. Its main-pass consumer `p_det` and
+/// the cache therefore both see the Plane.
 #[test]
-fn self_datum_projection_post_pass_cache_skip_audit() {
+fn self_datum_projection_commits_once_in_the_main_pass() {
     let module = parse_and_compile(SELF_DATUM_SRC);
     let mut engine = make_engine();
 
@@ -509,14 +493,12 @@ fn self_datum_projection_post_pass_cache_skip_audit() {
     eprintln!("p = {:?}", result.values.get(&p_id));
     eprintln!("p_det = {:?}", result.values.get(&p_det_id));
 
-    // (1) Provenance + explicit skip marker — RED today.
+    // (1) The LAST Started event for p is the main pass's own commit: no
+    // post-pass overwrite (and no `cache-skip=` marker) follows it.
     assert_eq!(
-        last_started_payload(&engine, &p_id),
-        Some("post-pass-overwrite|cache-skip=self-datum projection overwrite".to_string()),
-        "the self-datum post-pass's Started event should be the LAST one \
-         recorded for the cell and should carry the 'post-pass-overwrite' \
-         TraceSource slug plus its cache-skip reason once migrated onto \
-         commit_cell_result with CacheLeg::Skip"
+        last_started_payload(&engine, &p_id).as_deref(),
+        Some("cold-eval"),
+        "p should be committed once, by the main pass, with no later overwrite"
     );
 
     // (2) `self.xy_plane` is a pure value (task #6100), so the main pass
@@ -532,12 +514,10 @@ fn self_datum_projection_post_pass_cache_skip_audit() {
         },
     }
 
-    // (3) Value preserved (characterization guard) — the self-datum
-    // projection result is a concrete Plane, unchanged by the migration.
+    // (3) p is a concrete Plane.
     assert!(
         matches!(result.values.get(&p_id), Some(Value::Plane { .. })),
-        "p should evaluate to a concrete Value::Plane (the self-datum \
-         projection result must be unchanged by the migration), got {:?}",
+        "p should evaluate to a concrete Value::Plane, got {:?}",
         result.values.get(&p_id)
     );
     // A consumer evaluated in the main pass reads p's Plane (task #6100).
