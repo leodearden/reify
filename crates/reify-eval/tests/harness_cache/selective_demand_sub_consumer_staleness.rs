@@ -101,6 +101,7 @@ fn warm_engine(compiled: &CompiledModule) -> Engine {
     );
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
