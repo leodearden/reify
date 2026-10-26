@@ -30,7 +30,7 @@ use std::collections::{BTreeSet, HashMap};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, UnOp};
 
-use super::template_graph::{may_contain, names_same_structure};
+use super::template_graph::{imported_template_names, may_contain, names_same_structure};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::types::{CompiledPurpose, TopologyTemplate, ValueCellDecl, ValueCellKind};
 
@@ -347,10 +347,7 @@ pub(crate) fn phase_one_sided_auto_check(
     purposes: &[CompiledPurpose],
     prelude: &[&crate::CompiledModule],
 ) {
-    let imported_names: Vec<&str> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter().map(|t| t.name.as_str()))
-        .collect();
+    let imported_names = imported_template_names(prelude);
     let findings = one_sided_auto_findings(&ctx.templates, purposes, &imported_names);
     ctx.diagnostics.extend(findings.iter().map(render));
 }

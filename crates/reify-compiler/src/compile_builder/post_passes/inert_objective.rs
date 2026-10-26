@@ -17,11 +17,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet};
 
-// Every sub-to-template match here goes through `names_same_structure`, the
-// monomorph-aware rule `template_graph` owns: comparing names by equality alone
-// would miss a generic child compiled as `Generic$Arg` and let a genuine `auto`
-// override on it slip through as a false Inert.
-use super::template_graph::names_same_structure;
+use super::template_graph::{
+    SubTarget, Visit, imported_template_names, names_same_structure, search_sub_components,
+};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::types::{TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility};
 
@@ -153,25 +151,17 @@ fn declares_any_auto(template: &TopologyTemplate) -> bool {
 /// precision would buy nothing anyway — the only thing this caller does with a
 /// `true` is stay quiet.
 ///
-/// The walk:
-/// - descends `sub_components`, resolving each `structure_name` through
-///   [`names_same_structure`] so a monomorphised child still matches — and
-///   visits EVERY match, not just the first. A locally-monomorphised generic
-///   puts both `G` and `G$Arg` in the module and both satisfy the predicate;
-///   stopping at whichever the vector happened to hold first would let an
-///   objective-less sibling monomorph with an auto of its own go unseen, and
-///   answering `false` there is a FALSE `E_OBJECTIVE_INERT` — the one direction
-///   this rule may never take;
+/// The walk is [`search_sub_components`], which visits every monomorph a sub
+/// may name (missing a sibling `G$Arg` with an auto of its own would be a
+/// FALSE `E_OBJECTIVE_INERT`, the one direction this rule may never take) and
+/// terminates on a recursive structure. At each target it:
 /// - **prunes at an objective-bearing descendant** — the nearest
 ///   objective-bearing ancestor is the one that governs, so that subtree
 ///   inherits from the descendant, not from `template`;
 /// - answers `true` the moment an objective-less descendant declares an auto;
 /// - answers `true` for a sub whose structure does not resolve in
 ///   `all_templates`, matching the "cannot be ruled out ⇒ assume the worst"
-///   convention [`auto_override_possible`] documents;
-/// - carries a `seen` set keyed on template name, so a recursive structure
-///   terminates. Recursion is detected elsewhere ([`phase_recursion_detection`])
-///   but this walk must not assume that ran, or that it ran first.
+///   convention [`auto_override_possible`] documents.
 ///
 /// Preferred over the coarse alternative — "never conclude about a template
 /// that has any `sub_components`" — which would silence the rule for every
@@ -183,37 +173,12 @@ fn objective_inheritance_possible(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
 ) -> bool {
-    let mut seen: HashSet<&str> = HashSet::new();
-    seen.insert(template.name.as_str());
-    let mut frontier: Vec<&TopologyTemplate> = vec![template];
-
-    while let Some(current) = frontier.pop() {
-        for sub in &current.sub_components {
-            let mut matches = all_templates
-                .iter()
-                .filter(|t| names_same_structure(&t.name, &sub.structure_name))
-                .peekable();
-            if matches.peek().is_none() {
-                // A sub we cannot resolve may contain anything at all.
-                return true;
-            }
-            for child in matches {
-                if !seen.insert(child.name.as_str()) {
-                    continue;
-                }
-                if child.objective.is_some() {
-                    // `child` and everything under it inherit from `child`.
-                    continue;
-                }
-                if declares_any_auto(child) {
-                    return true;
-                }
-                frontier.push(child);
-            }
-        }
-    }
-
-    false
+    search_sub_components(template, all_templates, |target| match target {
+        SubTarget::Unresolved(_) => Visit::Found,
+        SubTarget::Local(child) if child.objective.is_some() => Visit::Prune,
+        SubTarget::Local(child) if declares_any_auto(child) => Visit::Found,
+        SubTarget::Local(_) => Visit::Descend,
+    })
 }
 
 /// Does any template in the module install an `auto` override on an instance of
@@ -504,16 +469,7 @@ pub(crate) fn phase_inert_objective_check(
     ctx: &mut CompilationCtx,
     prelude: &[&crate::CompiledModule],
 ) {
-    // Every name the prelude declares, flattened once for the whole walk.
-    // Deliberately UNFILTERED by visibility, mirroring the registry
-    // `phase_auto_type_param_resolution` monomorphises from: a private imported
-    // generic reaches `ctx.templates` as a clone too (measured — see
-    // `inert_objective_finding`'s obligation 0′), so filtering here would
-    // reopen exactly the route this closes.
-    let imported_template_names: Vec<&str> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter().map(|t| t.name.as_str()))
-        .collect();
+    let imported_names = imported_template_names(prelude);
 
     // Collect first, extend after: the predicate borrows `ctx.templates`
     // immutably for the whole walk (the NLL idiom `phase_sub_override_autos`
@@ -524,8 +480,7 @@ pub(crate) fn phase_inert_objective_check(
         let Some(objective) = template.objective.as_ref() else {
             continue;
         };
-        let Some(finding) =
-            inert_objective_finding(template, &ctx.templates, &imported_template_names)
+        let Some(finding) = inert_objective_finding(template, &ctx.templates, &imported_names)
         else {
             continue;
         };
