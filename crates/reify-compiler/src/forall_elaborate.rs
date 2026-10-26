@@ -33,17 +33,12 @@
 //! `engine_edit.rs`) re-elaborates it whenever the count becomes known.
 //!
 //! Captured for runtime re-elaboration: `Constraint` bodies without a
-//! where-clause, and `Connect` bodies whose endpoints parse as a `PortPath`.
-//! A captured `Connect`'s endpoints get the existence and direction checks
-//! once, at capture: every element shares the collection's child template, so
-//! the verdict holds whatever the count, and the template carries the
-//! direction verdict for each element's compatibility constraint. The
-//! deferred path still drops the connector type and params, saying so in an
-//! info diagnostic, and the own-entity-only port-member auto-matching and
-//! asymmetric-LocatedPort warning. Not captured, each with one info
-//! diagnostic: where-clause constraint bodies, constraint-instantiation
-//! bodies, chain bodies, and connect endpoints outside the `PortPath`
-//! grammar.
+//! where-clause, and `Connect` bodies whose endpoints parse as a `PortPath`
+//! (which `compile_connection` behaviours a captured `Connect` keeps, and
+//! which it drops, is listed on `CompiledForallBody::Connect`). Not captured,
+//! each with one info diagnostic: where-clause constraint bodies,
+//! constraint-instantiation bodies, chain bodies, and connect endpoints
+//! outside the `PortPath` grammar.
 //!
 //! ## PRD criteria 6 and 7 contract
 //!
@@ -913,11 +908,9 @@ pub(crate) fn elaborate_forall_connect(
 
 /// Capture a deferred-count `forall ... : connect ...` body as a runtime
 /// `CompiledForallTemplate`, or `None` (after one info diagnostic) when an
-/// endpoint falls outside the `PortPath` grammar.
-///
-/// The endpoints get the existence and direction checks `compile_connection`
-/// runs, once, here: every element shares the collection sub's child template,
-/// so the verdict does not depend on the count, and the template carries it.
+/// endpoint falls outside the `PortPath` grammar. What the capture keeps from
+/// `compile_connection`, and what it drops, is listed on
+/// `CompiledForallBody::Connect`.
 fn capture_deferred_connect(
     ctx: &ConnectContext,
     decl: &reify_ast::ForallConnectDecl,

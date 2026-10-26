@@ -630,12 +630,18 @@ pub enum CompiledForallBody {
     /// `Literal` root and is never rewritten, so each element's connection
     /// names the same ports the resolved (non-deferred) path names.
     ///
-    /// At runtime each element gets a fresh `CompiledConnection` paired with a
-    /// compatibility constraint carrying `directions_compatible`, which
-    /// `forall_elaborate.rs` computes once at capture through the same
-    /// endpoint checks `compile_connection` runs. `connector_type` / `params`
-    /// are dropped — no `connector_sub` or `frame_constraint` is created, and
-    /// `port_mappings` is carried verbatim.
+    /// **Kept from `compile_connection`:** the endpoint existence and direction
+    /// checks. `forall_elaborate.rs` runs them once, at capture, on the
+    /// bound-element endpoints: every element shares the collection sub's
+    /// child template, so the verdict holds whatever the count. At runtime each
+    /// element gets a fresh `CompiledConnection` paired with a compatibility
+    /// constraint carrying `directions_compatible`; `port_mappings` is carried
+    /// verbatim.
+    ///
+    /// **Dropped:** `connector_type` / `params`, which one info diagnostic at
+    /// capture reports — no `connector_sub`, connector-param validation or
+    /// `frame_constraint` is created — and the own-entity-only port-member
+    /// auto-matching and asymmetric-LocatedPort warning.
     Connect {
         left: PortPath,
         /// Direction operator from the source `connect` declaration.

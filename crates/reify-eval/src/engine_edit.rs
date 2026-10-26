@@ -2530,11 +2530,10 @@ impl Engine {
                             //     the same trade the Constraint arm makes for
                             //     `compile_expr`.
                             //   * The compatibility constraint's literal is
-                            //     the capture-time direction verdict from
-                            //     `forall_elaborate.rs`, matching what
-                            //     `compile_connection` bakes on the resolved
-                            //     path. No `connector_sub` or
-                            //     `frame_constraint` is created.
+                            //     `directions_compatible`. What this path
+                            //     keeps from `compile_connection`, and what
+                            //     it drops, is listed on
+                            //     `CompiledForallBody::Connect`.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
                                 t.variable, t.parent_entity, t.collection_sub_name, t_idx,
