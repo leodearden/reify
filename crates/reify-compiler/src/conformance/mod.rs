@@ -1,16 +1,16 @@
 pub(super) mod checker;
 use checker::*;
 
+mod realization_let_env;
+use realization_let_env::RealizationLetEnv;
+
 pub(super) mod sub_component_validation;
 pub(crate) use sub_component_validation::check_sub_structure_existence;
 
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
-use crate::geometry_traits_inference::{
-    GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
-};
+use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
 use reify_core::BASE_UNIT_SYMBOLS;
-use std::cell::RefCell;
 
 /// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
@@ -2215,121 +2215,6 @@ fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
     )
 }
 
-/// RAII guard that pops the top entry from an in-flight Vec when dropped.
-///
-/// Ensures the `push`–`pop` invariant around [`infer_traits_for_expr_in_env`]
-/// in [`RealizationLetEnv::lookup`] is upheld even if the inner call panics.
-/// Used only within `RealizationLetEnv::lookup`.
-struct InFlightGuard<'a> {
-    stack: &'a RefCell<Vec<ValueCellId>>,
-}
-
-impl Drop for InFlightGuard<'_> {
-    fn drop(&mut self) {
-        self.stack.borrow_mut().pop();
-    }
-}
-
-/// A `LetBindingEnv` that resolves geometry-typed `let` bindings by looking up
-/// their compiled op-arrays in the parent template's `realizations` list.
-///
-/// For non-geometry lets (`ValueCellKind::Let` with a `default_expr`), falls
-/// back to `infer_traits_for_expr_in_env` on the resolved `CompiledExpr`,
-/// threading `self` through so chained `ValueRef` lets are resolved recursively.
-/// For any id that doesn't match a known let or realization, returns `None`
-/// (safe-default: the caller falls back to `InferredTraits::all()`).
-///
-/// # Geometry-let lookup
-///
-/// `compile_entity` Pass 2 explicitly `continue`s past geometry-typed
-/// `MemberDecl::Let`, so geometry lets never enter `value_cells`. They are
-/// lowered in Pass 3 to `Vec<CompiledGeometryOp>` stored on
-/// `RealizationDecl.operations` with `RealizationDecl.name = Some(let_name)`.
-/// `lookup` therefore scans `realizations` first (geometry path) and falls
-/// back to `value_cells` (non-geometry path).
-///
-/// # Chained let
-///
-/// `compile_geometry_call` already handles geometry-let chaining at the AST
-/// level: for `let g = h; let h = union(box, box)`, the realization for `g`
-/// recursively compiles `h`'s init expression and emits the SAME op array
-/// under `realization.name = Some("g")`. No chained-ValueRef walk is needed
-/// here.
-///
-/// # Cycle guard
-///
-/// The value_cells fallback calls `infer_traits_for_expr_in_env(expr, self)`,
-/// which recurses back into `lookup` for any nested `ValueRef`. Malformed or
-/// forward-referencing IR can produce cycles (`let g = ValueRef(g)`).  Rather
-/// than stack-overflowing, the `in_flight` visited set detects re-entry and
-/// returns `None`; the caller's `unwrap_or(InferredTraits::all())` mechanism
-/// safe-defaults the result.  The realization arm does NOT recurse through
-/// the env (it calls `infer_traits_for_op` instead), so `in_flight` is only
-/// checked on the value_cells path.
-struct RealizationLetEnv<'a> {
-    templates: &'a HashMap<String, &'a TopologyTemplate>,
-    /// In-flight visited set used to terminate cycles in the value_cells fallback.
-    ///
-    /// `RefCell` is required because `LetBindingEnv::lookup` takes `&self`;
-    /// changing the trait to `&mut self` would cascade to all other impls.
-    /// `Vec` (not `HashSet`) because typical recursion depth is 1–4; a linear
-    /// scan is faster than hash overhead at this size, and avoids a new dep.
-    in_flight: RefCell<Vec<ValueCellId>>,
-}
-
-impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
-    fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
-        let template = self.templates.get(id.entity.as_str())?;
-
-        // Geometry-let path: realization with matching name.
-        if let Some(real) = template
-            .realizations
-            .iter()
-            .find(|r| r.name.as_deref() == Some(id.member.as_str()))
-        {
-            return Some(infer_traits_for_op(&real.operations));
-        }
-
-        // Non-geometry-let fallback: value_cells Let with a resolved default_expr.
-        // Match on both entity and member for symmetry with the realization arm
-        // above (entity is already narrowed by `templates.get(id.entity.as_str())`,
-        // but the explicit check makes the intent self-documenting and adds a
-        // cheap guard against any future refactor that reuses cells across templates).
-
-        // Cycle guard: if `id` is already being resolved on the current call stack,
-        // return None.  The caller's `unwrap_or(InferredTraits::all())` in
-        // `infer_traits_for_expr_in_env` converts None into the safe default, so
-        // cycles in malformed or forward-referencing IR yield `all()` rather than
-        // a stack overflow.
-        if self.in_flight.borrow().iter().any(|p| p == id) {
-            return None;
-        }
-
-        if let Some(cell) = template.value_cells.iter().find(|vc| {
-            vc.id.entity == id.entity
-                && vc.id.member == id.member
-                && matches!(vc.kind, ValueCellKind::Let)
-                && vc.default_expr.is_some()
-        }) {
-            // Thread the env through the resolved CompiledExpr so that any
-            // ValueRef nested inside a non-geometry let (e.g. a chained let
-            // whose default_expr references a geometry binding) is resolved via
-            // the env rather than silently safe-defaulting to all(). The
-            // in-flight guard above terminates any cycle in well-formed or
-            // malformed IR before a stack overflow can occur.
-            let expr = cell.default_expr.as_ref()?;
-            self.in_flight.borrow_mut().push(id.clone());
-            let _guard = InFlightGuard {
-                stack: &self.in_flight,
-            };
-            let result = infer_traits_for_expr_in_env(expr, self);
-            return Some(result);
-        }
-
-        None
-    }
-}
-
 /// Leaf conformance check: verify that `compiled_arg` conforms to `required_trait`.
 ///
 /// Derives `arg_call_name` from `compiled_arg.kind` so that any nested
@@ -2398,10 +2283,7 @@ fn check_leaf_trait_conformance(
             _ => None,
         };
         if let Some(trait_kind) = geom_trait {
-            let env = RealizationLetEnv {
-                templates: ctx.registries.templates,
-                in_flight: RefCell::new(Vec::new()),
-            };
+            let env = RealizationLetEnv::new(ctx.registries.templates);
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
                 // CARVE-OUT (task 5302 α): these two geometry-trait emit sites
@@ -3811,12 +3693,8 @@ mod tests {
         assert_eq!(d.labels[0].span, span);
     }
 
-    /// Build a minimal `TopologyTemplate` for cycle-guard tests.
-    ///
-    /// The template has no realizations so `RealizationLetEnv::lookup` always
-    /// falls through to the value_cells arm — the arm containing the recursive
-    /// call to `infer_traits_for_expr_in_env(expr, self)`.  All other fields are
-    /// zeroed/empty; they are irrelevant to the cycle-guard path.
+    /// Build a `TopologyTemplate` holding only `cells`; every other field is
+    /// empty.
     fn minimal_template(name: &str, cells: Vec<ValueCellDecl>) -> TopologyTemplate {
         TopologyTemplate {
             name: name.to_string(),
@@ -3845,190 +3723,6 @@ mod tests {
             assoc_fns: vec![],
             assoc_types: vec![],
         }
-    }
-
-    /// Build a `Let`-kind `ValueCellDecl` whose `default_expr` is a `ValueRef`
-    /// pointing at `ref_id`.  Used to construct cycle fixtures in the tests below.
-    fn let_cell_with_ref(id: ValueCellId, ref_id: ValueCellId) -> ValueCellDecl {
-        ValueCellDecl {
-            id,
-            kind: ValueCellKind::Let,
-            visibility: Visibility::Private,
-            is_aux: false,
-            cell_type: Type::dimensionless_scalar(),
-            default_expr: Some(CompiledExpr::value_ref(
-                ref_id,
-                Type::dimensionless_scalar(),
-            )),
-            solver_hints: vec![],
-            span: SourceSpan::empty(0),
-        }
-    }
-
-    /// Cycle guard: a self-referential `let` binding (`let g : Real = ValueRef(g)`)
-    /// must not overflow the stack; the in-flight visited set terminates the cycle
-    /// and `lookup` returns the safe-default `Some(InferredTraits::all())`.
-    ///
-    /// # Why the value_cells path is exercised
-    ///
-    /// Entity "E" has no geometry realization for "g" (no realization in the
-    /// template), so the realization arm is skipped and `lookup` falls through to
-    /// the value_cells arm — the arm that contains the recursive call to
-    /// `infer_traits_for_expr_in_env(expr, self)`.
-    ///
-    /// # Why `Type::dimensionless_scalar()`
-    ///
-    /// A non-geometry type confirms the fixture bypasses the realization arm
-    /// and only exercises the value_cells fallback where the recursion lives.
-    ///
-    /// # Assertion rationale
-    ///
-    /// `Some(InferredTraits::all())` is the safe-default propagation chain:
-    /// inner `lookup` hits the in-flight guard → returns `None` →
-    /// `infer_traits_for_expr_in_env(...).unwrap_or(all())` returns `all()` →
-    /// outer `lookup` wraps in `Some`.
-    #[test]
-    fn lookup_self_referential_let_returns_safe_default_without_overflow() {
-        use std::cell::RefCell;
-
-        // let g : Real = ValueRef(g)  — direct self-reference
-        let g_id = ValueCellId::new("E", "g");
-        let template = minimal_template("E", vec![let_cell_with_ref(g_id.clone(), g_id.clone())]);
-
-        let mut templates = HashMap::new();
-        templates.insert("E".to_string(), &template);
-
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
-
-        assert_eq!(
-            env.lookup(&g_id),
-            Some(InferredTraits::all()),
-            "self-referential let must safe-default to all() rather than stack-overflowing"
-        );
-    }
-
-    /// Cycle guard: a chained-cycle let (`let g = ValueRef(h); let h = ValueRef(g)`)
-    /// must not overflow the stack; the in-flight visited set terminates the cycle
-    /// at re-entry and `lookup` returns the safe-default `Some(InferredTraits::all())`.
-    ///
-    /// Pins that the guard handles cycles longer than direct self-reference.
-    /// The assertion shape is identical to the self-referential test; both produce
-    /// `Some(InferredTraits::all())`.
-    #[test]
-    fn lookup_chained_cycle_let_returns_safe_default_without_overflow() {
-        use std::cell::RefCell;
-
-        // let g : Real = ValueRef(h)
-        // let h : Real = ValueRef(g)
-        let g_id = ValueCellId::new("E", "g");
-        let h_id = ValueCellId::new("E", "h");
-        let template = minimal_template(
-            "E",
-            vec![
-                let_cell_with_ref(g_id.clone(), h_id.clone()),
-                let_cell_with_ref(h_id.clone(), g_id.clone()),
-            ],
-        );
-
-        let mut templates = HashMap::new();
-        templates.insert("E".to_string(), &template);
-
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
-
-        assert_eq!(
-            env.lookup(&g_id),
-            Some(InferredTraits::all()),
-            "chained-cycle let must safe-default to all() rather than stack-overflowing"
-        );
-    }
-
-    /// Non-cyclic chain: `let g = ValueRef(h); let h = difference(box(), box())`.
-    ///
-    /// Asserts that the in-flight guard does **not** short-circuit a non-cyclic
-    /// chain.  `lookup(h)` must resolve to `bounded_only()` — the inferred traits
-    /// of `difference` applied to two bounded primitives — and `lookup(g)` must
-    /// propagate that result rather than safe-defaulting to `all()`.
-    ///
-    /// This test distinguishes a correct guard (fires only when `id` is already
-    /// in the in-flight set) from a guard that fires too eagerly — for example,
-    /// one that returns `None` whenever `in_flight` is non-empty regardless of
-    /// which id is being resolved.  Without this test, both cycle tests pass even
-    /// with such a premature-firing guard because they assert `Some(all())`.
-    ///
-    /// # Fixture rationale
-    ///
-    /// `h`'s `default_expr` is `FunctionCall("difference", [box(), box()])` with
-    /// `result_type: Type::Geometry`.  `infer_traits_for_expr_in_env` dispatches
-    /// on `expr.kind` (not `cell_type`), so the `FunctionCall` arm fires and
-    /// returns `combine_difference(all(), all()) = bounded_only()`.
-    #[test]
-    fn lookup_chained_noncyclic_let_propagates_terminal_traits() {
-        use std::cell::RefCell;
-
-        // box_expr: FunctionCall("box", [], Geometry) → InferredTraits::all()
-        let box_expr = CompiledExpr {
-            kind: CompiledExprKind::FunctionCall {
-                function: ResolvedFunction {
-                    name: "box".to_string(),
-                    qualified_name: "std::box".to_string(),
-                },
-                args: vec![],
-            },
-            result_type: Type::Geometry,
-            content_hash: ContentHash(0),
-        };
-
-        // diff_expr: FunctionCall("difference", [box, box]) → bounded_only()
-        let diff_expr = CompiledExpr {
-            kind: CompiledExprKind::FunctionCall {
-                function: ResolvedFunction {
-                    name: "difference".to_string(),
-                    qualified_name: "std::difference".to_string(),
-                },
-                args: vec![box_expr.clone(), box_expr],
-            },
-            result_type: Type::Geometry,
-            content_hash: ContentHash(0),
-        };
-
-        let g_id = ValueCellId::new("E", "g");
-        let h_id = ValueCellId::new("E", "h");
-
-        // g: Let Real = ValueRef(h)  — bridges g into the value_cells fallback
-        let g_cell = let_cell_with_ref(g_id.clone(), h_id.clone());
-        // h: Let Real = difference(box(), box())  — terminal, resolves to bounded_only()
-        let h_cell = ValueCellDecl {
-            id: h_id,
-            kind: ValueCellKind::Let,
-            visibility: Visibility::Private,
-            is_aux: false,
-            cell_type: Type::dimensionless_scalar(),
-            default_expr: Some(diff_expr),
-            solver_hints: vec![],
-            span: SourceSpan::empty(0),
-        };
-
-        let template = minimal_template("E", vec![g_cell, h_cell]);
-        let mut templates = HashMap::new();
-        templates.insert("E".to_string(), &template);
-
-        let env = RealizationLetEnv {
-            templates: &templates,
-            in_flight: RefCell::new(Vec::new()),
-        };
-
-        assert_eq!(
-            env.lookup(&g_id),
-            Some(InferredTraits::bounded_only()),
-            "non-cyclic chain g→h→difference(box,box) must propagate bounded_only(), \
-             not short-circuit to all() via premature cycle-guard firing"
-        );
     }
 
     /// Regression for task-2543 / task-2458: `check_trait_arg_conformance` must
