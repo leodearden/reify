@@ -18,5 +18,11 @@ mod input_validation;
 mod kernel_contract;
 #[path = "harness_occt_kernel/lifecycle.rs"]
 mod lifecycle;
+#[path = "harness_occt_kernel/modify_ops.rs"]
+mod modify_ops;
 #[path = "harness_occt_kernel/support.rs"]
 mod support;
+#[path = "harness_occt_kernel/sweeps.rs"]
+mod sweeps;
+#[path = "harness_occt_kernel/transforms_patterns.rs"]
+mod transforms_patterns;
