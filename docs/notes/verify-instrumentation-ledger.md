@@ -171,8 +171,14 @@ them, parsed by `scripts/verify_events_lib.py`. The record schema is
 `tests/infra/README.md` "Verify event channel". A step that wrote no step file
 has no `run_all` key.
 
-`summary` is `{run_id, branch, discovered, phases}`, from the first
-`run_start` and the `phase_finish` records, or `null` when there is no
+The block describes one run: the step file's first `run_start` and the
+records sharing its `pid`, through that run's `run_finish`. A step file with
+no `run_start` folds every record. One file can hold several runs, because a
+step member that runs nested `run_all.sh` fixtures passes the step file on
+to them.
+
+`summary` is `{run_id, branch, discovered, phases}`, from the run's
+`run_start` and `phase_finish` records, or `null` when there is no
 `run_start`. `run_id` is run_all.sh's own `<epoch>-<pid>`, and `branch` is
 `pool`, `serial`, `subset` or `host-infra`. `phases` is
 `{<phase>: {began_at, ended_at}}`: `pool`, `serial` and `retry` on the pool
@@ -311,6 +317,12 @@ anything in it.
   Phase 3), so neither appears in the block.
 - **A run killed with SIGKILL** (or any kill that skips the traps) leaves no
   record.
+- **The `infra_selective` step's `run_all` block** can describe a fixture
+  run. That leaf removes only `REIFY_VERIFY_EVENT_LOG` from the
+  `tests/infra/test_*.sh` members it spawns. A member that runs `run_all.sh`
+  fixtures without scrubbing the step's `REIFY_RUN_ALL_TIMING_OUT`
+  (`test_run_all.sh` does not scrub it) copies their records to the step
+  file, and the block folds the first of them.
 - **Fingerprint scan scope:** only `target/debug` and `target/release`;
   cross-target triples are not scanned.
 - **Concurrency counts are point samples** at the two edges of a step, not

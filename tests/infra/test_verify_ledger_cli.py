@@ -288,14 +288,15 @@ class JournalFixture:
         )
 
 
-def c2(event, **fields):
+def c2(event, pid=1, **fields):
     """One C2 event-channel record line (tests/infra/README.md "Verify event channel")."""
-    return json.dumps({"v": 1, "ts_ns": 1, "pid": 1, "event": event, **fields})
+    return json.dumps({"v": 1, "ts_ns": 1, "pid": pid, "event": event, **fields})
 
 
-def c2_member_finish(member, attempt, verdict, rc, queued_ns, started_ns, ended_ns):
+def c2_member_finish(member, attempt, verdict, rc, queued_ns, started_ns, ended_ns, pid=1):
     return c2(
         "member_finish",
+        pid=pid,
         member=member,
         attempt=attempt,
         rc=rc,
@@ -487,6 +488,58 @@ class RecordTests(unittest.TestCase):
         self.assertNotIn("run_all", steps[1])
         self.assertIsNone(steps[2]["run_all"]["summary"])
         self.assertEqual([m["name"] for m in steps[2]["run_all"]["members"]], ["test_d.sh"])
+
+    def test_a_step_file_holding_several_runs_folds_only_the_first(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        journal.run_steps(8)
+        first, nested, later = 100, 200, 300
+
+        def phase(name, pid, at_secs):
+            started_ns = S + at_secs * 1_000_000_000
+            return c2("phase_finish", pid=pid, phase=name, started_ns=started_ns,
+                      ended_ns=started_ns + 1_000_000_000)
+
+        def member(name, pid):
+            return c2_member_finish(name, 1, "PASS", 0, None, S, S, pid=pid)
+
+        def run_finish(pid):
+            return c2("run_finish", pid=pid, discovered=1, failures=0, failed=[], flaky=[],
+                      skipped=[], interrupted=False, names_omitted=0)
+
+        lines = [
+            c2("run_start", pid=first, run_id="ra-first", scope="all", branch="pool", discovered=2),
+            member("test_first_a.sh", first),
+            phase("pool", first, 0),
+            c2("run_start", pid=nested, run_id="ra-nested", scope="all", branch="serial", discovered=1),
+            member("test_nested.sh", nested),
+            phase("serial", nested, 10),
+            run_finish(nested),
+            phase("serial", first, 20),
+            member("test_first_b.sh", first),
+            run_finish(first),
+            c2("run_start", pid=later, run_id="ra-later", scope="all", branch="pool", discovered=1),
+            member("test_later.sh", later),
+            phase("retry", later, 30),
+            c2("run_start", pid=first, run_id="ra-pid-reused", scope="all", branch="pool", discovered=1),
+            member("test_pid_reused.sh", first),
+            phase("retry", first, 40),
+        ]
+        (journal.dir / "step-0.run-all.jsonl").write_text("\n".join(lines) + "\n")
+        proc = journal.finalize(self.ledger, 0)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        (record,) = ledger_records(self.ledger)
+        run_all = record["steps"][0]["run_all"]
+        self.assertEqual(run_all["summary"]["run_id"], "ra-first")
+        self.assertEqual(
+            run_all["summary"]["phases"],
+            {
+                "pool": {"began_at": 1700000000.0, "ended_at": 1700000001.0},
+                "serial": {"began_at": 1700000020.0, "ended_at": 1700000021.0},
+            },
+        )
+        self.assertEqual(
+            [m["name"] for m in run_all["members"]], ["test_first_a.sh", "test_first_b.sh"]
+        )
 
     def test_finalize_is_once_only(self):
         journal = JournalFixture(self, BASE_PLAN)

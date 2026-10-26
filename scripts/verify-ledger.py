@@ -238,14 +238,36 @@ def ns_to_secs(ns):
 
 def fold_run_all(records):
     """run_all.sh's C2 records as the step's run_all block: {summary, members}."""
+    run = first_run(records)
     return {
-        "summary": run_all_summary(records),
-        "members": [run_all_member(r) for r in records if r.get("event") == "member_finish"],
+        "summary": run_all_summary(run),
+        "members": [run_all_member(r) for r in run if r.get("event") == "member_finish"],
     }
 
 
+def first_run(records):
+    """The first run_start's own records, through its run_finish; every record without one.
+
+    A step member that runs nested run_all.sh fixtures passes the step file on
+    to them, so one file can interleave several runs. Each run's records share
+    the pid of its run_start.
+    """
+    start = next((i for i, r in enumerate(records) if r.get("event") == "run_start"), None)
+    if start is None:
+        return list(records)
+    pid = records[start].get("pid")
+    run = []
+    for record in records[start:]:
+        if record.get("pid") != pid:
+            continue
+        run.append(record)
+        if record.get("event") == "run_finish":
+            break
+    return run
+
+
 def run_all_summary(records):
-    """The first run_start's identity plus each phase's window; None without a run_start."""
+    """The run's run_start identity plus each phase's window; None without a run_start."""
     run_start = next((r for r in records if r.get("event") == "run_start"), None)
     if run_start is None:
         return None
