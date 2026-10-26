@@ -390,8 +390,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
-    // its own --fused-memory-url, --runs-db, and --project-root before forwarding $@
-    // which may include caller-supplied overrides), the last occurrence wins.
+    // its own --runs-db and --project-root before forwarding $@, which may
+    // include caller-supplied overrides), the last occurrence wins.
     // The wrapper relies on this contract: it prepends its defaults so that
     // any flag in the caller's $@ implicitly overrides the wrapper-supplied
     // value without requiring the wrapper to parse and strip $@.

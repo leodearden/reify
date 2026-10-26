@@ -286,7 +286,7 @@ fi
 #
 # The target is $RAW_BIN and MUST NOT follow the hook env var, even though the
 # two were the same path historically. Routing 4a/4b through the wrapper would
-# prepend the wrapper's OWN --fused-memory-url/--runs-db/--project-root ahead
+# prepend the wrapper's OWN --runs-db/--project-root ahead
 # of the seeded fixture's flags, leaving the fixture's --runs-db and
 # --project-root to win only by reify-audit's last-wins argument precedence —
 # so the round-trip would stop proving how the binary itself handles an

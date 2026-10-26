@@ -98,14 +98,17 @@ assert "wrapper with flag-shaped --task value emits usage hint to stderr" \
 # ==============================================================================
 # The wrapper fetches no task corpus itself: it hands the task to reify-audit,
 # whose own fused-memory loader fetches the one flipping task with get_task. So
-# the child's argv names the MCP endpoint (--fused-memory-url) and never a
-# --tasks-file, and neither curl nor jq ever runs.
+# the child's argv never names a --tasks-file, and neither curl nor jq ever
+# runs. The endpoint is reify-audit's one setting, FUSED_MEMORY_URL (default in
+# its --help): the wrapper passes no --fused-memory-url of its own, so the env
+# var reaches the child unshadowed and the default lives in the binary alone.
 #
 # Tripwire curl/jq shims on PATH record any call and exit 97, so a wrapper that
 # fetched or filtered a snapshot again fails 5f/5g (and, in practice, 5a-5e and
 # 5h too, since the snapshot arm exits 125 before the child runs). The
-# reify-audit stub records its argv, one token per line, and exits 0, so the
-# wrapper's rc is the child's. It is freshly created, so the freshness guard
+# reify-audit stub records its argv, one token per line, and the
+# FUSED_MEMORY_URL it inherited, then exits 0, so the wrapper's rc is the
+# child's. It is freshly created, so the freshness guard
 # stays silent (that is Check 7/9's territory), and the advisory sentinel is
 # redirected into this check's tmpdir so it can never stamp the host-wide path.
 echo ""
@@ -126,6 +129,7 @@ done
 cat > "$LIVE_TMPDIR/reify-audit" <<'ARGV_STUB_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$ARGV_OUT"
+printf '%s' "${FUSED_MEMORY_URL-<unset>}" > "$ARGV_OUT.url"
 exit 0
 ARGV_STUB_EOF
 chmod +x "$LIVE_TMPDIR/reify-audit"
@@ -154,7 +158,7 @@ _argv_pair() {
 _argv_follows_wrapper_defaults() {
     local _token_at _default _default_at
     _token_at=$(_argv_index "$1" "$2") || return 1
-    for _default in --fused-memory-url --runs-db --project-root; do
+    for _default in --runs-db --project-root; do
         _default_at=$(_argv_index "$1" "$_default") || return 1
         [ "$_default_at" -lt "$_token_at" ] || return 1
     done
@@ -163,7 +167,7 @@ _argv_follows_wrapper_defaults() {
 set +e
 PATH="$LIVE_TMPDIR:$PATH" \
     ARGV_OUT="$LIVE_ARGV" \
-    FUSED_MEMORY_MCP_URL="$LIVE_URL" \
+    FUSED_MEMORY_URL="$LIVE_URL" \
     REIFY_AUDIT_BIN="$LIVE_TMPDIR/reify-audit" \
     REIFY_AUDIT_ADVISORY_SENTINEL="$LIVE_TMPDIR/sentinel" \
     bash "$WRAPPER" --task 4242 --pre-done >/dev/null 2>&1
@@ -173,8 +177,11 @@ set -e
 assert "5a: wrapper exits with the child's rc 0 (no 125 snapshot arm)" \
     bash -c 'test "$1" -eq 0' -- "$live_rc"
 
-assert "5b: child argv carries --fused-memory-url $LIVE_URL (FUSED_MEMORY_MCP_URL)" \
-    _argv_pair "$LIVE_ARGV" --fused-memory-url "$LIVE_URL"
+assert "5b: the wrapper passes no --fused-memory-url of its own" \
+    bash -c '[ -f "$1" ] && ! grep -qxF -e --fused-memory-url "$1"' -- "$LIVE_ARGV"
+
+assert "5b: the child inherits FUSED_MEMORY_URL=$LIVE_URL unshadowed" \
+    bash -c '[ "$(cat "$1")" = "$2" ]' -- "$LIVE_ARGV.url" "$LIVE_URL"
 
 assert "5c: child argv carries no --tasks-file" \
     bash -c '[ -f "$1" ] && ! grep -qxF -e --tasks-file "$1"' -- "$LIVE_ARGV"
@@ -200,11 +207,10 @@ assert "5f: curl was never invoked" \
 assert "5g: jq was never invoked" \
     bash -c '[ -f "$1" ] && [ ! -e "$2" ]' -- "$LIVE_ARGV" "$LIVE_TMPDIR/jq.called"
 
-# 5h: the production systemd unit sets no FUSED_MEMORY_MCP_URL, so the default
-# is what the live hook uses. No trailing slash: /mcp/ 307-redirects and drops
-# the mcp-session-id header.
+# 5h: the production systemd unit sets no FUSED_MEMORY_URL, so the live hook
+# uses reify-audit's own default (pinned in crates/reify-audit, not here).
 set +e
-env -u FUSED_MEMORY_MCP_URL \
+env -u FUSED_MEMORY_URL \
     PATH="$LIVE_TMPDIR:$PATH" \
     ARGV_OUT="$LIVE_ARGV_DEFAULT" \
     REIFY_AUDIT_BIN="$LIVE_TMPDIR/reify-audit" \
@@ -212,8 +218,8 @@ env -u FUSED_MEMORY_MCP_URL \
     bash "$WRAPPER" --task 4242 --pre-done >/dev/null 2>&1
 set -e
 
-assert "5h: with FUSED_MEMORY_MCP_URL unset the child gets --fused-memory-url http://localhost:8002/mcp" \
-    _argv_pair "$LIVE_ARGV_DEFAULT" --fused-memory-url http://localhost:8002/mcp
+assert "5h: with FUSED_MEMORY_URL unset the child gets no endpoint, so its own default applies" \
+    bash -c '[ -f "$1" ] && ! grep -qxF -e --fused-memory-url "$1" && [ "$(cat "$1.url")" = "<unset>" ]' -- "$LIVE_ARGV_DEFAULT"
 
 # ==============================================================================
 # Check 6: exit-code propagation under `set -e`

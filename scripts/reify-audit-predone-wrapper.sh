@@ -15,9 +15,12 @@
 # What the wrapper still owns:
 #   - self-location, so the hook works from any checkout;
 #   - the fail-open freshness guard and its durable advisory channel;
-#   - the --fused-memory-url / --runs-db / --project-root defaults, prepended
-#     ahead of the caller's argv so that a caller's own copy wins (reify-audit
-#     parses duplicate flags last-wins).
+#   - the --runs-db / --project-root defaults, prepended ahead of the caller's
+#     argv so that a caller's own copy wins (reify-audit parses duplicate flags
+#     last-wins).
+# The fused-memory endpoint is NOT one of them: reify-audit owns it
+# (FUSED_MEMORY_URL, else its built-in default), and the wrapper passes no
+# --fused-memory-url, so that env var reaches the binary unshadowed.
 #
 # DESIGN REFERENCE
 # ----------------
@@ -82,8 +85,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 
 # ── Constants ────────────────────────────────────────────────────────────────
-# No trailing slash: /mcp/ 307-redirects and drops the mcp-session-id header.
-MCP_URL="${FUSED_MEMORY_MCP_URL:-http://localhost:8002/mcp}"
 REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-/home/leo/.cargo/bin/reify-audit}"
 RUNS_DB="${REIFY_AUDIT_RUNS_DB:-$REPO_ROOT/data/orchestrator/runs.db}"
 # One-line durable stamp for whatever the freshness guard says; see the
@@ -104,10 +105,11 @@ Required flags (passed through to reify-audit):
   --task <id>        Task id to check
   --pre-done         Run P5 pre-done check only
 
-Optional flags (passed through to reify-audit; each overrides the wrapper default):
+Optional flags (passed through to reify-audit; each overrides its default):
   --since <date>     Window sweep from ISO date
   --pattern P1|P2|P5 Restrict to one detector
-  --fused-memory-url <url> Override the MCP endpoint (default: $MCP_URL)
+  --fused-memory-url <url> Override the MCP endpoint (default: reify-audit's own;
+                     see reify-audit --help)
   --runs-db <path>   Override runs.db (default: $RUNS_DB)
   --project-root <path> Override repo root (default: $REPO_ROOT)
 
@@ -115,8 +117,8 @@ Wrapper-local flags (NOT passed to reify-audit):
   --help, -h         Show this help and exit 0
 
 Environment overrides:
-  FUSED_MEMORY_MCP_URL       MCP endpoint, passed as --fused-memory-url
-                             (default: $MCP_URL)
+  FUSED_MEMORY_URL           MCP endpoint, read by reify-audit itself (the
+                             wrapper passes no --fused-memory-url of its own)
   REIFY_AUDIT_BIN            Path to reify-audit binary (default: $REIFY_AUDIT_BIN)
   REIFY_AUDIT_RUNS_DB        Path to runs.db (default: $RUNS_DB)
   REIFY_AUDIT_FRESHNESS_STRICT  Set to 1 to REFUSE (125) on a stale binary
@@ -282,8 +284,8 @@ fi
 # ── Invoke reify-audit's live loader ────────────────────────────────────────
 # Wrapper defaults first, the caller's "$@" last and unconsumed: reify-audit
 # parses duplicate flags last-wins (tests/cli.rs duplicate_flags_last_wins), so
-# a caller's own --fused-memory-url/--runs-db/--project-root overrides these
-# without the wrapper having to parse $@.
+# a caller's own --runs-db/--project-root overrides these without the wrapper
+# having to parse $@. No --fused-memory-url: reify-audit owns the endpoint.
 #
 # Idiomatic exit-code forwarding under `set -e`: reify-audit deliberately
 # returns 1-254 to indicate the count of High-severity findings (the EXPECTED
@@ -296,7 +298,6 @@ fi
 # reachable. See task 3731 review cycle 2.
 rc=0
 "$REIFY_AUDIT_BIN" \
-    --fused-memory-url "$MCP_URL" \
     --runs-db "$RUNS_DB" \
     --project-root "$REPO_ROOT" \
     "$@" || rc=$?
