@@ -54,15 +54,16 @@ impl GroupSpec {
         if let Some(group) = seed_ratios.iter().position(|&r| r == 0.0) {
             return Err(GroupSpecDefect::ZeroSeed { group });
         }
-        let mut spec = Self {
+        let signs: Vec<f64> = seed_ratios.iter().map(|r| r.signum()).collect();
+        let seed_magnitudes: Vec<f64> = seed_ratios.iter().map(|r| r.abs()).collect();
+        let seed_densities = member_densities(group_ids, &signs, &seed_magnitudes);
+        Ok(Self {
             group_ids: group_ids.to_vec(),
-            signs: seed_ratios.iter().map(|r| r.signum()).collect(),
-            seed_magnitudes: seed_ratios.iter().map(|r| r.abs()).collect(),
+            signs,
+            seed_magnitudes,
             reference_group,
-            seed_densities: Vec::new(),
-        };
-        spec.seed_densities = spec.densities(&spec.seed_magnitudes);
-        Ok(spec)
+            seed_densities,
+        })
     }
 
     /// Per-member group id, parallel to `members`.
@@ -96,11 +97,17 @@ impl GroupSpec {
     /// Per-member density at per-group `magnitudes` (indexed by group id):
     /// member `i`'s group's seed sign times that group's magnitude.
     pub(crate) fn densities(&self, magnitudes: &[f64]) -> Vec<f64> {
-        self.group_ids
-            .iter()
-            .map(|&g| self.signs[g] * magnitudes[g])
-            .collect()
+        member_densities(&self.group_ids, &self.signs, magnitudes)
     }
+}
+
+/// Per-member density: member `i`'s group's sign times that group's magnitude,
+/// both indexed by group id.
+fn member_densities(group_ids: &[usize], signs: &[f64], magnitudes: &[f64]) -> Vec<f64> {
+    group_ids
+        .iter()
+        .map(|&g| signs[g] * magnitudes[g])
+        .collect()
 }
 
 #[cfg(test)]

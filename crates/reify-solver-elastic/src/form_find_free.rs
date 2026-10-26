@@ -46,7 +46,7 @@ use crate::form_find::{
     ZeroAreaTriangle, free_equilibrium_residual_relative, member_axial_forces,
     scatter_surface_stencils,
 };
-use crate::group_spec::{GroupSpec, GroupSpecDefect};
+use crate::group_spec::GroupSpec;
 use faer::Mat;
 use faer::mat::MatRef;
 
@@ -148,12 +148,6 @@ impl From<ForceDensityInputError> for FreeFormError {
     }
 }
 
-impl From<GroupSpecDefect> for FreeFormError {
-    fn from(defect: GroupSpecDefect) -> Self {
-        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(defect))
-    }
-}
-
 impl From<SpectrumError> for FreeFormError {
     fn from(e: SpectrumError) -> Self {
         FreeFormError::Spectrum(e)
@@ -188,7 +182,10 @@ pub fn form_find_free(
 
 /// The densities `spec` leaves free to vary, validated: an explicit `q` as
 /// given, or a [`ForceDensitySpec::GroupRatios`] spec that can seed the search.
-fn free_spec(spec: &ForceDensitySpec, n_members: usize) -> Result<FreeSpec<'_>, GroupSpecDefect> {
+fn free_spec(
+    spec: &ForceDensitySpec,
+    n_members: usize,
+) -> Result<FreeSpec<'_>, ForceDensityInputError> {
     match spec {
         ForceDensitySpec::Explicit(q) => Ok(FreeSpec::Explicit(q)),
         ForceDensitySpec::GroupRatios {
@@ -1276,6 +1273,7 @@ fn recover_coordinates(
 mod tests {
     use super::*;
     use crate::form_find::IndexedInput;
+    use crate::group_spec::GroupSpecDefect;
 
     /// The complete 9-cable triplex (triangular antiprism / T-prism): 6 nodes,
     /// 3 struts + 9 cables (3 top, 3 bottom, 3 vertical), in struts-then-cables
