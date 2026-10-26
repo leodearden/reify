@@ -5987,58 +5987,6 @@ impl Engine {
             }
         }
 
-        // Self-datum projection pass (geometric-relations η, task 4387).
-        //
-        // `self.origin / .frame / .x / .y / .z / .xy_plane / .yz_plane /
-        // .zx_plane` lower to a `MethodCall` on the `__self` StructureRef ref
-        // (η step-8). There is no `__self` value cell at eval time, so the pure
-        // `eval_expr` short-circuits each projection to `Undef` during the main
-        // pass. Here we rewrite every such projection node to its intrinsic
-        // identity-frame constant (kernel-free) and re-evaluate the containing
-        // Let cell — mirroring the structural-query expansion above. The rewrite
-        // is a full tree-walk, so nested operands resolve too (e.g.
-        // `midplane(self.xy_plane, self.zx_plane)`).
-        for template in &module.templates {
-            for cell in &template.value_cells {
-                if !matches!(cell.kind, ValueCellKind::Let) {
-                    continue;
-                }
-                let expr = match &cell.default_expr {
-                    Some(e) => e,
-                    None => continue,
-                };
-                if !crate::geometry_ops::contains_self_datum_projection(expr) {
-                    continue;
-                }
-                let mut rewritten = expr.clone();
-                crate::geometry_ops::rewrite_self_datum_projections(&mut rewritten);
-                let val = reify_expr::eval_expr(
-                    &rewritten,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                        .with_determinacy(&snapshot.values),
-                );
-                // Commit-only migration (task γ #5053, impl-5): the
-                // determinacy-only eval ctx above is left as-is. CacheLeg::Skip
-                // makes the pre-existing no-cache decision explicit + auditable
-                // instead of silently omitting the cache leg.
-                commit_cell_result(
-                    CommitLegs {
-                        values: &mut values,
-                        snapshot_values: &mut snapshot.values,
-                        cache: &mut self.cache,
-                        journal: &mut self.journal,
-                    },
-                    cell.id.clone(),
-                    val,
-                    DeterminacyRule::UnconditionalDetermined,
-                    TraceSource::PostPassOverwrite,
-                    DependencyTrace::default(),
-                    version,
-                    CacheLeg::Skip("self-datum projection overwrite"),
-                );
-            }
-        }
-
         // Resolution phase: resolve auto params using the constraint solver.
         //
         // `resolve_solver_for_module` consults `module.solver_pragma` against the
@@ -6070,7 +6018,7 @@ impl Engine {
         // `cost(self.descendants)` is expanded).
         //
         // PRECONDITION — `values` is fully populated here: the field, Param+Let,
-        // Auto-preseed, sub-component, structural-query and self-datum phases
+        // Auto-preseed, sub-component and structural-query phases
         // have all run above, so the `__count_*` collection cells cluster-time
         // `enumerate_descendants` needs are live (the same precondition the
         // Let-cell structural-query pass above documents). Autos are still

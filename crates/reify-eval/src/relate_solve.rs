@@ -578,8 +578,8 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
 /// StructureRef), method, [] }` (η step-8/10) — distinct from a `<sub>.<member>`
 /// `IndexAccess` (which [`decode_operand`] owns). So a no-arg `MethodCall` on a
 /// `StructureRef`-typed receiver is the `self` anchor operand. Mirrors the
-/// self-datum discriminator the compiler's `classify` / eval's
-/// `try_eval_self_datum_projection` use.
+/// self-datum discriminator the compiler's `classify` / reify-expr's
+/// `eval_self_datum_projection` use.
 ///
 /// The member name is carried rather than a bare `bool` so the zero-auto verifier
 /// can NAME the operand (`self.frame`) it could not compare against; the two
