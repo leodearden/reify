@@ -52,6 +52,8 @@ fn language_reference_all_topics_return_non_empty_content() {
         .as_str()
         .expect("help content should be a string");
 
+    // A row dropped from CHUNKS is caught by reify-compiler's fence_gate check 4
+    // (its chunk file goes unserved), not here: this loop reads the registry.
     let topics = available_topics();
     assert!(
         !topics.is_empty(),
