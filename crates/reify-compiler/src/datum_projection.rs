@@ -177,6 +177,7 @@ pub(crate) fn datum_projection_unavailable_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::ValueCellId;
     use reify_expr::{EvalContext, eval_expr};
     use reify_ir::{CompiledExpr, Value, ValueMap};
     use reify_test_support::{
@@ -380,9 +381,9 @@ mod tests {
     /// reify-expr's public `eval_expr`, to a value of its codomain's kind, so a
     /// member typed here without an eval arm reds instead of evaluating to a
     /// silent `Undef` — the drift that left `Frame.yz_plane`/`.zx_plane` typed
-    /// `Plane` while they evaluated `Undef`. Feature receivers
-    /// (`Geometry`/`Selector`) are excluded: their projections are kernel-backed
-    /// in reify-eval, not pure.
+    /// `Plane` while they evaluated `Undef`. Covers the datum receivers and the
+    /// `self` (`StructureRef`) anchor; feature receivers (`Geometry`/`Selector`)
+    /// are excluded: their projections are kernel-backed in reify-eval, not pure.
     #[test]
     fn every_resolved_datum_projection_evaluates_to_its_codomain_kind() {
         let literal = |value: Value, ty: Type| (ty.clone(), CompiledExpr::literal(value, ty));
@@ -407,6 +408,15 @@ mod tests {
             literal(
                 frame_val(point3(4.0, 5.0, 6.0), orientation_val(0.5, 0.5, 0.5, 0.5)),
                 Type::Frame(3),
+            ),
+            // The `self` anchor, exactly as expr.rs lowers `self.<datum>`: a ref
+            // to the `__self` cell, which never exists at eval time.
+            (
+                Type::StructureRef("S".to_string()),
+                CompiledExpr::value_ref(
+                    ValueCellId::new("S", "__self"),
+                    Type::StructureRef("S".to_string()),
+                ),
             ),
         ];
         let values = ValueMap::new();

@@ -519,16 +519,14 @@ fn self_datum_projection_post_pass_cache_skip_audit() {
          commit_cell_result with CacheLeg::Skip"
     );
 
-    // (2) The Skip leg must not write/update the cache entry with the
-    // post-pass's fresh value (see the equivalent structural-query comment
-    // above for why a literal is_none() check does not hold here either).
+    // (2) `self.xy_plane` is a pure value (task #6100), so the main pass
+    // already evaluates `p` to its Plane: any cache entry holds that Plane.
     match engine.cache_store().get(&NodeId::Value(p_id.clone())) {
         None => {}
         Some(entry) => match &entry.result {
             CachedResult::Value(val, _) => assert!(
-                !matches!(val, Value::Plane { .. }),
-                "the self-datum post-pass's CacheLeg::Skip commit must not \
-                 have written its fresh Plane value into the cache leg, got {val:?}"
+                matches!(val, Value::Plane { .. }),
+                "the main pass's cache entry for p should hold its Plane, got {val:?}"
             ),
             other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
         },
@@ -542,13 +540,11 @@ fn self_datum_projection_post_pass_cache_skip_audit() {
          projection result must be unchanged by the migration), got {:?}",
         result.values.get(&p_id)
     );
-    // Regression guard on the UNRELATED main-pass short-circuit determinacy
-    // (mirrors ms_det) — must stay false across this migration.
+    // A consumer evaluated in the main pass reads p's Plane (task #6100).
     assert_eq!(
         result.values.get(&p_det_id),
-        Some(&Value::Bool(false)),
-        "p_det reads p's PRE-rewrite main-pass state (Undef, Determined), \
-         unrelated to and unaffected by the post-pass migration"
+        Some(&Value::Bool(true)),
+        "p_det reads the main pass's p, which is already its Plane"
     );
 }
 
@@ -764,12 +760,12 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 /// re-serve carries it forward verbatim instead of resetting it to `Final`.
 ///
 /// B3 — consolidated `CacheLeg::Skip` audit: re-asserts, in one place, that
-/// each of the three post-pass sites migrated at impl-4/5/6 (structural-query,
-/// self-datum projection, annotation-args materialization) carries its
+/// each of the two post-pass sites migrated at impl-4/6 (structural-query,
+/// annotation-args materialization) carries its
 /// `|cache-skip=<reason>` marker on the LAST Started event for its cell, and
 /// that the Skip leg did not overwrite the pre-existing cache entry with its
-/// fresh value. Cold-only (`engine.eval()`) — none of these three post-passes
-/// run during `eval_cached`. Mirrors test-4/5/6's "stale, not absent" cache
+/// fresh value. Cold-only (`engine.eval()`) — neither post-pass
+/// runs during `eval_cached`. Mirrors test-4/6's "stale, not absent" cache
 /// check exactly: a cache entry already exists from each cell's own
 /// preceding, unmigrated main-pass evaluation, so "no cache entry exists for
 /// it" does not hold literally — the journal's cache-skip marker is the
@@ -878,7 +874,7 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
          freshness parity above is measured on the RecordPropagating path"
     );
 
-    // ── B3: consolidated CacheLeg::Skip audit across the 3 post-pass sites ──
+    // ── B3: consolidated CacheLeg::Skip audit across the 2 post-pass sites ──
 
     // structural-query post-pass (impl-4).
     {
@@ -903,30 +899,6 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
                     Value::List(vec![]),
                     "structural-query post-pass's CacheLeg::Skip commit must not have \
                      written its fresh value into the cache leg"
-                ),
-                other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
-            },
-        }
-    }
-
-    // self-datum projection post-pass (impl-5).
-    {
-        let module = parse_and_compile(SELF_DATUM_SRC);
-        let mut engine = make_engine();
-        engine.eval(&module);
-        let p_id = ValueCellId::new("S", "p");
-        assert_eq!(
-            last_started_payload(&engine, &p_id),
-            Some("post-pass-overwrite|cache-skip=self-datum projection overwrite".to_string()),
-            "self-datum post-pass: LAST Started event for p should carry its cache-skip marker"
-        );
-        match engine.cache_store().get(&NodeId::Value(p_id.clone())) {
-            None => {}
-            Some(entry) => match &entry.result {
-                CachedResult::Value(val, _) => assert!(
-                    !matches!(val, Value::Plane { .. }),
-                    "self-datum post-pass's CacheLeg::Skip commit must not have written \
-                     its fresh Plane value into the cache leg, got {val:?}"
                 ),
                 other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
             },
