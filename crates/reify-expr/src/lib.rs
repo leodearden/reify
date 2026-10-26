@@ -50,7 +50,7 @@ use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 use reify_core::scalar_tolerance::scalars_equal;
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
-use datum_projection::{datum_vec3, eval_datum_projection};
+use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -929,6 +929,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         } => {
             if !args.is_empty() {
                 return Value::Undef;
+            }
+            // `self.<datum>` projects the structure's identity frame; its
+            // `__self` receiver has no cell to evaluate.
+            if let Some(datum) = eval_self_datum_projection(&object.result_type, method) {
+                return datum;
             }
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
@@ -3373,7 +3378,8 @@ fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
 fn eval_method_call(obj: &Value, method: &str, result_type: &Type) -> Value {
     // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
     // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane/.yz_plane/.zx_plane`,
-    // `direction.x/.y/.z`.
+    // `direction.x/.y/.z`. (`self.<datum>` is answered before its receiver is
+    // evaluated, by `eval_self_datum_projection` in `eval_expr`.)
     // Dispatched ONLY for datum receivers, so the collection/tensor arms below
     // (including the `"x"|"y"|"z"` Tensor arm) are unaffected for everything
     // else: a non-datum receiver yields `None` here and falls through.

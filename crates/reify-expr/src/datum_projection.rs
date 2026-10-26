@@ -1,6 +1,7 @@
 //! Pure evaluation of datum-projection member access on datum values; the
 //! typing table lives in `crates/reify-compiler/src/datum_projection.rs`.
 
+use reify_core::Type;
 use reify_ir::Value;
 
 /// Extract three finite numeric components from a 3-component `Point` or
@@ -148,5 +149,42 @@ pub(crate) fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> 
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// A structure's own frame: the identity frame at the world origin.
+fn identity_frame() -> Value {
+    Value::Frame {
+        origin: Box::new(Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+        basis: Box::new(Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+    }
+}
+
+/// Evaluate an intrinsic `self.<member>` datum without evaluating its receiver.
+/// A structure's `self` is its own identity frame (geometric-relations η design
+/// §6), so `self.frame` is that frame and every other member is what the frame
+/// projects. The compiler lowers `self.<datum>` to a `MethodCall` on the
+/// `__self` `StructureRef` ref (expr.rs η arm), which has no cell at eval time;
+/// it is the only `MethodCall` with a `StructureRef` receiver, because a
+/// sub-ref's datums lower to `IndexAccess`. Returns `None` for any other
+/// receiver type or member, so structural-query accessors (`self.children`, …)
+/// fall through to their own expansion.
+#[inline(never)]
+pub(crate) fn eval_self_datum_projection(receiver_type: &Type, member: &str) -> Option<Value> {
+    if !matches!(receiver_type, Type::StructureRef(_)) {
+        return None;
+    }
+    match member {
+        "frame" => Some(identity_frame()),
+        _ => eval_datum_projection(&identity_frame(), member),
     }
 }
