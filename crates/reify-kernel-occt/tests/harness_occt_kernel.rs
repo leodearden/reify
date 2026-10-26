@@ -16,6 +16,8 @@ mod handle_step_export;
 mod input_validation;
 #[path = "harness_occt_kernel/kernel_contract.rs"]
 mod kernel_contract;
+#[path = "harness_occt_kernel/length_tripwire.rs"]
+mod length_tripwire;
 #[path = "harness_occt_kernel/lifecycle.rs"]
 mod lifecycle;
 #[path = "harness_occt_kernel/mass_properties.rs"]
