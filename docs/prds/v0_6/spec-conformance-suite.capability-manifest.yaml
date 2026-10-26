@@ -621,6 +621,7 @@ tasks:
       pattern: PBLESS
       paths:
       - crates/reify-audit/src/lib.rs
+      - crates/reify-audit/src/model.rs
       expect: present
 - label: ο
   task_id: 6774

@@ -261,7 +261,7 @@ no-lockstep-duplication invariant at four separate places.
 - **`pbless-is-trailing-quality-control-not-a-blocking-gate`** — Scope fence, deliberate: sampling re-adjudication rides /audit and is NON-blocking. Blocking on a sampled LLM re-adjudication would make merge outcomes non-deterministic. The blocking gate is ν's mechanical hash check.
   - verdict **PASS** · check: `grep -E 'PBLESS'` in `crates/reify-audit/src` → **present**
 - **`audit-pattern-registration-convention-is-live`** — G3: same convention as ζ — enum variant + module + dispatch arm + `--pattern` registration in crates/reify-audit, verified present for PTODO/PDOCCOVER at HEAD.
-  - verdict **PASS** · check: `grep -E 'PBLESS'` in `crates/reify-audit/src/lib.rs` → **present**
+  - verdict **PASS** · check: `grep -E 'PBLESS'` in `crates/reify-audit/src/lib.rs` or `crates/reify-audit/src/model.rs` → **present** (widened 2026-10-26: #8806 moved the Pattern enum into model.rs)
 
 ### ο — #6774 · spec-conformance ο: loud-rename unfaithful rungs + call-site migration ratchet
 
