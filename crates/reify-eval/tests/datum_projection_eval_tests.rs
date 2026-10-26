@@ -46,6 +46,25 @@ fn assert_direction(v: &Value, expected: [f64; 3]) {
     }
 }
 
+/// Assert `v` is a plane normal in the shape `decode_plane` requires — a
+/// 3-component `Value::Vector`, NOT a `Value::Direction` — close to `expected`.
+fn assert_vector_normal(v: &Value, expected: [f64; 3]) {
+    let comps = match v {
+        Value::Vector(comps) if comps.len() == 3 => [
+            comps[0].as_f64().expect("normal component 0 is numeric"),
+            comps[1].as_f64().expect("normal component 1 is numeric"),
+            comps[2].as_f64().expect("normal component 2 is numeric"),
+        ],
+        other => panic!("expected a 3-component Value::Vector normal, got {other:?}"),
+    };
+    assert!(
+        (comps[0] - expected[0]).abs() < EPS
+            && (comps[1] - expected[1]).abs() < EPS
+            && (comps[2] - expected[2]).abs() < EPS,
+        "expected normal {expected:?}, got {comps:?}",
+    );
+}
+
 /// Extract the three numeric components of a 3-component `Value::Point`.
 fn point_components(v: &Value) -> [f64; 3] {
     match v {
@@ -122,6 +141,31 @@ fn frame_xy_plane_projects_to_plane() {
     match &result {
         Value::Plane { origin, .. } => assert_point(origin, [4.0, 5.0, 6.0]),
         other => panic!("expected Value::Plane, got {other:?}"),
+    }
+}
+
+/// A frame's three principal planes, on a frame rotated 120° about (1,1,1)
+/// (frame x/y/z = world y/z/x). Every plane passes through the frame origin and
+/// takes its normal from the frame axis it is named against: xy → z, yz → x,
+/// zx → y. The three expected normals are pairwise distinct, so a transposed
+/// basis-axis index between two planes fails here.
+#[test]
+fn frame_principal_planes_project_on_a_rotated_frame() {
+    let cases = [
+        ("xy_plane", [1.0, 0.0, 0.0]),
+        ("yz_plane", [0.0, 1.0, 0.0]),
+        ("zx_plane", [0.0, 0.0, 1.0]),
+    ];
+    for (member, expected_normal) in cases {
+        let frame = frame_val(point3(4.0, 5.0, 6.0), orientation_val(0.5, 0.5, 0.5, 0.5));
+        let result = project(frame, Type::Frame(3), member, Type::Plane);
+        match &result {
+            Value::Plane { origin, normal } => {
+                assert_point(origin, [4.0, 5.0, 6.0]);
+                assert_vector_normal(normal, expected_normal);
+            }
+            other => panic!("frame.{member}: expected Value::Plane, got {other:?}"),
+        }
     }
 }
 

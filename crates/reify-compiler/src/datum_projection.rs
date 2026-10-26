@@ -177,6 +177,11 @@ pub(crate) fn datum_projection_unavailable_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_expr::{EvalContext, eval_expr};
+    use reify_ir::{CompiledExpr, Value, ValueMap};
+    use reify_test_support::{
+        axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
+    };
 
     /// `Point3<Length>` codomain shorthand used by the `.origin` projections.
     fn point3_length() -> Type {
@@ -348,6 +353,88 @@ mod tests {
             assert!(
                 DATUM_PROJECTION_MEMBERS.contains(&m),
                 "DATUM_PROJECTION_MEMBERS should contain {m:?}"
+            );
+        }
+    }
+
+    // ── task #6100: projection table ⇔ evaluator lockstep ──
+
+    /// Whether `v` has the kind of value `codomain` denotes, for every codomain a
+    /// datum receiver's `Resolved` arm yields. A codomain with no check here
+    /// panics, so a new codomain must extend this helper.
+    fn has_codomain_kind(v: &Value, codomain: &Type) -> bool {
+        match codomain {
+            Type::Direction => matches!(v, Value::Direction { .. }),
+            Type::Plane => matches!(
+                v,
+                Value::Plane { normal, .. } if matches!(&**normal, Value::Vector(c) if c.len() == 3)
+            ),
+            Type::Frame(_) => matches!(v, Value::Frame { .. }),
+            t if *t == point3_length() => matches!(v, Value::Point(c) if c.len() == 3),
+            t if *t == Type::dimensionless_scalar() => matches!(v, Value::Real(_)),
+            other => panic!("has_codomain_kind has no check for codomain {other}; extend it"),
+        }
+    }
+
+    /// Every `Resolved` row of the projection table evaluates, through
+    /// reify-expr's public `eval_expr`, to a value of its codomain's kind, so a
+    /// member typed here without an eval arm reds instead of evaluating to a
+    /// silent `Undef` — the drift that left `Frame.yz_plane`/`.zx_plane` typed
+    /// `Plane` while they evaluated `Undef`. Feature receivers
+    /// (`Geometry`/`Selector`) are excluded: their projections are kernel-backed
+    /// in reify-eval, not pure.
+    #[test]
+    fn every_resolved_datum_projection_evaluates_to_its_codomain_kind() {
+        let literal = |value: Value, ty: Type| (ty.clone(), CompiledExpr::literal(value, ty));
+        let receivers: Vec<(Type, CompiledExpr)> = vec![
+            literal(
+                axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0)),
+                Type::Axis,
+            ),
+            literal(
+                plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0)),
+                Type::Plane,
+            ),
+            literal(
+                Value::Direction {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Type::Direction,
+            ),
+            // 120° about (1,1,1): frame x/y/z = world y/z/x.
+            literal(
+                frame_val(point3(4.0, 5.0, 6.0), orientation_val(0.5, 0.5, 0.5, 0.5)),
+                Type::Frame(3),
+            ),
+        ];
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        for (receiver_ty, receiver) in &receivers {
+            let mut resolved = 0;
+            for member in DATUM_PROJECTION_MEMBERS {
+                let DatumProjectionResolution::Resolved(codomain) =
+                    datum_projection_result_type(receiver_ty, member)
+                else {
+                    continue;
+                };
+                resolved += 1;
+                let call = CompiledExpr::method_call(
+                    receiver.clone(),
+                    member.to_string(),
+                    vec![],
+                    codomain.clone(),
+                );
+                let value = eval_expr(&call, &ctx);
+                assert!(
+                    has_codomain_kind(&value, &codomain),
+                    "{receiver_ty}.{member} is typed {codomain} but evaluated to {value:?}"
+                );
+            }
+            assert!(
+                resolved > 0,
+                "receiver row {receiver_ty} resolved no member of DATUM_PROJECTION_MEMBERS"
             );
         }
     }
