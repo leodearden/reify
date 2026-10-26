@@ -2507,6 +2507,7 @@ impl Engine {
                             connector_type: _,
                             params: _,
                             port_mappings,
+                            directions_compatible,
                         } => {
                             // task 2690: per-element forall-Connect runtime
                             // re-emission. Mirrors the Constraint-arm shape:
@@ -2528,11 +2529,11 @@ impl Engine {
                             //     `compile_connection` on every count edit —
                             //     the same trade the Constraint arm makes for
                             //     `compile_expr`.
-                            //   * Synthetic compatibility constraint emits
-                            //     `Bool::True` literal — direction-check
-                            //     and `connector_sub`/`frame_constraint`
-                            //     auto-creation are out of scope for this
-                            //     task (per the task's "Out of scope" list).
+                            //   * The compatibility constraint's literal is
+                            //     `directions_compatible`. What this path
+                            //     keeps from `compile_connection`, and what
+                            //     it drops, is listed on
+                            //     `CompiledForallBody::Connect`.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
                                 t.variable, t.parent_entity, t.collection_sub_name, t_idx,
@@ -2541,8 +2542,10 @@ impl Engine {
                                 let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
                                 let id_hash = ContentHash::of_str(&format!("{}", cnid));
                                 let label = format!("forall_connect@{}[{}]", t.variable, i);
-                                let compat_expr =
-                                    CompiledExpr::literal(Value::Bool(true), Type::Bool);
+                                let compat_expr = CompiledExpr::literal(
+                                    Value::Bool(*directions_compatible),
+                                    Type::Bool,
+                                );
                                 let node = ConstraintNodeData {
                                     id: cnid.clone(),
                                     label: Some(label),
