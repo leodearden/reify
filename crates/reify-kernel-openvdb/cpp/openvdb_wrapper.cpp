@@ -10,6 +10,9 @@
 #include <openvdb/math/Transform.h>
 #include <openvdb/tools/MeshToVolume.h>
 #include <openvdb/tools/Interpolation.h>
+#include <openvdb/tools/Composite.h>
+#include <openvdb/tools/GridTransformer.h>
+#include <openvdb/tools/LevelSetUtil.h>
 #include <openvdb/io/File.h>
 #include <openvdb/Grid.h>
 
@@ -192,6 +195,92 @@ std::unique_ptr<OpenVdbGridHandle> dense_sdf_to_level_set_ffi(
     }
 
     return std::make_unique<OpenVdbGridHandle>(std::move(grid));
+}
+
+// ---------------------------------------------------------------------------
+// Level-set CSG (policy: the doc block above csg_union_ffi in the header)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+enum class CsgKind { Union, Difference, Intersection };
+
+void require_level_set(const openvdb::FloatGrid& grid, const char* fn, const char* role) {
+    if (grid.getGridClass() != openvdb::GRID_LEVEL_SET) {
+        throw std::runtime_error(
+            std::string(fn) + ": the " + role + " operand must be a level set; its grid class is " +
+            openvdb::GridBase::gridClassToString(grid.getGridClass()));
+    }
+    if (!(grid.background() > 0.0f)) {
+        throw std::runtime_error(
+            std::string(fn) + ": the " + role +
+            " operand must have a positive level-set background; got " +
+            std::to_string(grid.background()));
+    }
+}
+
+// `right` on `left`'s lattice: `right` itself when the transforms already
+// agree, otherwise a fresh level set resampled onto `left`'s transform with
+// `left`'s background. `right` is only read.
+openvdb::FloatGrid::ConstPtr aligned_to(
+    const openvdb::FloatGrid& left, const openvdb::FloatGrid::ConstPtr& right)
+{
+    if (left.constTransform() == right->constTransform()) {
+        return right;
+    }
+    openvdb::FloatGrid::Ptr resampled = openvdb::FloatGrid::create(left.background());
+    resampled->setTransform(left.constTransform().copy());
+    resampled->setGridClass(openvdb::GRID_LEVEL_SET);
+    openvdb::tools::resampleToMatch<openvdb::tools::BoxSampler>(*right, *resampled);
+    return resampled;
+}
+
+std::unique_ptr<OpenVdbGridHandle> level_set_csg(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b, CsgKind kind, const char* fn)
+{
+    ensure_initialized_cpp_side();
+    require_level_set(*a.grid, fn, "left");
+    require_level_set(*b.grid, fn, "right");
+    const openvdb::FloatGrid::ConstPtr right = aligned_to(*a.grid, b.grid);
+
+    openvdb::FloatGrid::Ptr result;
+    switch (kind) {
+    case CsgKind::Union:
+        result = openvdb::tools::csgUnionCopy(*a.grid, *right);
+        break;
+    case CsgKind::Difference:
+        result = openvdb::tools::csgDifferenceCopy(*a.grid, *right);
+        break;
+    case CsgKind::Intersection:
+        result = openvdb::tools::csgIntersectionCopy(*a.grid, *right);
+        break;
+    }
+    if (!result) {
+        throw std::runtime_error(std::string(fn) + ": OpenVDB CSG returned a null grid");
+    }
+    // Set on the fresh, unregistered result only (Sync audit, I-6).
+    result->setGridClass(openvdb::GRID_LEVEL_SET);
+    return std::make_unique<OpenVdbGridHandle>(std::move(result));
+}
+
+} // namespace
+
+std::unique_ptr<OpenVdbGridHandle> csg_union_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b)
+{
+    return level_set_csg(a, b, CsgKind::Union, "csg_union_ffi");
+}
+
+std::unique_ptr<OpenVdbGridHandle> csg_difference_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b)
+{
+    return level_set_csg(a, b, CsgKind::Difference, "csg_difference_ffi");
+}
+
+std::unique_ptr<OpenVdbGridHandle> csg_intersection_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b)
+{
+    return level_set_csg(a, b, CsgKind::Intersection, "csg_intersection_ffi");
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +607,17 @@ std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi() {
 
 size_t tbb_max_allowed_parallelism_ffi() {
     return tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism);
+}
+
+// ---------------------------------------------------------------------------
+// Fog-volume copy of a level set (test-fixtures scope only)
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<OpenVdbGridHandle> level_set_to_fog_volume_ffi(const OpenVdbGridHandle& h) {
+    ensure_initialized_cpp_side();
+    openvdb::FloatGrid::Ptr fog = h.grid->deepCopy();
+    openvdb::tools::sdfToFogVolume(*fog);
+    return std::make_unique<OpenVdbGridHandle>(std::move(fog));
 }
 
 } // namespace reify_openvdb

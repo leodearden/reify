@@ -75,6 +75,30 @@ std::unique_ptr<OpenVdbGridHandle> dense_sdf_to_level_set_ffi(
     double band_half_width);
 
 // ---------------------------------------------------------------------------
+// Level-set CSG
+// ---------------------------------------------------------------------------
+
+/// Union (a ∪ b), difference (a minus b) and intersection (a ∩ b) of two
+/// level-set grids, one policy for all three:
+/// - Both operands must be level sets: grid class GRID_LEVEL_SET and a
+///   background > 0. Otherwise std::runtime_error names the operand (left or
+///   right) and the class or background found.
+/// - OpenVDB CSG works in index space, so when the transforms differ the right
+///   operand is first resampled onto the left's transform with
+///   tools::resampleToMatch, which takes its level-set rebuild branch and the
+///   left's background. Resampling a large coarse right operand onto a much
+///   finer left lattice costs memory proportional to the finer resolution.
+/// - The result is a FRESH grid carrying the left's transform and metadata.
+/// - Neither input is mutated: the tools::csg*Copy variants read const
+///   inputs, whereas the in-place tools::csg* calls always leave B empty.
+std::unique_ptr<OpenVdbGridHandle> csg_union_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b);
+std::unique_ptr<OpenVdbGridHandle> csg_difference_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b);
+std::unique_ptr<OpenVdbGridHandle> csg_intersection_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b);
+
+// ---------------------------------------------------------------------------
 // Volume → Mesh (marching cubes)
 // ---------------------------------------------------------------------------
 
@@ -180,5 +204,15 @@ struct TbbParallelismLimit {
 
 std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi();
 size_t tbb_max_allowed_parallelism_ffi();
+
+// ---------------------------------------------------------------------------
+// Fog-volume copy of a level set: compiled into every build, but the only
+// Rust caller is the test-fixtures-gated
+// `OpenVdbKernel::register_fog_volume_for_test`.
+// ---------------------------------------------------------------------------
+
+/// A fresh fog-volume copy of the level set `h` (tools::sdfToFogVolume);
+/// `h` is only read.
+std::unique_ptr<OpenVdbGridHandle> level_set_to_fog_volume_ffi(const OpenVdbGridHandle& h);
 
 } // namespace reify_openvdb

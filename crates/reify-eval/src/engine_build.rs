@@ -106,6 +106,24 @@ fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
 }
 
+/// The kernel-map key serving a conversion stage sourced on `source`, or
+/// `None` when no entry serves it.
+///
+/// Narrower than [`resolve_owning_kernel_name`]: its default-kernel fallback
+/// is taken only for the default kernel's own identity, so a stage sourced on
+/// any other kernel missing from the map fails rather than running on an
+/// unrelated kernel's handle-id space.
+fn conversion_source_key<'a, V>(
+    kernels: &BTreeMap<String, V>,
+    source: KernelId,
+    default_kernel_name: &'a str,
+) -> Option<&'a str> {
+    let key = resolve_owning_kernel_name(kernels, source, default_kernel_name);
+    let serves_source = key == source.as_registry_name()
+        || source == kernel_id_for_registry_name(default_kernel_name);
+    serves_source.then_some(key)
+}
+
 /// Forward a solid-level `TopologyAttribute` entry across the OCCT->Manifold
 /// ingest seam (task #4636, LINK1).
 ///
@@ -8013,7 +8031,7 @@ impl Engine {
                                 // ── Phase 1: validate stages + find source ────────
                                 // Walk the chain as a VALIDATION gate. Each stage
                                 // must classify as a known ConversionProjection:
-                                // - Tessellate: records the source kernel name (the
+                                // - Tessellate: records the source kernel (the
                                 //   kernel that tessellates BRep → Mesh).
                                 // - Voxelize: realised by ingest_mesh on plan.kernel
                                 //   below; no separate action needed here.
@@ -8023,13 +8041,13 @@ impl Engine {
                                 // chains (e.g. Mesh→Voxel before BRep→Mesh) would
                                 // silently mis-key the intermediate cache under the
                                 // single-recipe executor.
-                                let mut tessellate_source: Option<&'static str> = None;
+                                let mut tessellate_source: Option<KernelId> = None;
                                 // Task γ (5001): the MarchingCubes counterpart of
                                 // `tessellate_source` above — records the source
                                 // kernel of an at-most-one Voxel→Mesh stage. Phase 2
                                 // below picks whichever of the two is `Some` (the
                                 // gate after this loop guarantees exactly one is).
-                                let mut marching_cubes_source: Option<&'static str> = None;
+                                let mut marching_cubes_source: Option<KernelId> = None;
                                 // prev_to tracks the prior stage's output repr for
                                 // the contiguity check below.
                                 let mut prev_to: Option<ReprKind> = None;
@@ -8088,8 +8106,7 @@ impl Engine {
                                                      in v0.3-β",
                                                 ));
                                             } else {
-                                                tessellate_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                tessellate_source = Some(*stage_kernel);
                                             }
                                         }
                                         Some(ConversionProjection::Voxelize) => {
@@ -8127,8 +8144,7 @@ impl Engine {
                                                      in v0.3-γ",
                                                 ));
                                             } else {
-                                                marching_cubes_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                marching_cubes_source = Some(*stage_kernel);
                                             }
                                         }
                                     }
@@ -8180,16 +8196,22 @@ impl Engine {
                                 if conversion_error.is_none() {
                                     // Phase 1's gate above guarantees exactly one of
                                     // these is `Some`.
-                                    let (source_name, from_marching_cubes) =
+                                    let (source_kernel, from_marching_cubes) =
                                         match (tessellate_source, marching_cubes_source) {
-                                            (Some(name), None) => (name, false),
-                                            (None, Some(name)) => (name, true),
+                                            (Some(kernel), None) => (kernel, false),
+                                            (None, Some(kernel)) => (kernel, true),
                                             _ => unreachable!(
                                                 "checked above: exactly one of \
                                                  tessellate_source/marching_cubes_source \
                                                  is Some"
                                             ),
                                         };
+                                    let source_name = source_kernel.as_registry_name();
+                                    let source_key = conversion_source_key(
+                                        kernels,
+                                        source_kernel,
+                                        default_kernel_name,
+                                    );
                                     // Task γ (5001): extract the marching-cubes
                                     // options from `geom_op` when it is the
                                     // options-carrying `GeometryOp::Surface` (task
@@ -8216,12 +8238,15 @@ impl Engine {
                                     // per-parent loop since it does not depend on
                                     // `pid`.
                                     let options_hash = if from_marching_cubes {
-                                        kernels.get(source_name).map_or(NO_OPTIONS, |src| {
-                                            src.surface_options_content_hash(
-                                                surface_iso_level,
-                                                surface_adaptive,
-                                            )
-                                        })
+                                        source_key.and_then(|key| kernels.get(key)).map_or(
+                                            NO_OPTIONS,
+                                            |src| {
+                                                src.surface_options_content_hash(
+                                                    surface_iso_level,
+                                                    surface_adaptive,
+                                                )
+                                            },
+                                        )
                                     } else {
                                         NO_OPTIONS
                                     };
@@ -8260,59 +8285,17 @@ impl Engine {
                                         // non-primitive parent), degrading
                                         // gracefully to the existing Discarded path.
                                         //
-                                        // Robustness note (reviewer amendment,
-                                        // task #4636): the source `KernelHandle`
-                                        // built below assumes
-                                        // `kernel_id_for_registry_name(source_name)`
-                                        // equals the `op_kernel` the seed site
-                                        // (above, `record_solid_attribute`)
-                                        // recorded `pid`'s entry under — if
-                                        // those ever disagree for the same
-                                        // `pid`, `forward_solid_attribute_on_ingest`'s
-                                        // `table.lookup` silently misses,
-                                        // indistinguishable from a legitimately
-                                        // non-seeded parent (zero signal either
-                                        // way). `source_name` is always
-                                        // `stage_kernel.as_registry_name()` for
-                                        // a real `KernelId` drawn from
-                                        // `plan.conversions` above (never an
-                                        // arbitrary/unregistered string), and
-                                        // `KernelId::as_registry_name` /
-                                        // `from_registry_name` are documented
-                                        // exact inverses (reify-core
-                                        // `kernel.rs`) — so the debug_assert
-                                        // below pins that
-                                        // `kernel_id_for_registry_name`'s
-                                        // `unwrap_or(KernelId::Occt)` fallback
-                                        // never actually fires here. What it
-                                        // canNOT verify locally is the deeper
-                                        // half of the invariant: that the
-                                        // dispatcher's chosen `stage_kernel`
-                                        // for converting `pid` is the SAME
-                                        // kernel that originally produced/
-                                        // seeded `pid`. That correspondence is
-                                        // a property of the dispatcher's
-                                        // planning logic (`src/dispatcher.rs`),
-                                        // out of this loop's scope to assert —
-                                        // a future dispatcher change that
-                                        // planned a conversion stage against a
-                                        // different source kernel than the one
-                                        // that produced a given parent would
-                                        // still silently degrade this forward.
-                                        debug_assert!(
-                                            KernelId::from_registry_name(source_name).is_some(),
-                                            "conversion source kernel name {source_name:?} is not \
-                                             a registered KernelId — kernel_id_for_registry_name \
-                                             would silently fall back to KernelId::Occt here, \
-                                             degrading attribute forwarding below with zero signal",
-                                        );
+                                        // The forward assumes `pid` was seeded
+                                        // under `source_kernel`, the dispatcher's
+                                        // stage kernel. That correspondence is the
+                                        // dispatcher's to keep and is not checked
+                                        // here; a mismatch degrades to a silent
+                                        // lookup miss.
                                         let mut forward_and_track =
                                             |target: KernelHandle,
                                              diagnostics: &mut Vec<Diagnostic>| {
                                                 let source = KernelHandle {
-                                                    kernel: kernel_id_for_registry_name(
-                                                        source_name,
-                                                    ),
+                                                    kernel: source_kernel,
                                                     id: pid,
                                                 };
                                                 // Release-mode-visible companion to
@@ -8385,7 +8368,9 @@ impl Engine {
                                         // different error types (`TessError` /
                                         // `GeometryError`), so each arm maps its error
                                         // to `String` before the two branches unify.
-                                        let mesh = match kernels.get(source_name) {
+                                        let mesh_source =
+                                            source_key.and_then(|key| kernels.get(key));
+                                        let mesh = match mesh_source {
                                             Some(src) => {
                                                 let produced = if from_marching_cubes {
                                                     src.realize_mesh_from_voxel(
@@ -14065,6 +14050,9 @@ mod populate_local_feature_tests;
 
 #[cfg(test)]
 mod dispatch_volume_mesh_tests;
+
+#[cfg(test)]
+mod conversion_source_key_tests;
 
 /// Produce an info-level diagnostic when a swept body is meshed with P1
 /// hex/wedge despite the user requesting `element_order = P2`.
