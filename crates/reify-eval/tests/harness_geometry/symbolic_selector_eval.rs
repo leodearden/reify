@@ -20,9 +20,11 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
-use reify_ir::value::{LeafQuery, SelectorNode};
-use reify_ir::{ExportFormat, Value};
-use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
+use reify_ir::value::LeafQuery;
+use reify_ir::{ExportFormat, GeometryHandleId, Value};
+use reify_test_support::{
+    MockGeometryKernel, assert_selector_leaf_targeting, compile_source_with_stdlib,
+};
 
 /// Fixture: Widget with a body (box), a let-bound direction + tolerance, and a
 /// `faces_by_normal` selector on top.
@@ -41,29 +43,6 @@ const WIDGET_SRC: &str = r#"structure def Widget {
     let tol = 1deg
     let top = faces_by_normal(body, dir, tol)
 }"#;
-
-/// Assert a `Some(Value)` holds a `Value::Selector` whose node is a `Leaf` of
-/// `kind`, then invoke `check_query` on the leaf's `LeafQuery`.  Mirrors the
-/// helper in `kernel_queries_directional_selectors.rs`.
-fn assert_selector_leaf(
-    cell_value: Option<&Value>,
-    label: &str,
-    kind: SelectorKind,
-    check_query: impl FnOnce(&LeafQuery),
-) {
-    let sv = match cell_value {
-        Some(Value::Selector(sv)) => sv,
-        other => panic!(
-            "{label}: expected Value::Selector, got {other:?}; \
-             (RED until mint_symbolic_topology_selectors_into_values is wired in step-6)"
-        ),
-    };
-    assert_eq!(sv.kind, kind, "{label}: selector kind");
-    match &sv.node {
-        SelectorNode::Leaf { query, .. } => check_query(query),
-        other => panic!("{label}: must be a Leaf node, got {other:?}"),
-    }
-}
 
 /// SIGNAL — `Engine::eval` (kernel-free, no build) must yield a
 /// `Value::Selector(Face)` for `Widget.top` with:
@@ -97,7 +76,7 @@ fn top_eval_yields_symbolic_selector() {
     let value = result.values.get(&cell_id);
 
     // Assert Selector(Face) with ByNormal leaf and symbolic target.
-    assert_selector_leaf(value, "Widget.top", SelectorKind::Face, |query| {
+    assert_selector_leaf_targeting(value, "Widget.top", SelectorKind::Face, None, |query| {
         match query {
             LeafQuery::ByNormal { dir, tol_rad } => {
                 assert_eq!(*dir, [0.0, 0.0, 1.0], "Widget.top ByNormal dir must be +z");
@@ -109,22 +88,6 @@ fn top_eval_yields_symbolic_selector() {
             other => panic!("Widget.top must be a ByNormal leaf; got {other:?}"),
         }
     });
-
-    // Also pin that the target is symbolic (kernel_handle == None).
-    let sv = match value {
-        Some(Value::Selector(sv)) => sv,
-        _ => unreachable!("already checked above"),
-    };
-    match &sv.node {
-        SelectorNode::Leaf { target, .. } => {
-            assert_eq!(
-                target.kernel_handle,
-                None,
-                "symbolic eval must yield target.kernel_handle == None"
-            );
-        }
-        _ => unreachable!(),
-    }
 }
 
 /// §7.1 two-way boundary: `Engine::eval` (symbolic, `kernel_handle=None`) and
@@ -145,12 +108,11 @@ fn eval_and_build_selectors_are_content_hash_equal() {
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
 
-    // Confirm eval path gives a Selector (assert_selector_leaf handles the
-    // Undef → panic message).
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         Some(&eval_value),
         "eval Widget.top",
         SelectorKind::Face,
+        None,
         |_| {},
     );
 
@@ -171,11 +133,13 @@ fn eval_and_build_selectors_are_content_hash_equal() {
     );
     let build_value = build_result.values.get_or_undef(&cell_id);
 
-    // Build path must also give a Selector.
-    assert_selector_leaf(
+    // The mock kernel allocates GeometryHandleId(1) to `body`, the first
+    // realization op.
+    assert_selector_leaf_targeting(
         Some(&build_value),
         "build Widget.top",
         SelectorKind::Face,
+        Some(GeometryHandleId(1)),
         |_| {},
     );
 

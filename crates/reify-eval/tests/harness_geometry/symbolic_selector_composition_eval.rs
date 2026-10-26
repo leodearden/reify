@@ -24,7 +24,10 @@ use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
 use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::MockGeometryKernel;
+use reify_test_support::{
+    MockGeometryKernel, assert_leaf_node_targeting, assert_selector_leaf_targeting,
+    assert_selector_value,
+};
 
 /// Absolute path to a fixture file in `tests/fixtures/selectors/`.
 fn fixture_path(name: &str) -> String {
@@ -33,41 +36,6 @@ fn fixture_path(name: &str) -> String {
         env!("CARGO_MANIFEST_DIR"),
         name
     )
-}
-
-/// Assert `cell_value` holds `Value::Selector(kind)` and return a clone of
-/// it, panicking with a RED-until-wired message otherwise. Mirrors
-/// `symbolic_selector_eval.rs::assert_selector_leaf`, generalized to any
-/// `SelectorNode` shape (not just `Leaf`) since composition cells mint
-/// `Union`/`Intersect`/`Difference` nodes.
-fn assert_selector(
-    cell_value: Option<&Value>,
-    label: &str,
-    kind: SelectorKind,
-) -> reify_ir::value::SelectorValue {
-    match cell_value {
-        Some(Value::Selector(sv)) => {
-            assert_eq!(sv.kind, kind, "{label}: selector kind");
-            sv.clone()
-        }
-        other => panic!(
-            "{label}: expected Value::Selector, got {other:?}; \
-             (RED until the composition arms are wired in step-2)"
-        ),
-    }
-}
-
-/// Assert `node` is a `Leaf` with a symbolic (`kernel_handle == None`) target.
-fn assert_symbolic_leaf(node: &SelectorNode, label: &str) {
-    match node {
-        SelectorNode::Leaf { target, .. } => {
-            assert_eq!(
-                target.kernel_handle, None,
-                "{label}: symbolic eval must yield target.kernel_handle == None"
-            );
-        }
-        other => panic!("{label}: expected a Leaf node, got {other:?}"),
-    }
 }
 
 /// BT2 — `Engine::eval` must mint `BT2SameKindUnion.u`
@@ -90,13 +58,13 @@ fn bt2_union_eval_yields_symbolic_union_selector() {
 
     let cell_id = ValueCellId::new("BT2SameKindUnion", "u");
     let value = result.values.get(&cell_id);
-    let sv = assert_selector(value, "BT2SameKindUnion.u", SelectorKind::Face);
+    let sv = assert_selector_value(value, "BT2SameKindUnion.u", SelectorKind::Face);
 
     match &sv.node {
         SelectorNode::Union(children) => {
             assert_eq!(children.len(), 2, "BT2: union must have 2 children");
             for (i, child) in children.iter().enumerate() {
-                assert_symbolic_leaf(&child.node, &format!("BT2 union child[{i}]"));
+                assert_leaf_node_targeting(&child.node, &format!("BT2 union child[{i}]"), None);
             }
         }
         other => panic!("BT2SameKindUnion.u must be SelectorNode::Union, got {other:?}"),
@@ -128,22 +96,26 @@ fn bt3_difference_and_intersect_eval_yield_symbolic_composition_selectors() {
     let result = engine.eval(&compiled);
 
     let d_value = result.values.get(&ValueCellId::new("BT3SetOps", "d"));
-    let sv_d = assert_selector(d_value, "BT3SetOps.d", SelectorKind::Face);
+    let sv_d = assert_selector_value(d_value, "BT3SetOps.d", SelectorKind::Face);
     match &sv_d.node {
         SelectorNode::Difference(a, b) => {
-            assert_symbolic_leaf(&a.node, "BT3 difference minuend");
-            assert_symbolic_leaf(&b.node, "BT3 difference subtrahend");
+            assert_leaf_node_targeting(&a.node, "BT3 difference minuend", None);
+            assert_leaf_node_targeting(&b.node, "BT3 difference subtrahend", None);
         }
         other => panic!("BT3SetOps.d must be SelectorNode::Difference, got {other:?}"),
     }
 
     let i_value = result.values.get(&ValueCellId::new("BT3SetOps", "i"));
-    let sv_i = assert_selector(i_value, "BT3SetOps.i", SelectorKind::Face);
+    let sv_i = assert_selector_value(i_value, "BT3SetOps.i", SelectorKind::Face);
     match &sv_i.node {
         SelectorNode::Intersect(children) => {
             assert_eq!(children.len(), 2, "BT3: intersect must have 2 children");
             for (idx, child) in children.iter().enumerate() {
-                assert_symbolic_leaf(&child.node, &format!("BT3 intersect child[{idx}]"));
+                assert_leaf_node_targeting(
+                    &child.node,
+                    &format!("BT3 intersect child[{idx}]"),
+                    None,
+                );
             }
         }
         other => panic!("BT3SetOps.i must be SelectorNode::Intersect, got {other:?}"),
@@ -171,7 +143,7 @@ fn bt2_union_eval_and_build_selectors_are_content_hash_equal() {
     let mut eval_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
-    assert_selector(
+    assert_selector_value(
         Some(&eval_value),
         "eval BT2SameKindUnion.u",
         SelectorKind::Face,
@@ -193,7 +165,7 @@ fn bt2_union_eval_and_build_selectors_are_content_hash_equal() {
         "build must succeed with MockGeometryKernel; got: {build_errors:?}"
     );
     let build_value = build_result.values.get_or_undef(&cell_id);
-    assert_selector(
+    assert_selector_value(
         Some(&build_value),
         "build BT2SameKindUnion.u",
         SelectorKind::Face,
@@ -230,21 +202,13 @@ fn bt8_named_leaf_eval_yields_symbolic_named_selector() {
     let result = engine.eval(&compiled);
 
     let value = result.values.get(&ValueCellId::new("BT8NamedLeaf", "s"));
-    let sv = assert_selector(value, "BT8NamedLeaf.s", SelectorKind::Face);
-    match &sv.node {
-        SelectorNode::Leaf { target, query } => {
-            assert_eq!(
-                target.kernel_handle, None,
-                "BT8: symbolic target must have kernel_handle == None"
-            );
-            assert_eq!(
-                query,
-                &LeafQuery::Named("nope".to_string()),
-                "BT8: Named(\"nope\") leaf"
-            );
-        }
-        other => panic!("BT8NamedLeaf.s must be SelectorNode::Leaf, got {other:?}"),
-    }
+    assert_selector_leaf_targeting(value, "BT8NamedLeaf.s", SelectorKind::Face, None, |q| {
+        assert_eq!(
+            q,
+            &LeafQuery::Named("nope".to_string()),
+            "BT8: Named(\"nope\") leaf"
+        );
+    });
 
     let violations = engine.check_no_stale_undef();
     assert!(

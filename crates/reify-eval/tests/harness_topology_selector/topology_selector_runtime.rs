@@ -34,44 +34,9 @@ use reify_compiler::compile_with_stdlib;
 use reify_core::ty::SelectorKind;
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::value::{LeafQuery, SelectorNode};
+use reify_ir::value::LeafQuery;
 use reify_ir::{ExportFormat, GeometryHandleId, Value};
-use reify_test_support::MockGeometryKernel;
-
-/// Assert a cell holds a kernel-free `Value::Selector` leaf (task 4118 γ): the
-/// 7 predicate/all selector constructors now evaluate to a typed
-/// `Value::Selector(kind)` instead of a `Value::List<GeometryHandle>`. The
-/// `Selector → List<Geometry>` bridge is the compiler-inserted `ResolveSelector`
-/// coercion node, resolved by `topology_selectors::resolve()`.
-///
-/// Construction is KERNEL-FREE (K2/BT7): these callers build with an UNSTAGED
-/// mock kernel (no `with_extracted_*` / predicate-query staging), so the only
-/// way the cell can be the correct typed `Value::Selector` with the right leaf
-/// target + query is if the post-process packaged the leaf without issuing a
-/// single kernel query.
-fn assert_selector_leaf(
-    cell_value: Option<&Value>,
-    label: &str,
-    kind: SelectorKind,
-    target: GeometryHandleId,
-    check_query: impl FnOnce(&LeafQuery),
-) {
-    let sv = match cell_value {
-        Some(Value::Selector(sv)) => sv,
-        other => panic!("{label} must be Value::Selector(_), got {other:?}"),
-    };
-    assert_eq!(sv.kind, kind, "{label}: selector kind");
-    match &sv.node {
-        SelectorNode::Leaf { target: t, query } => {
-            assert_eq!(
-                t.kernel_handle, Some(target),
-                "{label}: leaf target must be the parent solid handle"
-            );
-            check_query(query);
-        }
-        other => panic!("{label} must be a Leaf selector node, got {other:?}"),
-    }
-}
+use reify_test_support::{MockGeometryKernel, assert_selector_leaf_targeting};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -354,11 +319,11 @@ fn edges_let_constructs_typed_edge_all_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| assert_eq!(*q, LeafQuery::All, "edges(body) → All leaf"),
     );
 }
@@ -378,11 +343,11 @@ fn faces_let_constructs_typed_face_all_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.fs",
         SelectorKind::Face,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| assert_eq!(*q, LeafQuery::All, "faces(body) → All leaf"),
     );
 }
@@ -489,11 +454,11 @@ fn edges_by_length_let_constructs_typed_edge_by_length_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByLength { min_m, max_m } => {
                 assert!(
@@ -530,11 +495,11 @@ fn edges_by_length_inline_range_constructs_by_length_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByLength { min_m, max_m } => {
                 assert!(
@@ -574,11 +539,11 @@ fn edges_by_length_inline_computed_range_constructs_by_length_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByLength { min_m, max_m } => {
                 assert!(
@@ -611,11 +576,11 @@ fn faces_by_area_let_constructs_typed_face_by_area_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.fs",
         SelectorKind::Face,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByArea { min_m2, max_m2 } => {
                 assert!(
@@ -650,11 +615,11 @@ fn faces_by_normal_let_constructs_typed_face_by_normal_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.fs",
         SelectorKind::Face,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByNormal { dir, tol_rad } => {
                 assert_eq!(*dir, [0.0, 0.0, 1.0], "dir must be +z");
@@ -690,11 +655,11 @@ fn faces_by_normal_inline_vec3_constructs_by_normal_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.fs",
         SelectorKind::Face,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByNormal { dir, tol_rad } => {
                 assert!((dir[0]).abs() < 1e-9, "dir.x must be 0, got {}", dir[0]);
@@ -732,11 +697,11 @@ fn edges_parallel_to_let_constructs_typed_edge_by_parallel_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByParallel { axis, tol_rad } => {
                 assert_eq!(*axis, [0.0, 0.0, 1.0], "axis must be +z");
@@ -768,11 +733,11 @@ fn edges_at_height_let_constructs_typed_edge_by_height_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByHeight { z_m, tol_m } => {
                 assert!((*z_m - 0.0).abs() < 1e-12, "z_m must be 0m, got {z_m}");
@@ -806,11 +771,11 @@ fn edges_at_height_inline_scalar_expr_constructs_by_height_selector() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| match q {
             LeafQuery::ByHeight { z_m, tol_m } => {
                 assert!(
@@ -1034,11 +999,11 @@ fn tessellate_realizations_post_processes_new_topology_selectors() {
     let result = engine.tessellate_realizations(&compiled);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&cell),
         "Bracket.es (tessellate path)",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| {
             assert_eq!(
                 *q,
@@ -1193,20 +1158,20 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
     // we pin that the OCCT build path packages the typed selector leaf over the
     // realized box handle.
     let es_cell = ValueCellId::new("Bracket", "es");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&es_cell),
         "Bracket.es (OCCT path)",
         SelectorKind::Edge,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| assert_eq!(*q, LeafQuery::All, "edges(body) → All leaf (OCCT path)"),
     );
 
     let fs_cell = ValueCellId::new("Bracket", "fs");
-    assert_selector_leaf(
+    assert_selector_leaf_targeting(
         result.values.get(&fs_cell),
         "Bracket.fs (OCCT path)",
         SelectorKind::Face,
-        GeometryHandleId(1),
+        Some(GeometryHandleId(1)),
         |q| assert_eq!(*q, LeafQuery::All, "faces(body) → All leaf (OCCT path)"),
     );
 }
