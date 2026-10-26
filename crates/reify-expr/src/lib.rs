@@ -3372,7 +3372,8 @@ fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
 /// and the `eval_expr` site refuses one before calling this.
 fn eval_method_call(obj: &Value, method: &str, result_type: &Type) -> Value {
     // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
-    // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane`, `direction.x/.y/.z`.
+    // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane/.yz_plane/.zx_plane`,
+    // `direction.x/.y/.z`.
     // Dispatched ONLY for datum receivers, so the collection/tensor arms below
     // (including the `"x"|"y"|"z"` Tensor arm) are unaffected for everything
     // else: a non-datum receiver yields `None` here and falls through.

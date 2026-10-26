@@ -86,11 +86,12 @@ fn frame_axis_direction(basis: &Value, axis: usize) -> Value {
     }
 }
 
-/// Project a `Frame` to its `.xy_plane`: a `Plane` at the frame origin whose
-/// normal is the frame's z-axis.
-fn frame_xy_plane(origin: &Value, basis: &Value) -> Value {
+/// Project a `Frame` to one of its principal planes: a `Plane` at the frame
+/// origin whose normal is basis axis `normal_axis` (0=x, 1=y, 2=z), kept as the
+/// 3-component `Vector` shape `decode_plane` requires.
+fn frame_plane(origin: &Value, basis: &Value, normal_axis: usize) -> Value {
     match basis {
-        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, 2) {
+        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, normal_axis) {
             Some([nx, ny, nz]) => Value::Plane {
                 origin: Box::new(origin.clone()),
                 normal: Box::new(Value::Vector(vec![
@@ -106,7 +107,9 @@ fn frame_xy_plane(origin: &Value, basis: &Value) -> Value {
 }
 
 /// Evaluate a datum-projection member access (task 4382 β) on a datum receiver
-/// (`Axis`/`Plane`/`Frame`/`Direction`). Returns `Some(value)` when `obj` is a
+/// (`Axis`/`Plane`/`Frame`/`Direction`); a `Frame` projects its basis axes, its
+/// origin and its three principal planes (`xy_plane` normal = z, `yz_plane`
+/// normal = x, `zx_plane` normal = y). Returns `Some(value)` when `obj` is a
 /// datum and `method` is one of that datum's projection members (the projection
 /// is `Undef` if the datum's internals are degenerate/malformed); returns
 /// `None` for any non-datum receiver or unrecognized member, so the regular
@@ -133,7 +136,9 @@ pub(crate) fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> 
             "y" => Some(frame_axis_direction(basis, 1)),
             "z" => Some(frame_axis_direction(basis, 2)),
             "origin" => Some((**origin).clone()),
-            "xy_plane" => Some(frame_xy_plane(origin, basis)),
+            "xy_plane" => Some(frame_plane(origin, basis, 2)),
+            "yz_plane" => Some(frame_plane(origin, basis, 0)),
+            "zx_plane" => Some(frame_plane(origin, basis, 1)),
             _ => None,
         },
         Value::Direction { x, y, z } => match method {
