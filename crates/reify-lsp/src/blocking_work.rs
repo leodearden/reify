@@ -1,6 +1,5 @@
-//! Where the language server runs the blocking work of its definition,
-//! prepareRename, rename and references handlers: parsing, compiling and
-//! reading imported files.
+//! Where the language server runs the blocking work of every query handler:
+//! parsing, compiling and reading imported files.
 //!
 //! The embedder chooses the placement. The stdio server keeps
 //! [`BlockingWorkPlacement::BlockingPool`], so that work never occupies an

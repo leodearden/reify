@@ -168,8 +168,8 @@ pub struct ReifyLanguageServer {
     /// reported once rather than per recovery. Shared across clones, since
     /// the `eval_state` it describes is.
     eval_state_poison_reported: Arc<AtomicBool>,
-    /// Where definition / prepareRename / rename / references run their
-    /// blocking work; see [`crate::blocking_work`].
+    /// Where every query handler runs its blocking work; see
+    /// [`crate::blocking_work`].
     blocking_work: BlockingWorkPlacement,
 }
 
@@ -572,12 +572,18 @@ impl LanguageServer for ReifyLanguageServer {
         };
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit) instead of
-        // re-parsing inside AnalysisContext::new; compile+check stay per-request.
-        // The parse uses the document's own module path (no per-call argument).
-        let text = doc.text.clone();
-        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
-        Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
+        // The per-document cached parse (one parse per edit; cache-filling on
+        // the first request after an edit) and the per-request compile+check
+        // run per the server's BlockingWorkPlacement (see crate::blocking_work).
+        let hover = self
+            .blocking_work
+            .run("hover", move || {
+                let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
+                crate::hover::compute_hover_in_context(&ctx, &doc.text, position)
+            })
+            .await
+            .flatten();
+        Ok(hover)
     }
 
     async fn goto_definition(
@@ -664,11 +670,17 @@ impl LanguageServer for ReifyLanguageServer {
         };
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
-        let items = crate::completion::compute_completions_in_context(&ctx, &text, position);
-        Ok(Some(CompletionResponse::Array(items)))
+        // The per-document cached parse (one parse per edit; cache-filling on
+        // the first request after an edit) and the per-request compile+check
+        // run per the server's BlockingWorkPlacement (see crate::blocking_work).
+        let items = self
+            .blocking_work
+            .run("completion", move || {
+                let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
+                crate::completion::compute_completions_in_context(&ctx, &doc.text, position)
+            })
+            .await;
+        Ok(items.map(CompletionResponse::Array))
     }
 
     async fn document_symbol(
@@ -677,8 +689,8 @@ impl LanguageServer for ReifyLanguageServer {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
 
-        // Brief read lock: snapshot the document text, then release before the
-        // (pure, CPU-only) symbol walk — mirrors the hover/completion handlers.
+        // Brief read lock: look up the document, then release it before the
+        // parse and symbol walk.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
@@ -686,11 +698,19 @@ impl LanguageServer for ReifyLanguageServer {
         };
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-        let symbols = crate::symbols::compute_document_symbols_from_parsed(&parsed, &text);
-        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        // The per-document cached parse (one parse per edit; cache-filling on
+        // the first request after an edit) and the symbol walk run per the
+        // server's BlockingWorkPlacement (see crate::blocking_work).
+        let symbols = self
+            .blocking_work
+            .run("document_symbol", move || {
+                crate::symbols::compute_document_symbols_from_parsed(
+                    &doc.parsed_module(),
+                    &doc.text,
+                )
+            })
+            .await;
+        Ok(symbols.map(DocumentSymbolResponse::Nested))
     }
 
     async fn document_highlight(
@@ -700,8 +720,8 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        // Brief read lock: snapshot the document text, then drop it before the
-        // (CPU-only) parse + scope walk — mirrors document_symbol/prepare_rename.
+        // Brief read lock: look up the document, then drop it before the parse
+        // and scope walk — mirrors document_symbol/prepare_rename.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
@@ -709,18 +729,27 @@ impl LanguageServer for ReifyLanguageServer {
         };
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
-        // for AST-shape consistency with goto_def/rename.
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-
+        // The per-document cached parse (one parse per edit; cache-filling on
+        // the first request after an edit) — prelude-aware for AST-shape
+        // consistency with goto_def/rename — and the scope walk run per the
+        // server's BlockingWorkPlacement (see crate::blocking_work).
+        //
         // The δ producer returns None for non-resolvable positions (keywords/
         // literals/types/declaration names), which the editor renders as "no
         // occurrences". Its spans are inherently in-document (boundary row 7),
         // so no active-doc filtering is needed.
-        Ok(crate::references::compute_document_highlights(
-            &text, &parsed, position,
-        ))
+        let highlights = self
+            .blocking_work
+            .run("document_highlight", move || {
+                crate::references::compute_document_highlights(
+                    &doc.text,
+                    &doc.parsed_module(),
+                    position,
+                )
+            })
+            .await
+            .flatten();
+        Ok(highlights)
     }
 
     async fn prepare_rename(
