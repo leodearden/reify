@@ -301,7 +301,8 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
         // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
         ("std.joints", include_str!("../stdlib/joints.ri").to_owned()),
         // `std.ports` declares the Directionality enum, the Port base trait,
-        // and the `Frame3` structure (origin + x/y/z axes, all Vector3<Length>).
+        // and the `Frame3` structure (a `Vec3<Length>` origin, which is a
+        // position, and `Vec3<Dimensionless>` x/y/z axes, which are directions).
         // No inter-module dependencies beyond built-in types.
         // Reconstruction of lost work per PRD task α.
         //

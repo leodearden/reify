@@ -1107,13 +1107,13 @@ trait MotivePort : MechanicalPort
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait GuidePort : MechanicalPort {
     param degrees_of_freedom : Int
