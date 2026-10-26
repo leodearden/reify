@@ -33,7 +33,7 @@
 
 use std::cell::Cell;
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -42,6 +42,7 @@ use crate::{DoneProvenance, TaskMetadata};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const CLIENT_NAME: &str = "reify-audit";
+/// Ceiling on any one POST, with or without a session budget.
 const HTTP_TIMEOUT_SECS: u64 = 30;
 
 /// Errors returned by [`FusedMemoryClient`]. All variants map to exit code
@@ -83,23 +84,51 @@ pub struct FusedMemoryClient {
     session_id: String,
     agent: ureq::Agent,
     next_id: Cell<u64>,
+    /// When the whole session must be done by; see [`Self::with_budget`].
+    deadline: Option<Instant>,
 }
 
 impl FusedMemoryClient {
     /// Connect to `url` (e.g. `http://localhost:8002/mcp/`) and complete
     /// the MCP handshake (initialize + notifications/initialized).
     pub fn new(url: impl Into<String>) -> Result<Self, LoadError> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .build();
+        Self::connect(url.into(), None)
+    }
+
+    /// As [`Self::new`], but the handshake and every later call share one
+    /// `budget`, counted from now. A request still unanswered when it runs
+    /// out fails as [`LoadError::Http`], naming the timeout.
+    pub fn with_budget(url: impl Into<String>, budget: Duration) -> Result<Self, LoadError> {
+        Self::connect(url.into(), Some(Instant::now() + budget))
+    }
+
+    fn connect(url: String, deadline: Option<Instant>) -> Result<Self, LoadError> {
         let client = Self {
-            url: url.into(),
+            url,
             session_id: random_hex_32(),
-            agent,
+            agent: ureq::AgentBuilder::new().build(),
             next_id: Cell::new(1),
+            deadline,
         };
         client.initialize()?;
         Ok(client)
+    }
+
+    /// How long the next POST may take: the per-request ceiling, cut to
+    /// whatever is left of the session budget.
+    fn request_timeout(&self) -> Result<Duration, LoadError> {
+        let ceiling = Duration::from_secs(HTTP_TIMEOUT_SECS);
+        let Some(deadline) = self.deadline else {
+            return Ok(ceiling);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(LoadError::Http(format!(
+                "POST {}: timed out: the session budget ran out before the request was sent",
+                self.url
+            )));
+        }
+        Ok(remaining.min(ceiling))
     }
 
     fn initialize(&self) -> Result<(), LoadError> {
@@ -146,6 +175,7 @@ impl FusedMemoryClient {
         let response = self
             .agent
             .post(&self.url)
+            .timeout(self.request_timeout()?)
             .set("Content-Type", "application/json")
             .set("Accept", "application/json, text/event-stream")
             .set("mcp-session-id", &self.session_id)

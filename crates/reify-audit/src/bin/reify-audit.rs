@@ -562,18 +562,30 @@ fn load_tasks_from_json_file(path: &str) -> Result<HashMap<String, TaskMetadata>
         .collect())
 }
 
+/// The whole `--pre-done` fused-memory fetch (handshake plus `get_task`) must
+/// finish within this. dark-factory's `pre_done_hook.py` kills the hook at
+/// 30 s while it holds the project's task-mutation write lock. This share
+/// leaves the rest of that 30 s for the freshness guard and P5's git legs, and
+/// turns a hung fused-memory into this binary's own diagnosable 125 rather
+/// than a `pre_done_hook_timeout` kill. See f-infra-design §11.1.2.
+const PRE_DONE_FUSED_MEMORY_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Live fused-memory MCP loader (production path).
 ///
 /// `pre_done_task_id` is `Some(id)` on the pre-done hook hot path — only
-/// that one task is fetched (`get_task`). On the sweep path it is `None`
-/// and the whole task corpus is pulled (`get_tasks`).
+/// that one task is fetched (`get_task`), within
+/// [`PRE_DONE_FUSED_MEMORY_BUDGET`]. On the sweep path it is `None` and the
+/// whole task corpus is pulled (`get_tasks`).
 fn load_tasks_from_fused_memory(
     url: &str,
     project_root: &str,
     pre_done_task_id: Option<&str>,
 ) -> Result<HashMap<String, TaskMetadata>, String> {
-    let client = FusedMemoryClient::new(url)
-        .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
+    let client = match pre_done_task_id {
+        Some(_) => FusedMemoryClient::with_budget(url, PRE_DONE_FUSED_MEMORY_BUDGET),
+        None => FusedMemoryClient::new(url),
+    }
+    .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
     // Canonicalize project_root so `.` (the hook's inherited cwd) becomes
     // the absolute path fused-memory keys its DB on.
     let project_root_abs = std::fs::canonicalize(project_root)

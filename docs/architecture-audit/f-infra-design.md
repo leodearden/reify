@@ -311,6 +311,20 @@ one; there is no `.format(`, `%`, or `string.Template` in the module). Launch
 is `asyncio.create_subprocess_exec` with no `env=` kwarg, no stdin written,
 stdout captured-and-discarded, a 30 s timeout, and `cwd=project_root`.
 
+**The fused-memory fetch gets 10 s of those 30 s (task 9269).** The hook
+holds the project's task-mutation write lock for as long as it runs, and a
+kill at 30 s surfaces only as `pre_done_hook_timeout`. Before task 9269 the
+wrapper's own `get_tasks` curl had a 10 s budget. Now the binary fetches, and
+on `--pre-done` it gives its whole fused-memory session (`initialize`,
+`notifications/initialized`, `get_task`) one 10 s budget
+(`PRE_DONE_FUSED_MEMORY_BUDGET` in `crates/reify-audit/src/bin/reify-audit.rs`).
+A stalled fused-memory therefore exits 125 naming the timeout, with the rest of
+the 30 s left for the freshness guard and P5's git legs. The sweep path has no
+session budget: each request is capped at 30 s, the ceiling on every path.
+Pinned by `pre_done_via_http_loader_stalled_get_task_exits_125_inside_the_hook_timeout`
+in `crates/reify-audit/tests/cli.rs`, which holds a corroborated `get_task`
+reply for 20 s and requires a 125.
+
 `task_interceptor.py` calls the hook at step "2d", BEFORE the write, and
 accumulates `done_provenance` in an in-memory `audit_fields` dict that is
 persisted only at write time. So the subprocess sees the PRE-transition status
