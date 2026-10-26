@@ -12,3 +12,11 @@
 mod handle;
 #[path = "harness_occt_kernel/handle_step_export.rs"]
 mod handle_step_export;
+#[path = "harness_occt_kernel/input_validation.rs"]
+mod input_validation;
+#[path = "harness_occt_kernel/kernel_contract.rs"]
+mod kernel_contract;
+#[path = "harness_occt_kernel/lifecycle.rs"]
+mod lifecycle;
+#[path = "harness_occt_kernel/support.rs"]
+mod support;
