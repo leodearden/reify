@@ -1,0 +1,14 @@
+//! Tests of the `OcctKernel` / `OcctKernelHandle` public surface, moved out of the in-file
+//! test modules of `src/lib.rs` and `src/handle.rs` by #8648
+//! (PRD docs/prds/v0_6/occt-crate-internals.md D10).
+//!
+//! Membership rule: a member drives only pub methods, the `test-fixtures` `*_for_test`
+//! constructors and `reify_ir`. Like `harness_occt`, no member uses `tests/common/`, so this
+//! root declares no `mod common;`. Every member carries `#![cfg(has_occt)]` and this root is
+//! deliberately ungated, for the same reason `harness_occt.rs` gives. The layout contract
+//! lives in `tests/infra/test_harness_kloc_cap.sh`'s C1 header.
+
+#[path = "harness_occt_kernel/handle.rs"]
+mod handle;
+#[path = "harness_occt_kernel/handle_step_export.rs"]
+mod handle_step_export;
