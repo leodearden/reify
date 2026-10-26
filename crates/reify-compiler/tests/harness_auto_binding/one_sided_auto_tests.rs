@@ -347,3 +347,67 @@ fn shapes_without_a_static_one_sided_proof_stay_silent() {
         assert_silent(name, &compiled.diagnostics);
     }
 }
+
+// ── Sub-graph resolution rows, compiled WITH the stdlib prelude ─────────────
+
+/// `A` names the generic `G` explicitly, while `B`'s `auto:` site mints the
+/// monomorph `G$GasketSeal`. The monomorph's only objective-bearing container
+/// is `A`, reached through `G` by the `Generic$Arg` naming rule alone, so the
+/// pass must abstain on `G$GasketSeal` as it does on `G`.
+#[test]
+fn an_objective_bearing_container_naming_a_generic_shields_its_monomorph() {
+    let compiled = compile_source_with_stdlib(
+        "trait Seal {}
+        structure def GasketSeal : Seal { param d : Real = 2.0 }
+        structure def G<S: Seal> {
+            param seal : S
+            param x : Length = auto
+            constraint x >= 8mm
+        }
+        structure def A {
+            param k : Length = 1mm
+            sub g = G<GasketSeal>()
+            minimize k
+        }
+        structure def B {
+            sub g = G<auto: Seal>()
+        }",
+    );
+    assert!(
+        compiled.templates.iter().any(|t| t.name == "G$GasketSeal"),
+        "the `auto:` site must mint the monomorph this row is about; templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+    assert_silent(
+        "objective-bearing container naming the generic",
+        &compiled.diagnostics,
+    );
+}
+
+/// `O` carries an objective, but its only sub resolves to a stdlib template,
+/// which cannot hold a template of this module. So `O` cannot pass its
+/// objective down to `T`, and `T` is refused.
+#[test]
+fn an_imported_sub_of_an_objective_bearing_template_does_not_shield_others() {
+    let compiled = compile_source_with_stdlib(
+        "structure T {
+            param x : Length = auto
+            constraint x >= 8mm
+        }
+        structure O {
+            param k : Length = 1mm
+            sub joint = JointBinding()
+            minimize k
+        }",
+    );
+    assert_fires(
+        "objective-bearing template holding only a stdlib sub",
+        &compiled.diagnostics,
+        "no constraint bounds `T.x` above",
+        "T",
+    );
+}
