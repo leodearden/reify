@@ -4,10 +4,12 @@
 // `mutable_key_type` on every `BTreeMap<Value, _>` site.
 #![allow(clippy::mutable_key_type)]
 
+pub mod adoption_ratchet;
 pub mod builders;
 pub mod ctor_conformance;
 pub mod ctor_conformance_debt;
 pub mod examples_corpus;
+pub mod finite_difference;
 pub mod fixtures;
 pub mod git_env;
 pub mod helpers;
@@ -18,9 +20,12 @@ pub mod mesh_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
 pub mod prd_gate_probe_set;
+pub mod ptodo_cite_marker;
 pub mod rust_fixture_scan;
+pub mod sampled_field_fixtures;
 pub mod skip_sets;
 pub mod specialization_fixtures;
+pub mod stl_bytes;
 pub mod temp_dirs;
 pub mod tensegrity_fixtures;
 pub mod tolerance_fixtures;
@@ -28,18 +33,22 @@ pub mod tracing_hygiene;
 pub mod tracing_support;
 pub mod value_decompose;
 pub mod values;
+pub mod workspace_root;
 pub mod workspace_sweep;
 
-// Not every module is glob-exported below. These five are held back
+// Not every module is glob-exported below. These seven are held back
 // deliberately: their item names are generic enough that hoisting them into a
 // crate root which many test files glob-import (`use reify_test_support::*;`)
 // would turn a future same-named item in any other glob-exported module into an
 // E0659 ambiguity at every such use site. Their readers spell the module path.
+// - `adoption_ratchet`
 // - `ctor_conformance_debt`
 // - `examples_corpus`
 // - `git_env`
 // - `mesh_fixtures`
 // - `rust_fixture_scan`
+// - `stl_bytes`
+// - `workspace_root`
 pub use builders::*;
 pub use ctor_conformance::*;
 pub use fixtures::*;

@@ -45,7 +45,7 @@ fn eval_single_template(template: reify_compiler::TopologyTemplate) -> reify_eva
         .template(template)
         .build();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module)
 }
 
@@ -258,7 +258,7 @@ fn unfold_recursive_non_recursive_sub_unchanged() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     let ab_x = ValueCellId::new("A.b", "x");
@@ -397,7 +397,7 @@ fn unfold_recursive_depth_limit_stops_unfolding() {
         .template(template)
         .build();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(5);
     let result = engine.eval(&module);
 
@@ -495,7 +495,7 @@ fn unfold_recursive_default_depth_limit_64() {
         .build();
     let checker = MockConstraintChecker::new();
     // Do NOT call set_max_unfold_depth — use the default (64)
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Build entity name chains and verify levels 0 through 64 all exist
@@ -744,7 +744,7 @@ fn unfold_recursive_depth_limit_emits_error_diagnostic() {
         .template(template)
         .build();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(3);
     let result = engine.eval(&module);
 
@@ -769,7 +769,7 @@ fn unfold_recursive_depth_limit_emits_error_diagnostic() {
 #[should_panic(expected = "max_unfold_depth must be >= 1")]
 fn unfold_recursive_depth_limit_zero_rejected() {
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(0); // must panic
 }
 
@@ -784,7 +784,7 @@ fn unfold_recursive_depth_limit_zero_rejected() {
 #[test]
 fn unfold_recursive_depth_limit_boundary_accepts_max() {
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT); // must NOT panic
 }
 
@@ -805,7 +805,7 @@ fn unfold_recursive_depth_limit_boundary_accepts_max() {
 #[should_panic(expected = "max_unfold_depth must be <=")]
 fn unfold_recursive_depth_limit_too_large_rejected() {
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(Engine::MAX_UNFOLD_DEPTH_LIMIT + 1); // must panic
 }
 
@@ -942,7 +942,7 @@ fn unfold_mutual_recursion_two_node_cycle() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // A.n should be 2 (top-level default)
@@ -1070,7 +1070,7 @@ fn unfold_mutual_recursion_three_node_cycle() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Verify chain: A(3) → A.b=B(2) → A.b.c=C(1) → A.b.c.a=A(0)
@@ -1200,7 +1200,7 @@ fn unfold_mutual_recursion_with_let_bindings() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // A(n=2): a_only = 2 * 10 = 20
@@ -1345,7 +1345,7 @@ fn unfold_mutual_recursion_heterogeneous_members() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Basic params
@@ -1577,7 +1577,7 @@ fn bfs_traverses_through_wrapper_with_zero_value_cells() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // BFS traversal through zero-value-cell wrappers should produce no diagnostics at all —
@@ -1737,7 +1737,7 @@ fn bfs_terminates_for_cyclic_structural_intermediaries() {
             .build();
 
         let checker = MockConstraintChecker::new();
-        let mut engine = Engine::new(Box::new(checker), None);
+        let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let result = engine.eval(&module);
         let _ = tx.send(result);
     });
@@ -1829,7 +1829,7 @@ fn non_recursive_child_guarded_sub_not_unfolded() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Phase 1: A.b.x should be 1 (arg x = A.n = 1)
@@ -1906,7 +1906,7 @@ fn non_recursive_top_level_guarded_sub_not_unfolded() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // (a) S.n should be 1 (Phase 1 param evaluation works)
@@ -1983,7 +1983,7 @@ fn budget_not_consumed_when_guard_false() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_nodes(3);
     let result = engine.eval(&module);
 
@@ -2062,7 +2062,7 @@ fn budget_not_consumed_when_depth_limit_hit() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(1);
     engine.set_max_unfold_nodes(2);
     let result = engine.eval(&module);
@@ -2145,7 +2145,7 @@ fn unfold_recursive_node_budget_exhaustion() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_nodes(3);
     let result = engine.eval(&module);
 
@@ -2423,7 +2423,7 @@ fn unfold_mutual_recursion_two_node_cycle_n3() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // ── Positive chain assertions: depth-3 alternation A→B→A→B ──────────────────

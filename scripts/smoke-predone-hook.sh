@@ -371,10 +371,10 @@ if [[ "$pass_exit" -ne 0 ]]; then
 fi
 
 # Extract the trailing JSON block from stderr. The binary may emit git
-# diagnostic warnings before the JSON array (see crates/reify-audit/tests/
-# cli.rs:73-85, which uses rfind("\n[") for the same reason). $SMOKE_TMPDIR
-# is not a git repo today, so the warning path is dormant — but mirroring
-# the cli.rs helper keeps 4a robust to future binary changes.
+# diagnostic warnings before the JSON array (find_findings_array_start in
+# crates/reify-audit/tests/cli.rs skips them with rfind("\n[") for the same
+# reason). $SMOKE_TMPDIR is not a git repo today, so the warning path is
+# dormant — but skipping them here too keeps 4a robust to future changes.
 if ! awk 'BEGIN{p=0} /^\[/{p=1} p{print}' "$SMOKE_TMPDIR/pass.stderr" \
         | jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "FAIL (4a): known-pass stderr trailing block is not a JSON array (output-format regression)." >&2

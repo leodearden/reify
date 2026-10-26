@@ -13,14 +13,13 @@
 // `let top_face` binding because a bare `Geometry`-typed cell has no eval-side
 // `Value` counterpart (see `is_representable_cell_type` in
 // `crates/reify-eval/src/engine_eval.rs`).  The `List<Geometry>` type used by
-// all other topology-selector cells IS representable (eval returns Value::Undef
-// while dispatch is pending).
+// all other topology-selector cells IS representable.
 //
-// Note: eval-side dispatch for the 11 task-2699 names is still pending
-// (cells stay at Value::Undef per
-//  crates/reify-eval/src/geometry_ops.rs:1646-1661); runtime coverage is
-// documented by the #[ignore]-gated tests in
-// crates/reify-eval/tests/topology_selector_smoke_tests.rs.
+// Note: eval-side dispatch for the 11 task-2699 names goes through
+// `try_eval_topology_selector` (crates/reify-eval/src/geometry_ops.rs). No
+// test pins these cells' eval-time values; compile-time wiring is pinned by
+// `all_topology_selectors_wiring_compiles_with_stdlib` in
+// crates/reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs.
 //
 // Coverage:
 //   1.  edges(solid)                              → List<Geometry>

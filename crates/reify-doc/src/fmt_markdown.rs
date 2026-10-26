@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 
 use crate::cross_refs::CrossRefs;
+use crate::expr_text::ExprText;
 use crate::model::{AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemKind, ParamDoc, PortDoc};
 
 /// A `CrossRefs` plus a precomputed *inverse* map from conformer name to the
@@ -388,7 +389,7 @@ fn render_item(
             type_repr,
             default_repr,
         } => {
-            render_field_body(out, type_repr, default_repr.as_deref());
+            render_field_body(out, type_repr, default_repr.as_ref());
         }
         ItemKind::Purpose {
             direction,
@@ -533,24 +534,24 @@ fn render_enum_variants(out: &mut String, variants: &[String]) {
 }
 
 /// Render the `**Type:**` (and optional `**Default:**`) lines for a `Field`.
-fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&str>) {
+fn render_field_body(out: &mut String, type_repr: &str, default_repr: Option<&ExprText>) {
     out.push_str("**Type:** ");
     out.push_str(&md_inline_code(type_repr));
     out.push_str("\n\n");
     if let Some(d) = default_repr {
         out.push_str("**Default:** ");
-        out.push_str(&md_inline_code(d));
+        out.push_str(&md_expr_text(d));
         out.push_str("\n\n");
     }
 }
 
 /// Render the `**Direction:**` and `**Expression:**` lines for a `Purpose`.
-fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &str) {
+fn render_purpose_body(out: &mut String, direction: &str, expr_repr: &ExprText) {
     out.push_str("**Direction:** ");
     out.push_str(direction);
     out.push_str("\n\n");
     out.push_str("**Expression:** ");
-    out.push_str(&md_inline_code(expr_repr));
+    out.push_str(&md_expr_text(expr_repr));
     out.push_str("\n\n");
 }
 
@@ -571,10 +572,28 @@ fn render_type_alias_body(out: &mut String, type_repr: &str) {
     out.push_str("\n\n");
 }
 
-/// Render the `\`{expr_repr}\`` line for a `ConstraintDef`.
-fn render_constraint_def_body(out: &mut String, expr_repr: &str) {
-    out.push_str(&md_inline_code(expr_repr));
+/// Render the expression line for a `ConstraintDef`.
+fn render_constraint_def_body(out: &mut String, expr_repr: &ExprText) {
+    out.push_str(&md_expr_text(expr_repr));
     out.push_str("\n\n");
+}
+
+/// Render an expression: source text as an inline-code span, and a missing
+/// source as `ExprText`'s placeholder in emphasis, so it can never pass for a
+/// value.
+fn md_expr_text(expr: &ExprText) -> String {
+    match expr {
+        ExprText::Source(text) => md_inline_code(text),
+        ExprText::Unavailable(_) => format!("*{expr}*"),
+    }
+}
+
+/// [`md_expr_text`] for a GFM table cell: pipes and newlines are escaped.
+fn md_expr_text_cell(expr: &ExprText) -> String {
+    match expr {
+        ExprText::Source(text) => md_inline_code_cell(text),
+        ExprText::Unavailable(_) => format!("*{}*", md_cell_escape(&expr.to_string())),
+    }
 }
 
 /// Wrap `s` in a Markdown inline-code span, picking a backtick fence longer
@@ -622,8 +641,8 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
     out.push_str("| Name | Type | Dimension | Default | Description |\n");
     out.push_str("| --- | --- | --- | --- | --- |\n");
     for p in params {
-        let default_cell = match p.default_repr.as_deref() {
-            Some(d) => md_inline_code_cell(d),
+        let default_cell = match &p.default_repr {
+            Some(d) => md_expr_text_cell(d),
             None => "—".to_string(),
         };
         // Description = doc text + optional `*hint: <solver_hint arg>*` suffix.
@@ -659,9 +678,9 @@ fn render_params_table(out: &mut String, params: &[ParamDoc]) {
 
 /// Render the `### Constraints` bullet list.  No-op when `cs` is empty.
 ///
-/// Each entry is one of three shapes:
-/// - `- `{expr}`` — no label
-/// - `- {label}: `{expr}`` — labeled
+/// Each entry is one of three shapes, `{expr}` rendered by [`md_expr_text`]:
+/// - `- {expr}` — no label
+/// - `- {label}: {expr}` — labeled
 /// - either of the above with a trailing ` *(line N)*` when `line.is_some()`.
 fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
     if cs.is_empty() {
@@ -674,7 +693,7 @@ fn render_constraints(out: &mut String, cs: &[ConstraintDoc]) {
             out.push_str(label);
             out.push_str(": ");
         }
-        out.push_str(&md_inline_code(&c.expr_repr));
+        out.push_str(&md_expr_text(&c.expr_repr));
         if let Some(line) = c.line {
             out.push_str(" *(line ");
             out.push_str(&line.to_string());

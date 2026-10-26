@@ -24,6 +24,12 @@
 #                             runs only when RUN_GUI_VITEST=1: a frontend-read
 #                             path changed, or the affected-crate closure
 #                             reaches reify-gui (or is unavailable) — task 7427
+#
+# SOURCE MODE: `source`-ing this file turns on set -euo pipefail, defines every
+# helper and returns before the first scenario. No fixture is built and no EXIT
+# trap is installed, so the caller owns cleanup (call `cleanup`). Helpers act
+# only on fixtures their constructors built in this shell. Pinned by
+# tests/infra/test_verify_scope_source_mode.py.
 
 set -euo pipefail
 
@@ -41,7 +47,6 @@ source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
 
 _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
-trap cleanup EXIT
 
 # Hermetic against the ambient REIFY_RELEASE_DELTA_SKIP knob (task #5280 zeta;
 # dark-factory-orchestrator.yaml exports it into the whole merge-gate verify.sh
@@ -58,27 +63,50 @@ trap cleanup EXIT
 # which overrides this export.
 export REIFY_RELEASE_DELTA_SKIP=0
 
-echo "=== verify.sh scope picker tests ==="
+# ===========================================================================
+# Helpers. Every function this file declares is defined here (cleanup in the
+# preamble above), before the source-mode return below, so sourcing the file
+# yields all of them without running a scenario. Fixtures are BUILT in the
+# scenario body, not here.
+# ===========================================================================
+
+# _require_fixture <var> <constructor-command> — succeed only if $<var> names a
+# directory a constructor of THIS shell registered in _TMPDIRS. Otherwise name
+# the calling helper, the variable, its value and the remedy, and return 1.
+_require_fixture() {
+    local _value="${!1:-}" _d
+    if [ -n "$_value" ]; then
+        for _d in "${_TMPDIRS[@]+"${_TMPDIRS[@]}"}"; do
+            if [ "$_d" = "$_value" ]; then return 0; fi
+        done
+    fi
+    printf "%s: \$%s is not a fixture this shell built (value: '%s'); run '%s' first\n" \
+        "${FUNCNAME[1]:-_require_fixture}" "$1" "$_value" "$2" >&2
+    return 1
+}
 
 # make_fixture VARNAME — create an isolated git repo with the three scripts
 # verify.sh needs, writing its path to the named variable.
 make_fixture() {
     local _var="$1" dir
-    dir="$(mktemp -d)"
+    dir="$(mktemp -d)" || return 1
     _TMPDIRS+=("$dir")
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
     cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/reify_path_attribution.py" "$dir/scripts/reify_path_attribution.py"
     cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
     cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
     cp "$REPO_ROOT/scripts/lib_slot_acquire.sh" "$dir/scripts/lib_slot_acquire.sh"
+    cp "$REPO_ROOT/scripts/lib_event_log.sh"    "$dir/scripts/lib_event_log.sh"
     cp "$REPO_ROOT/scripts/lib_clock_stop.sh"   "$dir/scripts/lib_clock_stop.sh"
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
     cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
+    cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$dir/scripts/lib_main_checkout.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
     cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
@@ -93,15 +121,12 @@ make_fixture() {
     # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
     # grammar and the transitive-closure rationale (generalizes the direct-only
     # grep this block used to run inline).
-    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || exit 1
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || return 1
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
     printf -v "$_var" '%s' "$dir"
 }
-
-FIX=""
-make_fixture FIX
 
 # plan_for <scope> <file...> — stage the given (new) files in the fixture, emit
 # the verify.sh plan for `all --scope <scope> --include-infra`, then unstage and
@@ -114,6 +139,7 @@ make_fixture FIX
 # than aborting the suite via set -euo pipefail.
 PLAN_OUT=""
 plan_for() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
     local scope="$1"; shift
     local f
     for f in "$@"; do
@@ -126,6 +152,16 @@ plan_for() {
         _ "$FIX" "$scope" || true
     git -C "$FIX" reset -q -- . 2>/dev/null || true
     for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+# plan_for_staged_role <role> <file...> — plan_for staged with DF_VERIFY_ROLE
+# set to <role> for that one call. It delegates, so plan_for stays the only
+# copy of the stage/capture/unstage steps; the fixture check is repeated
+# because _require_fixture names the helper it was called from.
+plan_for_staged_role() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    local role="$1"; shift
+    DF_VERIFY_ROLE="$role" plan_for staged "$@"
 }
 
 # Convenience predicates over PLAN_OUT.
@@ -142,26 +178,428 @@ plan_cmdcount() { plan_count_noncomment_lines "$PLAN_OUT"; }
 # narrowing assertions below (#6391).
 refute() { ! "$@"; }
 
+# plan_for_staged_rename <src> <dst> — stage a rename in FIX_PGR, capture the
+# plan for --scope staged, then restore the index and worktree.
+plan_for_staged_rename() {
+    _require_fixture FIX_PGR 'make_fixture FIX_PGR' || return 1
+    git -C "$FIX_PGR" mv "$1" "$2"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$FIX_PGR" || true
+    git -C "$FIX_PGR" reset -q --hard HEAD
+}
+
+# The fixture-LEAF pattern, named like its sibling _PG_DIR_PAT below so the two
+# halves read as one convention.
+_PG_FIX_PAT='tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri'
+# The SINGLE derivation that both the real-repo run below and the synthetic
+# self-tests go through: full matched LINES in, sorted-unique fixture paths out.
+# `-o` lives here rather than on `git grep` so the helper still sees whole
+# lines — the self-tests therefore exercise the production pipeline instead of
+# restating it, and the reviewed-marker filter has somewhere to stand.
+# That filter runs FIRST, before `-o` projects the line away. Its literal is the
+# EXACT `pg-drift:allow`: a shortened `pg-drift` would also swallow half (b)'s
+# reviewed `pg-drift-dir:allow` walks (pinned by the cross-suppression self-test
+# below). Callers keep the `|| true` the surrounding code already uses — under
+# `set -euo pipefail` a `grep` that suppresses every line exits 1, which is now
+# a legitimate outcome rather than a fault.
+_pg_derive() { grep -v 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u; }
+
+# make_branch_fixture VARNAME — like make_fixture but also commits the
+# scripts on a branch named exactly `main` so `git merge-base main HEAD`
+# can resolve inside the fixture.
+make_branch_fixture() {
+    local _var="$1" dir
+    dir="$(mktemp -d)" || return 1
+    _TMPDIRS+=("$dir")
+    mkdir -p "$dir/scripts"
+    cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
+    cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/reify_path_attribution.py" "$dir/scripts/reify_path_attribution.py"
+    cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
+    cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
+    cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/lib_slot_acquire.sh" "$dir/scripts/lib_slot_acquire.sh"
+    cp "$REPO_ROOT/scripts/lib_event_log.sh"    "$dir/scripts/lib_event_log.sh"
+    cp "$REPO_ROOT/scripts/lib_clock_stop.sh"   "$dir/scripts/lib_clock_stop.sh"
+    cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
+    cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
+    cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
+    cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$dir/scripts/lib_main_checkout.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
+    cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
+    chmod +x "$dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh's TRANSITIVE source closure has a lib
+    # that was not copied to the fixture. Without this check a new source line
+    # (direct or transitive-under-an-already-copied-lib) would be silently
+    # swallowed by the 2>/dev/null on the --print-plan invocations, surfacing
+    # only as an opaque all-plan-non-empty sanity failure. Shared helper
+    # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
+    # grammar and the transitive-closure rationale (generalizes the direct-only
+    # grep this block used to run inline).
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || return 1
+    git -C "$dir" init -q
+    git -C "$dir" config user.email "test@test.com"
+    git -C "$dir" config user.name "Test"
+    git -C "$dir" add scripts
+    git -C "$dir" commit -q -m "base"
+    git -C "$dir" branch -M main
+    printf -v "$_var" '%s' "$dir"
+}
+
+# plan_for_branch <file...> — checkout a task-branch off main, commit the
+# given (new) files, capture verify.sh --scope branch --print-plan output
+# into PLAN_OUT, then restore main and delete the branch.
+plan_for_branch() {
+    _require_fixture FIX_B 'make_branch_fixture FIX_B' || return 1
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
+# plan_for_branch_env <env-assignment> <file...> — plan_for_branch with ONE
+# extra environment variable exported into the --print-plan child.
+#
+# WHY it exists: the throwaway fixture repo has no cargo workspace, so
+# `cargo metadata` always fails there and affected_crates() always returns the
+# ALL sentinel. Any scenario whose assertion depends on the SHAPE of
+# AFFECTED_CLOSURE (a real crate list that does or does not contain reify-gui)
+# must therefore drive it hermetically via REIFY_AFFECTED_CRATES_OVERRIDE —
+# the same knob, for the same reason, as tests/infra/test_scope_boundary.sh's
+# B4P2 captures.
+#
+# <env-assignment> is a single `NAME=value` word handed VERBATIM to env(1) as
+# one argv element, so a value containing spaces (a crate list) needs no
+# quoting dance and no parsing here. Exactly one assignment: passing two would
+# require word-splitting the argument, which a space-bearing value defeats.
+# Pass "" for none (env with no assignment is a plain exec).
+#
+# Capture uses capture_print_plan rather than plan_for_branch's plain $( ),
+# picking up the retry-on-incomplete-capture defense (task #4708) that the
+# cited B4P2 idiom already uses.
+plan_for_branch_env() {
+    _require_fixture FIX_B 'make_branch_fixture FIX_B' || return 1
+    local env_assignment="$1"; shift
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec env ${2:+"$2"} bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX_B" "$env_assignment" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
+# plan_for_branch_modify <file...> — checkout a fresh task-branch off
+# FIX_MOD's main, grow (append to) the given already-seeded file(s) so each
+# shows up as an `M`, not an `A`, in `git diff "$_MERGE_BASE"`, capture
+# verify.sh --print-plan output into PLAN_OUT, then restore main and delete
+# the branch (mirrors plan_for_branch's own teardown, above).
+plan_for_branch_modify() {
+    _require_fixture FIX_MOD 'make_branch_fixture FIX_MOD' || return 1
+    local f
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    for f in "$@"; do printf 'grown\n' >> "$FIX_MOD/$f"; done
+    git -C "$FIX_MOD" commit -q -am "grow"          # M, not A, in `git diff <merge-base>`
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
+# plan_for_branch_delete <file...> — like plan_for_branch_modify, but each already-seeded file shows up as a D.
+plan_for_branch_delete() {
+    _require_fixture FIX_MOD 'make_branch_fixture FIX_MOD' || return 1
+    local f
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    for f in "$@"; do git -C "$FIX_MOD" rm -q "$f"; done
+    git -C "$FIX_MOD" commit -q -m "delete"
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
+# plan_for_branch_rename <src> <dst> <root> <mod-line> — the actual
+# rename-based consolidation absorb the A+M broadening exists for: checkout a
+# fresh task-branch off FIX_MOD's main, `git mv` <src> to <dst> (git's
+# default rename detection tags this R100 — verified empirically to be
+# excluded by --diff-filter=AM, so the mv itself leaves no A/M trace), then
+# append <mod-line> to <root> (the C1-required `#[path] mod` declaration) so
+# the root shows up as an `M`. Capture PLAN_OUT, restore main, delete branch.
+plan_for_branch_rename() {
+    _require_fixture FIX_MOD 'make_branch_fixture FIX_MOD' || return 1
+    local src="$1" dst="$2" root="$3" mod_line="$4"
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    mkdir -p "$FIX_MOD/$(dirname "$dst")"
+    git -C "$FIX_MOD" mv "$src" "$dst"
+    printf '%s\n' "$mod_line" >> "$FIX_MOD/$root"
+    git -C "$FIX_MOD" commit -q -am "rename absorb"
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
+# plan_for_branch_narrowed <override> <file...>
+# Like plan_for_branch but exports REIFY_AFFECTED_CRATES_OVERRIDE, and also
+# captures the typecheck-action plan into PLAN_OUT_NARROW_TC.
+PLAN_OUT_NARROW_TC=""
+plan_for_branch_narrowed() {
+    _require_fixture FIX_B 'make_branch_fixture FIX_B' || return 1
+    local _override="$1"; shift
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_B" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    PLAN_OUT_NARROW_TC="$(cd "$FIX_B" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
+# plan_for_staged_narrowed <override> <file...>
+# Like plan_for but exports REIFY_AFFECTED_CRATES_OVERRIDE and passes --narrow.
+# Captures PLAN_OUT (all action) and PLAN_OUT_NARROW_TC (typecheck action).
+plan_for_staged_narrowed() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    local _override="$1"; shift
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    PLAN_OUT="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope staged --narrow --include-infra --print-plan 2>/dev/null)" || true
+    PLAN_OUT_NARROW_TC="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh typecheck --profile debug --scope staged --narrow --print-plan 2>/dev/null)" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+# plan_for_vs_change — on a fresh task-branch, APPEND a harmless comment line
+# to the fixture's scripts/verify.sh (NEVER overwrite — it is the SUT), commit,
+# then capture the plan WITHOUT --include-infra (the real task-verify path).
+# Restores main and deletes the branch when done.
+plan_for_vs_change() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-4523 verify.sh-change simulation sentinel" >> "$FIX_VS/scripts/verify.sh"
+    git -C "$FIX_VS" add scripts/verify.sh
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
+# Reuses FIX_VS (restored to main by plan_for_vs_change above).
+plan_for_vs_change_incl() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-4523 verify.sh-change simulation sentinel (incl)" >> "$FIX_VS/scripts/verify.sh"
+    git -C "$FIX_VS" add scripts/verify.sh
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# plan_for_vs_map_append <fixture-relpath> — on a fresh task-branch off
+# FIX_VS, append a sentinel comment to an EXISTING fixture file (already
+# copied in by make_branch_fixture), commit, and capture the selective
+# (no --include-infra) plan into PLAN_OUT. Mirrors plan_for_vs_change.
+plan_for_vs_map_append() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
+    local _f="$1"
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-5125 map-coverage sentinel" >> "$FIX_VS/$_f"
+    git -C "$FIX_VS" add "$_f"
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# plan_for_vs_map_new <fixture-relpath> — on a fresh task-branch off FIX_VS,
+# CREATE a new file at a mapped path (not present in the fixture), commit,
+# and capture the selective (no --include-infra) plan into PLAN_OUT.
+plan_for_vs_map_new() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
+    local _f="$1"
+    git -C "$FIX_VS" checkout -q -b task-branch
+    mkdir -p "$FIX_VS/$(dirname "$_f")"
+    printf 'x\n' > "$FIX_VS/$_f"
+    git -C "$FIX_VS" add "$_f"
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# verify_pipeline_map_globs_resolve — print each scripts/verify-pipeline-infra-tests.txt
+# glob that expands to zero tests/infra files; return 1 if there is any.
+verify_pipeline_map_globs_resolve() {
+    local _map="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+    local _line _artifact _glob _f _match _bad=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ''|'#'*) continue ;;
+        esac
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_glob" ] || continue
+        _match=0
+        for _f in "$REPO_ROOT"/$_glob; do
+            [ -f "$_f" ] || continue
+            _match=1
+        done
+        [ "$_match" -eq 1 ] || _bad="${_bad}${_artifact} -> ${_glob}"$'\n'
+    done < "$_map"
+    if [ -n "$_bad" ]; then
+        printf 'glob(s) with zero matching tests/infra files:\n%s' "$_bad"
+        return 1
+    fi
+    return 0
+}
+
+# plan_for_noinfra <scope> <file...> — like plan_for but invokes the `test`
+# action WITHOUT --include-infra, so the selective infra pole at
+# verify.sh:1272 (gated on DO_TEST=1 && SELECTED_INFRA_GLOBS!="" &&
+# INCLUDE_INFRA=0) is NOT suppressed by the wholesale --include-infra path.
+plan_for_noinfra() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    local scope="$1"; shift
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh test --profile debug --scope "$2" --print-plan' \
+        _ "$FIX" "$scope" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+# plan_for_gec_rename <src> <dst> — stage a rename in FIX_GECR, capture the
+# plan for --scope staged, then restore the index and worktree. Mirrors
+# plan_for_staged_rename above.
+plan_for_gec_rename() {
+    _require_fixture FIX_GECR 'make_fixture FIX_GECR' || return 1
+    git -C "$FIX_GECR" mv "$1" "$2"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$FIX_GECR" || true
+    git -C "$FIX_GECR" reset -q --hard HEAD
+}
+
+# _check_scope_header <pattern> — plan_has <pattern>, but first echoes the
+# header line so a FAIL reports the classification it actually saw rather than
+# just "no match".
+_check_scope_header() {
+    printf '%s\n' "$PLAN_OUT" | grep -E '^# scope decision' || echo "(no scope-decision line in PLAN_OUT)"
+    plan_has "$1"
+}
+
+# make_rename_diff_fail_shim — build the GV-FAILWIDE-* PATH shim: a git that
+# fails ONLY the exact --diff-filter=R argument (recording each firing in
+# $_FW_FIRED) and execs the real git otherwise. Sets _FW_SHIM_DIR, _FW_FIRED
+# and _FW_ERR.
+make_rename_diff_fail_shim() {
+    _FW_SHIM_DIR="$(mktemp -d)" || return 1
+    _TMPDIRS+=("$_FW_SHIM_DIR")
+    _FW_FIRED="$_FW_SHIM_DIR/fired"
+    _FW_ERR="$_FW_SHIM_DIR/stderr.log"
+    cat > "$_FW_SHIM_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+    if [ "\$arg" = "--diff-filter=R" ]; then
+        echo "\$*" >> "$_FW_FIRED"
+        echo "git: simulated rename-source diff failure" >&2
+        exit 3
+    fi
+done
+exec $(command -v git) "\$@"
+STUB_EOF
+    chmod +x "$_FW_SHIM_DIR/git"
+}
+
+# _plan_for_staged_shimmed <file...> — plan_for's stage/capture/unstage body
+# with the shim first on PATH and stderr diverted to $_FW_ERR. It cannot just
+# BE plan_for: the C5 WARNING this family asserts on is written to fd 2, which
+# plan_for leaves on the suite's own stderr. PATH is PREPENDED, never
+# replaced, so grep/cut/sort stay resolvable inside verify.sh.
+_plan_for_staged_shimmed() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    _require_fixture _FW_SHIM_DIR make_rename_diff_fail_shim || return 1
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec env PATH="$2:$PATH" bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>"$3"' \
+        _ "$FIX" "$_FW_SHIM_DIR" "$_FW_ERR" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+# Source mode stops here (contract: tests/infra/test_verify_scope_source_mode.py).
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
+trap cleanup EXIT
+
+echo "=== verify.sh scope picker tests ==="
+
+FIX=""
+make_fixture FIX
+
 # ---------------------------------------------------------------------------
 # Scenario 1: docs/markdown/yaml only -> nothing heavy
 #
 # "Nothing heavy" is about CLASSIFICATION (RUN_RUST/RUN_GUI/RUN_OCCT_GATE), and
-# that is what this scenario owns. Since task #7785 the staged docs case is no
-# longer a ZERO-command plan: select_cited_test_path_gate emits one cheap
-# selective-infra leaf for any staged change whatever its extension, which is
-# the whole point of that gate (see the CT-* family below, which owns that
-# signal). The count is pinned at exactly one so a future re-escalation of the
-# docs arm still reds here.
+# that is what this scenario owns. Since task #7831 the staged docs case is no
+# longer a ZERO-command plan: select_cited_test_path_gate and, since task #7797,
+# select_canonical_config_path_gate each emit one cheap selective-infra leaf for
+# any staged change whatever its extension, which is the whole point of those
+# gates (see the CT-* and CANON-* families below, which own those signals). The
+# count is pinned at exactly two so a future re-escalation of the docs arm still
+# reds here.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario 1: docs/*.md + *.yaml only -> no Rust, no GUI ---"
 plan_for staged docs/note.md config/thing.yaml
 assert "docs/yaml-only: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "docs/yaml-only: exactly one command leaf — the cited-test-path gate (task #7785), nothing heavy" \
-    test "$(plan_cmdcount)" -eq 1
-assert "docs/yaml-only: that one leaf IS tests/infra/test_cited_test_paths_resolve.sh" \
+assert "docs/yaml-only: exactly two command leaves — the cited-test-path and canonical-config-path gates (tasks #7831, #7797), nothing heavy" \
+    test "$(plan_cmdcount)" -eq 2
+assert "docs/yaml-only: one leaf IS tests/infra/test_cited_test_paths_resolve.sh" \
     plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'
+assert "docs/yaml-only: the other leaf IS tests/infra/test_orchestrator_config_canonical_path.sh" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
 
 # ---------------------------------------------------------------------------
 # Scenario PG-*: PRD-gate .ri fixture classification (task 5536).
@@ -176,26 +614,27 @@ assert "docs/yaml-only: that one leaf IS tests/infra/test_cited_test_paths_resol
 # 16 command leaves) — which is why both 2026-07-25 PRD sessions split their
 # fixtures out into implementation tasks instead.
 #
-# PG-1's staged case is now TWO cheap leaves, not a zero-command plan — the
-# PT-* family below (task 6817) owns the PTODO one (PT-1) and the CT-* family
-# (task #7785) owns the cited-test-path one (CT-1). Neither is a
-# re-escalation: both are seconds-long hermetic bash, and the assertion that
+# PG-1's staged case is now THREE cheap leaves, not a zero-command plan — the
+# PT-* family below (task 6817) owns the PTODO one (PT-1), the CT-* family
+# (task #7831) owns the cited-test-path one (CT-1) and the CANON-* family
+# (task #7797) owns the canonical-config-path one (CANON-1). None is a
+# re-escalation: all are seconds-long hermetic bash, and the assertion that
 # no cargo workspace pass appears is what pins that.
 # PG-1b's branch case stays zero: task 5125's merge-tier-only PTODO stands
 # for --scope branch, which PT-CTRL-BRANCH (beside PG-1b) pins. PG-2..PG-5
 # are CONTROLS: green before AND after, they pin the carve-out as narrow and
 # never-subtracting, so any later widening has to be a deliberate, reviewed
 # act rather than a silent side effect. PG-1b lives with the branch-scope
-# family below (plan_for_branch is not defined until then).
+# family below (its FIX_B fixture is not built until then).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, TWO cheap leaves (tasks 6817, #7785) ---"
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, THREE cheap leaves (tasks 6817, #7831, #7797) ---"
 plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
     tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "PG-1/docs+fixture: exactly two command leaves — the cheap PTODO and cited-test-path gates, not a re-escalation" \
-    test "$(plan_cmdcount)" -eq 2
+assert "PG-1/docs+fixture: exactly three command leaves — the cheap PTODO, cited-test-path and canonical-config-path gates, not a re-escalation" \
+    test "$(plan_cmdcount)" -eq 3
 assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest --workspace" \
     plan_lacks 'cargo (test|nextest run) --workspace'
 
@@ -263,16 +702,6 @@ printf 'seed\n' > "$FIX_PGR/tests/prd-gate/fixtures/uncoupled_probe.ri"
 git -C "$FIX_PGR" add tests/prd-gate/fixtures/geometry_let_selector_consumer.ri \
                       tests/prd-gate/fixtures/uncoupled_probe.ri
 git -C "$FIX_PGR" commit -q -m "seed PG-RENAME sources"
-
-# plan_for_staged_rename <src> <dst> — stage a rename in FIX_PGR, capture the
-# plan for --scope staged, then restore the index and worktree.
-plan_for_staged_rename() {
-    git -C "$FIX_PGR" mv "$1" "$2"
-    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
-        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
-        _ "$FIX_PGR" || true
-    git -C "$FIX_PGR" reset -q --hard HEAD
-}
 
 echo ""
 echo "--- Scenario PG-RENAME: git mv of a Rust-consumed fixture -> RUN_RUST=1 (source side recovered from the R entry) ---"
@@ -359,21 +788,7 @@ assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RU
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
-# The fixture-LEAF pattern, named like its sibling _PG_DIR_PAT below so the two
-# halves read as one convention.
-_PG_FIX_PAT='tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri'
-# The SINGLE derivation that both the real-repo run below and the synthetic
-# self-tests go through: full matched LINES in, sorted-unique fixture paths out.
-# `-o` lives here rather than on `git grep` so the helper still sees whole
-# lines — the self-tests therefore exercise the production pipeline instead of
-# restating it, and the reviewed-marker filter has somewhere to stand.
-# That filter runs FIRST, before `-o` projects the line away. Its literal is the
-# EXACT `pg-drift:allow`: a shortened `pg-drift` would also swallow half (b)'s
-# reviewed `pg-drift-dir:allow` walks (pinned by the cross-suppression self-test
-# below). Callers keep the `|| true` the surrounding code already uses — under
-# `set -euo pipefail` a `grep` that suppresses every line exits 1, which is now
-# a legitimate outcome rather than a fault.
-_pg_derive() { grep -v 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u; }
+# _PG_FIX_PAT and its single derivation, _pg_derive, live in the helper block.
 _PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' | _pg_derive || true)"
 # Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
 # must fail loudly here instead of vacuously passing an empty loop.
@@ -412,8 +827,8 @@ assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT
 # which prints `path:count` rather than a bare number.
 _PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
     | grep 'pg-drift:allow' | wc -l || true)"
-assert "PG-DRIFT: exactly five reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, ctor_conformance_corpus_survey.rs's two SYNTHETIC one.ri drift-render inputs, and the two S-4 witness citations of getar_wildcard_headed_arg_silent.ri in overload.rs and result_combinator_resolution_tests.rs, task 8014); found $_PG_ALLOWED_MENTIONS" \
-    test "$_PG_ALLOWED_MENTIONS" -eq 5
+assert "PG-DRIFT: exactly six reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, harness_ctor_conformance_survey/render.rs's two SYNTHETIC one.ri drift-render inputs, the two S-4 witness citations of getar_wildcard_headed_arg_silent.ri in overload.rs and result_combinator_resolution_tests.rs, task 8014, and sweep_pose_guard_e2e.rs's pose-proxy citation of pnrg_envelope_sweep.ri, task 7248); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 6
 # (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
 # this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
 # classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
@@ -485,25 +900,36 @@ assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf (Rust or TS) and a 
 
 echo ""
 echo "--- Scenario PG-DRIFT-GUI: every EXPECTED_CLEAN-pinned prd-gate fixture classifies RUN_GUI=1 ---"
-# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpus.test.ts)
-# asserts that each pinned path still parses with zero ERROR nodes. Editing a
-# pinned fixture into an unparseable state regresses a committed signal, but the
-# prd-gate arm leaves gui=0 for a fixture that is not RUST-coupled — so under
+# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpusLedger.test.ts)
+# asserts that each path pinned in its JSON pin set
+# (gui/src/__tests__/reifyGrammarCorpus.expected-clean.json) still parses with
+# zero ERROR nodes. Editing a pinned fixture into an unparseable state
+# regresses a committed signal, but the prd-gate arm leaves gui=0 for a
+# fixture that is not RUST-coupled — so under
 # --scope staged/branch the suite that reads it would never run, and on the
 # hook-gated docs commit on `main` there is no later gate. verify.sh's
 # _GUI_COUPLED_RI_FIXTURES closes that; this scenario is what keeps the list
 # honest, exactly as PG-DRIFT does for the Rust side (task 6435).
-_PG_GUI_PINS="$(sed -n '/^const EXPECTED_CLEAN = \[/,/^\];/p' \
-    "$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.test.ts" \
-    | grep -o 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]*\.ri' | sort -u || true)"
-# Non-empty FIRST: a renamed ledger file, a changed EXPECTED_CLEAN spelling or a
-# broken sed range must fail loudly here rather than pass an empty loop.
-assert "PG-DRIFT-GUI: derived EXPECTED_CLEAN pin set is NON-EMPTY (guard is not vacuous)" \
+_PG_GUI_JSON="$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"
+_PG_GUI_PINS="$(python3 -I -c '
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    pins = json.load(f)
+if not isinstance(pins, list) or not all(isinstance(p, str) for p in pins):
+    sys.exit(f"{path}: expected a JSON array of repo-relative path strings")
+for p in pins:
+    if p.startswith("tests/prd-gate/fixtures/") and p.endswith(".ri"):
+        print(p)
+' "$_PG_GUI_JSON" | sort -u || true)"
+# Non-empty FIRST: a moved/renamed pin file or malformed JSON (python3 names it
+# on stderr) must fail loudly here rather than pass an empty loop.
+assert "PG-DRIFT-GUI: derived pin set from reifyGrammarCorpus.expected-clean.json is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PG_GUI_PINS"
 while IFS= read -r _pg_gui_path; do
     [ -n "$_pg_gui_path" ] || continue
     plan_for staged "$_pg_gui_path"
-    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
+    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.expected-clean.json; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
         plan_has 'RUN_GUI=1'
 done <<< "$_PG_GUI_PINS"
 
@@ -554,8 +980,9 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 # Scenario PT-DRIFT: the bash extension list in verify.sh's
 # select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
-# set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
-# re-derives the set from that function's SOURCE on every infra run and
+# set (crates/reify-audit/src/ptodo.rs::SWEPT_EXTENSIONS, the table
+# is_swept_ext looks paths up in). This scenario
+# re-derives the set from that table's SOURCE on every infra run and
 # asserts every derived member fires the gate (same derive-from-source idiom
 # as PG-DRIFT / PG-DRIFT-GUI above). This is ONE-DIRECTIONAL: it goes RED if
 # is_swept_ext gains an extension verify.sh's list lacks, but nothing here
@@ -570,10 +997,12 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* ---"
-_PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
-    | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
-# Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
-# fail loudly here rather than vacuously pass an empty loop.
+_PT_EXTS="$(sed -n '/^const SWEPT_EXTENSIONS/,/^];/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
+    | grep -o '("\.[a-z]*",' | sed 's/("\.\([a-z]*\)",/\1/' | sort -u)" || true
+# Non-empty FIRST: a renamed/reshaped SWEPT_EXTENSIONS or a broken sed range
+# must fail loudly here rather than vacuously pass an empty loop (`|| true`
+# above keeps an empty scrape from aborting the run under pipefail before
+# this assert can name it).
 assert "PT-DRIFT: derived swept-extension set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PT_EXTS"
 while IFS= read -r _pt_ext; do
@@ -597,22 +1026,25 @@ assert "PT-CASE: plan contains tests/infra/test_reify_audit_ptodo.sh (case-insen
 # ---------------------------------------------------------------------------
 # Scenario PT-CTRL-DOCS: fence re-asserting Scenario 1's shape under the new
 # rule — a genuinely non-swept docs landing must not gain the PTODO leaf.
-# Control for the PTODO half: green before AND after step-4.
+# Control for the PTODO half.
 #
-# The COUNT half moved with task #7785: select_cited_test_path_gate fires on
-# any staged change, so this plan now carries exactly one leaf — and pinning
-# it as the cited-test-path one is what keeps this a control for the PTODO
-# extension rule rather than a bare count that any future leaf would satisfy.
+# The COUNT half moved with tasks #7831 and #7797: select_cited_test_path_gate
+# and select_canonical_config_path_gate fire on any staged change, so this plan
+# now carries exactly two leaves — and pinning them as those two is what keeps
+# this a control for the PTODO extension rule rather than a bare count that any
+# future leaf would satisfy.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-CTRL-DOCS: non-swept docs/*.md + *.yaml gains NO PTODO leaf (control, green before AND after) ---"
 plan_for staged docs/note.md config/thing.yaml
 assert "PT-CTRL-DOCS: plan lacks the cheap PTODO gate leaf (neither extension is reify-audit-swept)" \
     plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
-assert "PT-CTRL-DOCS: exactly one command leaf, and it is the cited-test-path gate (5536's no-heavy-checks win is preserved)" \
-    test "$(plan_cmdcount)" -eq 1
-assert "PT-CTRL-DOCS: that leaf is tests/infra/test_cited_test_paths_resolve.sh, not a re-escalation" \
+assert "PT-CTRL-DOCS: exactly two command leaves, the cited-test-path and canonical-config-path gates (5536's no-heavy-checks win is preserved)" \
+    test "$(plan_cmdcount)" -eq 2
+assert "PT-CTRL-DOCS: one leaf is tests/infra/test_cited_test_paths_resolve.sh, not a re-escalation" \
     plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'
+assert "PT-CTRL-DOCS: the other leaf is tests/infra/test_orchestrator_config_canonical_path.sh, not a re-escalation" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
 
 # ---------------------------------------------------------------------------
 # Scenarios PT-RATCHET-*: the EMITTER half of REIFY_PTODO_RATCHET_REQUIRED
@@ -694,7 +1126,7 @@ assert "PT-RATCHET-DRIFT: tests/infra/test_reify_audit_ptodo.sh READS the emitte
 
 # ---------------------------------------------------------------------------
 # Scenarios CT-*: the cited-test-path gate on the hook-gated --scope staged
-# path (task #7785).
+# path (task #7831).
 #
 # tests/infra/test_cited_test_paths_resolve.sh — prose naming a
 # `crates/<crate>/tests/**/*.rs` file must name a path that still resolves —
@@ -751,11 +1183,13 @@ assert "CT-EXTLESS: extension-less staged path still emits the cited-test-path g
 # Scenario CT-CORPUS-DRIFT: the ANTI-ALLOWLIST ratchet — the analogue of
 # PT-DRIFT, for a selector that deliberately has NO set to mirror.
 #
-# select_cheap_ptodo_gate sits directly above select_cited_test_path_gate in
-# verify.sh and DOES filter by extension, so the standing hazard is a reader
-# who "helpfully" mirrors that filter here. It would be a coverage hole, not
-# an optimisation: the scan is extension-agnostic by construction, and says so
-# — cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited by
+# select_cheap_ptodo_gate sits earlier in verify.sh and DOES filter by
+# extension, so the standing hazard is a reader who "helpfully" mirrors that
+# filter into the trigger the staged gates share — most likely
+# select_staged_whole_tree_gate, where CT-EXTLESS and CANON-EXTLESS both catch
+# it. It would be a coverage hole, not an optimisation: the scan is
+# extension-agnostic by construction, and says so —
+# cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited by
 # FUNCTION NAME, not line, since a line cite into another file re-rots on
 # every edit to it), "NO EXTENSION FILTER. Extension-agnosticism is the
 # ABSENCE of a filter, not an allowlist".
@@ -789,7 +1223,7 @@ while IFS= read -r _ct_ext; do
     # docs/* is a no-heavy-checks path arm for EVERY extension (Scenario 1),
     # which isolates the extension rule from path classification exactly as
     # PT-DRIFT's docs/pt_probe.<ext> does: a gate leaf seen here can only come
-    # from select_cited_test_path_gate's own (absent) extension test.
+    # from select_staged_whole_tree_gate's own (absent) extension test.
     plan_for staged "docs/ct_probe.$_ct_ext"
     assert "CT-CORPUS-DRIFT: docs/ct_probe.$_ct_ext -> cited-test-path gate leaf emitted (corpus-derived extension)" \
         plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'
@@ -806,16 +1240,70 @@ done <<< "$_CT_EXTS"
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario CT-MERGE-SUPPRESSED: DF_VERIFY_ROLE=merge emits NO selective cited-test-path leaf ---"
-mkdir -p "$FIX/docs"
-printf 'x\n' > "$FIX/docs/ct_merge_probe.md"
-git -C "$FIX" add docs/ct_merge_probe.md
-_CT_MERGE_PLAN="$(cd "$FIX" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
-git -C "$FIX" reset -q -- . 2>/dev/null || true
-rm -f "$FIX/docs/ct_merge_probe.md"
+plan_for_staged_role merge docs/ct_merge_probe.md
 assert "CT-MERGE-SUPPRESSED-vacuity: the merge-role plan was captured (the negative pin below is not vacuous)" \
-    test -n "$_CT_MERGE_PLAN"
+    test -n "$PLAN_OUT"
 assert "CT-MERGE-SUPPRESSED: no selective tests/infra/test_cited_test_paths_resolve.sh leaf (run_all.sh owns it wholesale there)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "test_cited_test_paths_resolve"' _ "$_CT_MERGE_PLAN"
+    plan_lacks 'test_cited_test_paths_resolve'
+
+# ---------------------------------------------------------------------------
+# Scenarios CANON-*: the canonical-config-path gate on the hook-gated --scope
+# staged path (task #7797), the sibling of CT-* above.
+#
+# tests/infra/test_orchestrator_config_canonical_path.sh (task 5242) part (B)
+# is a repo-wide absence invariant with no grandfather baseline: any tracked
+# line naming the legacy top-level orchestrator config reds it. Everything
+# still in charter gets landing-path parity (landing-contract §3 R3,
+# docs/legibility/landing-contract.md), so a hook-gated commit on `main` must
+# run it; CT-1 owns the shared rationale, and these scenarios pin only that
+# this leaf rides the same trigger.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario CANON-1: staged plans/*.md + docs/legibility/*.yaml (the census-commit shape) -> canonical-config-path gate leaf emitted ---"
+plan_for staged plans/canon_census_probe.md docs/legibility/canon_probe.yaml
+assert "CANON-1: plan contains the tests/infra/test_orchestrator_config_canonical_path.sh selective leaf" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+assert "CANON-1: leaf runs through the selective-infra timeout+bash loop shape" \
+    plan_has 'test_orchestrator_config_canonical_path.*timeout.*bash'
+for canon_field in RUN_RUST RUN_GUI RUN_OCCT_GATE; do
+    assert "CANON-1: scope decision keeps $canon_field at 0 (gate ADDED, not a re-escalation)" \
+        test "$(plan_header_field "$PLAN_OUT" scope "$canon_field")" = 0
+done
+assert "CANON-1: no cargo test/nextest workspace pass (the gate is hermetic bash — no cargo, no npm)" \
+    plan_lacks 'cargo (test|nextest run) --workspace'
+assert "CANON-1: no cargo clippy" plan_lacks 'cargo clippy'
+
+echo ""
+echo "--- Scenario CANON-1-vacuity: the selected gate path resolves in the repo (mirrors CT-1-vacuity) ---"
+assert "CANON-1-vacuity: tests/infra/test_orchestrator_config_canonical_path.sh exists (the emitted loop's [ -f ] guard would otherwise silently no-op)" \
+    test -f "$REPO_ROOT/tests/infra/test_orchestrator_config_canonical_path.sh"
+
+# CANON-CONFIG: dark-factory-orchestrator.yaml is classified inert (RUN_RUST=0)
+# and its one infra-map row (knob parity) reads the verify_env block with awk,
+# so on a hook-gated commit nothing parses it as YAML; part (A) of the gate does.
+echo ""
+echo "--- Scenario CANON-CONFIG: staged dark-factory-orchestrator.yaml alone (the part (A) subject) -> gate leaf emitted ---"
+plan_for staged dark-factory-orchestrator.yaml
+assert "CANON-CONFIG: staging the canonical config itself emits the canonical-config-path gate leaf" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+
+# CANON-EXTLESS: same single-probe kill of the extension-filter class as
+# CT-EXTLESS — no `case` allowlist can match an extension-less path.
+echo ""
+echo "--- Scenario CANON-EXTLESS: a staged EXTENSION-LESS file still fires the gate ---"
+plan_for staged hooks/canon-probe-hook
+assert "CANON-EXTLESS: extension-less staged path still emits the canonical-config-path gate leaf (no allowlist can match it)" \
+    plan_has 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+
+# CANON-MERGE-SUPPRESSED: exactly-once (INV-5), CT-MERGE-SUPPRESSED's twin —
+# under DF_VERIFY_ROLE=merge run_all.sh runs this file wholesale.
+echo ""
+echo "--- Scenario CANON-MERGE-SUPPRESSED: DF_VERIFY_ROLE=merge emits NO selective canonical-config-path leaf ---"
+plan_for_staged_role merge docs/canon_merge_probe.md
+assert "CANON-MERGE-SUPPRESSED-vacuity: the merge-role plan was captured (the negative pin below is not vacuous)" \
+    test -n "$PLAN_OUT"
+assert "CANON-MERGE-SUPPRESSED: no selective tests/infra/test_orchestrator_config_canonical_path.sh leaf (run_all.sh owns it wholesale there)" \
+    plan_lacks 'test_orchestrator_config_canonical_path'
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
@@ -933,108 +1421,8 @@ assert "print-plan does not mutate the working tree/index" \
 # from `git diff --name-only "$merge_base"` instead of `git diff --cached`.
 # ===========================================================================
 
-# make_branch_fixture VARNAME — like make_fixture but also commits the
-# scripts on a branch named exactly `main` so `git merge-base main HEAD`
-# can resolve inside the fixture.
-make_branch_fixture() {
-    local _var="$1" dir
-    dir="$(mktemp -d)"
-    _TMPDIRS+=("$dir")
-    mkdir -p "$dir/scripts"
-    cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
-    cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
-    cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
-    cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
-    cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
-    cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
-    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
-    cp "$REPO_ROOT/scripts/lib_slot_acquire.sh" "$dir/scripts/lib_slot_acquire.sh"
-    cp "$REPO_ROOT/scripts/lib_clock_stop.sh"   "$dir/scripts/lib_clock_stop.sh"
-    cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
-    cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
-    cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
-    cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
-    cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
-    cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
-    mkdir -p "$dir/.config"
-    cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
-    chmod +x "$dir/scripts/verify.sh"
-    # Preflight: fail loudly if verify.sh's TRANSITIVE source closure has a lib
-    # that was not copied to the fixture. Without this check a new source line
-    # (direct or transitive-under-an-already-copied-lib) would be silently
-    # swallowed by the 2>/dev/null on the --print-plan invocations, surfacing
-    # only as an opaque all-plan-non-empty sanity failure. Shared helper
-    # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
-    # grammar and the transitive-closure rationale (generalizes the direct-only
-    # grep this block used to run inline).
-    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || exit 1
-    git -C "$dir" init -q
-    git -C "$dir" config user.email "test@test.com"
-    git -C "$dir" config user.name "Test"
-    git -C "$dir" add scripts
-    git -C "$dir" commit -q -m "base"
-    git -C "$dir" branch -M main
-    printf -v "$_var" '%s' "$dir"
-}
-
 FIX_B=""
 make_branch_fixture FIX_B
-
-# plan_for_branch <file...> — checkout a task-branch off main, commit the
-# given (new) files, capture verify.sh --scope branch --print-plan output
-# into PLAN_OUT, then restore main and delete the branch.
-plan_for_branch() {
-    local f
-    git -C "$FIX_B" checkout -q -b task-branch
-    for f in "$@"; do
-        mkdir -p "$FIX_B/$(dirname "$f")"
-        printf 'x\n' > "$FIX_B/$f"
-        git -C "$FIX_B" add "$f"
-    done
-    git -C "$FIX_B" commit -q -m "task changes"
-    PLAN_OUT="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-    git -C "$FIX_B" checkout -q main
-    git -C "$FIX_B" branch -q -D task-branch
-    for f in "$@"; do rm -f "$FIX_B/$f"; done
-}
-
-# plan_for_branch_env <env-assignment> <file...> — plan_for_branch with ONE
-# extra environment variable exported into the --print-plan child.
-#
-# WHY it exists: the throwaway fixture repo has no cargo workspace, so
-# `cargo metadata` always fails there and affected_crates() always returns the
-# ALL sentinel. Any scenario whose assertion depends on the SHAPE of
-# AFFECTED_CLOSURE (a real crate list that does or does not contain reify-gui)
-# must therefore drive it hermetically via REIFY_AFFECTED_CRATES_OVERRIDE —
-# the same knob, for the same reason, as tests/infra/test_scope_boundary.sh's
-# B4P2 captures.
-#
-# <env-assignment> is a single `NAME=value` word handed VERBATIM to env(1) as
-# one argv element, so a value containing spaces (a crate list) needs no
-# quoting dance and no parsing here. Exactly one assignment: passing two would
-# require word-splitting the argument, which a space-bearing value defeats.
-# Pass "" for none (env with no assignment is a plain exec).
-#
-# Capture uses capture_print_plan rather than plan_for_branch's plain $( ),
-# picking up the retry-on-incomplete-capture defense (task #4708) that the
-# cited B4P2 idiom already uses.
-plan_for_branch_env() {
-    local env_assignment="$1"; shift
-    local f
-    git -C "$FIX_B" checkout -q -b task-branch
-    for f in "$@"; do
-        mkdir -p "$FIX_B/$(dirname "$f")"
-        printf 'x\n' > "$FIX_B/$f"
-        git -C "$FIX_B" add "$f"
-    done
-    git -C "$FIX_B" commit -q -m "task changes"
-    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
-        bash -c 'cd "$1" && exec env ${2:+"$2"} bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
-        _ "$FIX_B" "$env_assignment" || true
-    git -C "$FIX_B" checkout -q main
-    git -C "$FIX_B" branch -q -D task-branch
-    for f in "$@"; do rm -f "$FIX_B/$f"; done
-}
 
 # FIX_MOD — shared fixture for the MODIFY, DELETE and RENAME vectors of the
 # B-KLOC-*, B-PDIAG-* and B-PDOCCOVER-* scenario families below. An `M`, `D` or
@@ -1067,51 +1455,6 @@ for _f in crates/reify-eval/tests/harness_probe/nested.rs \
 done
 git -C "$FIX_MOD" commit -q -m "seed MODIFY/DELETE/RENAME-vector targets"
 
-# plan_for_branch_modify <file...> — checkout a fresh task-branch off
-# FIX_MOD's main, grow (append to) the given already-seeded file(s) so each
-# shows up as an `M`, not an `A`, in `git diff "$_MERGE_BASE"`, capture
-# verify.sh --print-plan output into PLAN_OUT, then restore main and delete
-# the branch (mirrors plan_for_branch's own teardown, above).
-plan_for_branch_modify() {
-    local f
-    git -C "$FIX_MOD" checkout -q -b task-branch
-    for f in "$@"; do printf 'grown\n' >> "$FIX_MOD/$f"; done
-    git -C "$FIX_MOD" commit -q -am "grow"          # M, not A, in `git diff <merge-base>`
-    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-    git -C "$FIX_MOD" checkout -q main
-    git -C "$FIX_MOD" branch -q -D task-branch
-}
-
-# plan_for_branch_delete <file...> — like plan_for_branch_modify, but each already-seeded file shows up as a D.
-plan_for_branch_delete() {
-    local f
-    git -C "$FIX_MOD" checkout -q -b task-branch
-    for f in "$@"; do git -C "$FIX_MOD" rm -q "$f"; done
-    git -C "$FIX_MOD" commit -q -m "delete"
-    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-    git -C "$FIX_MOD" checkout -q main
-    git -C "$FIX_MOD" branch -q -D task-branch
-}
-
-# plan_for_branch_rename <src> <dst> <root> <mod-line> — the actual
-# rename-based consolidation absorb the A+M broadening exists for: checkout a
-# fresh task-branch off FIX_MOD's main, `git mv` <src> to <dst> (git's
-# default rename detection tags this R100 — verified empirically to be
-# excluded by --diff-filter=AM, so the mv itself leaves no A/M trace), then
-# append <mod-line> to <root> (the C1-required `#[path] mod` declaration) so
-# the root shows up as an `M`. Capture PLAN_OUT, restore main, delete branch.
-plan_for_branch_rename() {
-    local src="$1" dst="$2" root="$3" mod_line="$4"
-    git -C "$FIX_MOD" checkout -q -b task-branch
-    mkdir -p "$FIX_MOD/$(dirname "$dst")"
-    git -C "$FIX_MOD" mv "$src" "$dst"
-    printf '%s\n' "$mod_line" >> "$FIX_MOD/$root"
-    git -C "$FIX_MOD" commit -q -am "rename absorb"
-    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-    git -C "$FIX_MOD" checkout -q main
-    git -C "$FIX_MOD" branch -q -D task-branch
-}
-
 # ---------------------------------------------------------------------------
 # Scenario B1: docs-only branch -> nothing heavy (empty plan)
 # ---------------------------------------------------------------------------
@@ -1127,11 +1470,11 @@ assert "branch/docs: zero command leaves (empty plan)" \
 
 # ---------------------------------------------------------------------------
 # Scenario PG-1b: branch-scope twin of PG-1 (task 5536). Lives here, not
-# beside its PG-* siblings above, because plan_for_branch/FIX_B are not
-# defined until this section — the block above runs before them.
+# beside its PG-* siblings above, because plan_for_branch's FIX_B is not
+# built until this section — the block above runs before it.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-1b: docs + manifest + NEW prd-gate .ri fixture on a BRANCH -> no heavy checks (RED until step-2) ---"
+echo "--- Scenario PG-1b: docs + manifest + NEW prd-gate .ri fixture on a BRANCH -> no heavy checks ---"
 plan_for_branch docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
     tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PG-1b/branch docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
@@ -1143,8 +1486,8 @@ assert "PG-1b/branch docs+fixture: zero command leaves (empty plan)" \
 # Scenario PT-CTRL-BRANCH: per-task --scope branch lanes are untouched by the
 # cheap PTODO gate (task 6817's selector is keyed on SCOPE=staged only — task
 # 5125's merge-tier-only PTODO stands deliberately for branch scope). Lives
-# here, not beside PT-1/PT-DRIFT above, because plan_for_branch is not
-# defined until this section (mirrors why PG-1b lives here too).
+# here, not beside PT-1/PT-DRIFT above, because plan_for_branch's FIX_B is
+# not built until this section (mirrors why PG-1b lives here too).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-CTRL-BRANCH: staged->branch twin of PT-1 -> NO cheap PTODO gate leaf, still zero command leaves (control) ---"
@@ -1155,29 +1498,44 @@ assert "PT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched b
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
-# Scenario CT-CTRL-BRANCH: the staged->branch twin of CT-1. task #7785's
+# Scenario CT-CTRL-BRANCH: the staged->branch twin of CT-1. task #7831's
 # selector is keyed on SCOPE=staged only, and that narrowness is the POINT,
-# not an oversight: what #7785 closes is a PATH ASYMMETRY, and a --scope
+# not an oversight: what #7831 closes is a PATH ASYMMETRY, and a --scope
 # branch lane has no asymmetry to close — a task branch reaches `main` through
 # the merge tier, where run_all.sh runs this gate wholesale, so a stale
 # citation introduced on a branch already fails at that branch's OWN merge.
 # Only the hook-gated `git commit` on `main` had no later gate. Lives here,
-# not beside CT-1 above, because plan_for_branch is not defined until this
-# section (mirrors PG-1b and PT-CTRL-BRANCH).
+# not beside CT-1 above, because plan_for_branch's FIX_B is not built until
+# this section (mirrors PG-1b and PT-CTRL-BRANCH).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario CT-CTRL-BRANCH: staged->branch twin of CT-1 -> NO cited-test-path gate leaf (control) ---"
 plan_for_branch docs/ct_branch_probe.md
 assert "CT-CTRL-BRANCH: plan lacks the cited-test-path gate leaf (--scope branch keeps the merge tier as the authority)" \
     plan_lacks 'tests/infra/test_cited_test_paths_resolve\.sh'
-assert "CT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task #7785)" \
+assert "CT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task #7831)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario CANON-CTRL-BRANCH: the staged->branch twin of CANON-1. A task branch
+# reaches `main` through the merge tier, where run_all.sh runs this file
+# wholesale, so --scope branch has no path asymmetry to close (CT-CTRL-BRANCH
+# above argues it in full). Lives here because plan_for_branch is not defined
+# until this section.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario CANON-CTRL-BRANCH: staged->branch twin of CANON-1 -> NO canonical-config-path gate leaf (control) ---"
+plan_for_branch docs/canon_branch_probe.md
+assert "CANON-CTRL-BRANCH: plan lacks the canonical-config-path gate leaf (--scope branch keeps the merge tier as the authority)" \
+    plan_lacks 'tests/infra/test_orchestrator_config_canonical_path\.sh'
+assert "CANON-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task #7797)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
 # Scenario PT-RATCHET-BRANCH: the ratchet-required knob is armed for the
 # main-landing gate ONLY, never for a per-task --scope branch lane (task 7006).
 # Lives here rather than beside PT-RATCHET-REQ above for the same reason
-# PT-CTRL-BRANCH does: plan_for_branch is not defined until this section.
+# PT-CTRL-BRANCH does: plan_for_branch's FIX_B is not built until this section.
 #
 # A swept .py with an infra-map row, so a selective-infra leaf IS emitted under
 # --scope branch and the pin cannot pass merely because the plan is empty.
@@ -1375,13 +1733,13 @@ assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
 # top-level and the nested-harness-module shape).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario B-KLOC: new crates/reify-eval/tests/*.rs branch -> harness-kLOC guard selected (RED until step-2) ---"
+echo "--- Scenario B-KLOC: new crates/reify-eval/tests/*.rs branch -> harness-kLOC guard selected ---"
 plan_for_branch crates/reify-eval/tests/zz_prd_probe.rs
 assert "B-KLOC/reify-eval: plan contains test_harness_kloc_cap.sh (guard wired as selective pole)" \
     plan_has 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
-echo "--- Scenario B-KLOC-2: new crates/reify-compiler/tests/*.rs branch -> harness-kLOC guard selected (pins >1 of the 5 crates, RED until step-2) ---"
+echo "--- Scenario B-KLOC-2: new crates/reify-compiler/tests/*.rs branch -> harness-kLOC guard selected (pins >1 of the 5 crates) ---"
 plan_for_branch crates/reify-compiler/tests/zz_probe.rs
 assert "B-KLOC-2/reify-compiler: plan contains test_harness_kloc_cap.sh" \
     plan_has 'tests/infra/test_harness_kloc_cap\.sh'
@@ -1393,13 +1751,13 @@ assert "B-KLOC-src: plan LACKS test_harness_kloc_cap.sh (src file, not a top-lev
     plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
-echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard selected (forward-looking/belt-and-braces trigger, RED until step-2) ---"
+echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard selected (forward-looking/belt-and-braces trigger) ---"
 plan_for_branch crates/reify-eval/tests/harness_probe/nested.rs
 assert "B-KLOC-nested: plan contains test_harness_kloc_cap.sh (nested harness-module file is an accepted trigger shape, ahead of #5463's rule-(a) aggregate)" \
     plan_has 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
-echo "--- Scenario B-KLOC-nested-deep: crates/reify-cli/tests/harness_cli/sub/deep.rs branch (recursion below the module dir) -> guard selected (2nd crate, RED until step-2) ---"
+echo "--- Scenario B-KLOC-nested-deep: crates/reify-cli/tests/harness_cli/sub/deep.rs branch (recursion below the module dir) -> guard selected (2nd crate) ---"
 plan_for_branch crates/reify-cli/tests/harness_cli/sub/deep.rs
 assert "B-KLOC-nested-deep: plan contains test_harness_kloc_cap.sh (recursive nested harness-module file)" \
     plan_has 'tests/infra/test_harness_kloc_cap\.sh'
@@ -1438,13 +1796,13 @@ assert "B-KLOC-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not co
 # an already-grandfathered file for zero possible signal.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario B-KLOC-mod-nested: crates/reify-eval/tests/harness_probe/nested.rs branch MODIFY -> guard selected (RED until step-4) ---"
+echo "--- Scenario B-KLOC-mod-nested: crates/reify-eval/tests/harness_probe/nested.rs branch MODIFY -> guard selected ---"
 plan_for_branch_modify crates/reify-eval/tests/harness_probe/nested.rs
 assert "B-KLOC-mod-nested: plan contains test_harness_kloc_cap.sh (modified nested harness-module file is an accepted trigger shape, ahead of #5463's rule-(a) aggregate)" \
     plan_has 'tests/infra/test_harness_kloc_cap\.sh'
 
 echo ""
-echo "--- Scenario B-KLOC-mod-root: crates/reify-eval/tests/harness_probe.rs branch MODIFY -> guard selected (RED until step-4) ---"
+echo "--- Scenario B-KLOC-mod-root: crates/reify-eval/tests/harness_probe.rs branch MODIFY -> guard selected ---"
 plan_for_branch_modify crates/reify-eval/tests/harness_probe.rs
 assert "B-KLOC-mod-root: plan contains test_harness_kloc_cap.sh (modified harness root grows the measure; also the only visible trace of a rename-based absorb)" \
     plan_has 'tests/infra/test_harness_kloc_cap\.sh'
@@ -1896,13 +2254,13 @@ assert "B-PDOCCOVER-all: selective PDOCCOVER leaf ABSENT under --scope all" \
 # inline fixtures (FIX_B5/FIX_C5 idiom), left dirty and reclaimed by the
 # EXIT trap.
 #
-# All scenarios in this block are RED against current ACMR (deletion dropped
-# from `_files` -> decide_scope classifies nothing -> RUN_RUST=0 RUN_GUI=0
-# RUN_OCCT_GATE=0) and GREEN once the diff-filter widens to ACMRD. This
+# Every scenario in this block requires the ACMRD diff-filter: a filter
+# without D drops the deletion from `_files`, so decide_scope classifies
+# nothing (RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0) and the scenario reds. That
 # includes DEL-crate-branch's companion REIFY_AFFECTED_CRATES_OVERRIDE
-# measurement (narrowing is unreachable while RUN_RUST=0, so it is RED/GREEN
-# too) and DEL-occt-branch (locks the gate=1-via-deletion outcome alongside
-# DEL-crate-branch's gate=0 case).
+# measurement (narrowing is unreachable while RUN_RUST=0) and DEL-occt-branch
+# (locks the gate=1-via-deletion outcome alongside DEL-crate-branch's gate=0
+# case).
 # ===========================================================================
 echo ""
 echo "=== Deletion-aware scope classification (task 5140 DEL-* scenarios) ==="
@@ -1912,7 +2270,7 @@ echo "=== Deletion-aware scope classification (task 5140 DEL-* scenarios) ==="
 # still classified into scope. Locks the :718 branch-diff site.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario DEL-crate-branch: delete crates/reify-doc file on branch -> still classified (RED until ACMRD) ---"
+echo "--- Scenario DEL-crate-branch: delete crates/reify-doc file on branch -> still classified ---"
 FIX_DEL_CRATE=""
 make_branch_fixture FIX_DEL_CRATE
 # Seed the artifact into the committed base on `main` — a Deleted-status diff
@@ -1929,13 +2287,14 @@ PLAN_DEL_CRATE="$(cd "$FIX_DEL_CRATE" && bash scripts/verify.sh all --profile de
 # fixture cleanup below: with REIFY_AFFECTED_CRATES_OVERRIDE set, this
 # non-global crate deletion DOES narrow (NARROW_ACTIVE=1, affected=<crate>,
 # not ALL). The override bypasses affected_crates() entirely
-# (verify.sh:845-847), so this does NOT exercise affected-crates-lib.sh's
-# `_is_global` C4 short-circuit — it exists only to prove the ALL-vs-narrowed
+# (verify.sh:845-847), so this does NOT exercise affected_crates' C4
+# short-circuit on the module's `is_global` fact (scripts/
+# reify_path_attribution.py) — it exists only to prove the ALL-vs-narrowed
 # distinction is reachable in this suite at all. Without an override, every
 # real call into affected_crates() in this workspace-less fixture fails wide
 # to ALL (`cargo metadata` has no workspace to inspect — the C5 fallback), so
 # DEL-global-branch's "affected=ALL" below can't by itself distinguish the
-# deliberate `_is_global` short-circuit from that fixture-wide fallback. This
+# deliberate `is_global` short-circuit from that fixture-wide fallback. This
 # companion shows narrowing IS achievable for the identical
 # deleted-non-OCCT-crate input, which is what makes DEL-global-branch's
 # "deleted global defeats narrowing" claim meaningful.
@@ -1961,7 +2320,7 @@ assert "DEL-crate-branch/override: NARROW_ACTIVE=1 affected=reify-doc (non-globa
 # Locks the :718 branch-diff site for the gate=1-via-deletion outcome.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario DEL-occt-branch: delete crates/reify-eval file on branch -> gate=1 (RED until ACMRD) ---"
+echo "--- Scenario DEL-occt-branch: delete crates/reify-eval file on branch -> gate=1 ---"
 FIX_DEL_OCCT=""
 make_branch_fixture FIX_DEL_OCCT
 # Seed the artifact into the committed base on `main` — a Deleted-status diff
@@ -1986,7 +2345,7 @@ assert "DEL-occt-branch: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (deleted OCCT-touc
 # in Phase-2 narrowing. Locks the :718 branch-diff site.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario DEL-global-branch: delete Cargo.lock on branch -> conservative gate + affected=ALL (RED until ACMRD) ---"
+echo "--- Scenario DEL-global-branch: delete Cargo.lock on branch -> conservative gate + affected=ALL ---"
 FIX_DEL_GLOBAL=""
 make_branch_fixture FIX_DEL_GLOBAL
 printf '# lockfile\n' > "$FIX_DEL_GLOBAL/Cargo.lock"
@@ -2010,7 +2369,7 @@ assert "DEL-global-branch: NARROW_ACTIVE=0 affected=ALL (deleted global defeats 
 # site.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario DEL-crate-staged: stage deletion of crates/reify-doc file -> still classified (RED until ACMRD) ---"
+echo "--- Scenario DEL-crate-staged: stage deletion of crates/reify-doc file -> still classified ---"
 FIX_DEL_STAGED=""
 make_branch_fixture FIX_DEL_STAGED
 mkdir -p "$FIX_DEL_STAGED/crates/reify-doc/src"
@@ -2026,30 +2385,8 @@ assert "DEL-crate-staged: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (staged deletion 
 
 # ===========================================================================
 # Branch-scope narrowing scenarios: REIFY_AFFECTED_CRATES_OVERRIDE drives
-# -p flag wiring for clippy, nextest tail, and cargo check (step-2/step-4).
-# RED until step-2 lands (verify.sh has no narrowing yet).
+# -p flag wiring for clippy, nextest tail, and cargo check.
 # ===========================================================================
-
-# plan_for_branch_narrowed <override> <file...>
-# Like plan_for_branch but exports REIFY_AFFECTED_CRATES_OVERRIDE, and also
-# captures the typecheck-action plan into PLAN_OUT_NARROW_TC.
-PLAN_OUT_NARROW_TC=""
-plan_for_branch_narrowed() {
-    local _override="$1"; shift
-    local f
-    git -C "$FIX_B" checkout -q -b task-branch
-    for f in "$@"; do
-        mkdir -p "$FIX_B/$(dirname "$f")"
-        printf 'x\n' > "$FIX_B/$f"
-        git -C "$FIX_B" add "$f"
-    done
-    git -C "$FIX_B" commit -q -m "task changes"
-    PLAN_OUT="$(cd "$FIX_B" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-    PLAN_OUT_NARROW_TC="$(cd "$FIX_B" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)" || true
-    git -C "$FIX_B" checkout -q main
-    git -C "$FIX_B" branch -q -D task-branch
-    for f in "$@"; do rm -f "$FIX_B/$f"; done
-}
 
 # ---------------------------------------------------------------------------
 # Scenario B2-narrow: non-OCCT branch + override -> -p flags, no --workspace
@@ -2133,31 +2470,13 @@ assert "C1-guard: NO affected -p reify-doc in clippy (override ignored for scope
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo clippy.*-p reify-doc"' _ "$PLAN_C1"
 
 # ===========================================================================
-# B7 and B9 scenarios (step-3):
+# B7 and B9 scenarios:
 #   B7: branch, Cargo.lock changed -> affected_crates returns ALL (C4 path-match)
-#       -> no narrowing, --workspace kept. GREEN now, stays green (regression guard).
+#       -> no narrowing, --workspace kept. Regression guard.
 #   B9-default: staged without --narrow -> --workspace preserved (current behavior).
-#       GREEN now, stays green (regression guard).
+#       Regression guard.
 #   B9-narrowed: staged + --narrow + override -> narrowed -p flags.
-#       RED until step-4 adds --narrow parsing to verify.sh.
 # ===========================================================================
-
-# plan_for_staged_narrowed <override> <file...>
-# Like plan_for but exports REIFY_AFFECTED_CRATES_OVERRIDE and passes --narrow.
-# Captures PLAN_OUT (all action) and PLAN_OUT_NARROW_TC (typecheck action).
-plan_for_staged_narrowed() {
-    local _override="$1"; shift
-    local f
-    for f in "$@"; do
-        mkdir -p "$FIX/$(dirname "$f")"
-        printf 'x\n' > "$FIX/$f"
-        git -C "$FIX" add "$f"
-    done
-    PLAN_OUT="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope staged --narrow --include-infra --print-plan 2>/dev/null)" || true
-    PLAN_OUT_NARROW_TC="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh typecheck --profile debug --scope staged --narrow --print-plan 2>/dev/null)" || true
-    git -C "$FIX" reset -q -- . 2>/dev/null || true
-    for f in "$@"; do rm -f "$FIX/$f"; done
-}
 
 # ---------------------------------------------------------------------------
 # Scenario B7: branch, Cargo.lock -> ALL fallback, --workspace preserved
@@ -2193,7 +2512,7 @@ assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
 # Scenario B9-narrowed: staged + --narrow + override -> narrowed -p flags
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario B9-narrowed: staged --narrow + override -> narrowed -p flags (RED: --narrow not yet parsed) ---"
+echo "--- Scenario B9-narrowed: staged --narrow + override -> narrowed -p flags ---"
 plan_for_staged_narrowed "reify-doc reify-ir" crates/reify-doc/src/lib.rs
 assert "B9-narrowed: PLAN_OUT non-empty (verify.sh exited OK)" \
     bash -c '[ -n "$1" ]' _ "$PLAN_OUT"
@@ -2223,14 +2542,14 @@ echo ""
 echo "=== Merge-gate contract guard (T2 / contract C2) ==="
 
 # ---------------------------------------------------------------------------
-# Scenario MG-B6a: role=merge defeats active narrowing (RED until step-2 impl)
+# Scenario MG-B6a: role=merge defeats active narrowing
 # ---------------------------------------------------------------------------
 # Fixture: resolvable local main, no MERGE_HEAD — the ONLY path to scope=all
 # is the new role-guard. REIFY_AFFECTED_CRATES_OVERRIDE is set to prove the
 # guard defeats active branch-diff narrowing (the strongest form of the
 # invariant: would-be-narrowed plan is forced back to full --workspace).
 echo ""
-echo "--- Scenario MG-B6a: role=merge + --scope branch + override -> scope=all forced, narrowing defeated (RED until guard) ---"
+echo "--- Scenario MG-B6a: role=merge + --scope branch + override -> scope=all forced, narrowing defeated ---"
 FIX_MG_B6A=""
 make_branch_fixture FIX_MG_B6A
 git -C "$FIX_MG_B6A" checkout -q -b task-branch
@@ -2270,13 +2589,13 @@ assert "MG-B6a: narrowing axis carries NO -p selector at all (override narrowing
     refute plan_narrowing_axis_match "$PLAN_MG_B6A" " -p reify-"
 
 # ---------------------------------------------------------------------------
-# Scenario MG-B6b: role=merge force is unconditional (RED until step-2 impl)
+# Scenario MG-B6b: role=merge force is unconditional
 # ---------------------------------------------------------------------------
 # Docs-only branch => scope=branch classifies RUN_RUST=0 RUN_GUI=0 -> empty
 # plan. With the role-guard, SCOPE is forced to all before decide_scope,
 # so the plan becomes the full workspace: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1.
 echo ""
-echo "--- Scenario MG-B6b: role=merge + --scope branch on docs-only branch -> unconditional scope=all (RED until guard) ---"
+echo "--- Scenario MG-B6b: role=merge + --scope branch on docs-only branch -> unconditional scope=all ---"
 FIX_MG_B6B=""
 make_branch_fixture FIX_MG_B6B
 git -C "$FIX_MG_B6B" checkout -q -b task-branch
@@ -2293,7 +2612,7 @@ assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not emp
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_MG_B6B"
 
 # ---------------------------------------------------------------------------
-# Scenario MG-B5: merge gate full; no narrowing ON THE NARROWING AXIS (GREEN now)
+# Scenario MG-B5: merge gate full; no narrowing ON THE NARROWING AXIS
 # ---------------------------------------------------------------------------
 # role=merge + --profile both + --scope all: scope=all ignores the override
 # (C1 contract: no branch-diff narrowing). The assertions below are AXIS-AWARE
@@ -2342,7 +2661,7 @@ assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not emp
 # Non-vacuity and classifier drift are covered by Scenario MG-B5-control below,
 # which reruns the SAME fixture and SAME override with only the role/scope varied.
 echo ""
-echo "--- Scenario MG-B5: merge gate full (both profiles); off-axis -p permitted, narrowing axis carries none (GREEN, regression guard) ---"
+echo "--- Scenario MG-B5: merge gate full (both profiles); off-axis -p permitted, narrowing axis carries none (regression guard) ---"
 FIX_MG_B5=""
 make_branch_fixture FIX_MG_B5
 git -C "$FIX_MG_B5" checkout -q -b task-branch
@@ -2412,7 +2731,7 @@ assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: 
 # (#6391); it is what MG-B5 and plan_is_narrowing_axis_line's header both point
 # at instead of trusting a comment.
 echo ""
-echo "--- Scenario MG-B5-control: same fixture + same override, narrowing ACTIVE -> the axis DOES carry the override's -p (GREEN, non-vacuity control) ---"
+echo "--- Scenario MG-B5-control: same fixture + same override, narrowing ACTIVE -> the axis DOES carry the override's -p (non-vacuity control) ---"
 assert "MG-B5-control: PLAN_MG_B5_CONTROL non-empty (verify.sh exited OK)" \
     bash -c '[ -n "$1" ]' _ "$PLAN_MG_B5_CONTROL"
 assert "MG-B5-control: NARROW_ACTIVE=1 (narrowing really engaged — the -p presence below is not accidental)" \
@@ -2445,10 +2764,10 @@ assert "MG-B5-control: NO -p reify-doc off the narrowing axis (classifier drift 
     refute plan_offaxis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
 
 # ---------------------------------------------------------------------------
-# Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
+# Scenario MG-hook: pre-merge-commit hook drift guard
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario MG-hook: pre-merge-commit invokes verify.sh --scope all, not --scope branch/staged (GREEN, drift guard) ---"
+echo "--- Scenario MG-hook: pre-merge-commit invokes verify.sh --scope all, not --scope branch/staged (drift guard) ---"
 assert "MG-hook: pre-merge-commit calls verify.sh with --scope all" \
     grep -qE 'verify\.sh.*--scope all' "$REPO_ROOT/hooks/pre-merge-commit"
 assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged" \
@@ -2494,10 +2813,9 @@ echo "=== Background-gate contract guard (task 5210) ==="
 
 # ---------------------------------------------------------------------------
 # Scenario BG-B6b: role=background defeats an attempted --scope branch
-# (GREEN now)
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario BG-B6b: role=background + --scope branch on changed-crate branch -> unconditional scope=all (GREEN now) ---"
+echo "--- Scenario BG-B6b: role=background + --scope branch on changed-crate branch -> unconditional scope=all ---"
 FIX_BG_B6B=""
 make_branch_fixture FIX_BG_B6B
 git -C "$FIX_BG_B6B" checkout -q -b task-branch
@@ -2521,9 +2839,9 @@ assert "BG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not a n
 # was changed, build_plan() must emit a guarded for-loop that runs the
 # artifact's infra test glob via `timeout ... bash` BEFORE cargo test poles.
 #
-# VS-pos   (RED until step-2): verify.sh change -> selective loop present
-# VS-coverage (GREEN now):     glob covers both incident-named guards
-# VS-neg   (GREEN now):        non-artifact change -> no selective loop
+# VS-pos:      verify.sh change -> selective loop present
+# VS-coverage: glob covers both incident-named guards
+# VS-neg:      non-artifact change -> no selective loop
 # ===========================================================================
 echo ""
 echo "=== Selective infra injection (task 4523 VS-* scenarios) ==="
@@ -2532,26 +2850,11 @@ echo "=== Selective infra injection (task 4523 VS-* scenarios) ==="
 FIX_VS=""
 make_branch_fixture FIX_VS
 
-# plan_for_vs_change — on a fresh task-branch, APPEND a harmless comment line
-# to the fixture's scripts/verify.sh (NEVER overwrite — it is the SUT), commit,
-# then capture the plan WITHOUT --include-infra (the real task-verify path).
-# Restores main and deletes the branch when done.
-plan_for_vs_change() {
-    git -C "$FIX_VS" checkout -q -b task-branch
-    echo "# task-4523 verify.sh-change simulation sentinel" >> "$FIX_VS/scripts/verify.sh"
-    git -C "$FIX_VS" add scripts/verify.sh
-    git -C "$FIX_VS" commit -q -m "task changes"
-    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
-    git -C "$FIX_VS" checkout -q main
-    git -C "$FIX_VS" branch -q -D task-branch
-}
-
 # ---------------------------------------------------------------------------
 # Scenario VS-pos: verify.sh change (no --include-infra) -> selective infra loop
-# RED until step-2: implementation doesn't exist yet.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario VS-pos: scripts/verify.sh changed -> selective infra loop in plan (RED until step-2) ---"
+echo "--- Scenario VS-pos: scripts/verify.sh changed -> selective infra loop in plan ---"
 plan_for_vs_change
 assert "VS-pos: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
@@ -2560,10 +2863,10 @@ assert "VS-pos: plan contains timeout+bash invocation for infra tests" \
 
 # ---------------------------------------------------------------------------
 # Scenario VS-coverage: glob expands to include both incident-named guards
-# GREEN now (pure filesystem lock; no implementation dependency).
+# Pure filesystem lock; no plan generation involved.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario VS-coverage: glob tests/infra/test_verify_*.sh covers incident guards (GREEN) ---"
+echo "--- Scenario VS-coverage: glob tests/infra/test_verify_*.sh covers incident guards ---"
 assert "VS-coverage: test_verify_gui_feature_check.sh exists under glob" \
     test -f "$REPO_ROOT/tests/infra/test_verify_gui_feature_check.sh"
 assert "VS-coverage: test_verify_throughput.sh exists under glob" \
@@ -2571,10 +2874,10 @@ assert "VS-coverage: test_verify_throughput.sh exists under glob" \
 
 # ---------------------------------------------------------------------------
 # Scenario VS-neg: non-artifact change (no --include-infra) -> NO selective loop
-# GREEN now (no implementation => no loop emitted; plan_lacks trivially passes).
+# Negative control: an unmapped change must emit no selective loop.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario VS-neg: crates/reify-doc change -> NO selective infra loop (no --include-infra; GREEN) ---"
+echo "--- Scenario VS-neg: crates/reify-doc change -> NO selective infra loop (no --include-infra) ---"
 FIX_VS_NEG=""
 make_branch_fixture FIX_VS_NEG
 git -C "$FIX_VS_NEG" checkout -q -b task-branch
@@ -2593,24 +2896,11 @@ assert "VS-neg: plan lacks test_verify_*.sh glob (reify-doc not in artifact map)
 # wholesale run_all.sh ABSENT (task 5125: full pool suite moved to the merge
 # tier), selective test_verify_*.sh loop PRESENT instead (no double-run;
 # exactly-one: {full pool, selective infra}).
-# RED until step-3 (task 5125): verify.sh still gates run_all.sh on
-# INCLUDE_INFRA, so today's plan has run_all.sh present / selective loop
-# absent — the exact inversion this task fixes.
+# A verify.sh that re-gates run_all.sh on INCLUDE_INFRA at task tier inverts
+# both assertions (run_all.sh present, selective loop absent).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario VS-incl: verify.sh change + --include-infra (role=task) -> run_all.sh ABSENT, selective loop PRESENT (RED until step-3) ---"
-
-# plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
-# Reuses FIX_VS (restored to main by plan_for_vs_change above).
-plan_for_vs_change_incl() {
-    git -C "$FIX_VS" checkout -q -b task-branch
-    echo "# task-4523 verify.sh-change simulation sentinel (incl)" >> "$FIX_VS/scripts/verify.sh"
-    git -C "$FIX_VS" add scripts/verify.sh
-    git -C "$FIX_VS" commit -q -m "task changes"
-    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
-    git -C "$FIX_VS" checkout -q main
-    git -C "$FIX_VS" branch -q -D task-branch
-}
+echo "--- Scenario VS-incl: verify.sh change + --include-infra (role=task) -> run_all.sh ABSENT, selective loop PRESENT ---"
 
 plan_for_vs_change_incl
 assert "VS-incl: wholesale run_all.sh ABSENT (role=task; full pool moved to merge tier, task 5125)" \
@@ -2626,62 +2916,42 @@ assert "VS-incl: selective test_verify_*.sh loop PRESENT (role=task pole; no dou
 # no selection" is already established by Scenario VS-neg above; these
 # scenarios only need the positive per-row assertion.
 #
-# RED until step-5: scripts/verify-pipeline-infra-tests.txt does not yet map
-# these artifacts, so select_infra_tests() selects nothing for them.
+# Dropping one of these rows from scripts/verify-pipeline-infra-tests.txt
+# makes select_infra_tests() select nothing for that artifact, and its
+# scenario reds.
 # ===========================================================================
 echo ""
 echo "=== VS-map-* scenarios: broadened infra-map coverage (task 5125) ==="
 
-# plan_for_vs_map_append <fixture-relpath> — on a fresh task-branch off
-# FIX_VS, append a sentinel comment to an EXISTING fixture file (already
-# copied in by make_branch_fixture), commit, and capture the selective
-# (no --include-infra) plan into PLAN_OUT. Mirrors plan_for_vs_change.
-plan_for_vs_map_append() {
-    local _f="$1"
-    git -C "$FIX_VS" checkout -q -b task-branch
-    echo "# task-5125 map-coverage sentinel" >> "$FIX_VS/$_f"
-    git -C "$FIX_VS" add "$_f"
-    git -C "$FIX_VS" commit -q -m "task changes"
-    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
-    git -C "$FIX_VS" checkout -q main
-    git -C "$FIX_VS" branch -q -D task-branch
-}
-
-# plan_for_vs_map_new <fixture-relpath> — on a fresh task-branch off FIX_VS,
-# CREATE a new file at a mapped path (not present in the fixture), commit,
-# and capture the selective (no --include-infra) plan into PLAN_OUT.
-plan_for_vs_map_new() {
-    local _f="$1"
-    git -C "$FIX_VS" checkout -q -b task-branch
-    mkdir -p "$FIX_VS/$(dirname "$_f")"
-    printf 'x\n' > "$FIX_VS/$_f"
-    git -C "$FIX_VS" add "$_f"
-    git -C "$FIX_VS" commit -q -m "task changes"
-    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
-    git -C "$FIX_VS" checkout -q main
-    git -C "$FIX_VS" branch -q -D task-branch
-}
-
 echo ""
-echo "--- Scenario VS-map-occt: scripts/occt-scope-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-occt: scripts/occt-scope-lib.sh changed -> test_verify_*.sh selected ---"
 plan_for_vs_map_append scripts/occt-scope-lib.sh
 assert "VS-map-occt: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
 
 echo ""
-echo "--- Scenario VS-map-affected: scripts/affected-crates-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-affected: scripts/affected-crates-lib.sh changed -> test_verify_*.sh selected ---"
 plan_for_vs_map_append scripts/affected-crates-lib.sh
 assert "VS-map-affected: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
 
 echo ""
-echo "--- Scenario VS-map-release: scripts/release-scope-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-release: scripts/release-scope-lib.sh changed -> test_verify_*.sh selected ---"
 plan_for_vs_map_append scripts/release-scope-lib.sh
 assert "VS-map-release: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
 
+# The attribution and closure home both bash libs above read (task 8662).
 echo ""
-echo "--- Scenario VS-map-cpuadmit: scripts/cpu-admit.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-attribution: scripts/reify_path_attribution.py changed -> its guarding suites selected ---"
+plan_for_vs_map_append scripts/reify_path_attribution.py
+assert "VS-map-attribution: plan contains tests/infra/test_affected_crates_lib.sh" \
+    plan_has 'tests/infra/test_affected_crates_lib\.sh'
+assert "VS-map-attribution: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-cpuadmit: scripts/cpu-admit.sh changed -> test_verify_*.sh selected ---"
 plan_for_vs_map_append scripts/cpu-admit.sh
 assert "VS-map-cpuadmit: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
@@ -2689,19 +2959,19 @@ assert "VS-map-cpuadmit: plan also contains the dedicated test_cpu_admit.sh glob
     plan_has 'tests/infra/test_cpu_admit\.sh'
 
 echo ""
-echo "--- Scenario VS-map-runall: tests/infra/run_all.sh created -> test_run_all*.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-runall: tests/infra/run_all.sh created -> test_run_all*.sh selected ---"
 plan_for_vs_map_new tests/infra/run_all.sh
 assert "VS-map-runall: plan contains test_run_all*.sh glob literal" \
     plan_has 'tests/infra/test_run_all\*\.sh'
 
 echo ""
-echo "--- Scenario VS-map-land: scripts/land.sh created -> test_land_*.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-land: scripts/land.sh created -> test_land_*.sh selected ---"
 plan_for_vs_map_new scripts/land.sh
 assert "VS-map-land: plan contains test_land_*.sh glob literal" \
     plan_has 'tests/infra/test_land_\*\.sh'
 
 echo ""
-echo "--- Scenario VS-map-premerge: hooks/pre-merge-commit created -> test_hooks_call_verify.sh selected (RED until step-5) ---"
+echo "--- Scenario VS-map-premerge: hooks/pre-merge-commit created -> test_hooks_call_verify.sh selected ---"
 plan_for_vs_map_new hooks/pre-merge-commit
 assert "VS-map-premerge: plan contains test_hooks_call_verify.sh glob literal" \
     plan_has 'tests/infra/test_hooks_call_verify\.sh'
@@ -2715,32 +2985,9 @@ assert "VS-map-premerge: plan contains test_hooks_call_verify.sh glob literal" \
 # task's selective-infra tier exists to close, leaving only the merge-tier
 # pool suite to catch the regression. Drives the REAL shipped map against
 # the REAL tests/infra tree (no verify.sh invocation, no fixture needed --
-# this is a static check of the map file's own promise). GREEN now: this
-# guards against future drift, not a currently-broken contract.
+# this is a static check of the map file's own promise). It guards against
+# future drift.
 # ---------------------------------------------------------------------------
-verify_pipeline_map_globs_resolve() {
-    local _map="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
-    local _line _artifact _glob _f _match _bad=""
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        case "$_line" in
-            ''|'#'*) continue ;;
-        esac
-        read -r _artifact _glob <<< "$_line"
-        [ -n "$_glob" ] || continue
-        _match=0
-        for _f in "$REPO_ROOT"/$_glob; do
-            [ -f "$_f" ] || continue
-            _match=1
-        done
-        [ "$_match" -eq 1 ] || _bad="${_bad}${_artifact} -> ${_glob}"$'\n'
-    done < "$_map"
-    if [ -n "$_bad" ]; then
-        printf 'glob(s) with zero matching tests/infra files:\n%s' "$_bad"
-        return 1
-    fi
-    return 0
-}
-
 echo ""
 echo "--- Scenario VS-map-glob-resolve: every verify-pipeline-infra-tests.txt glob expands to >= 1 real file (drift guard, task 5125 review) ---"
 assert "VS-map-glob-resolve: all map globs resolve to at least one existing tests/infra file" \
@@ -2757,39 +3004,20 @@ assert "VS-map-glob-resolve: all map globs resolve to at least one existing test
 # (NOT on RUN_RUST), this fires even for a docs-only, RUN_RUST=0 change.
 # Empirically validated pre-implementation (task 4955 plan analysis).
 #
-# DS-pos (RED until step-6): staged doc-sync doc -> citing-test glob selected.
-# DS-neg (GREEN now):        staged unmapped doc -> no glob selected (control).
+# DS-pos: staged doc-sync doc -> citing-test glob selected.
+# DS-neg: staged unmapped doc -> no glob selected (control).
 # ===========================================================================
 echo ""
 echo "=== Doc-sync infra-map citing-test subset (task 4955 DS-* scenarios) ==="
 
-# plan_for_noinfra <scope> <file...> — like plan_for but invokes the `test`
-# action WITHOUT --include-infra, so the selective infra pole at
-# verify.sh:1272 (gated on DO_TEST=1 && SELECTED_INFRA_GLOBS!="" &&
-# INCLUDE_INFRA=0) is NOT suppressed by the wholesale --include-infra path.
-plan_for_noinfra() {
-    local scope="$1"; shift
-    local f
-    for f in "$@"; do
-        mkdir -p "$FIX/$(dirname "$f")"
-        printf 'x\n' > "$FIX/$f"
-        git -C "$FIX" add "$f"
-    done
-    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
-        bash -c 'cd "$1" && exec bash scripts/verify.sh test --profile debug --scope "$2" --print-plan' \
-        _ "$FIX" "$scope" || true
-    git -C "$FIX" reset -q -- . 2>/dev/null || true
-    for f in "$@"; do rm -f "$FIX/$f"; done
-}
-
 echo ""
-echo "--- Scenario DS-pos: docs/notes/verify-pipeline-knobs.md staged -> citing infra test pole (RED until step-6) ---"
+echo "--- Scenario DS-pos: docs/notes/verify-pipeline-knobs.md staged -> citing infra test pole ---"
 plan_for_noinfra staged docs/notes/verify-pipeline-knobs.md
 assert "DS-pos: plan contains test_verify_compile_gate glob literal (citing test selected as fail-fast pole)" \
     plan_has 'test_verify_compile_gate'
 
 echo ""
-echo "--- Scenario DS-neg: docs/note.md (unmapped) staged -> no citing infra test pole (GREEN, control) ---"
+echo "--- Scenario DS-neg: docs/note.md (unmapped) staged -> no citing infra test pole (control) ---"
 plan_for_noinfra staged docs/note.md
 assert "DS-neg: plan lacks test_verify_compile_gate glob (unmapped doc, no selection)" \
     plan_lacks 'test_verify_compile_gate'
@@ -2856,17 +3084,6 @@ printf 'seed\n' > "$FIX_GECR/docs/gui-event-channels.md"
 git -C "$FIX_GECR" add docs/gui-event-channels.md
 git -C "$FIX_GECR" commit -q -m "seed GEC-RENAME source"
 
-# plan_for_gec_rename <src> <dst> — stage a rename in FIX_GECR, capture the
-# plan for --scope staged, then restore the index and worktree. Mirrors
-# plan_for_staged_rename above.
-plan_for_gec_rename() {
-    git -C "$FIX_GECR" mv "$1" "$2"
-    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
-        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
-        _ "$FIX_GECR" || true
-    git -C "$FIX_GECR" reset -q --hard HEAD
-}
-
 echo ""
 echo "--- Scenario GEC-RENAME: git mv of docs/gui-event-channels.md -> RUN_RUST=1 RUN_GUI=1 (source recovered from the R entry) ---"
 plan_for_gec_rename docs/gui-event-channels.md docs/gui-event-channels-v2.md
@@ -2879,19 +3096,12 @@ assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename 
 # The examples/ tree gains a crate MAPPING on the affected_crates side (ALL ->
 # the declared reader closure), but decide_scope's answer must not move: the
 # corpus gates are compiled Rust tests (rust), gui/src/__tests__/
-# reifyGrammarCorpus.test.ts walks examples/ recursively (gui), and both
+# reifyGrammarCorpusLedger.test.ts walks examples/ recursively (gui), and both
 # reify-eval and reify-cli are declared OCCT-touching (gate). A control that
 # pins the mapping as never-SUBTRACTING heavy checks.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario EX-1: examples/*.ri staged -> RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (control) ---"
-# Echoes the header line so a FAIL reports the classification it actually saw
-# rather than just "no match".
-_check_scope_header() {
-    printf '%s\n' "$PLAN_OUT" | grep -E '^# scope decision' || echo "(no scope-decision line in PLAN_OUT)"
-    plan_has "$1"
-}
-
 plan_for staged examples/foo.ri
 assert "EX-1: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1'
@@ -3054,7 +3264,7 @@ assert "GV-6: gui lane carries the vitest runner" \
 #
 # The headline is a NEGATIVE (plan_lacks), so it gets an anti-vacuity control
 # FIRST, the same discipline b11/b13/b15 keep in
-# test_compute_trampoline_registration_wired.sh. plan_for_branch_env captures
+# test_verify_gui_feature_test_pass.sh. plan_for_branch_env captures
 # with `|| true` and asserts nothing itself, so on retry exhaustion PLAN_OUT can
 # be a partial dump that still carries the preamble both the scope-header check
 # and the vitest-lane grep live in — and then the one assertion pinning the
@@ -3132,41 +3342,7 @@ assert "GV-9: the gui lane forwards the requested spec, not a bare runner invoca
 # The emitted lane is what distinguishes a deliberate widening from that
 # accident.
 # ---------------------------------------------------------------------------
-_FW_SHIM_DIR="$(mktemp -d)"
-_TMPDIRS+=("$_FW_SHIM_DIR")
-_FW_FIRED="$_FW_SHIM_DIR/fired"
-_FW_ERR="$_FW_SHIM_DIR/stderr.log"
-cat > "$_FW_SHIM_DIR/git" << STUB_EOF
-#!/usr/bin/env bash
-for arg in "\$@"; do
-    if [ "\$arg" = "--diff-filter=R" ]; then
-        echo "\$*" >> "$_FW_FIRED"
-        echo "git: simulated rename-source diff failure" >&2
-        exit 3
-    fi
-done
-exec $(command -v git) "\$@"
-STUB_EOF
-chmod +x "$_FW_SHIM_DIR/git"
-
-# _plan_for_staged_shimmed <file...> — plan_for's stage/capture/unstage body
-# with the shim first on PATH and stderr diverted to $_FW_ERR. It cannot just
-# BE plan_for: the C5 WARNING this family asserts on is written to fd 2, which
-# plan_for leaves on the suite's own stderr. PATH is PREPENDED, never
-# replaced, so grep/cut/sort stay resolvable inside verify.sh.
-_plan_for_staged_shimmed() {
-    local f
-    for f in "$@"; do
-        mkdir -p "$FIX/$(dirname "$f")"
-        printf 'x\n' > "$FIX/$f"
-        git -C "$FIX" add "$f"
-    done
-    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
-        bash -c 'cd "$1" && exec env PATH="$2:$PATH" bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>"$3"' \
-        _ "$FIX" "$_FW_SHIM_DIR" "$_FW_ERR" || true
-    git -C "$FIX" reset -q -- . 2>/dev/null || true
-    for f in "$@"; do rm -f "$FIX/$f"; done
-}
+make_rename_diff_fail_shim
 
 echo ""
 echo "--- Scenario GV-FAILWIDE-1: staged rename-source diff fails -> widen, not abort ---"

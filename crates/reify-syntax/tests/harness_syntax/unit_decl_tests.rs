@@ -4,6 +4,8 @@
 
 use reify_ast::*;
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("unit_decl_test"));
@@ -291,4 +293,22 @@ enum Direction { In, Out }
         Declaration::Enum(e) => assert_eq!(e.name, "Direction"),
         other => panic!("expected Declaration::Enum, got {:?}", other),
     }
+}
+
+// ── Malformed unit declaration is refused ─────────────────────────
+
+#[test]
+fn unit_with_a_missing_dimension_type_is_refused() {
+    let source = "unit mm: = 0.001";
+    let (decls, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "invalid unit declaration: ");
+    let missing_type = source.find(':').unwrap() + 1;
+    assert_eq!(
+        error.span.start as usize, missing_type,
+        "`{source}`: expected the diagnostic at the missing dimension type, got: {error:?}"
+    );
+    assert!(
+        !decls.iter().any(|d| matches!(d, Declaration::Unit(_))),
+        "`{source}`: a refused unit declaration must not be lowered, got: {decls:?}"
+    );
 }

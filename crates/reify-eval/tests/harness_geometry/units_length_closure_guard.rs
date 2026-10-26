@@ -911,7 +911,8 @@ mod seeded_gate_dimension {
 ///
 /// Liveness is the half this guard cannot check: a test cannot query
 /// Taskmaster. It is delegated deliberately. Each shipped [`Residual`] also
-/// carries a marker comment on its entry in the canonical PTODO form, so the
+/// carries a marker comment on its entry in the canonical PTODO form, meeting
+/// the rule in `reify_test_support::ptodo_cite_marker`, so the
 /// PTODO detector — which DOES resolve task state — performs the liveness
 /// check, and a residual whose
 /// owner closes orphans its cite and reds the fingerprint ratchet in
@@ -1441,6 +1442,7 @@ fn shipped_registry() -> Registry {
 #[cfg(test)]
 mod seeded_cites {
     use super::*;
+    use reify_test_support::ptodo_cite_marker::has_liveness_marker;
 
     /// (i) A cite renders in the canonical PTODO form, and nothing else is
     /// representable.
@@ -1499,9 +1501,9 @@ mod seeded_cites {
         );
     }
 
-    /// (iii) Every shipped residual's cite is ALSO written as a PTODO marker
-    /// comment in this file, so the PTODO detector performs the liveness check
-    /// this test cannot.
+    /// (iii) Every shipped residual's cite is ALSO written as a sole-cite PTODO
+    /// marker comment in this file (rule: `reify_test_support::ptodo_cite_marker`),
+    /// so the PTODO detector performs the liveness check this test cannot.
     ///
     /// This is a cite-liveness mechanism, not a docstring-wording pin: it checks
     /// that a structured identifier is visible to another gate.
@@ -1527,12 +1529,11 @@ mod seeded_cites {
         cites.dedup();
 
         for cite in cites {
-            let marker = format!("// TODO({cite}):"); // ptodo:allow — the matcher, not a marker
             assert!(
-                source.contains(&marker),
-                "residual cite {cite} has no `{marker}` comment in this file. \
-                 Without it the PTODO detector never sees the cite, so nothing \
-                 checks that the owning task is still live."
+                has_liveness_marker(&source, &cite.to_string()),
+                "residual cite {cite} has no PTODO liveness marker in this file \
+                 (rule: reify_test_support::ptodo_cite_marker). Without it \
+                 nothing checks that the owning task is still live."
             );
         }
     }

@@ -1,171 +1,136 @@
 //! Run engine and compiler work on OS threads with an explicit LARGE stack.
 //!
-//! Defense-in-depth (task 5357): deeply-nested geometry can drive
-//! `reify_compiler`'s recursive compile past the ~2 MiB stack of a tokio worker
-//! or a default `std` thread, overflowing it and aborting the process. Running
-//! that work on a [`COMPILE_STACK_SIZE`] stack gives extra headroom on top of
-//! task 5337's compiler-layer `stacker::maybe_grow` growth and recursion-depth
-//! cap.
+//! Deeply-nested geometry can drive `reify_compiler`'s recursive compile past
+//! the ~2 MiB stack of a tokio worker or a default `std` thread (task 5357).
+//! Running that work on a [`COMPILE_STACK_SIZE`] stack adds headroom on top of
+//! task 5337's `stacker::maybe_grow` growth and recursion-depth cap. A plain
+//! `std` thread is also never a tokio runtime context, which the real OCCT
+//! kernel needs: `OcctKernelHandle::execute()` uses `blocking_send`, which
+//! panics inside one.
 //!
-//! A plain `std` thread is also strictly SAFER for the real OCCT kernel:
-//! `OcctKernelHandle::execute()` uses `blocking_send`, which panics inside any
-//! tokio runtime context, and a plain `std` thread is never one.
+//! # Two tiers
 //!
-//! # Two tiers, and what each one covers
+//! A 256 MiB stack is far above glibc's thread-stack cache ceiling, so it is
+//! never recycled: a per-call spawn pays a fresh `mmap`, guard-page `mprotect`
+//! and `munmap` every time. Negligible against a compile, pure overhead per
+//! keystroke. Hence two tiers:
 //!
-//! The tiers differ in the LIFETIME of the 256 MiB mapping, not in its size. A
-//! 256 MiB stack is far above glibc's ~40 MiB thread-stack cache ceiling, so it
-//! is never recycled: a per-call spawn pays a fresh `mmap` + guard-page
-//! `mprotect` + `munmap` every time. Negligible against a full compile, pure
-//! overhead per slider-drag frame or per keystroke — which is what makes the
-//! persistent lanes a separate tier rather than a nicety.
+//! * **Per-call — [`spawn_on_large_stack`].** For work that does not go through
+//!   a lane: `debug_server::run_on_engine`'s engine closures, which still bypass
+//!   the evaluation queue (tkt_0RV0J0HK8TK4WRS6YJVYEFP93C), and a job that
+//!   [`post`] or [`dispatch_async`] got back from a dead lane.
+//! * **Persistent lanes — [`ENGINE_LANE`], [`LSP_LANE`] and [`LSP_POOL`].** A
+//!   lane's consumer threads live for the process, so the per-call cost becomes
+//!   a queue push; see [`Lane`].
+//!   - The ENGINE lane is fed only by [`post_to_worker`], whose sole production
+//!     caller is [`crate::eval_queue::EvalQueue`]. Posting never waits, so no
+//!     submitter — least of all the GTK main thread — parks on engine work.
+//!   - The LSP lanes serve `main.rs::lsp_request` →
+//!     `lsp_bridge::lsp_request_on_worker`, which
+//!     [`crate::lsp_bridge::lane_for_method`] routes to the single-consumer
+//!     ORDERED [`LSP_LANE`] or to the [`LSP_POOL_SIZE`]-consumer QUERY POOL
+//!     [`LSP_POOL`], both through [`dispatch_async`].
 //!
-//! **Per-call — [`spawn_on_large_stack`].** A fresh thread per job, for work
-//! that does not go through a lane: `debug_server::run_on_engine`'s debug/MCP
-//! engine closures, which still bypass the evaluation queue
-//! (tkt_0RV0J0HK8TK4WRS6YJVYEFP93C), and a job that [`post`] or
-//! [`dispatch_async`] got back from a dead lane.
+//! # What is NOT covered
 //!
-//! **Persistent lanes — [`ENGINE_LANE`] and [`LSP_LANE`].** One thread per lane
-//! for the process lifetime; the per-call cost becomes a queue push.
-//!
-//! * ENGINE lane — fed ONLY by [`post_to_worker`], whose sole production caller
-//!   is [`crate::eval_queue::EvalQueue`]. Its roster is therefore everything that
-//!   submits to that queue. Posting never waits for the job, so no submitter —
-//!   least of all the GTK main thread — parks on engine work.
-//! * LSP lane — `main.rs::lsp_request` → `lsp_bridge::lsp_request_on_worker`,
-//!   which fires on effectively every keystroke and cursor move, through
-//!   [`run_on_lsp_worker`]. It carries a FUTURE rather than a closure: its
-//!   degraded arms run in the submitting async frame, where a future can be
-//!   `.await`ed but a closure with a [`tokio::runtime::Handle::block_on`] baked
-//!   in would panic "Cannot start a runtime from within a runtime".
-//!
-//! So every engine-bearing path runs on a large stack: queued work on the ENGINE
-//! lane, the debug server on per-call threads.
-//!
-//! # What is still NOT covered
-//!
-//! Two boundaries, stated as limits rather than left to be inferred. Both are
-//! LSP-side: the engine surface is covered.
-//!
-//! 1. **Concurrency WITHIN a lane.** A lane has one consumer, so routing
-//!    `lsp_request` onto [`LSP_LANE`] serializes LSP requests against each
-//!    other, where the multi-threaded tauri runtime previously ran them
-//!    concurrently. The split buys isolation from ENGINE work, not from other
-//!    LSP work — see [`Lane`]'s "What the split does NOT buy" for what that
-//!    costs and what bounding it would take. Tracked as task #6517.
-//! 2. **Drop-cancellation of an LSP request.** A future handed to a lane is
-//!    driven to completion by a thread that cannot be cancelled, so abandoning
-//!    the awaiting side no longer stops the work — see
-//!    [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
+//! 1. **Concurrency within the LSP lanes is BOUNDED, not unlimited.**
+//!    Head-of-line blocking among queries is bounded at [`LSP_POOL_SIZE`]: the
+//!    fifth simultaneous in-flight query queues. Notifications serialize
+//!    against each other, which is a requirement; see [`Lane`]'s ORDERING.
+//! 2. **No drop-cancellation.** An abandoned submission still runs to
+//!    completion; see [`dispatch_async`]'s "Abandonment".
+//! 3. **Same-document queries share one parse.**
+//!    `crates/reify-lsp/src/document.rs`'s `DocumentState::parsed_module` holds a
+//!    `std::sync::Mutex` across the whole `parse_with_stdlib` call, and every
+//!    `didChange` replaces the document's parse cache. So the hover,
+//!    `documentHighlight` and completion that one cursor move issues against ONE
+//!    uri serialize on that lock right after a keystroke, each parking a pool
+//!    consumer; item 1's bound holds exactly only across DIFFERENT documents.
+//!    The fix, computing the parse outside the lock, is a `reify-lsp` change
+//!    tracked as task #7272.
 //!
 //! # The degradation invariant
 //!
 //! Every submission that cannot get its large stack still RESOLVES, and no
-//! degraded arm needs a resource that the condition triggering it would have
-//! denied:
+//! degraded arm needs a resource the triggering condition would have denied:
 //!
 //! * No lane (the OS refused the 256 MiB mapping): [`post`] runs the job on a
-//!   spawned DEFAULT-stack thread, and [`dispatch_async`] `.await`s the future
-//!   natively — neither asks for a second 256 MiB mapping, which would be
-//!   refused the same way. A posted job never runs inline on its poster, which
-//!   may be a tokio worker where OCCT's synchronous handle panics.
-//! * Dead lane (its consumer is gone, so the queue hands the job back unrun): the
-//!   job goes to [`spawn_on_large_stack`]. Its trigger is a dead lane rather than
-//!   a refused mapping, so asking for a thread is not circular. If even that
-//!   spawn fails, [`post`] reports `Err` to its poster and [`dispatch_async`]'s
-//!   awaiter gets a loud panic.
+//!   spawned default-stack thread — never inline, because a poster may be a
+//!   tokio worker where OCCT's synchronous handle panics — and
+//!   [`dispatch_async`] `.await`s the future in place.
+//! * Dead lane (the queue hands the job back unrun): the job goes to
+//!   [`spawn_on_large_stack`]. If that spawn fails too, [`post`] returns `Err`
+//!   and [`dispatch_async`]'s awaiter gets a loud panic.
 //!
-//! RE-ENTRANT submission is the one shape that would not resolve: a job that
-//! WAITS on work it queued to the lane it is itself running on wedges that lane
-//! and every later submitter. Only [`dispatch_async`] waits, and it rejects that
-//! shape through [`assert_not_reentrant`] — the panic fires inside the running
-//! job, is caught by that job's own `catch_unwind` and re-raised on its
-//! submitter, so the lane survives. Posting never waits, so a job may post to
-//! its own lane.
-//!
-//! The worst outcome anywhere in this module is therefore a loud panic or an
-//! `Err` — never a silent hang, and never a nested runtime.
+//! The one shape that would not resolve — a job WAITING on work it queued to its
+//! own lane — is rejected by [`assert_not_reentrant`]. The worst outcome
+//! anywhere in this module is therefore a loud panic or an `Err`, never a silent
+//! hang and never a nested runtime.
 
-/// Stack size for the large-stack compile thread: 256 MiB.
+/// Stack size for every thread this module spawns: 256 MiB.
 ///
-/// A thread stack is a *virtual-address reservation*, committed lazily
-/// page-by-page on first touch — so 256 MiB costs only the pages actually used
-/// (small RSS), not 256 MiB resident. That is ~128x the compiler worker's 2 MiB
-/// default, a generous margin for pathological geometry nesting as
-/// belt-and-suspenders atop task 5337's `stacker::maybe_grow` growth and
-/// recursion cap. It is the single source of truth for every thread this module
-/// spawns.
-///
-/// # Per-call cost (why high-frequency work needs a persistent lane)
-///
-/// A 256 MiB stack is far above glibc's thread-stack cache ceiling (~40 MiB
-/// total by default), so such a stack is never recycled: every call pays a fresh
-/// `mmap` + guard-page `mprotect` + `munmap` and the matching page-table
-/// teardown (tens of microseconds), and churns 256 MiB of address space. That is
-/// negligible next to an actual compile, but it is pure overhead on a
-/// high-frequency path — hence the two tiers in the module docs.
+/// A thread stack is a virtual-address reservation committed page-by-page on
+/// first touch, so this costs the pages actually used, not 256 MiB resident.
+/// It is ~128x a tokio worker's 2 MiB default.
 pub const COMPILE_STACK_SIZE: usize = 256 * 1024 * 1024;
 
-/// Thread name for [`spawn_on_large_stack`]'s per-call engine thread, and for
-/// the default-stack thread [`post`] falls back to when there is no lane.
+/// Thread name for [`spawn_on_large_stack`]'s per-call thread, and for the
+/// default-stack thread [`post`] falls back to when there is no lane.
 ///
-/// Named so panic backtraces, `RUST_BACKTRACE` dumps, `top -H` / `perf` rows and
-/// debugger thread lists identify the engine work instead of reading
-/// `<unnamed>` — this module relocates exactly the work most likely to crash, so
-/// losing the caller's thread identity would be an observability regression.
-///
-/// Kept under 15 bytes: Linux `pthread_setname_np` caps names at 15 chars + NUL
-/// and `std` silently ignores the failure, so a longer name would just not show
-/// up in `/proc`.
+/// The names in this module say which TIER and which LANE a backtrace,
+/// `top -H` row or profiler capture is on. Each is held to Linux's 15-byte
+/// `pthread_setname_np` limit by a `const` assertion, because `std` silently
+/// drops a longer name.
 pub const ENGINE_THREAD_NAME: &str = "reify-engine";
 const _: () = assert!(
     ENGINE_THREAD_NAME.len() <= 15,
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
-/// Thread name for the persistent ENGINE lane — [`ENGINE_LANE`]'s thread.
-///
-/// Distinct from the per-call name so a backtrace or profiler row says which
-/// TIER the work arrived on, not just that it is large-stack work. This is the
-/// thread most worth naming: it is long-lived, so unlike the per-call threads it
-/// shows up in every profiler capture, `top -H` listing and debugger thread list
-/// for the process's whole life. Same 15-byte budget as [`ENGINE_THREAD_NAME`].
+/// Thread name for [`ENGINE_LANE`]'s consumer.
 pub const WORKER_THREAD_NAME: &str = "reify-engine-w";
 const _: () = assert!(
     WORKER_THREAD_NAME.len() <= 15,
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
-/// Thread name for the persistent LSP lane — [`LSP_LANE`]'s thread.
-///
-/// A SECOND long-lived thread earns a second name for the same reason the first
-/// did, and more sharply: the two lanes exist precisely so a keystroke-frequency
-/// stall and a geometry-evaluation stall are different events, and a shared name
-/// would make them indistinguishable in exactly the capture where telling them
-/// apart matters. Same 15-byte budget as [`ENGINE_THREAD_NAME`].
+/// Thread name for [`LSP_LANE`]'s consumer — distinct from the engine lane's, so
+/// a keystroke-path stall and a geometry-evaluation stall can be told apart.
 pub const LSP_WORKER_THREAD_NAME: &str = "reify-lsp-w";
 const _: () = assert!(
     LSP_WORKER_THREAD_NAME.len() <= 15,
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
-/// Spawn `f` on a dedicated OS thread with a [`COMPILE_STACK_SIZE`] stack WITHOUT
-/// blocking the caller, returning the [`std::thread::JoinHandle`].
+/// Thread-name PREFIX for [`LSP_POOL`]'s consumers, `reify-lsp-p0` ..
+/// `reify-lsp-p{LSP_POOL_SIZE-1}`. The assertion allows a two-digit index, so
+/// raising [`LSP_POOL_SIZE`] cannot silently overrun the 15-byte limit.
+pub const LSP_POOL_THREAD_PREFIX: &str = "reify-lsp-p";
+const _: () = assert!(
+    LSP_POOL_THREAD_PREFIX.len() + 2 <= 15,
+    "the pool prefix plus a two-digit consumer index must fit Linux's 15-byte \
+     pthread_setname_np limit"
+);
+
+/// How many consumers the LSP query pool runs: 4.
 ///
-/// The per-call tier, for work that does not go through a lane — notably
-/// `debug_server::run_on_engine`, which delivers its result out-of-band via a
-/// `tokio::sync::oneshot` channel. Because `f` outlives this call, it is
-/// `'static` (no borrowing of caller-stack data); deliver any result through a
-/// channel captured by `f`.
+/// Enough for one slow workspace-wide `references` or `rename` to overlap the
+/// hover / completion / documentHighlight / definition traffic of a single
+/// cursor move. A fixed constant rather than
+/// [`std::thread::available_parallelism`], so the head-of-line bound is the same
+/// number on every machine.
+pub(crate) const LSP_POOL_SIZE: usize = 4;
+const _: () = assert!(
+    LSP_POOL_SIZE >= 2,
+    "a query pool of one consumer serializes every LSP query again"
+);
+
+/// Spawn `f` on a dedicated OS thread with a [`COMPILE_STACK_SIZE`] stack, named
+/// [`ENGINE_THREAD_NAME`], WITHOUT blocking the caller.
 ///
-/// The `io::Result` surfaces OS thread-creation failure to the caller
-/// (`Builder::spawn` returns a `Result`, whereas `thread::spawn` panics), so an
-/// async caller can map it to a structured error. There is no inline fallback:
-/// the closure is `'static` and the caller must not block its runtime worker.
-///
-/// The thread is named [`ENGINE_THREAD_NAME`] so backtraces and profiler rows
-/// identify it.
+/// The per-call tier. `f` is `'static`, so deliver any result through a channel
+/// it captures. Thread-creation failure comes back as `Err` rather than running
+/// `f` inline, so an async caller can map it to a structured error.
 pub fn spawn_on_large_stack<F>(f: F) -> std::io::Result<std::thread::JoinHandle<()>>
 where
     F: FnOnce() + Send + 'static,
@@ -178,45 +143,27 @@ where
 
 // ── Persistent large-stack worker (task 5772) ────────────────────────────────
 
-/// A type-erased unit of work queued to a persistent lane.
+/// A type-erased unit of work queued to a persistent lane. `'static` because the
+/// queue outlives every submitter; any result travels over a channel the job
+/// captures.
 ///
-/// `'static` because the queue outlives every submitter, so a job can never
-/// borrow submitter-stack data. The erased signature is `FnOnce()` regardless of
-/// what the work produces: any result travels over a channel captured INSIDE the
-/// job, not through this type.
-///
-/// `pub(crate)` so the in-crate tests can name it when building a SYNTHETIC
-/// queue to provoke the `SendError` arm; it adds no public API surface.
+/// `pub(crate)` so tests can build a SYNTHETIC queue.
 pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// What a job sends back to its submitter: the computed value, or the panic
-/// payload its body raised.
-///
-/// Carrying the payload rather than a flattened string is what lets the
-/// submitter [`std::panic::resume_unwind`] the ORIGINAL panic, exactly as if
-/// the work had run inline.
+/// What a job sends back to its submitter: the value, or the panic payload its
+/// body raised, so the submitter can [`std::panic::resume_unwind`] the ORIGINAL
+/// panic.
 type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 
-/// The submit end of a lane's job queue, TAGGED with the lane it feeds.
+/// The submit end of a lane's job queue, TAGGED with the lane it feeds so
+/// [`assert_not_reentrant`] can tell a self-submission (a wedge) from a
+/// cross-lane one (legal).
 ///
-/// The [`std::sync::Mutex`] is defensive rather than required —
-/// `mpsc::Sender<T>` is `Sync` on current `std`, but nothing here needs to
-/// depend on that. The lock is held only across a `send` of an already-boxed
-/// job, so no user code ever runs under it and it is never held longer than a
-/// queue push.
-///
-/// The `lane` tag exists for the reentrancy guard, and is what makes that guard
-/// PRECISE rather than blanket: it lets [`assert_not_reentrant`] distinguish
-/// "submitting to the lane whose thread I am running on" (a permanent wedge for
-/// a waiting submission) from "submitting to the OTHER lane" (perfectly legal: a
-/// different thread, which drains independently).
-///
-/// `pub(crate)` for the same reason as [`Job`], and additionally because it is
-/// the parameter type of the [`post`] / [`dispatch_async`] seams — the latter
-/// being what `lsp_bridge` composes against.
+/// The [`std::sync::Mutex`] is held only across a `send` of an already-boxed
+/// job, so no user code runs under it.
 pub(crate) struct JobSender {
-    /// Which lane this queue feeds — the same `&'static str` that lane's thread
-    /// publishes in [`CURRENT_LANE`].
+    /// Which lane this queue feeds — the same `&'static str` that lane's
+    /// consumers publish in [`CURRENT_LANE`].
     lane: &'static str,
     tx: std::sync::Mutex<std::sync::mpsc::Sender<Job>>,
 }
@@ -235,10 +182,8 @@ impl JobSender {
     }
 
     /// Push `job` onto the queue, or hand it BACK inside `SendError` when the
-    /// consumer is gone.
-    ///
-    /// Poisoning is meaningless for a `Sender` — it holds no invariant a panic
-    /// could leave broken — so the guard is recovered rather than propagated.
+    /// consumer is gone. A poisoned guard is recovered: a `Sender` holds no
+    /// invariant a panic could break.
     fn send(&self, job: Job) -> Result<(), std::sync::mpsc::SendError<Job>> {
         self.tx
             .lock()
@@ -253,186 +198,275 @@ impl JobSender {
 }
 
 thread_local! {
-    /// The name of the lane whose consumer thread this is — `None` on every
-    /// thread that is not a lane consumer (i.e. on every submitter).
-    ///
-    /// Set once by the lane's receive loop and never cleared: a lane thread does
-    /// nothing but drain its own queue for the process lifetime.
+    /// The name of the lane whose consumer this thread is — `None` on every
+    /// other thread. Set once by the receive loop; a consumer drains its own
+    /// queue for the process lifetime.
     static CURRENT_LANE: std::cell::Cell<Option<&'static str>> =
         const { std::cell::Cell::new(None) };
 }
 
 /// Panic if this submission would enqueue work onto the lane whose thread is
-/// making it — the one shape that wedges a lane permanently.
+/// making it.
 ///
-/// A lane has a SINGLE consumer, so a job that submits to its own lane and then
-/// waits for the reply can never be answered: the inner job only runs once the
-/// outer one returns, and the outer one is blocked waiting for it. The thread
-/// stops returning to its `for job in rx` loop, so the lane is dead AND every
-/// future submitter in the process blocks forever too — a silent, unrecoverable,
-/// process-wide hang.
+/// A job that submits to its own lane and WAITS for the reply can never be
+/// answered by the consumer running it, which dequeues again only once the
+/// outer job returns. On a single-consumer lane that wedges the lane and every
+/// later submitter in the process. The rule is blanket for pools too: `size`
+/// simultaneous self-submissions wedge a size-`size` pool, so a permissive rule
+/// would be safe only for as long as few enough callers were in flight.
 ///
-/// # Why a panic here is strictly better than the hang it replaces
-///
-/// This check runs ON the lane thread, inside the currently-running job — so the
-/// panic is caught by that job's own [`std::panic::catch_unwind`] and re-raised
-/// on ITS submitter, exactly like any other job panic. The lane survives, one
-/// caller sees a loud error naming the reentrancy, and the module's "never a
-/// silent hang" invariant holds without exception. (An earlier revision argued a
-/// guard's failure mode would poison the shared worker; that is true of a guard
-/// placed on the SUBMITTING side, not of this one.)
-///
-/// Cross-lane submission is deliberately NOT rejected: `ENGINE_LANE` -> jobs
-/// submitting to `LSP_LANE` (or the reverse) land on a different thread with its
-/// own consumer, so they complete normally.
+/// The panic fires inside the running job, so that job's own `catch_unwind`
+/// re-raises it on its submitter and the lane survives. Cross-lane submission is
+/// allowed: it lands on a different consumer.
 fn assert_not_reentrant(sender: &JobSender) {
     assert!(
         !sender.is_own_lane_thread(),
         "re-entrant submission to the `{}` large-stack lane: a job running ON \
-         that lane submitted to it again. The lane has a single consumer, so the \
-         inner job could only run after the outer one returned, and the outer one \
-         is waiting for it — a permanent wedge. Run the inner work inline, or \
-         submit it to the other lane.",
+         that lane submitted to it again. The consumer running the outer job \
+         cannot answer the inner one — it only returns to its dequeue loop after \
+         the outer job returns, and the outer job is waiting for the inner. Run \
+         the inner work inline, or submit it to another lane.",
         sender.lane
     );
 }
 
-/// One persistent large-stack worker: a NAME plus the queue feeding it.
+/// One persistent large-stack lane: a NAME, a SIZE, and the queue feeding it.
 ///
-/// A lane is created lazily on first use and lives for the process. Everything
-/// about the mechanism — the 256 MiB stack, the single-consumer queue, the
-/// explicit `None`-on-spawn-failure record, the never-dropped `Sender` — is
-/// shared by every lane; a lane is an INSTANCE, not a variant.
+/// Created lazily on first use and kept for the process. Every lane is an
+/// instance of one mechanism — a 256 MiB stack per consumer, one FIFO queue,
+/// `None` when no consumer started, a never-dropped `Sender` — and `size` is a
+/// value it carries, not a second design.
 ///
 /// # Why more than one lane
 ///
-/// The alternative — one thread for all large-stack work — is a latency
-/// regression, not a simplification. LSP dispatch never takes the engine mutex,
-/// so it shares no state with engine work and serializing the two buys nothing;
-/// but a single-consumer queue would make a `textDocument/hover` queue behind an
-/// in-flight `set_parameter` geometry evaluation (hundreds of ms to seconds).
-/// Since `lsp_request` fires on effectively every keystroke and cursor move,
-/// that head-of-line blocking would land on the highest-frequency path in the
-/// GUI, where today the two run concurrently on the tokio runtime.
+/// LSP dispatch never takes the engine mutex, so serializing it behind engine
+/// work buys nothing, and would make a `textDocument/hover` queue behind an
+/// in-flight `set_parameter` evaluation on the GUI's highest-frequency path.
 ///
-/// A second lane costs one extra thread whose 256 MiB stack is a virtual-address
-/// reservation committed page-by-page — near-zero RSS until used — and it is
-/// created only if something actually submits to it.
+/// # The LSP split: an ordered lane and a query pool
 ///
-/// # What the split does NOT buy: LSP requests now serialize against EACH OTHER
+/// [`LSP_LANE`] keeps ONE consumer for the state-mutating and lifecycle
+/// methods; [`LSP_POOL`] runs the read-only queries on [`LSP_POOL_SIZE`]
+/// consumers. A workspace-wide `references` or `rename`, whose parse and compile
+/// run ON the consumer driving it (see [`crate::lsp_bridge::LspBridge`]'s
+/// "Where blocking work runs"), therefore holds one of N consumers rather than
+/// the only one.
 ///
-/// Stated as a limit rather than left to be inferred from "two lanes", because
-/// the argument above is about the OTHER lane's work and does not carry over.
-/// A lane has a single consumer, and [`LSP_LANE`]'s consumer parks in
-/// `Handle::block_on(fut)` for the whole request, so `lsp_request` calls now run
-/// strictly one at a time.
+/// * **ORDERING.** Notifications are order-sensitive against each other:
+///   applying `didChange` N+1 before N yields text neither side ever had. So
+///   [`LSP_LANE`] is size 1 by requirement, and
+///   [`crate::lsp_bridge::lane_for_method`] defaults every unrecognised method
+///   to it.
+/// * **REENTRANCY.** Every consumer of a pool publishes the same
+///   [`CURRENT_LANE`] name, so [`assert_not_reentrant`] treats a pool exactly
+///   like a single-consumer lane.
 ///
-/// That is a real change, not merely a theoretical one. Before task 5772 these
-/// futures were awaited on the multi-threaded tauri runtime, and
-/// `textDocument/hover` — which takes only a brief `state.read().await` and never
-/// touches the `eval_state` mutex that `didChange` holds across its diagnostics
-/// eval — genuinely ran concurrently with an in-flight `didChange` eval.
+/// The ordering given up is query-versus-notification: a query may read text
+/// older than a concurrently-processing `didChange`. That is staleness, never
+/// corruption — `reify-lsp`'s own locks serialise the accesses — and it is
+/// reachable in the shipped app. `gui/src/editor/Editor.tsx` debounces
+/// `didChange`, and only rename (F2) and find-uses (Shift-F12) wait for it
+/// (`flushPendingLspChange`); completion, hover, go-to-definition and occurrence
+/// highlights fire independently, and a stale answer self-corrects on the next
+/// request. A `rename` edit cannot land stale: the server version-stamps it and
+/// `gui/src/editor/rename.ts` refuses a mismatched version. A client that awaits
+/// each request reads its own writes (`lsp_lane_routing_tests`' (n)).
 ///
-/// The sharpest case is the four blocking-work arms — `definition`,
-/// `prepareRename`, `rename` and `references`. The bridge runs their parse and
-/// compile work ON the lane, which is how they get its stack (see
-/// [`crate::lsp_bridge::LspBridge`]'s "Where blocking work runs"), so a
-/// workspace-wide `textDocument/references` occupies the lane for its whole
-/// duration and every subsequent keystroke's `didChange` and `hover` waits
-/// behind it.
+/// # One consumer or N
 ///
-/// So the accurate claim is: the lane split protects the keystroke path from
-/// ENGINE work, not from other LSP work. Bounding the remainder means making
-/// [`LSP_LANE`] a small fixed pool of large-stack consumers instead of a
-/// single-consumer queue. Keeping those four arms OFF the lane is not a
-/// candidate: it would hand their deep work back to a ~2 MiB thread. A pool is
-/// follow-up work rather than part of this routing: it is a different
-/// concurrency design than the one this task specified, needing its own
-/// reentrancy and ordering argument (LSP notifications such as
-/// `didOpen`/`didChange` are order-sensitive against later requests on the same
-/// document, so a pool must not reorder them).
+/// [`Lane::sender`] spawns `size` consumers over one shared
+/// `Arc<Mutex<Receiver<Job>>>`; everything else — [`Job`], [`JobSender`],
+/// [`post`], [`dispatch_async`], [`assert_not_reentrant`] — is the same for
+/// every size.
 ///
-/// That deferral is TRACKED, not merely narrated: task #6517 carries it, and
-/// records that the design should be chosen against a measurement — no
-/// benchmark of serialized-vs-concurrent keystroke latency exists yet. Cited
-/// here because a disclosed limit with no ticket behind it is
-/// indistinguishable from a limit nobody intends to close.
+/// * Dequeue is FIFO, because [`std::sync::mpsc`] delivers in send order. The
+///   mutex only serialises `recv()` and is released before the job body runs,
+///   so `size` bodies run at once. It is not fair, so on a size-N lane job
+///   BODIES may start out of arrival order; only a size-1 lane gives strict
+///   start order.
+/// * A size-1 lane pays one uncontended lock per job, in exchange for a single
+///   receive loop.
+/// * A size-1 lane's consumer is named exactly `name`; a size-N lane's are
+///   `{name}{i}`.
 pub(crate) struct Lane {
-    /// The lane thread's name, for backtraces, `top -H` and profiler rows.
+    /// The consumer thread name; for a size-N lane, the PREFIX of `{name}{i}`.
     name: &'static str,
-    /// The lazily-created queue. `None` records that the OS REFUSED the mapping.
+    /// How many consumers drain this lane's queue — its head-of-line bound.
+    size: usize,
+    /// How many consumers actually started; see [`Lane::started`].
+    started: std::sync::atomic::AtomicUsize,
+    /// The lazily-created queue. `None` records that no consumer could be
+    /// spawned.
     queue: std::sync::OnceLock<Option<JobSender>>,
 }
 
 impl Lane {
-    /// Declare a lane. `const` so lanes can be `static`s created at no runtime
-    /// cost; the thread itself is not spawned until [`Lane::sender`] is first
-    /// called.
+    /// Declare a SINGLE-consumer lane. `const` so lanes can be `static`s; no
+    /// thread is spawned until [`Lane::sender`] is first called.
     const fn new(name: &'static str) -> Self {
+        Self::pool(name, 1)
+    }
+
+    /// Declare a lane with `size` consumers, bounding head-of-line blocking
+    /// among the work routed to it at `size` rather than serializing it.
+    ///
+    /// Consumer `i` is named `{name}{i}` (exactly `name` when `size` is 1), so
+    /// `name.len()` plus the widest index must fit Linux's 15-byte
+    /// `pthread_setname_np` limit — `std` silently drops a longer name. Each
+    /// production prefix carries a `const` assertion for that.
+    ///
+    /// A zero-size lane would be a queue nobody drains. Every call site is a
+    /// `static` initialiser, so the assertion below is const-evaluated and
+    /// fails the build.
+    ///
+    /// `pub(crate)` so a test can declare its own instance instead of parking
+    /// consumers of a process-wide `static`.
+    pub(crate) const fn pool(name: &'static str, size: usize) -> Self {
+        assert!(
+            size >= 1,
+            "a lane needs at least one consumer; a size-0 lane's queue would \
+             never be drained"
+        );
         Self {
             name,
+            size,
+            started: std::sync::atomic::AtomicUsize::new(0),
             queue: std::sync::OnceLock::new(),
         }
     }
 
-    /// Lazily create this lane's worker, yielding its queue — or `None` if the
-    /// OS refused the [`COMPILE_STACK_SIZE`] mapping.
+    /// How many consumers this lane DECLARES.
     ///
-    /// [`std::sync::OnceLock`] gives lazy creation (a session that never touches
-    /// this lane never pays for the 256 MiB mapping) and exactly-once semantics.
+    /// Read only by tests (`lsp_lane_routing_tests`' (p)); the allow is scoped
+    /// to `not(test)` so the lint still fires if the tests stop reading it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn size(&self) -> usize {
+        self.size
+    }
+
+    /// How many consumers this lane actually STARTED: 0 until [`Lane::sender`]
+    /// has run, then fixed. It falls short of [`Lane::size`] exactly when
+    /// [`Lane::sender`] hit a partial spawn failure, which narrows the lane's
+    /// concurrency bound without failing anything else.
     ///
-    /// The spawn failure is recorded EXPLICITLY as `None` rather than inferred
-    /// from a subsequently-dead channel: nothing documents that `Builder::spawn`
-    /// drops the closure it could not run, and a leaked `Receiver` would make
-    /// every `send` succeed into a queue nobody drains — i.e. a hang, the one
-    /// outcome this module must never produce.
+    /// The `queue.get()` is the synchronisation, not a fast path: the store
+    /// happens inside the `OnceLock` initialiser, so `Some` means this thread
+    /// happens-after it and the `Relaxed` load sees the stored count, and `None`
+    /// means 0 is the truth. Read only by tests, like [`Lane::size`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn started(&self) -> usize {
+        if self.queue.get().is_none() {
+            return 0;
+        }
+        self.started.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lazily create this lane's consumers, yielding its queue — or `None` if
+    /// not one consumer could be spawned.
     ///
-    /// Holding the `Sender` in the `OnceLock` forever is deliberate: the channel
-    /// therefore never disconnects on its own, so the lane's `for job in rx`
-    /// loop parks on an empty queue rather than exiting.
+    /// `None` is recorded EXPLICITLY rather than inferred from a dead channel: a
+    /// leaked `Receiver` would make every `send` succeed into a queue nobody
+    /// drains, which is a hang. A PARTIAL spawn failure still yields `Some`: the
+    /// queue has a drainer, so every submission still completes on a large
+    /// stack, with a smaller concurrency bound that [`Lane::started`] reports.
+    /// The `Sender` lives in the `OnceLock` forever, so consumers park on an
+    /// empty queue rather than exiting.
+    ///
+    /// The warnings use `eprintln!` because nothing in this workspace installs a
+    /// `tracing` subscriber, so `tracing::warn!` would print nowhere.
     pub(crate) fn sender(&'static self) -> Option<&'static JobSender> {
         self.queue
             .get_or_init(|| {
                 let (tx, rx) = std::sync::mpsc::channel::<Job>();
                 let name = self.name;
-                match std::thread::Builder::new()
-                    .name(name.to_string())
-                    .stack_size(COMPILE_STACK_SIZE)
-                    .spawn(move || {
-                        // Publish this thread's lane identity so
-                        // `assert_not_reentrant` can tell a self-submission (a
-                        // permanent wedge) from a cross-lane one (legal).
-                        CURRENT_LANE.with(|l| l.set(Some(name)));
-                        // Parks while the queue is empty. `rx` only ends when
-                        // the `Sender` in the `OnceLock` drops, which never
-                        // happens, so this loop lives as long as the process.
-                        for job in rx {
-                            job();
+                let size = self.size;
+                // Shared so `size` consumers can drain ONE queue. The lock is
+                // taken only across a dequeue, never across a job body.
+                let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+
+                let mut started = 0usize;
+                for index in 0..size {
+                    let thread_name = if size == 1 {
+                        name.to_owned()
+                    } else {
+                        format!("{name}{index}")
+                    };
+                    let rx = std::sync::Arc::clone(&rx);
+                    match std::thread::Builder::new()
+                        .name(thread_name)
+                        .stack_size(COMPILE_STACK_SIZE)
+                        .spawn(move || {
+                            // Every consumer of a lane publishes the SAME name,
+                            // which is what `assert_not_reentrant` compares.
+                            CURRENT_LANE.with(|l| l.set(Some(name)));
+                            loop {
+                                // Dequeue under the lock, then RELEASE it before
+                                // running the job, so `size` bodies run at once.
+                                // A job cannot poison this lock: its
+                                // `catch_unwind` is inside the job, and the lock
+                                // is not held while it runs.
+                                let dequeued = {
+                                    let guard = rx
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    guard.recv()
+                                };
+                                // `recv` errs only once the `Sender` in the
+                                // `OnceLock` drops, which never happens.
+                                let Ok(job) = dequeued else { break };
+                                job();
+                            }
+                        }) {
+                        Ok(_handle) => started += 1,
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: failed to spawn {name} lane consumer \
+                                 {index} of {size} ({e})"
+                            );
                         }
-                    }) {
-                    Ok(_handle) => Some(JobSender::new(name, tx)),
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to spawn {name} thread ({e}); that \
-                             lane's work will run on a default-size stack instead"
-                        );
-                        None
                     }
                 }
+
+                // Stored before either exit, so the degraded `None` and a
+                // partial pool alike leave a truthful count behind.
+                self.started
+                    .store(started, std::sync::atomic::Ordering::Relaxed);
+
+                if started == 0 {
+                    // Nothing will drain the queue: record the degrade signal.
+                    eprintln!(
+                        "Warning: failed to spawn any {name} thread; that lane's \
+                         work will run on a default-size stack instead"
+                    );
+                    return None;
+                }
+                if started < size {
+                    eprintln!(
+                        "Warning: the {name} lane started {started} of {size} \
+                         consumers; its work still runs on a large stack, with a \
+                         smaller concurrency bound"
+                    );
+                }
+                Some(JobSender::new(name, tx))
             })
             .as_ref()
     }
 }
 
-/// The ENGINE lane, fed only by [`post_to_worker`], whose sole production caller
-/// is [`crate::eval_queue::EvalQueue`]. Named [`WORKER_THREAD_NAME`].
+/// The ENGINE lane, fed only by [`post_to_worker`]. Named [`WORKER_THREAD_NAME`].
 pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 
-/// The LSP lane: `lsp_request` dispatch. Named [`LSP_WORKER_THREAD_NAME`].
-///
-/// Separate from [`ENGINE_LANE`] so a hover never queues behind a geometry
-/// evaluation — see [`Lane`]'s "Why more than one lane".
+/// The ORDERED LSP lane: the state-mutating and lifecycle methods, plus any
+/// method `InProcessLsp::handle_request` does not recognise. Size 1 is a
+/// correctness requirement; see [`Lane`]'s ORDERING. Which methods is
+/// [`crate::lsp_bridge::lane_for_method`]'s to say.
 pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
+
+/// The LSP QUERY POOL: the read-only query methods, on [`LSP_POOL_SIZE`]
+/// consumers. They may run concurrently because every one is read-only against
+/// server-side state. Which methods is [`crate::lsp_bridge::lane_for_method`]'s
+/// to say.
+pub(crate) static LSP_POOL: Lane = Lane::pool(LSP_POOL_THREAD_PREFIX, LSP_POOL_SIZE);
 
 /// Queue `job` on the persistent ENGINE lane WITHOUT waiting for it, so the
 /// calling thread is never parked on engine work. Deliver any result through a
@@ -486,101 +520,48 @@ pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &st
         .unwrap_or("<non-string panic payload>")
 }
 
-/// Drive `fut` to completion on the persistent LSP lane WITHOUT blocking the
-/// calling tokio worker, resolving to its output.
+/// Submit `fut` to `sender`'s lane and AWAIT its output, releasing the calling
+/// tokio worker while a lane consumer computes — or, given `None`, simply
+/// `.await` it here.
 ///
-/// For `lsp_request` — an `async fn` Tauri command that fires on effectively
-/// every keystroke and cursor move. Awaiting a
-/// [`tokio::sync::oneshot`](tokio::sync::oneshot) reply RELEASES the calling
-/// tokio worker while the lane thread computes, where waiting on the job would
-/// pin that worker for the whole LSP round trip.
+/// The LSP lanes' submission seam. `lsp_request` fires on effectively every
+/// keystroke, and awaiting a [`tokio::sync::oneshot`] reply keeps it from
+/// pinning a tokio worker for the whole round trip. The lane is a parameter so a
+/// test can reach the degraded arms without a real `pthread_create` failure.
 ///
-/// # Why this lane carries a FUTURE, not a closure
+/// # Why a FUTURE, driven by the submitter's `Handle`
 ///
-/// A correctness constraint rather than a style choice. The lane must be able to
-/// degrade — to run the work SOMEWHERE when it is absent or its queue is dead —
-/// and the degraded arms of an async submission necessarily run in the
-/// submitting async frame, i.e. on a thread already inside the tauri runtime. A
-/// future can simply be `.await`ed there. A closure that pre-bakes a
-/// [`tokio::runtime::Handle::block_on`] — which is what an LSP job must do, see
-/// [`dispatch_async`] — cannot: `block_on` from inside a runtime panics "Cannot
-/// start a runtime from within a runtime". Taking the future and letting
-/// [`dispatch_async`] decide how to drive it puts that decision with the code
-/// that knows which frame the work will land in.
+/// The degraded arms run in the submitting async frame, which is inside the
+/// tauri runtime: a future can be `.await`ed there, but a closure with a
+/// [`tokio::runtime::Handle::block_on`] baked in would panic "Cannot start a
+/// runtime from within a runtime". On the lane, a consumer is a plain `std`
+/// thread with no ambient runtime, and the future may need one —
+/// `InProcessLsp`'s default `BlockingPool` placement calls
+/// [`tokio::task::spawn_blocking`]. So the submitter's `Handle` is captured here
+/// and moved into the job, and `Handle::block_on` installs the runtime context
+/// on the consumer.
 ///
-/// Everything else is shared with the ENGINE lane: the same [`Lane`] mechanism,
-/// the same boxed [`Job`], the same catch-inside-the-job protocol. The
-/// [`JobReply`] payload is what keeps a job's panic faithful to its awaiter.
+/// # Degradation: never lose a result, never hang an `.await`, never nest a runtime
 ///
-/// This is not a new concurrency design: `debug_server::run_on_engine` already
-/// bridges an async caller to a large-stack thread with exactly
-/// [`spawn_on_large_stack`] + a `oneshot`. This amortises that bridge onto a
-/// persistent lane instead of paying a fresh 256 MiB mapping per call.
-pub async fn run_on_lsp_worker<Fut, T>(fut: Fut) -> T
-where
-    Fut: std::future::Future<Output = T> + Send + 'static,
-    T: Send + 'static,
-{
-    dispatch_async(LSP_LANE.sender(), fut).await
-}
-
-/// Submit `fut` to `sender`'s lane and AWAIT its output — or, given `None`,
-/// simply `.await` it here.
+/// * `None` lane (the OS refused the 256 MiB mapping), or no ambient runtime
+///   ([`tokio::runtime::Handle::try_current`] is `Err`): `.await` the future
+///   here. Neither arm needs a resource the triggering condition denies.
+/// * `SendError(job)`: the queue handed the job back unrun. It carries a
+///   `Handle::block_on`, so it must not run in this frame; it goes to
+///   [`spawn_on_large_stack`]. If that spawn also fails the job is dropped,
+///   `reply_rx` resolves `Err` at once, and the awaiter gets a loud panic.
 ///
-/// `pub(crate)` because turning "is there a lane?" into a parameter is what
-/// makes the degraded arm reachable from a test rather than requiring a real
-/// `pthread_create` failure.
+/// A panic in `fut` is caught inside the job and re-raised with its ORIGINAL
+/// payload on the awaiter, so a consumer's receive loop never unwinds.
+/// Submitting to the lane the caller is itself running on panics; see
+/// [`assert_not_reentrant`].
 ///
-/// # How the future is driven on the lane, and why by a `Handle`
+/// # Abandonment
 ///
-/// A lane thread is a plain `std` thread with no ambient runtime, so the future
-/// needs a driver, and the driver must not assume the future never needs a
-/// runtime context: `InProcessLsp`'s default `BlockingPool` placement calls
-/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`,
-/// so under a bare executor such as `futures::executor::block_on` it would panic
-/// with "there is no reactor running" (the GUI bridge picks `CallingThread`, but
-/// the lane does not depend on that choice).
-/// [`tokio::runtime::Handle::block_on`] installs the runtime context via
-/// `enter_runtime` and is explicitly legal from a NON-runtime thread. So the
-/// handle is captured HERE, on the submitter (which is inside the tauri
-/// runtime), and MOVED into the job: the "how is this future driven" policy
-/// lives with the lane that drives it, not with each caller. Secondary reason
-/// for `Handle` over `futures`: `futures` is not a declared `reify-gui`
-/// dependency, so using it would mean adding one to get strictly worse
-/// behaviour.
-///
-/// # Degradation policy: never lose a result, never hang an `.await`, never
-/// nest a runtime
-///
-/// A hung or panicking future would leave the frontend's `invoke` promise
-/// unresolved forever (a silently dead editor pane). Three arms, and none of
-/// them needs a resource the triggering condition would deny:
-///
-/// * `None` lane (the OS refused the 256 MiB mapping): `.await` the future right
-///   here. That is a NATIVE await, not a thread — which is the only degradation
-///   that still works under the very condition that triggers it, since an OS
-///   that refused a 256 MiB mapping will equally refuse a recovery thread. It is
-///   also genuinely "today's behaviour": the LSP future polled on a tokio
-///   worker's ~2 MiB stack, exactly what `main.rs::lsp_request` did before task
-///   5772.
-/// * No ambient runtime ([`tokio::runtime::Handle::try_current`] is `Err`):
-///   `.await` here too. `try_current` rather than `current` so a caller polled
-///   outside any runtime DEGRADES instead of panicking; with no runtime there is
-///   no nesting hazard, and a future that needs a runtime context would have
-///   failed under any driver in that state anyway.
-/// * `SendError(job)`: the queue handed the job BACK unrun. The job provably
-///   contains a `Handle::block_on`, so it must NOT run in this frame — this
-///   frame is inside the runtime, and `block_on` there panics "Cannot start a
-///   runtime from within a runtime". Hand it to [`spawn_on_large_stack`]
-///   instead: a plain `std` thread, therefore never a runtime context, with a
-///   [`COMPILE_STACK_SIZE`] stack and an `io::Result` rather than an inline
-///   fallback. If that spawn ALSO fails, drop the job — its `reply_tx` drops
-///   with it, `reply_rx` resolves `Err(RecvError)` at once, and the loud-panic
-///   arm below fires. One panic site, never a hang, and the result is preserved
-///   whenever preserving it is possible at all.
-///
-/// And a `RecvError` is that loud panic rather than a hang: a disconnected
-/// `oneshot` resolves AT ONCE, so the `.await` below can never park forever.
+/// Dropping this future drops only the `oneshot` receiver. The job still runs to
+/// completion, its side effects happen, and its answer is discarded. Nothing in
+/// the shipped app abandons a submission short of runtime teardown: an abandoned
+/// tauri `invoke` detaches its command future rather than dropping it.
 pub(crate) async fn dispatch_async<Fut, T>(sender: Option<&JobSender>, fut: Fut) -> T
 where
     Fut: std::future::Future<Output = T> + Send + 'static,
@@ -606,8 +587,8 @@ where
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
-        // The catch lives INSIDE the job, so the lane's `for job in rx` loop
-        // can never observe an unwind and cannot be killed by user code.
+        // The catch lives INSIDE the job, so the lane's receive loop can never
+        // observe an unwind and cannot be killed by user code.
         // `AssertUnwindSafe` is sound because the job OWNS its captures and is
         // consumed by this call — nothing observes them after a panic — and the
         // payload is re-raised on the submitter below rather than swallowed.

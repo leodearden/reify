@@ -8,10 +8,10 @@ use reify_core::{
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
-use crate::analysis::module_name_from_uri;
+use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
 
-/// The eval/check-pass containment guard shared by all three LSP production
+/// The eval/check-pass containment guard shared by both LSP production
 /// entry points — see [`eval_guard`] for the hazard it contains and why it is
 /// its own module.
 pub(crate) mod eval_guard;
@@ -43,7 +43,7 @@ impl EvalState {
     pub fn new() -> Self {
         let checker = SimpleConstraintChecker;
         Self {
-            engine: reify_eval::Engine::new(Box::new(checker), None),
+            engine: reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None),
             version_counter: 0,
             last_content_hash: None,
         }
@@ -108,6 +108,8 @@ pub struct DiagnosticsResult {
     /// may be used, so every log site in the server is forwarded from the
     /// same place, spelled the same way, for the same reason (task #6329).
     pub log_messages: Vec<LogLine>,
+    /// None when parse errors or the eval-readiness predicate (`eval_guard::skip_reason`) stopped the pipeline.
+    pub check_result: Option<reify_eval::CheckResult>,
 }
 
 /// Run the stateful parse → compile → eval → check pipeline.
@@ -150,12 +152,13 @@ pub struct DiagnosticsResult {
 /// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
 /// in debug builds (root cause owned by task **#6851**; mechanism in
 /// `eval_guard::first_unrepresentable_cell`'s doc — private, so cited by name
-/// rather than as an intra-doc link from this public item). All three LSP
-/// production entry points therefore ask `eval_guard::skip_reason` after
-/// collecting the compile-stage diagnostics, skip the eval/check pass when it
-/// answers `Some`, and report which cell forced the skip — to the server log
-/// at every site, and additionally as an editor-visible Warning at the two
-/// that own a diagnostics list. The user still gets the `E_AUTO_TYPE_PARAM_*`
+/// rather than as an intra-doc link from this public item). Both LSP
+/// production entry points — this function and
+/// `AnalysisContext::from_parsed` — therefore ask `eval_guard::skip_reason`
+/// after collecting the compile-stage diagnostics, skip the eval/check pass
+/// when it answers `Some`, and report which cell forced the skip — to the
+/// server log at both, and additionally as an editor-visible Warning at the
+/// one that owns a diagnostics list, this function. The user still gets the `E_AUTO_TYPE_PARAM_*`
 /// error this section is about where there is one, and the server stays
 /// alive. The guard tests the graph for an unrepresentable cell,
 /// NOT the diagnostics for an error: a compile error that leaves the graph
@@ -206,9 +209,10 @@ pub struct DiagnosticsResult {
 /// LSP-side analog of `cmd_check`'s `check_fea_violated_constraint_is_not_gated`
 /// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`), and also the
 /// lock that task #6798's compile-time checker injection (see the section
-/// above) does not disturb this posture, via an exhaustive probe over every
-/// target `reify_eval::compute_targets::register_compute_fns` registers —
-/// changing this posture requires updating that test intentionally.
+/// above) does not disturb this posture, by observing that every
+/// missing-trampoline diagnostic the engine reports is a Warning, which the
+/// engine picks only when its compute registry is empty — changing this
+/// posture requires updating that test intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
     source: &str,
@@ -219,12 +223,7 @@ pub fn compute_diagnostics_with_state(
     // `DiagnosticsResult::log_messages`.
     let mut log_messages: Vec<LogLine> = Vec::new();
 
-    // Derive module name from URI
-    let module_name = uri
-        .path_segments()
-        .and_then(|mut segs| segs.next_back())
-        .and_then(|name| name.strip_suffix(".ri"))
-        .unwrap_or("unnamed");
+    let module_name = module_name_from_uri(uri);
 
     // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
@@ -241,6 +240,7 @@ pub fn compute_diagnostics_with_state(
             diagnostics,
             geometry_output: None,
             log_messages,
+            check_result: None,
         };
     }
 
@@ -280,6 +280,7 @@ pub fn compute_diagnostics_with_state(
             diagnostics,
             geometry_output: None,
             log_messages,
+            check_result: None,
         };
     }
 
@@ -318,10 +319,11 @@ pub fn compute_diagnostics_with_state(
         // Observability: if the hash *did* match but the engine was uninitialized,
         // that is the specific invariant violation the engine-init guard (above) was
         // added to catch — last_content_hash was set without a preceding eval().
-        // Log a warning in debug builds so the decoupling is not silent. We cannot
-        // use debug_assert! here because the graceful-handling test intentionally
-        // constructs this state to verify the cold-start branch is taken; the right
-        // response is to handle it correctly (which we do below) and warn.
+        // Log a warning in debug builds so the decoupling is not silent. Not a
+        // debug_assert!: the state is reachable, if only through a panic inside
+        // eval after the engine replacement below followed by the server's Mutex
+        // poison recovery, and the right response is to handle it correctly
+        // (which we do below) and warn.
         #[cfg(debug_assertions)]
         if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
         {
@@ -334,7 +336,7 @@ pub fn compute_diagnostics_with_state(
             });
         }
         let checker = SimpleConstraintChecker;
-        state.engine = reify_eval::Engine::new(Box::new(checker), None);
+        state.engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         state.engine.eval(&compiled).diagnostics
     };
 
@@ -461,31 +463,55 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
-    // Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostic for
-    // FEA-dependent constraints that go unevaluated under this function's
-    // trampoline-free posture (see the doc comment above). A constraint
-    // reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
-    // `max_von_mises`) body-inlines to `Value::Undef` and therefore checks
-    // as `Satisfaction::Indeterminate` — neither the `violated_messages`
-    // skip-set above nor the span-aware `Satisfaction::Violated` loop emits
-    // anything for it, so today it surfaces NO diagnostic at all, silently
-    // indistinguishable from "no constraint". Surface a non-noisy
-    // `Severity::Info` hint instead, anchored to the constraint's span, so
-    // the user knows why the constraint shows nothing in the editor.
-    //
-    // Gated by `constraint_depends_on_unregistered_optimized_compute` so this
-    // does NOT fire on every `Indeterminate` constraint — e.g. a
-    // genuinely-unresolved `auto` param is also `Indeterminate` here (no
-    // solver attached), but is not FEA-dependent and must not get this hint.
-    //
-    // Deliberately additive and easily removable: a single emission branch
-    // plus one self-contained helper reading already-computed `check_result`
-    // / `compiled` data, no new `EvalState` fields, no keystroke-time solve.
-    //
+    diagnostics.extend(fea_not_evaluated_hints(
+        &state.engine,
+        &compiled,
+        &check_result,
+        source,
+    ));
+    diagnostics.extend(freshness_diagnostics(&state.engine, &compiled, source));
+
+    // Record the content hash so the next call can choose incremental vs cold-start.
+    state.last_content_hash = Some(compiled.content_hash);
+
+    DiagnosticsResult {
+        diagnostics,
+        geometry_output: None,
+        log_messages,
+        check_result: Some(check_result),
+    }
+}
+
+/// Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostics for
+/// FEA-dependent constraints that go unevaluated under
+/// [`compute_diagnostics_with_state`]'s trampoline-free posture. A constraint
+/// reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
+/// `max_von_mises`) body-inlines to `Value::Undef` and therefore checks as
+/// `Satisfaction::Indeterminate` — neither the `violated_messages` skip-set
+/// nor the span-aware `Satisfaction::Violated` loop in that function emits
+/// anything for it, so without this hint it surfaces NO diagnostic at all,
+/// silently indistinguishable from "no constraint". Surface a non-noisy
+/// `Severity::Info` hint instead, anchored to the constraint's span, so the
+/// user knows why the constraint shows nothing in the editor.
+///
+/// Gated by `constraint_depends_on_unregistered_optimized_compute` so this
+/// does NOT fire on every `Indeterminate` constraint — e.g. a
+/// genuinely-unresolved `auto` param is also `Indeterminate` here (no solver
+/// attached), but is not FEA-dependent and must not get this hint.
+///
+/// Deliberately additive and easily removable: one emitter reading
+/// already-computed `check_result` / `compiled` data, no new `EvalState`
+/// fields, no keystroke-time solve.
+fn fea_not_evaluated_hints(
+    engine: &reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+    check_result: &reify_eval::CheckResult,
+    source: &str,
+) -> Vec<lsp_types::Diagnostic> {
     // TODO(#5023): remove this stopgap when async-recalc Phase A lands
     // per-constraint computing/not-evaluated states that supersede this hint.
     //
-    // Perf guard: this whole block — including the lookup maps below — runs
+    // Perf guard: this whole function — including the lookup maps below — runs
     // on the LSP keystroke hot path, so skip it entirely when there is no
     // `Indeterminate` constraint in this document at all. Nothing in the
     // loop below can fire without at least one such entry, so this still
@@ -500,7 +526,7 @@ pub fn compute_diagnostics_with_state(
     // test uses `param gap : Length = auto` as its non-FEA control case), so
     // plenty of non-FEA documents still build the maps below on every
     // keystroke. A cheaper *and correct* pre-filter isn't available for
-    // free: `state.engine.prelude()` is the full stdlib, which always
+    // free: `engine.prelude()` is the full stdlib, which always
     // declares `@optimized` functions (`solve_elastic_static` and its
     // siblings), so "does `compiled.functions` ∪ prelude declare any
     // function with `optimized_target.is_some()`" is trivially true on every
@@ -509,136 +535,133 @@ pub fn compute_diagnostics_with_state(
     // constraint reaches its solver call through a *prelude* function, not a
     // module-local one, and would wrongly lose its hint. A correct tighter
     // filter would have to either walk the same constraint/value-cell
-    // closure the block below already performs (no savings) or cache
+    // closure the code below already performs (no savings) or cache
     // results across calls, which would need new persistent state — ruled
-    // out by this hint's "no new `EvalState` fields" design (see the block
-    // comment above this `if`).
-    if check_result
+    // out by this hint's "no new `EvalState` fields" design (see this
+    // function's doc).
+    if !check_result
         .constraint_results
         .iter()
         .any(|e| e.satisfaction == Satisfaction::Indeterminate)
     {
-        let value_cell_exprs: HashMap<ValueCellId, _> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.value_cells.iter())
-            .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
-            .collect();
-        let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.constraints.iter())
-            .map(|c| (&c.id, c))
-            .collect();
-        // Precompute name -> "names an unregistered @optimized compute
-        // target" once per document, instead of re-scanning all visible
-        // functions for every `UserFunctionCall` node encountered across
-        // every constraint's transitive value-cell closure — O(nodes *
-        // functions) before, O(functions) once to build plus O(1) lookups
-        // after.
-        //
-        // Iterate the union of the compiled module's own functions and the
-        // engine's prelude functions directly, with no intermediate `Vec` —
-        // stdlib solvers like `solve_elastic_static` are prelude functions,
-        // not user-module functions, so the prelude must be included or
-        // every FEA constraint would fail to match. Module-local functions
-        // are chained FIRST so that `.or_insert_with` (which keeps only the
-        // first-seen function per name) resolves a name shared between a
-        // module-local function and a prelude solver to the module's own
-        // definition — see the caller precedence note on
-        // `constraint_depends_on_unregistered_optimized_compute`.
-        let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
-        for f in compiled.functions.iter().chain(
-            state
-                .engine
-                .prelude()
-                .iter()
-                .flat_map(|m| m.functions.iter()),
-        ) {
-            unregistered_optimized_fn_names
-                .entry(f.name.as_str())
-                .or_insert_with(|| {
-                    f.optimized_target
-                        .as_deref()
-                        .is_some_and(|t| state.engine.compute_dispatch(t).is_none())
-                });
-        }
-
-        // No `(id, label)` dedup guard is needed here. `check_result.
-        // constraint_results` is built upstream (reify-eval) with at most
-        // one entry per constraint id: `forall` per-element constraints
-        // each get a fresh, unique `ConstraintNodeId` (`forall_elaborate.rs`
-        // increments `constraint_index` per element, so distinct elements
-        // never share an id), and the GD&T/Conforms path explicitly
-        // overrides any existing same-id entry in place rather than pushing
-        // a second one (`engine_constraints.rs`'s "OVERRIDE the matching
-        // entry ... push if absent" comment). So this single iteration
-        // already yields at most one hint per constraint without any extra
-        // bookkeeping. Pinned by
-        // `fea_hint_two_fea_constraints_each_get_distinct_span_hint` (below,
-        // in `mod tests`), which is the case most sensitive to a regression
-        // in this upstream invariant.
-        for entry in &check_result.constraint_results {
-            if entry.satisfaction != Satisfaction::Indeterminate {
-                continue;
-            }
-            let Some(constraint) = compiled_constraints.get(&entry.id) else {
-                continue;
-            };
-            if !constraint_depends_on_unregistered_optimized_compute(
-                &constraint.expr,
-                &value_cell_exprs,
-                &unregistered_optimized_fn_names,
-            ) {
-                continue;
-            }
-            let range = constraint_spans
-                .get(&entry.id)
-                .map(|span| convert::span_to_range(source, *span))
-                .unwrap_or_default();
-            diagnostics.push(lsp_types::Diagnostic {
-                range,
-                severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
-                code: Some(lsp_types::NumberOrString::String(
-                    FEA_NOT_EVALUATED_CODE.to_string(),
-                )),
-                source: Some("reify".to_string()),
-                message: FEA_NOT_EVALUATED_HINT.to_string(),
-                ..Default::default()
-            });
-        }
+        return Vec::new();
     }
 
-    // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
+    let value_cell_exprs: HashMap<ValueCellId, _> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
+        .collect();
+    let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.constraints.iter())
+        .map(|c| (&c.id, c))
+        .collect();
+    // Precompute name -> "names an unregistered @optimized compute
+    // target" once per document, instead of re-scanning all visible
+    // functions for every `UserFunctionCall` node encountered across
+    // every constraint's transitive value-cell closure — O(nodes *
+    // functions) before, O(functions) once to build plus O(1) lookups
+    // after.
     //
+    // Iterate the union of the compiled module's own functions and the
+    // engine's prelude functions directly, with no intermediate `Vec` —
+    // stdlib solvers like `solve_elastic_static` are prelude functions,
+    // not user-module functions, so the prelude must be included or
+    // every FEA constraint would fail to match. Module-local functions
+    // are chained FIRST so that `.or_insert_with` (which keeps only the
+    // first-seen function per name) resolves a name shared between a
+    // module-local function and a prelude solver to the module's own
+    // definition — see the caller precedence note on
+    // `constraint_depends_on_unregistered_optimized_compute`.
+    let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
+    for f in compiled
+        .functions
+        .iter()
+        .chain(engine.prelude().iter().flat_map(|m| m.functions.iter()))
+    {
+        unregistered_optimized_fn_names
+            .entry(f.name.as_str())
+            .or_insert_with(|| {
+                f.optimized_target
+                    .as_deref()
+                    .is_some_and(|t| engine.compute_dispatch(t).is_none())
+            });
+    }
+
+    // No `(id, label)` dedup guard is needed here. `check_result.
+    // constraint_results` is built upstream (reify-eval) with at most
+    // one entry per constraint id: `forall` per-element constraints
+    // each get a fresh, unique `ConstraintNodeId` (`forall_elaborate.rs`
+    // increments `constraint_index` per element, so distinct elements
+    // never share an id), and the GD&T/Conforms path explicitly
+    // overrides any existing same-id entry in place rather than pushing
+    // a second one (`engine_constraints.rs`'s "OVERRIDE the matching
+    // entry ... push if absent" comment). So this single iteration
+    // already yields at most one hint per constraint without any extra
+    // bookkeeping. Pinned by
+    // `fea_hint_two_fea_constraints_each_get_distinct_span_hint` (below,
+    // in `mod tests`), which is the case most sensitive to a regression
+    // in this upstream invariant.
+    let mut hints = Vec::new();
+    for entry in &check_result.constraint_results {
+        if entry.satisfaction != Satisfaction::Indeterminate {
+            continue;
+        }
+        let Some(constraint) = compiled_constraints.get(&entry.id) else {
+            continue;
+        };
+        if !constraint_depends_on_unregistered_optimized_compute(
+            &constraint.expr,
+            &value_cell_exprs,
+            &unregistered_optimized_fn_names,
+        ) {
+            continue;
+        }
+        hints.push(lsp_types::Diagnostic {
+            range: convert::span_to_range(source, constraint.span),
+            severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
+            code: Some(lsp_types::NumberOrString::String(
+                FEA_NOT_EVALUATED_CODE.to_string(),
+            )),
+            source: Some("reify".to_string()),
+            message: FEA_NOT_EVALUATED_HINT.to_string(),
+            ..Default::default()
+        });
+    }
+    hints
+}
+
+/// Freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
+///
+/// Final → no emission (success state, no diagnostic by definition).
+/// Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
+///   not actionable in an editor — LSP diagnostics are for states users can act on).
+/// Pending → WARNING with code "computation-pending" (upstream dependency failed).
+///   The message includes the chain-root cell name when known, e.g.
+///   "computation pending: upstream dependency failed (because Bracket.volume failed)".
+///   Falls back to the static string when pending_cause is None (bulk mark_pending
+///   paths that intentionally omit a cause; see cache.rs:482-513).
+/// Failed → ERROR with code "computation-failed" (this cell's computation broke).
+///
+/// Constraint violations are intentionally NOT emitted here — they route through
+/// `Satisfaction::Violated` (arch §9.3), not `Freshness::Failed`. The separation
+/// regression test `constraint_violation_does_not_produce_computation_failed` pins this.
+fn freshness_diagnostics(
+    engine: &reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+    source: &str,
+) -> Vec<lsp_types::Diagnostic> {
     // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
     // ordering is deterministic — same compile-defined cell order on every call.
     // Using a HashMap would yield entries in unstable order, causing flapping in
     // snapshot tests and non-deterministic output for the user.
-    //
-    // Final → no emission (success state, no diagnostic by definition).
-    // Intermediate → no emission (transient progress; arch §7.2 "naturally quiets";
-    //   not actionable in an editor — LSP diagnostics are for states users can act on).
-    // Pending → WARNING with code "computation-pending" (upstream dependency failed).
-    //   The message includes the chain-root cell name when known, e.g.
-    //   "computation pending: upstream dependency failed (because Bracket.volume failed)".
-    //   Falls back to the static string when pending_cause is None (bulk mark_pending
-    //   paths that intentionally omit a cause; see cache.rs:482-513).
-    // Failed → ERROR with code "computation-failed" (this cell's computation broke).
-    //
-    // Constraint violations are intentionally NOT emitted here — they route through
-    // `Satisfaction::Violated` (arch §9.3), not `Freshness::Failed`. The separation
-    // regression test `constraint_violation_does_not_produce_computation_failed` pins this.
-    //
-    // This block is only in `compute_diagnostics_with_state` (persistent engine).
-    // The stateless `compute_diagnostics` has no persistent engine, so it has no
-    // freshness state to report and this block is intentionally absent there.
+    let mut diagnostics = Vec::new();
     for template in &compiled.templates {
         for vc in &template.value_cells {
-            match state
-                .engine
-                .freshness(&reify_eval::cache::NodeId::Value(vc.id.clone()))
-            {
+            match engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
                 Freshness::Failed { error } => {
                     let range = convert::span_to_range(source, vc.span);
                     diagnostics.push(lsp_types::Diagnostic {
@@ -658,9 +681,8 @@ pub fn compute_diagnostics_with_state(
                     // cause is present we embed it in the message so the user sees
                     // which upstream cell failed. Falls back to the historic static
                     // string when None (bulk mark_pending path, cache.rs:482-513).
-                    let cause = state
-                        .engine
-                        .pending_cause(&reify_eval::cache::NodeId::Value(vc.id.clone()));
+                    let cause =
+                        engine.pending_cause(&reify_eval::cache::NodeId::Value(vc.id.clone()));
                     let message = match cause {
                         Some(node) => format!(
                             "computation pending: upstream dependency failed (because {} failed)",
@@ -685,15 +707,7 @@ pub fn compute_diagnostics_with_state(
             }
         }
     }
-
-    // Record the content hash so the next call can choose incremental vs cold-start.
-    state.last_content_hash = Some(compiled.content_hash);
-
-    DiagnosticsResult {
-        diagnostics,
-        geometry_output: None,
-        log_messages,
-    }
+    diagnostics
 }
 
 /// Format the span-aware "constraint violated" diagnostic message emitted
@@ -713,8 +727,8 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
 }
 
 /// Exact wording of task 5078's (PRD `compute-fea-hardening.md` C2) FEA
-/// "not evaluated in editor" `Severity::Info` hint, emitted in
-/// [`compute_diagnostics_with_state`] above.
+/// "not evaluated in editor" `Severity::Info` hint, emitted by
+/// [`fea_not_evaluated_hints`] above.
 ///
 /// Defined once here rather than re-declared as a local constant in each
 /// regression test, so the production message and every test that asserts
@@ -728,15 +742,15 @@ const FEA_NOT_EVALUATED_HINT: &str = "FEA constraint not evaluated in editor —
 
 /// Stable `code` for task 5078's FEA "not evaluated in editor" hint (PRD
 /// `compute-fea-hardening.md` C2), set on the `lsp_types::Diagnostic`
-/// emitted in [`compute_diagnostics_with_state`] alongside
+/// emitted by [`fea_not_evaluated_hints`] alongside
 /// [`FEA_NOT_EVALUATED_HINT`].
 ///
 /// Unlike the message, which is free-text prose, this is the
 /// wording-independent handle consumers — including this file's own
 /// regression tests — should match on to identify the diagnostic,
 /// mirroring the `"computation-pending"` / `"computation-failed"` codes
-/// the freshness diagnostics carry (emitted just below in the same
-/// function). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
+/// the freshness diagnostics carry (emitted by
+/// [`freshness_diagnostics`]). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
 /// silently break identification for a consumer matching on this code.
 const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 
@@ -759,7 +773,7 @@ const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 /// prelude functions, not user-module functions) to whether that name's
 /// `@optimized("target")` annotation (if any) names a compute target with
 /// no registered trampoline on the engine. Building this map is the
-/// caller's responsibility (see `compute_diagnostics_with_state`) so it can
+/// caller's responsibility (see [`fea_not_evaluated_hints`]) so it can
 /// be computed once per document rather than once per constraint.
 ///
 /// Matching is by function NAME rather than full overload resolution: in
@@ -866,57 +880,6 @@ fn constraint_depends_on_unregistered_optimized_compute(
     false
 }
 
-/// Run the full parse → compile → check pipeline and return LSP diagnostics.
-///
-/// Shares `compute_diagnostics_with_state`'s trampoline-free engine posture —
-/// see that function's doc comment for the authoritative posture writeup.
-pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
-    let mut result = Vec::new();
-
-    // Derive a module name from the URI
-    let module_name = module_name_from_uri(uri);
-
-    // Parse (prelude-aware so stdlib enum references disambiguate correctly;
-    // pairs with `compile_with_stdlib_checked` below). See task 2525.
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
-
-    // Convert parse errors
-    for err in &parsed.errors {
-        result.push(convert::convert_parse_error(err, source, uri));
-    }
-
-    // Compile. Real checker (task #6798, PRD leaf pi) — see
-    // `compute_diagnostics_with_state`'s "## Compile-time checker" doc
-    // section for the full rationale.
-    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-
-    // Convert compiler diagnostics
-    for diag in &compiled.diagnostics {
-        result.push(convert::convert_diagnostic(diag, source, uri));
-    }
-
-    // Containment for the unsubstituted-TypeParam panic — see
-    // `compute_diagnostics_with_state`'s equivalent guard for the full
-    // rationale (task #6851). This stateless surface panics identically and is
-    // guarded identically; it has no `EvalState` to leave untouched.
-    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
-        result.push(skipped.diagnostic());
-        return result;
-    }
-
-    // Check (eval with constraint checker, no geometry kernel)
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let check_result = engine.check(&compiled);
-
-    // Convert eval diagnostics
-    for diag in &check_result.diagnostics {
-        result.push(convert::convert_diagnostic(diag, source, uri));
-    }
-
-    result
-}
-
 /// Shared `auto:` test fixtures and anti-vacuity guards — see
 /// [`auto_type_param_fixtures`] for why they live outside this module.
 #[cfg(test)]
@@ -925,7 +888,8 @@ pub(crate) mod auto_type_param_fixtures;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
+    use crate::decl_oracle::test_fixtures::test_uri;
+    use tower_lsp::lsp_types::DiagnosticSeverity;
 
     // Shared `auto:` fixtures + anti-vacuity guards, also imported by
     // `crate::analysis::tests` so the two entry-point test families cannot
@@ -949,20 +913,15 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
-
-    /// Compile `parsed` exactly the way the LSP's three production compile
+    /// Compile `parsed` exactly the way the LSP's two production compile
     /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
     /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
     /// the compile-time `CompileTimeIndeterminateChecker` stub.
     ///
     /// Any test below that independently reproduces what
-    /// `compute_diagnostics` / `compute_diagnostics_with_state` compute
-    /// internally (e.g. to precompute a `content_hash` or a `CompiledModule`
-    /// for a follow-up `check`/`check_snapshot` call) MUST route through
-    /// this helper rather than calling `compile_with_stdlib` directly — a
+    /// `compute_diagnostics_with_state` computes internally (e.g. a
+    /// `CompiledModule` for a hand-built engine or a span lookup) MUST route
+    /// through this helper rather than calling `compile_with_stdlib` directly — a
     /// stub-compiled mirror agrees with production only by coincidence
     /// today (no fixture below carries an `auto:` clause), and would
     /// silently drift the moment one does.
@@ -1026,7 +985,8 @@ mod tests {
     #[test]
     fn valid_bracket_source_no_errors() {
         let source = reify_test_support::bracket_source();
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
@@ -1038,7 +998,7 @@ mod tests {
     }
 
     /// BT8 forward (task #6798, PRD `driver-contract-implementation.md` leaf
-    /// pi): the two production compile sites in this file must agree with
+    /// pi): the LSP's diagnostics pipeline must agree with
     /// `reify check`'s real-checker verdict on a CONSTANT `auto:`
     /// constraint, not the compile-time stub's.
     ///
@@ -1055,25 +1015,12 @@ mod tests {
         // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
         assert_bt8_fixture_still_diverges();
 
-        // --- Stateless surface: compute_diagnostics ---
-        let diags = compute_diagnostics(BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
         let no_candidate_code = Some(lsp_types::NumberOrString::String(
             "AutoTypeParamNoCandidate".to_string(),
         ));
         let ambiguous_code = Some(lsp_types::NumberOrString::String(
             "AutoTypeParamAmbiguous".to_string(),
         ));
-        assert!(
-            diags.iter().any(|d| d.code == no_candidate_code)
-                && !diags.iter().any(|d| d.code == ambiguous_code),
-            "BT8 forward (compute_diagnostics): must agree with `reify \
-             check`'s real-checker AutoTypeParamNoCandidate verdict on a \
-             constant constraint, not the compile-time stub's \
-             AutoTypeParamAmbiguous; got diagnostics: {:#?}",
-            diags
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
         let mut state = EvalState::new();
         let result =
             compute_diagnostics_with_state(&mut state, BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
@@ -1121,7 +1068,8 @@ mod tests {
     /// Anti-vacuity guard: assert the stub does NOT emit
     /// `AutoTypeParamConstraintUnevaluated` on this fixture (gated off by
     /// `CompileTimeIndeterminateChecker::is_compile_time_stub() == true`)
-    /// before asserting that the real checker — and both LSP entry points —
+    /// before asserting that the real checker — and the LSP's diagnostics
+    /// pipeline —
     /// do.
     #[test]
     fn lsp_surfaces_auto_type_param_constraint_unevaluated_warning() {
@@ -1167,17 +1115,6 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             real.diagnostics
         );
 
-        // --- Stateless surface: compute_diagnostics ---
-        let diags = compute_diagnostics(GAP_C_SRC, &test_uri());
-        assert!(
-            diags.iter().any(|d| d.code == unevaluated_code),
-            "BT8 amendment (compute_diagnostics): must surface \
-             AutoTypeParamConstraintUnevaluated now that the real checker \
-             is injected, matching `reify check`; got diagnostics: {:#?}",
-            diags
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, GAP_C_SRC, &test_uri());
         assert!(
@@ -1189,13 +1126,13 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         );
     }
 
-    /// The containment guard's NARROWNESS, pinned at the PRODUCTION ENTRY
-    /// POINTS rather than only on the predicate.
+    /// The containment guard's NARROWNESS, pinned at the diagnostics
+    /// pipeline rather than only on the predicate.
     ///
     /// The predicate-level test above proves
     /// `eval_guard::compiled_graph_has_unrepresentable_cell` answers `false` for a
-    /// non-`auto:` compile error. It cannot prove the CALL SITES ask it: a
-    /// future edit widening either site to `reify check`'s blanket
+    /// non-`auto:` compile error. It cannot prove the CALL SITE asks it: a
+    /// future edit widening that site to `reify check`'s blanket
     /// `compiled.diagnostics.iter().any(|d| d.severity == Severity::Error)`
     /// gate would leave that test green and silently stop every eval-time
     /// diagnostic on any document carrying a compile error. This test is the
@@ -1211,30 +1148,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         ));
         let has_compile_error =
             |diags: &[lsp_types::Diagnostic]| diags.iter().any(|d| d.code == unresolved_code);
-        // The engine's exact message: "circular let-binding dependency in
-        // template S: [a, b]" — matched the same way
-        // `eval_diagnostics_surfaced_in_stateful_pipeline` matches it.
-        let has_eval_diag = |diags: &[lsp_types::Diagnostic]| {
-            diags.iter().any(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-        };
 
-        // --- Stateless surface: compute_diagnostics ---
-        let diags = compute_diagnostics(NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC, &test_uri());
-        assert!(
-            has_compile_error(&diags) && has_eval_diag(&diags),
-            "narrowness (compute_diagnostics): an Error-severity compile \
-             diagnostic that is NOT an `auto:` failure must not suppress the \
-             eval pass — the LSP evaluates through non-fatal compile errors on \
-             purpose. Missing the eval diagnostic means a call site has drifted \
-             into `reify check`'s blanket error gate. got: {:#?}",
-            diags
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(
             &mut state,
@@ -1242,7 +1156,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
             &test_uri(),
         );
         assert!(
-            has_compile_error(&result.diagnostics) && has_eval_diag(&result.diagnostics),
+            has_compile_error(&result.diagnostics) && !circular_let_errors(&result).is_empty(),
             "narrowness (compute_diagnostics_with_state): the live server's \
              keystroke path must keep surfacing eval-time diagnostics on a \
              document that also carries a non-`auto:` compile error. got: {:#?}",
@@ -1270,48 +1184,35 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         let no_candidate_code = Some(lsp_types::NumberOrString::String(
             "AutoTypeParamNoCandidate".to_string(),
         ));
-        let check = |label: &str, diags: &[lsp_types::Diagnostic]| {
-            assert!(
-                diags.iter().any(|d| d.code == no_candidate_code),
-                "anti-vacuity ({label}): the fixture must still FAIL `auto:` \
-                 resolution, or this test no longer exercises the guard at \
-                 all. got: {diags:#?}"
-            );
-            for needle in [
-                "circular let-binding dependency in template Other",
-                "constraint Other#constraint[0] violated",
-                "constraint Bearing#constraint[0] violated",
-            ] {
-                assert!(
-                    diags.iter().any(|d| d.message.contains(needle)),
-                    "over-fire ({label}): a failed `auto:` resolution with an \
-                     UNUSED type parameter is safe to evaluate, so `{needle}` \
-                     must still reach the editor. Its absence means the \
-                     containment guard has regressed to a diagnostic-code \
-                     proxy and one `auto:` clause is blanking eval for the \
-                     whole document. got: {diags:#?}"
-                );
-            }
-        };
-
-        // --- Stateless surface: compute_diagnostics ---
-        check(
-            "compute_diagnostics",
-            &compute_diagnostics(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri()),
-        );
-
-        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(
-            &mut state,
+        let diags = compute_diagnostics_with_state(
+            &mut EvalState::new(),
             UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
             &test_uri(),
+        )
+        .diagnostics;
+        assert!(
+            diags.iter().any(|d| d.code == no_candidate_code),
+            "anti-vacuity: the fixture must still FAIL `auto:` resolution, or \
+             this test no longer exercises the guard at all. got: {diags:#?}"
         );
-        check("compute_diagnostics_with_state", &result.diagnostics);
+        for needle in [
+            "circular let-binding dependency in template Other",
+            "constraint Other#constraint[0] violated",
+            "constraint Bearing#constraint[0] violated",
+        ] {
+            assert!(
+                diags.iter().any(|d| d.message.contains(needle)),
+                "over-fire: a failed `auto:` resolution with an UNUSED type \
+                 parameter is safe to evaluate, so `{needle}` must still reach \
+                 the editor. Its absence means the containment guard has \
+                 regressed to a diagnostic-code proxy and one `auto:` clause is \
+                 blanking eval for the whole document. got: {diags:#?}"
+            );
+        }
     }
 
-    /// Containment regression lock for the two entry points in this file
-    /// (root cause owned by task **#6851**).
+    /// Containment regression lock for the diagnostics pipeline (root cause
+    /// owned by task **#6851**).
     ///
     /// A failed `auto:` type-parameter resolution leaves a `param seal : T`
     /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
@@ -1326,8 +1227,8 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// still reports the compile-stage error.
     ///
     /// **Reaching the assertions AT ALL is half the contract.** Without the
-    /// guard these two calls PANIC before they can return, so "the test ran to
-    /// completion" IS the no-panic assertion. Wrapping either call in
+    /// guard the pipeline call PANICS before it can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Wrapping the call in
     /// `#[should_panic]` or `catch_unwind` would invert the contract this test
     /// exists to state — do not.
     ///
@@ -1368,60 +1269,12 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                 "AutoTypeParamNoCandidate".to_string(),
             ));
 
-            // --- Stateless surface: compute_diagnostics ---
             // Panics at engine_eval.rs without the containment guard (measured).
-            let diags = compute_diagnostics(src, &test_uri());
+            let result = compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri());
             assert!(
-                diags.iter().any(|d| d.code == no_candidate_code),
-                "containment (compute_diagnostics, {shape}): a failed `auto:` resolution \
-                 must still surface the compile-stage AutoTypeParamNoCandidate \
-                 error — reaching this assertion at all means the eval pass was \
-                 correctly skipped rather than panicking on the unsubstituted \
-                 TypeParam cell (task #6851). A panic here means the containment \
-                 guard has regressed; an empty/miscoded result means the guard \
-                 fires too early and swallows the compile diagnostics. got: {:#?}",
-                diags
-            );
-
-            // --- Stateful surface: compute_diagnostics_with_state (live server) ---
-            //
-            // Snapshot `EvalState` first: the guard's placement BEFORE the state
-            // mutations is load-bearing, and nothing else pins it. If a refactor
-            // moved `state.version_counter += 1` or the `last_content_hash`
-            // assignment above the guard, this test would still be green on
-            // `result.diagnostics` alone while the SECOND request on the same
-            // unchanged document took the `content_unchanged` branch into
-            // `eval_cached` — which returns empty diagnostics by construction —
-            // and silently reported no eval diagnostics for a module that was
-            // never evaluated at all.
-            let mut state = EvalState::new();
-            let hash_before = state.last_content_hash;
-            let version_before = state.version_counter;
-            let initialized_before = state.is_engine_initialized();
-
-            let result = compute_diagnostics_with_state(&mut state, src, &test_uri());
-
-            assert_eq!(
-                state.last_content_hash, hash_before,
-                "containment ({shape}): a guard-suppressed request must leave \
-                 `last_content_hash` UNADVANCED, so the next request on the same \
-                 document takes the cold-start branch rather than `eval_cached` \
-                 (which returns empty diagnostics by construction). Advancing it \
-                 here is the stale-cache bug the guard's placement prevents."
-            );
-            assert_eq!(
-                state.version_counter, version_before,
-                "containment ({shape}): a guard-suppressed request evaluated nothing, so \
-                 it must not burn a version. A bumped counter means the guard drifted \
-                 BELOW `state.version_counter += 1`."
-            );
-            assert_eq!(
-                state.is_engine_initialized(),
-                initialized_before,
-                "containment ({shape}): a guard-suppressed request must leave the engine \
-                 UNINITIALIZED — it never fed it a snapshot. An initialized engine \
-                 here means the guard drifted below the eval call it exists to \
-                 skip, i.e. the panic it contains is reachable again."
+                result.check_result.is_none(),
+                "containment ({shape}): a guard-suppressed request evaluated nothing, \
+                 so it must carry no CheckResult"
             );
 
             assert!(
@@ -1429,11 +1282,12 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                     .diagnostics
                     .iter()
                     .any(|d| d.code == no_candidate_code),
-                "containment (compute_diagnostics_with_state, {shape}): the live \
-                 server's keystroke path must still surface the compile-stage \
-                 AutoTypeParamNoCandidate error without feeding the unsubstituted \
-                 TypeParam graph to the engine (task #6851). A panic here means \
-                 the containment guard has regressed. got: {:#?}",
+                "containment ({shape}): a failed `auto:` resolution must still \
+                 surface the compile-stage AutoTypeParamNoCandidate error without \
+                 feeding the unsubstituted TypeParam graph to the engine (task \
+                 #6851). A panic here means the containment guard has regressed; \
+                 an empty/miscoded result means the guard fires too early and \
+                 swallows the compile diagnostics. got: {:#?}",
                 result.diagnostics
             );
         }
@@ -1454,7 +1308,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// (via the same guard in `AnalysisContext::from_parsed`) every
     /// hover/completion computed value for the whole document.
     ///
-    /// So this test pins three things per entry point: no panic (reaching the
+    /// So this test pins three things: no panic (reaching the
     /// assertions IS that half of the contract — do not add `#[should_panic]`
     /// or `catch_unwind`), no Error-severity diagnostic to explain the loss,
     /// and consequently the file-level `EvalSkippedUnrepresentableCell`
@@ -1478,62 +1332,60 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
                 EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
             ),
         ] {
-            for (entry_point, diags) in [
-                ("compute_diagnostics", compute_diagnostics(src, &test_uri())),
-                (
-                    "compute_diagnostics_with_state",
-                    compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri())
-                        .diagnostics,
-                ),
-            ] {
-                let errors: Vec<_> = diags
-                    .iter()
-                    .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-                    .collect();
-                assert!(
-                    errors.is_empty(),
-                    "({entry_point}, {shape}): this fixture is valid `.ri` the \
-                     compiler accepts, which is the whole point — an Error here \
-                     means the fixture drifted and the report assertion below \
-                     could pass by riding on someone else's diagnostic. \
-                     errors: {errors:#?}"
-                );
+            let result = compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri());
+            assert!(
+                result.check_result.is_none(),
+                "({shape}): a guard-suppressed document evaluated nothing, so it \
+                 must carry no CheckResult"
+            );
+            let diags = &result.diagnostics;
+            let errors: Vec<_> = diags
+                .iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "({shape}): this fixture is valid `.ri` the \
+                 compiler accepts, which is the whole point — an Error here \
+                 means the fixture drifted and the report assertion below \
+                 could pass by riding on someone else's diagnostic. \
+                 errors: {errors:#?}"
+            );
 
-                let reported: Vec<_> = diags.iter().filter(|d| d.code == skip_code).collect();
-                assert_eq!(
-                    reported.len(),
-                    1,
-                    "({entry_point}, {shape}): a guard-suppressed compile-clean \
-                     document must carry exactly ONE editor-visible \
-                     EvalSkippedUnrepresentableCell Warning. Zero means the \
-                     document silently lost its whole eval pass — every \
-                     constraint result and every computed value — with nothing \
-                     but a line on the server's stderr to show for it. \
-                     Reaching this assertion at all also means the eval pass \
-                     was skipped rather than panicking on the unrepresentable \
-                     cell (task #6851). got: {diags:#?}"
-                );
-                let reported = reported[0];
-                assert_eq!(
-                    reported.severity,
-                    Some(DiagnosticSeverity::WARNING),
-                    "({entry_point}, {shape}): the skip report is the LSP \
-                     describing its own reduced service over a file the \
-                     compiler accepted, not a defect in that file — Warning, \
-                     not Error."
-                );
-                assert!(
-                    reported.message.contains("seal"),
-                    "({entry_point}, {shape}): the skip report must NAME the \
-                     offending cell, or it tells the user only that something \
-                     was lost. got: {}",
-                    reported.message
-                );
-            }
+            let reported: Vec<_> = diags.iter().filter(|d| d.code == skip_code).collect();
+            assert_eq!(
+                reported.len(),
+                1,
+                "({shape}): a guard-suppressed compile-clean \
+                 document must carry exactly ONE editor-visible \
+                 EvalSkippedUnrepresentableCell Warning. Zero means the \
+                 document silently lost its whole eval pass — every \
+                 constraint result and every computed value — with nothing \
+                 but a line on the server's stderr to show for it. \
+                 Reaching this assertion at all also means the eval pass \
+                 was skipped rather than panicking on the unrepresentable \
+                 cell (task #6851). got: {diags:#?}"
+            );
+            let reported = reported[0];
+            assert_eq!(
+                reported.severity,
+                Some(DiagnosticSeverity::WARNING),
+                "({shape}): the skip report is the LSP \
+                 describing its own reduced service over a file the \
+                 compiler accepted, not a defect in that file — Warning, \
+                 not Error."
+            );
+            assert!(
+                reported.message.contains("seal"),
+                "({shape}): the skip report must NAME the \
+                 offending cell, or it tells the user only that something \
+                 was lost. got: {}",
+                reported.message
+            );
         }
     }
 
-    /// Regression guard for task 2525: `compute_diagnostics` must accept sources
+    /// Regression guard for task 2525: the diagnostics pipeline must accept sources
     /// that reference stdlib enums (e.g. `CorrosionClass.C5`) WITHOUT inline
     /// redeclarations.
     ///
@@ -1542,9 +1394,10 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// instead of `EnumAccess` and the downstream `compile_with_stdlib` emitted
     /// an unresolved-name error diagnostic for `CorrosionClass`.
     #[test]
-    fn compute_diagnostics_resolves_stdlib_enum_access_without_inline_redecl() {
+    fn stateful_diagnostics_resolve_stdlib_enum_access_without_inline_redecl() {
         let source = "structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
@@ -1558,7 +1411,8 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     #[test]
     fn syntax_error_produces_diagnostic() {
         let source = "structure {";
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         assert!(!diags.is_empty(), "syntax error should produce diagnostics");
         assert!(
             diags
@@ -1572,22 +1426,16 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     fn unknown_identifier_produces_diagnostic() {
         // Reference a non-existent type/name
         let source = "structure Foo {\n  param x: Length = unknown_name;\n}";
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         assert!(
             !diags.is_empty(),
             "unknown identifier should produce diagnostics"
         );
     }
 
-    #[test]
-    fn empty_source_no_crash() {
-        let diags = compute_diagnostics("", &test_uri());
-        // Should not panic; may or may not produce diagnostics
-        let _ = diags;
-    }
-
     /// End-to-end regression lock: a deep dot-chain in a `let` value flows
-    /// through `compute_diagnostics` as an LSP Warning whose source is `reify`,
+    /// through the diagnostics pipeline as an LSP Warning whose source is `reify`,
     /// whose message contains the rendered chain text, and whose range is
     /// non-zero (anchored to the chain's source span via the diagnostic label).
     ///
@@ -1598,7 +1446,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// lsp_types::Diagnostic.code" — so we assert on severity, source,
     /// message text, and a non-zero range only.
     #[test]
-    fn lsp_compute_diagnostics_surfaces_deep_dot_chain_warning() {
+    fn lsp_diagnostics_surface_deep_dot_chain_warning() {
         // 6-segment chain `a.b.c.d.e.f` (length 6 > 4) inside a `let` value
         // forces exactly one DeepDotChain warning from the compiler pre-pass.
         let source = r#"
@@ -1607,7 +1455,8 @@ structure S {
     let x = a.b.c.d.e.f
 }
 "#;
-        let diags = compute_diagnostics(source, &test_uri());
+        let diags =
+            compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
 
         let deep_dot_chain_diags: Vec<_> = diags
             .iter()
@@ -1651,67 +1500,119 @@ structure S {
 
     // --- compute_diagnostics_with_state unit tests (step-25) ---
 
-    #[test]
-    fn eval_state_new_starts_with_version_counter_zero() {
-        let state = EvalState::new();
-        assert_eq!(state.version_counter, 0);
+    /// The constraint-violation ERRORs of one result, as sorted
+    /// `(start, end, message)` triples, so two results can be compared
+    /// independently of emission order.
+    fn violation_errors(
+        result: &DiagnosticsResult,
+    ) -> Vec<(lsp_types::Position, lsp_types::Position, String)> {
+        let mut errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.to_lowercase().contains("constraint")
+                    && d.message.to_lowercase().contains("violated")
+            })
+            .map(|d| (d.range.start, d.range.end, d.message.clone()))
+            .collect();
+        errors.sort();
+        errors
     }
 
+    /// The constraint outcomes of one evaluated result, as
+    /// `(constraint id, satisfaction)` pairs sorted by id.
+    fn constraint_outcomes(result: &DiagnosticsResult) -> Vec<(String, Satisfaction)> {
+        let mut outcomes: Vec<_> = result
+            .check_result
+            .as_ref()
+            .expect("an evaluated document must carry its CheckResult")
+            .constraint_results
+            .iter()
+            .map(|e| (e.id.to_string(), e.satisfaction))
+            .collect();
+        outcomes.sort_by(|a, b| a.0.cmp(&b.0));
+        outcomes
+    }
+
+    /// One `EvalState` serves a sequence of edits, and each call reports the
+    /// results of the content it was given: the first call on a fresh state,
+    /// an unchanged repeat (the warm leg), and a changed edit after a warm
+    /// call all agree with what that content reports on its own.
+    ///
+    /// Replaces the bookkeeping pins on `EvalState`'s private counters (the
+    /// version counter starting at zero and counting calls, the content hash
+    /// changing on an edit, the cache entry's basis version on a repeat) with
+    /// the behaviour they stood in for, observed on `DiagnosticsResult` only.
     #[test]
-    fn stateful_diagnostics_three_phase_lifecycle() {
-        let mut state = EvalState::new();
+    fn one_state_serves_each_edit_its_own_results() {
         let uri = test_uri();
+        let violating = reify_test_support::bracket_source_violating();
+        let valid = reify_test_support::bracket_source();
 
-        // Phase 1: valid source — no ERROR diagnostics
-        let source_valid = reify_test_support::bracket_source();
-        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
-        let errors1: Vec<_> = result1
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors1.is_empty(),
-            "Phase 1: valid source should produce no errors, got: {errors1:?}"
-        );
+        let mut state = EvalState::new();
+        let results: Vec<DiagnosticsResult> = [
+            valid,
+            violating.as_str(),
+            violating.as_str(),
+            valid,
+            valid,
+            violating.as_str(),
+        ]
+        .into_iter()
+        .map(|source| compute_diagnostics_with_state(&mut state, source, &uri))
+        .collect();
+        let violations: Vec<_> = results.iter().map(violation_errors).collect();
+        let outcomes: Vec<_> = results.iter().map(constraint_outcomes).collect();
+        let violated_count = |i: usize| {
+            outcomes[i]
+                .iter()
+                .filter(|(_, s)| *s == Satisfaction::Violated)
+                .count()
+        };
+        let assert_valid_is_clean = |i: usize, call: &str| {
+            let errors: Vec<_> = results[i]
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(
+                errors.is_empty() && violated_count(i) == 0,
+                "{call} must report no ERROR and no Violated outcome; got errors: \
+                 {errors:#?}, outcomes: {:#?}",
+                outcomes[i]
+            );
+        };
 
-        // Phase 2: violating source — at least one constraint violation ERROR
-        let source_violating = reify_test_support::bracket_source_violating();
-        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
-        let errors2: Vec<_> = result2
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
+        assert_valid_is_clean(0, "call 1 (valid, fresh state)");
         assert!(
-            !errors2.is_empty(),
-            "Phase 2: violating source should produce at least one ERROR"
+            !violations[1].is_empty() && violated_count(1) >= 1,
+            "call 2 (violating, changed) must report a violation; got \
+             diagnostics: {:#?}",
+            results[1].diagnostics
         );
-        let has_constraint_violation = errors2.iter().any(|d| {
-            let msg = d.message.to_lowercase();
-            msg.contains("constraint") && msg.contains("violated")
-        });
-        assert!(
-            has_constraint_violation,
-            "Phase 2: should have a 'constraint violated' diagnostic, got: {errors2:?}"
-        );
-
-        // Phase 3: back to valid source — violations should clear
-        let result3 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
-        let errors3: Vec<_> = result3
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors3.is_empty(),
-            "Phase 3: valid source should clear violations, got: {errors3:?}"
-        );
-
-        // Verify version_counter persistence: 3 calls = version_counter 3
         assert_eq!(
-            state.version_counter, 3,
-            "version_counter should be 3 after three calls"
+            (&violations[2], &outcomes[2]),
+            (&violations[1], &outcomes[1]),
+            "call 3 (violating, unchanged) must report what call 2 reported"
+        );
+        assert_valid_is_clean(3, "call 4 (valid, changed after a warm call)");
+        assert_eq!(
+            (&violations[3], &outcomes[3]),
+            (&violations[0], &outcomes[0]),
+            "call 4 (valid, changed after a warm call) must report what call 1 \
+             reported on a fresh state"
+        );
+        assert_eq!(
+            (&violations[4], &outcomes[4]),
+            (&violations[3], &outcomes[3]),
+            "call 5 (valid, unchanged) must report what call 4 reported"
+        );
+        assert_eq!(
+            (&violations[5], &outcomes[5]),
+            (&violations[1], &outcomes[1]),
+            "call 6 (violating, changed after a warm call) must report the \
+             violating content's own results, not the previous version's"
         );
     }
 
@@ -1721,7 +1622,7 @@ structure S {
     fn fresh_engine_check_snapshot_returns_none() {
         // A fresh Engine (without prior eval) should have no snapshot
         let checker = SimpleConstraintChecker;
-        let engine = reify_eval::Engine::new(Box::new(checker), None);
+        let engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let source = reify_test_support::bracket_source();
         let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
         let compiled = reify_compiler::compile(&parsed);
@@ -1767,31 +1668,32 @@ structure S {
     // --- parse error early return tests (step-6 / Task 497) ---
 
     /// When there are parse errors, compile/eval may produce misleading secondary
-    /// diagnostics on a broken AST. After the early return added in step-7, the
-    /// result should contain exactly the parse error diagnostics — no more.
+    /// diagnostics on a broken AST. The result contains exactly the parse error
+    /// diagnostics, each reported once: compiling the partial AST would report
+    /// every one a second time, re-emitted by the compiler's pre-pass as
+    /// `parse error: …`.
     #[test]
     fn parse_error_skips_compile_and_eval() {
         let source = "structure {";
         let uri = test_uri();
 
-        // Count parse errors directly using reify_syntax
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let parse_error_count = parsed.errors.len();
+        let parse_error_count =
+            reify_compiler::parse_with_stdlib(source, ModulePath::single("test"))
+                .errors
+                .len();
         assert!(
             parse_error_count > 0,
             "test source must produce at least one parse error"
         );
 
-        // compute_diagnostics_with_state should return only parse-error diagnostics
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, source, &uri);
         assert_eq!(
             result.diagnostics.len(),
             parse_error_count,
-            "on parse error, diagnostics count ({}) should equal parse error count ({}); \
-             secondary compile/eval diagnostics must not be included",
-            result.diagnostics.len(),
-            parse_error_count
+            "on parse error, each parse error must be reported exactly once and \
+             secondary compile/eval diagnostics must not be included; got: {:#?}",
+            result.diagnostics
         );
         assert!(
             result.geometry_output.is_none(),
@@ -1805,6 +1707,80 @@ structure S {
                 diag.severity
             );
         }
+    }
+
+    #[test]
+    fn check_result_carries_constraint_outcomes_after_eval() {
+        let uri = test_uri();
+
+        let violating = reify_test_support::bracket_source_violating();
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), &violating, &uri);
+        let check_result = result
+            .check_result
+            .expect("an evaluated document must carry its CheckResult");
+        assert!(
+            check_result
+                .constraint_results
+                .iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
+            "the violating fixture must report a Violated constraint; got: {:#?}",
+            check_result.constraint_results
+        );
+
+        let valid = reify_test_support::bracket_source();
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), valid, &uri);
+        let check_result = result
+            .check_result
+            .expect("an evaluated document must carry its CheckResult");
+        assert!(
+            !check_result.constraint_results.is_empty(),
+            "the valid fixture declares constraints, so its outcomes must be present"
+        );
+        assert!(
+            !check_result
+                .constraint_results
+                .iter()
+                .any(|e| e.satisfaction == Satisfaction::Violated),
+            "the valid fixture must report no Violated constraint; got: {:#?}",
+            check_result.constraint_results
+        );
+    }
+
+    #[test]
+    fn check_result_is_none_when_parse_errors_stop_the_pipeline() {
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), "structure {", &test_uri());
+        assert!(
+            !result.diagnostics.is_empty(),
+            "anti-vacuity: the source must still fail to parse"
+        );
+        assert!(
+            result.check_result.is_none(),
+            "a document that never reached eval must carry no CheckResult"
+        );
+    }
+
+    #[test]
+    fn check_result_is_none_when_the_eval_guard_skips() {
+        assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        let result = compute_diagnostics_with_state(
+            &mut EvalState::new(),
+            DECLARED_ONLY_GENERIC_TYPEPARAM_SRC,
+            &test_uri(),
+        );
+        let skip_code = Some(lsp_types::NumberOrString::String(
+            "EvalSkippedUnrepresentableCell".to_string(),
+        ));
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == skip_code),
+            "anti-vacuity: the eval guard must still skip this fixture; got: {:#?}",
+            result.diagnostics
+        );
+        assert!(
+            result.check_result.is_none(),
+            "a document the eval guard skipped must carry no CheckResult"
+        );
     }
 
     // --- task-2176 step-5: stateful diagnostics resolve stdlib types ---
@@ -1838,321 +1814,187 @@ structure S {
         );
     }
 
-    // --- task-2176 step-3: stateless diagnostics resolve stdlib types ---
+    /// Cyclic let-bindings: `a` depends on `b` and `b` depends on `a`, which
+    /// only the engine detects (the compiler catches geometry-let cycles
+    /// only), so every report of it is an eval diagnostic.
+    const CIRCULAR_LET_SRC: &str = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
 
-    #[test]
-    fn compute_diagnostics_resolves_stdlib_material_and_rigid() {
-        // Drives the stateless compute_diagnostics() path.
-        // A known-good stdlib source must produce zero UNEXPECTED error-severity diagnostics.
-        //
-        // The `Rigid` trait (via `Physical`) injects `let centroid = centroid(geometry)` and
-        // similar geometry-consumer builtins into conforming structures.  Since task #4651
-        // (R1a), those cells correctly emit EvalUnresolved at Error severity on the kernel-less
-        // eval() surface — they require a realized geometry kernel that is not present here.
-        // Filter those out; any remaining Error-severity diagnostic is unexpected.
-        let diags = compute_diagnostics(STDLIB_PROBE_SRC, &test_uri());
-        let errors: Vec<_> = diags
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.code
-                        != Some(lsp_types::NumberOrString::String(
-                            "EvalUnresolved".to_string(),
-                        ))
-            })
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "stdlib source should compile without unexpected errors; got: {errors:?}"
-        );
-    }
-
-    // --- step-5: cold-start fallback regression lock ---
-
-    #[test]
-    fn structural_change_detects_violations_and_updates_content_hash() {
-        let uri = test_uri();
-
-        // (1) First call with valid source — no ERROR diagnostics
-        let mut state = EvalState::new();
-        let source_valid = reify_test_support::bracket_source();
-        let result1 = compute_diagnostics_with_state(&mut state, source_valid, &uri);
-        let errors1: Vec<_> = result1
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .collect();
-        assert!(
-            errors1.is_empty(),
-            "Phase 1: valid source should produce no errors, got: {errors1:?}"
-        );
-        let hash_after_valid = state.last_content_hash();
-
-        // (2) Second call with violating source (different content_hash) — at least one ERROR
-        let source_violating = reify_test_support::bracket_source_violating();
-        let result2 = compute_diagnostics_with_state(&mut state, &source_violating, &uri);
-        let errors2: Vec<_> = result2
+    /// The sorted messages of one result's circular let-binding ERRORs.
+    fn circular_let_errors(result: &DiagnosticsResult) -> Vec<String> {
+        let mut errors: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.to_lowercase().contains("constraint")
-                    && d.message.to_lowercase().contains("violated")
+                    && d.message.contains("circular let-binding dependency")
+                    && d.message.contains("in template S")
             })
+            .map(|d| d.message.clone())
             .collect();
-        assert!(
-            !errors2.is_empty(),
-            "Phase 2: violating source should produce at least one constraint violation ERROR"
-        );
-
-        // (3) The content hash in state must have changed — an LSP-layer invariant.
-        //     Whether cold-start or eval_cached was used internally is an engine-level
-        //     detail; diagnostic correctness (assertions 1 and 2) is the behavioral
-        //     contract. This assertion locks the state-management invariant that
-        //     last_content_hash() always reflects the most recently evaluated source.
-        assert_ne!(
-            hash_after_valid,
-            state.last_content_hash(),
-            "last_content_hash must update when source changes"
-        );
+        errors.sort();
+        errors
     }
 
-    // --- step-1 (task-2236): eval_diagnostics_surfaced_in_stateful_pipeline ---
-
-    /// Eval-time diagnostics (e.g. circular let-binding) must appear in the LSP result.
-    ///
-    /// `structure S { let a = b + 1; let b = a + 1 }` has a cyclic let-binding
-    /// dependency that is NOT detected at compile time (only geometry-let cycles
-    /// are caught in the compiler). The engine catches it inside
-    /// `evaluate_let_bindings` (engine_eval.rs:1529) and records it in
-    /// `EvalResult::diagnostics` as "circular let-binding dependency in template S: [a, b]".
     #[test]
     fn eval_diagnostics_surfaced_in_stateful_pipeline() {
-        let mut state = EvalState::new();
-        let uri = test_uri();
-        // Cyclic let-bindings: `a` depends on `b` and `b` depends on `a`.
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-        let circular_errors: Vec<_> = result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    // Matches the exact engine message: "circular let-binding dependency in template S: [a, b]"
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-            .collect();
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), CIRCULAR_LET_SRC, &test_uri());
         assert!(
-            !circular_errors.is_empty(),
+            !circular_let_errors(&result).is_empty(),
             "eval-time circular let-binding diagnostic must be surfaced as an LSP ERROR; \
-             got diagnostics: {:?}",
+             got diagnostics: {:#?}",
             result.diagnostics
         );
     }
 
-    /// Invariant: an uninitialized engine must take the cold-start eval() branch,
-    /// even when `last_content_hash` already matches the compiled module's hash.
+    /// A version the eval guard skips leaves the versions around it alone:
+    /// an evaluated document after a skip, before a skip, or after a skip of a
+    /// previously evaluated state still reports its own eval diagnostics and
+    /// constraint outcomes, and a repeated skip is still a skip.
     ///
-    /// This guards against a future decoupling of EvalState's `last_content_hash`
-    /// and engine-initialization state: if `last_content_hash` is set without
-    /// initializing the engine (e.g. by a new code path), `eval_cached()` would
-    /// silently return empty diagnostics — dropping eval-time errors. The
-    /// `content_unchanged` predicate must AND in `is_engine_initialized()` to
-    /// guarantee the cold-start branch runs whenever the engine is not ready.
+    /// Replaces the pin that snapshotted `EvalState`'s private hash, version
+    /// counter and initialized flag around one skipped call, with the
+    /// behaviour that snapshot stood in for, observed on `DiagnosticsResult`
+    /// only. Each skip fixture runs behind its own anti-vacuity guard.
     #[test]
-    fn cold_start_branch_taken_when_engine_uninitialized_with_matching_hash() {
-        let mut state = EvalState::new();
+    fn skipped_version_does_not_disturb_neighbouring_versions() {
         let uri = test_uri();
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+        let fixtures: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
 
-        // Pre-compile to obtain the content_hash for this exact source.
-        // Must use compile_like_production + ModulePath::single("test") to
-        // match what compute_diagnostics_with_state derives from
-        // "file:///test.ri" — compile_like_production is what production
-        // actually calls.
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        for (shape, skip_src, assert_fixture_is_newly_reachable) in fixtures {
+            assert_fixture_is_newly_reachable();
 
-        // Inject a matching hash while leaving the engine uninitialized.
-        // (private-field write from child mod — same pattern as the
-        //  state.version_counter assertion at line 330)
-        state.last_content_hash = Some(compiled.content_hash);
+            let assert_skipped = |step: &str, result: &DiagnosticsResult| {
+                assert!(
+                    result.check_result.is_none(),
+                    "({shape}, {step}): a skipped version must carry no CheckResult"
+                );
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.code == no_candidate_code),
+                    "({shape}, {step}): a skipped version must still report its \
+                     compile-stage AutoTypeParamNoCandidate error; got: {:#?}",
+                    result.diagnostics
+                );
+            };
+            let assert_evaluated = |step: &str, result: &DiagnosticsResult| {
+                let errors = circular_let_errors(result);
+                assert!(
+                    !errors.is_empty(),
+                    "({shape}, {step}): the evaluated version must report its \
+                     circular let-binding ERROR; got: {:#?}",
+                    result.diagnostics
+                );
+                assert!(
+                    result.check_result.is_some(),
+                    "({shape}, {step}): the evaluated version must carry its CheckResult"
+                );
+                errors
+            };
 
-        // Sanity: engine must not be initialized — this is the precondition
-        // for the bug we are guarding against.
-        assert!(
-            !state.is_engine_initialized(),
-            "engine must be uninitialized after EvalState::new() + hash injection"
-        );
+            let mut state = EvalState::new();
+            assert_skipped(
+                "skip on a fresh state",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+            assert_evaluated(
+                "eval after a skip",
+                &compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri),
+            );
 
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+            let mut state = EvalState::new();
+            let before = assert_evaluated(
+                "eval before a skip",
+                &compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri),
+            );
+            assert_skipped(
+                "skip after an eval",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+            let after = assert_evaluated(
+                "the same eval after the skip",
+                &compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri),
+            );
+            assert_eq!(
+                after, before,
+                "({shape}): the same content must report the same eval diagnostics \
+                 on either side of a skipped version"
+            );
 
-        // The cold-start eval() branch must run and surface the circular error.
-        // On buggy code (before the fix): content_unchanged=true → eval_cached()
-        // → empty diagnostics → this assertion fails.
-        let circular_errors: Vec<_> = result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-            .collect();
-        assert!(
-            !circular_errors.is_empty(),
-            "cold-start branch must be taken when engine is uninitialized, \
-             surfacing the circular let-binding diagnostic; \
-             got diagnostics: {:?}",
-            result.diagnostics
-        );
+            let mut state = EvalState::new();
+            assert_skipped(
+                "skip on a fresh state",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+            assert_skipped(
+                "the same skip again",
+                &compute_diagnostics_with_state(&mut state, skip_src, &uri),
+            );
+        }
     }
 
-    /// The pipeline REPORTS its server-log lines by RETURNING them, so it
-    /// stays a pure function of its inputs and one module (`server.rs`)
-    /// owns the transport (task #6329).
+    /// Eval-time diagnostics are reported on the first call on a fresh state
+    /// and again on an unchanged repeat: both calls report the circular
+    /// let-binding ERROR and a CheckResult, report the same set of those
+    /// ERRORs, and return no log line.
     ///
-    /// Reuses `cold_start_branch_taken_when_engine_uninitialized_with_matching_hash`'s
-    /// trigger exactly — inject `last_content_hash` while the engine is
-    /// still uninitialized — so the engine-init guard fires deterministically
-    /// from a state the suite already knows how to build, and so a future
-    /// change to the guard's precondition breaks both tests together rather
-    /// than silently making this one vacuous.
-    ///
-    /// `#[cfg(debug_assertions)]`-GATED, matching the guard itself. Tests
-    /// run in debug by default so it is live in the merge gate; under a
-    /// release-profile run the whole test disappears, and that absence is a
-    /// gate on the guard's own gating, not a silent hole.
-    #[cfg(debug_assertions)]
+    /// Replaces two pins that wrote a matching `last_content_hash` into a
+    /// fresh `EvalState` to force the engine-init guard's precondition (hash
+    /// matches, engine uninitialized), then asserted that the cold-start
+    /// branch ran and that the guard's warning came back in `log_messages`.
+    /// Recorded limitation: that precondition is not constructible through
+    /// the public API. It arises only from a panic inside eval after the
+    /// cold-start engine replacement, followed by the server's Mutex poison
+    /// recovery. So the guard's `&& is_engine_initialized()` conjunct and its
+    /// log line are pinned here on their reachable arms only: on every
+    /// publicly reachable call sequence the guard stays quiet.
     #[test]
-    fn engine_init_guard_warning_is_returned_not_written_to_stderr() {
-        let mut state = EvalState::new();
+    fn eval_diagnostics_reported_on_first_and_repeat_calls() {
         let uri = test_uri();
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
-
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-        state.last_content_hash = Some(compiled.content_hash);
-        assert!(
-            !state.is_engine_initialized(),
-            "engine must be uninitialized after EvalState::new() + hash injection"
-        );
-
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-
-        let guard_lines: Vec<_> = result
-            .log_messages
-            .iter()
-            .filter(|line| line.message.contains("engine-init guard"))
-            .collect();
-        assert_eq!(
-            guard_lines.len(),
-            1,
-            "expected the engine-init guard's warning to be RETURNED in \
-             DiagnosticsResult.log_messages for the caller to route, rather than written to \
-             stderr by the pipeline itself; got log_messages: {:?}",
-            result
-                .log_messages
-                .iter()
-                .map(|line| (line.typ, line.message.as_str()))
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            guard_lines[0].typ,
-            lsp_types::MessageType::WARNING,
-            "the engine-init guard reports a recoverable internal inconsistency (cold-start is \
-             forced, no diagnostics are lost), so WARNING — not ERROR"
-        );
-    }
-
-    /// Canary: `eval_cached()` currently returns empty diagnostics by construction
-    /// (engine_eval.rs:1183 — `let diagnostics = Vec::new()` is never appended to).
-    ///
-    /// This test asserts *current* behavior so it fails loudly the moment
-    /// `eval_cached` starts emitting diagnostics — that failure is the expected
-    /// signal to update the assertion (flip `is_empty()` → `!is_empty()`).
-    /// An `#[ignore]`'d future-state test would bitrot silently; a canary that
-    /// asserts today's behavior forces maintainer attention at the right time.
-    #[test]
-    fn eval_cached_path_surfaces_circular_let_binding_when_fixed() {
         let mut state = EvalState::new();
-        let uri = test_uri();
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+        let first = compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri);
+        let repeat = compute_diagnostics_with_state(&mut state, CIRCULAR_LET_SRC, &uri);
 
-        // First call: cold-start eval() — must surface the circular let-binding diagnostic.
-        let result1 = compute_diagnostics_with_state(&mut state, source, &uri);
-        let has_circular_on_cold_start = result1.diagnostics.iter().any(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR)
-                && d.message.contains("circular let-binding dependency")
-                && d.message.contains("in template S")
-        });
-        assert!(
-            has_circular_on_cold_start,
-            "cold-start call must surface circular let-binding diagnostic; got: {:?}",
-            result1.diagnostics
-        );
-
-        // Second call: same source → content_unchanged=true → eval_cached path.
-        // eval_cached() now emits cycle diagnostics (task 2259 fixed the immutable
-        // `let diagnostics = Vec::new()` and inserted per-template cycle detection).
-        let result2 = compute_diagnostics_with_state(&mut state, source, &uri);
-        let circular_on_cached_path: Vec<_> = result2
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::ERROR)
-                    && d.message.contains("circular let-binding dependency")
-                    && d.message.contains("in template S")
-            })
-            .collect();
-        assert!(
-            !circular_on_cached_path.is_empty(),
-            "eval_cached() must surface the circular let-binding diagnostic on cached path; \
-             got: {:?}",
-            result2.diagnostics,
-        );
-    }
-
-    // --- step-3: eval_cached path via basis_version ---
-
-    #[test]
-    fn incremental_path_uses_eval_cached_when_content_unchanged() {
-        use reify_eval::cache::NodeId;
-        use reify_core::ValueCellId;
-
-        let uri = test_uri();
-        let source = reify_test_support::bracket_source();
-
-        // (1) First call: cold-start
-        let mut state = EvalState::new();
-        compute_diagnostics_with_state(&mut state, source, &uri);
+        for (call, result) in [("first", &first), ("repeat", &repeat)] {
+            assert!(
+                !circular_let_errors(result).is_empty(),
+                "{call} call must report the circular let-binding ERROR; got: {:#?}",
+                result.diagnostics
+            );
+            assert!(
+                result.check_result.is_some(),
+                "{call} call evaluated the document, so it must carry its CheckResult"
+            );
+            assert!(
+                result.log_messages.is_empty(),
+                "{call} call must return no log line; got: {:?}",
+                result
+                    .log_messages
+                    .iter()
+                    .map(|line| (line.typ, line.message.as_str()))
+                    .collect::<Vec<_>>()
+            );
+        }
         assert_eq!(
-            state.version_counter, 1,
-            "version_counter should be 1 after first call"
-        );
-
-        // (2) Second call with identical source: should use eval_cached path
-        compute_diagnostics_with_state(&mut state, source, &uri);
-        assert_eq!(
-            state.version_counter, 2,
-            "version_counter should be 2 after second call"
-        );
-
-        // (3) Inspect cache: basis_version of Bracket.width should be > 0
-        //     eval_cached passes VersionId(state.version_counter) which is VersionId(2) at call time
-        //     (counter is incremented to 2 before eval_cached is called).
-        //     A cold-start would reset the engine to a fresh state with basis_version=0.
-        let node = NodeId::Value(ValueCellId::new("Bracket", "width"));
-        let entry = state
-            .engine
-            .cache_store()
-            .get(&node)
-            .expect("Bracket.width cache entry must exist after eval");
-        assert!(
-            entry.basis_version.0 > 0,
-            "eval_cached path should bump basis_version > 0; cold-start path would reset to 0, got {}",
-            entry.basis_version.0
+            circular_let_errors(&repeat),
+            circular_let_errors(&first),
+            "an unchanged repeat must report the same eval diagnostics as the first call"
         );
     }
 
@@ -2318,12 +2160,11 @@ structure S {
     fn eval_diagnostics_never_use_constraint_violation_format() {
         // Use circular-let-binding source: a known eval-time diagnostic emitter
         // (the unfold.rs / engine_eval.rs circular let-binding paths).
-        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let parsed = reify_syntax::parse(CIRCULAR_LET_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let result = engine.eval(&compiled);
 
         // Sanity: eval must emit at least one diagnostic for the circular let-binding
@@ -2380,7 +2221,7 @@ structure S {
         let source = "structure S { param width: Length = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let _ = engine.eval(&compiled);
         engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
         engine.eval(&compiled).diagnostics
@@ -2398,7 +2239,7 @@ structure S {
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
         let counter = solver.counter_handle();
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(solver));
         let diagnostics = engine.eval(&compiled).diagnostics;
         (counter, diagnostics)
@@ -2506,7 +2347,7 @@ structure S {
         let source = "structure S { sub x = Unknown() }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let diags = engine.eval(&compiled).diagnostics;
 
         assert!(
@@ -2591,28 +2432,28 @@ structure S {
 
     // --- task #2337 step-17: freshness diagnostic tests ---
 
-    /// Helper: build an EvalState whose engine has been pre-evaluated with
-    /// bracket_source and a forced panic on `cell_id`.  The engine has gone
-    /// through two full `eval()` passes:
+    /// Helper: compile `source` the way production does and evaluate it on a
+    /// trampoline-free engine twice:
     ///   1. Cold eval (all cells → Final).
-    ///   2. Hot eval with forced panic on `cell_id` (cell → Failed; cells
-    ///      that depend on it → Pending via §9.2 propagation).
+    ///   2. Eval with a forced panic on `cell_id` (cell → Failed; cells that
+    ///      depend on it → Pending via §9.2 propagation).
     ///
-    /// The returned EvalState has `last_content_hash` and `version_counter`
-    /// pre-set so that the NEXT call to `compute_diagnostics_with_state` with
-    /// the same bracket_source takes the **eval_cached** path (not cold-start).
-    /// This avoids the cold-start branch recreating the engine (which would
-    /// discard the freshness state we just set up).
+    /// A Failed or Pending cell is unreachable through the public pipeline
+    /// (`EvalState::new` registers no trampoline that could fail), so the
+    /// freshness tests drive [`freshness_diagnostics`] on this engine
+    /// directly.
     ///
     /// `test-instrumentation` feature is enabled in dev-deps (Cargo.toml line 29).
     #[cfg(any(test, feature = "test-support"))]
-    fn build_eval_state_with_failed_cell(cell_id: ValueCellId) -> EvalState {
-        let source = reify_test_support::bracket_source();
+    fn build_engine_with_failed_cell(
+        source: &str,
+        cell_id: ValueCellId,
+    ) -> (reify_eval::Engine, reify_compiler::CompiledModule) {
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
         // Pass 1: cold eval — initialises the cache (all cells → Final).
         let _ = engine.eval(&compiled);
@@ -2622,35 +2463,23 @@ structure S {
         let _ = engine.eval(&compiled);
         // After pass 2: `cell_id` is Failed; its dependents are Pending.
 
-        // Package into EvalState with matching hash so next call uses eval_cached.
-        let mut state = EvalState::new();
-        state.engine = engine;
-        state.last_content_hash = Some(compiled.content_hash);
-        state.version_counter = 2;
-        state
+        (engine, compiled)
     }
 
-    /// (a) `compute_diagnostics_with_state` must emit exactly one ERROR diagnostic
-    /// with `code == "computation-failed"` for a cell whose freshness is Failed
+    /// (a) [`freshness_diagnostics`] must emit an ERROR diagnostic with
+    /// `code == "computation-failed"` for a cell whose freshness is Failed
     /// (forced-panic via test-instrumentation).
-    ///
-    /// This test is intentionally RED before step-18 adds the freshness-diagnostic
-    /// emission block to `compute_diagnostics_with_state`.
     #[cfg(any(test, feature = "test-support"))]
     #[test]
-    fn compute_diagnostics_with_state_emits_failed_diagnostic_for_failed_cell() {
+    fn freshness_diagnostics_emits_failed_diagnostic_for_failed_cell() {
         // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
         let volume_id = ValueCellId::new("Bracket", "volume");
-        let mut state = build_eval_state_with_failed_cell(volume_id.clone());
-
-        let uri = test_uri();
         let source = reify_test_support::bracket_source();
+        let (engine, compiled) = build_engine_with_failed_cell(source, volume_id.clone());
 
-        // eval_cached path: content unchanged, engine initialized.
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
 
-        let failed_diags: Vec<_> = result
-            .diagnostics
+        let failed_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.code
@@ -2664,15 +2493,13 @@ structure S {
             !failed_diags.is_empty(),
             "expected at least one 'computation-failed' ERROR diagnostic (got 0); \
              all diagnostics: {:#?}",
-            result.diagnostics
+            diagnostics
         );
 
-        // Pin that Bracket.volume's source span is among the failed diagnostics.
-        // Re-compile with the same pipeline to get the canonical cell span.  This
-        // avoids a hardcoded line number (which would drift if bracket_source changes)
-        // and is resilient to stdlib templates adding extra let cells in the future.
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        // Pin that Bracket.volume's source span is among the failed diagnostics,
+        // read off the compiled module rather than hardcoded (a line number
+        // would drift if bracket_source changes, and stdlib templates may add
+        // extra let cells in the future).
         let volume_span = compiled
             .templates
             .iter()
@@ -2700,7 +2527,7 @@ structure S {
         );
     }
 
-    /// (b) `compute_diagnostics_with_state` must emit at least one WARNING diagnostic
+    /// (b) [`freshness_diagnostics`] must emit at least one WARNING diagnostic
     /// with `code == "computation-pending"` for a cell that is Pending because its
     /// upstream dependency failed (Failed leaf → Pending consumer, arch §9.2).
     ///
@@ -2714,38 +2541,16 @@ structure S {
     /// a param and would not be affected by `set_panic_on_eval`).
     #[cfg(any(test, feature = "test-support"))]
     #[test]
-    fn compute_diagnostics_with_state_emits_pending_diagnostic_for_pending_cell() {
+    fn freshness_diagnostics_emits_pending_diagnostic_for_pending_cell() {
         // Source with a let-chain: S.derived depends on S.base.
         // Forcing S.base (a let) to fail makes S.derived Pending (arch §9.2).
-        // Module name "test" matches what compute_diagnostics_with_state derives
-        // from "file:///test.ri" (strip ".ri" suffix).
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
+        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
 
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
 
-        let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-
-        // Pass 1: cold eval — initialises cache (all cells → Final).
-        let _ = engine.eval(&compiled);
-
-        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
-        engine.set_panic_on_eval(base_id);
-        let _ = engine.eval(&compiled);
-
-        // Package into EvalState with matching hash so next call uses eval_cached.
-        let mut state = EvalState::new();
-        state.engine = engine;
-        state.last_content_hash = Some(compiled.content_hash);
-        state.version_counter = 2;
-
-        let uri = test_uri();
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-
-        let pending_diags: Vec<_> = result
-            .diagnostics
+        let pending_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.code
@@ -2760,7 +2565,7 @@ structure S {
             "expected at least one 'computation-pending' WARNING diagnostic \
              (S.derived is Pending because S.base failed), \
              got zero; all diagnostics: {:#?}",
-            result.diagnostics
+            diagnostics
         );
         for d in &pending_diags {
             assert_eq!(
@@ -2786,40 +2591,17 @@ structure S {
     ///   (iii) its `message` contains the parenthesized suffix
     ///         `"(because S.base failed)"` — pinning the exact user-visible
     ///         wording the enrichment introduces.
-    ///
-    /// Step-3 test: will fail with today's static message until step-4 enriches
-    /// the Pending arm to call `Engine::pending_cause`.
     #[cfg(any(test, feature = "test-support"))]
     #[test]
     fn pending_diagnostic_message_includes_upstream_cell_name() {
         // Same let-chain source and setup as the sibling pending-diagnostic test.
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
+        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
 
-        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
 
-        let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-
-        // Pass 1: cold eval — initialises cache (all cells → Final).
-        let _ = engine.eval(&compiled);
-
-        // Pass 2: force S.base to fail; S.derived becomes Pending (arch §9.2).
-        engine.set_panic_on_eval(base_id);
-        let _ = engine.eval(&compiled);
-
-        // Package into EvalState with matching hash so next call uses eval_cached.
-        let mut state = EvalState::new();
-        state.engine = engine;
-        state.last_content_hash = Some(compiled.content_hash);
-        state.version_counter = 2;
-
-        let uri = test_uri();
-        let result = compute_diagnostics_with_state(&mut state, source, &uri);
-
-        let pending_diags: Vec<_> = result
-            .diagnostics
+        let pending_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
                 d.code
@@ -2835,7 +2617,7 @@ structure S {
             "expected at least one 'computation-pending' diagnostic \
              (S.derived is Pending because S.base failed); \
              got zero; all diagnostics: {:#?}",
-            result.diagnostics
+            diagnostics
         );
 
         for d in &pending_diags {
@@ -2898,8 +2680,8 @@ structure S {
     // Each test builds a ParsedModule with a specialization scope
     // (`MemberDecl::Sub { body: Some(_) }`), drives it through
     // `reify_compiler::compile_with_stdlib`, converts every compiler diagnostic
-    // through `convert::convert_diagnostic` (mirroring the post-parse half of
-    // `compute_diagnostics`), then filters to
+    // through `convert::convert_diagnostic` (mirroring the compile stage of
+    // `compute_diagnostics_with_state`), then filters to
     // `code == "SpecializationForbiddenDecl"` before asserting.
     //
     // AST-builder helpers are imported from
@@ -3200,118 +2982,46 @@ structure S {
         );
     }
 
-    /// Every compute target registered by
-    /// `reify_eval::compute_targets::register_compute_fns` — that function's
-    /// own doc comment calls it "the single place that registers the full
-    /// production set of compute trampolines". Exhaustive, not a sample:
-    /// used below to probe that the LSP's engine ([`EvalState::new`], which
-    /// never calls `register_compute_fns`) carries none of them registered.
-    /// If `register_compute_fns` gains or loses a target, update this list
-    /// to match — a stale list would silently narrow the probe back to a
-    /// sample.
-    ///
-    /// That instruction is HALF-ENFORCED, deliberately so. A rename or a
-    /// removal upstream is caught immediately by
-    /// [`assert_all_production_compute_targets_are_registrable`], the positive
-    /// counter-probe: without it every `compute_dispatch(target).is_none()`
-    /// assertion on a stale name passes trivially and the whole posture lock
-    /// goes vacuous without going red. An ADDITION upstream is NOT caught —
-    /// closing that half needs a public enumerator over `Engine`'s
-    /// `compute_registry.fns` in reify-eval (so the const can be asserted
-    /// set-equal to the registry), which is outside this leaf's
-    /// "Modules: `reify-lsp`" scope.
-    const ALL_PRODUCTION_COMPUTE_TARGETS: &[&str] = &[
-        "solver::elastic_static",
-        "solver::buckling",
-        "solver::form_find",
-        "solver::form_find_free",
-        "solver::tensegrity_load",
-        "solver::membrane_load",
-        "solver::multi_case",
-        "solver::buckling_multi_case",
-        "fdm::as_printed_material_r_fast",
-        "fdm::as_printed_material_r0",
-        "fdm::slice",
-        "modal::free_vibration",
-        "modal::transient_response",
-        "modal::displacement_at",
-        "modal::mechanism_modal",
-        "dynamics::inverse_dynamics",
-        "trajectory::simulate",
-        "trajectory::input_shape",
-    ];
-
-    /// Positive counter-probe for [`ALL_PRODUCTION_COMPUTE_TARGETS`]: every
-    /// name in the const must actually be registered by
-    /// `reify_eval::compute_targets::register_compute_fns`.
-    ///
-    /// The const is a hand-maintained mirror of that function, and the posture
-    /// lock that consumes it only ever asserts `compute_dispatch(t).is_none()`.
-    /// Those assertions pass TRIVIALLY on a name that no longer exists, so an
-    /// upstream rename or removal would hollow the lock out silently — it
-    /// would keep proving that an engine carries no trampoline for eighteen
-    /// strings, none of which name a real compute target any more. Asserting
-    /// the same names ARE dispatchable on a throwaway registered engine makes
-    /// exactly that drift red, at the cost of one extra `Engine`.
-    ///
-    /// Does NOT catch an upstream ADDITION — see the const's own doc for why
-    /// that half is out of this leaf's scope.
-    fn assert_all_production_compute_targets_are_registrable() {
-        let mut registered_probe = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-        reify_eval::compute_targets::register_compute_fns(&mut registered_probe);
-        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
-            assert!(
-                registered_probe.compute_dispatch(target).is_some(),
-                "ALL_PRODUCTION_COMPUTE_TARGETS is STALE: '{target}' is not \
-                 registered by reify_eval::compute_targets::register_compute_fns \
-                 any more. Every `compute_dispatch('{target}').is_none()` \
-                 assertion in the trampoline-free posture lock is therefore \
-                 passing trivially. Re-sync this const with \
-                 `register_compute_fns`."
-            );
-        }
-    }
-
     /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1) for
     /// the trampoline-free posture — see [`compute_diagnostics_with_state`]'s
     /// doc comment for the authoritative posture writeup; this test is its
     /// executable contract. Over the FEA-bearing [`FEA_BEARING_SRC`] fixture,
-    /// on both LSP entry points, locks that the resulting `Indeterminate`
-    /// FEA constraint produces neither a false violation nor a false pass
-    /// (see [`assert_no_false_violation_or_pass`]) — the LSP-side analog of
-    /// the CLI's `check_fea_violated_constraint_is_not_gated`
-    /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before and after:
-    /// this locks pre-existing gate behaviour, not new runtime behaviour.
+    /// locks that the resulting `Indeterminate` FEA constraint produces
+    /// neither a false violation nor a false pass (see
+    /// [`assert_no_false_violation_or_pass`]) — the LSP-side analog of the
+    /// CLI's `check_fea_violated_constraint_is_not_gated`
+    /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before
+    /// and after: this locks pre-existing gate behaviour, not new runtime
+    /// behaviour.
+    ///
+    /// The posture itself is read off the pipeline's own result. The engine
+    /// reports a missing compute trampoline
+    /// (`DiagnosticCode::NoRegisteredComputeTrampoline`) at Warning if and
+    /// only if its compute registry is entirely empty, and at Error otherwise
+    /// (`reify_eval::Engine::soft_no_trampoline_diagnostic`; the rule is
+    /// pinned upstream by the Warning/Error pair in
+    /// `crates/reify-eval/tests/compute_dispatch_registry.rs`). So at least
+    /// one such diagnostic, every one at Warning, proves that the engine the
+    /// pipeline actually used can dispatch no compute target at all: every
+    /// target the production bundle registers today, and any it adds later.
     ///
     /// **Also the BT8 REVERSE lock** (task #6798, PRD
     /// `driver-contract-implementation.md` leaf pi / §5 BT8 / §12 matrix
-    /// ruling 2): the compute-trampoline probe below enumerates
-    /// [`ALL_PRODUCTION_COMPUTE_TARGETS`] — every target
-    /// `register_compute_fns` registers, not a sample — so it doubles as
-    /// the lock that injecting the real `SimpleConstraintChecker` at
-    /// compile time (this leaf's change) does not disturb the
-    /// Leo-ratified trampoline-free posture. Matrix ruling 2 retires the
-    /// CLI-side FEA lock but explicitly KEEPS this LSP-side subtraction.
-    /// `FEA_BEARING_SRC` has no `auto:` type parameter, so the injected
-    /// compile-time checker is never even consulted on it — the checker
-    /// swap is a no-op here by construction (see
+    /// ruling 2): because that registry-empty observation covers every
+    /// target, it doubles as the lock that injecting the real
+    /// `SimpleConstraintChecker` at compile time (that leaf's change) does
+    /// not disturb the Leo-ratified trampoline-free posture. Matrix ruling 2
+    /// retires the CLI-side FEA lock but explicitly KEEPS this LSP-side
+    /// subtraction. `FEA_BEARING_SRC` has no `auto:` type parameter, so the
+    /// injected compile-time checker is never even consulted on it — the
+    /// checker swap is a no-op here by construction (see
     /// [`compute_diagnostics_with_state`]'s "## Compile-time checker" doc
-    /// section), which is exactly why this stays a posture lock rather
-    /// than a BT8-forward-style divergence test, and why it is GREEN
-    /// before and after task #6798's impl steps: the compile-time checker
-    /// change never touches the eval-time Engine built by
-    /// [`EvalState::new`].
+    /// section), which is exactly why this stays a posture lock rather than
+    /// a BT8-forward-style divergence test: the compile-time checker change
+    /// never touches the eval-time Engine built by [`EvalState::new`].
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
-        // Anti-vacuity for the probe's own vocabulary: the negative
-        // `is_none()` assertions below are only meaningful if every name in
-        // ALL_PRODUCTION_COMPUTE_TARGETS still names a real, registrable
-        // compute target.
-        assert_all_production_compute_targets_are_registrable();
-
-        let uri = test_uri();
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = compile_like_production(&parsed);
 
         // Guard: the fixture must compile with zero errors, so the
@@ -3329,72 +3039,48 @@ structure S {
             "FEA_BEARING_SRC must compile without errors; got: {compile_errors:#?}"
         );
 
-        // --- Stateless surface: compute_diagnostics ---
-        //
-        // No persistent engine survives the call, so we probe an
-        // independently constructed Engine sharing its exact, documented
-        // posture (Engine::new(SimpleConstraintChecker, None), no
-        // trampoline registration) rather than compute_diagnostics's own
-        // internal engine — a redundant belt-and-suspenders check, not the
-        // authoritative lock (see `assert_no_false_violation_or_pass`'s doc
-        // comment for the full rationale; the stateful surface below is
-        // authoritative).
-        let stateless_diags = compute_diagnostics(FEA_BEARING_SRC, &uri);
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), FEA_BEARING_SRC, &test_uri());
 
-        let checker = SimpleConstraintChecker;
-        let mut stateless_probe = reify_eval::Engine::new(Box::new(checker), None);
-        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
-            assert!(
-                stateless_probe.compute_dispatch(target).is_none(),
-                "sanity: Engine::new(SimpleConstraintChecker, None) — the \
-                 exact construction compute_diagnostics uses internally — \
-                 must carry no pre-registered '{target}' compute trampoline"
-            );
-        }
-        let stateless_check_result = stateless_probe.check(&compiled);
-        assert_no_false_violation_or_pass(
-            &stateless_diags,
-            &stateless_check_result,
-            "compute_diagnostics",
+        let no_trampoline_code = Some(lsp_types::NumberOrString::String(
+            "NoRegisteredComputeTrampoline".to_string(),
+        ));
+        let no_trampoline: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == no_trampoline_code)
+            .collect();
+        assert!(
+            !no_trampoline.is_empty(),
+            "the FEA-bearing fixture calls an @optimized solver, so the engine \
+             must report that no compute trampoline is registered for it; got \
+             diagnostics: {:#?}",
+            result.diagnostics
+        );
+        assert!(
+            no_trampoline
+                .iter()
+                .all(|d| d.severity == Some(DiagnosticSeverity::WARNING)),
+            "every missing-trampoline diagnostic must be a WARNING: the engine \
+             picks Warning only when its compute registry is empty, so an \
+             ERROR means the engine the pipeline used has a compute \
+             trampoline registered, breaking the trampoline-free posture (and, \
+             since task #6798, the compile-time checker injection must not \
+             disturb it); got: {no_trampoline:#?}"
         );
 
-        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
-        //
-        // Unlike the stateless surface, EvalState carries the actual
-        // persistent Engine the production call used — read its posture and
-        // constraint satisfactions directly off `state.engine` (a private
-        // field; child-module test access to it is already established
-        // elsewhere in this file, e.g. `build_eval_state_with_failed_cell`)
-        // rather than a hand-rebuilt one.
-        let mut state = EvalState::new();
-        let stateful_result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
-            assert!(
-                state.engine.compute_dispatch(target).is_none(),
-                "the actual persistent Engine used by \
-                 compute_diagnostics_with_state must carry no registered \
-                 '{target}' compute trampoline — this is the \
-                 trampoline-free posture documented on that function, and \
-                 (task #6798) the compile-time checker injection must not \
-                 disturb it"
-            );
-        }
-        let stateful_check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content \
-             hash immediately after compute_diagnostics_with_state evaluated it",
-        );
-        assert_no_false_violation_or_pass(
-            &stateful_result.diagnostics,
-            &stateful_check_result,
-            "compute_diagnostics_with_state",
-        );
+        let check_result = result
+            .check_result
+            .as_ref()
+            .expect("the pipeline evaluated FEA_BEARING_SRC, so it must carry its CheckResult");
+        assert_no_false_violation_or_pass(&result.diagnostics, check_result);
     }
 
     /// Shared assertion for
     /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`]
-    /// (see that test's doc for the full rationale). Given one LSP entry
-    /// point's diagnostics and the `CheckResult` for the same content,
-    /// assert: (a) no diagnostic message equals the exact text
+    /// (see that test's doc for the full rationale). Given the pipeline's
+    /// diagnostics and its `CheckResult` for the same content, assert: (a)
+    /// no diagnostic message equals the exact text
     /// [`constraint_violated_message`] would produce for any constraint (no
     /// false violation, matched via the same formatter production uses, not
     /// a drift-prone substring); (b) zero `Violated` and zero `Satisfied`
@@ -3403,18 +3089,9 @@ structure S {
     /// The three counts are tallied via an exhaustive `match` (no wildcard
     /// arm) on `Satisfaction`, so this fn fails to *compile* — rather than
     /// silently passing — the moment `Satisfaction` grows a fourth variant.
-    ///
-    /// Belt-and-suspenders note (applies to both call sites below): the
-    /// stateless (`compute_diagnostics`) call site passes a `check_result`
-    /// from an independently constructed probe engine, not the exact
-    /// internal engine `compute_diagnostics` builds and drops — a redundant
-    /// check, not the authoritative lock. The stateful
-    /// (`compute_diagnostics_with_state`) call site, which reads
-    /// `state.engine` directly, is the authoritative lock for this contract.
     fn assert_no_false_violation_or_pass(
         diagnostics: &[lsp_types::Diagnostic],
         check_result: &reify_eval::CheckResult,
-        surface: &str,
     ) {
         let would_be_violated_msgs: Vec<String> = check_result
             .constraint_results
@@ -3427,8 +3104,8 @@ structure S {
             .collect();
         assert!(
             false_violations.is_empty(),
-            "{surface} must not report a false violation for an Indeterminate \
-             FEA constraint; got: {false_violations:#?}"
+            "the pipeline must not report a false violation for an \
+             Indeterminate FEA constraint; got: {false_violations:#?}"
         );
 
         // Exhaustive `match` (no wildcard arm) — see this fn's doc comment
@@ -3445,24 +3122,24 @@ structure S {
 
         assert_eq!(
             violated_count, 0,
-            "{surface}: FEA-only fixture must have zero Violated constraints; \
-             got constraint_results: {:#?}",
+            "FEA-only fixture must have zero Violated constraints; got \
+             constraint_results: {:#?}",
             check_result.constraint_results
         );
         assert_eq!(
             satisfied_count, 0,
-            "{surface}: every FEA-result constraint must be Indeterminate \
-             under the trampoline-free posture, never Satisfied — otherwise \
-             a per-constraint false pass on a subset of the fixture's \
+            "every FEA-result constraint must be Indeterminate under the \
+             trampoline-free posture, never Satisfied — otherwise a \
+             per-constraint false pass on a subset of the fixture's \
              constraints would slip through; got constraint_results: {:#?}",
             check_result.constraint_results
         );
         assert!(
             indeterminate_count >= 1,
-            "{surface}: expected >= 1 Indeterminate constraint (FEA-result \
-             constraint under the trampoline-free posture); got 0 — the \
-             constraint may be silently Satisfied (false pass) or missing \
-             entirely. constraint_results: {:#?}",
+            "expected >= 1 Indeterminate constraint (FEA-result constraint \
+             under the trampoline-free posture); got 0 — the constraint may be \
+             silently Satisfied (false pass) or missing entirely. \
+             constraint_results: {:#?}",
             check_result.constraint_results
         );
     }
@@ -3491,13 +3168,8 @@ structure S {
     /// `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`.
     #[test]
     fn fea_indeterminate_constraint_emits_info_hint() {
-        let uri = test_uri();
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+        let result =
+            compute_diagnostics_with_state(&mut EvalState::new(), FEA_BEARING_SRC, &test_uri());
 
         let hints: Vec<_> = result
             .diagnostics
@@ -3529,14 +3201,12 @@ structure S {
         }
 
         // Compute the expected count dynamically (not a hardcoded magic
-        // number): read the persistent engine's snapshot for the content it
-        // just evaluated and count Indeterminate constraints (mirrors the
-        // stateful surface in
-        // `fea_bearing_constraint_produces_no_false_violation_or_false_pass`).
-        let check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
-             immediately after compute_diagnostics_with_state evaluated it",
-        );
+        // number): count the Indeterminate constraints in the CheckResult the
+        // pipeline returned for this content.
+        let check_result = result
+            .check_result
+            .as_ref()
+            .expect("the pipeline evaluated FEA_BEARING_SRC, so it must carry its CheckResult");
         let indeterminate_count = check_result
             .constraint_results
             .iter()
@@ -3642,8 +3312,7 @@ structure S {
             "fixture sanity: SRC must compile without errors; got: {compile_errors:#?}"
         );
 
-        let mut state = EvalState::new();
-        let result = compute_diagnostics_with_state(&mut state, SRC, &uri);
+        let result = compute_diagnostics_with_state(&mut EvalState::new(), SRC, &uri);
 
         let hints: Vec<_> = result
             .diagnostics
@@ -3662,10 +3331,10 @@ structure S {
         // below on `hints.len() == 1` is a genuine discrimination check,
         // not a vacuous pass because only one constraint was Indeterminate
         // to begin with.
-        let check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for SRC's content hash \
-             immediately after compute_diagnostics_with_state evaluated it",
-        );
+        let check_result = result
+            .check_result
+            .as_ref()
+            .expect("the pipeline evaluated SRC, so it must carry its CheckResult");
         let indeterminate_count = check_result
             .constraint_results
             .iter()
@@ -3712,8 +3381,8 @@ structure S {
     /// Amendment regression lock (task 5078, PRD `compute-fea-hardening.md`
     /// C2): the FEA "not evaluated in editor" Info hint must not double up
     /// with a freshness diagnostic (`computation-pending` /
-    /// `computation-failed`, arch §7.1/§9.2, emitted by the loop just below
-    /// this hint's emission block) for the same underlying unevaluated FEA
+    /// `computation-failed`, arch §7.1/§9.2, emitted by
+    /// [`freshness_diagnostics`]) for the same underlying unevaluated FEA
     /// value cell over the [`FEA_BEARING_SRC`] fixture.
     ///
     /// Under the trampoline-free posture, an unregistered `@optimized`
@@ -3772,11 +3441,11 @@ structure S {
     /// C2): pins the *other* half of
     /// `constraint_depends_on_unregistered_optimized_compute`'s
     /// discriminator — `engine.compute_dispatch(t).is_none()` — that every
-    /// other FEA-hint test leaves unexercised. Every other test builds its
-    /// `EvalState` via `EvalState::new()`, which never registers a compute
+    /// other FEA-hint test leaves unexercised. Every other test runs the
+    /// pipeline on `EvalState::new()`, which never registers a compute
     /// trampoline, so `compute_dispatch` returns `None` for every target in
     /// every other test; the "registered target ⇒ not FEA-dependent ⇒ no
-    /// hint" branch of the discriminator has never actually run.
+    /// hint" branch of the discriminator never runs there.
     ///
     /// Registers a trampoline for `"solver::elastic_static"` that itself
     /// completes with `Value::Undef` — deliberately mirroring the *value*
@@ -3785,20 +3454,12 @@ structure S {
     /// sanity check below confirms this) and the emission loop actually
     /// reaches the discriminator instead of short-circuiting earlier on
     /// `entry.satisfaction != Indeterminate`. Only the *registration status*
-    /// differs from the unregistered-path tests above — isolating the
-    /// `compute_dispatch(..).is_none()` check as the thing this test can
-    /// catch a regression in.
+    /// differs from the positive control taken on the same engine before
+    /// registering — isolating the `compute_dispatch(..).is_none()` check as
+    /// the thing this test can catch a regression in.
     ///
-    /// Registration happens *after* a priming first call, not before: a
-    /// freshly-constructed `EvalState` is not yet "initialized"
-    /// ([`EvalState::is_engine_initialized`]), so `compute_diagnostics_with_state`'s
-    /// cold-start branch would replace `state.engine` wholesale with a fresh
-    /// `Engine::new(..)` — silently discarding a trampoline registered
-    /// beforehand. Mirrors the priming pattern in
-    /// `incremental_path_uses_eval_cached_when_content_unchanged` (above):
-    /// call once to initialize the engine, register, then call again with
-    /// unchanged content so the `eval_cached` path is taken and `state.engine`
-    /// is reused rather than replaced.
+    /// Drives [`fea_not_evaluated_hints`] on a hand-built engine: no
+    /// registered trampoline is reachable through the public pipeline.
     #[test]
     fn fea_hint_does_not_fire_when_compute_target_is_registered() {
         fn undef_result_fn(
@@ -3817,39 +3478,41 @@ structure S {
             }
         }
 
-        let uri = test_uri();
-        let mut state = EvalState::new();
+        let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let compiled = compile_like_production(&parsed);
+        let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
+            Box::new(SimpleConstraintChecker),
+            None,
+        );
+        let _ = engine.eval(&compiled);
 
-        // Priming call: cold-starts and initializes `state.engine` (no
-        // trampoline registered yet, so this behaves like the ordinary
-        // unregistered/body-inline path — its result is discarded).
-        let _ = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+        // Positive control: the same engine and module, target still
+        // unregistered, DO produce hints — so the empty result below is the
+        // registration's doing, not a fixture that never hints.
+        let unregistered_check_result = engine
+            .check_snapshot(&compiled)
+            .expect("the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval");
+        assert!(
+            !fea_not_evaluated_hints(
+                &engine,
+                &compiled,
+                &unregistered_check_result,
+                FEA_BEARING_SRC
+            )
+            .is_empty(),
+            "positive control: with solver::elastic_static unregistered, the \
+             FEA-bearing fixture must produce at least one hint"
+        );
 
-        // Register on the now-initialized, surviving engine instance.
-        state.engine.register_compute_fn(
+        engine.register_compute_fn(
             "solver::elastic_static",
             undef_result_fn as reify_eval::ComputeFn,
         );
-        assert!(
-            state
-                .engine
-                .compute_dispatch("solver::elastic_static")
-                .is_some(),
-            "test setup sanity: solver::elastic_static must be registered \
-             before the second compute_diagnostics_with_state call"
-        );
+        let _ = engine.eval_cached(&compiled, VersionId(2));
 
-        // Second call, same content: takes the `eval_cached` path (content
-        // unchanged + engine now initialized), which does NOT replace
-        // `state.engine` — the registered trampoline survives into it.
-        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-
-        let parsed =
-            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
-        let check_result = state.engine.check_snapshot(&compiled).expect(
-            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
-             immediately after compute_diagnostics_with_state evaluated it",
+        let check_result = engine.check_snapshot(&compiled).expect(
+            "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval_cached",
         );
         let indeterminate_count = check_result
             .constraint_results
@@ -3868,17 +3531,7 @@ structure S {
             check_result.constraint_results
         );
 
-        let hints: Vec<_> = result
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.code
-                        == Some(lsp_types::NumberOrString::String(
-                            FEA_NOT_EVALUATED_CODE.to_string(),
-                        ))
-            })
-            .collect();
+        let hints = fea_not_evaluated_hints(&engine, &compiled, &check_result, FEA_BEARING_SRC);
         assert!(
             hints.is_empty(),
             "no FEA \"not evaluated in editor\" hint should fire once \
@@ -3898,7 +3551,7 @@ structure S {
     /// This is the scenario most sensitive to a regression in the upstream
     /// "at most one `constraint_results` entry per constraint id" invariant
     /// that the emission loop's dedup-elision rationale (in
-    /// `compute_diagnostics_with_state`, above) relies on instead of an
+    /// [`fea_not_evaluated_hints`], above) relies on instead of an
     /// explicit `(id, label)` guard: a regression there could plausibly
     /// collapse two constraints' entries into one, or misattribute one
     /// hint's span — `fea_indeterminate_constraint_emits_info_hint`'s

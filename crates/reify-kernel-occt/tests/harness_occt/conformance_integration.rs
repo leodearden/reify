@@ -52,9 +52,9 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.010),
-            depth: Value::Real(0.010),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.010),
+            size_z: Value::Real(0.010),
         })
         .expect("Box creation should succeed");
     (kernel, box_h.id)
@@ -597,16 +597,16 @@ fn disconnected_compound_is_not_connected() {
     let mut kernel = OcctKernel::new();
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.010),
-            depth: Value::Real(0.010),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.010),
+            size_z: Value::Real(0.010),
         })
         .expect("Box A creation should succeed");
     let box_b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.010),
-            depth: Value::Real(0.010),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.010),
+            size_z: Value::Real(0.010),
         })
         .expect("Box B creation should succeed");
 
@@ -653,16 +653,16 @@ fn nested_disjoint_compound_is_not_connected() {
     let mut kernel = OcctKernel::new();
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.010),
-            depth: Value::Real(0.010),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.010),
+            size_z: Value::Real(0.010),
         })
         .expect("Box A creation should succeed");
     let box_b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.010),
-            depth: Value::Real(0.010),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.010),
+            size_z: Value::Real(0.010),
         })
         .expect("Box B creation should succeed");
 

@@ -34,9 +34,9 @@ fn build_noncube_box() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_LX_M),
-            height: Value::Real(BOX_LY_M),
-            depth: Value::Real(BOX_LZ_M),
+            size_x: Value::Real(BOX_LX_M),
+            size_y: Value::Real(BOX_LY_M),
+            size_z: Value::Real(BOX_LZ_M),
         })
         .expect("30×20×10 mm box should build");
     (kernel, box_h.id)
@@ -190,9 +190,9 @@ fn shell_solid_faces_foreign_face_returns_error() {
     // Build a second box in the SAME kernel; extract one of its faces.
     let box2_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(5.0e-3),
-            height: Value::Real(5.0e-3),
-            depth: Value::Real(5.0e-3),
+            size_x: Value::Real(5.0e-3),
+            size_y: Value::Real(5.0e-3),
+            size_z: Value::Real(5.0e-3),
         })
         .expect("second 5×5×5 mm box should build");
     let box2_faces = kernel

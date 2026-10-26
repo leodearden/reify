@@ -20,8 +20,7 @@ function parsePort(raw: string | undefined): number | undefined {
  * DEFAULT_DEBUG_PORT (3939), mirroring the fallback of `parse_debug_port` in
  * `gui/src-tauri/src/debug_server.rs`.
  *
- * Cross-ref: `gui/sidecar/src/session.ts` `resolveReifyDebugUrl` uses identical
- * logic.  Keep all three in lockstep if the rules change.
+ * Keep the two in lockstep if the rules change.
  */
 export function resolveDebugPort(env: Record<string, string | undefined> = process.env): number {
   return parsePort(env['REIFY_DEBUG_PORT']) ?? DEFAULT_DEBUG_PORT;

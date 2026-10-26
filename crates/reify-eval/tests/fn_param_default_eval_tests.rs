@@ -44,7 +44,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let v_id = ValueCellId::new("S", "v");
@@ -95,7 +95,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let v_id = ValueCellId::new("S", "v");
@@ -143,7 +143,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let v_id = ValueCellId::new("S", "v");
@@ -195,7 +195,7 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let v_id = ValueCellId::new("S", "v");

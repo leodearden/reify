@@ -14,13 +14,13 @@
  *
  * SCAFFOLDING, NOT PERMANENT ARCHITECTURE. This module exists only because
  * `status` crosses the wire as an untyped `String` produced by a hand-written
- * mapping. A serde-derived `ConstraintStatus` enum (`#[serde(rename_all =
- * "lowercase")]`, `From<Satisfaction>`) plus the matching TypeScript union would
- * make the casing DERIVED rather than hand-written, and re-introducing the drift
- * a compile error. When that lands, this module, ./constraintVerdictTokens.test.ts
- * and the source-reading half of ./constraintVerdictParity.test.ts should be
- * DELETED, not maintained. The narrowing is filed as follow-up work (see
- * `ConstraintData.status` in ../types.ts).
+ * mapping. The TypeScript union (`ConstraintStatus` in ../types.ts) has landed;
+ * the remaining Rust half, a serde-derived `ConstraintStatus` enum
+ * (`#[serde(rename_all = "lowercase")]`, `From<Satisfaction>`), is #7471. It
+ * makes the casing DERIVED rather than hand-written, and re-introducing the
+ * drift a compile error. When it lands, this module,
+ * ./constraintVerdictTokens.test.ts and the source-reading half of
+ * ./constraintVerdictParity.test.ts should be DELETED, not maintained.
  *
  * WHERE IT LIVES. gui/tsconfig.json is `include: ["src"]`, so a module under
  * gui/src/__tests__/ is inside tsc's strict program. Following the

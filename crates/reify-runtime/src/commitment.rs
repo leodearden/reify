@@ -96,14 +96,15 @@ impl NodePolicyOverrides {
     /// Precedence (highest → lowest):
     /// 1. **Instance override** — exact match on `node_id`
     /// 2. **Type override** — match on the node's [`NodeKind`]
-    /// 3. **Config-file override** — `[node_overrides]` from `reify.toml`
-    ///    (reserved slot; owned by GR-007 task 3578, depends_on this task)
+    /// 3. **Config-file override** — `[[node_overrides]]` from `reify.toml`
+    ///    (no distinct slot; config entries land in levels 1/2)
     /// 4. **Kind+traits default** — [`default_overrides(kind, traits)`](default_overrides)
     ///    (absent [`NodeTraits::COMMITTABLE`] → `AlwaysCancelWhenStale`; present → `CommitIfSlow`)
     /// 5. **Hard default** — PRD §6's floor, `NodeCommitmentOverride::CommitIfSlow`
     ///
-    /// Neither level 3 nor level 5 has a branch here: level 3 is reserved for
-    /// task 3578, and level 4 always returns, so nothing reaches the level-5
+    /// Neither level 3 nor level 5 has a branch here. Level 3 has no slot of its
+    /// own: GR-007 (#3464) has `from_config_overrides` write config entries into
+    /// the level-1/2 maps. Level 4 always returns, so nothing reaches the level-5
     /// floor — this resolver never calls `NodeCommitmentOverride::default()`.
     ///
     /// Its only production consumer is `render_inspection` in the `reify` CLI
@@ -123,7 +124,7 @@ impl NodePolicyOverrides {
         if let Some(o) = self.type_overrides.get(&kind) {
             return *o;
         }
-        // Level 3: reify.toml [node_overrides] — reserved; task 3578 (GR-007)
+        // Level 3: no distinct slot — config entries land in levels 1/2 (see from_config_overrides)
         // Level 4: kind+traits-derived default (PRD §5 B3 / arch §7.6 row 4)
         default_overrides(kind, traits)
     }
@@ -162,7 +163,7 @@ impl fmt::Display for NodeOverrideConfigError {
 impl std::error::Error for NodeOverrideConfigError {}
 
 impl NodePolicyOverrides {
-    /// Build a `NodePolicyOverrides` from config-file entries (GR-007 Level 3).
+    /// Build a `NodePolicyOverrides` from config-file entries (GR-007).
     ///
     /// For each entry in `entries`:
     /// - If `node_id_pattern` (case-insensitive, already trimmed) matches a
@@ -178,10 +179,13 @@ impl NodePolicyOverrides {
     /// `Entity.member` selectors only. Glob expansion over concrete node-ids
     /// requires the compiled graph and is a future enhancement.
     ///
-    /// These config selectors fill the "Level 3" slot in the five-level
-    /// precedence chain (`docs/prds/v0_3/node-traits-unification.md` §6):
-    /// they populate the same instance/type maps that
-    /// [`resolve_with_traits`](Self::resolve_with_traits) already reads.
+    /// PRD §6 (`docs/prds/v0_3/node-traits-unification.md`) places config
+    /// selectors at level 3 of the precedence chain, but they get no slot of
+    /// their own: they populate the same level-1/2 instance/type maps that
+    /// [`resolve_with_traits`](Self::resolve_with_traits) reads. Whether
+    /// anything reads `reify.toml` at all is recorded in
+    /// `docs/notes/reify-toml-schema.md`.
+    // G-allow: no production caller pending #5023; status in docs/notes/reify-toml-schema.md
     pub fn from_config_overrides(
         entries: &[reify_config::NodePolicyOverride],
     ) -> Result<Self, NodeOverrideConfigError> {
@@ -325,6 +329,7 @@ pub enum CommitmentDecision {
 /// 3. Elapsed > `always_commit_after` → `Committed`
 /// 4. Estimated progress > `commit_when_proportion_done` → `Committed`
 /// 5. Otherwise → `NotYet`
+// G-allow: no production caller pending #5023; status in docs/notes/reify-toml-schema.md
 pub fn check_commitment(
     policy: &CommitmentPolicy,
     override_: NodeCommitmentOverride,
@@ -380,6 +385,7 @@ struct CommitmentState {
 /// Wraps the pure [`check_commitment`] function with stateful tracking:
 /// register tasks when they start, update status periodically, and query
 /// whether a task should continue or be cancelled.
+// G-allow: no production caller pending #5023; status in docs/notes/reify-toml-schema.md
 pub struct CommitmentTracker {
     policy: CommitmentPolicy,
     states: HashMap<NodeId, CommitmentState>,

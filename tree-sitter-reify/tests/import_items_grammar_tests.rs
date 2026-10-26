@@ -15,11 +15,11 @@
 //! "Destructured import" row) and by the identical `import_path` production in
 //! `docs/initial-design/syntax-design-decisions.md` §11 "Grammar summary".
 //!
-//! The AST-level tests in `crates/reify-syntax/tests/harness_syntax/import_tests.rs`
-//! cannot pin the separator on their own: tree-sitter can error-recover a stray
-//! `.` into an `(ERROR)` node nested inside `import_declaration` while leaving
-//! `path` and `items` intact, so the dotted form would still lower correctly.
-//! These tests therefore assert on the CST itself, counting every ERROR node.
+//! These tests assert on the CST itself, counting every ERROR node, so they pin
+//! the separator at the grammar level independently of how the lowering in
+//! `crates/reify-syntax` reports a recovered parse: tree-sitter can
+//! error-recover a stray `.` into an `(ERROR)` node nested inside
+//! `import_declaration` while leaving `path` and `items` intact.
 //!
 //! Coverage:
 //! * **(a)** Canonical `import std.mech.{Bolt, Nut}` — zero ERROR nodes, with

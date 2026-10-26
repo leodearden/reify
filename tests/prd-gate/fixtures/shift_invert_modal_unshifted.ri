@@ -1,15 +1,17 @@
-// Fixture: shift-invert modal CONTROL — the unshifted (sigma = 0) half of the
+// Fixture: shift-invert modal CONTROL — the unshifted (shift_frequency = 0Hz) half of the
 // committed pair behind leaf δ.
 //
 // PRD: docs/prds/v0_6/shift-invert-eigensolve.md (leaf δ, task #7261 — the
-// modal trampoline honors the shift surface-agnostically in λ-space).
+// modal trampoline honors the shift in λ-space). The author writes the shift in
+// Hz as `ModalOptions.shift_frequency` (task #6097); the trampoline converts it
+// to λ = (2π·shift_frequency)² via `frequency_hz_to_eigenvalue`.
 //
 // PAIRED WITH: shift_invert_modal_shifted.ri. The two MODELS are identical
-// except for the `sigma:` literal (the headers and the `module` / `structure`
-// names differ, as they must to coexist in one gate), so the ONLY thing that
-// can explain a difference in their frequency pairs is the shift. ENFORCED by
-// `assert_fixtures_differ_only_in_sigma`, the first assertion of the e2e test
-// named below — do not weaken it to prose.
+// except for the `shift_frequency:` literal (the headers and the `module` /
+// `structure` names differ, as they must to coexist in one gate), so the ONLY
+// thing that can explain a difference in their frequency pairs is the shift.
+// ENFORCED by `assert_fixtures_differ_only_in_shift_frequency`, the first
+// assertion of the e2e test named below — do not weaken it to prose.
 //
 // LIVE GUARD (cited by SYMBOL, not file:line — nothing recompiles a fixture, so
 // a line number here would drift silently): `include_str!`-embedded and asserted
@@ -27,15 +29,14 @@
 // real shifted Lanczos path — NOT the dense QZ arm. A smaller beam would reach
 // only the dense arm and would never touch the code this pair exists to pin.
 //
-// MEASURED (release `reify eval`, 2026-09-18): f = {18829.10242785022,
-// 28285.078935628768} Hz, exit 0, and NO `W_ShiftSkippedModes` — sigma = 0 makes
+// MEASURED (release `reify eval`, 2026-10-09): f = {18925.96994693253,
+// 28456.125839671546} Hz, exit 0, and NO `W_ShiftSkippedModes` — σ = 0 makes
 // `shift_provenance_from_factorization` return false unconditionally.
 //
 // GRAMMAR notes: `.ri` structure bodies are NEWLINE-separated with NO statement
-// terminators (a trailing `;` is one parse error per line), and `ModalOptions`
-// argument binding is POSITIONAL — the `name:` labels are cosmetic (see the
-// IMPORTANT note in examples/modal/cantilever_beam_modes.ri), so every param
-// must be supplied in declaration order to reach `element_order`.
+// terminators (a trailing `;` is one parse error per line), and ctor args bind
+// BY NAME (task 4522), so a misspelled label is the hazard — see the binding
+// note in examples/modal/cantilever_beam_modes.ri.
 
 module shift_invert_modal_unshifted
 
@@ -52,7 +53,7 @@ structure ShiftInvertModalUnshifted {
         n_modes: 2,
         boundary_conditions: [root],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

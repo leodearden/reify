@@ -29,6 +29,7 @@ pub mod overload;
 pub mod panic_payload;
 pub mod persistent_cache;
 pub mod primitives;
+pub mod scalar_tolerance;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod ty;

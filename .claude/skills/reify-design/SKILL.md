@@ -11,7 +11,7 @@ Help the user author parametric designs in `.ri` files. Be terse and focus on ge
 
 All paths below are relative to the Reify repo root (find it via the working directory or `git rev-parse --show-toplevel` if unsure).
 
-- **Language reference (authoritative):** `crates/reify-mcp/src/tools/chunks/*.md` — one file per topic: `structures`, `syntax`, `types`, `units`, `geometry`, `traits`, `parameters`, `constraints`, `enums`, `fields`, `occurrences`, `connect`, `collections`, `functions`, `guards`, `purposes`, `stdlib`. Read the relevant chunk when unsure — these are the same chunks the in-GUI assistant exposes via `reify_language_reference`.
+- **Language reference (authoritative):** `crates/reify-mcp/src/tools/chunks/*.md` — one file per topic: `structures`, `syntax`, `types`, `units`, `geometry`, `measurement`, `topology`, `traits`, `parameters`, `constraints`, `enums`, `fields`, `occurrences`, `connect`, `collections`, `functions`, `guards`, `purposes`, `stdlib`. Read the relevant chunk when unsure — these are the same chunks the in-GUI assistant exposes via `reify_language_reference`.
 - **Examples:** `examples/*.ri`. Canonical patterns:
   - `m5_geometry_flange.ri` — `structure def ... : Rigid`, params with units, `cylinder` / `circular_pattern` / `difference`
   - `m8_units.ri`, `m8_materials.ri`, `m8_tolerancing.ri` — units, materials, tolerances
@@ -85,10 +85,10 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   OCCT-less build, or an in-process `Engine::new(.., None)`) reports them INDETERMINATE.
   → `clearance_oracle.ri`; assembly-grade worked example:
   `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
-- **Discrete choices**: until CP-SAT is wired, `param s : Real = auto(free)` +
-  `constraint s*s == 1` (s = ±1). Note `auto` is a binding *value* — `auto s : Real` is a
-  parse error — and strict `auto` goes `undef` here because two roots defeat the uniqueness
-  re-solve. → `discrete_choice.ri`
+- **Discrete choices**: keep a binary choice in the model as a `Bool` auto read by a
+  constraint — `param b : Bool = auto(free)`, `let s = if b then 1.0 else -1.0`,
+  `constraint s*s == 1`. Note `auto` is a binding *value* — `auto s : Real` is a parse error.
+  → `discrete_choice.ri`
 - **Turning an arc-measure ratio into an angle — and why the `* 1rad`**:
   `let theta : Angle = (s/r) * 1rad` enters Angle, `theta / 1rad` leaves; arc length is
   `r * theta / 1rad`. No-space literal only (`1 rad` is a parse error). Not optional:

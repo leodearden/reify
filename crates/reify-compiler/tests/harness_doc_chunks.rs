@@ -30,8 +30,8 @@
 //! - `chunk_markdown` (#6956) — how a chunk's markdown divides into fenced code
 //!   blocks, the sections those fences cannot end, and the catalogue tables a
 //!   section carries; the one fence parser.
-//! - `call_scan` (#6956) — which calls a piece of Reify text makes, read as
-//!   text behind a comment stripper.
+//! - `call_scan` (#6956) — which names a chunk's markdown prose calls, read as
+//!   text.
 //! - `callable_registries` (#6956) — the compiler name registries a documented
 //!   call may belong to, and the one wording for a name that belongs to none.
 //! - `module_compile` (#6956) — what the compiler makes of one complete module,
@@ -39,8 +39,9 @@
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
 //! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
 //!   and maintainer-note gates.
-//! - `doc_forms` (#6974) — documented call forms, read from markdown spans and
-//!   parsed sources, and their pairing.
+//! - `doc_forms` (#6974) — documented call forms read from markdown spans, the
+//!   call forms of parsed sources and ```` ```reify ```` fences read by AST
+//!   walk, and their pairing.
 //! - `signature_fixtures` (#6974) — the compile-verified fixtures whose calls
 //!   stand for documented signatures, and what "compiles clean" means for them.
 //! - `unfenced_signature_gate` (#6974) — every signature in any chunk's unfenced
@@ -48,9 +49,25 @@
 //! - `schematic_listing_gate` (#6956) — every signature in a gated chunk's
 //!   ```` ```reify-schematic ```` listings is exercised by a compile-verified
 //!   fixture.
+//! - `measurement_chunk_smoke` (#7344) — truth checks for the `measurement`
+//!   chunk, split out of geometry.md with the guards that cover it.
+//! - `topology_chunk_smoke` (#7344) — truth checks for the `topology` chunk,
+//!   split out of geometry.md with the guard that covers it.
+//! - `prose_idiom_gate` (#8050) — every concrete idiom in a gated chunk's
+//!   unfenced prose compiles, its metavariables left unbound.
+//! - `written_calls` (#7232) — every call form a chunk writes as copyable
+//!   code, read as text.
+//! - `arity_gate_probe` (#7232) — which `(name, arity)` call forms a builtin's
+//!   arity gate rejects.
+//! - `call_arity_gate` (#7232) — every call form any chunk writes passes the
+//!   compiler's arity gate.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
+#[path = "harness_doc_chunks/arity_gate_probe.rs"]
+mod arity_gate_probe;
+#[path = "harness_doc_chunks/call_arity_gate.rs"]
+mod call_arity_gate;
 #[path = "harness_doc_chunks/call_scan.rs"]
 mod call_scan;
 #[path = "harness_doc_chunks/callable_registries.rs"]
@@ -73,17 +90,25 @@ mod fence_gate;
 mod functions_chunk_overloading_smoke;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
+#[path = "harness_doc_chunks/measurement_chunk_smoke.rs"]
+mod measurement_chunk_smoke;
 #[path = "harness_doc_chunks/module_compile.rs"]
 mod module_compile;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
+#[path = "harness_doc_chunks/prose_idiom_gate.rs"]
+mod prose_idiom_gate;
 #[path = "harness_doc_chunks/schematic_listing_gate.rs"]
 mod schematic_listing_gate;
 #[path = "harness_doc_chunks/signature_fixtures.rs"]
 mod signature_fixtures;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
 mod stdlib_chunk_geometry_ops_smoke;
+#[path = "harness_doc_chunks/topology_chunk_smoke.rs"]
+mod topology_chunk_smoke;
 #[path = "harness_doc_chunks/unfenced_signature_gate.rs"]
 mod unfenced_signature_gate;
 #[path = "harness_doc_chunks/units_chunk_smoke.rs"]
 mod units_chunk_smoke;
+#[path = "harness_doc_chunks/written_calls.rs"]
+mod written_calls;

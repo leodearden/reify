@@ -191,17 +191,17 @@ fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
     //   bar:   Box{4, 0.5, 0.5} half-extents (2,    0.25, 0.25)
     let cube = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(2.0),
-            height: Value::Real(2.0),
-            depth: Value::Real(2.0),
+            size_x: Value::Real(2.0),
+            size_y: Value::Real(2.0),
+            size_z: Value::Real(2.0),
         })
         .expect("Box cube")
         .id;
     let bar = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(4.0),
-            height: Value::Real(0.5),
-            depth: Value::Real(0.5),
+            size_x: Value::Real(4.0),
+            size_y: Value::Real(0.5),
+            size_z: Value::Real(0.5),
         })
         .expect("Box bar")
         .id;

@@ -29,7 +29,7 @@ fn example_fields_sample_evaluates_to_300_k() {
 
     let compiled = parse_and_compile_with_stdlib(&source);
 
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
     // No eval-level errors.
     let result = engine.eval(&compiled);

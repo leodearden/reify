@@ -82,7 +82,7 @@ fn eval_solves_leaf_first_and_later_sees_solved_leaf_value() {
 
     let spy = MultiCallSpyConstraintSolver::new(vec![leaf_k_solved, later_y_solved]);
     let captured = spy.captured_problems();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(spy));
 
     let _result = engine.eval(&module);
@@ -170,7 +170,7 @@ fn eval_uncoupled_module_solved_in_source_order() {
 
     let spy = MultiCallSpyConstraintSolver::new(vec![x_solved, y_solved]);
     let captured = spy.captured_problems();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(spy));
 
     let _result = engine.eval(&module);
@@ -258,7 +258,7 @@ fn eval_cached_solver_pass_sees_leaf_k_in_later_problem() {
     // --- eval_cached() path ---
     let spy_cached = MultiCallSpyConstraintSolver::new(make_results(&leaf_k, &later_y));
     let captured_cached = spy_cached.captured_problems();
-    let mut engine_cached = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine_cached = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(spy_cached));
 
     let _result_cached = engine_cached.eval_cached(&module, VersionId(1));

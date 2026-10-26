@@ -484,6 +484,7 @@ pub struct ContributorWalk {
 // The symmetric attributes on `walk_recursive` and `is_editor_debris` were removed in the
 // same commit.
 #[allow(dead_code)]
+// G-allow: build-script code — reached via engine_version_hash_for from crates/reify-eval/build.rs (include!, outside this audit's src scope); the lib's own callers are unit tests (see comment above)
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     let mut walk = ContributorWalk {
         parts: Vec::new(),
@@ -706,6 +707,7 @@ pub fn parse_cargo_lock_stanzas(lock_text: &str) -> Vec<LockPackage> {
 /// The `(name, version)` projection of [`parse_cargo_lock_stanzas`], in file
 /// order.
 #[allow(dead_code)]
+// G-allow: same-file caller only (cargo_lock_closure_pins, on build.rs's engine_version_hash_for path); pub for persistent_cache.rs unit tests; audit counts cross-file refs
 pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
     parse_cargo_lock_stanzas(lock_text)
         .into_iter()

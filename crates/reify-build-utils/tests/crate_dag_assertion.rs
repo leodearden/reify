@@ -1,3 +1,26 @@
+//! The two crate-graph gates over the workspace:
+//! - `scripts/assert-crate-dag.sh` B1–B6;
+//! - `scripts/assert-crate-strata.py` over `scripts/crate-strata.json`, driven
+//!   through its CLI against hermetic fixtures and the real workspace (PRD
+//!   docs/prds/v0_6/kernel-interface-typed-seam.md §8 γ).
+
+use std::ffi::OsStr;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn workspace_root() -> PathBuf {
+    // The runtime variable, not `env!`: a warm-lane test binary can be reused
+    // from another worktree, and `env!` bakes in the build-time path.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+    Path::new(&manifest_dir)
+        .parent()
+        .and_then(Path::parent)
+        .expect("CARGO_MANIFEST_DIR is crates/<crate>, two levels below the workspace root")
+        .to_path_buf()
+}
+
 /// Workspace-wide DAG invariant gate.
 ///
 /// Invokes `scripts/assert-crate-dag.sh` and asserts:
@@ -8,32 +31,17 @@
 /// This is the integration gate for task η of
 /// docs/prds/core-ast-ir-layering.md.
 ///
-/// `scripts/affected-crates-lib.sh` names this crate in `_REIFY_DAG_GATE_CRATE`
+/// `scripts/reify_path_attribution.py` names this crate in `DAG_GATE_CRATE`
 /// so a per-crate manifest diff pulls this gate into a narrowed, task-scoped
 /// verify. Moving this gate to another crate means updating that constant.
 #[test]
 fn workspace_dag_invariant_via_assert_script() {
-    use std::path::Path;
-    use std::process::Command;
-
-    // CARGO_MANIFEST_DIR resolves to `crates/reify-build-utils/` at test time.
-    // Two levels up reaches the workspace root.
-    // Use the runtime env var (set by cargo/nextest per test-run) rather than the
-    // compile-time env!() macro, which bakes in the build-time worktree path and
-    // breaks when test binaries are reused across worktrees (warm-lane CoW pool).
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-    let workspace_root = Path::new(&manifest_dir)
-        .parent() // crates/
-        .expect("parent of CARGO_MANIFEST_DIR")
-        .parent() // workspace root
-        .expect("workspace root");
-
+    let workspace_root = workspace_root();
     let script = workspace_root.join("scripts/assert-crate-dag.sh");
 
     let output = Command::new("bash")
         .arg(&script)
-        .current_dir(workspace_root)
+        .current_dir(&workspace_root)
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -63,4 +71,848 @@ fn workspace_dag_invariant_via_assert_script() {
             output.status, missing, stdout, stderr
         );
     }
+}
+
+// --- crate strata: scripts/assert-crate-strata.py ---------------------------
+
+fn run_strata<I, S>(args: I) -> Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let script = workspace_root().join("scripts/assert-crate-strata.py");
+    Command::new("python3")
+        .arg("-I")
+        .arg(&script)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script.display()))
+}
+
+fn describe(out: &Output) -> String {
+    format!(
+        "{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+fn stdout_of(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn line_has_all(line: &str, needles: &[&str]) -> bool {
+    needles.iter().all(|needle| line.contains(needle))
+}
+
+fn has_line_with_all(text: &str, needles: &[&str]) -> bool {
+    text.lines().any(|line| line_has_all(line, needles))
+}
+
+/// Every stdout line except the `crate-strata:` summary.
+fn finding_lines(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| !line.starts_with("crate-strata:"))
+        .collect()
+}
+
+fn assert_exit(out: &Output, expected: i32, context: &str) {
+    assert_eq!(
+        out.status.code(),
+        Some(expected),
+        "{context}: expected exit {expected}\n{}",
+        describe(out)
+    );
+}
+
+fn assert_green(out: &Output, context: &str) {
+    assert_exit(out, 0, context);
+    assert!(
+        has_line_with_all(&stdout_of(out), &["crate-strata: OK"]),
+        "{context}: expected a `crate-strata: OK` summary\n{}",
+        describe(out)
+    );
+}
+
+/// Exit 2 — an input could not be trusted — with stderr naming `culprit`.
+fn assert_input_error(out: &Output, culprit: &str, context: &str) {
+    assert_exit(out, 2, context);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(culprit),
+        "{context}: expected stderr to name {culprit:?}\n{}",
+        describe(out)
+    );
+}
+
+/// Exit 1 with exactly one finding line per entry of `expected`, each line
+/// holding every needle of its entry.
+fn assert_findings(out: &Output, expected: &[&[&str]], context: &str) {
+    assert_exit(out, 1, context);
+    let stdout = stdout_of(out);
+    let lines = finding_lines(&stdout);
+    assert_eq!(
+        lines.len(),
+        expected.len(),
+        "{context}: expected {} finding lines\n{}",
+        expected.len(),
+        describe(out)
+    );
+    for needles in expected {
+        let matching = lines
+            .iter()
+            .filter(|line| line_has_all(line, needles))
+            .count();
+        assert_eq!(
+            matching,
+            1,
+            "{context}: expected exactly one finding holding {needles:?}\n{}",
+            describe(out)
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DepKind {
+    Normal,
+    Build,
+    Dev,
+}
+
+#[derive(Clone)]
+struct Dep {
+    name: &'static str,
+    kind: DepKind,
+    optional: bool,
+    target: Option<&'static str>,
+}
+
+impl Dep {
+    fn new(name: &'static str, kind: DepKind) -> Dep {
+        Dep {
+            name,
+            kind,
+            optional: false,
+            target: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Pkg {
+    name: &'static str,
+    deps: Vec<Dep>,
+}
+
+fn pkg(name: &'static str, normal_deps: &[&'static str]) -> Pkg {
+    Pkg {
+        name,
+        deps: normal_deps
+            .iter()
+            .map(|dep| Dep::new(dep, DepKind::Normal))
+            .collect(),
+    }
+}
+
+impl Pkg {
+    fn dep(mut self, dep: Dep) -> Pkg {
+        self.deps.push(dep);
+        self
+    }
+}
+
+fn package_mut<'a>(pkgs: &'a mut [Pkg], name: &str) -> &'a mut Pkg {
+    pkgs.iter_mut()
+        .find(|p| p.name == name)
+        .unwrap_or_else(|| panic!("fixture has no package {name}"))
+}
+
+fn with_dep(mut pkgs: Vec<Pkg>, from: &str, dep: Dep) -> Vec<Pkg> {
+    package_mut(&mut pkgs, from).deps.push(dep);
+    pkgs
+}
+
+fn without_dep(mut pkgs: Vec<Pkg>, from: &str, to: &str) -> Vec<Pkg> {
+    let deps = &mut package_mut(&mut pkgs, from).deps;
+    let before = deps.len();
+    deps.retain(|d| d.name != to);
+    assert_ne!(before, deps.len(), "fixture has no edge {from} -> {to}");
+    pkgs
+}
+
+fn without_package(pkgs: Vec<Pkg>, name: &str) -> Vec<Pkg> {
+    let before = pkgs.len();
+    let pkgs: Vec<Pkg> = pkgs.into_iter().filter(|p| p.name != name).collect();
+    assert_ne!(before, pkgs.len(), "fixture has no package {name}");
+    pkgs
+}
+
+fn package_id(name: &str) -> String {
+    format!("{name} 0.1.0 (path+file:///fixture/{name})")
+}
+
+fn dependency_json(dep: &Dep) -> String {
+    let kind = match dep.kind {
+        DepKind::Normal => "null",
+        DepKind::Build => "\"build\"",
+        DepKind::Dev => "\"dev\"",
+    };
+    let target = dep
+        .target
+        .map_or_else(|| "null".to_string(), |t| format!("\"{t}\""));
+    format!(
+        "{{\"name\": \"{}\", \"kind\": {kind}, \"optional\": {}, \"target\": {target}}}",
+        dep.name, dep.optional
+    )
+}
+
+/// The subset of `cargo metadata --no-deps --format-version 1` the checker reads.
+fn metadata_json(pkgs: &[Pkg]) -> String {
+    let packages = pkgs
+        .iter()
+        .map(|p| {
+            let deps = p.deps.iter().map(dependency_json).collect::<Vec<_>>();
+            format!(
+                "{{\"name\": \"{}\", \"id\": \"{}\", \"dependencies\": [{}]}}",
+                p.name,
+                package_id(p.name),
+                deps.join(", ")
+            )
+        })
+        .collect::<Vec<_>>();
+    let members = pkgs
+        .iter()
+        .map(|p| format!("\"{}\"", package_id(p.name)))
+        .collect::<Vec<_>>();
+    format!(
+        "{{\"packages\": [{}], \"workspace_members\": [{}], \"resolve\": null}}\n",
+        packages.join(",\n"),
+        members.join(", ")
+    )
+}
+
+struct StrataFixture {
+    dir: tempfile::TempDir,
+}
+
+impl StrataFixture {
+    fn new(table: &str, pkgs: &[Pkg]) -> Self {
+        let fixture = StrataFixture {
+            dir: tempfile::tempdir().expect("create strata fixture dir"),
+        };
+        fixture.write("table.json", table);
+        fixture.write("metadata.json", &metadata_json(pkgs));
+        fixture
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    fn write(&self, name: &str, contents: &str) {
+        let path = self.path(name);
+        fs::write(&path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    }
+
+    fn check(&self) -> Output {
+        self.check_metadata("metadata.json")
+    }
+
+    /// Checks table.json against the fixture file `metadata`.
+    fn check_metadata(&self, metadata: &str) -> Output {
+        run_strata([
+            OsStr::new("--table"),
+            self.path("table.json").as_os_str(),
+            OsStr::new("--metadata"),
+            self.path(metadata).as_os_str(),
+        ])
+    }
+}
+
+const FIXTURE_TABLE: &str = r#"{
+  "schema": 1,
+  "strata": [
+    {"name": "spine", "may_depend_on": [], "packages": ["reify-core", "reify-ir"]},
+    {"name": "language", "may_depend_on": ["spine"], "packages": ["reify-compiler", "reify-expr"]},
+    {"name": "kernel", "may_depend_on": ["spine"], "packages": ["reify-kernel-gmsh", "reify-kernel-x"]},
+    {"name": "solver", "may_depend_on": ["spine"], "packages": ["reify-compute-contract", "reify-solver-elastic"]},
+    {"name": "analysis", "may_depend_on": ["spine", "language", "solver"], "packages": []},
+    {"name": "engine", "may_depend_on": ["spine", "language", "kernel", "solver"], "packages": ["reify-eval"]},
+    {"name": "test-support", "may_depend_on": ["spine", "language", "kernel", "solver", "engine"], "packages": ["reify-test-support"]}
+  ],
+  "crate_rules": [
+    {"name": "kernel-crate-deps", "from": {"packages": ["reify-kernel-gmsh", "reify-kernel-x"]}, "only": {"packages": ["reify-core", "reify-ir"]}},
+    {"name": "compute-contract-spine-only", "from": {"packages": ["reify-compute-contract"]}, "only": {"strata": ["spine"]}},
+    {"name": "expr-compiler-independent", "from": {"packages": ["reify-compiler", "reify-expr"]}, "never": {"packages": ["reify-compiler", "reify-expr"]}},
+    {"name": "production-not-on-test-support", "from": {"strata": ["spine", "language", "kernel", "solver", "analysis", "engine"]}, "never": {"strata": ["test-support"]}}
+  ],
+  "exceptions": [
+    {"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}
+  ]
+}
+"#;
+
+/// FIXTURE_TABLE with the one occurrence of `from` replaced by `to`.
+fn fixture_table_with(from: &str, to: &str) -> String {
+    assert_eq!(
+        FIXTURE_TABLE.matches(from).count(),
+        1,
+        "FIXTURE_TABLE must hold {from:?} exactly once"
+    );
+    FIXTURE_TABLE.replacen(from, to, 1)
+}
+
+/// FIXTURE_TABLE's one exception row.
+const EXCEPTED_ROW: &str = r#"{"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}"#;
+
+/// A graph FIXTURE_TABLE accepts, with dev back-edges and the excepted edge.
+fn clean_workspace() -> Vec<Pkg> {
+    vec![
+        pkg("reify-core", &[]),
+        pkg("reify-ir", &["reify-core"]),
+        pkg("reify-compiler", &["reify-core", "reify-ir"]),
+        pkg("reify-expr", &["reify-ir"]),
+        pkg("reify-kernel-x", &["reify-core", "reify-ir"])
+            .dep(Dep::new("reify-eval", DepKind::Dev)),
+        pkg("reify-kernel-gmsh", &["reify-core", "reify-ir"]),
+        pkg("reify-solver-elastic", &["reify-ir", "reify-kernel-gmsh"]),
+        pkg("reify-compute-contract", &["reify-core", "reify-ir"]),
+        pkg(
+            "reify-eval",
+            &[
+                "reify-compiler",
+                "reify-expr",
+                "reify-kernel-x",
+                "reify-solver-elastic",
+                "reify-compute-contract",
+            ],
+        )
+        .dep(Dep::new("reify-test-support", DepKind::Dev)),
+        pkg("reify-test-support", &["reify-eval", "reify-compiler"]),
+    ]
+}
+
+fn check(table: &str, pkgs: &[Pkg]) -> Output {
+    StrataFixture::new(table, pkgs).check()
+}
+
+#[test]
+fn strata_clean_fixture_is_green() {
+    let out = check(FIXTURE_TABLE, &clean_workspace());
+    assert_green(
+        &out,
+        "dev back-edges are not counted, the excepted edge passes, and a rule may \
+         name an empty stratum beside non-empty ones",
+    );
+}
+
+#[test]
+fn strata_new_kernel_to_engine_edge_reds_naming_the_edge_and_rule() {
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-kernel-x",
+        Dep::new("reify-eval", DepKind::Normal),
+    );
+    assert_findings(
+        &check(FIXTURE_TABLE, &graph),
+        &[
+            &[
+                "VIOLATION reify-kernel-x -> reify-eval",
+                "stratum rule",
+                "reify-eval is engine",
+            ],
+            &[
+                "VIOLATION reify-kernel-x -> reify-eval",
+                "crate rule kernel-crate-deps",
+                "may depend only on",
+            ],
+        ],
+        "a new normal kernel -> engine edge",
+    );
+}
+
+#[test]
+fn strata_new_solver_to_kernel_edge_reds_naming_the_edge_and_rule() {
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-solver-elastic",
+        Dep::new("reify-kernel-x", DepKind::Normal),
+    );
+    assert_findings(
+        &check(FIXTURE_TABLE, &graph),
+        &[&[
+            "VIOLATION reify-solver-elastic -> reify-kernel-x",
+            "stratum rule",
+            "reify-kernel-x is kernel",
+        ]],
+        "a new solver -> kernel edge that no exception names",
+    );
+}
+
+#[test]
+fn strata_unclassified_package_reds_naming_the_crate() {
+    let mut graph = clean_workspace();
+    graph.push(pkg("reify-newcrate", &["reify-core"]));
+    assert_findings(
+        &check(FIXTURE_TABLE, &graph),
+        &[&["UNCLASSIFIED reify-newcrate"]],
+        "a workspace package no stratum lists",
+    );
+}
+
+#[test]
+fn strata_stale_exception_reds_naming_the_row() {
+    let stale = "STALE exception reify-solver-elastic -> reify-kernel-gmsh (#8289)";
+
+    let dropped = without_dep(
+        clean_workspace(),
+        "reify-solver-elastic",
+        "reify-kernel-gmsh",
+    );
+    assert_findings(
+        &check(FIXTURE_TABLE, &dropped),
+        &[&[stale, "not in the graph"]],
+        "the excepted edge left the graph",
+    );
+
+    let loosened = fixture_table_with(
+        r#"{"name": "solver", "may_depend_on": ["spine"]"#,
+        r#"{"name": "solver", "may_depend_on": ["spine", "kernel"]"#,
+    );
+    assert_findings(
+        &check(&loosened, &clean_workspace()),
+        &[&[stale, "allowed"]],
+        "a table edit allowed the excepted edge",
+    );
+}
+
+#[test]
+fn strata_counts_normal_build_optional_and_target_edges_but_not_dev_edges() {
+    let edge = |dep: Dep| {
+        check(
+            FIXTURE_TABLE,
+            &with_dep(clean_workspace(), "reify-kernel-x", dep),
+        )
+    };
+    let normal = Dep::new("reify-eval", DepKind::Normal);
+
+    assert_green(
+        &edge(Dep::new("reify-eval", DepKind::Dev)),
+        "a dev kernel -> engine edge",
+    );
+
+    let reference = edge(normal.clone());
+    assert_exit(&reference, 1, "a normal kernel -> engine edge");
+    let reference_stdout = stdout_of(&reference);
+    let expected = finding_lines(&reference_stdout);
+    assert!(
+        has_line_with_all(
+            &reference_stdout,
+            &["VIOLATION reify-kernel-x -> reify-eval", "stratum rule"]
+        ),
+        "{}",
+        describe(&reference)
+    );
+
+    for (label, dep) in [
+        ("a build edge", Dep::new("reify-eval", DepKind::Build)),
+        (
+            "an optional normal edge",
+            Dep {
+                optional: true,
+                ..normal.clone()
+            },
+        ),
+        (
+            "a cfg(unix) target edge",
+            Dep {
+                target: Some("cfg(unix)"),
+                ..normal.clone()
+            },
+        ),
+    ] {
+        let out = edge(dep);
+        assert_exit(&out, 1, label);
+        assert_eq!(
+            finding_lines(&stdout_of(&out)),
+            expected,
+            "{label} reds exactly as a plain normal edge does\n{}",
+            describe(&out)
+        );
+    }
+}
+
+#[test]
+fn strata_a_classified_package_absent_from_the_workspace_reds() {
+    let graph = without_package(
+        without_dep(clean_workspace(), "reify-eval", "reify-compute-contract"),
+        "reify-compute-contract",
+    );
+    assert_findings(
+        &check(FIXTURE_TABLE, &graph),
+        &[&["STALE stratum solver lists reify-compute-contract"]],
+        "a classified package that left the workspace",
+    );
+}
+
+#[test]
+fn strata_crate_rules_fire_on_edges_the_stratum_table_allows() {
+    for (from, to, needles) in [
+        (
+            "reify-kernel-x",
+            "reify-kernel-gmsh",
+            &["crate rule kernel-crate-deps"][..],
+        ),
+        (
+            "reify-compute-contract",
+            "reify-solver-elastic",
+            &["crate rule compute-contract-spine-only"][..],
+        ),
+        (
+            "reify-compiler",
+            "reify-expr",
+            &[
+                "crate rule expr-compiler-independent",
+                "must not depend on reify-expr",
+            ][..],
+        ),
+    ] {
+        let graph = with_dep(clean_workspace(), from, Dep::new(to, DepKind::Normal));
+        let violation = format!("VIOLATION {from} -> {to}");
+        let mut expected = vec![violation.as_str()];
+        expected.extend_from_slice(needles);
+        assert_findings(
+            &check(FIXTURE_TABLE, &graph),
+            &[&expected],
+            &format!("a same-stratum {from} -> {to} edge"),
+        );
+    }
+}
+
+#[test]
+fn strata_production_strata_must_not_depend_on_test_support() {
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-eval",
+        Dep::new("reify-test-support", DepKind::Normal),
+    );
+    let violation = "VIOLATION reify-eval -> reify-test-support";
+    assert_findings(
+        &check(FIXTURE_TABLE, &graph),
+        &[
+            &[violation, "stratum rule", "engine may depend only on"],
+            &[violation, "crate rule production-not-on-test-support"],
+        ],
+        "a normal engine -> test-support edge beside the clean graph's dev edge",
+    );
+}
+
+#[test]
+fn strata_one_exception_row_covers_every_rule_its_edge_breaks() {
+    let table = fixture_table_with(
+        EXCEPTED_ROW,
+        &format!(
+            "{EXCEPTED_ROW},\n    {}",
+            r#"{"from": "reify-kernel-x", "to": "reify-eval", "task": 8561, "note": "fixture"}"#
+        ),
+    );
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-kernel-x",
+        Dep::new("reify-eval", DepKind::Normal),
+    );
+    assert_green(
+        &check(&table, &graph),
+        "one row excuses both the stratum rule and kernel-crate-deps",
+    );
+}
+
+#[test]
+fn strata_fails_closed_on_an_untrustworthy_table() {
+    let swap = fixture_table_with;
+    const SPINE_ROW: &str =
+        r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-core", "reify-ir"]},"#;
+    let cases: Vec<(String, &[&str], &str)> = vec![
+        (
+            swap(r#""schema": 1"#, r#""schema": 2"#),
+            &["schema"][..],
+            "an unknown schema",
+        ),
+        (
+            swap(r#""schema": 1"#, r#""schema": true"#),
+            &["schema"][..],
+            "a bool schema, which Python compares equal to 1",
+        ),
+        (
+            swap(r#""schema": 1,"#, r#""schema": 1, "comment": "fixture","#),
+            &["'comment'"][..],
+            "an unknown top-level key",
+        ),
+        (
+            swap(r#""crate_rules":"#, r#""crate_rule":"#),
+            &["'crate_rule'", "'crate_rules'"][..],
+            "a misspelt top-level key, unknown and leaving a required one missing",
+        ),
+        (
+            swap(
+                r#"{"name": "spine", "may_depend_on": []"#,
+                r#"{"name": "spine", "may_depend_on": ["kernel"]"#,
+            ),
+            &["spine", "kernel"][..],
+            "a stratum depending on a stratum listed after it",
+        ),
+        (
+            swap(
+                r#"{"name": "language", "may_depend_on": ["spine"]"#,
+                r#"{"name": "language", "may_depend_on": ["spine", "nowhere"]"#,
+            ),
+            &["nowhere"][..],
+            "a stratum depending on an unknown stratum",
+        ),
+        (
+            swap(
+                r#"{"name": "solver", "may_depend_on": ["spine"]"#,
+                r#"{"name": "solver", "may_depend_on": ["spine", "solver"]"#,
+            ),
+            &["solver"][..],
+            "a stratum listing itself",
+        ),
+        (
+            swap(
+                SPINE_ROW,
+                &format!(
+                    "{SPINE_ROW}\n    {}",
+                    r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-other"]},"#
+                ),
+            ),
+            &["spine"][..],
+            "two strata named spine",
+        ),
+        (
+            swap(
+                r#"["spine"], "packages": ["reify-compiler", "reify-expr"]}"#,
+                r#"["spine"], "packages": ["reify-compiler", "reify-expr", "reify-ir"]}"#,
+            ),
+            &["reify-ir"][..],
+            "a package in two strata",
+        ),
+        (
+            swap(
+                r#"{"name": "engine", "may_depend_on":"#,
+                r#"{"name": "engine", "may_depends_on":"#,
+            ),
+            &["may_depends_on"][..],
+            "a misspelt stratum key",
+        ),
+        (
+            swap(
+                r#"["reify-compiler", "reify-expr"]}, "never""#,
+                r#"["reify-compiler", "reify-expr"]}, "only": {"packages": ["reify-ir"]}, "never""#,
+            ),
+            &["expr-compiler-independent"][..],
+            "a crate rule with both only and never",
+        ),
+        (
+            swap(
+                r#"["reify-compute-contract"]}, "only": {"strata": ["spine"]}}"#,
+                r#"["reify-compute-contract"]}}"#,
+            ),
+            &["compute-contract-spine-only"][..],
+            "a crate rule with neither only nor never",
+        ),
+        (
+            swap(
+                r#""name": "compute-contract-spine-only""#,
+                r#""name": "kernel-crate-deps""#,
+            ),
+            &["kernel-crate-deps", "twice"][..],
+            "two crate rules with one name",
+        ),
+        (
+            swap(
+                r#"{"packages": ["reify-kernel-gmsh", "reify-kernel-x"]}"#,
+                r#"{"packages": ["reify-kernel-gmsh", "reify-kernel-gmsh", "reify-kernel-x"]}"#,
+            ),
+            &["kernel-crate-deps", "reify-kernel-gmsh", "twice"][..],
+            "a package set naming a package twice",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "from: resolves to no packages",
+            ][..],
+            "a crate rule from a set naming nothing",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"packages": []}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "from: resolves to no packages",
+            ][..],
+            "a crate rule from an empty package list, which could never fire",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"strata": ["analysis"]}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "from: resolves to no packages",
+            ][..],
+            "a crate rule from only an empty stratum, which could never fire",
+        ),
+        (
+            swap(
+                r#""only": {"strata": ["spine"]}"#,
+                r#""only": {"strata": ["analysis"]}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "only: resolves to no packages",
+            ][..],
+            "an only set naming only an empty stratum, which would forbid every edge",
+        ),
+        (
+            swap(
+                r#""never": {"strata": ["test-support"]}"#,
+                r#""never": {"packages": []}"#,
+            ),
+            &[
+                "production-not-on-test-support",
+                "never: resolves to no packages",
+            ][..],
+            "an empty never set, which could never fire",
+        ),
+        (
+            swap(
+                r#""only": {"packages": ["reify-core", "reify-ir"]}"#,
+                r#""only": {"packages": ["reify-core", "reify-ghost", "reify-ir"]}"#,
+            ),
+            &["reify-ghost"][..],
+            "a crate rule naming an unclassified package",
+        ),
+        (
+            swap(
+                r#""never": {"strata": ["test-support"]}"#,
+                r#""never": {"strata": ["nowhere", "test-support"]}"#,
+            ),
+            &["nowhere"][..],
+            "a crate rule naming an unknown stratum",
+        ),
+        (
+            swap(
+                r#""to": "reify-kernel-gmsh", "task""#,
+                r#""to": "reify-ghost", "task""#,
+            ),
+            &["reify-ghost"][..],
+            "an exception naming an unclassified package",
+        ),
+        (
+            swap(r#""task": 8289"#, r##""task": "#8289""##),
+            &["task"][..],
+            "an exception task that is a string",
+        ),
+        (
+            swap(r#""task": 8289"#, r#""task": true"#),
+            &["task"][..],
+            "an exception task that is a bool",
+        ),
+        (
+            swap(
+                r#""note": "fixture: excepted solver -> kernel edge""#,
+                r#""note": """#,
+            ),
+            &["note"][..],
+            "an exception with an empty note",
+        ),
+        (
+            swap(
+                EXCEPTED_ROW,
+                &format!("{EXCEPTED_ROW},\n    {EXCEPTED_ROW}"),
+            ),
+            &["reify-solver-elastic -> reify-kernel-gmsh"][..],
+            "a duplicate exception edge",
+        ),
+    ];
+    for (table, culprits, context) in &cases {
+        let out = check(table, &clean_workspace());
+        for culprit in *culprits {
+            assert_input_error(&out, culprit, context);
+        }
+    }
+}
+
+#[test]
+fn strata_fails_closed_on_untrustworthy_metadata() {
+    let fixture = StrataFixture::new(FIXTURE_TABLE, &clean_workspace());
+    assert_input_error(
+        &fixture.check_metadata("absent.json"),
+        "absent.json",
+        "a nonexistent --metadata path",
+    );
+
+    fixture.write("garbled.json", "{\"packages\": [");
+    assert_input_error(
+        &fixture.check_metadata("garbled.json"),
+        "garbled.json",
+        "a --metadata file that is not JSON",
+    );
+
+    let graph = with_dep(
+        clean_workspace(),
+        "reify-kernel-x",
+        Dep::new("reify-eval", DepKind::Build),
+    );
+    let metadata = metadata_json(&graph);
+    assert_eq!(metadata.matches(r#""kind": "build""#).count(), 1);
+    fixture.write(
+        "weird.json",
+        &metadata.replace(r#""kind": "build""#, r#""kind": "weird""#),
+    );
+    let out = fixture.check_metadata("weird.json");
+    for culprit in ["weird", "reify-kernel-x"] {
+        assert_input_error(&out, culprit, "a dependency kind cargo never documents");
+    }
+
+    fixture.write("no-members.json", r#"{"packages": []}"#);
+    let out = fixture.check_metadata("no-members.json");
+    for culprit in ["malformed cargo metadata", "workspace_members"] {
+        assert_input_error(&out, culprit, "metadata with no workspace_members");
+    }
+
+    let metadata = metadata_json(&clean_workspace());
+    let kindless = metadata.replacen(r#""kind": null, "#, "", 1);
+    assert_ne!(
+        kindless, metadata,
+        "the clean metadata has a normal dependency"
+    );
+    fixture.write("kindless.json", &kindless);
+    let out = fixture.check_metadata("kindless.json");
+    for culprit in ["malformed cargo metadata", "'kind'"] {
+        assert_input_error(&out, culprit, "a dependency with no kind");
+    }
+}
+
+#[test]
+fn workspace_crate_strata_match_the_committed_table() {
+    let root = workspace_root();
+    let out = run_strata([OsStr::new("--root"), root.as_os_str()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the crate-strata assertion (PRD kernel-interface-typed-seam §8 γ) is red. \
+         `python3 scripts/assert-crate-strata.py --help` explains each line: classify a \
+         new crate in scripts/crate-strata.json, and delete an exception row in the diff \
+         that drops its edge.\n{}",
+        describe(&out)
+    );
 }

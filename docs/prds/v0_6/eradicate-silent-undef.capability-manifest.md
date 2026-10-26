@@ -33,7 +33,8 @@ only novel "syntax" in this PRD is CLI flags, not grammar).
   undef elements evades the notes loop's `v.is_undef()` filter (probe: the
   printed `P.holes` produced no note even though the loop ran).
 - `cli-skip-site` → PASS. Empty-cause `continue` in `cmd_eval`'s undef-notes
-  loop (`crates/reify-cli/src/main.rs`, "if causes.is_empty() { continue; }").
+  loop (`crates/reify-cli/src/main.rs`, "if causes.is_empty() { continue; }"). **[Amended 2026-10-22, υ #8775 BLK-1]**
+  delivered check `cli-empty-cause-loud` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is `cmd_eval`'s undef-notes loop, which moved to `crates/reify-cli/src/cmd/eval.rs`.
 - `diagnostic-code-home` → PASS. `DiagnosticCode` registry in
   `crates/reify-core/src/diagnostics.rs` (W_/E_ codes; task 2255/3416
   precedent) — `W_UNDEF_UNEXPLAINED` is a new coded variant there.
@@ -83,7 +84,8 @@ only novel "syntax" in this PRD is CLI flags, not grammar).
 
 - `severity-gate-precedent` → PASS. `cmd_eval`'s Severity::Error exit gate
   (`main.rs:1661` region) and `build_is_success` (`main.rs:2286`, task 4458)
-  — ε converges check on the same rule via a shared helper.
+  — ε converges check on the same rule via a shared helper. **[Amended 2026-10-20, τ #8758 BLK-1]**
+  delivered check re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `CHECK_ERROR_EXIT_ALLOWLIST` moved to `crates/reify-cli/src/check_verdict.rs`.
 - `outlier-baseline-real` (signal premise) → PASS. `finish_check`
   (`main.rs:2719`) decides exit from constraint outcome alone; #5386's
   probe-anchored repro: `error: sub-component "j" references unknown
@@ -95,7 +97,8 @@ only novel "syntax" in this PRD is CLI flags, not grammar).
   (`main.rs:~672`) + `E_DFM_` message-prefix escalation
   (`dfm_has_error_diagnostic`, `main.rs:~688/2580`) — both match
   Error-severity diagnostics only, so the general gate subsumes them;
-  deletion is behaviour-preserving for those classes.
+  deletion is behaviour-preserving for those classes. **[Amended 2026-10-20, τ #8758 BLK-1]**
+  delivered check `bolt-ons-subsumed-and-deleted` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: the verdict layer that hosted `dfm_has_error_diagnostic` moved to `crates/reify-cli/src/check_verdict.rs`.
 - `healthy-path-error-exists` → PASS. Code-less Error "no registered compute
   trampoline" emitted on kernel-less FEA check (`engine_compute.rs:654`,
   `engine_admin.rs:1519`, `engine_eval.rs:8301`; named by the DFM bolt-on's
@@ -133,7 +136,8 @@ only novel "syntax" in this PRD is CLI flags, not grammar).
 
 - `flag-parsing-substrate` → PASS. cmd_eval/cmd_check hand-rolled flag
   loops already parse `--strict`/`--explain-undef`/`--purpose`; `--deny`
-  is the same shape.
+  is the same shape. **[Amended 2026-10-20, τ #8758 BLK-1]**
+  delivered check `flag-added` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is the flag parsers in `crates/reify-cli/src/args.rs` or the `cmd_*` flag loops.
 - `exit-0-baseline-real` (signal premise) → PASS. Probe: `reify eval` on
   the unbound fixture exits 0 while printing `P.d = undef`.
 - `census-upstream` → PASS. DAG-direction: ι ← α (contains_undef census),

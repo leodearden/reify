@@ -73,6 +73,8 @@
 
 ### M-008: Solver-side / runtime consumption of `SolverHint` (the "what the hint actually does")
 
+- **Status update (2026-10-08):** `discrete_set` is resolved by redesign, not by wiring the hint: it compiles to the constraint `x in C` in `docs/prds/v0_6/catalog-membership-constraint.md` (α #8355 … γ #8357). `prefer_stock` / `preferred_strategy` stay unconsumed and become loud (coded Warning, γ #8357); their semantics are decision gate #8360. The findings below are the as-audited record.
+
 - **State:** FICTION
 - **Failure mode:** F1 (compile-time contract → no runtime/solver backing)
 - **Evidence:** Recursive grep for `\.solver_hints` outside test/`test_support` namespaces in `crates/`: **zero readers**. `crates/reify-constraints/src/` has zero references to `SolverHint`, `solver_hint`, `DiscreteSet`, or `PreferStock`. `crates/reify-eval/src/` has zero non-test references. Auto-param resolution in `crates/reify-eval/src/concurrent.rs:263-466` resolves auto params via the constraint solver but does not consult hint collections.

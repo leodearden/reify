@@ -1,0 +1,18 @@
+module s8_geometry_ctor_conformance
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: eta (geometry calls typed Geometry; constructor-argument conformance).
+// Pins: Holder params (String, Length, Point3<Length>) given a let-bound
+// geometry. Silent today (Geometry counts as unverifiable). The inline form
+// is in s8_geometry_ctor_conformance_inline.ri.
+
+structure def Holder {
+    param name : String
+    param len : Length
+    param origin : Point3<Length>
+}
+
+structure def S8GeometryCtorConformance {
+    let b = box(1mm, 1mm, 1mm)
+    sub vialet = Holder(name: b, len: b, origin: b)
+}

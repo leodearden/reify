@@ -512,10 +512,9 @@ impl LanguageServer for ReifyLanguageServer {
             //
             // ONE DELIBERATE RESIDUAL: diagnostics/eval_guard.rs's
             // `SkippedEval::report_to_log` still writes to stderr. Out of
-            // scope for #6329 because `skip_reason` has three production
-            // entry points and two of them (the stateless
-            // `compute_diagnostics`, and `AnalysisContext::from_parsed`)
-            // have no channel to route to — deciding how a sinkless pure
+            // scope for #6329 because `skip_reason` has two production
+            // entry points and one of them (`AnalysisContext::from_parsed`)
+            // has no channel to route to — deciding how a sinkless pure
             // entry point reports is a separate design question. The hazard
             // class above is already absent there regardless: that site is
             // throttled by `LAST_REPORTED_SKIP` to one line per distinct
@@ -690,7 +689,7 @@ impl LanguageServer for ReifyLanguageServer {
         // Reuse the per-document cached parse (one parse per edit).
         let text = doc.text.clone();
         let parsed = doc.parsed_module();
-        let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
+        let symbols = crate::symbols::compute_document_symbols_from_parsed(&parsed, &text);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
@@ -1209,11 +1208,8 @@ fn version_stamped_workspace_edit(
 mod tests {
     use super::test_support::RecordingSink;
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use tower_lsp::LspService;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Create a test LspService with NoOpSink (reduces boilerplate across tests).
     fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) {
@@ -3312,7 +3308,7 @@ structure Assembly {
             .await
             .unwrap();
 
-        // Should resolve to parts.ri line 0 (from editor content, not disk).
+        // Should resolve to parts.ri line 0 (from editor content, not disk). plinecite:allow — 0-based LSP position asserted below, in this test's in-memory parts.ri; not a code cite
         // Disk version doesn't have Plate, so this proves DocumentStore is used.
         let response = goto_result
             .expect("goto-def should resolve Plate from DocumentStore content, not disk");

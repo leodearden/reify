@@ -100,6 +100,7 @@ fn cold_population_records_seeded_face_under_dispatched_kernel_not_interim_occt(
 
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry,
@@ -243,6 +244,7 @@ fn ad_hoc_face_selector_resolves_against_manifold_scoped_attribute() {
 
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry,

@@ -102,6 +102,14 @@ CITED_TEST_PATH_REGEX='crates/[a-z0-9-]+/tests/[A-Za-z0-9_./-]+\.rs'
 # automatically signal when this exemption goes stale. The trigger above is a
 # human obligation, not a check.
 #
+# ROW 5 IS STRUCTURAL, like rows 1-3. crates/reify-audit/plinecite-baseline.txt
+# is PLINECITE's ratchet ledger: each row QUOTES a line cite found in a tracked
+# source comment, so every stale cited test path in such a comment appears
+# there a second time. The source comment is the reference to repoint, and it
+# is still scanned; the ledger row follows it when the ledger is regenerated
+# (plinecite-baseline-gen --write), so a finding against the row is never
+# actionable.
+#
 # Defined ONCE here so the gate and the generator cannot drift apart — the
 # `:(exclude)` pathspec idiom tests/infra/test_orchestrator_config_canonical_path.sh
 # uses to exclude itself.
@@ -115,7 +123,8 @@ cited_test_path_exclusions() {
         ':(exclude)tests/infra/cited-test-path-baseline.manifest' \
         ':(exclude)tests/infra/cited-test-path-lib.sh' \
         ':(exclude)tests/infra/test_cited_test_paths_resolve.sh' \
-        ':(exclude)docs/legibility/confusion-codebook.yaml'
+        ':(exclude)docs/legibility/confusion-codebook.yaml' \
+        ':(exclude)crates/reify-audit/plinecite-baseline.txt'
 }
 
 # ---------------------------------------------------------------------------

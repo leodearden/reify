@@ -124,7 +124,7 @@ fn p7_ri_driver_minimize_parks_at_seed_silently() {
         compile_errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 

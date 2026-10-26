@@ -2,7 +2,8 @@
 # Infrastructure test for task 4608 (prd-gate-exec γ — decompose-phase verification).
 # Verifies that:
 #   1. python3 is on PATH
-#   2. scripts/test_prd_decompose_verify.py (stdlib unittest) exits 0
+#   2. every scripts/test_prd_decompose_verify*.py partition (stdlib unittest),
+#      in one unittest invocation, exits 0
 #   3. CLI smoke: scripts/prd-decompose-verify.py --help exits 0
 #   4. CLI smoke: synthesize on an all-PASS results fixture exits 0
 #   5. CLI smoke: synthesize on a FAIL results fixture exits 1
@@ -31,8 +32,8 @@ echo "=== test_prd_decompose_verify ==="
 assert "python3 is available" command -v python3
 
 # ── Unit tests ────────────────────────────────────────────────────────────
-assert "scripts/test_prd_decompose_verify.py exits 0" \
-    python3 "$REPO_ROOT/scripts/test_prd_decompose_verify.py"
+assert "scripts/test_prd_decompose_verify*.py partitions (one unittest run) exit 0" \
+    python3 -m unittest discover -s "$REPO_ROOT/scripts" -t "$REPO_ROOT/scripts" -p 'test_prd_decompose_verify*.py'
 
 # ── CLI smoke: --help ─────────────────────────────────────────────────────
 assert "scripts/prd-decompose-verify.py --help exits 0" \

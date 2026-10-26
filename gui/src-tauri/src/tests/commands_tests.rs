@@ -17,7 +17,7 @@ use crate::engine::EngineSession;
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// [`make_session`] with `source` loaded under the module name `bracket`.
@@ -176,7 +176,7 @@ fn get_source_location_for_width() {
 fn export_writes_file() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -577,16 +577,23 @@ fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representatio
 ///
 /// The refusal must also leave the delta baseline untouched: the seam's
 /// `compute_delta` sits after the `?`, so a refused write commits no new state.
+///
+/// The design is loaded from a file and exported beside it because the seam confines
+/// export targets to the open design's directory, a check that precedes η.
 #[cfg(feature = "gui")]
 #[tokio::test]
 async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
     use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
 
-    let engine = Arc::new(Mutex::new(make_loaded_session_from(&bounded_bracket_source())));
+    let dir = tempfile::tempdir().unwrap();
+    let design = dir.path().join("bracket.ri");
+    std::fs::write(&design, bounded_bracket_source()).unwrap();
+    let mut session = make_session();
+    session.load_file(&design).expect("initial load");
+    let engine = Arc::new(Mutex::new(session));
     let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
         std::sync::Mutex::new(None);
 
-    let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ai_bounded.step");
 
     let err = reify_export_on_engine_and_refresh_baseline(
@@ -647,7 +654,7 @@ fn get_mechanism_descriptors_impl_round_trips() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
         .expect("load mechanism fixture");
@@ -699,7 +706,7 @@ fn get_mechanism_descriptors_impl_recovers_from_poisoned_mutex() {
     // an empty default.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
         .expect("load mechanism fixture");
@@ -1167,6 +1174,7 @@ fn mesh_stats_json_reports_full_scene_under_selective_demand() {
             "face_count",
             "bounding_box",
             "element_kind_count",
+            "default_visible",
         ] {
             assert!(
                 entry.get(key).is_some(),
@@ -1197,7 +1205,7 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
     let source = include_str!("../../../../examples/fea_shell_flexure.ri");
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(source, "FeaShellFlexure")
         .expect("load_from_source must succeed for fea_shell_flexure.ri");
@@ -1266,6 +1274,113 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
             bbox[key].as_array().map(|a| a.len()),
             Some(3),
             "bounding_box.{key} must be a 3-element array"
+        );
+    }
+}
+
+/// A flange whose `body` and `hole` are consumed by the terminal `geometry`
+/// (#5195) beside an `aux` blank (T6) — the shapes whose engine verdict is
+/// hidden-by-default. Material literal as in engine_tests'
+/// `get_entity_tree_consumed_realizations_default_visible_false`.
+const AUX_AND_CONSUMED_FLANGE_SRC: &str = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = cylinder(60mm, 12mm)
+    let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
+    aux let blank = cylinder(8mm, 40mm)
+    param geometry : Solid = difference(body, hole)
+}"#;
+
+/// Each mesh entry's `default_visible`, keyed by its `entity_path`.
+fn default_visible_by_path(
+    projection: &serde_json::Value,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    projection["meshes"]
+        .as_array()
+        .expect("meshes must be an array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["entity_path"]
+                    .as_str()
+                    .expect("each mesh must carry an entity_path string")
+                    .to_string(),
+                entry
+                    .get("default_visible")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect()
+}
+
+/// Both full-scene debug reads report the engine's hidden-by-default verdict
+/// per mesh, joined through the entity tree's realization node for that mesh.
+#[test]
+fn mesh_stats_and_engine_state_report_the_engine_default_visible_verdict_per_mesh() {
+    use crate::commands::{engine_state_json, mesh_stats_json};
+
+    let mut session = make_session();
+    session
+        .load_from_source(AUX_AND_CONSUMED_FLANGE_SRC, "flange")
+        .expect("load");
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+    let path_of = |name: &str| -> String {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+            .entity_path
+            .clone()
+    };
+    let expected = [
+        ("body", false),
+        ("hole", false),
+        ("blank", false),
+        ("geometry", true),
+    ];
+
+    let mesh_stats = mesh_stats_json(&mut session).expect("mesh_stats_json succeeds");
+    let engine_state = engine_state_json(&mut session).expect("engine_state_json succeeds");
+
+    for (read, projection) in [("mesh_stats", &mesh_stats), ("engine_state", &engine_state)] {
+        let by_path = default_visible_by_path(projection);
+        for (name, visible) in expected {
+            let path = path_of(name);
+            assert_eq!(
+                by_path.get(&path),
+                Some(&serde_json::json!(visible)),
+                "{read}: mesh {path} ('{name}') must carry default_visible == {visible}; \
+                 got {by_path:?}"
+            );
+        }
+    }
+}
+
+/// Sub-component bodies join too: `MeshData.entity_path` keys the same
+/// realization-node paths the frontend's auto-view joins on, at every depth.
+#[test]
+fn every_nested_composed_mesh_carries_a_boolean_default_visible() {
+    use crate::commands::mesh_stats_json;
+
+    let mut session = make_nested_composed_session();
+
+    let stats = mesh_stats_json(&mut session).expect("mesh_stats_json succeeds");
+    let by_path = default_visible_by_path(&stats);
+
+    assert!(
+        by_path.len() >= 4,
+        "the fixture projects 4 leaf bodies; got {by_path:?}"
+    );
+    for (path, visible) in &by_path {
+        assert!(
+            visible.is_boolean(),
+            "mesh {path} must carry a boolean default_visible (null means no entity-tree \
+             realization node matched its entity_path); got {visible}"
         );
     }
 }
@@ -1826,7 +1941,7 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let engine = std::sync::Mutex::new(session);
 
     let _guard = cwd_lock().lock().unwrap();
@@ -2046,7 +2161,7 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
 fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -2067,6 +2182,7 @@ fn make_test_engine_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Arc<Mut
     std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -3840,6 +3956,7 @@ mod queued_requests {
 
     fn fresh_engine() -> Arc<Mutex<EngineSession>> {
         Arc::new(Mutex::new(EngineSession::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         )))

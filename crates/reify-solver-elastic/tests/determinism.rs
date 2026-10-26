@@ -685,17 +685,16 @@ fn deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts() {
 /// (`deterministic_displacement_bit_stable_across_repeats_and_thread_counts`)
 /// only flakes under heavy system load, making it a poor reintroduction guard
 /// for the assembly-determinism fix (task 4573). This fast guard uses a
-/// scaled-down mesh that still exercises the BTreeMap duplicate-summation path
-/// (interior nodes shared by up to 6 elements → abundant duplicate (row,col)
-/// contributions) but solves in well under a second, so it runs every CI
-/// invocation.
+/// scaled-down mesh that still exercises shared-entry summation (interior
+/// nodes shared by many elements → many contributions per (row, col)) but
+/// solves in well under a second, so it runs every CI invocation.
 ///
 /// # Mesh
 ///
 /// `8×6×5` hex cells → `9×7×6 = 378` nodes → `1 134` DOFs. Interior nodes
-/// are shared by many elements; the 6 × 8 × 6 × 5 × 144 = 207 360 raw
-/// triplets from `emit_element_triplets` collapse to ≪ 207 360 unique
-/// `(row, col)` keys via the BTreeMap pre-aggregation.
+/// are shared by many elements; the 6 × 8 × 6 × 5 × 144 = 207 360 element
+/// contributions land on ≪ 207 360 stored `(row, col)` entries, each summed
+/// node by node over its incident elements in element order.
 ///
 /// # Assertions (16 repeats)
 ///

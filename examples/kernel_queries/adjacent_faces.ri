@@ -6,10 +6,11 @@
 // FunctionCall args which fall through to None in the dispatcher.
 //
 // Runtime note: prior to selector→list-helper→selector eval-chaining support
-// (engine_build.rs:3942-3949, out of scope for KGQ-κ), the chained cells
-// `top`, `side`, `neighbors`, and `shared` evaluate to Value::Undef at
-// runtime. This fixture pins COMPILATION (grammar + type registration for
-// adjacent_faces and shared_edges) rather than runtime semantics.
+// (`post_process_topology_selectors`, crates/reify-eval/src/engine_build.rs;
+// out of scope for KGQ-κ), the chained cells `top`, `side`, `neighbors`, and
+// `shared` evaluate to Value::Undef at runtime. This fixture pins COMPILATION
+// (grammar + type registration for adjacent_faces and shared_edges) rather
+// than runtime semantics.
 // Runtime semantics are pinned by the kernel-layer OCCT tests instead:
 //   crates/reify-eval/tests/kernel_queries_adjacent_faces.rs
 //

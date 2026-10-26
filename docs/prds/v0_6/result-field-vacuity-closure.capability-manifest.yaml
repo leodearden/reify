@@ -142,6 +142,7 @@ tasks:
       pattern: P[Vv][Aa][Cc]
       paths:
       - crates/reify-audit/src/lib.rs
+      - crates/reify-audit/src/model.rs
       expect: present
   - name: infra-ratchet-registration-same-diff
     binding: 'drift-guard registration (esc-4914-162 rule) - the run-all-classification

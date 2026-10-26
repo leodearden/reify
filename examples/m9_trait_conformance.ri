@@ -7,8 +7,7 @@
 //   5. Trait refinement chain
 //   6. Diamond merging (member deduplication)
 //   7. Qualified access for disambiguation (fallback: not available in branch)
-//   8. Port declaration in trait (syntax coverage)
-//   9. Additional constraints ensure >=12 total across all structures
+//   8. Additional constraints ensure >=12 total across all structures
 
 // ── Feature 1+2: Trait with params/lets/constraints + structure implementing it ──
 
@@ -54,8 +53,6 @@ structure def Part : Measurable + Weighable {
 trait Physical : Measurable + Weighable {
     param density : Real
     constraint density > 0
-    // Feature 8: port declaration in trait (syntax coverage)
-    port output : out Physical
 }
 
 structure def Component : Physical {

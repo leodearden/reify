@@ -513,6 +513,39 @@ impl LetBindingEnv for EmptyLetEnv {
     }
 }
 
+/// An environment that resolves a `GeomRef::Sub(name)` operand to the inferred
+/// traits of its referent.
+///
+/// The op-array walker does not own name→ops resolution: a `Sub` ref names a
+/// sibling realization on the enclosing template, which only the conformance
+/// walker can look up. This trait is the seam it reaches through, mirroring
+/// [`LetBindingEnv`] for the expression walker.
+///
+/// Returns `None` for any name the implementor declines to resolve (unknown,
+/// deliberately out of scope, or already in flight on the current call stack),
+/// in which case the caller falls back to `InferredTraits::all()` — the same
+/// safe-default convention [`LetBindingEnv`] uses.
+pub trait SubRefEnv {
+    /// Look up the inferred traits for the geometry named by a `GeomRef::Sub`.
+    ///
+    /// Returns `Some(traits)` if `name` resolves, or `None` for "unknown / use
+    /// the safe default". Implementors MUST terminate cycles themselves —
+    /// nothing in this module tracks which names are already being resolved.
+    fn lookup_sub(&self, name: &str) -> Option<InferredTraits>;
+}
+
+/// An empty `SubRefEnv` that always returns `None`.
+///
+/// Used by the env-less [`infer_traits_for_op`] wrapper and by any call site
+/// that has no sibling-realization context to offer.
+pub struct EmptySubRefEnv;
+
+impl SubRefEnv for EmptySubRefEnv {
+    fn lookup_sub(&self, _name: &str) -> Option<InferredTraits> {
+        None
+    }
+}
+
 /// Walk the inference table over a `CompiledExpr`.
 ///
 /// This is the call-site form used by the conformance walker, which has a
@@ -577,7 +610,13 @@ pub fn infer_traits_for_expr_in_env(
     }
 }
 
-/// Walk the inference table over a compiled geometry op-array.
+/// Walk the inference table over a compiled geometry op-array that has NO
+/// sibling scope.
+///
+/// This wrapper never resolves `GeomRef::Sub`: every such operand infers
+/// `all()`, so an unbounded sibling-let operand would satisfy `Bounded`. Use it
+/// only for an op-array with no enclosing template (e.g. a hand-built one); a
+/// caller that can name the template must use [`infer_traits_for_op_in_env`].
 ///
 /// This is the **inverse** of the `infer_traits_for_expr` FunctionCall arm —
 /// same dispatch table (same `combine_*` helpers and `infer_primitive` lookup)
@@ -593,9 +632,7 @@ pub fn infer_traits_for_expr_in_env(
 ///
 /// - Empty array → `InferredTraits::all()` (defensive; compiler never emits an
 ///   empty realization).
-/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (safe-default: sub-component
-///   geometry is not chased through the call stack; doing so would require
-///   resolving cross-entity references that are out of scope here).
+/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (see above).
 /// - Out-of-range `GeomRef::Step(idx)` → `InferredTraits::all()` (defensive;
 ///   well-formed IR never produces an out-of-range index).
 /// - Self-referential or forward-chain `GeomRef::Step(idx)` (`idx >=
@@ -603,9 +640,27 @@ pub fn infer_traits_for_expr_in_env(
 ///   SSA-style construction guarantees `idx < current_position`, so any
 ///   violation is malformed IR that would otherwise infinite-recurse).
 pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
+    infer_traits_for_op_in_env(ops, &EmptySubRefEnv)
+}
+
+/// Walk the inference table over a compiled geometry op-array, consulting
+/// `env` to resolve `GeomRef::Sub(name)` operands to their referent's traits.
+///
+/// Every arm behaves identically to [`infer_traits_for_op`] except
+/// `GeomRef::Sub`, which delegates to `env.lookup_sub(name)` and safe-defaults
+/// to `InferredTraits::all()` only when the env declines. The dispatch table
+/// lives here and the env-less wrapper is a thin alias over `EmptySubRefEnv`.
+///
+/// The env is responsible for its own cycle termination — a sibling
+/// realization can name a sibling that names it back, and this walker's
+/// `idx < current_position` guard only covers `GeomRef::Step` within one array.
+pub fn infer_traits_for_op_in_env(
+    ops: &[CompiledGeometryOp],
+    env: &dyn SubRefEnv,
+) -> InferredTraits {
     match ops.last() {
         None => InferredTraits::all(),
-        Some(op) => infer_op(op, ops, ops.len() - 1),
+        Some(op) => infer_op(op, ops, ops.len() - 1, env),
     }
 }
 
@@ -614,11 +669,14 @@ pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
 ///
 /// `current_position` is the index of `op` within `ops`. It is threaded
 /// through all recursive calls so that `infer_geom_ref` can enforce the
-/// `idx < current_position` SSA-style invariant.
+/// `idx < current_position` SSA-style invariant. `env` is threaded the same
+/// way, so every `GeomRef::Sub` reachable from the root sees the same
+/// resolution environment.
 fn infer_op(
     op: &CompiledGeometryOp,
     ops: &[CompiledGeometryOp],
     current_position: usize,
+    env: &dyn SubRefEnv,
 ) -> InferredTraits {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
@@ -628,8 +686,8 @@ fn infer_op(
             left,
             right,
         } => {
-            let a = infer_geom_ref(left, ops, current_position);
-            let b = infer_geom_ref(right, ops, current_position);
+            let a = infer_geom_ref(left, ops, current_position, env);
+            let b = infer_geom_ref(right, ops, current_position, env);
             match bool_op {
                 BooleanOp::Union => combine_union(a, b),
                 BooleanOp::Difference => combine_difference(a, b),
@@ -638,15 +696,15 @@ fn infer_op(
         }
 
         CompiledGeometryOp::Modify { target, .. } => {
-            combine_modify(infer_geom_ref(target, ops, current_position))
+            combine_modify(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Transform { target, .. } => {
-            combine_transform(infer_geom_ref(target, ops, current_position))
+            combine_transform(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Pattern { target, .. } => {
-            combine_pattern(infer_geom_ref(target, ops, current_position))
+            combine_pattern(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Sweep { profiles, .. } => {
@@ -654,7 +712,7 @@ fn infer_op(
             // geometry swept along a finite path stays bounded and connected).
             let profile = profiles
                 .first()
-                .map(|r| infer_geom_ref(r, ops, current_position))
+                .map(|r| infer_geom_ref(r, ops, current_position, env))
                 .unwrap_or(InferredTraits::all());
             combine_sweep(profile)
         }
@@ -686,7 +744,8 @@ fn infer_op(
 }
 
 /// Resolve a `GeomRef` within an op-array, returning the inferred traits for
-/// the referenced op. `GeomRef::Sub(_)` returns the safe all() default.
+/// the referenced op. `GeomRef::Sub(name)` delegates to `env.lookup_sub(name)`
+/// and falls back to the safe all() default only when the env declines.
 ///
 /// # Cycle guard — `idx < current_position` invariant
 ///
@@ -705,6 +764,7 @@ fn infer_geom_ref(
     geom_ref: &GeomRef,
     ops: &[CompiledGeometryOp],
     current_position: usize,
+    env: &dyn SubRefEnv,
 ) -> InferredTraits {
     match geom_ref {
         GeomRef::Step(idx) => {
@@ -723,11 +783,14 @@ fn infer_geom_ref(
                 "cycle guard should have caught idx >= current_position"
             );
             ops.get(*idx)
-                .map(|op| infer_op(op, ops, *idx))
+                .map(|op| infer_op(op, ops, *idx, env))
                 .unwrap_or(InferredTraits::all())
         }
-        // Sub-component geometry is not chased through the call stack.
-        GeomRef::Sub(_) => InferredTraits::all(),
+        // Sub-component geometry is resolved by the env, which owns
+        // name→realization lookup and its own cycle termination. `None` means
+        // the env declined (unknown name, out of scope, or already in flight),
+        // which collapses to the module-wide safe default.
+        GeomRef::Sub(name) => env.lookup_sub(name).unwrap_or(InferredTraits::all()),
     }
 }
 

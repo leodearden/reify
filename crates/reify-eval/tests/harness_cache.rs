@@ -39,6 +39,12 @@
 //! as well as compiled so the fixture/example *content* is confirmed to still reach the
 //! assertions.
 //!
+//! The `selective_eviction_*` modules (task #6925) test keyed realization-cache eviction
+//! at the edit seam (PRD selective-realization-eviction δ/ε), the eviction half of the
+//! same incremental-recompute subsystem. `selective_eviction_conversion_intermediate`
+//! (task #8443) pins that a cross-kernel conversion intermediate leaves with its owner's
+//! eviction family, over a two-kernel test registry.
+//!
 //! Whole-unit size — this root, every `harness_cache/*.rs` module below, and the
 //! `common/differential.rs` include above, which escapes the module directory — is
 //! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
@@ -75,6 +81,12 @@ mod selective_demand_gamma;
 mod selective_demand_measurement;
 #[path = "harness_cache/selective_demand_redemand_staleness.rs"]
 mod selective_demand_redemand_staleness;
+#[path = "harness_cache/selective_eviction_conversion_intermediate.rs"]
+mod selective_eviction_conversion_intermediate;
+#[path = "harness_cache/selective_eviction_slider_drag_dispatch_e2e.rs"]
+mod selective_eviction_slider_drag_dispatch_e2e;
+#[path = "harness_cache/selective_eviction_staleness_differential.rs"]
+mod selective_eviction_staleness_differential;
 #[path = "harness_cache/snapshot_cache_divergence_gate.rs"]
 mod snapshot_cache_divergence_gate;
 #[path = "harness_cache/unified_dag_boundary_cases.rs"]

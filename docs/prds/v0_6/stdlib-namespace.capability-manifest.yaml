@@ -11,7 +11,7 @@ tasks:
       entities_phase.rs HashMap-collect last-wins, enums_phase.rs prelude++local inversion
       (type_resolution.rs .iter().find), eval-side first-wins find_template_with_prelude
       (reify-eval/src/engine_eval.rs:64-68); both `structure def Mode` decls live
-      (solver_buckling.ri:174, modal_analysis.ri:192)'
+      (solver_buckling.ri, since renamed BucklingMode by #5496; modal_analysis.ri)'
     verdict: PASS
     delivered_check:
       kind: grep

@@ -104,6 +104,8 @@ _NEXTEST_ABSENT_PREV_HUP=""
 # location so a caller need not thread it through. Overridable per-call (first
 # positional arg) and per-environment (NEXTEST_ABSENT_VERIFY).
 _NEXTEST_ABSENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/infra/plan_capture_lib.sh
+source "$_NEXTEST_ABSENT_LIB_DIR/plan_capture_lib.sh"
 _NEXTEST_ABSENT_REPO_ROOT="$(cd "$_NEXTEST_ABSENT_LIB_DIR/../.." && pwd)"
 NEXTEST_ABSENT_VERIFY="${NEXTEST_ABSENT_VERIFY:-$_NEXTEST_ABSENT_REPO_ROOT/scripts/verify.sh}"
 
@@ -171,10 +173,18 @@ _nextest_absent_mirror_source() {
 #       signal cannot terminate the shell either, and EXIT still runs on a normal
 #       exit. See tests/infra/README.md, "Signals ignored on entry".
 #
-#       ONE CONSEQUENCE, and it is not new: because the dispatcher does not
-#       re-raise, a handler replayed on INT/TERM/HUP may run AGAIN at EXIT if the
-#       shell resumes and then exits normally. A COMPOSED HANDLER MUST THEREFORE
-#       BE IDEMPOTENT. That is exactly the semantics of the plain
+#       A FATAL SIGNAL ENDS THE SHELL (task 9441). On INT/TERM/HUP, after
+#       teardown and the replayed handler, the dispatcher exits 128+n. It
+#       does not let the shell resume against the NX_WORKDIR it has just
+#       deleted. That is the shape diagnosed in esc-8989-2 / esc-6673-6:
+#       test_verify_nextest_absent_suites.sh outlived the merge envelope's
+#       TERM, and its later nested suites failed against the removed farm.
+#       `exit` runs the EXIT dispatch too, so the caller's EXIT handler still
+#       fires.
+#
+#       ONE CONSEQUENCE: a handler composed onto EXIT is replayed for the
+#       signal and then AGAIN at EXIT, so a COMPOSED HANDLER MUST BE
+#       IDEMPOTENT. That is exactly the semantics of the plain
 #       `trap cleanup EXIT INT TERM HUP` this composition replaces (and which
 #       test_verify_semaphore_wiring.sh itself used before it moved onto the
 #       lib); both live consumers' handlers are `rm -rf` loops, which are.
@@ -217,10 +227,10 @@ _nextest_absent_trap_body() {
 }
 
 # _nextest_absent_trap_dispatch <sig> — the composed handler: lib teardown
-# first, then the caller's stashed handler.
-#
-# Signals are deliberately NOT re-raised after the handler runs, matching the
-# behaviour of the plain `trap 'rm -rf ...' EXIT INT TERM HUP` this replaces.
+# first, then the caller's stashed handler. On INT/TERM/HUP the shell then
+# exits 128+n (see "A FATAL SIGNAL ENDS THE SHELL" above). It uses `exit`, not
+# `trap - SIG; kill -SIG $$`, for two reasons: exit still runs the EXIT
+# dispatch, and `$$` would name the parent shell inside a subshell.
 _nextest_absent_trap_dispatch() {
     local sig="$1" prev=""
     nextest_absent_cleanup
@@ -228,14 +238,21 @@ _nextest_absent_trap_dispatch() {
     if [ -n "$prev" ]; then
         eval "$prev" || true
     fi
+    case "$sig" in
+        INT|TERM|HUP)
+            trap - "$sig"
+            exit $(( 128 + $(kill -l "$sig") ))
+            ;;
+    esac
     return 0
 }
 
 # _nextest_absent_arm_traps — stash-and-compose on all four signals.
 #
 # INT/TERM/HUP as well as EXIT: verify.sh wraps each selected infra test in
-# `timeout --kill-after=60 <n>m` and run_all.sh applies a 30m cap, so an outer
-# timeout kill would otherwise leak the whole temp tree.
+# `timeout --kill-after=60 <n>m` and runs run_all.sh under the merge-tier outer
+# envelope (its run_all.sh add_tool line), so an outer timeout kill would
+# otherwise leak the whole temp tree.
 _nextest_absent_arm_traps() {
     local sig prev
     for sig in EXIT INT TERM HUP; do
@@ -547,13 +564,20 @@ _nextest_absent_h3() { nx_run tree-sitter --version; }
 _nextest_absent_h4() {
     local hdr; hdr="$(nextest_absent_plan_header "${1:-$NEXTEST_ABSENT_VERIFY}")"
     printf '%s\n' "$hdr"
-    case "$hdr" in *"nextest=0"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 0
 }
 
 _nextest_absent_h5() {
     local hdr; hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
     printf '%s\n' "$hdr"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 1
+}
+
+# _nextest_absent_nextest_field_is <header-or-plan> <want> — the plan header's
+# `nextest` field, read by plan_capture_lib.sh's plan_header_field, is <want>.
+# An empty or headerless argument reads as absent, so it never equals <want>.
+_nextest_absent_nextest_field_is() {
+    [ "$(plan_header_field "$1" plan nextest)" = "$2" ]
 }
 
 nextest_absent_assert_real() {
@@ -586,7 +610,8 @@ nextest_absent_assert_real() {
 }
 
 # nextest_available_ambient — does the AMBIENT host have cargo-nextest, as
-# verify.sh sees it? Returns 0 on a `nextest=1` plan header, non-zero otherwise.
+# verify.sh sees it? Returns 0 when the plan header's nextest field reads 1
+# (_nextest_absent_nextest_field_is), non-zero otherwise.
 #
 # This DETECTS host state; it does not simulate absence. It is the idiom
 # test_verify_retry_subset.sh open-coded — that suite deliberately tests against
@@ -599,7 +624,7 @@ nextest_absent_assert_real() {
 nextest_available_ambient() {
     local hdr
     hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 1
 }
 
 # nextest_available_in_plan <plan-text> — the same answer as
@@ -619,11 +644,11 @@ nextest_available_ambient() {
 # nextest_absent_plan_header_ambient captures is
 # `bash "$verify" test --scope all --print-plan 2>/dev/null`, byte-identical to
 # the capture retry_subset already makes, and both route the result through the
-# same content-keyed _nextest_absent_header_of.
+# same content-keyed _nextest_absent_header_of and _nextest_absent_nextest_field_is.
 nextest_available_in_plan() {
     local hdr
     hdr="$(_nextest_absent_header_of "${1:-}")"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 1
 }
 
 # ---------------------------------------------------------------------------
@@ -751,8 +776,8 @@ nextest_absent_home_is_small() {
 # spurious pipeline failure that has nothing to do with the header's content.
 #
 # The capture is guarded with `|| true` so a verify.sh hiccup yields an empty
-# header — which every caller's `case` rejects — rather than aborting a `set -e`
-# caller mid-suite with no Results line at all.
+# header — which every caller's classifier rejects — rather than aborting a
+# `set -e` caller mid-suite with no Results line at all.
 
 # _nextest_absent_header_of <plan> — pick the plan header out of a captured plan.
 #

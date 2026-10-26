@@ -152,7 +152,7 @@ fn build_with_unstaged_kernel(source: &str) -> BuildResult {
     let compiled = parse_and_compile_with_stdlib(source);
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> = Box::new(MockGeometryKernel::new());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     engine.build(&compiled, ExportFormat::Step)
 }
 
@@ -290,7 +290,7 @@ fn bt4_index_access_coercion_realizes_face() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let f0_id = ValueCellId::new("BT4IndexAccess", "f0");
@@ -325,7 +325,7 @@ structure def BT4Ref {
     let ref_compiled = compile_source_with_stdlib(ref_src);
     let ref_kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut ref_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(ref_kernel));
+    let mut ref_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(ref_kernel));
     let ref_result = ref_engine.build(&ref_compiled, ExportFormat::Step);
     let f1_id = ValueCellId::new("BT4Ref", "f1");
     let f1_hash = match ref_result.values.get(&f1_id) {
@@ -415,7 +415,7 @@ fn bt5_single_face_by_normal_coercion() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // `top = single(faces_by_normal(b, +Z, 1°))` must coerce
@@ -467,7 +467,7 @@ structure def BT5Verify {
     let verify_compiled = compile_source_with_stdlib(verify_src);
     let verify_kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut verify_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(verify_kernel));
+    let mut verify_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(verify_kernel));
     let verify_result = verify_engine.build(&verify_compiled, ExportFormat::Step);
 
     // top's kernel_handle (session-scoped, valid within this engine instance).
@@ -864,7 +864,7 @@ fn bt7_construction_is_kernel_free() {
 
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> = Box::new(counting_kernel);
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // (a) `sel` = Value::Selector(Face) with ByNormal{+Z, tol>0} Leaf

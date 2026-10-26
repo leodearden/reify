@@ -22,9 +22,7 @@
  * doing their own I/O is what lets ./toolDefNames.test.ts pin every form from a
  * string literal with no on-disk fixture.
  */
-import { readFileSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readTauriSrc } from './tauriSource';
 
 /**
  * Extract the tool names advertised by `tool_defs()` in debug_server.rs.
@@ -112,25 +110,9 @@ export function analyzeToolDefs(rustSource: string): ToolDefExtraction {
 }
 
 /**
- * Read gui/src-tauri/src/debug_server.rs.
- *
- * The path is resolved from THIS module's own location, not the caller's:
- * `import.meta.url` is per-module, so a single computation is correct for every
- * importer regardless of which directory it sits in.  That is what replaced the
- * two different path computations the copies used
- * (`join(__dirname, '../../src-tauri/...')` in one, `resolveRepoRoot()` +
- * `path.join` in the other).
- *
- * The `fileURLToPath` + `path.dirname` + `path.resolve` idiom is the one proven
- * in gui/test/visual/paths.ts, which documents why naive URL-relative `..` math
- * over-shoots.  Segment count here:
- *
- *   <gui>/src/__tests__/toolDefNames.ts
- *              ^^^^^^^^   (dirname = __tests__/)
- *         ^^^               (..     = src/)
- *   ^^^^^                   (..     = gui/)
+ * Read gui/src-tauri/src/debug_server.rs via the shared `readTauriSrc`, which
+ * owns the one path computation (see ./tauriSource.ts).
  */
 export function readDebugServerSource(): string {
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  return readFileSync(path.resolve(dir, '..', '..', 'src-tauri', 'src', 'debug_server.rs'), 'utf-8');
+  return readTauriSrc('debug_server.rs');
 }

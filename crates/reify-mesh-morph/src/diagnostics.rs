@@ -24,11 +24,12 @@ use crate::quality::QualityVerdict;
 
 /// Point-in-time snapshot of the process-global mesh-morph diagnostic counters.
 ///
-/// The six per-outcome buckets named in PRD task #11 plus an additive
-/// `panicked` bucket (the logging policy mandates "Morph panics → error +
-/// diagnostic, plus counter"). Field names match the counter names exactly (no
+/// The six per-outcome buckets named in PRD task #11 plus two additive ones:
+/// `remeshed_solver_error` (a non-panic solver failure) and `panicked` (the
+/// logging policy mandates "Morph panics → error + diagnostic, plus counter").
+/// Field names match the counter names exactly (no
 /// `#[serde(rename_all)]`) so the downstream debug-RPC consumer (task #2949)
-/// can deserialize this DTO by name. Derives mirror `stats::MorphStats`.
+/// can deserialize this DTO by name.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiagnosticSnapshot {
     /// Successful morphs (existing mesh deformed in place).
@@ -37,6 +38,9 @@ pub struct DiagnosticSnapshot {
     pub remeshed_quality_hard_fail: u64,
     /// Remeshed because the quality check soft-failed (metric threshold breach).
     pub remeshed_quality_soft_fail: u64,
+    /// Remeshed because the morph solve or boundary projection returned an
+    /// error, or the quality check reported an unsupported mesh.
+    pub remeshed_solver_error: u64,
     /// Ineligible: Stage-A structural change.
     pub ineligible_structural_change: u64,
     /// Ineligible: Stage-B bijection failure.
@@ -52,13 +56,14 @@ pub struct DiagnosticSnapshot {
 /// Process-global lock-free counters, one per [`MorphOutcome`] bucket.
 ///
 /// `AtomicU64::new(0)` is `const`, so a plain `static COUNTERS` suffices — no
-/// `OnceLock`/`Mutex` wrapper (simpler and lock-free, unlike `stats.rs`). The
+/// `OnceLock`/`Mutex` wrapper. The
 /// counters are mutually independent with no cross-counter invariant, so
 /// `Ordering::Relaxed` is sufficient for both `fetch_add` and `load`.
 struct Counters {
     morphed: AtomicU64,
     remeshed_quality_hard_fail: AtomicU64,
     remeshed_quality_soft_fail: AtomicU64,
+    remeshed_solver_error: AtomicU64,
     ineligible_structural_change: AtomicU64,
     ineligible_bijection_failure: AtomicU64,
     ineligible_naming_error: AtomicU64,
@@ -69,6 +74,7 @@ static COUNTERS: Counters = Counters {
     morphed: AtomicU64::new(0),
     remeshed_quality_hard_fail: AtomicU64::new(0),
     remeshed_quality_soft_fail: AtomicU64::new(0),
+    remeshed_solver_error: AtomicU64::new(0),
     ineligible_structural_change: AtomicU64::new(0),
     ineligible_bijection_failure: AtomicU64::new(0),
     ineligible_naming_error: AtomicU64::new(0),
@@ -77,14 +83,14 @@ static COUNTERS: Counters = Counters {
 
 /// Return a point-in-time snapshot of the process-global diagnostic counters.
 ///
-/// Reached via the `diagnostics::` module path; deliberately NOT bare-re-exported
-/// from the crate root, to avoid colliding with the existing `stats::snapshot`
-/// re-export.
+/// Reached via the `diagnostics::` module path; not re-exported from the crate
+/// root.
 pub fn snapshot() -> DiagnosticSnapshot {
     DiagnosticSnapshot {
         morphed: COUNTERS.morphed.load(Ordering::Relaxed),
         remeshed_quality_hard_fail: COUNTERS.remeshed_quality_hard_fail.load(Ordering::Relaxed),
         remeshed_quality_soft_fail: COUNTERS.remeshed_quality_soft_fail.load(Ordering::Relaxed),
+        remeshed_solver_error: COUNTERS.remeshed_solver_error.load(Ordering::Relaxed),
         ineligible_structural_change: COUNTERS
             .ineligible_structural_change
             .load(Ordering::Relaxed),
@@ -98,23 +104,23 @@ pub fn snapshot() -> DiagnosticSnapshot {
 
 // ── Outcome taxonomy + counter routing ────────────────────────────────────────
 
-/// The seven mutually-exclusive per-tick outcomes the mesh-morph engine can
+/// The eight mutually-exclusive per-tick outcomes the mesh-morph engine can
 /// produce. One variant per [`DiagnosticSnapshot`] counter bucket; selected
 /// inside the recorders from the existing `&QualityVerdict` / `&Reason` the
 /// engine already holds.
 ///
-/// Crate-internal: this type carries no external behaviour — its only consumer
-/// is the private bucket-routing [`counter`] — so it is deliberately neither
-/// `pub` nor re-exported from the crate root. The public diagnostic surface is
-/// the recorders, [`snapshot`], and [`DiagnosticSnapshot`].
+/// The bucket vocabulary `seed_for_test` takes; not re-exported from the crate
+/// root, and replaced by reify-eval's `MorphOutcome` in β (#9092).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MorphOutcome {
+pub enum MorphOutcome {
     /// Existing mesh deformed in place.
     Morphed,
     /// Remeshed after a quality hard-fail (element inversion).
     RemeshedQualityHardFail,
     /// Remeshed after a quality soft-fail (metric threshold breach).
     RemeshedQualitySoftFail,
+    /// Remeshed after the morph solve or boundary projection returned an error.
+    RemeshedSolverError,
     /// Ineligible: Stage-A structural change.
     IneligibleStructuralChange,
     /// Ineligible: Stage-B bijection failure.
@@ -134,6 +140,7 @@ const _: fn() = || {
             MorphOutcome::Morphed
             | MorphOutcome::RemeshedQualityHardFail
             | MorphOutcome::RemeshedQualitySoftFail
+            | MorphOutcome::RemeshedSolverError
             | MorphOutcome::IneligibleStructuralChange
             | MorphOutcome::IneligibleBijectionFailure
             | MorphOutcome::IneligibleNamingError
@@ -149,6 +156,7 @@ fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
         MorphOutcome::Morphed => &COUNTERS.morphed,
         MorphOutcome::RemeshedQualityHardFail => &COUNTERS.remeshed_quality_hard_fail,
         MorphOutcome::RemeshedQualitySoftFail => &COUNTERS.remeshed_quality_soft_fail,
+        MorphOutcome::RemeshedSolverError => &COUNTERS.remeshed_solver_error,
         MorphOutcome::IneligibleStructuralChange => &COUNTERS.ineligible_structural_change,
         MorphOutcome::IneligibleBijectionFailure => &COUNTERS.ineligible_bijection_failure,
         MorphOutcome::IneligibleNamingError => &COUNTERS.ineligible_naming_error,
@@ -164,7 +172,7 @@ fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
 // this module path (`reify_mesh_morph::diagnostics`).
 
 /// Record a successful morph.
-pub fn record_morphed() {
+pub(crate) fn record_morphed() {
     tracing::trace!("mesh morph: morphed");
     counter(MorphOutcome::Morphed).fetch_add(1, Ordering::Relaxed);
 }
@@ -174,7 +182,7 @@ pub fn record_morphed() {
 /// [`QualityVerdict::Pass`] is not a remesh trigger — the engine only calls this
 /// on a fail verdict — so it is a no-op here. The `debug_assert!` makes that
 /// contract loud in debug builds at no release-build cost.
-pub fn record_quality_remesh(verdict: &QualityVerdict) {
+pub(crate) fn record_quality_remesh(verdict: &QualityVerdict) {
     let outcome = match verdict {
         QualityVerdict::HardFail(details) => {
             tracing::info!(
@@ -211,7 +219,7 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
 }
 
 /// Record an ineligible edit, bucketed by reject category.
-pub fn record_ineligible(reason: &Reason) {
+pub(crate) fn record_ineligible(reason: &Reason) {
     tracing::trace!(reason = ?reason, "mesh morph: ineligible edit");
     let outcome = match reason {
         Reason::StructuralChange => MorphOutcome::IneligibleStructuralChange,
@@ -221,8 +229,15 @@ pub fn record_ineligible(reason: &Reason) {
     counter(outcome).fetch_add(1, Ordering::Relaxed);
 }
 
+/// Record a non-panic solver failure that falls back to a remesh; `detail` is
+/// surfaced in the WARN log message.
+pub(crate) fn record_solver_error(detail: &str) {
+    tracing::warn!("mesh morph: solver error, remesh fallback: {detail}");
+    counter(MorphOutcome::RemeshedSolverError).fetch_add(1, Ordering::Relaxed);
+}
+
 /// Record a caught morph panic; `detail` is surfaced in the ERROR log message.
-pub fn record_panicked(detail: &str) {
+pub(crate) fn record_panicked(detail: &str) {
     tracing::error!("mesh morph panicked: {detail}");
     counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
 }
@@ -232,21 +247,28 @@ pub fn record_panicked(detail: &str) {
 /// Render the one-line `--verbose` exit summary for a snapshot.
 ///
 /// Format: `mesh updates: {m} morphed, {r} remeshed, {i} ineligible`, where `r`
-/// aggregates the two remesh buckets and `i` the three ineligible buckets. When
-/// `i > 0`, a parenthetical lists only the non-zero ineligible sub-categories in
-/// the fixed order structural, bijection, naming. When `panicked > 0`, a
-/// `, {p} panicked` suffix is appended. Matches the PRD example exactly:
+/// aggregates every `remeshed_*` bucket and `i` every `ineligible_*` bucket. When
+/// `remeshed_solver_error > 0`, a `({n} solver error)` parenthetical follows the
+/// remeshed count. When `i > 0`, a parenthetical lists only the non-zero
+/// ineligible sub-categories in the fixed order structural, bijection, naming.
+/// When `panicked > 0`, a `, {p} panicked` suffix is appended. Matches the PRD example exactly:
 /// `mesh updates: 47 morphed, 4 remeshed, 2 ineligible (1 structural, 1 bijection)`.
 pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
-    let remeshed = snap.remeshed_quality_hard_fail + snap.remeshed_quality_soft_fail;
+    let remeshed = snap.remeshed_quality_hard_fail
+        + snap.remeshed_quality_soft_fail
+        + snap.remeshed_solver_error;
     let ineligible = snap.ineligible_structural_change
         + snap.ineligible_bijection_failure
         + snap.ineligible_naming_error;
 
     let mut out = format!(
-        "mesh updates: {} morphed, {} remeshed, {} ineligible",
-        snap.morphed, remeshed, ineligible
+        "mesh updates: {} morphed, {} remeshed",
+        snap.morphed, remeshed
     );
+    if snap.remeshed_solver_error > 0 {
+        let _ = write!(out, " ({} solver error)", snap.remeshed_solver_error);
+    }
+    let _ = write!(out, ", {ineligible} ineligible");
 
     if ineligible > 0 {
         let mut parts: Vec<String> = Vec::new();
@@ -276,13 +298,13 @@ pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
 /// Production-callable (ungated); intended for use by the cross-crate
 /// `mesh_morph_stats` debug RPC (`gui/src-tauri/src/debug_server.rs`) when the
 /// caller passes `reset: true` to zero counters and restart the measurement clock
-/// (benchmark-sequence use case). Note: the seven stores are independent and not
+/// (benchmark-sequence use case). Note: the eight stores are independent and not
 /// combined into a single atomic operation — a concurrent recorder active during
 /// the reset window may make the post-reset snapshot non-zero.
 ///
 // Only caller is the cross-crate debug RPC (gui/src-tauri/src/debug_server.rs
 // handle_mesh_morph_stats), invisible to the crate-scoped orphan audit; the
-// diagnostics_g_allow.rs test pins the 4 recorders and does not assert orphan_count==0.
+// diagnostics_g_allow.rs test pins the recorders and does not assert orphan_count==0.
 // G-allow: cross-crate debug RPC caller (debug_server.rs handle_mesh_morph_stats), invisible to crate-scoped audit
 pub fn reset() {
     COUNTERS.morphed.store(0, Ordering::Relaxed);
@@ -292,6 +314,7 @@ pub fn reset() {
     COUNTERS
         .remeshed_quality_soft_fail
         .store(0, Ordering::Relaxed);
+    COUNTERS.remeshed_solver_error.store(0, Ordering::Relaxed);
     COUNTERS
         .ineligible_structural_change
         .store(0, Ordering::Relaxed);
@@ -306,16 +329,26 @@ pub fn reset() {
 ///
 /// Available in same-crate `#[cfg(test)]` context, and also when the crate is
 /// compiled with `features = ["testing"]` — enabling cross-crate test isolation
-/// (e.g. from task #2949's debug-RPC tests). Mirrors `stats::reset_for_test`.
-/// Delegates to the ungated [`reset()`] so the body stays DRY.
+/// (e.g. from task #2949's debug-RPC tests). Delegates to the ungated [`reset()`] so the body stays DRY.
 #[cfg(any(test, feature = "testing"))]
+// G-allow: test-isolation hook compiled only under cfg(test) / feature "testing"; its cross-crate callers are crates/reify-eval/tests/morph_arm_e2e.rs (a tests/ file this audit excludes) and the gui/src-tauri/src/debug_server.rs tests (outside this audit's crates/reify-*/src scope)
 pub fn reset_for_test() {
     reset();
 }
 
+/// Increment exactly one bucket, without the matching recorder's policy log.
+///
+/// Exists so cross-crate tests can seed the counters while the recorders stay
+/// crate-private. Compiled under the same gate as [`reset_for_test`].
+#[cfg(any(test, feature = "testing"))]
+// G-allow: test-seeding hook compiled only under cfg(test) / feature "testing"; its cross-crate caller is the gui/src-tauri/src/debug_server.rs mesh_morph_stats handler tests (outside this audit's crates/reify-*/src scope)
+pub fn seed_for_test(outcome: MorphOutcome) {
+    counter(outcome).fetch_add(1, Ordering::Relaxed);
+}
+
 /// Serializes test access to the process-global diagnostic counters across
 /// BOTH this module's own test suite and `lib.rs`'s `compose_morph` tests,
-/// which mutate the same [`COUNTERS`] statics via the public recorders and
+/// which mutate the same [`COUNTERS`] statics via the recorders and
 /// [`reset_for_test`]. `pub(crate)` so `lib.rs`'s `#[cfg(test)]` tests can
 /// acquire this exact lock — a lock private to this module's `tests`
 /// submodule would only serialize this module's own tests against each
@@ -378,7 +411,7 @@ mod tests {
     /// counters. Each test acquires this before resetting state so tests
     /// don't interfere with each other regardless of execution order —
     /// including `lib.rs`'s `compose_morph` tests, which acquire the same
-    /// lock directly. Mirrors the `TEST_LOCK` discipline in `stats.rs`.
+    /// lock directly.
     fn with_locked_state<F: FnOnce()>(f: F) {
         let _guard = super::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();
@@ -390,29 +423,11 @@ mod tests {
     #[test]
     fn snapshot_returns_all_zeros_after_reset() {
         with_locked_state(|| {
-            let s = snapshot();
-            assert_eq!(s.morphed, 0, "morphed should be 0 after reset");
             assert_eq!(
-                s.remeshed_quality_hard_fail, 0,
-                "remeshed_quality_hard_fail should be 0 after reset"
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "every bucket should be 0 after reset"
             );
-            assert_eq!(
-                s.remeshed_quality_soft_fail, 0,
-                "remeshed_quality_soft_fail should be 0 after reset"
-            );
-            assert_eq!(
-                s.ineligible_structural_change, 0,
-                "ineligible_structural_change should be 0 after reset"
-            );
-            assert_eq!(
-                s.ineligible_bijection_failure, 0,
-                "ineligible_bijection_failure should be 0 after reset"
-            );
-            assert_eq!(
-                s.ineligible_naming_error, 0,
-                "ineligible_naming_error should be 0 after reset"
-            );
-            assert_eq!(s.panicked, 0, "panicked should be 0 after reset");
         });
     }
 
@@ -425,6 +440,7 @@ mod tests {
             record_morphed();
             record_quality_remesh(&hard_fail());
             record_ineligible(&Reason::StructuralChange);
+            record_solver_error("x");
             assert_ne!(snapshot().morphed, 0, "morphed must be non-zero before reset");
             assert_ne!(
                 snapshot().remeshed_quality_hard_fail, 0,
@@ -433,6 +449,11 @@ mod tests {
             assert_ne!(
                 snapshot().ineligible_structural_change, 0,
                 "ineligible_structural_change must be non-zero before reset"
+            );
+            assert_ne!(
+                snapshot().remeshed_solver_error,
+                0,
+                "remeshed_solver_error must be non-zero before reset"
             );
             // Call the NEW production reset() and assert all counters return to zero.
             super::reset();
@@ -624,6 +645,42 @@ mod tests {
         });
     }
 
+    #[test]
+    fn record_solver_error_increments_only_solver_error_bucket() {
+        with_locked_state(|| {
+            record_solver_error("x");
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    remeshed_solver_error: 1,
+                    ..Default::default()
+                }
+            );
+            record_solver_error("y");
+            assert_eq!(
+                snapshot().remeshed_solver_error,
+                2,
+                "repeated calls must accumulate"
+            );
+        });
+    }
+
+    #[test]
+    fn seed_for_test_increments_only_the_named_buckets() {
+        with_locked_state(|| {
+            seed_for_test(MorphOutcome::Morphed);
+            seed_for_test(MorphOutcome::RemeshedSolverError);
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    morphed: 1,
+                    remeshed_solver_error: 1,
+                    ..Default::default()
+                }
+            );
+        });
+    }
+
     // ── Step-5: logging policy ────────────────────────────────────────────────
     //
     // Each recorder emits exactly one tracing event at its policy level,
@@ -717,6 +774,30 @@ mod tests {
         });
     }
 
+    #[test]
+    fn record_solver_error_logs_at_warn_with_detail() {
+        with_locked_state(|| {
+            prime_tracing_callsite_cache();
+            let (subscriber, capture) = CapturingSubscriberBuilder::new(Level::WARN)
+                .target_prefix(TARGET)
+                .build();
+            tracing::subscriber::with_default(subscriber, || {
+                record_solver_error("solver-detail");
+            });
+            assert_eq!(
+                capture.count(),
+                1,
+                "record_solver_error must emit exactly one WARN event"
+            );
+            let msgs = capture.messages();
+            assert!(
+                msgs[0].contains("solver-detail"),
+                "WARN message must contain the passed detail, got: {:?}",
+                msgs[0]
+            );
+        });
+    }
+
     // ── Step-7: format_summary ────────────────────────────────────────────────
     //
     // Pure function over a `DiagnosticSnapshot` — no globals, no lock needed.
@@ -791,6 +872,26 @@ mod tests {
             summary,
             "mesh updates: 47 morphed, 4 remeshed, 2 ineligible \
              (1 structural, 1 bijection), 5 panicked"
+        );
+    }
+
+    #[test]
+    fn format_summary_folds_solver_errors_into_remeshed_with_parenthetical() {
+        // remeshed aggregates every remesh bucket (3+1+2=6); the solver-error
+        // share is called out so it stays distinguishable from quality rejects.
+        let snap = DiagnosticSnapshot {
+            morphed: 47,
+            remeshed_quality_hard_fail: 3,
+            remeshed_quality_soft_fail: 1,
+            remeshed_solver_error: 2,
+            ineligible_structural_change: 1,
+            ineligible_bijection_failure: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            format_summary(&snap),
+            "mesh updates: 47 morphed, 6 remeshed (2 solver error), 2 ineligible \
+             (1 structural, 1 bijection)"
         );
     }
 }

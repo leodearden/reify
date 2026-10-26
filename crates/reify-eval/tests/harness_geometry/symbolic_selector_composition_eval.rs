@@ -85,7 +85,7 @@ fn bt2_union_eval_yields_symbolic_union_selector() {
         "bt2 fixture must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let cell_id = ValueCellId::new("BT2SameKindUnion", "u");
@@ -124,7 +124,7 @@ fn bt3_difference_and_intersect_eval_yield_symbolic_composition_selectors() {
         "bt3 fixture must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let d_value = result.values.get(&ValueCellId::new("BT3SetOps", "d"));
@@ -168,7 +168,7 @@ fn bt2_union_eval_and_build_selectors_are_content_hash_equal() {
     let cell_id = ValueCellId::new("BT2SameKindUnion", "u");
 
     // Path A: pure eval (no kernel) — symbolic selector.
-    let mut eval_engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut eval_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
     assert_selector(
@@ -180,7 +180,7 @@ fn bt2_union_eval_and_build_selectors_are_content_hash_equal() {
     // Path B: build with mock kernel — realized selector.
     let kernel = MockGeometryKernel::new();
     let mut build_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -226,7 +226,7 @@ fn bt8_named_leaf_eval_yields_symbolic_named_selector() {
         "bt8 fixture must compile without errors: {errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let value = result.values.get(&ValueCellId::new("BT8NamedLeaf", "s"));
@@ -318,7 +318,7 @@ structure def R2cSolidBooleanUnion {
     // `Value::Undef` either: the general symbolic-geometry-handle mint
     // (task #4652 R2a) stamps a `kernel_handle: None` placeholder for every
     // named Type::Geometry cell.
-    let mut eval_engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut eval_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
     assert!(
@@ -349,7 +349,7 @@ structure def R2cSolidBooleanUnion {
     // the build() path, to a realized geometry handle.
     let kernel = MockGeometryKernel::new();
     let mut build_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
