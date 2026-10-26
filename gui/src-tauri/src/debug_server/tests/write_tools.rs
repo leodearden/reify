@@ -911,9 +911,6 @@ fn filter_diagnostics_for_file_matches_either_spelling() {
 // Neither commits new engine state, but both still route through the
 // shared seam so §6.2 invariant (a) holds UNIFORMLY across all five tools
 // and θ's structural anchor has no exceptions to enumerate.
-//
-// FAILS TO COMPILE until step-14 adds the two seams and
-// `crate::commands::parse_export_format`.
 
 #[tokio::test]
 async fn reify_save_file_writes_the_session_buffer() {
@@ -954,9 +951,9 @@ async fn reify_save_file_writes_the_session_buffer() {
         "the seam must refresh last_state even for a pure-I/O tool"
     );
 
-    // (ii) An explicit target writes THERE and leaves the original alone.
-    let other_dir = tempfile::tempdir().unwrap();
-    let other = other_dir.path().join("copy.ri").to_string_lossy().into_owned();
+    // (ii) An explicit target writes THERE and leaves the original alone. It
+    // lies inside the design's directory, the only place a save-as may write.
+    let other = dir.path().join("copy.ri").to_string_lossy().into_owned();
     let s2 = reify_save_file_on_engine_and_refresh_baseline(
         &engine,
         &last_state,
@@ -998,6 +995,7 @@ async fn reify_save_file_errors_when_no_source_is_loaded() {
     // The message is the one the reify-mcp surface already uses for this
     // condition, so a client cannot meet two spellings of it.
     let engine = Arc::new(Mutex::new(EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(reify_test_support::MockGeometryKernel::new())),
     )));
@@ -1064,22 +1062,21 @@ async fn reify_save_file_refuses_when_the_session_has_no_canonical_path() {
         "a refused save must leave the baseline where it was"
     );
 
-    // …and an EXPLICIT target still works on the very same session, so the
-    // refusal is about the missing target, not about the session kind.
+    // …and an EXPLICIT target is refused too: with no design file there is no
+    // design directory, the only place an AI write may land.
     let dir = tempfile::tempdir().unwrap();
-    let explicit = dir.path().join("saved.ri").to_string_lossy().into_owned();
+    let explicit = dir.path().join("saved.ri");
     reify_save_file_on_engine_and_refresh_baseline(
         &engine,
         &last_state,
-        Some(explicit.clone()),
+        Some(explicit.to_string_lossy().into_owned()),
     )
     .await
-    .expect("an explicit target must still save a load_from_source session");
+    .expect_err("a load_from_source session has no design dir to confine a save-as to");
     assert!(
-        std::fs::read_to_string(&explicit)
-            .expect("the explicit target must be readable")
-            .contains("structure def"),
-        "the explicit target must receive the session's in-memory source"
+        !explicit.exists(),
+        "the refused save-as must not have created {}",
+        explicit.display()
     );
 }
 
@@ -1214,8 +1211,9 @@ async fn reify_save_file_refuses_a_rejected_buffer_for_an_explicit_target_too() 
     .await
     .expect_err("source that does not compile must be REFUSED");
 
-    let other_dir = tempfile::tempdir().unwrap();
-    let other = other_dir.path().join("copy.ri");
+    // Inside the design's directory, so the refusal is the interlock's and
+    // not the write-target confinement's.
+    let other = dir.path().join("copy.ri");
     reify_save_file_on_engine_and_refresh_baseline(
         &engine,
         &last_state,
@@ -1312,12 +1310,12 @@ async fn reify_export_rejects_an_unknown_format() {
     let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
         std::sync::Mutex::new(Some(s0.clone()));
 
-    let out = dir.path().join("part.obj").to_string_lossy().into_owned();
-    let err = reify_export_on_engine_and_refresh_baseline(&engine, &last_state, "obj", &out)
+    let out = dir.path().join("part.dxf").to_string_lossy().into_owned();
+    let err = reify_export_on_engine_and_refresh_baseline(&engine, &last_state, "dxf", &out)
         .await
-        .expect_err("an unsupported format must be REFUSED");
+        .expect_err("an unknown format must be REFUSED");
     assert!(
-        err.contains("obj"),
+        err.contains("dxf"),
         "the refusal must name the format it does not know, got: {err}"
     );
     assert!(
@@ -1331,21 +1329,49 @@ async fn reify_export_rejects_an_unknown_format() {
     );
 }
 
+/// The `reify_export` schema tells an AI client which `format` spellings
+/// exist; it must list exactly what `parse_export_format` accepts, or the
+/// advertisement lies about the tool.
 #[test]
-fn parse_export_format_maps_the_shipped_spellings() {
-    // ONE map, shared with `commands::export_impl`, so the AI write tool
-    // and the Tauri command cannot drift on which spellings are accepted.
-    use reify_ir::ExportFormat;
-    assert_eq!(crate::commands::parse_export_format("step"), Ok(ExportFormat::Step));
-    assert_eq!(crate::commands::parse_export_format("stp"), Ok(ExportFormat::Step));
-    assert_eq!(crate::commands::parse_export_format("stl"), Ok(ExportFormat::Stl));
+fn reify_export_advertises_exactly_the_spellings_parse_export_format_accepts() {
+    let defs = tool_defs();
+    let export = defs
+        .iter()
+        .find(|d| d.name == "reify_export")
+        .expect("reify_export must be advertised in tool_defs()");
+    let format = &export.input_schema["properties"]["format"];
 
-    let err = crate::commands::parse_export_format("obj")
-        .expect_err("an unshipped spelling must be refused");
-    assert!(
-        err.contains("obj"),
-        "the refusal must name the offending format, got: {err}"
+    assert_eq!(
+        format["type"].as_str(),
+        Some("string"),
+        "reify_export: properties.format.type must stay 'string'"
     );
+
+    let advertised: Vec<&str> = format["enum"]
+        .as_array()
+        .unwrap_or_else(|| panic!("reify_export: properties.format.enum must be an array"))
+        .iter()
+        .map(|v| {
+            v.as_str().unwrap_or_else(|| {
+                panic!("reify_export: properties.format.enum must hold strings, got {v}")
+            })
+        })
+        .collect();
+    let accepted: Vec<&str> = crate::commands::EXPORT_FORMAT_SPELLINGS
+        .iter()
+        .map(|&(spelling, _)| spelling)
+        .collect();
+    assert_eq!(
+        advertised, accepted,
+        "reify_export: properties.format.enum must be EXPORT_FORMAT_SPELLINGS, in table order"
+    );
+
+    for spelling in advertised {
+        assert!(
+            crate::commands::parse_export_format(spelling).is_ok(),
+            "reify_export advertises {spelling:?}, which parse_export_format refuses"
+        );
+    }
 }
 
 // ── Task 5097 (δ) step-15: RED — the AI write-tool SURFACE ──

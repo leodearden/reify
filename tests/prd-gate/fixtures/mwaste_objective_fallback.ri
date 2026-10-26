@@ -1,0 +1,13 @@
+// M-WASTE PRD baseline (§2.3, §5 B4b): an objective that reads geometry but reaches no auto
+// is attached to an unrelated component, which then fails.
+module mwaste_objective_fallback
+
+structure def ObjectiveFallback {
+    param wide : Bool = true
+    let w = if wide then 40mm else 20mm
+    let body = box(w, 30mm, 10mm)
+    param x : Length = auto
+    constraint x >= 2mm
+    constraint x <= 9mm
+    minimize volume(body)
+}

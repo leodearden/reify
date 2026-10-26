@@ -4,7 +4,7 @@
 **Cluster:** gap-register `P10 structural-traits` (4 gaps, 2 high) — `docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md`
 **Source doc:** `docs/reify-stdlib-reference.md` §4 (`std.structural`)
 **Shipped source:** `crates/reify-compiler/stdlib/structural_physical.ri`
-**Supersedes:** task **#3114** (deferred — "Tighten structural_physical.ri dimensioned params"; its stale `volume`/`centroid` clause is corrected here).
+**Supersedes:** task **#3114** ("Tighten structural_physical.ri dimensioned params"; its stale `volume`/`centroid` clause is corrected here).
 
 ---
 

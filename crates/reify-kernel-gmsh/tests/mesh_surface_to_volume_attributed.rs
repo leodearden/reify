@@ -14,10 +14,8 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
-// The shared size-option read-back is declared by path rather than through
-// `common/mod.rs`, which #6387 reduced to a re-export shim over
-// `reify_test_support::fixtures` and which is scheduled for deletion; see
-// `common/clamp_probe.rs` for why one copy of the loop matters.
+// The shared size-option read-back. Declared by `#[path]`; see
+// `common/clamp_probe.rs` for why, and why one copy of the loop matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 

@@ -61,12 +61,13 @@ pub fn register(registry: &mut ToolRegistry) {
                 },
                 "value": {
                     "type": "string",
-                    "description": "The new value as a string expression. For a DIMENSIONED \
-cell the expression is parsed as a bare number and installed as that cell's SI-coherent \
-magnitude in the cell's own dimension - metres for Length, SI RADIANS for Angle, kilograms \
-for Mass, and so on. No unit suffix is parsed and no conversion is applied, so 1.5708 on an \
-Angle cell means 1.5708 rad, not 1.5708 degrees. Call reify_get_parameters to learn a \
-parameter's dimension from its `unit` field before choosing a number."
+                    "description": "The new value as a unit-bearing literal - the same \
+spelling you would write in the `.ri` source, e.g. '120mm', '0.5m', '30deg'. On a DIMENSIONED \
+cell whose dimension has typeable units (Length, Angle, Mass, and so on) the unit suffix is \
+REQUIRED and the literal is converted from that unit; a bare number is refused rather than \
+read as an SI magnitude, and the error suggests a dimensioned literal to send instead. \
+Dimensionless cells take a bare number. Call reify_get_parameters to learn a parameter's \
+dimension from its `unit` field before choosing a literal."
                 }
             },
             "required": ["cell_id", "value"]

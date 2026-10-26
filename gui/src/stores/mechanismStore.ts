@@ -8,12 +8,12 @@ import type { MechanismDescriptor, JointDescriptor } from '../types';
 
 /**
  * Return the authoritative current-SI value for a joint using its `binding`
- * field.  Used by MechanismPanel for initial/effective slider values and by
- * `refresh()` for the optimistic-override equality check.
+ * field.  Used by MechanismPanel for slider values and the read-only literal
+ * display, and by `refresh()` for the optimistic-override equality check.
  *
  * - `param_bound`  → `binding.current_value_si` (falls back to legacy field)
- * - `literal_bound` → `binding.initial_value_si` (AST literal baseline; the
- *    engine never surfaces a post-scrub "current" value for LiteralBound)
+ * - `literal_bound` → `binding.initial_value_si` (the AST literal, shown by the
+ *    panel's read-only row; `null` when no literal value is known)
  * - `coupling_derived` / `fixed_no_motion` → `null`
  */
 export function jointCurrentSi(joint: Pick<JointDescriptor, 'binding' | 'current_value_si'>): number | null {
@@ -82,10 +82,7 @@ export function createMechanismStore(deps: MechanismStoreDeps) {
     //
     // Binding semantics:
     //   param_bound   → uses binding.current_value_si (set by engine on commit)
-    //   literal_bound → uses binding.initial_value_si (AST baseline; the engine
-    //                   never surfaces a post-scrub value for LiteralBound, so a
-    //                   literal-bound override will NOT equal the baseline unless
-    //                   the user explicitly scrubbed back, which is fine to clear)
+    //   literal_bound → never scrubbed (read-only row), so no override exists to clear
     //   coupling/fixed → null → never cleared
     const toDelete: string[] = [];
     for (const desc of newDescriptors) {

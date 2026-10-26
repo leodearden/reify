@@ -1310,6 +1310,7 @@ mod tests {
 
         let compiled = compile_source(SRC);
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
         );

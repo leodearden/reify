@@ -46,6 +46,12 @@ mod import_warning_tests;
 mod io_traits_tests;
 #[path = "harness_modules_ports/module_dag_tests.rs"]
 mod module_dag_tests;
+#[path = "harness_modules_ports/module_decl_remedy_tests.rs"]
+mod module_decl_remedy_tests;
+#[path = "harness_modules_ports/name_env_policy_tests.rs"]
+mod name_env_policy_tests;
+#[path = "harness_modules_ports/ns_p4_parity_tests.rs"]
+mod ns_p4_parity_tests;
 #[path = "harness_modules_ports/occurrence_compile_tests.rs"]
 mod occurrence_compile_tests;
 #[path = "harness_modules_ports/pin_cell_id_namespace_tests.rs"]
@@ -68,6 +74,8 @@ mod standard_gravity_tests;
 mod standard_joint_library_tests;
 #[path = "harness_modules_ports/standard_stock_tests.rs"]
 mod standard_stock_tests;
+#[path = "harness_modules_ports/stdlib_shadow_warning_tests.rs"]
+mod stdlib_shadow_warning_tests;
 #[path = "harness_modules_ports/sub_placement_lowering_tests.rs"]
 mod sub_placement_lowering_tests;
 #[path = "harness_modules_ports/sub_structure_existence_tests.rs"]

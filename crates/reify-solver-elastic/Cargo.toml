@@ -16,6 +16,11 @@ faer = { workspace = true }
 inventory = { workspace = true }
 tracing.workspace = true
 
+[features]
+linear-solve-fault-injection = []
+
 [dev-dependencies]
 reify-ir.workspace = true
 reify-test-support.workspace = true
+# Test targets enable the inert linear_solve fault hook this way; release builds never do.
+reify-solver-elastic = { path = ".", features = ["linear-solve-fault-injection"] }

@@ -1,0 +1,12 @@
+module auto_reach_conn_no_default
+trait Signal {}
+
+structure ConnNoDefault {
+    param gain : Length
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnNoDefault { gain = auto }
+}

@@ -185,7 +185,7 @@ structure def MomentOfInertiaInline {
     {
         let checker = SimpleConstraintChecker;
         let mut engine =
-            reify_eval::Engine::new(Box::new(checker), Some(Box::new(MockGeometryKernel::new())));
+            reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(MockGeometryKernel::new())));
         let result = engine.build(&compiled, ExportFormat::Step);
         let density_warnings: Vec<&str> = result
             .diagnostics

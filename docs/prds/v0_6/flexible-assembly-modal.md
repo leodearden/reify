@@ -66,7 +66,7 @@ the same two seams PRD 1 rides; no new seam.
   decompose to point there, with #6626 dropped from its dep set.
 - Known accuracy/cost hazards (G6 floor family): P1-tet bending lock (9–11% on slender members —
   P2 mandatory on the modal path, the #6882 posture); pointwise-Dirichlet BC realization
-  (`k≈0.67–0.70`); two-FixedSupport pin-collapse #6663 (in-progress; inherited, not owned);
+  (`k≈0.67–0.70`); two-FixedSupport pin-collapse #6663 (inherited, not owned);
   synthetic-mesh cost blowups measured at 550 s for one dims eval (2026-08-27 probe note) and gmsh
   fill-fraction defects (#6200 class) — whence the mandatory *measurement* leaves (§9 π/ρ) before
   any cost- or accuracy-bound is asserted.

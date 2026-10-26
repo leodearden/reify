@@ -255,17 +255,14 @@ const DIMENSIONLESS_NORMAL_NOTE: &str =
 /// gated families named in task 6450's own description — patterns,
 /// translate/rotate_around, revolve, line_segment, arc, helix, interp,
 /// bezier, nurbs poles, ... — have no entry here at all, so naming them
-/// would invent a residual with no surface). The full "deliberately NOT
-/// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
-/// restated here (G7).
+/// would invent a residual with no surface).
 ///
-/// RESIDUAL: this table is a snapshot of the families gated as of task 5750
-/// (leaf η — see `builtin_signatures.rs`'s module doc, which attributes the
-/// PRIMITIVE/PROFILE compile-layer slots this table mirrors to that task),
-/// taken before the units-length-gate-completion PRD's closure guard (task
-/// ι) has landed to close the gated set by construction. TODO(#5752): once ι
-/// lands, re-check this table against its allowlist — the gated set can
-/// still grow via ι's downstream siblings.
+/// Which positions are gated, and which are deliberately left bare, is pinned
+/// by reify-eval's units-length closure guard
+/// (crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs).
+/// This table mirrors that guard's verdicts for the `01-geometry` rows, and
+/// `tests::length_gated_tables_stay_in_sync` reds when a `01-geometry`
+/// signature types a slot `Length` without a row here.
 const LENGTH_GATED_EXAMPLES: &[(&str, &str, Option<&'static str>)] = &[
     ("box", "box(20mm, 10mm, 30mm)", None),
     ("cylinder", "cylinder(5mm, 20mm)", None),
@@ -497,8 +494,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     // --- 01-geometry: solid geometry primitives ---
     BuiltinFunctionInfo {
         name: "box",
-        signature: "box(width: Length, height: Length, depth: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -515,8 +512,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "box_centered",
-        signature: "box_centered(width: Length, depth: Length, height: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box_centered(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -1411,8 +1408,8 @@ mod tests {
     /// added to `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
     /// behavioural pin at all, and a typo'd or stale `LENGTH_GATED_EXAMPLES`
     /// key is simply never looked up by `builtin_doc_with_length_gate_note`'s
-    /// `find` and never reds. All three are exactly the failure modes the
-    /// TODO(#5752) residual anticipates as the gated set grows.
+    /// `find` and never reds. All three are failure modes that open up as the
+    /// gated set grows.
     #[test]
     fn length_gated_tables_stay_in_sync() {
         let example_names: HashSet<&str> = LENGTH_GATED_EXAMPLES
@@ -1652,6 +1649,55 @@ mod tests {
                 detail.contains(": Length"),
                 "{name}: signature should type at least one gated slot as \
                  Length, got: {detail}"
+            );
+        }
+    }
+
+    /// The editor names box's parameters the way a diagnostic names them, in
+    /// the same order.
+    ///
+    /// `served` is the parameter list completion advertises; `compiler` is the
+    /// slot each `ArgTypeMismatch` blames for a bare `<name>(1, 2, 3)`, in
+    /// emission order. An author told "box: size_y argument expects Length"
+    /// must find `size_y` at that position in the signature popup.
+    #[test]
+    fn box_signatures_name_the_compiler_slots_in_order() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        for name in ["box", "box_centered"] {
+            let signature = served_signature(&items, name);
+            let params = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .map(|(params, _)| params)
+                .unwrap_or_else(|| panic!("{name}: signature has no parameter list: {signature}"));
+            let served: Vec<&str> = params
+                .split(',')
+                .map(|param| param.split(':').next().unwrap_or(param).trim())
+                .collect();
+
+            let compiled = reify_test_support::compile_source(&format!(
+                "structure def S {{\n    let b = {name}(1, 2, 3)\n}}\n"
+            ));
+            let compiler: Vec<&str> = compiled
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+                .filter_map(|d| reify_test_support::named_length_argument(&d.message))
+                .collect();
+
+            assert_eq!(
+                compiler.len(),
+                3,
+                "{name}: a bare {name}(1, 2, 3) should blame three LENGTH slots; \
+                 diagnostics: {:#?}",
+                compiled.diagnostics
+            );
+            assert_eq!(
+                served, compiler,
+                "{name}: the served signature `{signature}` must name the slots \
+                 the compiler's diagnostics name, in order"
             );
         }
     }

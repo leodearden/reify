@@ -35,7 +35,7 @@ fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     // Guard: the build itself must not produce hard errors (which would make
@@ -124,7 +124,7 @@ fn rotate_around_with_explicit_deg_unit_realization_lands_in_kernel() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     // Guard: no hard errors.
@@ -245,7 +245,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     // ── COMPILE layer (PRD 3 leaf ζ) ────────────────────────────────────────
@@ -340,6 +340,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -398,7 +399,7 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     let checker_o = MockConstraintChecker::new();
     let kernel_o = MockGeometryKernel::new();
     let ops_ref_o = kernel_o.operations_ref();
-    let mut engine_o = Engine::new(Box::new(checker_o), Some(Box::new(kernel_o)));
+    let mut engine_o = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker_o), Some(Box::new(kernel_o)));
     let result_o: BuildResult = engine_o.build(&compiled_orient, ExportFormat::Step);
 
     let errors_o: Vec<_> = result_o
@@ -425,7 +426,7 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     let checker_a = MockConstraintChecker::new();
     let kernel_a = MockGeometryKernel::new();
     let ops_ref_a = kernel_a.operations_ref();
-    let mut engine_a = Engine::new(Box::new(checker_a), Some(Box::new(kernel_a)));
+    let mut engine_a = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker_a), Some(Box::new(kernel_a)));
     let _result_a: BuildResult = engine_a.build(&compiled_aa, ExportFormat::Step);
 
     let ops_a = ops_ref_a.lock().unwrap();
@@ -497,7 +498,7 @@ fn rotate_orientation_malformed_drops_op() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();

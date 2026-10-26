@@ -50,6 +50,7 @@ fn build_boolean_source(source: &str) -> Option<reify_eval::Engine> {
     // are forwarded to OCCT (not the default-trait error stubs).
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     );

@@ -53,13 +53,17 @@
 //                               solid (via `point_mass`/`mass_properties`).
 //   `options : ModalOptions`  — reuses the same ModalOptions from
 //                               std.modal.analysis (n_modes, tol, max_iters,
-//                               sigma, damping, boundary_conditions). For a
-//                               lumped generalized-coordinate model the BCs and
-//                               reference_direction fields are unused (no 3D FEA
-//                               mesh), so `ModalResult.boundary_conditions` is
-//                               `undef`, not an echo of the caller's list. The
-//                               same ModalOptions type is accepted for API
-//                               consistency.
+//                               shift_frequency, damping, boundary_conditions).
+//                               For a lumped generalized-coordinate model the
+//                               BCs and reference_direction fields are unused
+//                               (no 3D FEA mesh), so
+//                               `ModalResult.boundary_conditions` is `undef`,
+//                               not an echo of the caller's list. The same
+//                               ModalOptions type is accepted for API
+//                               consistency. A non-zero shift_frequency is not
+//                               yet honored here: it warns
+//                               `W_ModalOptionUnsupported` and the solve
+//                               returns the lowest modes (owner #7263).
 //
 // Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
 // modes are ordered ascending by frequency.  Each Mode carries `.frequency`

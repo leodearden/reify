@@ -81,6 +81,7 @@ fn bt8_transparency_representative_design() {
 
     // Capture OFF.
     let mut engine_off = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -91,6 +92,7 @@ fn bt8_transparency_representative_design() {
 
     // Capture ON.
     let mut engine_on = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -201,7 +203,7 @@ fn solve_failed_module() -> reify_compiler::CompiledModule {
 fn bt4_tracer_surfaces_solve_origins() {
     // (a) auto cell "k", no solver attached → tracer surfaces AwaitingSolve.
     let layer1 = layer1_module();
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&layer1);
 
@@ -221,7 +223,7 @@ fn bt4_tracer_surfaces_solve_origins() {
         "constraints are infeasible",
     )]);
     let mut engine2 =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     engine2.set_capture_undef_causes(true);
     engine2.eval(&solve_failed);
 

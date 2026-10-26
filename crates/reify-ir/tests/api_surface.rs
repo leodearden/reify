@@ -268,6 +268,15 @@ use reify_ir::ranked::{
     RankedSolveResult as RankedSolveResultMod,
 };
 
+// ── completeness (flat form) ─────────────────────────────────────────────────
+use reify_ir::{Completeness, PartialReason};
+
+// ── completeness (module-path form) ──────────────────────────────────────────
+use reify_ir::completeness::{
+    Completeness as CompletenessMod,
+    PartialReason as PartialReasonMod,
+};
+
 // ── cross-crate deps ─────────────────────────────────────────────────────────
 use reify_ast::{Expr, ExprKind};
 use reify_core::{DimensionVector, SourceSpan};
@@ -750,6 +759,18 @@ fn ranked_types_in_scope() {
     let _: fn() -> Option<RankedSolveResultMod> = || None;
 }
 
+/// `Completeness` / `PartialReason` are CONTRACT: the completeness verdict is the
+/// vocabulary every producer and every consumer of a ranked solve speaks
+/// (solution-set-completeness §3.1), and `RankedSolveResult::Ranked` already
+/// carries one, so the shape is load-bearing cross-crate from task α onward.
+#[test]
+fn completeness_types_in_scope() {
+    let _: fn() -> Option<Completeness> = || None;
+    let _: fn() -> Option<PartialReason> = || None;
+    let _: fn() -> Option<CompletenessMod> = || None;
+    let _: fn() -> Option<PartialReasonMod> = || None;
+}
+
 /// S1 RED — §7.1 IR contract: widened EnumVariantDef / VariantPayload /
 /// CompiledPattern types (task γ #3940).
 ///
@@ -950,4 +971,30 @@ fn dimension_unit_label_reachable_cross_crate_with_ascii_labels() {
         dimension_unit_label(&DimensionVector::AREA),
         dimension_unit_label_mod(&DimensionVector::AREA)
     );
+}
+
+use reify_ir::SolutionSet;
+use reify_ir::completeness::SolutionSet as SolutionSetMod;
+
+/// PROVISIONAL (see the banner above). `SolutionSet` lands with the
+/// solution-set-completeness carrier at task α (#6706), but **nothing consumes it
+/// yet**: `RankedSolveResult::Ranked` carries a bare `completeness` field, not a
+/// `SolutionSet`, and the first real consumers are ζ #6711 → #6902 (box-based basin
+/// identity, which supplies the deduplicated `solutions` this struct's
+/// `proven_count`/`unique` presuppose) and PRD 2 θ #5474 (rendering the composed
+/// verdict).
+///
+/// It is recorded here rather than in the contract precisely because of that gap:
+/// the widening should be VISIBLE — this file exists to make an
+/// exported-ahead-of-its-consumer surface legible — without being frozen before a
+/// call site has exercised it. If ζ finds the pairing wants a different shape,
+/// narrowing it back is a normal edit: delete these two `use` lines and this test.
+///
+/// Both spellings are recorded because lib.rs exports the module as `pub mod` AND
+/// re-exports the symbol at the crate root; recording only one would let the other
+/// rot silently.
+#[test]
+fn solution_set_provisional_surface() {
+    let _: fn() -> Option<SolutionSet> = || None;
+    let _: fn() -> Option<SolutionSetMod> = || None;
 }

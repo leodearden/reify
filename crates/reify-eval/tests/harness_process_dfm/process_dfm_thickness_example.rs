@@ -27,7 +27,7 @@
 //!     `process_dfm_metrology_example.rs`).
 //!
 //! Compile coverage for `std_process_dfm_thickness.ri` (kernel-independent)
-//! is provided by `crates/reify-compiler/tests/examples_smoke.rs` which
+//! is provided by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` which
 //! discovers `examples/**/*.ri` automatically and gates on Error-severity
 //! compile diagnostics.
 //!
@@ -98,7 +98,7 @@ fn load_and_compile_example() -> reify_compiler::CompiledModule {
 fn make_occt_openvdb_engine() -> reify_eval::Engine {
     // Linker anchor — forces inventory::submit! in reify-kernel-openvdb/src/register.rs.
     let _anchor = reify_kernel_openvdb::register::openvdb_capability_descriptor();
-    reify_eval::Engine::with_registered_kernels(Box::new(
+    reify_eval::Engine::with_registered_kernels(reify_eval::SolverPosture::SolverFree, Box::new(
         reify_constraints::SimpleConstraintChecker,
     ))
 }

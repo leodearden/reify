@@ -1,6 +1,6 @@
 # Capability manifest — gui-code-intelligence-and-navigation
 
-Mechanizes G3 (assumed-substrate verified / wired) + G6 (premise validity) per leaf. Each binding: capability → evidence. Any FAIL blocks the batch. Verified 2026-06-02 against `main`.
+**AS-AUTHORED GATE ARTIFACT (2026-06-02) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (α #4201 … λ #4211, plus #4238 and #4466) — see the parent PRD's SHIPPED header (`docs/prds/gui-code-intelligence-and-navigation.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-06-02 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 (assumed-substrate verified / wired) + G6 (premise validity) per leaf. Each binding: capability → evidence. Any FAIL blocks the batch. Verified 2026-06-02 against `main`.
 
 PRD: `docs/prds/gui-code-intelligence-and-navigation.md`. Task IDs: α=4201, β=4202, γ=4203, δ=4204, ε=4205, ζ=4206, η=4207, θ=4208, ι=4209, κ=4210, λ=4211.
 

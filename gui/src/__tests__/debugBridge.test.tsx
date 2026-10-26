@@ -41,25 +41,13 @@ import {
 } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
+import { defaultLayout } from '../stores/layoutStore';
 import {
   makeCmdDispatcher,
   makeDebugStores,
   type DebugRequestHandler,
 } from './debugBridgeTestHelpers';
 import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
-
-// jsdom 25 does not implement document.elementFromPoint — the method is simply
-// absent from the document prototype. vi.spyOn requires the property to exist
-// before it can be overridden per test. Define a stub that returns null (matching
-// jsdom's layout-less behaviour) so that vi.spyOn/.mockReturnValue works and
-// vi.restoreAllMocks() reverts to this stub after each test.
-if (typeof document.elementFromPoint !== 'function') {
-  Object.defineProperty(document, 'elementFromPoint', {
-    configurable: true,
-    writable: true,
-    value: (): Element | null => null,
-  });
-}
 
 /** The shared minimal stores, with the selection set to `selectedEntities` (last = primary). */
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
@@ -2410,90 +2398,55 @@ describe('debug bridge resize_panes', () => {
     return JSON.parse(payload.result);
   }
 
-  it('(a) single dimension: editorWidth calls setEditorWidth with value and returns { ok:true }', async () => {
+  const defaults = defaultLayout();
+
+  it('(a) single dimension: editorWidth 450 changes only that row and returns { ok:true }', async () => {
     const stores = makeStores();
     const result = await dispatch(stores, 7000, { editorWidth: 450 });
     expect(result.ok).toBe(true);
-    expect(stores.layout.setEditorWidth).toHaveBeenCalledWith(450);
-    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
-    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
-    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
-    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+    expect({ ...stores.layout.state }).toEqual({ ...defaults, editorWidth: 450 });
   });
 
-  it('(b) multi-dimension call invokes exactly those setters', async () => {
+  it('(b) multi-dimension call changes exactly those rows', async () => {
     const stores = makeStores();
     const result = await dispatch(stores, 7001, { sideWidth: 380, designTreeHeight: 220 });
     expect(result.ok).toBe(true);
-    expect(stores.layout.setSideWidth).toHaveBeenCalledWith(380);
-    expect(stores.layout.setDesignTreeHeight).toHaveBeenCalledWith(220);
-    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
-    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
-    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+    expect({ ...stores.layout.state }).toEqual({ ...defaults, sideWidth: 380, designTreeHeight: 220 });
   });
 
-  it('(c) non-number value for a dimension returns error and calls no setter', async () => {
-    const stores = makeStores();
-    const result = await dispatch(stores, 7002, { editorWidth: 'bad' });
-    expect(result).toHaveProperty('error');
-    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
-  });
+  for (const [label, value] of [
+    ['non-number', 'bad'],
+    ['negative', -1],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+  ] as const) {
+    it(`(c) ${label} value for a dimension returns error and leaves the layout at its defaults`, async () => {
+      const stores = makeStores();
+      const result = await dispatch(stores, 7002, { editorWidth: value });
+      expect(result).toHaveProperty('error');
+      expect({ ...stores.layout.state }).toEqual(defaults);
+    });
+  }
 
-  it('(c) negative value for a dimension returns error and calls no setter', async () => {
-    const stores = makeStores();
-    const result = await dispatch(stores, 7003, { editorWidth: -1 });
-    expect(result).toHaveProperty('error');
-    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
-  });
-
-  it('(c) NaN for a dimension returns error and calls no setter', async () => {
-    const stores = makeStores();
-    const result = await dispatch(stores, 7004, { editorWidth: NaN });
-    expect(result).toHaveProperty('error');
-    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
-  });
-
-  it('(c) Infinity for a dimension returns error and calls no setter', async () => {
-    const stores = makeStores();
-    const result = await dispatch(stores, 7005, { editorWidth: Infinity });
-    expect(result).toHaveProperty('error');
-    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
-  });
-
-  it('(d) empty params {} returns an error', async () => {
+  it('(d) empty params {} returns an error and leaves the layout at its defaults', async () => {
     const stores = makeStores();
     const result = await dispatch(stores, 7006, {});
     expect(result).toHaveProperty('error');
-    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
-    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
-    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
-    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
-    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+    expect({ ...stores.layout.state }).toEqual(defaults);
   });
 
-  it('(e) returned layout snapshot has all 5 pane dimension keys with current store values', async () => {
-    // Regression: resize_panes returns { ok, layout: {...ctx.stores.layout.state} }.
-    // This test locks in the returned layout snapshot contract so a regression that
-    // removes or reshapes the field is caught. The setter is mocked (vi.fn()) so the
-    // state does not change; the snapshot reflects the initial makeStores() values.
+  it('(e) the returned layout echo is the full table snapshot after the resize', async () => {
     const stores = makeStores();
     const result = await dispatch(stores, 7007, { editorWidth: 450 });
     expect(result.ok).toBe(true);
-    // layout snapshot must exist and carry all 5 dimension keys.
-    expect(result.layout).toBeDefined();
-    expect(result.layout).toHaveProperty('editorWidth');
-    expect(result.layout).toHaveProperty('sideWidth');
-    expect(result.layout).toHaveProperty('designTreeHeight');
-    expect(result.layout).toHaveProperty('propertyHeight');
-    expect(result.layout).toHaveProperty('constraintHeight');
-    // Values reflect the initial makeStores() state (setter is mocked, state unchanged).
-    expect(result.layout).toEqual({
-      editorWidth: 300,
-      sideWidth: 300,
-      designTreeHeight: 160,
-      propertyHeight: 200,
-      constraintHeight: 140,
-    });
+    expect(result.layout).toEqual({ ...defaults, editorWidth: 450 });
+  });
+
+  it('only px rows are resizable: a flag row alone provides no pane dimension', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7008, { problemsCollapsed: false });
+    expect(result).toEqual({ error: 'no pane dimensions provided' });
+    expect({ ...stores.layout.state }).toEqual(defaults);
   });
 });
 
@@ -3619,8 +3572,9 @@ describe('debug bridge dom_query viewport scoping', () => {
    * Two panes each holding a same-testid element with DISTINGUISHABLE text, so
    * asserting on `text` proves WHICH element was described — not merely that
    * something existed. jsdom implements no layout and no innerText, so `text` is
-   * stubbed per element; `bounds` stays all-zero (and therefore `visible` false)
-   * exactly as it already does for every other jsdom-hosted dom_query.
+   * stubbed per element; `bounds` stays all-zero (and therefore `visible` and
+   * `hitTestable` false) exactly as it already does for every other jsdom-hosted
+   * dom_query.
    */
   function twoPanesWithBadge() {
     document.body.innerHTML = `
@@ -3637,10 +3591,11 @@ describe('debug bridge dom_query viewport scoping', () => {
     return { designMain, pane1 };
   }
 
-  /** The complete pre-#5891 five-key payload — asserted with toEqual so an extra key fails. */
+  /** The complete single-match payload — asserted with toEqual so an extra key fails. */
   const description = (text: string) => ({
     exists: true,
     visible: false, // jsdom reports a zero-width rect for every element
+    hitTestable: false, // not visible, so never hit-testable
     text,
     tagName: 'div',
     bounds: { x: 0, y: 0, width: 0, height: 0 },
@@ -3699,7 +3654,7 @@ describe('debug bridge dom_query viewport scoping', () => {
     });
   });
 
-  it('#5891 single match keeps today\'s exact five-key payload — no diagnostic keys leak', async () => {
+  it('#5891 single match keeps the exact single-match payload — no diagnostic keys leak', async () => {
     document.body.innerHTML = '<div data-testid="lonely-badge"></div>';
     const el = document.querySelector('[data-testid="lonely-badge"]') as HTMLElement;
     Object.defineProperty(el, 'innerText', { configurable: true, value: 'only one' });
@@ -3825,9 +3780,7 @@ describe('debug bridge apply_gui_state', () => {
 });
 
 // ---------------------------------------------------------------------------
-// debug bridge resize_panes problemsHeight + get_local_storage (task-4404 step-3 RED)
-// RED: (a) problemsHeight is not in resize_panes DIMS so setProblemsHeight is never called;
-//      (b-d) get_local_storage has no handler (returns "unknown command").
+// debug bridge resize_panes problemsHeight + get_local_storage (task-4404)
 // ---------------------------------------------------------------------------
 
 describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
@@ -3847,44 +3800,28 @@ describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
     window.localStorage.clear();
   });
 
-  /** makeStores extended with problems-panel layout fields (task-4404).
-   *  Setters update state so that the layout-echo in resize_panes reflects the new value. */
-  function makeStoresWithProblems() {
-    const s = makeStores();
-    (s.layout.state as any).problemsHeight = 160;
-    (s.layout.state as any).problemsCollapsed = true;
-    (s.layout as any).setProblemsHeight = vi.fn((v: number) => {
-      (s.layout.state as any).problemsHeight = v;
-    });
-    (s.layout as any).setProblemsCollapsed = vi.fn((v: boolean) => {
-      (s.layout.state as any).problemsCollapsed = v;
-    });
-    return s;
-  }
-
   const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
-  // (a) resize_panes({problemsHeight:240}) must call setProblemsHeight(240) and return
-  //     a layout echo that includes problemsHeight:240.
-  //     RED: not in DIMS → handler returns {error:"no pane dimensions provided"},
-  //     setProblemsHeight never called, result.layout undefined.
-  it('resize_panes({problemsHeight:240}) calls setProblemsHeight(240) and layout echo includes problemsHeight:240', async () => {
-    const stores = makeStoresWithProblems();
+  // (a) resize_panes({problemsHeight:240}) sets problemsHeight and echoes it.
+  it('resize_panes({problemsHeight:240}) sets problemsHeight and the layout echo includes problemsHeight:240', async () => {
+    const stores = makeStores();
     await initDebugBridge(stores);
 
     const result = await dispatchCmd(9000, 'resize_panes', { problemsHeight: 240 });
 
     expect(result.ok).toBe(true);
-    expect((stores.layout as any).setProblemsHeight).toHaveBeenCalledWith(240);
+    expect(stores.layout.state.problemsHeight).toBe(240);
     expect(result.layout.problemsHeight).toBe(240);
   });
 
   // (b) get_local_storage: present key returns {key, value (string), present:true}.
   //     RED: unknown command → result has no key/present fields.
   it('get_local_storage: seeded key returns {key, value, present:true}', async () => {
+    // A loadable layout: the real layout store restores it, so its debounced save
+    // writes the same values back rather than racing this read with defaults.
     window.localStorage.setItem(
       'reify-panel-layout',
-      JSON.stringify({ problemsHeight: 200, problemsCollapsed: false }),
+      JSON.stringify({ editorWidth: 300, sideWidth: 300, problemsHeight: 200, problemsCollapsed: false }),
     );
     const stores = makeStores();
     await initDebugBridge(stores);
@@ -4896,11 +4833,12 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // The TESTID escape — this resolver's busiest arm, since every #5891 scoped
-  // tool reaches it — is pinned by the `resolveByTestId testId` row of the
-  // `debug bridge escapeAttrValue` table at the end of this file, so this block
-  // carries no case for it. Case (f) above keeps the sibling VIEWPORTID arm,
-  // which no row covers.
+  // The TESTID escape — it lives in `queryAllByTestId`, beneath this resolver
+  // and `buildSelectorPredicate`, so every #5891 scoped tool reaches it — is
+  // pinned by the `queryAllByTestId testId` row of the `debug bridge
+  // escapeAttrValue` table at the end of this file, so this block carries no
+  // case for it. Case (f) above keeps the sibling VIEWPORTID arm, which no row
+  // covers.
 });
 
 // ---------------------------------------------------------------------------
@@ -4985,13 +4923,13 @@ type EscapeSite = {
  *
  * INVENTORY CAVEAT — these rows are the `escapeAttrValue` call sites reachable
  * with a caller-supplied value, with ONE deliberate omission:
- * `resolveByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
+ * `queryAllByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
  * `debug bridge resolveByTestId viewport scoping` block (which also asserts the
  * no-cross-pane-bleed property, that no row here has). Case (f) is MISS-only,
  * and — that block installing no CSS stub — runs under the fallback arm alone.
  * Both omissions follow from the split above rather than contradicting it: MISS
  * is the half that carries the site-level pin, and the semantics an added HIT
- * half would re-prove belong to the shared helper, which the `resolveByTestId
+ * half would re-prove belong to the shared helper, which the `queryAllByTestId
  * testId` row below already pins on BOTH arms. What (f) genuinely lacks is a
  * success-SHAPE assertion of its own — the one thing promoting it to a row here
  * would add. This table is NOT a proof that every selector interpolation in
@@ -5005,13 +4943,13 @@ type EscapeSite = {
  * escape` block below.
  */
 const ESCAPE_SITES: EscapeSite[] = [
-  // resolveByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
+  // queryAllByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
   // tools (dom_query, click_element, focus_element, scroll, element_screenshot,
-  // wait_for_selector and wait_for's selector arm) reach the escape here, over
-  // six `resolveByTestId(…)` call sites — `buildSelectorPredicate` serves the
-  // last two from one.
+  // wait_for_selector and wait_for's selector arm) reach the escape here — the
+  // first five through `resolveByTestId(…)`'s five call sites, the two waiters
+  // through `buildSelectorPredicate`.
   {
-    label: 'resolveByTestId testId',
+    label: 'queryAllByTestId testId',
     prefix: 'row',
     dispatch: (value) => ['click_element', { testId: value }],
     setUpMiss: () => () => {},
@@ -5218,7 +5156,7 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
-   * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
+   * one row per CALL SITE and seven tools ride on its `queryAllByTestId testId`
    * row. The guards are TWELVE independent hand-written copies, so a row here
    * that covered only one of them would leave the other eleven free to regress with
    * the suite green — which is what #6178 measured for the five guards it
@@ -5341,8 +5279,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
       expected: { error: 'testId is required' },
     },
     {
-      // wait_for reaches the same resolver through `buildSelectorPredicate`, and
-      // guards the NESTED `predicate.testId` — hence its own distinct wording.
+      // wait_for reaches the same testid query through `buildSelectorPredicate`,
+      // and guards the NESTED `predicate.testId` — hence its own distinct wording.
       label: 'wait_for (selector predicate)',
       decoyTestId: '3',
       dispatch: () => [

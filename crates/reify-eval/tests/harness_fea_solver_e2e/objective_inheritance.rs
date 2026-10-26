@@ -21,7 +21,7 @@ use reify_test_support::{
 };
 
 fn solver_engine() -> Engine {
-    Engine::new(Box::new(MockConstraintChecker::new()), None)
+    Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver))
 }
 

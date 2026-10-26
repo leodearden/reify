@@ -657,8 +657,8 @@ fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
 ///
 /// All three, not just the first: the eval layer reads a multi-slot builtin's
 /// whole set in ONE `required_length_values` call precisely so an author fixes
-/// `width`, `height` and `depth` in a single edit rather than one per rebuild
-/// (`crates/reify-eval/src/arg_acceptance.rs`'s "all-at-once discipline"). The
+/// `size_x`, `size_y` and `size_z` in a single edit rather than one per rebuild
+/// (`crates/reify-ir/src/arg_acceptance.rs`'s "all-at-once discipline"). The
 /// compile layer must not degrade that to a one-at-a-time drip, so the count is
 /// asserted, not just non-emptiness.
 ///
@@ -673,14 +673,14 @@ fn box_bare_dimensions_are_rejected_once_per_axis() {
     assert_eq!(
         messages,
         vec![
-            "box: width argument expects Length, got Int; \
+            "box: size_x argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`",
-            "box: height argument expects Length, got Int; \
+            "box: size_y argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`",
-            "box: depth argument expects Length, got Int; \
+            "box: size_z argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`",
         ],
-        "a bare box(20, 20, 10) must be diagnosed at width, height AND depth, \
+        "a bare box(20, 20, 10) must be diagnosed at size_x, size_y AND size_z, \
          each rendering the full C1 template.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
@@ -791,9 +791,10 @@ fn statically_invisible_primitive_operand_stays_silent_at_compile_time() {
 /// `box_centered` lowers to `PrimitiveKind::Box`, and the eval-layer gate
 /// renders its `{builtin}` prefix from that kind's `Display`
 /// (`crates/reify-eval/src/geometry_ops.rs`'s `prim_box` passes `kind` as
-/// `kind_label`; `crates/reify-compiler/src/types.rs:1394` writes `"box"`), so
-/// eval says `box:` for a bare `box_centered(20, 20, 10)`. The compile layer is
-/// keyed on the CALL, so it says `box_centered:`.
+/// `kind_label`; the `PrimitiveKind::Box` arm of its `Display` impl in
+/// `crates/reify-compiler/src/types.rs` writes `"box"`), so eval says `box:` for
+/// a bare `box_centered(20, 20, 10)`. The compile layer is keyed on the CALL, so
+/// it says `box_centered:`.
 ///
 /// This is the ONE place decision D9's "byte-identical" wording does NOT hold,
 /// and it holds this way DELIBERATELY: the compile layer knows the name that
@@ -813,11 +814,11 @@ fn centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind() {
     assert_eq!(
         messages,
         vec![
-            "box_centered: width argument expects Length, got Int; \
+            "box_centered: size_x argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`",
-            "box_centered: height argument expects Length, got Int; \
+            "box_centered: size_y argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`",
-            "box_centered: depth argument expects Length, got Int; \
+            "box_centered: size_z argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`",
         ],
         "the compile slot must name the SURFACE call `box_centered`, not the \
@@ -992,9 +993,9 @@ fn nested_primitive_keeps_one_diagnostic_per_axis() {
     assert_eq!(
         messages,
         vec![
-            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "box: height argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "box: depth argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: size_y argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: size_z argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
         "all three axes must survive the duplicate drop.\nAll diagnostics: {:#?}",
         compiled.diagnostics
@@ -1173,10 +1174,12 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
 /// The twin of `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`,
 /// and the second instance of that class. `circular_pattern` lowers to
 /// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
-/// `"circular"` (`crates/reify-compiler/src/types.rs:1748`), so eval says
-/// `circular:` where this layer says `circular_pattern:`. `PatternKind::Mirror`
-/// displays as `"mirror"` (types.rs:1749), so for `mirror` the two layers agree
-/// byte-for-byte and decision D9's "byte-identical" wording holds unmodified.
+/// `"circular"` (the `PatternKind::Circular` arm of its `Display` impl in
+/// `crates/reify-compiler/src/types.rs`), so eval says `circular:` where this
+/// layer says `circular_pattern:`. `PatternKind::Mirror` displays as `"mirror"`
+/// (the `PatternKind::Mirror` arm of the same `Display` impl), so for `mirror`
+/// the two layers agree byte-for-byte and decision D9's "byte-identical" wording
+/// holds unmodified.
 ///
 /// Both halves are pinned — the divergence AND its absence — because a reader
 /// who saw only the divergence might "fix" it in the wrong direction, by
@@ -1315,6 +1318,7 @@ fn dim_kinded_wrong_dimension_source() -> String {
 /// primitive_profile_length_units_e2e.rs`'s `build_compiled`.
 fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::Diagnostic> {
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
         Some(Box::new(
             reify_test_support::mocks::MockGeometryKernel::new(),

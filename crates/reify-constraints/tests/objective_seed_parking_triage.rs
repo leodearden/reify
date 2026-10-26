@@ -165,8 +165,8 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::Type;
 use reify_ir::{
-    AutoParam, BestFoundReason, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet,
-    OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, ValueMap,
+    AutoParam, BestFoundReason, CompiledExpr, Completeness, ConstraintSolver, ObjectiveSense,
+    ObjectiveSet, OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, ValueMap,
 };
 use reify_test_support::*;
 
@@ -479,7 +479,20 @@ fn p5_optimality_status_is_not_iteration_limited() {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            completeness,
         } => {
+            // BT13 (task #6706) — this probe reads a `DimensionalSolver` PRODUCER, so
+            // it pins the solution-set verdict the producer reports. At leaf α no
+            // producer opts into the axis: the seed-parking path establishes nothing
+            // about the solution SET, only about the one point it parked on. The
+            // pre-existing P5 assertions below are unchanged; `optimality` stays
+            // asserted exactly as before (cross-PRD seam (a) — #6680 owns that axis).
+            assert_eq!(
+                *completeness,
+                Completeness::not_attempted(),
+                "BT13: the objective-seed/parking path does not opt into the \
+                 completeness axis at task α"
+            );
             assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
             match optimality {
                 OptimalityStatus::BestFound { reason } => assert!(

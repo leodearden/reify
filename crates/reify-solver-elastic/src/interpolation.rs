@@ -235,6 +235,10 @@ enum BvhNode {
 /// per query while guaranteeing bit-identical results to the linear scan in
 /// [`locate_element_p1`].
 ///
+/// The index borrows the mesh it was built over and applies its build `tol`
+/// to every query, so a query can neither be answered against a different
+/// mesh nor at a different tolerance than the one the boxes were padded for.
+///
 /// # Bit-identical contract
 ///
 /// `locate` and `locate_counted` return the **minimum** element index among
@@ -252,19 +256,22 @@ enum BvhNode {
 /// `point_in_tet_p1(.., tol)` accepts is guaranteed to lie inside the padded
 /// AABB.  Over-padding only adds a few extra `point_in_tet_p1` evaluations;
 /// under-padding (not possible here) would silently miss the correct element.
-pub struct TetSpatialIndex {
-    /// Flat BVH node array.  Named `bvh_nodes` to avoid shadowing the mesh
-    /// vertex parameter `nodes` that callers pass to [`Self::locate_counted`].
+pub struct TetSpatialIndex<'a> {
+    /// Mesh vertex positions the index was built over.
+    nodes: &'a [[f64; 3]],
+    /// Tet connectivity (indices into `nodes`) the index was built over.
+    elems: &'a [[usize; 4]],
+    /// Barycentric slack used both for AABB padding and for every query.
+    tol: f64,
+    /// Flat BVH node array.  Named `bvh_nodes` to keep it distinct from the
+    /// mesh vertex slice `nodes`.
     bvh_nodes: Vec<BvhNode>,
     root: usize,
-    /// Number of mesh nodes supplied at build time; used in the geometry
-    /// consistency [`debug_assert`] in [`Self::locate_counted`].
-    n_nodes: usize,
     /// Element-index permutation; leaves reference contiguous sub-ranges.
     perm: Vec<usize>,
 }
 
-impl TetSpatialIndex {
+impl<'a> TetSpatialIndex<'a> {
     /// Maximum elements per BVH leaf.
     const LEAF_MAX: usize = 8;
     /// Absolute padding floor: prevents zero padding on degenerate (flat) faces.
@@ -272,12 +279,21 @@ impl TetSpatialIndex {
 
     /// Build a BVH over the mesh defined by `nodes` and `elems`.
     ///
-    /// `tol` controls AABB padding so that the padded boxes conservatively
-    /// contain every point accepted by `point_in_tet_p1(.., tol)`.
-    pub fn build(nodes: &[[f64; 3]], elems: &[[usize; 4]], tol: f64) -> Self {
+    /// The index borrows both slices and keeps `tol`: it pads the AABBs so the
+    /// padded boxes conservatively contain every point accepted by
+    /// `point_in_tet_p1(.., tol)`, and every later query tests containment at
+    /// that same `tol`.
+    pub fn build(nodes: &'a [[f64; 3]], elems: &'a [[usize; 4]], tol: f64) -> Self {
         let n = elems.len();
         if n == 0 {
-            return TetSpatialIndex { bvh_nodes: vec![], root: 0, perm: vec![], n_nodes: nodes.len() };
+            return TetSpatialIndex {
+                nodes,
+                elems,
+                tol,
+                bvh_nodes: vec![],
+                root: 0,
+                perm: vec![],
+            };
         }
 
         // Per-element padded AABB.
@@ -342,7 +358,14 @@ impl TetSpatialIndex {
             &mut bvh_nodes,
         );
 
-        TetSpatialIndex { bvh_nodes, root, perm, n_nodes: nodes.len() }
+        TetSpatialIndex {
+            nodes,
+            elems,
+            tol,
+            bvh_nodes,
+            root,
+            perm,
+        }
     }
 
     /// Total-order comparator for element centroids along `axis`, used by
@@ -439,99 +462,45 @@ impl TetSpatialIndex {
     /// or `None` if no element contains `p`.
     ///
     /// Result is bit-identical to [`locate_element_p1`] for every query point.
-    pub fn locate(
-        &self,
-        nodes: &[[f64; 3]],
-        elems: &[[usize; 4]],
-        p: [f64; 3],
-        tol: f64,
-    ) -> Option<usize> {
-        self.locate_counted(nodes, elems, p, tol).0
+    pub fn locate(&self, p: [f64; 3]) -> Option<usize> {
+        self.locate_counted(p).0
     }
 
     /// Like [`locate`] but also returns the number of `point_in_tet_p1`
     /// evaluations performed (for deterministic performance assertions).
-    pub fn locate_counted(
-        &self,
-        nodes: &[[f64; 3]],
-        elems: &[[usize; 4]],
-        p: [f64; 3],
-        tol: f64,
-    ) -> (Option<usize>, usize) {
-        // Geometry-consistency contract: callers MUST pass the same nodes/elems
-        // that were supplied to `build`.  The index stores only `perm` (element
-        // indices) and `n_nodes`; passing a different or reordered slice silently
-        // returns wrong results at runtime.  These asserts catch the most common
-        // misuse in debug builds.
-        debug_assert_eq!(
-            nodes.len(),
-            self.n_nodes,
-            "locate_counted: nodes.len() ({}) != index n_nodes ({}); \
-             pass the same nodes slice that was used to build the index",
-            nodes.len(),
-            self.n_nodes,
-        );
-        debug_assert_eq!(
-            elems.len(),
-            self.perm.len(),
-            "locate_counted: elems.len() ({}) != index perm.len() ({}); \
-             pass the same elems slice that was used to build the index",
-            elems.len(),
-            self.perm.len(),
-        );
+    pub fn locate_counted(&self, p: [f64; 3]) -> (Option<usize>, usize) {
         if self.bvh_nodes.is_empty() {
             return (None, 0);
         }
         let mut best: Option<usize> = None;
         let mut count: usize = 0;
-        Self::traverse(
-            &self.bvh_nodes,
-            self.root,
-            &self.perm,
-            nodes,
-            elems,
-            p,
-            tol,
-            &mut best,
-            &mut count,
-        );
+        self.traverse(self.root, p, &mut best, &mut count);
         (best, count)
     }
 
-    #[allow(clippy::too_many_arguments)] // private recursive helper; args cannot be reduced without overhead
-    fn traverse(
-        bvh_nodes: &[BvhNode],
-        node_idx: usize,
-        perm: &[usize],
-        nodes: &[[f64; 3]],
-        elems: &[[usize; 4]],
-        p: [f64; 3],
-        tol: f64,
-        best: &mut Option<usize>,
-        count: &mut usize,
-    ) {
-        match &bvh_nodes[node_idx] {
+    fn traverse(&self, node_idx: usize, p: [f64; 3], best: &mut Option<usize>, count: &mut usize) {
+        match &self.bvh_nodes[node_idx] {
             BvhNode::Internal { aabb, left, right } => {
                 if !aabb.contains(p) {
                     return;
                 }
-                Self::traverse(bvh_nodes, *left, perm, nodes, elems, p, tol, best, count);
-                Self::traverse(bvh_nodes, *right, perm, nodes, elems, p, tol, best, count);
+                self.traverse(*left, p, best, count);
+                self.traverse(*right, p, best, count);
             }
             BvhNode::Leaf { aabb, start, end } => {
                 if !aabb.contains(p) {
                     return;
                 }
-                for &elem_idx in &perm[*start..*end] {
-                    let conn = &elems[elem_idx];
+                for &elem_idx in &self.perm[*start..*end] {
+                    let conn = &self.elems[elem_idx];
                     let phys4: [[f64; 3]; 4] = [
-                        nodes[conn[0]],
-                        nodes[conn[1]],
-                        nodes[conn[2]],
-                        nodes[conn[3]],
+                        self.nodes[conn[0]],
+                        self.nodes[conn[1]],
+                        self.nodes[conn[2]],
+                        self.nodes[conn[3]],
                     ];
                     *count += 1;
-                    if point_in_tet_p1(&phys4, p, tol) {
+                    if point_in_tet_p1(&phys4, p, self.tol) {
                         *best = Some(match *best {
                             Some(prev) => prev.min(elem_idx),
                             None => elem_idx,
@@ -543,8 +512,61 @@ impl TetSpatialIndex {
     }
 }
 
+/// Tet tilings shared by this module's index tests and by `resample`'s tests.
+#[cfg(test)]
+pub(crate) mod test_meshes {
+    /// Build a Freudenthal box-of-tets: M³ hexes → 6·M³ tets tiling [0,1]³.
+    ///
+    /// Node index: `ix*(M+1)²+iy*(M+1)+iz`; physical coords: `(ix/M, iy/M, iz/M)`.
+    /// Each hex is split along its (1,1,1)-corner diagonal n6 into the same six
+    /// tets, under the same corner labels n0..n7, as `bvh_tests::box_elems`.
+    ///
+    /// Hexes are emitted x-outer/z-inner, 6 consecutive tets each, so hex
+    /// `(cx,cy,cz)` owns `elems[6*((cx*M + cy)*M + cz) .. +6]`; `resample`'s
+    /// grid-miss tests rely on that to punch a coverage hole in one specific hex.
+    pub(crate) fn make_box_of_tets(m: usize) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let m1 = m + 1;
+        let mut nodes = Vec::with_capacity(m1 * m1 * m1);
+        for ix in 0..=m {
+            for iy in 0..=m {
+                for iz in 0..=m {
+                    nodes.push([
+                        ix as f64 / m as f64,
+                        iy as f64 / m as f64,
+                        iz as f64 / m as f64,
+                    ]);
+                }
+            }
+        }
+        let node = |ix: usize, iy: usize, iz: usize| ix * m1 * m1 + iy * m1 + iz;
+        let mut elems = Vec::with_capacity(6 * m * m * m);
+        for cx in 0..m {
+            for cy in 0..m {
+                for cz in 0..m {
+                    let n0 = node(cx, cy, cz);
+                    let n1 = node(cx + 1, cy, cz);
+                    let n2 = node(cx + 1, cy + 1, cz);
+                    let n3 = node(cx, cy + 1, cz);
+                    let n4 = node(cx, cy, cz + 1);
+                    let n5 = node(cx + 1, cy, cz + 1);
+                    let n6 = node(cx + 1, cy + 1, cz + 1);
+                    let n7 = node(cx, cy + 1, cz + 1);
+                    elems.push([n0, n1, n2, n6]);
+                    elems.push([n0, n2, n3, n6]);
+                    elems.push([n0, n5, n1, n6]);
+                    elems.push([n0, n3, n7, n6]);
+                    elems.push([n0, n4, n5, n6]);
+                    elems.push([n0, n7, n4, n6]);
+                }
+            }
+        }
+        (nodes, elems)
+    }
+}
+
 #[cfg(test)]
 mod bvh_tests {
+    use super::test_meshes::make_box_of_tets;
     use super::*;
 
     // ── Shared fixture: 6-tet Freudenthal box tiling [0,1]³ ─────────────────
@@ -630,19 +652,19 @@ mod bvh_tests {
 
         // (1) Centroid of Tet0 — inside.
         let p_in = [0.25_f64, 0.25, 0.25];
-        let (opt_cnt, cnt_in) = idx.locate_counted(&nodes, &elems, p_in, tol);
+        let (opt_cnt, cnt_in) = idx.locate_counted(p_in);
         assert_eq!(opt_cnt, Some(0), "inside: must find Tet0");
         assert!(cnt_in >= 1, "inside: count ≥ 1 (at least Tet0 tested)");
 
         // (2) Centroid of Tet1 — inside.
         let p_in1 = [2.25_f64, 0.25, 0.25];
-        let (opt1, _) = idx.locate_counted(&nodes, &elems, p_in1, tol);
-        assert_eq!(opt1, idx.locate(&nodes, &elems, p_in1, tol), "Tet1 centroid: parity");
+        let (opt1, _) = idx.locate_counted(p_in1);
+        assert_eq!(opt1, idx.locate(p_in1), "Tet1 centroid: parity");
         assert_eq!(opt1, Some(1), "Tet1 centroid: must find Tet1");
 
         // (3) Far-outside point — no AABB contains it → count = 0.
         let p_out = [10.0_f64, 10.0, 10.0];
-        let (opt_out, cnt_out) = idx.locate_counted(&nodes, &elems, p_out, tol);
+        let (opt_out, cnt_out) = idx.locate_counted(p_out);
         assert_eq!(opt_out, None, "far outside: None");
         assert_eq!(cnt_out, 0, "far outside: count must be 0 (root AABB culls all)");
     }
@@ -659,13 +681,14 @@ mod bvh_tests {
         let idx = TetSpatialIndex::build(&nodes, &elems, tol);
 
         for p in [[0.0_f64, 0.0, 0.0], [1.0, 2.0, 3.0], [-5.0, 0.0, 0.0]] {
-            let (loc, cnt) = idx.locate_counted(&nodes, &elems, p, tol);
+            let (loc, cnt) = idx.locate_counted(p);
             assert_eq!(loc, None, "empty mesh: locate must be None for p={p:?}");
             assert_eq!(cnt, 0, "empty mesh: count must be 0 for p={p:?}");
         }
     }
 
-    /// Step-1 RED: TetSpatialIndex does not exist yet; this test fails to compile.
+    /// The index agrees with the linear scan at tet centroids, on a shared face,
+    /// just outside a vertex within `tol`, and far outside the mesh.
     #[test]
     fn tet_spatial_index_matches_linear_oracle_for_all_cases() {
         let nodes = box_nodes();
@@ -680,7 +703,7 @@ mod bvh_tests {
         let locatable = make_locatable(&nodes, &elems, &mut phys);
 
         let check = |label: &str, p: [f64; 3]| {
-            let bvh = idx.locate(&nodes, &elems, p, tol);
+            let bvh = idx.locate(p);
             let oracle = locate_element_p1(&locatable, p, tol);
             assert_eq!(
                 bvh, oracle,
@@ -709,6 +732,100 @@ mod bvh_tests {
 
         // (d) Far-outside point → None in both BVH and oracle.
         check("far outside", [10.0, 10.0, 10.0]);
+    }
+
+    /// Every point of the cube lattice `axis × axis × axis`.
+    fn cube_lattice(axis: &[f64]) -> Vec<[f64; 3]> {
+        let mut points = Vec::with_capacity(axis.len().pow(3));
+        for &x in axis {
+            for &y in axis {
+                for &z in axis {
+                    points.push([x, y, z]);
+                }
+            }
+        }
+        points
+    }
+
+    /// BT11: an index built over a mesh with a given `tol` answers every query
+    /// point exactly as the linear scan does at that same `tol`.
+    ///
+    /// `make_box_of_tets(4|8)` holds 384 and 3072 tets, so unlike the 6-tet box
+    /// (one leaf) the index is a multi-level tree. Sweeps tol ∈ {0, 1e-9, 1e-6}
+    /// over two lattices: one spanning [-0.1, 1.1]³, with interior hits and
+    /// out-of-solid misses, and the mesh's own vertex lattice, computed as the
+    /// fixture computes its nodes so its points equal mesh vertices bit-for-bit.
+    /// Most of those lie in several tets at once, which exercises the min-index
+    /// tie-break. Each tiling is also swept with its tets numbered in reverse:
+    /// under the fixture's own x-major numbering, a traversal that skips the
+    /// right subtree once the left one hits still returns the minimum index.
+    #[test]
+    fn tet_spatial_index_locate_is_bit_identical_to_locate_element_p1_over_box_tilings() {
+        let spanning_axis: Vec<f64> = (0..=5).map(|i| -0.1 + 0.24 * i as f64).collect();
+        let spanning_points = cube_lattice(&spanning_axis);
+        for m in [4, 8] {
+            let (nodes, ascending) = make_box_of_tets(m);
+            let reversed: Vec<[usize; 4]> = ascending.iter().rev().copied().collect();
+
+            let vertex_axis: Vec<f64> = (0..=m).map(|i| i as f64 / m as f64).collect();
+            let vertex_points = cube_lattice(&vertex_axis);
+
+            for (numbering, elems) in [("ascending", &ascending), ("reversed", &reversed)] {
+                let mut phys = Vec::new();
+                let locatable = make_locatable(&nodes, elems, &mut phys);
+                for tol in [0.0, 1e-9, 1e-6] {
+                    let idx = TetSpatialIndex::build(&nodes, elems, tol);
+                    for &p in spanning_points.iter().chain(&vertex_points) {
+                        let indexed = idx.locate(p);
+                        let scanned = locate_element_p1(&locatable, p, tol);
+                        assert_eq!(
+                            indexed, scanned,
+                            "m={m} {numbering} tol={tol:e} p={p:?}: index located {indexed:?}, \
+                             linear scan {scanned:?}",
+                        );
+                        assert_eq!(
+                            idx.locate_counted(p).0,
+                            indexed,
+                            "m={m} {numbering} tol={tol:e} p={p:?}: locate_counted disagrees \
+                             with locate",
+                        );
+                    }
+                }
+            }
+
+            if m == 4 {
+                let mut phys = Vec::new();
+                let locatable = make_locatable(&nodes, &ascending, &mut phys);
+                let tol = 1e-9;
+                let hits: Vec<Option<usize>> = spanning_points
+                    .iter()
+                    .map(|&p| locate_element_p1(&locatable, p, tol))
+                    .collect();
+                assert!(
+                    hits.iter().any(Option::is_some),
+                    "spanning lattice must contain interior hits"
+                );
+                assert!(
+                    hits.iter().any(Option::is_none),
+                    "spanning lattice must contain out-of-solid misses"
+                );
+
+                let tie_points = vertex_points
+                    .iter()
+                    .filter(|&&p| {
+                        locatable
+                            .iter()
+                            .filter(|t| point_in_tet_p1(t.phys_nodes, p, tol))
+                            .count()
+                            >= 2
+                    })
+                    .count();
+                assert!(
+                    tie_points > 0,
+                    "vertex lattice must hit points shared by ≥2 tets"
+                );
+            }
+        }
     }
 
     /// Smoke test (task #5090, PRD compute-fea-hardening.md task E3 /
@@ -759,7 +876,7 @@ mod bvh_tests {
             [-5.0, -5.0, -5.0],
         ];
         for p in probes {
-            let _ = idx.locate(&nodes, &elems, p, tol);
+            let _ = idx.locate(p);
         }
     }
 

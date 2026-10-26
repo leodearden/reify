@@ -9,16 +9,20 @@ mod branch_signature;
 mod calculus;
 mod complex;
 mod dual;
+mod dual_builtin_rules;
+mod dual_env;
 mod dual_eval;
+mod dual_seeds;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
+mod non_differentiable;
 mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
-// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
 // modules are PRIVATE and these flat re-exports are the only path to them, so
 // `reify_expr::Tangent` is not merely the preferred spelling over
 // `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
@@ -30,10 +34,10 @@ pub use branch_signature::{
     RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
 };
 pub use dual::{DualValue, Tangent};
-pub use dual_eval::{
-    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
-    jacobian_row_with_env,
-};
+pub use dual_env::DualEnv;
+pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
+pub use dual_seeds::Seeds;
+pub use non_differentiable::NonDifferentiable;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +46,7 @@ use std::sync::Arc;
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
+use reify_core::scalar_tolerance::scalars_equal;
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -1440,10 +1445,10 @@ fn eval_ad_hoc_selector(
 /// candidate. With `is_generic == false` the head tier's `heads_unifiable` arm
 /// is gated off and head genuinely IS a subset of wildcard — the same relation
 /// [`reify_core::overload`]'s module doc states. So tier 2 CAN drop a
-/// non-generic candidate: a concrete param facing an arg that CARRIES a type
-/// param without BEING a bare `Type::TypeParam` (e.g. `Option<T>`) passes tier
-/// 3's arg-side `type_carries_type_param` disjunct (D4) and fails tier 2's
-/// bare-`TypeParam` one. Being a filter over tier 3's survivors, tier 2 can
+/// non-generic candidate: a concrete same-head param facing an arg whose heads
+/// unify only through an R1 placeholder slot (e.g. `Result<Length, String>` vs
+/// `Result<Length, ?E>`) passes tier 3 and fails tier 2's bare-user-`TypeParam`
+/// disjunct. Being a filter over tier 3's survivors, tier 2 can
 /// still only ever narrow — never admit a candidate tier 3 rejected.
 ///
 /// The narrowing is per-CANDIDATE but its effect is per-SET, and the
@@ -1980,51 +1985,57 @@ fn interp_render(value: &Value) -> String {
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
 /// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
+/// geometry-builtin family (`geometry_diagnose`) / dynamics /
 /// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
 /// six classifiers returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
+///
+/// A classified `DimensionedArgRejected` also records that specific code as
+/// the cell's `UndefCause::OpContractFailed` (PRD-5 §7 I5), via
+/// [`push_op_contract_failure`].
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
-    if !matches!(result, Value::Undef) {
+    // The classifiers run when EITHER sink is attached: the undef-cause capture
+    // pass (`record_op_contract_failures`) re-evaluates with a cause sink and no
+    // diagnostics sink, and it is the pass that records the I5 cause below. With
+    // capture on, an Undef builtin cell is therefore classified once per pass.
+    if !matches!(result, Value::Undef) || (ctx.diagnostics.is_none() && ctx.undef_causes.is_none())
+    {
         return;
     }
-    let Some(sink) = ctx.diagnostics else {
-        return;
-    };
-    // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
-    if let Some(diag) = reify_stdlib::stackup_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
-    if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
-    // severity split by fault class, disjoint from the sibling hooks here.
-    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
-    if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Inverse-dynamics Undef: body has no resolvable mass.
-    if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
-    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
-    // Severity::Error instead of a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
-    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
-    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
-    // spelling, so this Severity::Error is the migration mechanism for that
-    // breaking change rather than a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as the five above.
-    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
+    let classified = [
+        // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
+        reify_stdlib::stackup_diagnose(name, args),
+        // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
+        reify_stdlib::fea_diagnose(name, args),
+        // Geometry-builtin diagnostics: one classifier with severity split by
+        // fault class. See `geometry_diagnose`'s own doc for the per-name breakdown.
+        reify_stdlib::geometry_diagnose(name, args),
+        // Dynamics: inverse-dynamics body mass / compliance, and the
+        // `mass_properties` / `point_mass` argument dimensions.
+        reify_stdlib::dynamics_diagnose(name, args),
+        // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+        // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+        // Severity::Error instead of a silent Undef.
+        reify_stdlib::tolerancing_diagnose(name, args),
+        // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+        // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+        // spelling, so this Severity::Error is the migration mechanism for that
+        // breaking change rather than a silent Undef.
+        reify_stdlib::orientation_diagnose(name, args),
+    ];
+    for diag in classified.into_iter().flatten() {
+        // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This
+        // runs before the generic `OpContractViolation` push in `eval_expr`'s
+        // `FunctionCall` arm, and the engine keeps the first `OpContractFailed`
+        // per cell, so the specific code is the one recorded.
+        if diag.code == Some(DiagnosticCode::DimensionedArgRejected) {
+            push_op_contract_failure(ctx, DiagnosticCode::DimensionedArgRejected);
+        }
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(diag);
+        }
     }
 }
 
@@ -2896,6 +2907,12 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
 ///    short-circuit at lib.rs:206 already filtered out Undef args).
 /// 2. `eval_binop`, after the strict undef-propagation check (both operands
 ///    are determined at that point; an Undef result is a genuine contract failure).
+///
+/// Both push the generic `OpContractViolation`. The one SPECIFIC cause is
+/// `DimensionedArgRejected` (PRD-5 §7 I5, task 6922), pushed by
+/// `emit_undef_builtin_diagnostics` when a classifier rejects an argument's
+/// dimension; it runs before site 1, and the engine keeps the first
+/// `OpContractFailed` per cell, so the specific code wins.
 ///
 /// Uses an **empty placeholder span** (`SourceSpan::default()`) because
 /// `CompiledExpr` carries no span (spans are lost at compile). The engine's
@@ -3792,11 +3809,18 @@ fn scale_components(
     }
 }
 
+/// Int overflow (a `None` from a checked `i64` op) is `Undef`, never a panic
+/// or a wrapped value.
+#[inline]
+fn int_or_undef(checked: Option<i64>) -> Value {
+    checked.map_or(Value::Undef, Value::Int)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
     match v {
-        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Int(i) => int_or_undef(i.checked_neg()),
         Value::Real(r) => Value::Real(-r),
         Value::Scalar {
             si_value,
@@ -3945,7 +3969,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
 
 pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_add(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 + b)
@@ -4049,7 +4073,7 @@ pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_sub(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 - b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a - *b as f64),
@@ -4231,7 +4255,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
 
 pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_mul(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
@@ -4515,15 +4539,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => {
-            if *b == 0 {
-                Value::Undef
-            } else if a % b == 0 {
-                Value::Int(a / b)
-            } else {
-                Value::Real(*a as f64 / *b as f64)
-            }
-        }
+        (Value::Int(a), Value::Int(b)) => match a.checked_rem(*b) {
+            Some(0) => int_or_undef(a.checked_div(*b)),
+            Some(_) => Value::Real(*a as f64 / *b as f64),
+            None => Value::Undef,
+        },
         (Value::Real(a), Value::Real(b)) => Value::Real(a / b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 / b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a / *b as f64),
@@ -4663,7 +4683,9 @@ pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
             if *b == 0 {
                 Value::Undef
             } else {
-                Value::Int(a % b)
+                // A remainder always fits an i64; `wrapping_rem` is `%` made total
+                // for `i64::MIN % -1` (exactly 0, but `%` panics on it).
+                Value::Int(a.wrapping_rem(*b))
             }
         }
         (Value::Real(a), Value::Real(b)) => {
@@ -4696,14 +4718,21 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // so the wrapping is zero-cost for the common case.
     // (task-4106 step-6)
     let result = match (lv, rv) {
+        // Exponent domain is [i32::MIN, u32::MAX]: a non-negative exponent stays
+        // Int (exact, or Undef on overflow), a negative one is a Real reciprocal
+        // power, and anything wider is Undef rather than silently truncated.
         (Value::Int(base), Value::Int(exp)) => {
-            if *exp >= 0 && *exp <= i32::MAX as i64 {
-                Value::Int(base.pow(*exp as u32))
+            if let Ok(e) = u32::try_from(*exp) {
+                int_or_undef(base.checked_pow(e))
+            } else if let Ok(e) = i32::try_from(*exp) {
+                Value::Real((*base as f64).powi(e))
             } else {
-                Value::Real((*base as f64).powi(*exp as i32))
+                Value::Undef
             }
         }
-        (Value::Real(base), Value::Int(exp)) => Value::Real(base.powi(*exp as i32)),
+        (Value::Real(base), Value::Int(exp)) => {
+            i32::try_from(*exp).map_or(Value::Undef, |e| Value::Real(base.powi(e)))
+        }
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
         // Scalar ^ Int: raise value, multiply dimension exponents.
@@ -4728,7 +4757,11 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
+/// The language's `==` verdict on two evaluated operands. Scalar and Real
+/// operands compare through [`reify_core::scalar_tolerance`]; public so the
+/// DimensionalSolver's equality-row acceptance calls this same function
+/// (#6653) instead of re-deriving the dimension and Int dispatch.
+pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -4747,7 +4780,7 @@ pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
             if da != db {
                 Value::Bool(false)
             } else {
-                Value::Bool(a == b)
+                Value::Bool(scalars_equal(*a, *b, *da))
             }
         }
         // Enum-vs-Enum equality: same type → compare variant, different type → false
@@ -4789,7 +4822,9 @@ pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
         _ => {
             // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
-                (Some(a), Some(b)) => Value::Bool(a == b),
+                (Some(a), Some(b)) => {
+                    Value::Bool(scalars_equal(a, b, DimensionVector::DIMENSIONLESS))
+                }
                 _ => Value::Undef,
             }
         }

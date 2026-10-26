@@ -22,8 +22,8 @@
 //! sharing `mesh_size_scope::MeshSizeScope` between its consumers.
 //!
 //! Declared by `#[path]` from each binary rather than as a submodule of
-//! `common/mod.rs`, whose stated scope is the #6200 box/cylinder geometry
-//! fixtures; either way there is exactly one copy of the source.
+//! `common/mod.rs`, so each binary compiles only the shared helpers it uses;
+//! either way there is exactly one copy of the source.
 //!
 //! Every consumer is `#[allow(dead_code)]`-tolerant by construction: each test
 //! binary compiles its own copy of this module and uses only part of it, so the

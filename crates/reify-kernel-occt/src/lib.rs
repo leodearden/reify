@@ -105,6 +105,13 @@ mod boolean_parallelism;
 pub use boolean_parallelism::{
     BooleanParallelism, boolean_parallelism, parallel_bop_build_count, with_boolean_parallelism,
 };
+#[cfg(has_occt)]
+mod step_document;
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub use step_document::xstep_cascade_unit_for_test;
+#[cfg(has_occt)]
+pub use step_document::{StepBodyError, StepDocument, StepReadError};
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -165,11 +172,19 @@ mod types;
 pub use types::Curvature;
 pub use types::Transform3;
 #[cfg(has_occt)]
+mod history_decode;
+#[cfg(has_occt)]
+mod op_args;
+#[cfg(has_occt)]
 mod queries;
 #[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
+#[cfg(has_occt)]
+mod sweep_pose;
+#[cfg(has_occt)]
+use sweep_pose::validate_sweep_pose;
 // `reify_mesh_morph::Projector` impl over `OcctKernel`. Gated on
 // `feature = "mesh-morph"` so adapters keep the dep-direction-inverted
 // layering (see `Cargo.toml`); also `has_occt` because the impl requires the
@@ -199,6 +214,18 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
+use history_decode::{
+    decode_boolean_history, decode_local_feature_history, decode_loft_history, decode_sweep_history,
+};
+
+#[cfg(has_occt)]
+use op_args::{
+    AXIS_MAG_SQ_MIN, extract_f64, extract_length_f64, validate_all_positive_finite,
+    validate_extrude_distance, validate_loft_profile_count, validate_pipe_start_tangent,
+    validate_positive_finite, validate_revolve_params, validate_uv_finite,
+};
+
+#[cfg(has_occt)]
 use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, StepSchema, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
 
 #[cfg(has_occt)]
@@ -222,158 +249,6 @@ struct OcctWarmState {
     reprs: HashMap<u64, BRepKind>,
     /// The next handle ID to assign (preserves ID namespace across warm-start).
     next_id: u64,
-}
-
-#[cfg(has_occt)]
-/// Minimum squared magnitude for axis/direction vectors.
-///
-/// Vectors with mag² below this threshold are treated as zero-length and rejected.
-/// This catches physically meaningless axes (e.g. sub-micrometer) while allowing
-/// any vector representable in normal CAD geometry.
-///
-/// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
-const AXIS_MAG_SQ_MIN: f64 = 1e-12;
-
-/// Minimum absolute angle (radians) for revolve operations.
-/// Angles below this are treated as effectively zero.
-/// Matches the C++ ANGLE_ABS_MIN threshold (1e-30).
-/// Value: 1e-30 radians ≈ 5.7e-29 degrees — far below any physical relevance.
-#[cfg(has_occt)]
-const ANGLE_ABS_MIN: f64 = 1e-30;
-
-#[cfg(has_occt)]
-/// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
-///
-/// Length-semantic fields go through [`extract_length_f64`] instead. This
-/// context-free form survives for the FIVE deliberately ungated OCCT fields —
-/// `HalfSpace`'s `nx`/`ny`/`nz` (dimensionless unit-normal components) and
-/// `CircularPattern.angle` / `Draft.angle` (ANGLE, PRD 3's surface) — each
-/// marked at its call site with a `// not length-semantic:` comment.
-fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
-    v.as_f64()
-        .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
-}
-
-#[cfg(has_occt)]
-/// Length-semantic numeric extraction + the C4 kernel LENGTH tripwire.
-///
-/// Identical accept/reject disposition and `Ok` payload to [`extract_f64`];
-/// the only differences are (a) a `tracing::warn!` naming op kind and field
-/// when a non-LENGTH value arrives, (b) the opt-in debug assertion, and (c) an
-/// `Err` string that names op kind and field instead of the bare
-/// `"expected numeric value"`.
-///
-/// **A tripwire, not a gate** (PRD D5 / ratified decision 4): a violation is
-/// *reported* and execution proceeds exactly as before. A fired tripwire means
-/// a hole in the eval-layer gate (`required_length_value` /
-/// `required_length_values`, `crates/reify-eval/src/geometry_ops.rs:482`/`:523`),
-/// not a kernel bug. Canonical rationale, plus the C2 corollary about
-/// `GeometryOp` construction routes, lives with the shared classifier in
-/// `crates/reify-ir/src/kernel_validation.rs`. Contract:
-/// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
-///
-/// It is the SECOND, INDEPENDENT detection layer: the first is the closure
-/// guard (leaf ι), which is not yet landed. The closure guard reasons about
-/// where a value came from; this observes what actually arrived at the kernel
-/// boundary. Neither subsumes the other, so this one keeps working if the
-/// first is bypassed or has a hole.
-///
-/// `OcctKernel::execute`'s 47 numeric-extraction sites split 47 = 42 + 3 + 2:
-/// the 42 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
-/// (dimensionless unit-normal components) and `CircularPattern.angle` /
-/// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
-/// [`extract_f64`], each marked at its call site with a
-/// `// not length-semantic:` comment.
-///
-/// The warn is emitted HERE rather than from `reify-ir` because the house
-/// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
-/// the emitting crate (`reify_kernel_gmsh::repair`,
-/// `reify_kernel_manifold::kernel`), and because it keeps `reify-ir` — a
-/// dependency of 13+ crates — free of a `tracing` edge. The message string
-/// still comes from the single `kernel_validation.rs` formatter, so the two
-/// kernels cannot drift.
-fn extract_length_f64(
-    v: &Value,
-    op: &GeometryOp,
-    field: &'static str,
-) -> Result<f64, GeometryError> {
-    let op_kind = op.kind_name();
-    if let Some(msg) = reify_ir::check_length_field(op_kind, field, v) {
-        tracing::warn!(
-            target: "reify_kernel_occt::length_tripwire",
-            reason = "non_length_field",
-            op_kind = op_kind,
-            field = field,
-            "{msg}"
-        );
-    }
-    v.as_f64().ok_or_else(|| {
-        GeometryError::OperationFailed(reify_ir::non_numeric_kernel_field_message(op_kind, field))
-    })
-}
-
-#[cfg(has_occt)]
-/// Validate that `value` is a finite, strictly positive number.
-///
-/// Returns an `OperationFailed` error with the message
-/// `"{label} must be a finite positive value"` if the check fails. `label`
-/// is intended to be a specific dimension name (e.g. `"tube outer radius"`,
-/// `"pipe radius"`) so the caller does not need to construct bespoke error
-/// strings for each dimension.
-fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
-    if !(value.is_finite() && value > 0.0) {
-        return Err(GeometryError::OperationFailed(format!(
-            "{label} must be a finite positive value"
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(has_occt)]
-/// Validate that `u` and `v` are both finite (not NaN and not ±Inf).
-///
-/// This is the shared NaN/Inf rejection idiom for surface differential FFI
-/// primitives (`surface_normal_at`, `curvature_at`). The check runs at the
-/// Rust FFI boundary so the C++ wrapper never receives non-finite parametric
-/// inputs — OCCT may silently produce nonsensical output for NaN/Inf inputs
-/// rather than reporting a structured error, so we reject upfront.
-///
-/// Returns `QueryError::NonFiniteParameter { u, v }` if either component
-/// is non-finite (NaN or ±Infinity). The variant echoes the bad inputs
-/// so callers can surface structured diagnostics without inspecting a
-/// message string.
-fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
-    if !u.is_finite() || !v.is_finite() {
-        return Err(QueryError::NonFiniteParameter { u, v });
-    }
-    Ok(())
-}
-
-#[cfg(has_occt)]
-/// Validate that a pipe start-tangent is all-finite (defense-in-depth for `gp_Dir`).
-///
-/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity).
-///
-/// # Rationale
-///
-/// The tangent is fed into OCCT's `gp_Dir` (via the oriented-circle profile
-/// construction) to align the circular profile with the path's start frame, and
-/// `gp_Dir` requires a finite, non-degenerate vector. `BRepAdaptor_CompCurve::D1`
-/// already yields a normalized tangent, so a non-finite component here signals a
-/// malformed wire or an FFI contract violation; this Rust-side guard rejects it
-/// explicitly rather than passing NaN/∞ across the FFI boundary.
-///
-/// Any finite orientation is accepted: `gp_Ax2(point, dir)` builds a valid
-/// orthonormal frame for ANY unit normal (including −Z), so pipes are no longer
-/// restricted to a +Z start-tangent.
-fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
-    if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
-        return Err(GeometryError::OperationFailed(format!(
-            "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
-            t.x, t.y, t.z
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(has_occt)]
@@ -407,200 +282,40 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
 
 #[cfg(has_occt)]
-/// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,
-/// result_subshape_index)` triples — as emitted by the C++ wrapper —
-/// into typed `HistoryRecord`s.
-///
-/// Trailing partial groups (length not a multiple of 3) are discarded
-/// via `chunks_exact`; the wrapper guarantees full triples, so this is
-/// a defense-in-depth no-op rather than a permitted code path.
-fn decode_history_records(flat: Vec<u32>) -> Vec<HistoryRecord> {
-    flat.chunks_exact(3)
-        .map(|c| HistoryRecord {
-            parent_index: c[0] as u8,
-            parent_subshape_index: c[1],
-            result_subshape_index: c[2],
-        })
-        .collect()
+/// The sub-shape kinds [`OcctKernel::extract_subshapes`] enumerates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubShapeKind {
+    Edge,
+    Face,
+    Vertex,
 }
 
 #[cfg(has_occt)]
-/// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index)`
-/// pairs into typed `DeletedRecord`s.  Mirrors `decode_history_records`.
-fn decode_deleted_records(flat: Vec<u32>) -> Vec<DeletedRecord> {
-    flat.chunks_exact(2)
-        .map(|c| DeletedRecord {
-            parent_index: c[0] as u8,
-            parent_subshape_index: c[1],
-        })
-        .collect()
-}
+impl SubShapeKind {
+    fn repr(self) -> BRepKind {
+        match self {
+            Self::Edge => BRepKind::Edge,
+            Self::Face => BRepKind::Face,
+            Self::Vertex => BRepKind::Vertex,
+        }
+    }
 
-#[cfg(has_occt)]
-/// Raw decoded values from the six-buffer history layout shared by
-/// `boolean_fuse_with_history` and `run_local_feature_with_history`.
-///
-/// Both `BooleanOpHistoryRecords` and `LocalFeatureOpHistoryRecords` have
-/// identical field shapes (`silent_drop_count: u32`, four `Vec<HistoryRecord>`,
-/// two `Vec<DeletedRecord>`).  This struct is the common intermediate: the
-/// shared decoder fills it and returns it; call sites convert to their specific
-/// output type via `From<SixBufferHistoryDecoded>`.
-struct SixBufferHistoryDecoded {
-    silent_drop_count: u32,
-    face_modified: Vec<HistoryRecord>,
-    face_generated: Vec<HistoryRecord>,
-    face_deleted: Vec<DeletedRecord>,
-    edge_modified: Vec<HistoryRecord>,
-    edge_generated: Vec<HistoryRecord>,
-    edge_deleted: Vec<DeletedRecord>,
-}
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Face => "face",
+            Self::Vertex => "vertex",
+        }
+    }
 
-#[cfg(has_occt)]
-/// Function-pointer accessors for the eight FFI entry points that comprise
-/// the shared six-buffer-history protocol.
-///
-/// Two const instances exist, one per history type:
-/// [`BOOLEAN_OP_ACCESSORS`] and [`LOCAL_FEATURE_OP_ACCESSORS`].
-/// Both are consumed by [`decode_six_buffer_history`].
-///
-/// The eight fields map 1-to-1 to the cxx-bridge free functions declared in
-/// `crates/reify-kernel-occt/src/ffi.rs`:
-/// - six record-buffer readers (`fn(&H) -> Vec<u32>`)
-/// - one silent-drop-count reader (`fn(&H) -> u32`)
-/// - one shape-taker (`fn(Pin<&mut H>) -> UniquePtr<OcctShape>`)
-struct SixBufferHistoryAccessors<H> {
-    face_modified: fn(&H) -> Vec<u32>,
-    face_generated: fn(&H) -> Vec<u32>,
-    face_deleted: fn(&H) -> Vec<u32>,
-    edge_modified: fn(&H) -> Vec<u32>,
-    edge_generated: fn(&H) -> Vec<u32>,
-    edge_deleted: fn(&H) -> Vec<u32>,
-    silent_drop_count: fn(&H) -> u32,
-    take_result_shape: fn(std::pin::Pin<&mut H>) -> cxx::UniquePtr<ffi::ffi::OcctShape>,
-}
-
-#[cfg(has_occt)]
-/// Decode the six record buffers plus `silent_drop_count` from an FFI
-/// history wrapper `H`, take the result shape, and return both as a pair.
-/// The caller's output type `R` must implement `From<SixBufferHistoryDecoded>`.
-///
-/// ## Six-buffer protocol
-///
-/// Both `boolean_fuse_with_history` (via `BooleanOpHistory`) and
-/// `run_local_feature_with_history` (via `LocalFeatureOpHistory`) share the
-/// same decode shape:
-///
-/// 1. Six buffer reads via FFI accessors: `face_modified`, `face_generated`,
-///    `face_deleted`, `edge_modified`, `edge_generated`, `edge_deleted`.
-/// 2. `silent_drop_count` — number of records the C++ wrapper dropped because
-///    their result geometry was not found in the output map.
-/// 3. `take_result_shape` — called after all record buffer reads (see below).
-///
-/// ## Read order (defensive convention)
-///
-/// All six buffers are read before `take_result_shape` is called.  The C++
-/// wrapper stores the result shape and record buffers as separate members, so
-/// reading buffers after the take is technically safe with the current wrapper.
-/// This function preserves the original inline order as a defensive convention:
-/// it guards against future C++ wrapper changes that might move a buffer into
-/// the result shape and make pre-take reads essential.
-///
-/// ## Cross-references
-///
-/// - [`decode_history_records`]: decodes flat `Vec<u32>` triples into
-///   `Vec<HistoryRecord>` (used for `*_modified` and `*_generated` buffers).
-/// - [`decode_deleted_records`]: decodes flat `Vec<u32>` pairs into
-///   `Vec<DeletedRecord>` (used for `*_deleted` buffers).
-/// - [`BOOLEAN_OP_ACCESSORS`]: accessor table for `BooleanOpHistory`.
-/// - [`LOCAL_FEATURE_OP_ACCESSORS`]: accessor table for `LocalFeatureOpHistory`.
-fn decode_six_buffer_history<H, R>(
-    mut history: cxx::UniquePtr<H>,
-    accessors: &SixBufferHistoryAccessors<H>,
-) -> (cxx::UniquePtr<ffi::ffi::OcctShape>, R)
-where
-    H: cxx::memory::UniquePtrTarget,
-    R: From<SixBufferHistoryDecoded>,
-{
-    let face_modified = decode_history_records((accessors.face_modified)(&history));
-    let face_generated = decode_history_records((accessors.face_generated)(&history));
-    let face_deleted = decode_deleted_records((accessors.face_deleted)(&history));
-    let edge_modified = decode_history_records((accessors.edge_modified)(&history));
-    let edge_generated = decode_history_records((accessors.edge_generated)(&history));
-    let edge_deleted = decode_deleted_records((accessors.edge_deleted)(&history));
-    let silent_drop_count = (accessors.silent_drop_count)(&history);
-    // Take the result shape last — see "Read order" in the doc-comment above.
-    let result_shape = (accessors.take_result_shape)(history.pin_mut());
-    let decoded = SixBufferHistoryDecoded {
-        silent_drop_count,
-        face_modified,
-        face_generated,
-        face_deleted,
-        edge_modified,
-        edge_generated,
-        edge_deleted,
-    };
-    (result_shape, decoded.into())
-}
-
-#[cfg(has_occt)]
-impl From<SixBufferHistoryDecoded> for BooleanOpHistoryRecords {
-    fn from(raw: SixBufferHistoryDecoded) -> Self {
-        Self {
-            silent_drop_count: raw.silent_drop_count,
-            face_modified: raw.face_modified,
-            face_generated: raw.face_generated,
-            face_deleted: raw.face_deleted,
-            edge_modified: raw.edge_modified,
-            edge_generated: raw.edge_generated,
-            edge_deleted: raw.edge_deleted,
+    fn plural(self) -> &'static str {
+        match self {
+            Self::Edge => "edges",
+            Self::Face => "faces",
+            Self::Vertex => "vertices",
         }
     }
 }
-
-#[cfg(has_occt)]
-impl From<SixBufferHistoryDecoded> for LocalFeatureOpHistoryRecords {
-    fn from(raw: SixBufferHistoryDecoded) -> Self {
-        Self {
-            silent_drop_count: raw.silent_drop_count,
-            face_modified: raw.face_modified,
-            face_generated: raw.face_generated,
-            face_deleted: raw.face_deleted,
-            edge_modified: raw.edge_modified,
-            edge_generated: raw.edge_generated,
-            edge_deleted: raw.edge_deleted,
-        }
-    }
-}
-
-#[cfg(has_occt)]
-/// Accessor table for `BooleanOpHistory`.  Consumed by
-/// [`decode_six_buffer_history`] in `boolean_fuse_with_history`.
-const BOOLEAN_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::BooleanOpHistory> =
-    SixBufferHistoryAccessors {
-        face_modified: ffi::ffi::boolean_op_history_face_modified,
-        face_generated: ffi::ffi::boolean_op_history_face_generated,
-        face_deleted: ffi::ffi::boolean_op_history_face_deleted,
-        edge_modified: ffi::ffi::boolean_op_history_edge_modified,
-        edge_generated: ffi::ffi::boolean_op_history_edge_generated,
-        edge_deleted: ffi::ffi::boolean_op_history_edge_deleted,
-        silent_drop_count: ffi::ffi::boolean_op_history_silent_drop_count,
-        take_result_shape: ffi::ffi::boolean_op_history_take_result_shape,
-    };
-
-#[cfg(has_occt)]
-/// Accessor table for `LocalFeatureOpHistory`.  Consumed by
-/// [`decode_six_buffer_history`] in `run_local_feature_with_history`.
-const LOCAL_FEATURE_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::LocalFeatureOpHistory> =
-    SixBufferHistoryAccessors {
-        face_modified: ffi::ffi::local_feature_op_history_face_modified,
-        face_generated: ffi::ffi::local_feature_op_history_face_generated,
-        face_deleted: ffi::ffi::local_feature_op_history_face_deleted,
-        edge_modified: ffi::ffi::local_feature_op_history_edge_modified,
-        edge_generated: ffi::ffi::local_feature_op_history_edge_generated,
-        edge_deleted: ffi::ffi::local_feature_op_history_edge_deleted,
-        silent_drop_count: ffi::ffi::local_feature_op_history_silent_drop_count,
-        take_result_shape: ffi::ffi::local_feature_op_history_take_result_shape,
-    };
 
 #[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
@@ -615,8 +330,7 @@ pub struct OcctKernel {
     /// restored in lock-step with `shapes` across warm-start (see
     /// `warm_state` / `with_warm_state`): entries missing at restore time
     /// (e.g. because the shape failed to serialize) fall back to
-    /// `BRepKind::Solid`, matching the implicit default in
-    /// [`Self::store`].
+    /// `BRepKind::Solid`.
     reprs: HashMap<u64, BRepKind>,
     /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
     /// previously-minted edge handle list (in canonical
@@ -665,24 +379,24 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
-/// Map an `OcctShape` to the [`BRepKind`] matching its actual top-level TopAbs
-/// type, for ops whose result kind depends on their input rather than being
-/// fixed. Both `COMPSOLID` and `COMPOUND` are multi-body aggregates and
-/// classify as [`BRepKind::Compound`]. Any unrecognized type falls back to
-/// [`BRepKind::Solid`] (matches `store`'s implicit default).
+/// Classify an `OcctShape` by its BODY type: the top-level TopAbs type after
+/// the single-body unwrap, so a 1-solid COMPOUND wrapper is
+/// [`BRepKind::Solid`]. A type with no [`BRepKind`] is an error, never Solid.
 ///
-/// Callers:
-/// - [`OcctKernel::fuse_all`] — `fuse_shape_list` yields a `SOLID` for an
-///   overlapping fuse and a `COMPSOLID` for a disjoint one, so the stored repr
-///   must not claim a multi-body result is a single `Solid`.
-/// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
-///   `loft_guided_profiles` solidify only when the section(s) were faces and
-///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
+/// Only the kind is unwrapped, not the stored shape: a fillet, chamfer, draft
+/// or thicken result is still OCCT's COMPOUND wrapper, so C++ code branching
+/// on `ShapeType()` sees COMPOUND where `repr_of` says Solid.
 #[cfg(has_occt)]
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
-    let name = ffi::ffi::shape_type_name(shape)
+    let name = ffi::ffi::body_type_name(shape)
         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-    Ok(match name.as_str() {
+    brep_kind_of_type_name(&name)
+}
+
+/// The OCCT TopAbs type name → [`BRepKind`] table behind [`brep_kind_of_shape`].
+#[cfg(has_occt)]
+fn brep_kind_of_type_name(name: &str) -> Result<BRepKind, GeometryError> {
+    Ok(match name {
         "Solid" => BRepKind::Solid,
         "CompSolid" | "Compound" => BRepKind::Compound,
         "Shell" => BRepKind::Shell,
@@ -690,8 +404,30 @@ fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryE
         "Face" => BRepKind::Face,
         "Edge" => BRepKind::Edge,
         "Vertex" => BRepKind::Vertex,
-        _ => BRepKind::Solid,
+        other => {
+            return Err(GeometryError::OperationFailed(format!(
+                "cannot classify OCCT shape type {other:?} as a BRepKind"
+            )));
+        }
     })
+}
+
+/// How an op's result [`BRepKind`] is decided: stated, copied from an input,
+/// or read off the built shape by [`brep_kind_of_shape`].
+#[cfg(has_occt)]
+#[derive(Clone, Copy)]
+enum ReprPolicy {
+    Fixed(BRepKind),
+    Inherit(GeometryHandleId),
+    Classify,
+}
+
+/// What an `execute` arm yields: a new shape to store under its policy, or a
+/// handle a delegate already stored.
+#[cfg(has_occt)]
+enum ArmOutcome {
+    New(cxx::UniquePtr<ffi::ffi::OcctShape>, ReprPolicy),
+    Stored(GeometryHandle),
 }
 
 #[cfg(has_occt)]
@@ -715,7 +451,7 @@ impl OcctKernel {
     /// After a `warm_state()`/`with_warm_state()` round-trip the classification
     /// is restored from the persisted `reprs` map. Any handle whose BRep
     /// serialized successfully but whose repr entry was absent falls back to
-    /// [`BRepKind::Solid`] (matches the implicit default in [`OcctKernel::store`]).
+    /// [`BRepKind::Solid`].
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
         self.reprs.get(&id.0).copied()
     }
@@ -806,11 +542,6 @@ impl OcctKernel {
         parent_handle.clear();
     }
 
-    /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
-    fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
-        self.store_with_repr(shape, BRepKind::Solid)
-    }
-
     /// Store a shape with an explicit `BRepKind`.
     ///
     /// `repr` is wrapped in `Some(...)` on the returned [`GeometryHandle`] —
@@ -832,9 +563,43 @@ impl OcctKernel {
         }
     }
 
-    /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
-    /// `extract_vertices`: asserts that `h`, just returned from
-    /// `store_with_repr`, really did get a strictly fresh id (never reused).
+    /// The [`BRepKind`] `policy` assigns to `shape`.
+    ///
+    /// An `Inherit` source always has a recorded kind: every caller has
+    /// already read the source's shape, and `store_with_repr` and
+    /// `with_warm_state` record a shape and its kind together. A source with
+    /// no kind is therefore a broken invariant and an error, never a silent
+    /// re-classification.
+    fn resolve_repr(
+        &self,
+        shape: &ffi::ffi::OcctShape,
+        policy: ReprPolicy,
+    ) -> Result<BRepKind, GeometryError> {
+        match policy {
+            ReprPolicy::Fixed(kind) => Ok(kind),
+            ReprPolicy::Inherit(source) => self.repr_of(source).ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "ReprPolicy::Inherit source {source:?} has no recorded BRepKind: \
+                     the kernel's shapes and reprs are out of lock-step"
+                ))
+            }),
+            ReprPolicy::Classify => brep_kind_of_shape(shape),
+        }
+    }
+
+    /// Store `shape` under the [`BRepKind`] its `policy` resolves to.
+    fn store_with_policy(
+        &mut self,
+        shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
+        policy: ReprPolicy,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let repr = self.resolve_repr(&shape, policy)?;
+        Ok(self.store_with_repr(shape, repr))
+    }
+
+    /// Debug-only invariant guard for [`Self::extract_subshapes`]: asserts
+    /// that `h`, just returned from `store_with_repr`, really did get a
+    /// strictly fresh id (never reused).
     ///
     /// This protects `warm_state()`'s bounded-payload filter (see its
     /// "Bounded payload" note): the filter treats every `parent_handle` key
@@ -857,14 +622,17 @@ impl OcctKernel {
     }
 
     /// Look up a shape by handle ID.
+    ///
+    /// Propagate with `?`; see reify-ir's `From<GeometryError>` impls for the
+    /// mapping.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
         let ptr = self
             .shapes
             .get(&id.0)
             .ok_or(GeometryError::InvalidReference(id))?;
-        let shape = ptr
-            .as_ref()
-            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))?;
+        let shape = ptr.as_ref().ok_or_else(|| {
+            GeometryError::OperationFailed(format!("shape handle {id:?} is null"))
+        })?;
         // Reject a NON-null wrapper around null (IsNull) topology. Such a shape
         // passes the null-UniquePtr check above yet dereferences to a null
         // TShape, which crashes the unguarded OCCT geometry-query FFI (e.g.
@@ -895,6 +663,100 @@ impl OcctKernel {
         Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
 
+    /// The idempotency cache holding `kind`'s extractions.
+    fn subshape_cache(&mut self, kind: SubShapeKind) -> &mut HashMap<u64, Vec<GeometryHandleId>> {
+        match kind {
+            SubShapeKind::Edge => &mut self.extracted_edges,
+            SubShapeKind::Face => &mut self.extracted_faces,
+            SubShapeKind::Vertex => &mut self.extracted_vertices,
+        }
+    }
+
+    /// Extract every unique `kind` sub-shape of `parent` in canonical
+    /// `TopExp::MapShapes` order, each stamped `kind.repr()` with `parent`
+    /// recorded as its owner. Idempotent per (parent, kind): see
+    /// [`Self::extract_edges`].
+    fn extract_subshapes(
+        &mut self,
+        parent: GeometryHandleId,
+        kind: SubShapeKind,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.subshape_cache(kind).get(&parent.0) {
+            return Ok(cached.clone());
+        }
+        // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
+        // immutable borrow of `self` (via get_shape) drops before we mutate
+        // self via store_with_repr.
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self.get_shape(parent)?;
+            let vec = match kind {
+                SubShapeKind::Edge => ffi::ffi::get_edges(shape),
+                SubShapeKind::Face => ffi::ffi::get_faces(shape),
+                SubShapeKind::Vertex => ffi::ffi::get_vertices(shape),
+            }
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, kind.repr());
+            self.debug_assert_fresh_id(&h);
+            // Provenance, so `OwnerBody(child)` answers without re-extraction.
+            self.parent_handle.insert(h.id.0, parent);
+            ids.push(h.id);
+        }
+        self.subshape_cache(kind).insert(parent.0, ids.clone());
+        Ok(ids)
+    }
+
+    /// The 0-based positions of `selection` in `parent`'s canonical `kind`
+    /// enumeration, in selection order; `None` selects every sub-shape.
+    ///
+    /// `extract_subshapes`, the `get_edges`/`get_faces` getters and the
+    /// `OcctShape` edge/face maps share one `TopExp::MapShapes` order, so a
+    /// position is exactly the index the kernel-side FFI expects.
+    fn map_selection_to_indices(
+        &mut self,
+        parent: GeometryHandleId,
+        selection: Option<&[GeometryHandleId]>,
+        kind: SubShapeKind,
+        label: &str,
+    ) -> Result<Vec<u32>, GeometryError> {
+        let parent_subshapes = self.extract_subshapes(parent, kind).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "{label}: failed to enumerate parent {} of {parent:?}: {e:?}",
+                kind.plural()
+            ))
+        })?;
+        let Some(selection) = selection else {
+            return Ok((0..parent_subshapes.len() as u32).collect());
+        };
+        let index_of: HashMap<GeometryHandleId, u32> = parent_subshapes
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (*h, i as u32))
+            .collect();
+        selection
+            .iter()
+            .map(|h| {
+                index_of.get(h).copied().ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "{label}: {} {h:?} does not belong to solid {parent:?}",
+                        kind.noun()
+                    ))
+                })
+            })
+            .collect()
+    }
+
     /// Extract every unique edge of `handle` as a handle with
     /// `BRepKind::Edge`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
@@ -915,42 +777,7 @@ impl OcctKernel {
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        if let Some(cached) = self.extracted_edges.get(&handle.0) {
-            return Ok(cached.clone());
-        }
-        // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
-        // immutable borrow of `self` (via get_shape) drops before we mutate
-        // self via store_with_repr.
-        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(handle)
-                .map_err(|_| QueryError::InvalidHandle(handle))?;
-            let vec =
-                ffi::ffi::get_edges(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-            let len = ffi::ffi::shape_vec_len(&vec);
-            let mut buf = Vec::with_capacity(len);
-            for i in 0..len {
-                let sub = ffi::ffi::shape_vec_at(&vec, i)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                buf.push(sub);
-            }
-            buf
-        };
-
-        let mut ids = Vec::with_capacity(materialized.len());
-        for sub in materialized {
-            let h = self.store_with_repr(sub, BRepKind::Edge);
-            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
-            // rationale (protects warm_state()'s parent_handle-keyed
-            // bounded-payload filter).
-            self.debug_assert_fresh_id(&h);
-            // Record provenance so `OwnerBody(child)` can answer
-            // "what body did this edge come from?" without re-extraction.
-            self.parent_handle.insert(h.id.0, handle);
-            ids.push(h.id);
-        }
-        self.extracted_edges.insert(handle.0, ids.clone());
-        Ok(ids)
+        self.extract_subshapes(handle, SubShapeKind::Edge)
     }
 
     /// Extract every unique face of `handle` as a handle with
@@ -965,39 +792,7 @@ impl OcctKernel {
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        if let Some(cached) = self.extracted_faces.get(&handle.0) {
-            return Ok(cached.clone());
-        }
-        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(handle)
-                .map_err(|_| QueryError::InvalidHandle(handle))?;
-            let vec =
-                ffi::ffi::get_faces(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-            let len = ffi::ffi::shape_vec_len(&vec);
-            let mut buf = Vec::with_capacity(len);
-            for i in 0..len {
-                let sub = ffi::ffi::shape_vec_at(&vec, i)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                buf.push(sub);
-            }
-            buf
-        };
-
-        let mut ids = Vec::with_capacity(materialized.len());
-        for sub in materialized {
-            let h = self.store_with_repr(sub, BRepKind::Face);
-            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
-            // rationale (protects warm_state()'s parent_handle-keyed
-            // bounded-payload filter).
-            self.debug_assert_fresh_id(&h);
-            // Record provenance — sister to `extract_edges`. See
-            // `parent_handle` field doc for the design contract.
-            self.parent_handle.insert(h.id.0, handle);
-            ids.push(h.id);
-        }
-        self.extracted_faces.insert(handle.0, ids.clone());
-        Ok(ids)
+        self.extract_subshapes(handle, SubShapeKind::Face)
     }
 
     /// Extract every unique vertex of `handle` as a handle with
@@ -1024,39 +819,7 @@ impl OcctKernel {
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        if let Some(cached) = self.extracted_vertices.get(&handle.0) {
-            return Ok(cached.clone());
-        }
-        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(handle)
-                .map_err(|_| QueryError::InvalidHandle(handle))?;
-            let vec = ffi::ffi::get_vertices(shape)
-                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-            let len = ffi::ffi::shape_vec_len(&vec);
-            let mut buf = Vec::with_capacity(len);
-            for i in 0..len {
-                let sub = ffi::ffi::shape_vec_at(&vec, i)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                buf.push(sub);
-            }
-            buf
-        };
-
-        let mut ids = Vec::with_capacity(materialized.len());
-        for sub in materialized {
-            let h = self.store_with_repr(sub, BRepKind::Vertex);
-            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
-            // rationale (protects warm_state()'s parent_handle-keyed
-            // bounded-payload filter).
-            self.debug_assert_fresh_id(&h);
-            // Record provenance so `OwnerBody(child)` can answer
-            // "what body did this vertex come from?" without re-extraction.
-            self.parent_handle.insert(h.id.0, handle);
-            ids.push(h.id);
-        }
-        self.extracted_vertices.insert(handle.0, ids.clone());
-        Ok(ids)
+        self.extract_subshapes(handle, SubShapeKind::Vertex)
     }
 
     /// Split `target` with an unbounded cutting plane defined by
@@ -1091,9 +854,7 @@ impl OcctKernel {
         // Collect UniquePtr<OcctShape> pieces in a scope that ends the
         // immutable borrow on `self` before we call `store_with_repr`.
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(target)
-                .map_err(|_| GeometryError::OperationFailed(format!("unknown handle {target:?}")))?;
+            let shape = self.get_shape(target)?;
             let vec = ffi::ffi::split_shape(shape, ox, oy, oz, nx, ny, nz)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
@@ -1191,19 +952,13 @@ impl OcctKernel {
             }
             ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
         };
-        // Stamp the repr from the ACTUAL result type rather than assuming
-        // Solid: `fuse_shape_list` returns a SOLID for an overlapping fuse, a
-        // COMPSOLID for a disjoint one, and — in the single-element identity
-        // path — the sole input shape unchanged (any kind). A hardcoded Solid
-        // would mislead future `repr_of()` consumers that trust it to tell a
-        // single solid from a multi-body compound/compsolid.
-        let repr = if handles.len() == 1 {
-            // Identity passthrough: preserve the sole input's classification.
-            self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
-        } else {
-            brep_kind_of_shape(&fused)?
+        // The single-element path is an identity passthrough of the sole
+        // input shape (any kind), so it keeps that input's classification.
+        let policy = match handles {
+            [only] => ReprPolicy::Inherit(*only),
+            _ => ReprPolicy::Classify,
         };
-        Ok(self.store_with_repr(fused, repr))
+        self.store_with_policy(fused, policy)
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).
@@ -1226,12 +981,8 @@ impl OcctKernel {
         a: GeometryHandleId,
         b: GeometryHandleId,
     ) -> Result<bool, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         ffi::ffi::shapes_intersect(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -1249,12 +1000,8 @@ impl OcctKernel {
         b: GeometryHandleId,
         t_rel: &crate::Transform3,
     ) -> Result<bool, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         queries::interferes_with_transform(s1, s2, t_rel)
     }
 
@@ -1272,12 +1019,8 @@ impl OcctKernel {
         a: GeometryHandleId,
         b: GeometryHandleId,
     ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         ffi::ffi::min_clearance(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -1295,12 +1038,8 @@ impl OcctKernel {
         b: GeometryHandleId,
         t_rel: &crate::Transform3,
     ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         queries::distance_with_transform(s1, s2, t_rel)
     }
 
@@ -1328,16 +1067,20 @@ impl OcctKernel {
         handle: GeometryHandleId,
         t: &crate::Transform3,
     ) -> Result<GeometryHandleId, GeometryError> {
-        // Inherit the source's BRepKind so a transformed Face stays a Face,
-        // a Wire stays a Wire, etc. Missing repr falls back to Solid to match
-        // the implicit default in `store(shape)`.
-        let source_repr = self.repr_of(handle).unwrap_or(BRepKind::Solid);
-        let shape = self.get_shape(handle)?;
+        self.store_transformed(handle, t).map(|stored| stored.id)
+    }
+
+    /// [`Self::apply_transform_to_handle`], returning the whole stored handle.
+    fn store_transformed(
+        &mut self,
+        source: GeometryHandleId,
+        t: &crate::Transform3,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let shape = self.get_shape(source)?;
         let props = ffi::ffi::Transform3Props::from(t);
         let new_shape = ffi::ffi::apply_transform_to_shape(shape, &props)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        let new_handle = self.store_with_repr(new_shape, source_repr);
-        Ok(new_handle.id)
+        self.store_with_policy(new_shape, ReprPolicy::Inherit(source))
     }
 
     /// Test whether two stored shapes share the same underlying `TShape`
@@ -1394,9 +1137,7 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         let p = ffi::ffi::closest_point_on_shape(s, px, py, pz)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -1415,9 +1156,7 @@ impl OcctKernel {
     /// `TopoDS_Vertex` or the OCCT call fails. Return type is `[f64; 3]` for
     /// the same stub-build reason as `closest_point_on_shape`.
     pub fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         let p =
             ffi::ffi::vertex_point(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -1453,12 +1192,8 @@ impl OcctKernel {
         face_a: GeometryHandleId,
         face_b: GeometryHandleId,
     ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(face_a)
-            .map_err(|_| QueryError::InvalidHandle(face_a))?;
-        let s2 = self
-            .get_shape(face_b)
-            .map_err(|_| QueryError::InvalidHandle(face_b))?;
+        let s1 = self.get_shape(face_a)?;
+        let s2 = self.get_shape(face_b)?;
         ffi::ffi::surface_angle(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -1485,9 +1220,7 @@ impl OcctKernel {
         u: f64,
         v: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         validate_uv_finite(u, v)?;
         let p = ffi::ffi::surface_normal_at(s, u, v)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
@@ -1521,9 +1254,7 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         let p = ffi::ffi::surface_normal_at_point(s, px, py, pz)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -1557,9 +1288,7 @@ impl OcctKernel {
         u: f64,
         v: f64,
     ) -> Result<Curvature, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         validate_uv_finite(u, v)?;
         let c =
             ffi::ffi::curvature_at(s, u, v).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
@@ -1595,9 +1324,7 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<f64, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
             return Err(QueryError::QueryFailed(
                 "curve_curvature_at: query point coordinates must be finite".into(),
@@ -1649,9 +1376,7 @@ impl OcctKernel {
         pz: f64,
         tolerance: f64,
     ) -> Result<bool, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         ffi::ffi::point_on_shape(s, px, py, pz, tolerance)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -1680,9 +1405,7 @@ impl OcctKernel {
         pz: f64,
         tolerance: f64,
     ) -> Result<bool, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         ffi::ffi::contains_solid(s, px, py, pz, tolerance)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -1707,12 +1430,8 @@ impl OcctKernel {
         right: GeometryHandleId,
         tolerance: f64,
     ) -> Result<bool, QueryError> {
-        let s_left = self
-            .get_shape(left)
-            .map_err(|_| QueryError::InvalidHandle(left))?;
-        let s_right = self
-            .get_shape(right)
-            .map_err(|_| QueryError::InvalidHandle(right))?;
+        let s_left = self.get_shape(left)?;
+        let s_right = self.get_shape(right)?;
         ffi::ffi::geo_equiv_topo_sample(s_left, s_right, tolerance, reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -1724,9 +1443,10 @@ impl OcctKernel {
     /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
     /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
     /// arm, and the handle's `BRepKind` is classified from that real shape —
-    /// so a disjoint fuse registers as the multi-body `BRepKind::Compound`,
-    /// not `Solid`. The history records describe the parent ↔ result correspondence
-    /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
+    /// so a disjoint fuse registers as the multi-body
+    /// `BRepKind::Compound`, not `Solid`. The history records describe the
+    /// parent ↔ result correspondence emitted by
+    /// `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
     /// `.IsDeleted()` for each parent's faces and edges; consumers (the
     /// v0.2 propagation helper in `reify-eval`) use them to copy parent
     /// topology attributes onto the result handles.
@@ -1743,27 +1463,25 @@ impl OcctKernel {
         right: GeometryHandleId,
     ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
         // Run the FFI call inside a scope that drops the immutable borrow
-        // before we mutate `self` via `store_with_repr`.
+        // before we mutate `self` via `store_with_policy`.
         let (result_shape, records) = {
             let l = self.get_shape(left)?;
             let r = self.get_shape(right)?;
             let history = ffi::ffi::boolean_fuse_with_history(l, r)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
+            decode_boolean_history(history)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
     /// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_cut` arm and its
+    /// `BRepKind` is classified from the real shape (see `brep_kind_of_shape`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1780,21 +1498,19 @@ impl OcctKernel {
             let r = self.get_shape(right)?;
             let history = ffi::ffi::boolean_cut_with_history(l, r)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
+            decode_boolean_history(history)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
     /// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_common` arm and its
+    /// `BRepKind` is classified from the real shape (see `brep_kind_of_shape`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1811,15 +1527,9 @@ impl OcctKernel {
             let r = self.get_shape(right)?;
             let history = ffi::ffi::boolean_common_with_history(l, r)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
+            decode_boolean_history(history)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -1827,7 +1537,7 @@ impl OcctKernel {
     ///
     /// Looks up `shape_id`, calls `build` to run the OCCT algorithm and obtain a
     /// `LocalFeatureOpHistory`, decodes all six record buffers, then registers the
-    /// result shape with `BRepKind::Solid`.  Error mapping (cxx exceptions →
+    /// result shape under its classified `BRepKind`.  Error mapping (cxx exceptions →
     /// `GeometryError::OperationFailed`) is handled here so public callers stay
     /// concise.
     ///
@@ -1850,31 +1560,17 @@ impl OcctKernel {
         E: std::fmt::Display,
     {
         // DEFENSE-IN-DEPTH (task 2821 / esc-2655-26 #4): `BRepFilletAPI_MakeFillet`
-        // and `BRepFilletAPI_MakeChamfer` iterate parent edges of a Solid; only a
-        // Solid input has a well-defined edge map AND produces a Solid result that
-        // matches the hardcoded `store_with_repr(..., BRepKind::Solid)` below.
-        // Passing a Face / Edge / Wire / Shell / Compound would either crash inside
-        // OCCT or silently produce a misclassified result.  Guard up-front so both
-        // `fillet_with_history` and `chamfer_with_history` receive the check for free.
+        // and `BRepFilletAPI_MakeChamfer` iterate parent edges of ONE solid; a
+        // Face / Edge / Wire / Shell / Compound input would either fail inside
+        // OCCT or fillet a multi-body aggregate. The result is Classify-stamped.
         //
-        // REACH (task 7054 amendment): this is the shared body of the ALL-edge
-        // variants (`fillet_with_history`, `chamfer_with_history`) AND the
-        // curated-edge ones (`fillet_edges_with_history`,
-        // `chamfer_edges_with_history`, `chamfer_asymmetric_edges_with_history`),
-        // so it is the guard the designer-facing `fillet(body, edges_at_height(..), r)`
-        // idiom hits. Task 7054 made the binary-boolean arms stamp the TRUE repr
-        // instead of an unconditional `BRepKind::Solid`, which means a
-        // `union(a, b)` of DISJOINT operands now classifies as `BRepKind::Compound`
-        // (a COMPSOLID underneath) and is REJECTED here where it previously fell
-        // through on the strength of a false Solid stamp. That is deliberate, not
-        // incidental: the n-ary `fuse_all` path has classified from the real shape
-        // since task 5213, so `fillet(pattern(...))` over disjoint instances
-        // already errored the same way — the binary path now merely agrees with
-        // it, and the alternative is handing a multi-body aggregate to an API that
-        // assumes one. `apply_transform_to_handle` propagates the repr, so
-        // `fillet(translate(union(a, b)), ...)` is rejected too. Pinned by
-        // `curated_fillet_over_a_disjoint_fuse_is_rejected_as_non_solid` in
-        // `boolean_result_normalization_integration.rs`.
+        // REACH: every fillet/chamfer entry point — `execute`'s all-edges and
+        // curated arms and each `*_with_history` variant — runs through this one
+        // guard. A disjoint `union(a, b)` classifies as `BRepKind::Compound`, and
+        // a transform inherits its input's repr (`ReprPolicy::Inherit`), so
+        // `fillet(translate(union(a, b)))` is rejected like `fillet(union(a, b))`.
+        // Pinned by `repr_policy_table.rs`'s D5 block and
+        // `occt_repr_policy_fixtures_e2e.rs`.
         match self.repr_of(shape_id) {
             Some(BRepKind::Solid) => {}
             Some(other) => {
@@ -1895,9 +1591,9 @@ impl OcctKernel {
             let shape = self.get_shape(shape_id)?;
             let history =
                 build(shape).map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            decode_six_buffer_history(history, &LOCAL_FEATURE_OP_ACCESSORS)
+            decode_local_feature_history(history)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -1905,9 +1601,7 @@ impl OcctKernel {
     /// given `radius`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Fillet` arm:
-    /// `radius` must be a finite, strictly positive number. Result handle is
-    /// registered with `BRepKind::Solid`.
+    /// `radius` must be a finite, strictly positive number.
     ///
     /// `parent_index` in every record is `0` (single parent solid).
     ///
@@ -1917,8 +1611,6 @@ impl OcctKernel {
         shape_id: GeometryHandleId,
         radius: f64,
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Fillet validation in `execute`
-        // so direct callers get the same descriptive errors.
         validate_positive_finite(radius, "fillet radius")?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_fillet_with_history(shape, radius)
@@ -1936,11 +1628,11 @@ impl OcctKernel {
     /// `extract_edges` first. Each handle is mapped to its 0-based position in
     /// the parent's canonical edge enumeration and passed to the kernel, which
     /// applies the fillet to exactly those edges. An empty selection is rejected
-    /// up-front — the all-edges path is [`Self::fillet_with_history`] /
-    /// `fillet_all_edges`, never this method silently falling through.
+    /// up-front — the all-edges path is [`Self::fillet_with_history`], never
+    /// this method silently falling through.
     ///
-    /// `radius` must be finite and strictly positive. Result handle is
-    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    /// `radius` must be finite and strictly positive. `parent_index` in every
+    /// record is `0`.
     ///
     /// Curated edge-selection seam (task 3205). The persistent-naming history
     /// seam is preserved identically to the all-edges path.
@@ -1954,31 +1646,16 @@ impl OcctKernel {
         if edges.is_empty() {
             return Err(GeometryError::OperationFailed(
                 "fillet_edges_with_history: edge selection must be non-empty \
-                 (the all-edges path is fillet_with_history / fillet_all_edges)"
+                 (the all-edges path is fillet_with_history)"
                     .into(),
             ));
         }
-        // Map each selected edge handle → its 0-based position in the parent's
-        // canonical edge enumeration. `extract_edges`, `get_edges`, and
-        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
-        // so the position is exactly the index the kernel-side FFI expects.
-        // Warm the cache if cold (idempotent per parent).
-        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "fillet_edges_with_history: failed to enumerate parent edges of \
-                 {shape_id:?}: {e:?}"
-            ))
-        })?;
-        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
-        for e in edges {
-            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "fillet_edges_with_history: edge {e:?} does not belong to \
-                     solid {shape_id:?}"
-                ))
-            })?;
-            edge_indices.push(pos as u32);
-        }
+        let edge_indices = self.map_selection_to_indices(
+            shape_id,
+            Some(edges),
+            SubShapeKind::Edge,
+            "fillet_edges_with_history",
+        )?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_fillet_edges_with_history(shape, radius, &edge_indices)
         })
@@ -1993,9 +1670,8 @@ impl OcctKernel {
     /// handles are mapped to their 0-based canonical positions via
     /// `extract_faces` (TopExp::MapShapes order, same as the eval-arm seam).
     ///
-    /// The result is stored directly via `store_with_repr(.., BRepKind::Solid)`
-    /// (history-free) — mirroring the existing `draft_shape` execute arm, which
-    /// does not participate in persistent-naming.
+    /// The result is stored history-free — mirroring the existing `draft_shape`
+    /// execute arm, which does not participate in persistent-naming.
     pub fn draft_faces(
         &mut self,
         target: GeometryHandleId,
@@ -2010,37 +1686,14 @@ impl OcctKernel {
                     .into(),
             ));
         }
-        // Map each selected face handle → its 0-based position in the
-        // parent's canonical face enumeration. `extract_faces` and
-        // `draft_faces_shape` both use TopExp::MapShapes(TopAbs_FACE)
-        // order, so the index is exactly what the kernel-side FFI expects.
-        let parent_faces = self.extract_faces(target).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "draft_faces: failed to enumerate parent faces of {target:?}: {e:?}"
-            ))
-        })?;
-        // Build a reverse map (handle → 0-based index) once so each lookup is
-        // O(1) rather than scanning the whole parent list per selected face.
-        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (*h, i as u32))
-            .collect();
-        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
-        for f in faces {
-            let pos = face_index_map.get(f).copied().ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "draft_faces: face {f:?} does not belong to solid {target:?}"
-                ))
-            })?;
-            face_indices.push(pos);
-        }
+        let face_indices =
+            self.map_selection_to_indices(target, Some(faces), SubShapeKind::Face, "draft_faces")?;
         let shape = self.get_shape(target)?;
         let plane_shape = self.get_shape(plane)?;
         let result_shape =
             ffi::ffi::draft_faces_shape(shape, angle_rad, plane_shape, &face_indices)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+        self.store_with_policy(result_shape, ReprPolicy::Classify)
     }
 
     /// Apply `BRepOffsetAPI_MakeThickSolid` to the curated face subset
@@ -2058,9 +1711,6 @@ impl OcctKernel {
     /// - `OperationFailed` if any handle in `faces` is not a member of
     ///   `target`'s canonical face enumeration (foreign-face guard).
     /// - `OperationFailed` if the underlying OCCT operation fails.
-    ///
-    /// Structural copy of `draft_faces` (lib.rs:1597); mirrors its
-    /// empty-selection + non-member error semantics exactly.
     pub fn shell_solid_faces(
         &mut self,
         target: GeometryHandleId,
@@ -2074,46 +1724,23 @@ impl OcctKernel {
                     .into(),
             ));
         }
-        // Map each selected face handle → its 0-based position in the
-        // parent's canonical face enumeration. `extract_faces` and
-        // `shell_shape` both use TopExp::MapShapes(TopAbs_FACE) order
-        // (after the step-8 cpp switch), so the index is exactly what
-        // the kernel-side FFI expects.
-        let parent_faces = self.extract_faces(target).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "shell_solid_faces: failed to enumerate parent faces of {target:?}: {e:?}"
-            ))
-        })?;
-        // Build a reverse map (handle → 0-based index) once so each
-        // lookup is O(1) rather than scanning the whole parent list per
-        // selected face.
-        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (*h, i as u32))
-            .collect();
-        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
-        for f in faces {
-            let pos = face_index_map.get(f).copied().ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "shell_solid_faces: face {f:?} does not belong to solid {target:?}"
-                ))
-            })?;
-            face_indices.push(pos);
-        }
+        let face_indices = self.map_selection_to_indices(
+            target,
+            Some(faces),
+            SubShapeKind::Face,
+            "shell_solid_faces",
+        )?;
         let shape = self.get_shape(target)?;
         let result_shape = ffi::ffi::shell_shape(shape, thickness, &face_indices)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+        self.store_with_policy(result_shape, ReprPolicy::Classify)
     }
 
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Chamfer` arm:
-    /// `distance` must be a finite, strictly positive number. Result handle is
-    /// registered with `BRepKind::Solid`.
+    /// `distance` must be a finite, strictly positive number.
     ///
     /// `parent_index` in every record is `0` (single parent solid).
     ///
@@ -2123,8 +1750,6 @@ impl OcctKernel {
         shape_id: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Chamfer validation in `execute`
-        // so direct callers get the same descriptive errors.
         validate_positive_finite(distance, "chamfer distance")?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_with_history(shape, distance)
@@ -2136,13 +1761,12 @@ impl OcctKernel {
     /// modified-result handle alongside the per-parent face/edge
     /// Modified/Generated/Deleted history records.
     ///
-    /// `distance` must be finite and strictly positive. Result handle is
-    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    /// `distance` must be finite and strictly positive. `parent_index` in every
+    /// record is `0`.
     ///
     /// Curated edge-selection seam (task 4185, β). The persistent-naming history
     /// seam is preserved identically to the all-edges path. An empty `edges`
-    /// slice is rejected — the all-edges path is `chamfer_with_history` /
-    /// `chamfer_all_edges`.
+    /// slice is rejected — the all-edges path is `chamfer_with_history`.
     pub fn chamfer_edges_with_history(
         &mut self,
         shape_id: GeometryHandleId,
@@ -2153,30 +1777,16 @@ impl OcctKernel {
         if edges.is_empty() {
             return Err(GeometryError::OperationFailed(
                 "chamfer_edges_with_history: edge selection must be non-empty \
-                 (the all-edges path is chamfer_with_history / chamfer_all_edges)"
+                 (the all-edges path is chamfer_with_history)"
                     .into(),
             ));
         }
-        // Map each selected edge handle → its 0-based position in the parent's
-        // canonical edge enumeration. `extract_edges`, `get_edges`, and
-        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
-        // so the position is exactly the index the kernel-side FFI expects.
-        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "chamfer_edges_with_history: failed to enumerate parent edges of \
-                 {shape_id:?}: {e:?}"
-            ))
-        })?;
-        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
-        for e in edges {
-            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "chamfer_edges_with_history: edge {e:?} does not belong to \
-                     solid {shape_id:?}"
-                ))
-            })?;
-            edge_indices.push(pos as u32);
-        }
+        let edge_indices = self.map_selection_to_indices(
+            shape_id,
+            Some(edges),
+            SubShapeKind::Edge,
+            "chamfer_edges_with_history",
+        )?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_edges_with_history(shape, distance, &edge_indices)
         })
@@ -2188,9 +1798,8 @@ impl OcctKernel {
     /// modified-result handle alongside the per-parent face/edge
     /// Modified/Generated/Deleted history records.
     ///
-    /// Both `d1` and `d2` must be finite and strictly positive. Result handle
-    /// is registered with `BRepKind::Solid`. `parent_index` in every record is
-    /// `0`.
+    /// Both `d1` and `d2` must be finite and strictly positive. `parent_index`
+    /// in every record is `0`.
     ///
     /// An empty `edges` slice means ALL edges (back-compat, mirroring the
     /// symmetric/Fillet contract): the wrapper enumerates every parent edge
@@ -2209,33 +1818,15 @@ impl OcctKernel {
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
         validate_positive_finite(d1, "chamfer d1")?;
         validate_positive_finite(d2, "chamfer d2")?;
-        // Map each selected edge handle → its 0-based position in the parent's
-        // canonical edge enumeration. `extract_edges`, `get_edges`, and
-        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
-        // so the position is exactly the index the kernel-side FFI expects.
-        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "chamfer_asymmetric_edges_with_history: failed to enumerate parent \
-                 edges of {shape_id:?}: {e:?}"
-            ))
-        })?;
-        // Empty selection = all edges: enumerate every parent edge index so the
-        // empty=all-edges back-compat holds without a dedicated all-edges FFI.
-        let edge_indices: Vec<u32> = if edges.is_empty() {
-            (0..parent_edges.len() as u32).collect()
-        } else {
-            let mut indices: Vec<u32> = Vec::with_capacity(edges.len());
-            for e in edges {
-                let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "chamfer_asymmetric_edges_with_history: edge {e:?} does not \
-                         belong to solid {shape_id:?}"
-                    ))
-                })?;
-                indices.push(pos as u32);
-            }
-            indices
-        };
+        // Empty selection = all edges, enumerated so the back-compat holds
+        // without a dedicated all-edges FFI.
+        let selection = (!edges.is_empty()).then_some(edges);
+        let edge_indices = self.map_selection_to_indices(
+            shape_id,
+            selection,
+            SubShapeKind::Edge,
+            "chamfer_asymmetric_edges_with_history",
+        )?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_asymmetric_edges_with_history(shape, d1, d2, &edge_indices)
         })
@@ -2248,8 +1839,7 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Extrude` arm of
     /// [`OcctKernel::execute`]: profile is extruded along `(0, 0, distance)`,
-    /// validated to be finite and non-zero. Result handle is registered
-    /// with `BRepKind::Solid`.
+    /// validated to be finite and non-zero.
     ///
     /// `parent_index` in every record is `0` (single parent profile).
     /// `start_cap_face_indices` carries the FirstShape() face index (the
@@ -2262,68 +1852,14 @@ impl OcctKernel {
         profile_id: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Extrude validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive errors.
-        if !distance.is_finite() {
-            return Err(GeometryError::OperationFailed(
-                "extrude distance must be finite".into(),
-            ));
-        }
-        if distance == 0.0 {
-            return Err(GeometryError::OperationFailed(
-                "extrude distance must not be zero".into(),
-            ));
-        }
+        validate_extrude_distance(distance, "extrude")?;
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
-            let mut history = ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
+            let history = ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified =
-                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
-            let face_generated =
-                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
-            let face_deleted =
-                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
-            let edge_modified =
-                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
-            let edge_generated =
-                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
-            let edge_deleted =
-                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
-            let start_cap_face_indices =
-                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
-                    .into_iter()
-                    .collect();
-            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
-                .into_iter()
-                .collect();
-            let unsynthesized_profile_edge_count =
-                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
-            let duplicate_parent_subshape_index_count =
-                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
-            let silent_drop_count = ffi::ffi::sweep_op_history_silent_drop_count(&history);
-            // Take the result shape last, after all record buffers have
-            // been read off — `take_result_shape` leaves `history` with
-            // an empty result pointer, but the record buffers are still
-            // live (separate `std::vector`s in the wrapper).
-            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
-            let records = SweepOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-                start_cap_face_indices,
-                end_cap_face_indices,
-                unsynthesized_profile_edge_count,
-                duplicate_parent_subshape_index_count,
-            };
-            (result_shape, records)
+            decode_sweep_history(history)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -2336,8 +1872,7 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Revolve` arm of
     /// [`OcctKernel::execute`]: same finite/non-zero/non-degenerate
-    /// validation thresholds (AXIS_MAG_SQ_MIN, ANGLE_ABS_MIN). Result
-    /// handle is registered with `BRepKind::Solid`.
+    /// validation thresholds (AXIS_MAG_SQ_MIN, ANGLE_ABS_MIN).
     ///
     /// Cap behavior:
     /// - PARTIAL revolution (angle_rad mod 2π ∈ (0, 2π)) →
@@ -2357,45 +1892,10 @@ impl OcctKernel {
         axis_dir: [f64; 3],
         angle_rad: f64,
     ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Revolve validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive errors with stricter
-        // thresholds than the C++ FFI safety net.
-        if !axis_origin[0].is_finite() || !axis_origin[1].is_finite() || !axis_origin[2].is_finite()
-        {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_origin must be finite: [{}, {}, {}]",
-                axis_origin[0], axis_origin[1], axis_origin[2]
-            )));
-        }
-        if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite() {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_dir must be finite: [{}, {}, {}]",
-                axis_dir[0], axis_dir[1], axis_dir[2]
-            )));
-        }
-        if !angle_rad.is_finite() {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve angle must be finite: {}",
-                angle_rad
-            )));
-        }
-        if angle_rad.abs() < ANGLE_ABS_MIN {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve angle must not be zero, got {}",
-                angle_rad
-            )));
-        }
-        let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-        if mag_sq < AXIS_MAG_SQ_MIN {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_dir must not be zero-length: [{}, {}, {}]",
-                axis_dir[0], axis_dir[1], axis_dir[2]
-            )));
-        }
+        validate_revolve_params(axis_origin, axis_dir, angle_rad)?;
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
-            let mut history = ffi::ffi::make_revolve_with_history(
+            let history = ffi::ffi::make_revolve_with_history(
                 profile_shape,
                 axis_origin[0],
                 axis_origin[1],
@@ -2406,51 +1906,9 @@ impl OcctKernel {
                 angle_rad,
             )
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified =
-                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
-            let face_generated =
-                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
-            let face_deleted =
-                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
-            let edge_modified =
-                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
-            let edge_generated =
-                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
-            let edge_deleted =
-                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
-            let start_cap_face_indices =
-                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
-                    .into_iter()
-                    .collect();
-            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
-                .into_iter()
-                .collect();
-            let unsynthesized_profile_edge_count =
-                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
-            let duplicate_parent_subshape_index_count =
-                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
-            let silent_drop_count = ffi::ffi::sweep_op_history_silent_drop_count(&history);
-            // Take the result shape last, after all record buffers have
-            // been read off — `take_result_shape` leaves `history` with
-            // an empty result pointer, but the record buffers are still
-            // live (separate `std::vector`s in the wrapper).
-            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
-            let records = SweepOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-                start_cap_face_indices,
-                end_cap_face_indices,
-                unsynthesized_profile_edge_count,
-                duplicate_parent_subshape_index_count,
-            };
-            (result_shape, records)
+            decode_sweep_history(history)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -2460,8 +1918,14 @@ impl OcctKernel {
     /// FirstShape/LastShape cap-face indices.
     ///
     /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
-    /// [`OcctKernel::execute`]: same handle resolution and result
-    /// registration with `BRepKind::Solid`. Sweep is single-parent
+    /// [`OcctKernel::execute`]: same handle resolution, the same
+    /// [`validate_sweep_pose`] degenerate-pose refusal, and the same
+    /// input-dependent `brep_kind_of_shape` stamp. Sharing both is deliberate —
+    /// this method is the entry point `OcctKernelHandle`'s worker routes
+    /// `GeometryOp::Sweep` to, so the two sites must not disagree about which
+    /// poses are legal, nor about what the result IS, the way they did while
+    /// each stamped its own unconditional `BRepKind::Solid` (#5713).
+    /// Sweep is single-parent
     /// (the profile is the operand; the path is the spine along which
     /// the profile is swept), so `parent_index` is always `0` and the
     /// existing `SweepOpHistoryRecords` struct fits verbatim.
@@ -2486,51 +1950,12 @@ impl OcctKernel {
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let path_shape = self.get_shape(path_id)?;
-            let mut history = ffi::ffi::make_pipe_with_history(profile_shape, path_shape)
+            validate_sweep_pose(profile_shape, path_shape)?;
+            let history = ffi::ffi::make_pipe_with_history(profile_shape, path_shape)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified =
-                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
-            let face_generated =
-                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
-            let face_deleted =
-                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
-            let edge_modified =
-                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
-            let edge_generated =
-                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
-            let edge_deleted =
-                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
-            let start_cap_face_indices =
-                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
-                    .into_iter()
-                    .collect();
-            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
-                .into_iter()
-                .collect();
-            let unsynthesized_profile_edge_count =
-                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
-            let duplicate_parent_subshape_index_count =
-                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
-            let silent_drop_count = ffi::ffi::sweep_op_history_silent_drop_count(&history);
-            // Take the result shape last, after all record buffers have
-            // been read off (mirrors extrude/revolve pattern).
-            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
-            let records = SweepOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-                start_cap_face_indices,
-                end_cap_face_indices,
-                unsynthesized_profile_edge_count,
-                duplicate_parent_subshape_index_count,
-            };
-            (result_shape, records)
+            decode_sweep_history(history)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 
@@ -2542,8 +1967,8 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Loft` arm of
     /// [`OcctKernel::execute`]: same handle resolution, same
-    /// `profiles.len() < 2` validation, and same result registration
-    /// with `BRepKind::Solid`. Loft is **multi-parent** — each profile
+    /// `profiles.len() < 2` validation, and same result classification.
+    /// Loft is **multi-parent** — each profile
     /// section is a distinct parent indexed `0..N-1`, and
     /// `LoftOpHistoryRecords::face_generated`'s `parent_index` field
     /// denotes the section index (NOT always 0 like sweep / extrude /
@@ -2562,14 +1987,7 @@ impl OcctKernel {
         &mut self,
         profile_ids: &[GeometryHandleId],
     ) -> Result<(GeometryHandle, LoftOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Loft validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive error before the FFI call.
-        if profile_ids.len() < 2 {
-            return Err(GeometryError::OperationFailed(
-                "Loft requires at least 2 profiles".into(),
-            ));
-        }
+        validate_loft_profile_count(profile_ids.len())?;
         let (result_shape, records) = {
             // Build an OcctShapeVec from the profile handles. Reuses the
             // same `new_shape_vec` / `shape_vec_push` builder pattern as
@@ -2581,42 +1999,11 @@ impl OcctKernel {
             }
             // is_solid hard-coded to `true` to match `GeometryOp::Loft`'s
             // contract; the FFI exposes the flag for forward-compatibility.
-            let mut history = ffi::ffi::make_loft_with_history(&vec, true)
+            let history = ffi::ffi::make_loft_with_history(&vec, true)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified =
-                decode_history_records(ffi::ffi::loft_op_history_face_modified(&history));
-            let face_generated =
-                decode_history_records(ffi::ffi::loft_op_history_face_generated(&history));
-            let face_deleted =
-                decode_deleted_records(ffi::ffi::loft_op_history_face_deleted(&history));
-            let edge_modified =
-                decode_history_records(ffi::ffi::loft_op_history_edge_modified(&history));
-            let edge_generated =
-                decode_history_records(ffi::ffi::loft_op_history_edge_generated(&history));
-            let edge_deleted =
-                decode_deleted_records(ffi::ffi::loft_op_history_edge_deleted(&history));
-            let start_cap_face_indices = ffi::ffi::loft_op_history_start_cap_face_indices(&history)
-                .into_iter()
-                .collect();
-            let end_cap_face_indices = ffi::ffi::loft_op_history_end_cap_face_indices(&history)
-                .into_iter()
-                .collect();
-            // Take the result shape last, after all record buffers have
-            // been read off (mirrors extrude/revolve/sweep pattern).
-            let result_shape = ffi::ffi::loft_op_history_take_result_shape(history.pin_mut());
-            let records = LoftOpHistoryRecords {
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-                start_cap_face_indices,
-                end_cap_face_indices,
-            };
-            (result_shape, records)
+            decode_loft_history(history)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        let handle = self.store_with_policy(result_shape, ReprPolicy::Classify)?;
         Ok((handle, records))
     }
 }
@@ -2633,54 +2020,35 @@ impl Default for OcctKernel {
 /// Called directly by the kernel thread in `OcctKernelHandle`.
 impl OcctKernel {
     pub fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        let shape = match op {
+        let outcome = match op {
             GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } => {
-                let w = extract_length_f64(width, op, "width")?;
-                let h = extract_length_f64(height, op, "height")?;
-                let d = extract_length_f64(depth, op, "depth")?;
-                if !(w.is_finite()
-                    && w > 0.0
-                    && h.is_finite()
-                    && h > 0.0
-                    && d.is_finite()
-                    && d > 0.0)
-                {
-                    return Err(GeometryError::OperationFailed(
-                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.into(),
-                    ));
-                }
-                ffi::ffi::make_box(w, h, d)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let x = extract_length_f64(size_x, op, "size_x")?;
+                let y = extract_length_f64(size_y, op, "size_y")?;
+                let z = extract_length_f64(size_z, op, "size_z")?;
+                validate_all_positive_finite(&[x, y, z], BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE)?;
+                let built = ffi::ffi::make_box(x, y, z)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Cylinder { radius, height } => {
                 let r = extract_length_f64(radius, op, "radius")?;
                 let h = extract_length_f64(height, op, "height")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "cylinder radius must be a finite positive value".into(),
-                    ));
-                }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "cylinder height must be a finite positive value".into(),
-                    ));
-                }
-                ffi::ffi::make_cylinder(r, h)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                validate_positive_finite(r, "cylinder radius")?;
+                validate_positive_finite(h, "cylinder height")?;
+                let built = ffi::ffi::make_cylinder(r, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Sphere { radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
-                    ));
-                }
-                ffi::ffi::make_sphere(r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                validate_all_positive_finite(&[r], SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE)?;
+                let built = ffi::ffi::make_sphere(r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Tube {
                 outer_r,
@@ -2707,8 +2075,9 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 let inner_shape = ffi::ffi::make_cylinder(inner, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Cone {
                 bottom_radius,
@@ -2733,13 +2102,10 @@ impl OcctKernel {
                         "cone both radii are zero — degenerate line, at least one radius must be positive".into(),
                     ));
                 }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "cone height must be a finite positive value".into(),
-                    ));
-                }
-                ffi::ffi::make_cone(bottom_r, top_r, h)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                validate_positive_finite(h, "cone height")?;
+                let built = ffi::ffi::make_cone(bottom_r, top_r, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Wedge {
                 width,
@@ -2759,8 +2125,9 @@ impl OcctKernel {
                         "wedge top_width must be finite and non-negative".into(),
                     ));
                 }
-                ffi::ffi::make_wedge(w, d, h, ltx)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_wedge(w, d, h, ltx)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::Torus {
                 major_radius,
@@ -2778,8 +2145,9 @@ impl OcctKernel {
                         "torus minor radius must be strictly less than major radius".into(),
                     ));
                 }
-                ffi::ffi::make_torus(major, minor)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_torus(major, minor)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
             GeometryOp::HalfSpace {
                 px,
@@ -2805,47 +2173,30 @@ impl OcctKernel {
                         "half_space normal must be a non-zero finite vector".into(),
                     ));
                 }
-                ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Fixed(BRepKind::Solid))
             }
-            // The three binary booleans return EARLY rather than falling
-            // through to the shared `Ok(self.store(shape))` tail below, which
-            // hardcodes `BRepKind::Solid`. Since task 7054 the C++ side
-            // normalizes every boolean result (`normalize_boolean_result`), so
-            // a fuse of disjoint operands genuinely yields a COMPSOLID and a
-            // hardcoded Solid would be a lie to any `repr_of()` consumer that
-            // trusts it to tell a single solid from a multi-body aggregate.
-            // Classified through the SAME `brep_kind_of_shape` helper `fuse_all`
-            // already uses — deliberately not a second classifier.
-            //
-            // One consumer does more than READ the repr: `run_local_feature_with_history`
-            // REJECTS anything that is not `BRepKind::Solid`, so a disjoint
-            // `union` that now classifies as `Compound` can no longer be filleted
-            // or chamfered. See the reach note on that guard for why that is the
-            // intended outcome rather than a regression.
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let fused = ffi::ffi::boolean_fuse(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&fused)?;
-                return Ok(self.store_with_repr(fused, repr));
+                ArmOutcome::New(fused, ReprPolicy::Classify)
             }
             GeometryOp::Difference { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let cut = ffi::ffi::boolean_cut(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&cut)?;
-                return Ok(self.store_with_repr(cut, repr));
+                ArmOutcome::New(cut, ReprPolicy::Classify)
             }
             GeometryOp::Intersection { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let common = ffi::ffi::boolean_common(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&common)?;
-                return Ok(self.store_with_repr(common, repr));
+                ArmOutcome::New(common, ReprPolicy::Classify)
             }
             GeometryOp::Fillet {
                 target,
@@ -2853,27 +2204,14 @@ impl OcctKernel {
                 radius,
             } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "fillet radius must be a finite positive value".into(),
-                    ));
-                }
-                if edges.is_empty() {
-                    // 2-arg / empty-selection back-compat: fillet ALL edges
-                    // (unchanged path). Yields a shape stored after the match.
-                    let shape = self.get_shape(*target)?;
-                    ffi::ffi::fillet_all_edges(shape, r)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                // Empty `edges` = all edges (2-arg back-compat). Neither
+                // primitive's history is surfaced through execute().
+                let handle = if edges.is_empty() {
+                    self.fillet_with_history(*target, r)?.0
                 } else {
-                    // Curated per-edge selection: fillet only the chosen edges.
-                    // `fillet_edges_with_history` stores the Solid result and
-                    // returns its handle (mirroring the Wire/Face early-return
-                    // arms below); the history is captured for the
-                    // persistent-naming seam but not surfaced through execute().
-                    let (handle, _history) =
-                        self.fillet_edges_with_history(*target, r, edges)?;
-                    return Ok(handle);
-                }
+                    self.fillet_edges_with_history(*target, r, edges)?.0
+                };
+                ArmOutcome::Stored(handle)
             }
             GeometryOp::Chamfer {
                 target,
@@ -2881,27 +2219,14 @@ impl OcctKernel {
                 distance,
             } => {
                 let d = extract_length_f64(distance, op, "distance")?;
-                if !(d.is_finite() && d > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "chamfer distance must be a finite positive value".into(),
-                    ));
-                }
-                if edges.is_empty() {
-                    // 2-arg / empty-selection back-compat: chamfer ALL edges
-                    // (unchanged path). Yields a shape stored after the match.
-                    let shape = self.get_shape(*target)?;
-                    ffi::ffi::chamfer_all_edges(shape, d)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                // Empty `edges` = all edges (2-arg back-compat). Neither
+                // primitive's history is surfaced through execute().
+                let handle = if edges.is_empty() {
+                    self.chamfer_with_history(*target, d)?.0
                 } else {
-                    // Curated per-edge selection: chamfer only the chosen edges.
-                    // `chamfer_edges_with_history` stores the Solid result and
-                    // returns its handle (mirroring the Fillet arm); the history
-                    // is captured for the persistent-naming seam but not surfaced
-                    // through execute().
-                    let (handle, _history) =
-                        self.chamfer_edges_with_history(*target, d, edges)?;
-                    return Ok(handle);
-                }
+                    self.chamfer_edges_with_history(*target, d, edges)?.0
+                };
+                ArmOutcome::Stored(handle)
             }
             GeometryOp::ChamferAsymmetric {
                 target,
@@ -2911,19 +2236,13 @@ impl OcctKernel {
             } => {
                 let d1 = extract_length_f64(d1, op, "d1")?;
                 let d2 = extract_length_f64(d2, op, "d2")?;
-                if !(d1.is_finite() && d1 > 0.0 && d2.is_finite() && d2 > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "asymmetric chamfer distances must be finite positive values".into(),
-                    ));
-                }
                 // Asymmetric chamfer always routes to the per-edge primitive
                 // (empty `edges` = all-edges, enumerated inside the kernel
-                // wrapper). `chamfer_asymmetric_edges_with_history` stores the
-                // Solid result and returns its handle; the history is captured
-                // for the persistent-naming seam but not surfaced through execute().
+                // wrapper). The history is captured for the persistent-naming
+                // seam but not surfaced through execute().
                 let (handle, _history) =
                     self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)?;
-                return Ok(handle);
+                ArmOutcome::Stored(handle)
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
@@ -2932,8 +2251,9 @@ impl OcctKernel {
                         "translate components must be finite values: dx={dx}, dy={dy}, dz={dz}"
                     )));
                 }
-                ffi::ffi::translate_shape(shape, *dx, *dy, *dz)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::translate_shape(shape, *dx, *dy, *dz)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::Rotate {
                 target,
@@ -2957,8 +2277,9 @@ impl OcctKernel {
                         "rotation axis must not be zero-length".into(),
                     ));
                 }
-                ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::rotate_shape(shape, axis[0], axis[1], axis[2], *angle_rad)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::LinearPattern {
                 target,
@@ -2973,7 +2294,7 @@ impl OcctKernel {
                         "linear pattern count must be >= 1".into(),
                     ));
                 }
-                ffi::ffi::linear_pattern(
+                let built = ffi::ffi::linear_pattern(
                     shape,
                     direction[0],
                     direction[1],
@@ -2981,7 +2302,8 @@ impl OcctKernel {
                     *count as u32,
                     sp,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::CircularPattern {
                 target,
@@ -2998,7 +2320,7 @@ impl OcctKernel {
                         "circular pattern count must be >= 1".into(),
                     ));
                 }
-                ffi::ffi::circular_pattern(
+                let built = ffi::ffi::circular_pattern(
                     shape,
                     axis_origin[0],
                     axis_origin[1],
@@ -3009,7 +2331,8 @@ impl OcctKernel {
                     *count as u32,
                     total_angle,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::Mirror {
                 target,
@@ -3034,7 +2357,7 @@ impl OcctKernel {
                         "mirror plane normal must not be zero-length".into(),
                     ));
                 }
-                ffi::ffi::mirror_shape(
+                let built = ffi::ffi::mirror_shape(
                     shape,
                     plane_origin[0],
                     plane_origin[1],
@@ -3043,21 +2366,19 @@ impl OcctKernel {
                     plane_normal[1],
                     plane_normal[2],
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::Loft { profiles } => {
-                if profiles.len() < 2 {
-                    return Err(GeometryError::OperationFailed(
-                        "Loft requires at least 2 profiles".into(),
-                    ));
-                }
+                validate_loft_profile_count(profiles.len())?;
                 let mut vec = ffi::ffi::new_shape_vec();
                 for &pid in profiles {
                     let shape = self.get_shape(pid)?;
                     ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
                 }
-                ffi::ffi::loft_profiles(&vec)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::loft_profiles(&vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::Draft {
                 target,
@@ -3075,22 +2396,21 @@ impl OcctKernel {
                     // faces (unchanged path). Shape stored after the match.
                     let shape = self.get_shape(*target)?;
                     let plane_shape = self.get_shape(*plane)?;
-                    ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                    let built = ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                    ArmOutcome::New(built, ReprPolicy::Classify)
                 } else {
-                    // Curated per-face selection: draft only the chosen faces.
-                    // `draft_faces` stores the Solid result history-free and
-                    // returns its handle; early return mirrors the Fillet
-                    // curated arm (lib.rs:2167-2174).
-                    let handle = self.draft_faces(*target, angle_rad, *plane, faces)?;
-                    return Ok(handle);
+                    // Curated per-face selection: draft only the chosen faces,
+                    // stored history-free by `draft_faces`.
+                    ArmOutcome::Stored(self.draft_faces(*target, angle_rad, *plane, faces)?)
                 }
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
                 let off = extract_length_f64(offset, op, "offset")?;
-                ffi::ffi::thicken_shape(shape, off)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::thicken_shape(shape, off)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::OffsetCurve {
                 target,
@@ -3099,10 +2419,7 @@ impl OcctKernel {
                 direction,
             } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                // Build the offset wire inside an inner scope so the immutable
-                // `get_shape` borrow(s) drop before `store_with_repr` takes
-                // `&mut self` (mirrors `extract_edges` / `execute_split`'s
-                // `materialized` scope). Dispatch the three overloads on
+                // Dispatch the three overloads on
                 // (reference, direction): a reference surface (overload 2) wins
                 // over a direction (overload 3); neither → planar offset
                 // (overload 1).
@@ -3120,19 +2437,21 @@ impl OcctKernel {
                     }
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
                 };
-                return Ok(self.store_with_repr(result, BRepKind::Wire));
+                ArmOutcome::New(result, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::ZoneSlab { target, width } => {
                 let shape = self.get_shape(*target)?;
                 let w = extract_length_f64(width, op, "width")?;
-                ffi::ffi::zone_slab_shape(shape, w)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::zone_slab_shape(shape, w)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::OffsetSolid { target, distance } => {
                 let shape = self.get_shape(*target)?;
                 let d = extract_length_f64(distance, op, "distance")?;
-                ffi::ffi::offset_solid_shape(shape, d)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::offset_solid_shape(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::OffsetSurface { target, distance } => {
                 let shape = self.get_shape(*target)?;
@@ -3144,7 +2463,7 @@ impl OcctKernel {
                 // `make_offset_surface`'s header doc comment (occt_wrapper.h)
                 // for the shell-input caveat this would need if that ever
                 // changes.
-                return Ok(self.store_with_repr(out, BRepKind::Face));
+                ArmOutcome::New(out, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::Shell {
                 target,
@@ -3154,17 +2473,19 @@ impl OcctKernel {
             } => {
                 let th = extract_length_f64(thickness, op, "thickness")?;
                 // Curated-handle path (shell_open): open_face_handles is
-                // non-empty → delegate to shell_solid_faces and early-return,
-                // mirroring the Draft execute arm's curated dispatch
-                // (lib.rs:2398-2418 pattern).
+                // non-empty → delegate to shell_solid_faces, mirroring the
+                // Draft execute arm's curated dispatch.
                 if !open_face_handles.is_empty() {
-                    return self.shell_solid_faces(*target, th, open_face_handles);
+                    ArmOutcome::Stored(self.shell_solid_faces(*target, th, open_face_handles)?)
+                } else {
+                    // Legacy numeric path: faces_to_remove 0-based indices → FFI.
+                    let shape = self.get_shape(*target)?;
+                    let face_indices: Vec<u32> =
+                        faces_to_remove.iter().map(|&i| i as u32).collect();
+                    let built = ffi::ffi::shell_shape(shape, th, &face_indices)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                    ArmOutcome::New(built, ReprPolicy::Classify)
                 }
-                // Legacy numeric path: faces_to_remove 0-based indices → FFI.
-                let shape = self.get_shape(*target)?;
-                let face_indices: Vec<u32> = faces_to_remove.iter().map(|&i| i as u32).collect();
-                ffi::ffi::shell_shape(shape, th, &face_indices)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Scale { target, factor } => {
                 let shape = self.get_shape(*target)?;
@@ -3173,8 +2494,9 @@ impl OcctKernel {
                         "scale factor must be finite and non-zero, got {factor}"
                     )));
                 }
-                ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::RotateAround {
                 target,
@@ -3202,10 +2524,11 @@ impl OcctKernel {
                         "rotate_around axis must not be zero-length".into(),
                     ));
                 }
-                ffi::ffi::rotate_around_shape(
+                let built = ffi::ffi::rotate_around_shape(
                     shape, point[0], point[1], point[2], axis[0], axis[1], axis[2], *angle_rad,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::ApplyTransform {
                 target,
@@ -3239,13 +2562,7 @@ impl OcctKernel {
                     ty: translation[1],
                     tz: translation[2],
                 };
-                // Forward to the inherent `apply_transform_to_handle` to
-                // re-use its source-repr inheritance + FFI plumbing. Return
-                // early so we don't fall through to the default `self.store`
-                // path below — the new handle is already registered.
-                let new_id = self.apply_transform_to_handle(*target, &t)?;
-                let repr = self.repr_of(new_id);
-                return Ok(GeometryHandle { id: new_id, repr });
+                ArmOutcome::Stored(self.store_transformed(*target, &t)?)
             }
             GeometryOp::AffineApply {
                 target,
@@ -3261,7 +2578,7 @@ impl OcctKernel {
                         linear, translation
                     )));
                 }
-                ffi::ffi::gtransform_shape(
+                let built = ffi::ffi::gtransform_shape(
                     shape,
                     linear[0][0],
                     linear[0][1],
@@ -3276,7 +2593,8 @@ impl OcctKernel {
                     translation[1],
                     translation[2],
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::ScaleNonUniform { target, sx, sy, sz } => {
                 let shape = self.get_shape(*target)?;
@@ -3291,26 +2609,19 @@ impl OcctKernel {
                         "scale factors must be finite and non-zero, got sx={sx}, sy={sy}, sz={sz}"
                     )));
                 }
-                ffi::ffi::gtransform_shape(
+                let built = ffi::ffi::gtransform_shape(
                     shape, *sx, 0.0, 0.0, 0.0, *sy, 0.0, 0.0, 0.0, *sz, 0.0, 0.0, 0.0,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Inherit(*target))
             }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                if !dist.is_finite() {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude distance must be finite".into(),
-                    ));
-                }
-                if dist == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude distance must not be zero".into(),
-                    ));
-                }
+                validate_extrude_distance(dist, "extrude")?;
                 let profile_shape = self.get_shape(*profile)?;
-                ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::Revolve {
                 profile,
@@ -3318,49 +2629,9 @@ impl OcctKernel {
                 axis_dir,
                 angle_rad,
             } => {
-                // Revolve validation (Rust layer — DEFENSE-IN-DEPTH)
-                // This Rust layer validates inputs with stricter thresholds (AXIS_MAG_SQ_MIN=1e-12,
-                // ANGLE_ABS_MIN=1e-30) and produces descriptive error messages including parameter
-                // names and values. The C++ FFI layer (occt_wrapper.cpp) has its own validation
-                // with relaxed thresholds (1e-30 for mag_sq) as a safety net for any future code
-                // paths that may call FFI directly, bypassing this Rust layer.
-                if !axis_origin[0].is_finite()
-                    || !axis_origin[1].is_finite()
-                    || !axis_origin[2].is_finite()
-                {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_origin must be finite: [{}, {}, {}]",
-                        axis_origin[0], axis_origin[1], axis_origin[2]
-                    )));
-                }
-                if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite()
-                {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_dir must be finite: [{}, {}, {}]",
-                        axis_dir[0], axis_dir[1], axis_dir[2]
-                    )));
-                }
-                if !angle_rad.is_finite() {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve angle must be finite: {}",
-                        angle_rad
-                    )));
-                }
-                if angle_rad.abs() < ANGLE_ABS_MIN {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve angle must not be zero, got {}",
-                        angle_rad
-                    )));
-                }
-                let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-                if mag_sq < AXIS_MAG_SQ_MIN {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_dir must not be zero-length: [{}, {}, {}]",
-                        axis_dir[0], axis_dir[1], axis_dir[2]
-                    )));
-                }
+                validate_revolve_params(*axis_origin, *axis_dir, *angle_rad)?;
                 let profile_shape = self.get_shape(*profile)?;
-                ffi::ffi::make_revolve(
+                let built = ffi::ffi::make_revolve(
                     profile_shape,
                     axis_origin[0],
                     axis_origin[1],
@@ -3370,13 +2641,16 @@ impl OcctKernel {
                     axis_dir[2],
                     *angle_rad,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::Sweep { profile, path } => {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
-                ffi::ffi::make_pipe(profile_shape, path_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                validate_sweep_pose(profile_shape, path_shape)?;
+                let shape = ffi::ffi::make_pipe(profile_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(shape, ReprPolicy::Classify)
             }
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
@@ -3397,21 +2671,13 @@ impl OcctKernel {
                 let circle_shape =
                     ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, tx, ty, tz)
                         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                ffi::ffi::make_pipe(&circle_shape, path_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_pipe(&circle_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                if !dist.is_finite() {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude_symmetric distance must be finite".into(),
-                    ));
-                }
-                if dist == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude_symmetric distance must not be zero".into(),
-                    ));
-                }
+                validate_extrude_distance(dist, "extrude_symmetric")?;
                 // Compose: prism the profile by the full distance, then
                 // translate by -distance/2 along the extrusion axis so the
                 // resulting solid's centroid (in z) aligns with the
@@ -3421,8 +2687,9 @@ impl OcctKernel {
                 let profile_shape = self.get_shape(*profile)?;
                 let prism = ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::translate_shape(&prism, 0.0, 0.0, -dist / 2.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::ExtrudeInfinite { profile, axis, both } => {
                 let [dx, dy, dz] = *axis;
@@ -3441,8 +2708,9 @@ impl OcctKernel {
                     )));
                 }
                 let profile_shape = self.get_shape(*profile)?;
-                ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             // No Rust-side argument validation, unlike the LoftGuided / Pipe /
             // ExtrudeInfinite neighbours: `make_pipe_shell` in
@@ -3459,16 +2727,7 @@ impl OcctKernel {
                 let guide_shape = self.get_shape(*guide)?;
                 let shape = ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                // The result kind is input-dependent, so it cannot use the
-                // default `store` (which stamps BRepKind::Solid): a face
-                // profile — the only kind a DSL `sweep_guided()` can supply —
-                // is capped into a SOLID, while a wire or vertex profile
-                // leaves an un-capped SHELL that no end cap can close. Stamping
-                // Solid on the latter would make `repr_of()` report a closed
-                // solid for a shape whose `IsClosed` is false, and mislead the
-                // sub-shape classification keyed off the repr.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                ArmOutcome::New(shape, ReprPolicy::Classify)
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3493,13 +2752,7 @@ impl OcctKernel {
                 }
                 let shape = ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                // Input-dependent result kind, exactly as for SweepGuided
-                // above: an all-face section set — the only kind a DSL
-                // `loft_guided()` can supply — is capped into a SOLID, while a
-                // mixed or all-wire set stays an un-capped SHELL. Stamp the
-                // repr the shape actually has rather than the default Solid.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                ArmOutcome::New(shape, ReprPolicy::Classify)
             }
             GeometryOp::LineSegment {
                 x1,
@@ -3513,7 +2766,7 @@ impl OcctKernel {
                     .map_err(GeometryError::OperationFailed)?;
                 let shape = ffi::ffi::make_line_wire(*x1, *y1, *z1, *x2, *y2, *z2)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::Arc {
                 center,
@@ -3522,11 +2775,7 @@ impl OcctKernel {
                 end_angle,
                 axis,
             } => {
-                if !radius.is_finite() || *radius <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "arc radius must be finite and positive".into(),
-                    ));
-                }
+                validate_positive_finite(*radius, "arc radius")?;
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
                 if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
@@ -3545,31 +2794,19 @@ impl OcctKernel {
                     axis[2],
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::Helix {
                 radius,
                 pitch,
                 height,
             } => {
-                if !radius.is_finite() || *radius <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "helix radius must be finite and positive".into(),
-                    ));
-                }
-                if !pitch.is_finite() || *pitch <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "helix pitch must be finite and positive".into(),
-                    ));
-                }
-                if !height.is_finite() || *height <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "helix height must be finite and positive".into(),
-                    ));
-                }
+                validate_positive_finite(*radius, "helix radius")?;
+                validate_positive_finite(*pitch, "helix pitch")?;
+                validate_positive_finite(*height, "helix height")?;
                 let shape = ffi::ffi::make_helix_wire(*radius, *pitch, *height)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::InterpCurve { points } => {
                 if points.len() < 2 {
@@ -3580,7 +2817,7 @@ impl OcctKernel {
                 let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_interp_curve(&coords, points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::BezierCurve { control_points } => {
                 if control_points.len() < 2 {
@@ -3594,7 +2831,7 @@ impl OcctKernel {
                     .collect();
                 let shape = ffi::ffi::make_bezier_curve(&coords, control_points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::NurbsCurve {
                 control_points,
@@ -3642,7 +2879,7 @@ impl OcctKernel {
                     *degree as i32,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Wire));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Wire))
             }
             GeometryOp::LinearPattern2D {
                 target,
@@ -3684,7 +2921,7 @@ impl OcctKernel {
                         "linear_pattern_2d count2 must be >= 1".into(),
                     ));
                 }
-                ffi::ffi::linear_pattern_2d(
+                let built = ffi::ffi::linear_pattern_2d(
                     shape,
                     direction1[0],
                     direction1[1],
@@ -3697,7 +2934,8 @@ impl OcctKernel {
                     *count2 as u32,
                     sp2,
                 )
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::ArbitraryPattern { target, transforms } => {
                 let shape = self.get_shape(*target)?;
@@ -3725,36 +2963,25 @@ impl OcctKernel {
                     })
                     .collect();
                 let num_transforms = transforms.len() as u32;
-                ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let built = ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                ArmOutcome::New(built, ReprPolicy::Classify)
             }
             GeometryOp::RectangleProfile { width, height } => {
                 let w = extract_length_f64(width, op, "width")?;
                 let h = extract_length_f64(height, op, "height")?;
-                if !(w.is_finite() && w > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "rectangle_profile width must be a finite positive value".into(),
-                    ));
-                }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "rectangle_profile height must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(w, "rectangle_profile width")?;
+                validate_positive_finite(h, "rectangle_profile height")?;
                 let shape = ffi::ffi::make_rectangle_face(w, h, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::CircleProfile { radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "circle_profile radius must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(r, "circle_profile radius")?;
                 let shape = ffi::ffi::make_circle_face(r, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::PolygonProfile { points } => {
                 if points.len() < 3 {
@@ -3766,24 +2993,16 @@ impl OcctKernel {
                 let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_polygon_face(&coords, points.len(), 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::EllipseProfile { semi_major, semi_minor } => {
                 let a = extract_length_f64(semi_major, op, "semi_major")?;
                 let b = extract_length_f64(semi_minor, op, "semi_minor")?;
-                if !(a.is_finite() && a > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "ellipse_profile semi_major must be a finite positive value".into(),
-                    ));
-                }
-                if !(b.is_finite() && b > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "ellipse_profile semi_minor must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(a, "ellipse_profile semi_major")?;
+                validate_positive_finite(b, "ellipse_profile semi_minor")?;
                 let shape = ffi::ffi::make_ellipse_face(a, b, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             GeometryOp::NurbsSurface {
                 control_points,
@@ -3891,7 +3110,7 @@ impl OcctKernel {
                     *v_degree as i32,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, BRepKind::Face));
+                ArmOutcome::New(shape, ReprPolicy::Fixed(BRepKind::Face))
             }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
@@ -3914,7 +3133,94 @@ impl OcctKernel {
                 ));
             }
         };
-        Ok(self.store(shape))
+        match outcome {
+            ArmOutcome::New(shape, policy) => self.store_with_policy(shape, policy),
+            ArmOutcome::Stored(handle) => Ok(handle),
+        }
+    }
+
+    /// The one op-to-history lowering: execute `op` and return the attribute
+    /// history its OCCT builder recorded.
+    ///
+    /// Extrude, Revolve, Sweep, Loft, Union, Difference, Intersection, Fillet,
+    /// Chamfer and ChamferAsymmetric route to their `*_with_history` primitives
+    /// (Fillet and Chamfer to the all-edges or curated-edges form by
+    /// `edges.is_empty()`; ChamferAsymmetric's one primitive reads an empty
+    /// selection as all edges), decoding length fields exactly as
+    /// [`Self::execute`] does. Every other op runs through [`Self::execute`]
+    /// with [`AttributeHistory::None`].
+    pub fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        match op {
+            GeometryOp::Extrude { profile, distance } => {
+                let d = extract_length_f64(distance, op, "distance")?;
+                self.extrude_with_history(*profile, d)
+                    .map(|(h, recs)| (h, AttributeHistory::Extrude(recs)))
+            }
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => self
+                .revolve_with_history(*profile, *axis_origin, *axis_dir, *angle_rad)
+                .map(|(h, recs)| (h, AttributeHistory::Revolve(recs))),
+            GeometryOp::Sweep { profile, path } => self
+                .sweep_with_history(*profile, *path)
+                .map(|(h, recs)| (h, AttributeHistory::Sweep(recs))),
+            GeometryOp::Loft { profiles } => self
+                .loft_with_history(profiles)
+                .map(|(h, recs)| (h, AttributeHistory::Loft(recs))),
+            GeometryOp::Union { left, right } => self
+                .boolean_fuse_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Difference { left, right } => self
+                .boolean_cut_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Intersection { left, right } => self
+                .boolean_common_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Fillet {
+                target,
+                edges,
+                radius,
+            } => {
+                let r = extract_length_f64(radius, op, "radius")?;
+                let lowered = if edges.is_empty() {
+                    self.fillet_with_history(*target, r)
+                } else {
+                    self.fillet_edges_with_history(*target, r, edges)
+                };
+                lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            GeometryOp::Chamfer {
+                target,
+                edges,
+                distance,
+            } => {
+                let d = extract_length_f64(distance, op, "distance")?;
+                let lowered = if edges.is_empty() {
+                    self.chamfer_with_history(*target, d)
+                } else {
+                    self.chamfer_edges_with_history(*target, d, edges)
+                };
+                lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                let d1 = extract_length_f64(d1, op, "d1")?;
+                let d2 = extract_length_f64(d2, op, "d2")?;
+                self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)
+                    .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            _ => self.execute(op).map(|h| (h, AttributeHistory::None)),
+        }
     }
 
     /// A shape's volume together with which arm produced it.
@@ -3939,9 +3245,7 @@ impl OcctKernel {
         &self,
         id: GeometryHandleId,
     ) -> Result<VolumeMeasurement, QueryError> {
-        let shape = self
-            .get_shape(id)
-            .map_err(|_| QueryError::InvalidHandle(id))?;
+        let shape = self.get_shape(id)?;
         ffi::ffi::query_volume_measurement(shape)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -3949,17 +3253,13 @@ impl OcctKernel {
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match query {
             GeometryQuery::Volume(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let vol = ffi::ffi::query_volume(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(vol))
             }
             GeometryQuery::SurfaceArea(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let area = ffi::ffi::query_area(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(area))
@@ -3973,9 +3273,7 @@ impl OcctKernel {
                 // preserving existing semantics validated by tests like
                 // `center_of_mass_on_non_solid_wire_returns_origin` and
                 // `sweep_guided_orientation_differs_from_plain_sweep`.
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let pt = if self.repr_of(*id) == Some(BRepKind::Face) {
                     ffi::ffi::query_face_centroid(shape)
                         .map_err(|e| QueryError::QueryFailed(e.to_string()))?
@@ -3987,9 +3285,7 @@ impl OcctKernel {
                 Ok(Value::String(centroid_json(pt)))
             }
             GeometryQuery::BoundingBox(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let bb = ffi::ffi::query_bbox(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::String(format!(
@@ -3998,20 +3294,14 @@ impl OcctKernel {
                 )))
             }
             GeometryQuery::Distance { from, to } => {
-                let s1 = self
-                    .get_shape(*from)
-                    .map_err(|_| QueryError::InvalidHandle(*from))?;
-                let s2 = self
-                    .get_shape(*to)
-                    .map_err(|_| QueryError::InvalidHandle(*to))?;
+                let s1 = self.get_shape(*from)?;
+                let s2 = self.get_shape(*to)?;
                 let dist = ffi::ffi::query_distance(s1, s2)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(dist))
             }
             GeometryQuery::MomentOfInertia { handle, axis } => {
-                let shape = self
-                    .get_shape(*handle)
-                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let shape = self.get_shape(*handle)?;
                 let moi = ffi::ffi::query_moment_of_inertia(shape, axis[0], axis[1], axis[2])
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(moi))
@@ -4019,17 +3309,13 @@ impl OcctKernel {
             // For uniform-density solids, the center of mass equals the geometric centroid.
             // density is intentionally ignored here (see GeometryQuery::CenterOfMass doc).
             GeometryQuery::CenterOfMass { handle, density: _ } => {
-                let shape = self
-                    .get_shape(*handle)
-                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let shape = self.get_shape(*handle)?;
                 let pt = ffi::ffi::query_centroid(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::String(centroid_json(pt)))
             }
             GeometryQuery::InertiaTensor { handle, density } => {
-                let shape = self
-                    .get_shape(*handle)
-                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let shape = self.get_shape(*handle)?;
                 let t = ffi::ffi::query_inertia_tensor(shape, *density)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::List(vec![
@@ -4051,9 +3337,7 @@ impl OcctKernel {
                 ]))
             }
             GeometryQuery::AdjacentFaces { shape, face_index } => {
-                let s = self
-                    .get_shape(*shape)
-                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let s = self.get_shape(*shape)?;
                 let idx_u32: u32 = (*face_index).try_into().map_err(|_| {
                     QueryError::QueryFailed(format!(
                         "adjacent_faces: face_index {} exceeds u32::MAX",
@@ -4074,9 +3358,7 @@ impl OcctKernel {
                 face_a,
                 face_b,
             } => {
-                let s = self
-                    .get_shape(*shape)
-                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let s = self.get_shape(*shape)?;
                 let a_u32: u32 = (*face_a).try_into().map_err(|_| {
                     QueryError::QueryFailed(format!(
                         "shared_edges: face_a {} exceeds u32::MAX",
@@ -4096,65 +3378,49 @@ impl OcctKernel {
                 ))
             }
             GeometryQuery::IsWatertight(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_watertight(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsManifold(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_manifold(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsOrientable(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_orientable(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsClosed(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_closed(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsConnected(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_connected(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsBounded(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_bounded(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::EdgeLength(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let len = ffi::ffi::query_edge_length(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(len))
             }
             GeometryQuery::EdgeTangent(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let t = ffi::ffi::query_edge_tangent(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 // Encode as the same JSON-string format as Centroid /
@@ -4172,9 +3438,7 @@ impl OcctKernel {
                 Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
             }
             GeometryQuery::FaceSurfaceKind(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 // FFI returns a canonical name string from OCCT's GeomAbs_*
                 // enumeration (`"Plane"` / `"Cylinder"` / …). Decoded
                 // downstream by `FaceSurfaceKind::try_from_str` in
@@ -4184,9 +3448,7 @@ impl OcctKernel {
                 Ok(Value::String(name))
             }
             GeometryQuery::EdgeCurveKind(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 // FFI returns a canonical name string from OCCT's GeomAbs_*
                 // enumeration (`"Line"` / `"Circle"` / …). Decoded
                 // downstream by `EdgeCurveKind::try_from_str` in
@@ -4196,9 +3458,7 @@ impl OcctKernel {
                 Ok(Value::String(name))
             }
             GeometryQuery::AncestorFacesOfEdge { shape, edge_index } => {
-                let s = self
-                    .get_shape(*shape)
-                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let s = self.get_shape(*shape)?;
                 let idx_u32: u32 = (*edge_index).try_into().map_err(|_| {
                     QueryError::QueryFailed(format!(
                         "ancestor_faces_of_edge: edge_index {} exceeds u32::MAX",
@@ -4295,25 +3555,19 @@ impl OcctKernel {
             // projected datum Value per the GeomAbs `kind` byte. Edge +
             // tolerance dispatch land in steps 4 and 10.
             GeometryQuery::FaceAnalyticDatum(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let d = ffi::ffi::face_analytic_datum(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 analytic_surface_datum_to_value(&d)
             }
             GeometryQuery::EdgeAnalyticDatum(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let d = ffi::ffi::edge_analytic_datum(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 analytic_curve_datum_to_value(&d)
             }
             GeometryQuery::ShapeLocalTolerance(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let tol = ffi::ffi::shape_local_tolerance(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::length(tol))
@@ -4334,12 +3588,26 @@ impl OcctKernel {
     /// - `QueryError::QueryFailed` — if the shape is not a face, has no
     ///   underlying surface, or yields a degenerate normal.
     fn face_outward_unit_normal(&self, id: GeometryHandleId) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(id)
-            .map_err(|_| QueryError::InvalidHandle(id))?;
+        let s = self.get_shape(id)?;
         let p =
             ffi::ffi::query_face_normal(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
+    }
+
+    /// Store the `body_index`-th solid of a STEP `product` as a Solid handle.
+    ///
+    /// The handle is in the product's LOCAL frame, in metres; the component
+    /// placements in [`StepDocument::tree`] are the occurrence poses.
+    /// `body_index` is 0-based, in the order `ProductKind::Part::solid_count`
+    /// counts. Nothing is stored on error.
+    pub fn import_step_body(
+        &mut self,
+        doc: &StepDocument,
+        product: &reify_ir::ProductRef,
+        body_index: u32,
+    ) -> Result<GeometryHandle, StepBodyError> {
+        doc.body_shape(product, body_index)
+            .map(|shape| self.store_with_repr(shape, BRepKind::Solid))
     }
 
     /// Linear deflection used by the CLI `export(handle, Stl, writer)` arm.
@@ -4356,9 +3624,7 @@ impl OcctKernel {
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
 
         match format {
             ExportFormat::Step => {
@@ -4411,11 +3677,10 @@ impl OcctKernel {
         options: &ExportOptions,
         writer: &mut dyn std::io::Write,
     ) -> Result<Vec<ExportWarning>, ExportError> {
+        let shape = self.get_shape(handle)?;
+
         match format {
             ExportFormat::Step => {
-                let shape = self
-                    .get_shape(handle)
-                    .map_err(|_| ExportError::InvalidHandle(handle))?;
                 let result = ffi::ffi::export_step(shape, options.step_schema.as_str())
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 writer
@@ -4460,9 +3725,7 @@ impl OcctKernel {
     }
 
     pub fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| TessError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
 
         let result = ffi::ffi::tessellate_shape(shape, tolerance)
             .map_err(|e| TessError::TessellationFailed(e.to_string()))?;
@@ -4496,9 +3759,7 @@ impl OcctKernel {
         handle: GeometryHandleId,
         mesh: &Mesh,
     ) -> Result<f64, QueryError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
 
         let tess_result = ffi::ffi::TessResult {
             vertices: mesh.vertices.clone(),
@@ -4774,8 +4035,7 @@ impl WarmStartable for OcctKernel {
         // `parent_handle`, untouched on a dirty kernel).
         if !staged.is_empty() {
             // Rebuild repr map: for every successfully staged id, take the
-            // persisted repr if present, falling back to BRepKind::Solid
-            // (matches the implicit default in OcctKernel::store).
+            // persisted repr if present, falling back to BRepKind::Solid.
             // debug_assert guards against a future producer that serializes
             // warm.shapes and warm.reprs out of sync: if reprs is non-empty it
             // must contain an entry for every shape id (the lock-step invariant
@@ -4840,8 +4100,7 @@ impl WarmStartable for OcctKernel {
 impl OcctKernel {
     /// Store a raw OcctShape and return its GeometryHandleId for testing.
     fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
-        let h = self.store(shape);
-        h.id
+        self.store_with_repr(shape, BRepKind::Solid).id
     }
 
     /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
@@ -4895,9 +4154,7 @@ impl OcctKernel {
         schema: &str,
         fault: StepGuardFault,
     ) -> Result<StepGuardProbeResult, ExportError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
         ffi::ffi::export_step_with_injected_fault_for_test(shape, schema, fault)
             .map_err(|e| ExportError::FormatError(e.to_string()))
     }
@@ -4935,9 +4192,7 @@ impl OcctKernel {
         schema: &str,
         fault: StepGuardFault,
     ) -> Result<StepGuardProbeResult, ExportError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
         ffi::ffi::step_guard_probe_for_test(shape, schema, fault)
             .map_err(|e| ExportError::FormatError(e.to_string()))
     }
@@ -4974,7 +4229,7 @@ impl OcctKernel {
     pub fn store_circle_face_for_test(&mut self, radius: f64, z: f64) -> GeometryHandleId {
         let shape = ffi::ffi::make_circle_face(radius, z)
             .expect("make_circle_face should succeed in test fixture");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Face);
         h.id
     }
 
@@ -5058,7 +4313,7 @@ impl OcctKernel {
     pub fn store_nonmanifold_compound_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_nonmanifold_compound_for_test()
             .expect("make_nonmanifold_compound_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Compound);
         h.id
     }
 
@@ -5070,7 +4325,7 @@ impl OcctKernel {
     pub fn store_malformed_solid_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_malformed_solid_for_test()
             .expect("make_malformed_solid_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Solid);
         h.id
     }
 
@@ -5083,7 +4338,7 @@ impl OcctKernel {
     pub fn store_nonorientable_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_nonorientable_shell_for_test()
             .expect("make_nonorientable_shell_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Shell);
         h.id
     }
 
@@ -5096,7 +4351,7 @@ impl OcctKernel {
     pub fn store_closed_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_closed_shell_for_test()
             .expect("make_closed_shell_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Shell);
         h.id
     }
 
@@ -5117,7 +4372,7 @@ impl OcctKernel {
     pub fn store_closed_nonmanifold_shell_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_closed_nonmanifold_shell_for_test()
             .expect("make_closed_nonmanifold_shell_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Shell);
         h.id
     }
 
@@ -5128,7 +4383,7 @@ impl OcctKernel {
     /// short-circuit path in `is_watertight`.
     pub fn store_edge_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_edge_for_test().expect("make_edge_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Edge);
         h.id
     }
 
@@ -5139,7 +4394,7 @@ impl OcctKernel {
     /// short-circuit path in `is_watertight`.
     pub fn store_vertex_for_test(&mut self) -> GeometryHandleId {
         let shape = ffi::ffi::make_vertex_for_test().expect("make_vertex_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Vertex);
         h.id
     }
 
@@ -5152,7 +4407,7 @@ impl OcctKernel {
     pub fn store_vertex_at_for_test(&mut self, x: f64, y: f64, z: f64) -> GeometryHandleId {
         let shape = ffi::ffi::make_vertex_at_for_test(x, y, z)
             .expect("make_vertex_at_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Vertex);
         h.id
     }
 
@@ -5164,7 +4419,7 @@ impl OcctKernel {
     pub fn store_compsolid_for_test(&mut self) -> GeometryHandleId {
         let shape =
             ffi::ffi::make_compsolid_for_test().expect("make_compsolid_for_test should succeed");
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Compound);
         h.id
     }
 
@@ -5198,8 +4453,9 @@ impl OcctKernel {
         let placed =
             ffi::ffi::apply_test_placement_for_test(src, ax, ay, az, angle_rad, dx, dy, dz)
                 .expect("apply_test_placement_for_test should succeed");
-        let h = self.store(placed);
-        h.id
+        self.store_with_policy(placed, ReprPolicy::Inherit(src_handle))
+            .expect("store_placed_for_test: src_handle's repr is recorded with its shape")
+            .id
     }
 
     /// Build a half-space via the OCCT FFI and store it in the kernel, returning
@@ -5222,7 +4478,7 @@ impl OcctKernel {
     ) -> Result<GeometryHandleId, GeometryError> {
         let shape = ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-        let h = self.store(shape);
+        let h = self.store_with_repr(shape, BRepKind::Solid);
         Ok(h.id)
     }
 }
@@ -5269,9 +4525,9 @@ mod tests {
     fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(5.0),
             })
             .expect("Box creation must succeed")
             .id
@@ -5500,9 +4756,9 @@ mod tests {
         // Execute a box and a cylinder
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         kernel
@@ -5527,9 +4783,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -5559,9 +4815,9 @@ mod tests {
         // Create box (10x20x30), handle ID 1
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -5650,9 +4906,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         let box_h = kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -5714,9 +4970,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -5935,9 +5191,9 @@ mod tests {
         let mut kernel_a = OcctKernel::new();
         kernel_a
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let faces_a = kernel_a
@@ -6010,9 +5266,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let box_id = box_handle.id;
@@ -6073,9 +5329,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let box_id = box_handle.id;
@@ -6164,9 +5420,9 @@ mod tests {
 
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         kernel
@@ -6195,9 +5451,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let box_id = box_handle.id;
@@ -6270,9 +5526,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let pre = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let pre_id = pre.id.0;
@@ -6314,9 +5570,9 @@ mod tests {
         for _ in 0..CYCLES {
             let box_h = kernel
                 .execute(&GeometryOp::Box {
-                    width: Value::Real(10.0),
-                    height: Value::Real(20.0),
-                    depth: Value::Real(30.0),
+                    size_x: Value::Real(10.0),
+                    size_y: Value::Real(20.0),
+                    size_z: Value::Real(30.0),
                 })
                 .unwrap();
             first_ids.push(box_h.id.0);
@@ -6450,9 +5706,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -6481,9 +5737,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -6510,9 +5766,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .expect("Box should succeed");
         let box_id = box_h.id;
@@ -6557,9 +5813,9 @@ mod tests {
         // Kernel should still function normally
         let gh = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let vol = kernel.query(&GeometryQuery::Volume(gh.id)).unwrap();
@@ -6575,9 +5831,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -6634,9 +5890,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         kernel
@@ -6734,9 +5990,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -6937,9 +6193,9 @@ mod tests {
         let mut source = OcctKernel::new();
         source
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
         let state = source.warm_state().expect("should have warm state");
@@ -6976,9 +6232,9 @@ mod tests {
         // Create a valid box (id=1)
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -7011,69 +6267,210 @@ mod tests {
         }
     }
 
+    /// The `OperationFailed` cause `get_shape` reports for a corrupted handle.
+    fn get_shape_cause(kernel: &OcctKernel, h: GeometryHandleId) -> String {
+        match kernel.get_shape(h) {
+            Err(GeometryError::OperationFailed(msg)) => msg,
+            Err(other) => panic!("get_shape({h:?}): expected OperationFailed, got {other:?}"),
+            Ok(_) => panic!("get_shape({h:?}): expected OperationFailed, got Ok"),
+        }
+    }
+
+    /// One handle of each corrupted-but-present kind — IsNull topology and a
+    /// null `UniquePtr` — paired with the cause `get_shape` reports for it.
+    fn corrupted_handles(kernel: &mut OcctKernel) -> Vec<(GeometryHandleId, String)> {
+        let null_topology = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+        let null_pointer = GeometryHandleId(4000);
+        kernel.insert_null_shape(null_pointer.0);
+        [null_topology, null_pointer]
+            .into_iter()
+            .map(|h| (h, get_shape_cause(kernel, h)))
+            .collect()
+    }
+
+    fn assert_query_cause<T: std::fmt::Debug>(r: Result<T, QueryError>, cause: &str, what: &str) {
+        match r {
+            Err(QueryError::QueryFailed(m)) if m == cause => {}
+            other => panic!("{what}: expected QueryFailed({cause:?}), got {other:?}"),
+        }
+    }
+
     /// Structural boundary guard: a NON-null `OcctShape` wrapping null (IsNull)
-    /// topology must be rejected at `get_shape`, and every production query
-    /// path that flows through `get_shape` must therefore return `Err` — never
-    /// a hardware SIGSEGV.
+    /// topology must be rejected at `get_shape`, and every query path that
+    /// flows through `get_shape` must report that rejection's cause as
+    /// `QueryFailed` — never a hardware SIGSEGV, and never `InvalidHandle`,
+    /// which is reserved for an id the kernel does not hold.
     ///
     /// The input is `make_null_shape_for_test()` — a default-constructed
     /// `OcctShape` whose `.shape` is a null `TopoDS_Shape`. It passes
-    /// `get_shape`'s existing null-`UniquePtr` check (the pointer is non-null)
-    /// but, pre-fix, dereferences to null topology: `query_volume`'s
-    /// `ShapeType()` fallback then SIGSEGVs.
-    ///
-    /// RED (pre-fix): `get_shape` returns `Ok(&null_shape)`, so the assertion
-    /// below fails on the `Ok(_)` arm. GREEN (after the get_shape IsNull
-    /// guard): `get_shape` returns `Err(OperationFailed)` and all four queries
-    /// return `Err`.
+    /// `get_shape`'s null-`UniquePtr` check (the pointer is non-null) but
+    /// dereferences to null topology, on which `query_volume`'s `ShapeType()`
+    /// fallback would SIGSEGV were `get_shape` not to refuse it.
     ///
     /// MUST run under `cargo nextest run` (process-per-test isolation) so any
-    /// pre-fix crash is contained as a single failing test, not a suite abort.
+    /// crash is contained as a single failing test, not a suite abort.
     #[test]
     fn get_shape_rejects_null_topology_and_queries_return_err() {
         let mut kernel = OcctKernel::new();
         let h = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+        let good_box = make_box_20_10_5(&mut kernel);
 
         // Structural chokepoint: get_shape refuses null/empty topology loudly.
-        match kernel.get_shape(h) {
-            Err(GeometryError::OperationFailed(msg)) => {
-                let low = msg.to_lowercase();
-                assert!(
-                    low.contains("null") || low.contains("empty"),
-                    "error should mention null/empty topology, got: {msg}"
+        let cause = get_shape_cause(&kernel, h);
+        let low = cause.to_lowercase();
+        assert!(
+            low.contains("null") || low.contains("empty"),
+            "error should mention null/empty topology, got: {cause}"
+        );
+
+        // Every query path routes through get_shape, so each reports its
+        // cause (never SIGSEGV). Volume is the guaranteed crash vector.
+        assert_query_cause(kernel.query(&GeometryQuery::Volume(h)), &cause, "Volume");
+        assert_query_cause(kernel.volume_measurement(h), &cause, "volume_measurement");
+        assert_query_cause(
+            kernel.query(&GeometryQuery::Centroid(h)),
+            &cause,
+            "Centroid",
+        );
+        assert_query_cause(
+            kernel.query(&GeometryQuery::BoundingBox(h)),
+            &cause,
+            "BoundingBox",
+        );
+        assert_query_cause(
+            kernel.query(&GeometryQuery::InertiaTensor {
+                handle: h,
+                density: 1000.0,
+            }),
+            &cause,
+            "InertiaTensor",
+        );
+        assert_query_cause(kernel.extract_faces(h), &cause, "extract_faces");
+        assert_query_cause(
+            kernel.shapes_intersect(h, good_box),
+            &cause,
+            "shapes_intersect",
+        );
+
+        // Contrast: an id the kernel does not hold is the invalid-handle case.
+        match kernel.query(&GeometryQuery::Volume(GeometryHandleId(999))) {
+            Err(QueryError::InvalidHandle(id)) => assert_eq!(id, GeometryHandleId(999)),
+            other => panic!("unknown handle: expected InvalidHandle(999), got {other:?}"),
+        }
+    }
+
+    /// Both corrupted-handle kinds report `get_shape`'s cause through the
+    /// query entry points, not `InvalidHandle`.
+    #[test]
+    fn queries_on_a_corrupted_handle_report_the_cause() {
+        let mut kernel = OcctKernel::new();
+        let good_box = make_box_20_10_5(&mut kernel);
+        for (h, cause) in corrupted_handles(&mut kernel) {
+            assert_query_cause(
+                kernel.query(&GeometryQuery::Volume(h)),
+                &cause,
+                &format!("Volume({h:?})"),
+            );
+            assert_query_cause(
+                kernel.volume_measurement(h),
+                &cause,
+                &format!("volume_measurement({h:?})"),
+            );
+            assert_query_cause(
+                kernel.extract_edges(h),
+                &cause,
+                &format!("extract_edges({h:?})"),
+            );
+            assert_query_cause(
+                kernel.shapes_intersect(good_box, h),
+                &cause,
+                &format!("shapes_intersect(box, {h:?})"),
+            );
+        }
+    }
+
+    fn assert_export_cause<T: std::fmt::Debug>(
+        r: Result<T, ExportError>,
+        written: &[u8],
+        cause: &str,
+        what: &str,
+    ) {
+        match r {
+            Err(ExportError::FormatError(m)) if m == cause => {}
+            other => panic!("{what}: expected FormatError({cause:?}), got {other:?}"),
+        }
+        assert!(
+            written.is_empty(),
+            "{what}: wrote {} bytes before failing",
+            written.len()
+        );
+    }
+
+    /// Export, tessellation and mesh-deviation of either corrupted-handle kind
+    /// report `get_shape`'s cause, through both export entry points and for
+    /// every format — not `InvalidHandle`, which means the id is unknown.
+    #[test]
+    fn export_and_tessellate_of_a_corrupted_handle_report_the_cause_not_invalid_handle() {
+        let mut kernel = OcctKernel::new();
+        for (h, cause) in corrupted_handles(&mut kernel) {
+            for format in [ExportFormat::Step, ExportFormat::Stl, ExportFormat::ThreeMF] {
+                let mut buf = Vec::new();
+                let r = kernel.export(h, format, &mut buf);
+                assert_export_cause(r, &buf, &cause, &format!("export({h:?}, {format:?})"));
+
+                let mut buf = Vec::new();
+                let r = kernel.export_with_options(h, format, &ExportOptions::default(), &mut buf);
+                assert_export_cause(
+                    r,
+                    &buf,
+                    &cause,
+                    &format!("export_with_options({h:?}, {format:?})"),
                 );
             }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for null-topology shape, got Ok"),
+            match kernel.tessellate(h, 0.1) {
+                Err(TessError::TessellationFailed(m)) if m == cause => {}
+                other => panic!(
+                    "tessellate({h:?}): expected TessellationFailed({cause:?}), got {other:?}"
+                ),
+            }
+            let empty_mesh = Mesh {
+                vertices: vec![],
+                indices: vec![],
+                normals: None,
+            };
+            assert_query_cause(
+                kernel.measure_mesh_deviation(h, &empty_mesh),
+                &cause,
+                &format!("measure_mesh_deviation({h:?})"),
+            );
+        }
+    }
+
+    /// `execute_split` reports exactly what `get_shape` found: an unknown
+    /// target is `InvalidReference`, a corrupted one its `OperationFailed`
+    /// cause — never a corrupted handle mislabelled as unknown.
+    #[test]
+    fn execute_split_reports_the_get_shape_cause() {
+        let split = |target| GeometryOp::Split {
+            target,
+            plane_origin: [0.0; 3],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        let mut kernel = OcctKernel::new();
+
+        match kernel.execute_split(&split(GeometryHandleId(999))) {
+            Err(GeometryError::InvalidReference(id)) => assert_eq!(id, GeometryHandleId(999)),
+            other => panic!("unknown target: expected InvalidReference(999), got {other:?}"),
         }
 
-        // Every production query path routes through get_shape, so each must
-        // now return Err (never SIGSEGV). Volume is the guaranteed crash vector.
-        assert!(
-            kernel.query(&GeometryQuery::Volume(h)).is_err(),
-            "Volume query on null-topology shape must return Err, not crash/Ok"
-        );
-        assert!(
-            kernel.volume_measurement(h).is_err(),
-            "volume_measurement on null-topology shape must return Err, not crash/Ok"
-        );
-        assert!(
-            kernel.query(&GeometryQuery::Centroid(h)).is_err(),
-            "Centroid query on null-topology shape must return Err"
-        );
-        assert!(
-            kernel.query(&GeometryQuery::BoundingBox(h)).is_err(),
-            "BoundingBox query on null-topology shape must return Err"
-        );
-        assert!(
-            kernel
-                .query(&GeometryQuery::InertiaTensor {
-                    handle: h,
-                    density: 1000.0,
-                })
-                .is_err(),
-            "InertiaTensor query on null-topology shape must return Err"
-        );
+        for (h, cause) in corrupted_handles(&mut kernel) {
+            match kernel.execute_split(&split(h)) {
+                Err(GeometryError::OperationFailed(m)) if m == cause => {}
+                other => panic!(
+                    "execute_split({h:?}): expected OperationFailed({cause:?}), got {other:?}"
+                ),
+            }
+        }
     }
 
     /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
@@ -7150,9 +6547,9 @@ mod tests {
         // Create a valid box (id=1)
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(30.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(30.0),
             })
             .unwrap();
 
@@ -7185,9 +6582,9 @@ mod tests {
     fn execute_box_zero_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(0.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(0.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -7205,9 +6602,9 @@ mod tests {
     fn execute_box_negative_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(-5.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(-5.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -7291,9 +6688,9 @@ mod tests {
         // Create a valid box first
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
@@ -7314,9 +6711,9 @@ mod tests {
     fn execute_box_nan_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(f64::NAN),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(f64::NAN),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -7334,9 +6731,9 @@ mod tests {
     fn execute_box_infinity_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(f64::INFINITY),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(f64::INFINITY),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -7354,9 +6751,9 @@ mod tests {
     fn execute_box_neg_infinity_dimension_returns_error() {
         let mut kernel = OcctKernel::new();
         let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(f64::NEG_INFINITY),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(f64::NEG_INFINITY),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         });
         match result {
             Err(GeometryError::OperationFailed(msg)) => {
@@ -7439,9 +6836,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
@@ -7461,9 +6858,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
@@ -7485,9 +6882,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -7507,9 +6904,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -7529,9 +6926,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -7551,9 +6948,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
@@ -7581,9 +6978,9 @@ mod tests {
     fn make_10mm_box_for_local_feature_test(kernel: &mut OcctKernel) -> GeometryHandle {
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0e-3),
-                height: Value::Real(10.0e-3),
-                depth: Value::Real(10.0e-3),
+                size_x: Value::Real(10.0e-3),
+                size_y: Value::Real(10.0e-3),
+                size_z: Value::Real(10.0e-3),
             })
             .expect("10mm box should build")
     }
@@ -7649,9 +7046,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7671,9 +7068,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7693,9 +7090,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7715,9 +7112,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // A near-zero axis (mag_sq = 1e-34, non-zero but physically meaningless)
@@ -7741,9 +7138,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // axis=[1e-10, 0, 0] has mag_sq=1e-20, physically meaningless (0.1 nanometer)
@@ -7771,9 +7168,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // axis=[0, 1e-8, 0] has mag_sq=1e-16, physically meaningless (10 nanometers)
@@ -7806,9 +7203,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7834,9 +7231,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Rotate {
@@ -7864,9 +7261,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Radius 100.0 is much larger than any edge of the 10x10x10 box
@@ -7889,9 +7286,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7912,9 +7309,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7935,9 +7332,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Translate {
@@ -7985,9 +7382,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Apply LinearPattern: 4 copies along X with spacing 20
@@ -8018,9 +7415,9 @@ mod tests {
         // Create a small 5x5x5 box (volume = 125)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(5.0),
-                height: Value::Real(5.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(5.0),
+                size_y: Value::Real(5.0),
+                size_z: Value::Real(5.0),
             })
             .unwrap();
         // Translate to (20,0,0) to offset from center
@@ -8061,9 +7458,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Apply LinearPattern2D: 3×4 grid along X and Y with 20mm spacing
@@ -8097,9 +7494,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Apply ArbitraryPattern with 3 non-overlapping translations
@@ -8130,9 +7527,9 @@ mod tests {
     /// carries a 90-degree-about-Y rotation (zero translation) must honor the rotation
     /// in the fused result, not just the translation.
     ///
-    /// `box(width=2, height=2, depth=10)` maps to X-extent=2, Y-extent=2, Z-extent=10
-    /// (`make_box(width,height,depth)` -> `gp_Pnt(-w/2,-h/2,-d/2)` + `MakeBox(dx,dy,dz)`,
-    /// so width->X, height->Y, depth->Z). A 90-degree rotation about Y swaps the X and Z
+    /// `Box { size_x: 2, size_y: 2, size_z: 10 }` has X-extent=2, Y-extent=2, Z-extent=10
+    /// (`make_box(size_x,size_y,size_z)` -> `gp_Pnt(-size_x/2,-size_y/2,-size_z/2)` +
+    /// `MakeBox(dx,dy,dz)`). A 90-degree rotation about Y swaps the X and Z
     /// extents (2<->10) for the rotated copy; fusing it with the untouched original
     /// (X-extent 2) grows the union's overall X-extent to the max of the two, ~10.
     ///
@@ -8144,9 +7541,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(2.0),
-                height: Value::Real(2.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(2.0),
+                size_y: Value::Real(2.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Single instance: 90-degree-about-Y quaternion [cos45,0,sin45,0], zero
@@ -8177,9 +7574,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::LinearPattern2D {
@@ -8207,9 +7604,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::LinearPattern2D {
@@ -8237,9 +7634,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // NaN in direction1 should fail
@@ -8293,9 +7690,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::ArbitraryPattern {
@@ -8459,9 +7856,9 @@ mod tests {
         // Create a 10x10x10mm box (10mm = 0.010m)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.010),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.010),
+                size_x: Value::Real(0.010),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.010),
             })
             .unwrap();
         // Positive thicken: should expand box to ~11mm
@@ -8508,9 +7905,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Thicken by offset=2.0 — result should have volume > 1000
@@ -8676,9 +8073,9 @@ mod tests {
         // 10×10×10 box; inradius = 5
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Inward offset -100 >> inradius 5 → degenerate, must return Err
@@ -8698,9 +8095,9 @@ mod tests {
         // Create a 20x20x20 box (volume = 8000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
         // Shell with thickness=1.0, remove face 0 to create hollow box
@@ -8872,9 +8269,9 @@ mod tests {
         // (c) Overload 2 — offset on a reference surface (a box face) → Ok wire.
         let boxx = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.02),
-                height: Value::Real(0.02),
-                depth: Value::Real(0.02),
+                size_x: Value::Real(0.02),
+                size_y: Value::Real(0.02),
+                size_z: Value::Real(0.02),
             })
             .expect("box should build");
         let faces = kernel
@@ -8918,17 +8315,17 @@ mod tests {
         // Create box_a at origin (10x10x10, centered)
         let box_a = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Create box_b and translate to (50,0,0)
         let box_b_raw = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let box_b = kernel
@@ -8961,9 +8358,9 @@ mod tests {
         // Create a 10x10x10 box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Query MoI around Z axis
@@ -8996,9 +8393,9 @@ mod tests {
         // Mirror
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let translated = kernel
@@ -9051,9 +8448,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -9116,9 +8513,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let translated = kernel
@@ -9173,9 +8570,9 @@ mod tests {
         // Create plate: 100x60x10
         let plate = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(60.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(60.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let plate_vol = match kernel.query(&GeometryQuery::Volume(plate.id)).unwrap() {
@@ -9237,17 +8634,17 @@ mod tests {
         // Create a 20x20x20 box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
         // Create a plane reference (small flat box at z=0)
         let plane_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(100.0),
-                depth: Value::Real(0.1),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(100.0),
+                size_z: Value::Real(0.1),
             })
             .unwrap();
         // Apply Draft with angle ~5.7 degrees (0.1 rad)
@@ -9295,16 +8692,16 @@ mod tests {
     fn build_draft_fixture(kernel: &mut OcctKernel) -> (GeometryHandle, GeometryHandle) {
         let target_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
         let plane_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(100.0),
-                height: Value::Real(100.0),
-                depth: Value::Real(0.1),
+                size_x: Value::Real(100.0),
+                size_y: Value::Real(100.0),
+                size_z: Value::Real(0.1),
             })
             .unwrap();
         (target_h, plane_h)
@@ -9578,9 +8975,9 @@ mod tests {
         // Build a second box and extract its faces — these are foreign to `target`.
         let second_box = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(5.0),
-                height: Value::Real(5.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(5.0),
+                size_y: Value::Real(5.0),
+                size_z: Value::Real(5.0),
             })
             .unwrap();
         let foreign_faces = kernel
@@ -9631,9 +9028,9 @@ mod tests {
         // Create a 10x10x10 box (volume = 1000)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Translate box to (5,0,0) so it's off-center
@@ -9678,9 +9075,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // plane_normal=[1e-20, 0, 0] has mag_sq=1e-40, physically meaningless.
@@ -9727,9 +9124,9 @@ mod tests {
         // Create a 10x10x10 box, volume = 1000
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Scale by 2: linear dimensions double, volume becomes 8x = 8000
@@ -9760,9 +9157,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let scaled_h = kernel
@@ -9792,9 +9189,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Scale {
@@ -9824,9 +9221,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Scale {
@@ -9859,9 +9256,9 @@ mod tests {
         // Create a 10x10x10 box centered at origin.
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -9945,9 +9342,9 @@ mod tests {
         // Target box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(20.0),
-                depth: Value::Real(20.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(20.0),
+                size_z: Value::Real(20.0),
             })
             .unwrap();
 
@@ -10005,9 +9402,9 @@ mod tests {
         // Create a box as a stand-in profile (provides a valid handle)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         // Extrude with zero distance should fail
@@ -10036,9 +9433,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Extrude {
@@ -10066,9 +9463,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Extrude {
@@ -10354,9 +9751,9 @@ mod tests {
         // Create a box solid as (invalid) path
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         // Create a circle face as profile
@@ -10394,9 +9791,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10413,9 +9810,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10432,9 +9829,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10503,9 +9900,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10522,9 +9919,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10541,9 +9938,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10560,9 +9957,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10580,9 +9977,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::Revolve {
@@ -10600,9 +9997,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         // 1e-35 is below C++ threshold (1e-30) and below any reasonable physical angle.
@@ -10621,9 +10018,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(1.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(1.0),
             })
             .unwrap();
         // axis=[1e-8, 0, 0] has mag_sq=1e-16, physically meaningless
@@ -11635,9 +11032,9 @@ mod tests {
         // Create a 10×10×10 box and translate it by dx=5 so centroid is at (5, 0, 0).
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let translated = kernel
@@ -11862,9 +11259,9 @@ mod tests {
         // A 10×10×10 box centred at the origin.
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("Box creation must succeed");
         // Query with four density values including the two edge cases ρ=0 and ρ<0.
@@ -11950,9 +11347,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("Box creation must succeed");
         let translated = kernel
@@ -12237,9 +11634,9 @@ mod tests {
         // zero at the centroid.
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(1000.0),
-                height: Value::Real(1000.0),
-                depth: Value::Real(1000.0),
+                size_x: Value::Real(1000.0),
+                size_y: Value::Real(1000.0),
+                size_z: Value::Real(1000.0),
             })
             .unwrap();
         let result = kernel
@@ -12343,19 +11740,19 @@ mod tests {
     #[test]
     fn inertia_tensor_rotated_non_cubic_box_offdiagonals_symmetric() {
         let mut kernel = OcctKernel::new();
-        // Non-cubic box: width=1000, height=2000, depth=500, density=1.
+        // Non-cubic box: size_x=1000, size_y=2000, size_z=500, density=1.
         // Volume = 1e9, mass m = 1e9.
         // Centroidal moments in local frame (box axes):
-        //   I_xx_local = m/12·(h²+d²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
-        //   I_yy_local = m/12·(w²+d²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
+        //   I_xx_local = m/12·(size_y²+size_z²) = 1e9/12·(4e6+2.5e5) ≈ 3.54e14
+        //   I_yy_local = m/12·(size_x²+size_z²) = 1e9/12·(1e6+2.5e5) ≈ 1.04e14
         // After 30° rotation around Z:
         //   I_xy_world = (I_xx_local - I_yy_local)·sin30°·cos30° ≈ 1.08e14
         // (I_xz and I_yz remain zero because Z-rotation doesn't mix Z cross-products.)
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(1000.0),
-                height: Value::Real(2000.0),
-                depth: Value::Real(500.0),
+                size_x: Value::Real(1000.0),
+                size_y: Value::Real(2000.0),
+                size_z: Value::Real(500.0),
             })
             .expect("Box creation must succeed");
         // Rotate 30° around Z-axis (PI/6 radians).
@@ -12950,9 +12347,9 @@ mod tests {
 
         let source = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("box creation should succeed");
 
@@ -13002,9 +12399,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let transformed = kernel
@@ -13046,9 +12443,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let orig_mesh = kernel.tessellate(box_h.id, 1e-4).unwrap();
@@ -13095,9 +12492,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let transformed = kernel.execute(&GeometryOp::AffineApply {
@@ -13133,9 +12530,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::AffineApply {
@@ -13173,9 +12570,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(0.01),
-                height: Value::Real(0.01),
-                depth: Value::Real(0.01),
+                size_x: Value::Real(0.01),
+                size_y: Value::Real(0.01),
+                size_z: Value::Real(0.01),
             })
             .unwrap();
         let scaled = kernel
@@ -13219,9 +12616,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let scaled = kernel
@@ -13253,9 +12650,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::ScaleNonUniform {
@@ -13287,9 +12684,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
         let result = kernel.execute(&GeometryOp::ScaleNonUniform {
@@ -13341,16 +12738,16 @@ mod tests {
         // Build two distinct box handles.
         let ha = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.02),
-                height: Value::length(0.02),
-                depth: Value::length(0.02),
+                size_x: Value::length(0.02),
+                size_y: Value::length(0.02),
+                size_z: Value::length(0.02),
             })
             .expect("Box A must succeed");
         let hb = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.02),
-                height: Value::length(0.02),
-                depth: Value::length(0.02),
+                size_x: Value::length(0.02),
+                size_y: Value::length(0.02),
+                size_z: Value::length(0.02),
             })
             .expect("Box B must succeed");
 
@@ -13414,9 +12811,9 @@ mod tests {
         // Build ONE box handle — used as BOTH inputs to make_compound.
         let h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.02),
-                height: Value::length(0.02),
-                depth: Value::length(0.02),
+                size_x: Value::length(0.02),
+                size_y: Value::length(0.02),
+                size_z: Value::length(0.02),
             })
             .expect("Box must succeed");
 
@@ -13882,9 +13279,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -14265,9 +13662,9 @@ mod tests {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .unwrap();
 
@@ -14384,9 +13781,9 @@ mod tests {
         real;
         OcctKernelHandle::spawn,
         valid_op = GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         },
     );
 
@@ -14443,16 +13840,16 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let result = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::Real(20.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(5.0),
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(5.0),
             })
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
-        capture.assert_any_event_field_contains("field", "height");
-        capture.assert_any_event_field_contains("field", "depth");
+        capture.assert_any_event_field_contains("field", "size_x");
+        capture.assert_any_event_field_contains("field", "size_y");
+        capture.assert_any_event_field_contains("field", "size_z");
         assert!(
             result.is_ok(),
             "the tripwire is a detector, not a gate: {result:?}"
@@ -14468,9 +13865,9 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let result = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::length(0.020),
-                height: Value::length(0.010),
-                depth: Value::length(0.005),
+                size_x: Value::length(0.020),
+                size_y: Value::length(0.010),
+                size_z: Value::length(0.005),
             })
         });
 
@@ -14491,23 +13888,23 @@ mod tests {
         let _g = reify_ir::arm_length_tripwire_assert();
         let mut kernel = OcctKernel::new();
         let _ = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(20.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(20.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(5.0),
         });
     }
 
     /// Boundary row 13 through the real OCCT path, half 2 (field name).
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "width")]
+    #[should_panic(expected = "size_x")]
     fn occt_armed_bare_length_panics_naming_the_field() {
         let _g = reify_ir::arm_length_tripwire_assert();
         let mut kernel = OcctKernel::new();
         let _ = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(20.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(5.0),
+            size_x: Value::Real(20.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(5.0),
         });
     }
 
@@ -14794,30 +14191,30 @@ mod tests {
         let cases: Vec<(GeometryOp, &str, &str)> = vec![
             (
                 GeometryOp::Box {
-                        width: Value::Real(2.0),
-                        height: Value::length(3.0),
-                        depth: Value::length(4.0),
+                        size_x: Value::Real(2.0),
+                        size_y: Value::length(3.0),
+                        size_z: Value::length(4.0),
                 },
                 "Box",
-                "width",
+                "size_x",
             ),
             (
                 GeometryOp::Box {
-                        width: Value::length(2.0),
-                        height: Value::Real(3.0),
-                        depth: Value::length(4.0),
+                        size_x: Value::length(2.0),
+                        size_y: Value::Real(3.0),
+                        size_z: Value::length(4.0),
                 },
                 "Box",
-                "height",
+                "size_y",
             ),
             (
                 GeometryOp::Box {
-                        width: Value::length(2.0),
-                        height: Value::length(3.0),
-                        depth: Value::Real(4.0),
+                        size_x: Value::length(2.0),
+                        size_y: Value::length(3.0),
+                        size_z: Value::Real(4.0),
                 },
                 "Box",
-                "depth",
+                "size_z",
             ),
             (
                 GeometryOp::Cylinder {
@@ -15217,20 +14614,20 @@ mod tests {
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         let bare = tracing::subscriber::with_default(subscriber, || {
             kernel.execute(&GeometryOp::Box {
-                width: Value::Real(0.020),
-                height: Value::Real(0.010),
-                depth: Value::Real(0.005),
+                size_x: Value::Real(0.020),
+                size_y: Value::Real(0.010),
+                size_z: Value::Real(0.005),
             })
         });
 
         capture.assert_count_and_any_message_contains(3, "Box");
-        capture.assert_any_event_field_contains("field", "width");
+        capture.assert_any_event_field_contains("field", "size_x");
 
         // Same SI magnitudes, properly dimensioned: the disposition must match.
         let control = kernel.execute(&GeometryOp::Box {
-            width: Value::length(0.020),
-            height: Value::length(0.010),
-            depth: Value::length(0.005),
+            size_x: Value::length(0.020),
+            size_y: Value::length(0.010),
+            size_z: Value::length(0.005),
         });
         assert_eq!(
             bare.is_ok(),
@@ -15238,5 +14635,72 @@ mod tests {
             "armed release build changed the accept/reject disposition: \
              bare={bare:?} control={control:?}"
         );
+    }
+
+    #[test]
+    fn brep_kind_decoder_rejects_an_unrecognised_shape_type_name() {
+        let known = [
+            ("Solid", BRepKind::Solid),
+            ("CompSolid", BRepKind::Compound),
+            ("Compound", BRepKind::Compound),
+            ("Shell", BRepKind::Shell),
+            ("Wire", BRepKind::Wire),
+            ("Face", BRepKind::Face),
+            ("Edge", BRepKind::Edge),
+            ("Vertex", BRepKind::Vertex),
+        ];
+        for (name, kind) in known {
+            assert_eq!(
+                brep_kind_of_type_name(name).ok(),
+                Some(kind),
+                "known TopAbs name {name:?}"
+            );
+        }
+
+        for unknown in ["Shape", "Bogus"] {
+            match brep_kind_of_type_name(unknown) {
+                Err(GeometryError::OperationFailed(msg)) => assert!(
+                    msg.contains(unknown),
+                    "error for {unknown:?} must name it, got: {msg}"
+                ),
+                other => panic!(
+                    "unrecognised TopAbs name {unknown:?} must be an \
+                     OperationFailed error, not silently classified: {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// The storing entry every `execute` arm ends in refuses, and stores
+    /// nothing, when a policy cannot name a kind: a null shape under
+    /// `Classify`, or an `Inherit` source the kernel has no kind for.
+    #[test]
+    fn store_with_policy_refuses_a_shape_it_cannot_name_a_kind_for() {
+        let mut kernel = OcctKernel::new();
+        let unknown_source = GeometryHandleId(999_999);
+        let cases = [
+            (
+                "null shape under Classify",
+                ffi::ffi::make_null_shape_for_test(),
+                ReprPolicy::Classify,
+                "null shape",
+            ),
+            (
+                "Inherit from an unknown source",
+                ffi::ffi::make_box(0.01, 0.01, 0.01).expect("make_box"),
+                ReprPolicy::Inherit(unknown_source),
+                "out of lock-step",
+            ),
+        ];
+        for (case, shape, policy, cause) in cases {
+            match kernel.store_with_policy(shape, policy) {
+                Err(GeometryError::OperationFailed(msg)) => assert!(
+                    msg.contains(cause),
+                    "{case}: the error must name its cause {cause:?}, got: {msg}"
+                ),
+                other => panic!("{case}: expected OperationFailed, got {other:?}"),
+            }
+            assert_eq!(kernel.shape_count(), 0, "{case}: nothing may be stored");
+        }
     }
 }

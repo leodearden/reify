@@ -124,17 +124,17 @@ fn boolean_union_module() -> reify_compiler::CompiledModule {
     let box_op_a = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(10.0)),
-            ("height".into(), mm_literal(10.0)),
-            ("depth".into(), mm_literal(10.0)),
+            ("size_x".into(), mm_literal(10.0)),
+            ("size_y".into(), mm_literal(10.0)),
+            ("size_z".into(), mm_literal(10.0)),
         ],
     };
     let box_op_b = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(5.0)),
-            ("height".into(), mm_literal(5.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(5.0)),
+            ("size_y".into(), mm_literal(5.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let union_op = CompiledGeometryOp::Boolean {
@@ -199,17 +199,17 @@ fn two_boolean_unions_module() -> reify_compiler::CompiledModule {
     let box_op_a = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(10.0)),
-            ("height".into(), mm_literal(10.0)),
-            ("depth".into(), mm_literal(10.0)),
+            ("size_x".into(), mm_literal(10.0)),
+            ("size_y".into(), mm_literal(10.0)),
+            ("size_z".into(), mm_literal(10.0)),
         ],
     };
     let box_op_b = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(5.0)),
-            ("height".into(), mm_literal(5.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(5.0)),
+            ("size_y".into(), mm_literal(5.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let union_op_1 = CompiledGeometryOp::Boolean {
@@ -220,9 +220,9 @@ fn two_boolean_unions_module() -> reify_compiler::CompiledModule {
     let box_op_c = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(3.0)),
-            ("height".into(), mm_literal(3.0)),
-            ("depth".into(), mm_literal(3.0)),
+            ("size_x".into(), mm_literal(3.0)),
+            ("size_y".into(), mm_literal(3.0)),
+            ("size_z".into(), mm_literal(3.0)),
         ],
     };
     let union_op_2 = CompiledGeometryOp::Boolean {
@@ -261,6 +261,7 @@ fn boolean_union_drop_produces_warning_diagnostic() {
         SweepOpHistoryRecords::default(),
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -304,9 +305,9 @@ fn local_feature_drop_module(kind: ModifyKind) -> reify_compiler::CompiledModule
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(10.0)),
-            ("height".into(), mm_literal(10.0)),
-            ("depth".into(), mm_literal(10.0)),
+            ("size_x".into(), mm_literal(10.0)),
+            ("size_y".into(), mm_literal(10.0)),
+            ("size_z".into(), mm_literal(10.0)),
         ],
     };
     let modify_args = match kind {
@@ -346,6 +347,7 @@ fn extrude_drop_produces_warning_diagnostic() {
         },
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -399,6 +401,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
         ..Default::default()
     });
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -467,6 +470,7 @@ fn clean_local_feature_produces_no_drop_warning() {
         SweepOpHistoryRecords::default(),
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -514,6 +518,7 @@ fn two_boolean_drops_in_same_realization_aggregate_to_one_diagnostic() {
         SweepOpHistoryRecords::default(),
     );
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

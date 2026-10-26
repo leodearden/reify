@@ -147,6 +147,9 @@ tasks:
       pattern: adt_mirror_of_arm.ri
       paths:
       - scripts/verify.sh
+      - gui/src/__tests__/reifyGrammarCorpus.test.ts
+      - gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
+      - tree-sitter-reify/tests/derived_sub_grammar_tests.rs
       expect: present
 - label: A-λ
   task_id: 6625

@@ -245,18 +245,22 @@ impl DimensionVector {
     pub const STIFFNESS: DimensionVector = DimensionVector::from_exps(&[(1, 1), (2, -2)]);
     /// Absorption coefficient: 1/m
     pub const ABSORPTION_COEFF: DimensionVector = DimensionVector::from_exps(&[(0, -1)]);
-    /// Curvature: 1/m — dimensionally identical to `ABSORPTION_COEFF`.
+    /// Curvature: rad/m = rad·m⁻¹.
     ///
-    /// Both are `1/Length`. There is no physically honest way to make them
-    /// distinct DimensionVectors; the alias is justified because the
-    /// source-syntax name `Curvature` carries different engineering intent
-    /// (reciprocal-length-of-arc) than `AbsorptionCoeff` (per-distance decay).
-    /// Per task 3603 / GHR-α design decision: `canonical_name()` continues to
-    /// return `"AbsorptionCoeff"` for the shared dim because the `Curvature`
-    /// entry is placed AFTER `AbsorptionCoeff` in `NAMED_DIMENSIONS` (first-
-    /// match wins). The `Curvature` alias resolves correctly in the name→dim
-    /// direction via `resolve_dimension_type` (used by `param k : Curvature`).
-    pub const CURVATURE: DimensionVector = DimensionVector::from_exps(&[(0, -1)]);
+    /// κ = dθ/ds with θ primitive, so the geometry `curvature` query is an
+    /// arc-measure primitive (the #6080 `orient_log` shape). η = 1, so values
+    /// are byte-identical to the old m⁻¹ tagging.
+    ///
+    /// Supersedes the task-3603 / GHR-α alias rationale, which held there was
+    /// "no physically honest way" to separate this from
+    /// [`ABSORPTION_COEFF`](Self::ABSORPTION_COEFF). Under angle-as-dimension
+    /// there is one: absorption stays m⁻¹. CURVATURE is now the SOLE holder of
+    /// rad·m⁻¹, so `canonical_name()` returns `"Curvature"` wherever its
+    /// `NAMED_DIMENSIONS` row sits — the same resolution as
+    /// [`TORQUE`](Self::TORQUE) (#5799), whose docs carry the argument against
+    /// alias rows. Ruling: docs/prds/v0_6/angle-dimension-completion.md D1,
+    /// task #6179.
+    pub const CURVATURE: DimensionVector = DimensionVector::from_exps(&[(0, -1), (7, 1)]);
     /// Fracture toughness: Pa·√m = kg·m^(-1/2)·s⁻²
     ///
     /// The only fractional-exponent named alias — Length slot is Rational(-1, 2).
@@ -297,8 +301,8 @@ impl DimensionVector {
     /// Spring coefficient for prismatic joints (spring_force = -k·Δx gives N force).
     /// Name alias: `canonical_name()` returns `"Stiffness"` (first-match scan order;
     /// see `STIFFNESS` above). The `"TranslationalStiffness"` name resolves in the
-    /// name→dim direction via `resolve_dimension_type`. Mirrors the Curvature/AbsorptionCoeff
-    /// alias precedent (task 3603 / GHR-α).
+    /// name→dim direction via `resolve_dimension_type`. Follows the alias-row
+    /// convention of task 3603 / GHR-α (as Momentum/Impulse does).
     pub const TRANSLATIONAL_STIFFNESS: DimensionVector = DimensionVector::STIFFNESS;
     /// Translational damping: N·s/m = kg·s⁻¹
     ///
@@ -419,6 +423,37 @@ impl DimensionVector {
 
     pub fn is_dimensionless(&self) -> bool {
         self.0.iter().all(|r| r.is_zero())
+    }
+
+    /// Names this DIMENSION for a diagnostic that has already named the value
+    /// (`"… must be Vector3<Length>; got {label}"`): `"dimensionless"`, else
+    /// the canonical name, else the `Display` exponents.
+    ///
+    /// Intentionally separate from [`Self::diagnostic_scalar_label`] — do not
+    /// merge; `diagnostic_dimension_label_names_the_dimension` pins the difference.
+    pub fn diagnostic_dimension_label(&self) -> String {
+        if self.is_dimensionless() {
+            return "dimensionless".to_string();
+        }
+        self.canonical_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| self.to_string())
+    }
+
+    /// Names a `Value::Scalar` carrying this dimension, for an argument
+    /// rejection's `got` slot: `"{qualifier} Scalar"`, where an unnamed
+    /// dimension is the generic `"dimensioned"`.
+    ///
+    /// Intentionally separate from [`Self::diagnostic_dimension_label`] — do not
+    /// merge; `diagnostic_scalar_label_names_a_scalar_value_of_the_dimension`
+    /// pins the difference.
+    pub fn diagnostic_scalar_label(&self) -> String {
+        let qualifier = if self.is_dimensionless() {
+            "dimensionless"
+        } else {
+            self.canonical_name().unwrap_or("dimensioned")
+        };
+        format!("{qualifier} Scalar")
     }
 
     /// Multiply dimensions (add exponents).
@@ -552,12 +587,13 @@ pub const FORCE: DimensionVector = {
 ///   direction (linear scan forward).
 ///
 /// Both directions are FIRST-MATCH, which is why ENTRY ORDER IS LOAD-BEARING: an
-/// alias row (`TranslationalStiffness`, `Curvature`, `Momentum`) is placed
+/// alias row (`TranslationalStiffness`, `Momentum`) is placed
 /// AFTER the canonical row it shares a vector with, so `canonical_name()` keeps
 /// returning the canonical name while the alias name still resolves in the
 /// name→dim direction. Inserting one BEFORE its canonical row would silently
 /// change every reverse-lookup consumer's output. (`Torque` is no longer an
-/// alias — see the `DimensionVector::TORQUE` docs.)
+/// alias — see the `DimensionVector::TORQUE` docs. `Curvature` is no longer an
+/// alias — see `DimensionVector::CURVATURE`.)
 ///
 /// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
@@ -629,8 +665,8 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // canonical_name() continues to return "Stiffness" for the shared dim
     // (preserves materials golden behaviour). The name→dim direction
     // (resolve_dimension_type / resolve_type_name) finds this entry when source
-    // syntax says `TranslationalStiffness`. Mirrors the Curvature/AbsorptionCoeff
-    // alias precedent (task 3603 / GHR-α).
+    // syntax says `TranslationalStiffness`. Follows the alias-row convention of
+    // task 3603 / GHR-α (as the Impulse/Momentum pair below does).
     (DimensionVector::TRANSLATIONAL_STIFFNESS, "TranslationalStiffness"),
     (DimensionVector::ROTATIONAL_STIFFNESS, "RotationalStiffness"),
     // Added as an alias row by task η, when Torque shared a vector with
@@ -642,13 +678,11 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::ROTATIONAL_DAMPING, "RotationalDamping"),
     (DimensionVector::TRANSLATIONAL_DAMPING, "TranslationalDamping"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
-    // Task 3603 / GHR-α: `Curvature` is dimensionally identical to
-    // `AbsorptionCoeff` (both `1/Length`). The entry is placed AFTER
-    // `AbsorptionCoeff` so the first-match linear scan in `canonical_name`
-    // continues to return `"AbsorptionCoeff"` for the shared dim (preserves
-    // existing `materials_optical` golden behavior). The name→dim direction
-    // (`resolve_dimension_type`) finds this entry directly when source syntax
-    // says `Curvature`.
+    // Added by task 3603 / GHR-α as an alias row, when Curvature shared 1/Length
+    // with AbsorptionCoeff and this row's position decided which name
+    // canonical_name() reported. Task #6179 re-dimensioned curvature to rad·m⁻¹,
+    // so Curvature is now the sole holder of that vector and the position is no
+    // longer load-bearing. See the `DimensionVector::CURVATURE` docs.
     (DimensionVector::CURVATURE, "Curvature"),
     (DimensionVector::FRACTURE_TOUGHNESS, "FractureToughness"),
     // Task 4548 / stdlib placeholder registry B: `Impulse` (N·s = momentum =
@@ -657,8 +691,8 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // first-match scan in `canonical_name` returns "Impulse" for the shared
     // dim (Impulse is the only current consumer). The name→dim direction
     // (resolve_dimension_type / resolve_type_name) finds the "Momentum" entry
-    // when source syntax says `Momentum`. Mirrors the Curvature/AbsorptionCoeff
-    // and TranslationalStiffness/Stiffness alias precedent.
+    // when source syntax says `Momentum`. Mirrors the TranslationalStiffness/
+    // Stiffness alias precedent (task 3603 / GHR-α convention).
     (DimensionVector::IMPULSE, "Impulse"),
     (DimensionVector::IMPULSE, "Momentum"),
 ];
@@ -1158,12 +1192,12 @@ mod tests {
     /// updating `NAMED_DIMENSIONS`; this test and both consuming functions automatically stay in
     /// sync.
     ///
-    /// Refactored for task 3603 / GHR-α to admit dim aliases (e.g. `Curvature`
-    /// and `AbsorptionCoeff` both map to `1/Length`). The strict per-row
+    /// Refactored for task 3603 / GHR-α to admit dim aliases (e.g. `Stiffness`
+    /// and `TranslationalStiffness` both map to N/m). The strict per-row
     /// `canonical_name == Some(expected_name)` assertion is replaced by
     /// "canonical_name returns some name registered for that dim"; the
     /// first-match scan-order property is verified separately by the
-    /// `materials_optical` golden tests.
+    /// per-alias-pair tests (e.g. `impulse_and_momentum_are_registered_as_dimension_aliases`).
     #[test]
     fn canonical_name_covers_all_named_singletons() {
         for &(dim, _) in super::NAMED_DIMENSIONS {
@@ -1186,6 +1220,54 @@ mod tests {
         }
         // DIMENSIONLESS is intentionally not named (self-explanatory to users).
         assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
+    }
+
+    // --- diagnostic label tests ---
+
+    /// Dimension form: no " Scalar" suffix; an unnamed dimension prints its
+    /// `Display` exponents. Deliberately different from the scalar form below.
+    #[test]
+    fn diagnostic_dimension_label_names_the_dimension() {
+        let cases = [
+            (
+                "DIMENSIONLESS",
+                DimensionVector::DIMENSIONLESS,
+                "dimensionless",
+            ),
+            ("LENGTH", DimensionVector::LENGTH, "Length"),
+            ("MASS", DimensionVector::MASS, "Mass"),
+            (
+                "MONEY/MASS",
+                DimensionVector::MONEY.div(&DimensionVector::MASS),
+                "USD\u{00B7}kg^-1",
+            ),
+        ];
+        for (label, dim, expected) in cases {
+            assert_eq!(dim.diagnostic_dimension_label(), expected, "{label}");
+        }
+    }
+
+    /// Scalar form: " Scalar" suffix; an unnamed dimension is the generic
+    /// "dimensioned". Deliberately different from the dimension form above.
+    #[test]
+    fn diagnostic_scalar_label_names_a_scalar_value_of_the_dimension() {
+        let cases = [
+            (
+                "DIMENSIONLESS",
+                DimensionVector::DIMENSIONLESS,
+                "dimensionless Scalar",
+            ),
+            ("LENGTH", DimensionVector::LENGTH, "Length Scalar"),
+            ("MASS", DimensionVector::MASS, "Mass Scalar"),
+            (
+                "MONEY/MASS",
+                DimensionVector::MONEY.div(&DimensionVector::MASS),
+                "dimensioned Scalar",
+            ),
+        ];
+        for (label, dim, expected) in cases {
+            assert_eq!(dim.diagnostic_scalar_label(), expected, "{label}");
+        }
     }
 
     #[test]
@@ -1324,8 +1406,7 @@ mod tests {
         // map to IMPULSE in NAMED_DIMENSIONS. "Impulse" is canonical (placed
         // first); "Momentum" is the dimension-alias (placed after), so the
         // first-match scan in canonical_name() returns "Impulse". Mirrors the
-        // Curvature/AbsorptionCoeff and TranslationalStiffness/Stiffness
-        // alias precedent.
+        // TranslationalStiffness/Stiffness alias precedent.
         let impulse_registered = NAMED_DIMENSIONS
             .iter()
             .any(|(dim, name)| *name == "Impulse" && *dim == DimensionVector::IMPULSE);
@@ -1368,8 +1449,8 @@ mod tests {
     ///     table by name finds the row's own dim.
     /// (c) For every entry, `dim.canonical_name()` returns SOME name that is
     ///     itself a registered entry's name for that dim. When multiple entries
-    ///     share the same dim (e.g. `ABSORPTION_COEFF` and `CURVATURE` are both
-    ///     `1/Length`), `canonical_name` returns the first one in scan order —
+    ///     share the same dim (e.g. `STIFFNESS` and `TRANSLATIONAL_STIFFNESS` are
+    ///     both N/m), `canonical_name` returns the first one in scan order —
     ///     this test accepts ANY registered name for the dim, not the row's own
     ///     name, so dim-aliasing is permitted.
     /// (d) All entry names are unique (no two rows register the same name).
@@ -1377,7 +1458,7 @@ mod tests {
     ///
     /// Refactored for task 3603 / GHR-α: the original per-row
     /// `assert_eq!(dim.canonical_name(), Some(expected_name))` could not admit
-    /// dimension aliases (Curvature and AbsorptionCoeff share `1/Length`). The
+    /// dimension aliases (Stiffness and TranslationalStiffness share N/m). The
     /// new three-part check preserves the consistency contract while allowing
     /// aliases.
     #[test]
@@ -1916,33 +1997,39 @@ mod tests {
         );
     }
 
-    /// CURVATURE is 1/Length — dimensionally identical to ABSORPTION_COEFF.
-    /// Pin the Length-slot exponent to Rational(-1, 1) and confirm all other
-    /// slots are Rational::ZERO. Added for task 3603 / GHR-α (PRD §8 Phase 1)
-    /// so the stdlib geometry-query registration `curvature → Scalar<Curvature>`
-    /// has a well-defined dimensional alias.
+    /// CURVATURE is rad·m⁻¹ (κ = dθ/ds), the sole holder of its vector.
+    /// See docs/prds/v0_6/angle-dimension-completion.md D1.
     #[test]
-    fn curvature_constant_is_length_inverse() {
-        // 1/m = reciprocal of LENGTH — matches ABSORPTION_COEFF by construction.
+    fn curvature_constant_is_angle_per_length() {
+        let curvature = DimensionVector::CURVATURE;
         assert_eq!(
-            DimensionVector::CURVATURE,
-            DimensionVector::from_exps(&[(0, -1)])
+            curvature,
+            DimensionVector::ANGLE.div(&DimensionVector::LENGTH)
         );
-        // Length slot is exactly Rational(-1, 1).
+        assert_eq!(curvature, DimensionVector::from_exps(&[(0, -1), (7, 1)]));
         assert_eq!(
-            DimensionVector::CURVATURE.0[0],
+            curvature.0[0],
             Rational::new(-1, 1),
-            "Curvature Length slot should be Rational(-1, 1)"
+            "Curvature Length slot 0 should be Rational(-1, 1)"
         );
-        // All other slots are Rational::ZERO.
-        for i in 1..10 {
+        assert_eq!(
+            curvature.0[7],
+            Rational::ONE,
+            "Curvature Angle slot 7 should be Rational::ONE"
+        );
+        for i in (1..=6).chain(8..=9) {
             assert_eq!(
-                DimensionVector::CURVATURE.0[i],
+                curvature.0[i],
                 Rational::ZERO,
                 "Curvature slot {} should be Rational::ZERO",
                 i
             );
         }
+        assert_ne!(curvature, DimensionVector::ABSORPTION_COEFF);
+        assert_eq!(curvature.canonical_name(), Some("Curvature"));
+        let (value, label) = curvature.to_display_units(200.0);
+        assert_eq!(value.to_bits(), 200.0f64.to_bits());
+        assert_eq!(label, "rad·m^-1");
     }
 
     // ─── Step-1 (task 3849): flexure dimensioned-type const existence + exponents ──

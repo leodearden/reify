@@ -57,8 +57,6 @@ use reify_core::{DiagnosticCode, ModulePath};
 /// caller-side defence-in-depth, scoped to `reify-lsp`'s three production
 /// entry points only — [`crate::diagnostics::eval_guard::compiled_graph_has_unrepresentable_cell`]
 /// skips the eval/check pass when the graph would carry such a cell.
-/// `crates/reify-cli/src/mcp_context.rs`'s three ungated `engine.eval` sites
-/// remain #6851's to fix.
 ///
 /// **It IS test-pinned here** — the guard is exactly what makes a test that
 /// reaches the hazard possible without itself panicking. See

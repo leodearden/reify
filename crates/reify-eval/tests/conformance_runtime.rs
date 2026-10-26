@@ -49,7 +49,7 @@ fn engine_with_mock_kernel(reply: bool) -> Engine {
     let kernel =
         MockGeometryKernel::new().with_query_result(GeometryHandleId(1), Value::Bool(reply));
     let checker = reify_constraints::SimpleConstraintChecker;
-    Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Step-11 (RED): a `let watertight = is_watertight(body)` cell on a
@@ -234,7 +234,7 @@ fn watertight_user_assertion_short_circuits_kernel_query() {
     let kernel = CountingMockKernel::new(inner);
     let counts = kernel.counts();
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
@@ -339,7 +339,7 @@ fn tessellate_realizations_honours_user_assertion_escape_hatch() {
     let kernel = CountingMockKernel::new(inner);
     let counts = kernel.counts();
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_realizations(&compiled);
 
@@ -391,7 +391,7 @@ fn box_is_watertight_manifold_orientable_via_occt() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 

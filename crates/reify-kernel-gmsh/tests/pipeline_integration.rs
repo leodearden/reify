@@ -19,7 +19,7 @@ use reify_kernel_gmsh::mesh_volume::{
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
 use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 
 // ---------------------------------------------------------------------------
 // Helpers shared across multiple tests in this file

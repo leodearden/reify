@@ -1,0 +1,27 @@
+module s5_tensegrity_load_surface
+
+// PRD evidence (docs/prds/v0_6/analysis-stratum.md, leaf ι): the declared .ri
+// surface for solver::tensegrity_load, spelled with probe names so it cannot
+// collide with the stdlib declaration ι adds. Existing grammar only: a
+// `structure def` and an `@optimized` pub fn with a structure-typed return.
+// `reify check` must exit 0 (the declaration shape compiles at main).
+
+structure def TensegrityLoadResultProbe {
+    param displacements       : List<Vector3<Length>>
+    param member_forces       : List<Force>
+    param member_force_deltas : List<Force>
+    param slack               : List<Bool>
+    param converged           : Bool
+}
+
+@optimized("solver::tensegrity_load")
+pub fn tensegrity_load_probe(
+    structure      : Tensegrity,
+    prestress      : List<Force>,
+    youngs_modulus : Pressure,
+    area           : Area,
+    loads          : List<Vector3<Force>>,
+    supports       : List<Int>
+) -> TensegrityLoadResultProbe {
+    TensegrityLoadResultProbe()
+}

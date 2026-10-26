@@ -48,8 +48,8 @@ Named in-crate consumers whose call sites this PRD repoints (all real code, re-d
 
 | Call site | Symbol | Note |
 |---|---|---|
-| `gui/src-tauri/src/claude_bridge.rs:766` | `debug_server::resolve_debug_port` | inside a `#[cfg(feature = "gui")]` block — the cfg there is *behavioural* (only inject `REIFY_DEBUG_PORT` when a debug server can exist). It currently does double duty as symbol availability; after the move it is purely behavioural. **Behaviour must not change.** |
-| `gui/src-tauri/src/claude_bridge.rs:1189` | `debug_server::resolve_debug_port` | test-side |
+| `gui/src-tauri/src/claude_bridge.rs:766` | `debug_server::resolve_debug_port` | inside a `#[cfg(feature = "gui")]` block — the cfg there is *behavioural* (only inject `REIFY_DEBUG_PORT` when a debug server can exist). It currently does double duty as symbol availability; after the move it is purely behavioural. **Behaviour must not change.** *Removed by #7816: `compute_sidecar_env` no longer reads the port (it takes the live endpoint URL), so this row needs no repoint.* |
+| `gui/src-tauri/src/claude_bridge.rs:1189` | `debug_server::resolve_debug_port` | test-side. *Removed by #7816 with the row above; #6964's move has these two fewer repoints.* |
 | `gui/src-tauri/src/main.rs:945-946` | `debug_server::{debug_endpoint_url, resolve_debug_port}` | `main.rs` is `required-features = ["gui"]`, so this is gated regardless |
 | `large_stack.rs:14,187` · `path_key.rs:30,35` · `commands.rs:176,311,403,543` | intra-doc `[crate::debug_server::…]` links | four of these name items that move (`run_on_engine`, `open_source_into_engine_and_refresh_baseline`); repoint them so rustdoc links resolve |
 

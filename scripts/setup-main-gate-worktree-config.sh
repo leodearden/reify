@@ -16,12 +16,17 @@
 #   target_dir  Optional path to the git worktree root to configure.
 #               Defaults to the repo root (one level up from this script).
 #
-# Idempotent: safe to run multiple times.  Exits 0 on success, non-zero on error.
+# Idempotent and write-free when both values are already in place, so
+# lane-cadence callers take no config lock in the steady state.  Exits 0 on
+# success, non-zero on error.
 # All diagnostics go to stderr; nothing is written to stdout.
+#
+# What the pin is, its canonical value, and how to read it back:
+# scripts/lib_worktree_hooks_pin.sh (shared with scripts/hooks-armed-guard.sh).
 #
 # Order matters:
 #   1. Enable extensions.worktreeConfig  (MUST come first)
-#   2. Write config.worktree core.hooksPath = hooks
+#   2. Write config.worktree core.hooksPath = the canonical pin
 #
 # If extensions.worktreeConfig is NOT enabled first, `git config --worktree` is
 # identical to `--local` and writes to the shared .git/config — the exact file
@@ -32,6 +37,8 @@ set -euo pipefail
 # ── resolve target dir ────────────────────────────────────────────────────────
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib_worktree_hooks_pin.sh
+. "$_SCRIPT_DIR/lib_worktree_hooks_pin.sh"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     echo "Usage: $(basename "$0") [target_dir]" >&2
@@ -87,11 +94,14 @@ fi
 # Must be done BEFORE the --worktree write so the write lands in config.worktree
 # rather than aliasing to --local (shared .git/config).
 
-git -C "$TARGET" config extensions.worktreeConfig true
+if ! worktree_config_enabled "$TARGET"; then
+    git -C "$TARGET" config extensions.worktreeConfig true
+fi
 
 # ── step 2: seed per-worktree core.hooksPath ─────────────────────────────────
-# Uses the relative value 'hooks' (resolves to <worktree_root>/hooks/) to match
-# dark-factory's existing create_worktree write and to stay independent of fix (A)'s
-# .git/hooks -> ../hooks symlink.
+# The relative canonical pin stays independent of fix (A)'s .git/hooks -> ../hooks
+# symlink.
 
-git -C "$TARGET" config --worktree core.hooksPath hooks
+if [ "$(worktree_hooks_pin "$TARGET")" != "$WORKTREE_HOOKS_PIN" ]; then
+    git -C "$TARGET" config --worktree core.hooksPath "$WORKTREE_HOOKS_PIN"
+fi

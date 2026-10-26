@@ -1,139 +1,22 @@
 //! `reify dev` subcommand group (GR-038 ε integration gate).
 //!
 //! Provides `reify dev inspect-node <node-id>`, which prints a node's
-//! kind, declared traits, derived priority, derived policy, and active
-//! instance/type overrides by routing through the α/β/γ/δ chain end-to-end.
+//! kind, declared traits, derived priority, derived policy, and the
+//! instance/type override slots (always `(none)` today; see
+//! `render_inspection`) by routing through the α/β/γ/δ chain end-to-end.
+//! `<node-id>` is the id printed on the output's `node:` line (the node's
+//! Display form), so an inspected id can be pasted straight back in.
 
 use std::process::ExitCode;
 
-use reify_core::{
-    ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId,
-};
+use reify_core::identity::IndexedNodeKind;
 use reify_eval::cache::NodeId;
 use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
 use reify_runtime::commitment::{NodeCommitmentOverride, NodePolicyOverrides};
 use reify_runtime::{traits_to_priority, Priority};
 
-/// Parse a `Kind(inner)` node-id string into a [`NodeId`].
-///
-/// Accepted grammar:
-/// - `Value(Entity.member)` — exactly one `.`, non-empty entity and member
-/// - `Compute(Entity)` or `Compute(Entity[index])` — optional `[u32]` suffix, index defaults to 0
-/// - `Constraint(...)`, `Realization(...)`, `Resolution(...)` — same as Compute
-///
-/// Returns `Err(String)` with a user-facing message for every malformed form.
-pub fn parse_node_id(s: &str) -> Result<NodeId, String> {
-    // Grammar: Kind(inner)
-    // Split at the first '(' and require a trailing ')'.
-    let (kind_str, rest) = s
-        .split_once('(')
-        .ok_or_else(|| format!("invalid node-id {:?}: expected 'Kind(inner)' form", s))?;
-
-    let inner = rest
-        .strip_suffix(')')
-        .ok_or_else(|| format!("invalid node-id {:?}: missing closing ')'", s))?;
-
-    match kind_str {
-        "Value" => {
-            // Value(Entity.member) — exactly one '.', non-empty halves.
-            let (entity, member) = inner.split_once('.').ok_or_else(|| {
-                format!(
-                    "invalid Value node-id {:?}: expected 'Value(Entity.member)'",
-                    s
-                )
-            })?;
-            if entity.is_empty() || member.is_empty() {
-                return Err(format!(
-                    "invalid Value node-id {:?}: entity and member must be non-empty",
-                    s
-                ));
-            }
-            // Reject multiple dots in the member part.
-            if member.contains('.') {
-                return Err(format!(
-                    "invalid Value node-id {:?}: only one '.' separator allowed",
-                    s
-                ));
-            }
-            Ok(NodeId::Value(ValueCellId::new(entity, member)))
-        }
-        "Compute" => {
-            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
-            Ok(NodeId::Compute(ComputeNodeId::new(entity, index)))
-        }
-        "Constraint" => {
-            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
-            Ok(NodeId::Constraint(ConstraintNodeId::new(entity, index)))
-        }
-        "Realization" => {
-            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
-            Ok(NodeId::Realization(RealizationNodeId::new(entity, index)))
-        }
-        "Resolution" => {
-            let (entity, index) = parse_entity_with_optional_index(s, inner)?;
-            Ok(NodeId::Resolution(ResolutionNodeId::new(entity, index)))
-        }
-        other => Err(format!(
-            "unknown node kind {:?}: expected one of Value, Compute, Constraint, Realization, Resolution",
-            other
-        )),
-    }
-}
-
-/// Parse `entity` or `entity[index]` from the inner part of a node-id.
-///
-/// Returns `(entity_str, index)`. Index defaults to 0 when the `[n]` suffix is absent.
-fn parse_entity_with_optional_index<'a>(
-    full: &str,
-    inner: &'a str,
-) -> Result<(&'a str, u32), String> {
-    if inner.is_empty() {
-        return Err(format!(
-            "invalid node-id {:?}: entity name must be non-empty",
-            full
-        ));
-    }
-    if let Some((entity, idx_str)) = inner.split_once('[') {
-        // Expect idx_str to end with ']'.
-        let idx_str = idx_str.strip_suffix(']').ok_or_else(|| {
-            format!(
-                "invalid node-id {:?}: index bracket '[' opened but ']' not found",
-                full
-            )
-        })?;
-        if entity.is_empty() {
-            return Err(format!(
-                "invalid node-id {:?}: entity name must be non-empty",
-                full
-            ));
-        }
-        for ch in [']', '(', ')'] {
-            if entity.contains(ch) {
-                return Err(format!(
-                    "invalid node-id {:?}: entity name contains invalid character '{}'",
-                    full, ch
-                ));
-            }
-        }
-        let index = idx_str.parse::<u32>().map_err(|_| {
-            format!(
-                "invalid node-id {:?}: index {:?} is not a valid u32",
-                full, idx_str
-            )
-        })?;
-        Ok((entity, index))
-    } else {
-        for ch in [']', '(', ')'] {
-            if inner.contains(ch) {
-                return Err(format!(
-                    "invalid node-id {:?}: entity name contains invalid character '{}'",
-                    full, ch
-                ));
-            }
-        }
-        Ok((inner, 0))
-    }
-}
+/// The node id the usage hint offers as an example.
+const EXAMPLE_NODE_ID: &str = "Bracket#computation[0]";
 
 /// Format [`NodeTraits`] as a human-readable string for CLI output.
 ///
@@ -179,11 +62,10 @@ pub fn render_inspection(node_id: &NodeId) -> String {
     let policy_overrides = NodePolicyOverrides::new();
     let policy: NodeCommitmentOverride = policy_overrides.resolve_with_traits(node_id, traits);
 
-    // Instance and type override slots — intentionally pinned to "(none)".
-    // With NodePolicyOverrides::new() both instance_overrides and type_overrides
-    // maps are empty, so no real override can be reported even if one existed.
-    // These should be derived from the override maps once config-file override
-    // support (GR-007) populates NodePolicyOverrides with per-node entries.
+    // Instance and type override slots — pinned to "(none)". inspect-node never
+    // loads reify.toml and no production path populates NodePolicyOverrides, so
+    // both maps are always empty. `policy` above is the kind+traits default; no
+    // scheduler applies it. Status: docs/notes/reify-toml-schema.md.
     let instance_override = "(none)";
     let type_override = "(none)";
 
@@ -199,17 +81,29 @@ pub fn render_inspection(node_id: &NodeId) -> String {
     )
 }
 
+/// Print the `inspect-node` usage, naming every accepted `<node-id>` form.
+fn print_inspect_node_usage() {
+    let indexed_forms =
+        IndexedNodeKind::ALL.map(|kind| format!("<entity>#{}[<index>]", kind.marker()));
+    eprintln!("Usage: reify dev inspect-node <node-id>");
+    eprintln!(
+        "  <node-id>: <entity>.<member> | {}",
+        indexed_forms.join(" | ")
+    );
+    eprintln!("  e.g.: reify dev inspect-node '{EXAMPLE_NODE_ID}'");
+}
+
 /// Entry point for `reify dev <subcommand> [args...]`.
 pub fn cmd_dev(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("inspect-node") => cmd_inspect_node(&args[1..]),
         Some(other) => {
             eprintln!("Unknown dev subcommand: {}", other);
-            eprintln!("Usage: reify dev inspect-node <node-id>");
+            print_inspect_node_usage();
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("Usage: reify dev inspect-node <node-id>");
+            print_inspect_node_usage();
             ExitCode::FAILURE
         }
     }
@@ -220,25 +114,23 @@ fn cmd_inspect_node(args: &[String]) -> ExitCode {
     let node_id_str = match args.first() {
         Some(s) => s,
         None => {
-            eprintln!("Usage: reify dev inspect-node <node-id>");
-            eprintln!("  e.g.: reify dev inspect-node Compute(foo)");
+            print_inspect_node_usage();
             return ExitCode::FAILURE;
         }
     };
     if args.len() > 1 {
         eprintln!("error: unexpected extra arguments after <node-id>");
-        eprintln!("Usage: reify dev inspect-node <node-id>");
+        print_inspect_node_usage();
         return ExitCode::FAILURE;
     }
-    match parse_node_id(node_id_str) {
+    match node_id_str.parse::<NodeId>() {
         Ok(node_id) => {
             println!("{}", render_inspection(&node_id));
             ExitCode::SUCCESS
         }
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            eprintln!("Usage: reify dev inspect-node <node-id>");
-            eprintln!("  e.g.: reify dev inspect-node Compute(foo)");
+        Err(e) => {
+            eprintln!("error: invalid node id {node_id_str:?}: {e}");
+            print_inspect_node_usage();
             ExitCode::FAILURE
         }
     }
@@ -247,16 +139,20 @@ fn cmd_inspect_node(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::{
-        ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId,
-    };
-    use reify_eval::cache::NodeId;
+    use reify_core::{ComputeNodeId, ConstraintNodeId, ValueCellId};
+
+    #[test]
+    fn usage_example_node_id_is_accepted() {
+        if let Err(e) = EXAMPLE_NODE_ID.parse::<NodeId>() {
+            panic!("the usage example {EXAMPLE_NODE_ID:?} must be a valid node id: {e}");
+        }
+    }
 
     // ── render_inspection (step-5 RED) ───────────────────────────────────────
 
     #[test]
     fn render_compute_foo() {
-        let node_id = parse_node_id("Compute(foo)").unwrap();
+        let node_id = NodeId::Compute(ComputeNodeId::new("foo", 0));
         let out = render_inspection(&node_id);
         assert!(out.contains("kind: Compute"), "missing 'kind: Compute' in:\n{out}");
         assert!(
@@ -283,7 +179,7 @@ mod tests {
 
     #[test]
     fn render_value_b_w() {
-        let node_id = parse_node_id("Value(B.w)").unwrap();
+        let node_id = NodeId::Value(ValueCellId::new("B", "w"));
         let out = render_inspection(&node_id);
         assert!(out.contains("kind: Value"), "missing 'kind: Value' in:\n{out}");
         assert!(
@@ -302,7 +198,7 @@ mod tests {
 
     #[test]
     fn render_constraint_a() {
-        let node_id = parse_node_id("Constraint(A)").unwrap();
+        let node_id = NodeId::Constraint(ConstraintNodeId::new("A", 0));
         let out = render_inspection(&node_id);
         assert!(
             out.contains("declared traits: (none)"),
@@ -348,89 +244,5 @@ mod tests {
             format_node_traits(all),
             "IMMEDIATE | WARM_STARTABLE | PROGRESSIVE | COMMITTABLE"
         );
-    }
-
-    // ── parse_node_id (step-1 RED) ────────────────────────────────────────────
-
-    #[test]
-    fn parse_compute_no_index() {
-        let result = parse_node_id("Compute(foo)");
-        assert_eq!(result, Ok(NodeId::Compute(ComputeNodeId::new("foo", 0))));
-    }
-
-    #[test]
-    fn parse_compute_with_index() {
-        let result = parse_node_id("Compute(foo[3])");
-        assert_eq!(result, Ok(NodeId::Compute(ComputeNodeId::new("foo", 3))));
-    }
-
-    #[test]
-    fn parse_value() {
-        let result = parse_node_id("Value(Bracket.width)");
-        assert_eq!(
-            result,
-            Ok(NodeId::Value(ValueCellId::new("Bracket", "width")))
-        );
-    }
-
-    #[test]
-    fn parse_constraint_with_index() {
-        let result = parse_node_id("Constraint(A[2])");
-        assert_eq!(
-            result,
-            Ok(NodeId::Constraint(ConstraintNodeId::new("A", 2)))
-        );
-    }
-
-    #[test]
-    fn parse_realization_no_index() {
-        let result = parse_node_id("Realization(R)");
-        assert_eq!(
-            result,
-            Ok(NodeId::Realization(RealizationNodeId::new("R", 0)))
-        );
-    }
-
-    #[test]
-    fn parse_resolution_no_index() {
-        let result = parse_node_id("Resolution(S)");
-        assert_eq!(
-            result,
-            Ok(NodeId::Resolution(ResolutionNodeId::new("S", 0)))
-        );
-    }
-
-    // Error cases ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_bare_word_is_err() {
-        assert!(parse_node_id("foo").is_err());
-    }
-
-    #[test]
-    fn parse_unknown_kind_is_err() {
-        assert!(parse_node_id("Bogus(x)").is_err());
-    }
-
-    #[test]
-    fn parse_value_no_dot_is_err() {
-        assert!(parse_node_id("Value(no_dot)").is_err());
-    }
-
-    #[test]
-    fn parse_empty_inner_is_err() {
-        assert!(parse_node_id("Compute()").is_err());
-    }
-
-    #[test]
-    fn parse_entity_with_stray_closing_bracket_is_err() {
-        // "foo]" as entity is not a valid grammar — stray ']' with no opener.
-        assert!(parse_node_id("Compute(foo])").is_err());
-    }
-
-    #[test]
-    fn parse_entity_with_parens_is_err() {
-        // Extra parens in the entity portion should be rejected.
-        assert!(parse_node_id("Compute((foo))").is_err());
     }
 }

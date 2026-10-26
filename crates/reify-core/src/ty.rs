@@ -242,13 +242,7 @@
 //! That is the same bounded-cost class as the `Point` arm's tolerance of a
 //! scalar-family arg (any `Type::Scalar { .. }`, dimensioned or not, plus `Int`
 //! and `ScalarParam` — not a bare literal alone), and it is accepted for the
-//! same reason.  Task 5848 has since
-//! LANDED and retyped the direction fields this paragraph used to name —
-//! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
-//! `Vec3<Dimensionless>` today — but the residual is structural, not a property
-//! of those sites, and `ports_mechanical.ri`'s `RotaryPort.axis` /
-//! `LinearPort.axis` (`Vector3<Length>`) are surviving instances.  Retyping what remains is a stdlib type-vocabulary
-//! ruling of its own and is deliberately not folded in here.  Pinned by
+//! same reason.  Pinned by
 //! `vector_param_accepts_dimensionless_vector_arg` (`conformance/mod.rs`) and
 //! `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 //! (`struct_ctor_field_conformance_tests.rs`).
@@ -644,6 +638,10 @@ pub enum Type {
     Projection { base: Box<Type>, member: String },
 }
 
+/// Reserved `TypeParam` name prefix of an R1 unbound placeholder. Private:
+/// only `Type::unbound_placeholder` / `Type::is_unbound_placeholder` spell it.
+const UNBOUND_TYPE_ARG_PREFIX: &str = "__unbound_";
+
 impl Type {
     /// Shorthand for a length scalar.
     pub fn length() -> Self {
@@ -799,6 +797,16 @@ impl Type {
         }
     }
 
+    /// The static type of a generic-enum type argument that neither the
+    /// payload nor an annotation determined (R1 placeholder; ruling:
+    /// docs/prds/v0_6/generic-enum-type-arg-retention.md §6 R1(c)).
+    ///
+    /// It stays a `TypeParam`, and its name is the same at every site for a
+    /// given declared `param`.
+    pub fn unbound_placeholder(param: &str) -> Self {
+        Type::TypeParam(format!("{UNBOUND_TYPE_ARG_PREFIX}{param}"))
+    }
+
     /// Is this type a numeric type (Int, Real, or Scalar)?
     pub fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Scalar { .. })
@@ -862,6 +870,13 @@ impl Type {
     /// from "IS present" to "is NOT present", and update this follow-up section.
     pub fn is_error(&self) -> bool {
         matches!(self, Type::Error)
+    }
+
+    /// Is this an R1 unbound placeholder (see `Type::unbound_placeholder`)?
+    ///
+    /// Top-level only: `Result<Length, ?E>` and `Option<?T>` return `false`.
+    pub fn is_unbound_placeholder(&self) -> bool {
+        matches!(self, Type::TypeParam(name) if name.starts_with(UNBOUND_TYPE_ARG_PREFIX))
     }
 
     /// Returns the inner name for name-carrying variants without allocating.
@@ -2697,5 +2712,40 @@ mod tests {
 
         // (d) Display == "Feature"
         assert_eq!(format!("{}", Type::Feature), "Feature");
+    }
+
+    // ── R1 unbound placeholder (generic-enum-type-arg-retention §6 R1(c)) ────
+
+    #[test]
+    fn unbound_placeholder_is_a_recognisable_type_param() {
+        let e = Type::unbound_placeholder("E");
+
+        // (1) R1(c): it stays a TypeParam, so provisional-binding rules apply.
+        assert!(matches!(e, Type::TypeParam(_)), "got {e:?}");
+        // (2) the predicate recognises it.
+        assert!(e.is_unbound_placeholder());
+
+        // (3) site-independent: no per-site counter in the name or Display.
+        assert_eq!(e, Type::unbound_placeholder("E"));
+        assert_eq!(e.to_string(), Type::unbound_placeholder("E").to_string());
+        assert_ne!(Type::unbound_placeholder("T"), e);
+
+        // (4) negatives — the predicate inspects the top level only.
+        let not_placeholders = [
+            Type::TypeParam("E".into()),
+            Type::TypeParam("__auto_Seal".into()),
+            Type::Int,
+            Type::applied(
+                "Result",
+                vec![Type::length(), Type::unbound_placeholder("E")],
+            ),
+            Type::Option(Box::new(Type::unbound_placeholder("T"))),
+        ];
+        for t in &not_placeholders {
+            assert!(
+                !t.is_unbound_placeholder(),
+                "{t:?} is not an R1 placeholder"
+            );
+        }
     }
 }

@@ -1,0 +1,3544 @@
+{
+  "as_of": "2026-10-10T20:00:00Z",
+  "at_trigger": null,
+  "attribution": {
+    "coarse": [
+      6706,
+      6719,
+      6745,
+      6748,
+      6768,
+      6789,
+      6791,
+      6836,
+      6839,
+      6898,
+      6899,
+      6900,
+      6901,
+      6902,
+      6903,
+      6904,
+      6905,
+      6906,
+      6907,
+      6908,
+      6909,
+      6910,
+      6911,
+      6912,
+      6913
+    ],
+    "standard": [
+      6668,
+      6669,
+      6670,
+      6671,
+      6672,
+      6673,
+      6675,
+      6676,
+      6677,
+      6678,
+      6679,
+      6680,
+      6681,
+      6682,
+      6683,
+      6684,
+      6685,
+      6686,
+      6687,
+      6689,
+      6690,
+      6691,
+      6692,
+      6693,
+      6694,
+      6695,
+      6696,
+      6698,
+      6699,
+      6700,
+      6701,
+      6702,
+      6703,
+      6704,
+      6773,
+      6775,
+      6777,
+      6779,
+      6781,
+      6784,
+      6786,
+      6788,
+      6790,
+      6792,
+      6793,
+      6794,
+      6795,
+      6796,
+      6797,
+      6798,
+      6799,
+      6800,
+      6801,
+      6802,
+      6804,
+      6805,
+      6806,
+      6807,
+      6808
+    ]
+  },
+  "carve_outs": [
+    {
+      "anomalies": [
+        {
+          "detail": "#6758 is done with no task merge",
+          "kind": "done-without-merge"
+        }
+      ],
+      "attempt_starts": [
+        "2026-08-26T21:52:59Z",
+        "2026-08-27T10:51:57Z"
+      ],
+      "attempts_counted": 2,
+      "attempts_drain_censored": 0,
+      "attempts_in_flight": 0,
+      "blocking_escalations": 1,
+      "cost": 53.115741400000005,
+      "landed_at": null,
+      "loc": 0,
+      "merges": [],
+      "status": "done",
+      "task_id": 6758
+    },
+    {
+      "anomalies": [],
+      "attempt_starts": [
+        "2026-08-26T22:00:15Z",
+        "2026-08-27T14:00:25Z",
+        "2026-08-27T20:47:30Z",
+        "2026-08-28T04:29:36Z",
+        "2026-08-28T13:37:59Z",
+        "2026-08-29T03:38:16Z",
+        "2026-08-29T12:45:12Z",
+        "2026-08-30T05:12:05Z",
+        "2026-08-31T15:38:28Z",
+        "2026-08-31T23:30:20Z",
+        "2026-09-03T00:47:27Z",
+        "2026-09-04T18:22:09Z",
+        "2026-09-07T21:39:48Z",
+        "2026-09-12T23:04:29Z",
+        "2026-09-15T18:40:14Z",
+        "2026-09-15T18:44:20Z",
+        "2026-09-20T03:57:34Z",
+        "2026-09-25T18:59:25Z"
+      ],
+      "attempts_counted": 3,
+      "attempts_drain_censored": 15,
+      "attempts_in_flight": 0,
+      "blocking_escalations": 2,
+      "cost": 94.0633712,
+      "landed_at": "2026-09-27T22:44:04Z",
+      "loc": 450,
+      "merges": [
+        {
+          "commit": "3bbf1e3607175a6940a8b1a366c96a09de695684",
+          "deletions": 2,
+          "insertions": 448,
+          "merged_at": "2026-09-27T22:44:04Z",
+          "task_id": 6759
+        }
+      ],
+      "status": "done",
+      "task_id": 6759
+    }
+  ],
+  "current": {
+    "censoring": [
+      {
+        "arm": "coarse",
+        "drain_censored_attempts": 0,
+        "freeze_window_excluded": 2,
+        "right_censored": 23
+      },
+      {
+        "arm": "standard",
+        "drain_censored_attempts": 8,
+        "freeze_window_excluded": 3,
+        "right_censored": 55
+      }
+    ],
+    "descriptives": {
+      "label": "DESCRIPTIVE",
+      "stratum_b": [
+        {
+          "arm": "coarse",
+          "attempts_per_kloc": null,
+          "attempts_per_task": null,
+          "blocking_esc_per_kloc": null,
+          "blocking_esc_per_task": null,
+          "label": "DESCRIPTIVE",
+          "landed_cost": 0,
+          "landed_loc": 0,
+          "landed_scope_share": {
+            "exact": "0",
+            "float": 0.0
+          },
+          "n_freeze_excluded": 1,
+          "n_landed": 0,
+          "n_right_censored": 9,
+          "n_tasks": 10,
+          "prd_slug": "spec-conformance-suite",
+          "unlanded_attempts": 1,
+          "unlanded_blocking_escalations": 0,
+          "usd_per_kloc": null
+        },
+        {
+          "arm": "standard",
+          "attempts_per_kloc": 1.953125,
+          "attempts_per_task": 1.0,
+          "blocking_esc_per_kloc": 0.0,
+          "blocking_esc_per_task": 0.0,
+          "label": "DESCRIPTIVE",
+          "landed_cost": 31.04963445,
+          "landed_loc": 512,
+          "landed_scope_share": {
+            "exact": "1/24",
+            "float": 0.041666666666666664
+          },
+          "n_freeze_excluded": 1,
+          "n_landed": 1,
+          "n_right_censored": 23,
+          "n_tasks": 25,
+          "prd_slug": "driver-contract-implementation",
+          "unlanded_attempts": 1,
+          "unlanded_blocking_escalations": 0,
+          "usd_per_kloc": 60.643817285156246
+        }
+      ],
+      "summaries": [
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "usd_per_kloc",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            60.643817285156246,
+            60.643817285156246
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 60.643817285156246,
+          "metric": "usd_per_kloc",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "attempts_per_task",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            1.0,
+            1.0
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 1.0,
+          "metric": "attempts_per_task",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "attempts_per_kloc",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            1.953125,
+            1.953125
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 1.953125,
+          "metric": "attempts_per_kloc",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "blocking_esc_per_task",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            0.0,
+            0.0
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 0.0,
+          "metric": "blocking_esc_per_task",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "blocking_esc_per_kloc",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            0.0,
+            0.0
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 0.0,
+          "metric": "blocking_esc_per_kloc",
+          "n_prds": 1
+        }
+      ]
+    },
+    "era_split": [
+      {
+        "arm": "coarse",
+        "attempts_per_task": null,
+        "blocking_esc_per_task": null,
+        "era": "pre",
+        "label": "DESCRIPTIVE",
+        "n_tasks": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_task": null,
+        "blocking_esc_per_task": null,
+        "era": "post",
+        "label": "DESCRIPTIVE",
+        "n_tasks": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_task": null,
+        "blocking_esc_per_task": null,
+        "era": "straddle",
+        "label": "DESCRIPTIVE",
+        "n_tasks": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_task": null,
+        "blocking_esc_per_task": null,
+        "era": "pre",
+        "label": "DESCRIPTIVE",
+        "n_tasks": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_task": null,
+        "blocking_esc_per_task": null,
+        "era": "post",
+        "label": "DESCRIPTIVE",
+        "n_tasks": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_task": 1.0,
+        "blocking_esc_per_task": 0.0,
+        "era": "straddle",
+        "label": "DESCRIPTIVE",
+        "n_tasks": 1,
+        "usd_per_kloc": 60.643817285156246
+      }
+    ],
+    "kind": "interim descriptive",
+    "label": "DESCRIPTIVE",
+    "prd_endpoints": [
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 0,
+        "n_landed": 0,
+        "n_right_censored": 4,
+        "n_tasks": 4,
+        "prd_slug": "gui-on-demand-measurement",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 1,
+        "n_landed": 0,
+        "n_right_censored": 5,
+        "n_tasks": 6,
+        "prd_slug": "solution-set-completeness",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 0,
+        "n_landed": 0,
+        "n_right_censored": 5,
+        "n_tasks": 5,
+        "prd_slug": "gui-purpose-surface",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 1,
+        "n_landed": 0,
+        "n_right_censored": 9,
+        "n_tasks": 10,
+        "prd_slug": "spec-conformance-suite",
+        "unlanded_attempts": 1,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 0,
+        "n_landed": 0,
+        "n_right_censored": 15,
+        "n_tasks": 15,
+        "prd_slug": "solver-driver-parity",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 2,
+        "n_landed": 0,
+        "n_right_censored": 17,
+        "n_tasks": 19,
+        "prd_slug": "geometry-algebra-solver-unification",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_kloc": 1.953125,
+        "attempts_per_task": 1.0,
+        "blocking_esc_per_kloc": 0.0,
+        "blocking_esc_per_task": 0.0,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 31.04963445,
+        "landed_loc": 512,
+        "landed_scope_share": {
+          "exact": "1/24",
+          "float": 0.041666666666666664
+        },
+        "n_freeze_excluded": 1,
+        "n_landed": 1,
+        "n_right_censored": 23,
+        "n_tasks": 25,
+        "prd_slug": "driver-contract-implementation",
+        "unlanded_attempts": 1,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": 60.643817285156246
+      }
+    ],
+    "tasks": [
+      {
+        "era": "pre",
+        "excluded": "freeze-window",
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-08-27T10:39:48Z"
+          ],
+          "attempts_counted": 1,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 11.223332000000001,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6668
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6668,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6669
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6669,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6670
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6670,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6671
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6671,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": "straddle",
+        "excluded": "freeze-window",
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-08-26T19:33:36Z",
+            "2026-08-28T19:10:08Z",
+            "2026-08-29T03:42:19Z",
+            "2026-08-29T12:43:16Z",
+            "2026-09-02T01:59:59Z",
+            "2026-09-02T14:26:48Z",
+            "2026-09-03T01:05:15Z",
+            "2026-09-03T09:48:27Z",
+            "2026-09-04T18:27:28Z",
+            "2026-09-10T19:48:21Z",
+            "2026-09-12T10:18:27Z",
+            "2026-09-14T15:13:51Z",
+            "2026-09-17T17:24:27Z"
+          ],
+          "attempts_counted": 3,
+          "attempts_drain_censored": 10,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 2,
+          "cost": 192.72513935,
+          "landed_at": "2026-09-18T23:55:36Z",
+          "loc": 9267,
+          "merges": [
+            {
+              "commit": "11eec02538d778fa5ab0a5223832625c0a2a5f9e",
+              "deletions": 12,
+              "insertions": 9255,
+              "merged_at": "2026-09-18T23:55:36Z",
+              "task_id": 6672
+            }
+          ],
+          "status": "done",
+          "task_id": 6672
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6672,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6673
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6673,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6675
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6675,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6676
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6676,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6677
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6677,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6678
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-28",
+            "note": "esc-5472-2 option 1: owns exact t ~ 3.0 on discrete_mixed.ri",
+            "source": "(c)",
+            "task_id": 6678
+          },
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6678,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6679
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6679,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6680
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6680,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6681
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-10-08",
+            "note": "catalog-membership coordination note (#8355/#8356/#8358)",
+            "source": "(c)",
+            "task_id": 6681
+          },
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6681,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6682
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6682,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6683
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-21",
+            "note": "dependency #6583 -> #5436 (+ #5483); two planner guardrails",
+            "source": "(c)",
+            "task_id": 6683
+          },
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6683,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6684
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6684,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6685
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6685,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6686
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6686,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6687
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6687,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "geometry-algebra-solver-unification",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6689
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6689,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6690
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-10-08",
+            "note": "catalog-membership coordination note plus one warm-path test",
+            "source": "(c)",
+            "task_id": 6690
+          },
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6690,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6691
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6691,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6692
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6692,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6693
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6693,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6694
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6694,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6695
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6695,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6696
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6696,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6698
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6698,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6699
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6699,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6700
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6700,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6701
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6701,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6702
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6702,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6703
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6703,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6704
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6704,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "solver-driver-parity",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": "straddle",
+        "excluded": "freeze-window",
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-08-26T19:54:45Z",
+            "2026-08-30T05:16:49Z",
+            "2026-08-30T13:13:30Z",
+            "2026-09-14T13:15:34Z",
+            "2026-10-04T17:33:50Z"
+          ],
+          "attempts_counted": 2,
+          "attempts_drain_censored": 3,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 53.9926558,
+          "landed_at": "2026-10-05T08:45:38Z",
+          "loc": 1609,
+          "merges": [
+            {
+              "commit": "40f3efae250d9ca4cb505a41fe564c392d93c4f3",
+              "deletions": 12,
+              "insertions": 1597,
+              "merged_at": "2026-10-05T08:45:38Z",
+              "task_id": 6706
+            }
+          ],
+          "status": "done",
+          "task_id": 6706
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6706,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "solution-set-completeness",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6719
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6719,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "solution-set-completeness",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6745
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6745,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "gui-on-demand-measurement",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6748
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6748,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "gui-on-demand-measurement",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": "straddle",
+        "excluded": "freeze-window",
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-08-26T23:33:18Z",
+            "2026-09-15T18:59:26Z",
+            "2026-09-16T19:57:58Z",
+            "2026-09-17T17:36:55Z"
+          ],
+          "attempts_counted": 3,
+          "attempts_drain_censored": 1,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 1,
+          "cost": 26.183291399999998,
+          "landed_at": "2026-09-18T22:46:58Z",
+          "loc": 233,
+          "merges": [
+            {
+              "commit": "6e461313ad399fbd4a255f28d14851cd74e981d0",
+              "deletions": 8,
+              "insertions": 225,
+              "merged_at": "2026-09-18T22:46:58Z",
+              "task_id": 6768
+            }
+          ],
+          "status": "done",
+          "task_id": 6768
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6768,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6773
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6773,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6775
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6775,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6777
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6777,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6779
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6779,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6781
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-11",
+            "note": "esc-6781-1 option A: kernel plus post-geometry fold in reify test",
+            "source": "(c)",
+            "task_id": 6781
+          },
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6781,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6784
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6784,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6786
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6786,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6788
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6788,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6789
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6789,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6790
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6790,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6791
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6791,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6792
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6792,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6793
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6793,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6794
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6794,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": "post",
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-09-12T18:18:45Z"
+          ],
+          "attempts_counted": 1,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 5.9480724999999985,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6795
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6795,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6796
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6796,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6797
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6797,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": "straddle",
+        "excluded": "freeze-window",
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-08-26T23:39:42Z",
+            "2026-08-27T15:05:28Z",
+            "2026-08-28T00:54:56Z",
+            "2026-08-28T06:57:43Z",
+            "2026-08-28T14:02:01Z",
+            "2026-08-28T19:19:50Z",
+            "2026-08-29T03:48:18Z",
+            "2026-08-29T12:48:36Z",
+            "2026-08-30T05:14:19Z",
+            "2026-08-30T13:19:40Z",
+            "2026-08-30T21:51:18Z",
+            "2026-08-31T15:48:06Z",
+            "2026-09-01T08:10:04Z",
+            "2026-09-02T02:03:13Z",
+            "2026-09-02T14:32:27Z",
+            "2026-09-03T09:53:07Z",
+            "2026-09-09T04:56:03Z",
+            "2026-09-10T19:59:05Z"
+          ],
+          "attempts_counted": 2,
+          "attempts_drain_censored": 16,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 107.5817785,
+          "landed_at": "2026-09-12T07:35:09Z",
+          "loc": 2425,
+          "merges": [
+            {
+              "commit": "6adb693d2cb163c21945c591a8b11e0f215ffc60",
+              "deletions": 52,
+              "insertions": 2373,
+              "merged_at": "2026-09-12T07:35:09Z",
+              "task_id": 6798
+            }
+          ],
+          "status": "done",
+          "task_id": 6798
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6798,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6799
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6799,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6800
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6800,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": "straddle",
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-08-28T20:14:10Z",
+            "2026-08-29T04:25:09Z",
+            "2026-08-30T05:40:43Z",
+            "2026-08-30T13:52:00Z",
+            "2026-08-30T22:02:05Z",
+            "2026-09-09T05:16:45Z",
+            "2026-09-15T02:03:10Z",
+            "2026-09-16T09:05:51Z",
+            "2026-09-26T17:22:40Z"
+          ],
+          "attempts_counted": 1,
+          "attempts_drain_censored": 8,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 31.04963445,
+          "landed_at": "2026-09-27T20:10:57Z",
+          "loc": 512,
+          "merges": [
+            {
+              "commit": "659412d920c56093cfa1322290eb65ea8feaf217",
+              "deletions": 229,
+              "insertions": 283,
+              "merged_at": "2026-09-27T20:10:57Z",
+              "task_id": 6801
+            }
+          ],
+          "status": "done",
+          "task_id": 6801
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6801,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6802
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6802,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6804
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6804,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6805
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6805,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6806
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6806,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6807
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": true,
+          "id": 6807,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6808
+        },
+        "task": {
+          "amendment": null,
+          "arm": "standard",
+          "counts_toward_floor": false,
+          "id": 6808,
+          "is_coalesced": false,
+          "is_reused": false,
+          "prd_slug": "driver-contract-implementation",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6836
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6836,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "gui-purpose-surface",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6839
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": false,
+          "id": 6839,
+          "is_coalesced": false,
+          "is_reused": true,
+          "prd_slug": "gui-purpose-surface",
+          "scope_weight": 1
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6898
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-01",
+            "note": "carrier type fixed for the structured measured-value channel",
+            "source": "\u00a710 A5-R",
+            "task_id": 6898
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6898,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "gui-on-demand-measurement",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6899
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-08-28/2026-10-05",
+            "note": "dependency #6666 -> #6963; took #6963's GUI build-before-check half",
+            "source": "(c)",
+            "task_id": 6899
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6899,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "gui-on-demand-measurement",
+          "scope_weight": 4
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6900
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6900,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "solution-set-completeness",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6901
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-28",
+            "note": "esc-5472-2 option 1: maps Partial{InnerSolveUnproven} to a diagnostic",
+            "source": "(c)",
+            "task_id": 6901
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6901,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "solution-set-completeness",
+          "scope_weight": 2
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6902
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-10-08",
+            "note": "catalog-membership coordination note (#8355/#8356/#8358)",
+            "source": "(c)",
+            "task_id": 6902
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6902,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "solution-set-completeness",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6903
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-28",
+            "note": "esc-5472-2 option 1: composes Partial{InnerSolveUnproven}",
+            "source": "(c)",
+            "task_id": 6903
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6903,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "solution-set-completeness",
+          "scope_weight": 2
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6904
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6904,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "gui-purpose-surface",
+          "scope_weight": 2
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6905
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6905,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "gui-purpose-surface",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6906
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6906,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "gui-purpose-surface",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": "post",
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [
+            "2026-10-10T14:15:07Z"
+          ],
+          "attempts_counted": 1,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 12.043541800000002,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6907
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6907,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6908
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-10-10",
+            "note": "writes delta's transitional divergence-baseline rows (esc-6907-3)",
+            "source": "(e)",
+            "task_id": 6908
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6908,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 2
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6909
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-10-10",
+            "note": "writes eta's rows and the SEEDING_MARKER line (esc-6907-3)",
+            "source": "(e)",
+            "task_id": 6909
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6909,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6910
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6910,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6911
+        },
+        "task": {
+          "amendment": {
+            "date": "2026-09-16",
+            "note": "esc-6768-2 option A moved the mnemonic-migration hook into item 2a",
+            "source": "(c)",
+            "task_id": 6911
+          },
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6911,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 2
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6912
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6912,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 3
+        }
+      },
+      {
+        "era": null,
+        "excluded": null,
+        "ledger": {
+          "anomalies": [],
+          "attempt_starts": [],
+          "attempts_counted": 0,
+          "attempts_drain_censored": 0,
+          "attempts_in_flight": 0,
+          "blocking_escalations": 0,
+          "cost": 0,
+          "landed_at": null,
+          "loc": 0,
+          "merges": [],
+          "status": "pending",
+          "task_id": 6913
+        },
+        "task": {
+          "amendment": null,
+          "arm": "coarse",
+          "counts_toward_floor": true,
+          "id": 6913,
+          "is_coalesced": true,
+          "is_reused": false,
+          "prd_slug": "spec-conformance-suite",
+          "scope_weight": 3
+        }
+      }
+    ]
+  },
+  "freeze_window_set": [
+    6668,
+    6672,
+    6706,
+    6768,
+    6798
+  ],
+  "protocol": {
+    "alpha": {
+      "exact": "1/10",
+      "float": 0.1
+    },
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": "72b9c5b08322094677af181a8742a3790c5330da",
+    "drain_window_seconds": 300.0,
+    "freeze_cutoff": "2026-08-28T07:07:00Z",
+    "interval_level": {
+      "exact": "9/10",
+      "float": 0.9
+    },
+    "landing_floor_k": 2
+  },
+  "schema": "e3-endpoints/1",
+  "sensitivity": {
+    "descriptives": {
+      "label": "DESCRIPTIVE",
+      "stratum_b": [
+        {
+          "arm": "coarse",
+          "attempts_per_kloc": null,
+          "attempts_per_task": null,
+          "blocking_esc_per_kloc": null,
+          "blocking_esc_per_task": null,
+          "label": "DESCRIPTIVE",
+          "landed_cost": 0,
+          "landed_loc": 0,
+          "landed_scope_share": {
+            "exact": "0",
+            "float": 0.0
+          },
+          "n_freeze_excluded": 1,
+          "n_landed": 0,
+          "n_right_censored": 6,
+          "n_tasks": 7,
+          "prd_slug": "spec-conformance-suite",
+          "unlanded_attempts": 1,
+          "unlanded_blocking_escalations": 0,
+          "usd_per_kloc": null
+        },
+        {
+          "arm": "standard",
+          "attempts_per_kloc": 1.953125,
+          "attempts_per_task": 1.0,
+          "blocking_esc_per_kloc": 0.0,
+          "blocking_esc_per_task": 0.0,
+          "label": "DESCRIPTIVE",
+          "landed_cost": 31.04963445,
+          "landed_loc": 512,
+          "landed_scope_share": {
+            "exact": "1/23",
+            "float": 0.043478260869565216
+          },
+          "n_freeze_excluded": 1,
+          "n_landed": 1,
+          "n_right_censored": 22,
+          "n_tasks": 24,
+          "prd_slug": "driver-contract-implementation",
+          "unlanded_attempts": 1,
+          "unlanded_blocking_escalations": 0,
+          "usd_per_kloc": 60.643817285156246
+        }
+      ],
+      "summaries": [
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "usd_per_kloc",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            60.643817285156246,
+            60.643817285156246
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 60.643817285156246,
+          "metric": "usd_per_kloc",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "attempts_per_task",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            1.0,
+            1.0
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 1.0,
+          "metric": "attempts_per_task",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "attempts_per_kloc",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            1.953125,
+            1.953125
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 1.953125,
+          "metric": "attempts_per_kloc",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "blocking_esc_per_task",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            0.0,
+            0.0
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 0.0,
+          "metric": "blocking_esc_per_task",
+          "n_prds": 1
+        },
+        {
+          "arm": "coarse",
+          "interval": null,
+          "label": "DESCRIPTIVE",
+          "median": null,
+          "metric": "blocking_esc_per_kloc",
+          "n_prds": 0
+        },
+        {
+          "arm": "standard",
+          "interval": [
+            0.0,
+            0.0
+          ],
+          "label": "DESCRIPTIVE",
+          "median": 0.0,
+          "metric": "blocking_esc_per_kloc",
+          "n_prds": 1
+        }
+      ]
+    },
+    "dropped": [
+      {
+        "date": "2026-09-01",
+        "note": "carrier type fixed for the structured measured-value channel",
+        "source": "\u00a710 A5-R",
+        "task_id": 6898
+      },
+      {
+        "date": "2026-08-28/2026-10-05",
+        "note": "dependency #6666 -> #6963; took #6963's GUI build-before-check half",
+        "source": "(c)",
+        "task_id": 6899
+      },
+      {
+        "date": "2026-09-11",
+        "note": "esc-6781-1 option A: kernel plus post-geometry fold in reify test",
+        "source": "(c)",
+        "task_id": 6781
+      },
+      {
+        "date": "2026-09-16",
+        "note": "esc-6768-2 option A moved the mnemonic-migration hook into item 2a",
+        "source": "(c)",
+        "task_id": 6911
+      },
+      {
+        "date": "2026-09-21",
+        "note": "dependency #6583 -> #5436 (+ #5483); two planner guardrails",
+        "source": "(c)",
+        "task_id": 6683
+      },
+      {
+        "date": "2026-09-28",
+        "note": "esc-5472-2 option 1: maps Partial{InnerSolveUnproven} to a diagnostic",
+        "source": "(c)",
+        "task_id": 6901
+      },
+      {
+        "date": "2026-09-28",
+        "note": "esc-5472-2 option 1: composes Partial{InnerSolveUnproven}",
+        "source": "(c)",
+        "task_id": 6903
+      },
+      {
+        "date": "2026-09-28",
+        "note": "esc-5472-2 option 1: owns exact t ~ 3.0 on discrete_mixed.ri",
+        "source": "(c)",
+        "task_id": 6678
+      },
+      {
+        "date": "2026-10-08",
+        "note": "catalog-membership coordination note (#8355/#8356/#8358)",
+        "source": "(c)",
+        "task_id": 6902
+      },
+      {
+        "date": "2026-10-08",
+        "note": "catalog-membership coordination note (#8355/#8356/#8358)",
+        "source": "(c)",
+        "task_id": 6681
+      },
+      {
+        "date": "2026-10-08",
+        "note": "catalog-membership coordination note plus one warm-path test",
+        "source": "(c)",
+        "task_id": 6690
+      },
+      {
+        "date": "2026-10-10",
+        "note": "writes delta's transitional divergence-baseline rows (esc-6907-3)",
+        "source": "(e)",
+        "task_id": 6908
+      },
+      {
+        "date": "2026-10-10",
+        "note": "writes eta's rows and the SEEDING_MARKER line (esc-6907-3)",
+        "source": "(e)",
+        "task_id": 6909
+      }
+    ],
+    "label": "DESCRIPTIVE",
+    "prd_endpoints": [
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 0,
+        "n_landed": 0,
+        "n_right_censored": 2,
+        "n_tasks": 2,
+        "prd_slug": "gui-on-demand-measurement",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 1,
+        "n_landed": 0,
+        "n_right_censored": 2,
+        "n_tasks": 3,
+        "prd_slug": "solution-set-completeness",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 0,
+        "n_landed": 0,
+        "n_right_censored": 5,
+        "n_tasks": 5,
+        "prd_slug": "gui-purpose-surface",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "coarse",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 1,
+        "n_landed": 0,
+        "n_right_censored": 6,
+        "n_tasks": 7,
+        "prd_slug": "spec-conformance-suite",
+        "unlanded_attempts": 1,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 0,
+        "n_landed": 0,
+        "n_right_censored": 14,
+        "n_tasks": 14,
+        "prd_slug": "solver-driver-parity",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_kloc": null,
+        "attempts_per_task": null,
+        "blocking_esc_per_kloc": null,
+        "blocking_esc_per_task": null,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 0,
+        "landed_loc": 0,
+        "landed_scope_share": {
+          "exact": "0",
+          "float": 0.0
+        },
+        "n_freeze_excluded": 2,
+        "n_landed": 0,
+        "n_right_censored": 14,
+        "n_tasks": 16,
+        "prd_slug": "geometry-algebra-solver-unification",
+        "unlanded_attempts": 0,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": null
+      },
+      {
+        "arm": "standard",
+        "attempts_per_kloc": 1.953125,
+        "attempts_per_task": 1.0,
+        "blocking_esc_per_kloc": 0.0,
+        "blocking_esc_per_task": 0.0,
+        "label": "DESCRIPTIVE",
+        "landed_cost": 31.04963445,
+        "landed_loc": 512,
+        "landed_scope_share": {
+          "exact": "1/23",
+          "float": 0.043478260869565216
+        },
+        "n_freeze_excluded": 1,
+        "n_landed": 1,
+        "n_right_censored": 22,
+        "n_tasks": 24,
+        "prd_slug": "driver-contract-implementation",
+        "unlanded_attempts": 1,
+        "unlanded_blocking_escalations": 0,
+        "usd_per_kloc": 60.643817285156246
+      }
+    ]
+  },
+  "stop_rule_probe": {
+    "per_prd": [
+      {
+        "arm": "coarse",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "gui-on-demand-measurement",
+        "qualifying": []
+      },
+      {
+        "arm": "coarse",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "solution-set-completeness",
+        "qualifying": []
+      },
+      {
+        "arm": "coarse",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "gui-purpose-surface",
+        "qualifying": []
+      },
+      {
+        "arm": "coarse",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "spec-conformance-suite",
+        "qualifying": []
+      },
+      {
+        "arm": "standard",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "solver-driver-parity",
+        "qualifying": []
+      },
+      {
+        "arm": "standard",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "geometry-algebra-solver-unification",
+        "qualifying": []
+      },
+      {
+        "arm": "standard",
+        "floor_instant": null,
+        "floor_met": false,
+        "prd_slug": "driver-contract-implementation",
+        "qualifying": [
+          [
+            6801,
+            "2026-09-27T20:10:57Z"
+          ]
+        ]
+      }
+    ],
+    "rule_i": {
+      "cancelled": [],
+      "instant": null,
+      "last_merge": null,
+      "met": false,
+      "operator_fixed": false
+    },
+    "rule_ii_instant": null,
+    "rule_ii_met": false,
+    "trigger_instant": null
+  },
+  "task_snapshot": {
+    "fetched_at": "2026-10-10T23:26:19Z",
+    "project_root": "/home/leo/src/reify",
+    "source": "fused-memory MCP get_statuses + get_task"
+  },
+  "verdict": {
+    "label": "DESCRIPTIVE",
+    "min_p": null,
+    "reason": "stop rule not met: no trigger instant, no confirmatory look",
+    "rejects_null": null,
+    "split": null,
+    "test": null,
+    "trigger_instant": null
+  }
+}

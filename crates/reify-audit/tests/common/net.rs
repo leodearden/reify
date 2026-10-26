@@ -7,8 +7,8 @@
 //! was minted*, which leaves a time-of-check/time-of-use window: anything
 //! that binds an ephemeral port in the meantime can be handed the very port
 //! the URL names. Inside this test suite the recycler is real — the mock MCP
-//! server in `cli.rs` binds `127.0.0.1:0` — and when it landed on a recycled
-//! port it answered `initialize` happily, so the binary's fail-soft
+//! server in `common::mcp_mock` binds `127.0.0.1:0` — and when it landed on a
+//! recycled port it answered `initialize` happily, so the binary's fail-soft
 //! "jcodemunch unreachable" breadcrumb never fired and the assertion on it
 //! failed. That was the #5830 flake.
 //!
@@ -31,25 +31,9 @@
 //! Refusal is also immediate, so this sentinel is strictly faster than the
 //! idiom it replaces.
 //!
-//! ## Deliberately out of scope here
-//!
-//! `JcodemunchClient::initialize` (`src/jcodemunch_client.rs`) does not
-//! validate the *body* of the `initialize` response. Since #6106 it does
-//! require the server to assign a session — a response with no
-//! `Mcp-Session-Id` header is rejected — so the residual hole is narrower
-//! than it was: a response that DOES carry a session id but whose body is a
-//! 202, empty, or valid-JSON-that-is-not-an-initialize-result is still
-//! accepted as a successful handshake.
-//!
-//! That residual is a real but *separate* fail-soft hole, and it is not what
-//! caused the #5830 flake: the in-suite recycler (`spawn_mock_mcp` in
-//! `cli.rs`) answers `initialize` with a fully well-formed JSON-RPC result
-//! carrying `protocolVersion`, `capabilities` and `serverInfo` — and now a
-//! session id too — which any realistic response validation would accept, so
-//! hardening the handshake would have left the flake untouched. Task #5832
-//! tracks that hardening; it needs live-wire verification against a running
-//! jcodemunch serve, which is a different verification budget from this
-//! test-only de-flake.
+//! The separate hole of accepting a session-assigning `initialize` reply whose
+//! body is not an MCP `InitializeResult` was closed by #5832
+//! (`src/mcp_handshake.rs`, pinned by `tests/mcp_handshake.rs`).
 //!
 //! Per the `common` partial-consumer contract, every item here carries
 //! `#[allow(dead_code)]` so a test binary may consume only a subset.

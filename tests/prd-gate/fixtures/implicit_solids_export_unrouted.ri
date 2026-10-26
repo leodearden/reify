@@ -1,0 +1,7 @@
+// B21: declarative STLOutput / STEPOutput on an implicit body (E_IMPLICIT_EXPORT_UNROUTED / E_IMPLICIT_NO_BREP).
+structure def ImplicitExport {
+    let f = sdf_sphere(8mm)
+    let im = implicit(f, vec3(30mm, 30mm, 30mm), 2mm)
+    sub stl = STLOutput(subject: im, path: "out.stl", resolution: 0.2mm)
+    sub step = STEPOutput(subject: im, path: "out.step", version: STEPVersion.AP214)
+}

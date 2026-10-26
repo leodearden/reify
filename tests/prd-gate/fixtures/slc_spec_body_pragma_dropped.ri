@@ -1,0 +1,8 @@
+structure ElectricMotor { param shaft_diameter : Length = 5mm }
+structure S {
+  sub motor : ElectricMotor {
+    shaft_diameter = 8mm
+    #frobnicate(1)
+    @deprecated("x")
+  }
+}

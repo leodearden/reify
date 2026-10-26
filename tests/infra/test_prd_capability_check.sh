@@ -2,7 +2,8 @@
 # Infrastructure test for task 4607 (prd-gate-exec α — capability probe runner).
 # Verifies that:
 #   1. python3 is on PATH
-#   2. scripts/test_prd_capability_check.py (stdlib unittest) exits 0
+#   2. scripts/test_pcc_*.py (stdlib unittest; every partition in one
+#      `unittest discover` run, sharing scripts/_pcc_test_support.py) exits 0
 #   3. scripts/prd-capability-check.py --help exits 0 (CLI smoke)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
@@ -66,8 +67,8 @@ if [ "$SUBSTRATE_RC" -eq 75 ]; then
 fi
 
 # ── Unit tests ────────────────────────────────────────────────────────────
-assert "scripts/test_prd_capability_check.py exits 0" \
-    python3 "$REPO_ROOT/scripts/test_prd_capability_check.py"
+assert "scripts/test_pcc_*.py (every partition, one unittest run) exits 0" \
+    python3 -m unittest discover -s "$REPO_ROOT/scripts" -t "$REPO_ROOT/scripts" -p 'test_pcc_*.py'
 
 # ── CLI smoke ─────────────────────────────────────────────────────────────
 assert "scripts/prd-capability-check.py --help exits 0" \

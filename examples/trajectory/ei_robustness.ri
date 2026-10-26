@@ -38,7 +38,7 @@
 structure def EiRobustness {
     // EI impulse shaper: 10 Hz target, 5 % critical damping, 5 % residual
     // tolerance at the band edges.  ctor constraints: target_frequency > 0Hz and
-    // 0 < vibration_tolerance <= 1 (trajectory.ri:723-725).
+    // 0 < vibration_tolerance <= 1 (`EIShaper`'s constraints, trajectory.ri).
     let shaper = EIShaper(
         target_frequency: 10Hz,
         damping_ratio: 0.05,

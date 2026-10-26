@@ -1,0 +1,10 @@
+module auto_reach_two_siblings
+structure Bearing {
+    param bore : Length = 10mm
+    let fit = self.bore * 2.0
+}
+structure Sib {
+    sub b1 : Bearing { bore = auto }
+    sub b2 : Bearing { bore = auto }
+    constraint self.b1.fit == 20mm
+}

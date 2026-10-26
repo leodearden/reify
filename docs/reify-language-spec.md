@@ -892,8 +892,8 @@ fn area(surface: Surface) -> Scalar<Area> { ... }
 fn area(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
-fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
 ```
 
 ### 4.3 Function Declarations (`fn`)
@@ -1325,6 +1325,8 @@ a < b       a > b       a <= b      a >= b
 
 Equality is structural for value types, identity for structure references.
 
+`==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
+
 **Chained comparisons:** `a < b < c` desugars to `a < b and b < c`. Any comparison operators may chain.
 
 ```
@@ -1591,7 +1593,7 @@ connect bracket@face(top_surface) -> plate@face(bottom_surface) : Adhesive  // A
 connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
 ```
 
-The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`.
+The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`. The selector `@` must be on the same line as the expression it selects from; an `@` that begins a line always begins an annotation (§12.1).
 
 **Canonical region-reference model (P0 D1/D3).** A region reference is a `Selector` value — representation-aware, content-hash-stable, and a deferred query spec resolved per-kernel at solve time. Topology selection is *one* resolution strategy, not the model's foundation: a region is named by *intent* (a predicate, a role, or a provenance feature) and resolved against whatever representation the body is realized as. Resolution is **fail-closed**: when the realized representation cannot answer the intent, `reify eval`/`check` emits `E_QUERY_NOT_SUPPORTED_ON_REPR` and the cell stays `Value::Undef` — never a silent fake. See `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D1/D3/D5.
 
@@ -2587,7 +2589,7 @@ The complete API reference for all `std.*` modules is in the [Standard Library R
 
 ### 12.1 Annotations
 
-Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain.
+Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain. An annotation on its own line attaches to the following member or declaration, whatever the preceding member ends with.
 
 **`@optimized`** -- registers that a language-level definition has a semantically equivalent optimized implementation in the runtime. The optimized implementation must produce identical results; it is a pure performance optimization:
 
@@ -3108,6 +3110,8 @@ From highest to lowest precedence:
 | 15 (lowest) | `implies` | Right | Logical implication |
 
 Chained comparisons: `a < b < c` desugars to `a < b and b < c`.
+
+Binder bodies have no row because they are not operators. That covers a quantifier predicate (the expression after `forall`/`exists` … `:`), a conditional's `else` branch and a lambda body. Each body extends as far right as possible, past every operator in the table, `implies` included. So `forall v in xs: v > 0 and v < 3` means `forall v in xs: (v > 0 and v < 3)`, and `if c then a else b and d` means `if c then a else (b and d)`. To end a body early, parenthesise the binder: `(forall v in xs: p) and q`.
 
 ---
 

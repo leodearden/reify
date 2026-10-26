@@ -137,3 +137,12 @@ The normative doc is not yet on main (produced by the undelivered dark_factory `
 ## Milestone wiring
 
 Program milestone **5254** (merge-verify CPU-reduction release gate) `depends_on` **δ (5290)** and **ε (5291)** — wired 2026-07-19 (`add_dependency id=5254 depends_on=<leaf>`). Intra-reify: δ(5290) ← α(5287)/β(5288)/γ(5289); ε(5291) ← δ(5290), reify:5261. ε external deps: dark_factory:2833/2834/2835/2836/2837 + dark_factory:2821. Intra-DF: D2(2834) ← D1(2833); D3(2835)/D4(2836)/D5(2837) ← D2(2834).
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `nextest-filter-file-consumption`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE`.
+- `tree-oid-sidecar-guard-and-loud-full-fallback`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `REIFY_VERIFY_RETRY_SCOPE`.
+- `gui-failed-spec-forwarding`: paths now `scripts/verify.sh`, `scripts/gui-test.sh`, `scripts/reify_verify/`; pattern now `REIFY_GUI_RETRY_SPECS`.
+- `boundary-test-b1-b6-and-honest-marker`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `REIFY_RETRY_SCOPE=failed_only`.

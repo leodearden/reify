@@ -22,7 +22,9 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    collect_value_ref_members, compile_source_with_stdlib, errors_only, get_function_in,
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1558,16 +1560,11 @@ fn revolute_tots_half() -> TotsShaperHalf {
 /// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
 /// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
 ///
-/// ⚠ Duplicate-Mode note: the stdlib has TWO `structure def Mode` declarations
-/// with different field shapes — `modal_analysis.ri:187` (frequency, shape,
-/// participation_mass, damping_ratio) and `solver_buckling.ri:148` (eigenvalue,
-/// mode_shape). `Type::StructureRef("Mode")` carries only the name, so the
-/// assertion below cannot distinguish which Mode was bound by name resolution.
-/// Correct resolution is guaranteed by load order: slot 16 (std.modal.analysis)
-/// is compiled before slot 17 (std.trajectory), so the modal-analysis Mode wins
-/// the first-wins shadow rule. `modal_analysis.ri:137-141` documents this
-/// coexistence; if name-shadowing ever surfaces as a problem, the fallback is a
-/// one-line rename in `trajectory.ri`.
+/// `Type::StructureRef("Mode")` carries only the name, which is unambiguous:
+/// `Mode` is the stdlib's sole structure of that name (buckling's eigenpair
+/// is `BucklingMode` since task 5496), as the `Mode` block comment in
+/// `modal_analysis.ri` records, and the NS-P2 duplicate-pub-name scan in
+/// `stdlib_loader::build_stdlib_modules` keeps it so.
 ///
 /// Does NOT assert defaults or constraints — those are the other two bodies.
 /// Mirrors `piecewise_polynomial_profile_has_correct_param_shape` (step-17)
@@ -1679,8 +1676,8 @@ fn assert_tots_shaper_param_shape(half: TotsShaperHalf) {
 /// guarantees mechanically.
 ///
 /// Decimal-encoding discipline: Reify's grammar has no scientific notation,
-/// so 1e-6 is spelled as `0.000001` (same convention as modal_analysis.ri
-/// tol = 0.000000001 = 1e-9 at modal_analysis.ri:356). IEEE-754
+/// so 1e-6 is spelled as `0.000001` (same convention as `ModalOptions.tol =
+/// 0.000000001` = 1e-9 in modal_analysis.ri). IEEE-754
 /// round-to-nearest of these exact decimal literals is deterministic, so
 /// strict equality is safe.
 ///
@@ -2642,39 +2639,7 @@ fn cascaded_shaper_struct_has_correct_param_shape() {
     );
 }
 
-// ─── η (task 3859): EndEffectorTrack lazy-accessor helpers + tests ───────────
-
-/// Generic name-lookup helper used by [`find_trait`], [`find_enum`], and
-/// [`find_function`]. Returns the first item in `items` where
-/// `key(item) == name`, or panics with a descriptive message listing the
-/// available names.
-///
-/// `kind` labels the item type in the error string (e.g. `"fn"`, `"trait"`).
-/// `key` extracts the name string for comparison and error display.
-///
-/// Not used by [`find_structure`] — that helper additionally filters on
-/// `entity_kind` and emits `(name, entity_kind)` pairs in its error message.
-fn find_named<T>(
-    items: &'static [T],
-    name: &str,
-    kind: &str,
-    key: impl Fn(&T) -> &str,
-) -> &'static T {
-    let result = items.iter().find(|item| key(item) == name);
-    result.unwrap_or_else(|| {
-        panic!(
-            "expected `{kind} {name}` in std/trajectory, got: {:?}",
-            items.iter().map(&key).collect::<Vec<_>>()
-        )
-    })
-}
-
-/// Look up a compiled function by name within the `std/trajectory` module.
-fn find_function(name: &str) -> &'static CompiledFunction {
-    find_named(&load_stdlib_module().functions, name, "fn", |f| {
-        f.name.as_str()
-    })
-}
+// ─── η (task 3859): EndEffectorTrack lazy-accessor tests ─────────────────────
 
 // ─── step-29: EndEffectorTrack structure param shape ─────────────────────────
 
@@ -2839,7 +2804,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// code.
 #[test]
 fn end_effector_track_fn_has_correct_signature() {
-    let func = find_function("end_effector_track");
+    let func = get_function_in(load_stdlib_module(), "end_effector_track");
 
     assert!(func.is_pub, "end_effector_track should be pub");
 
@@ -2896,7 +2861,7 @@ fn end_effector_track_fn_has_correct_signature() {
 /// dimension: DimensionVector::LENGTH }))` — one Length scalar per time sample.
 #[test]
 fn deviation_from_nominal_fn_has_correct_signature() {
-    let func = find_function("deviation_from_nominal");
+    let func = get_function_in(load_stdlib_module(), "deviation_from_nominal");
 
     assert!(func.is_pub, "deviation_from_nominal should be pub");
 
@@ -2957,7 +2922,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
 /// time sample).
 #[test]
 fn peak_deviation_fn_has_correct_signature() {
-    let func = find_function("peak_deviation");
+    let func = get_function_in(load_stdlib_module(), "peak_deviation");
 
     assert!(func.is_pub, "peak_deviation should be pub");
 

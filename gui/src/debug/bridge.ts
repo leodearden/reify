@@ -14,15 +14,10 @@ import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 import { pathToUri } from '../utils/pathUtils';
-import {
-  DEFAULT_EDITOR_WIDTH,
-  DEFAULT_SIDE_WIDTH,
-  DEFAULT_DESIGN_TREE_HEIGHT,
-  DEFAULT_PROPERTY_HEIGHT,
-  DEFAULT_CONSTRAINT_HEIGHT,
-} from '../stores/layoutStore';
+import { LAYOUT_DIMENSIONS } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
 import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
+import { describePlacement } from './elementPlacement';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -30,6 +25,10 @@ import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 // the Tauri WebView IPC channel (observed in task-3634 / commit 412aa4b8bd).
 // ascii base64 data URLs are 1 char ≈ 1 byte, so string length is a valid proxy.
 const MAX_SCREENSHOT_CHARS = 16 * 1024 * 1024;
+
+// resize_panes sets exactly the layout's px rows.
+const PX_LAYOUT_DIMENSIONS = LAYOUT_DIMENSIONS.filter((d) => d.kind === 'px');
+type PxLayoutKey = (typeof PX_LAYOUT_DIMENSIONS)[number]['key'];
 
 // Default curated CSS property subset for get_computed_style (step-8 GREEN).
 // PRD §4 resolved decision #2: avoid dumping all ~400 computed properties.
@@ -374,17 +373,41 @@ export interface ResolvedByTestId {
 }
 
 /**
+ * Every `data-testid` match in document order, optionally scoped to one pane (#5891).
+ *
+ * The scoped selector is descendant-OR-SELF because FeaModeToolbar stamps
+ * `data-testid` and `data-viewport-id` on the SAME root element, which a
+ * descendant-only selector would miss. `querySelectorAll` de-duplicates, so that
+ * root, matching both arms, is counted once.
+ */
+function queryAllByTestId(testId: string, viewportId: string | undefined): Element[] {
+  const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
+  if (viewportId === undefined) {
+    return Array.from(document.querySelectorAll(idSel));
+  }
+  const vpSel = `[data-viewport-id="${escapeAttrValue(viewportId)}"]`;
+  return Array.from(document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`));
+}
+
+/** The one malformed-`viewportId` check, shared by the drive and observe paths. */
+function narrowViewportId(
+  viewportId: unknown,
+): { viewportId: string | undefined } | { error: string } {
+  if (viewportId !== undefined && typeof viewportId !== 'string') {
+    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+  }
+  return { viewportId };
+}
+
+/**
  * Resolve a single element by `data-testid`, optionally scoped to one pane (#5891).
  *
  * Deliberately mirrors `pickFeaChannelSelect`'s ladder above — same param name,
  * same non-string rejection FIRST, same scoped-then-document-wide ordering, same
  * distinct not-found-for-viewport error — so the two read as one convention:
- *  1. params.viewportId present → reject non-string, then a descendant-OR-SELF
- *     scoped query. The self arm is load-bearing: FeaModeToolbar stamps
- *     `data-testid` and `data-viewport-id` on the SAME root element, so a
- *     descendant-only selector would resolve the nine sibling controls but not
- *     the root by its own testid. No match is `notFoundForViewport` (distinct
- *     from a bare `notFound`, which means no such testid exists ANYWHERE).
+ *  1. params.viewportId present → reject non-string, then the scoped
+ *     `queryAllByTestId`. No match is `notFoundForViewport` (distinct from a
+ *     bare `notFound`, which means no such testid exists ANYWHERE).
  *  2. No id → today's document-wide lookup; zero is `notFound`.
  *
  * THE ONE DIVERGENCE from `pickFeaChannelSelect`: a request matching more than
@@ -401,42 +424,24 @@ export interface ResolvedByTestId {
  * testid can repeat inside a single pane. Such a request is first-match and
  * reports `matchCount` exactly as an unscoped one does.
  *
- * `querySelectorAll` returns a de-duplicated, document-ordered result, so an
- * element matching both arms of the scoped selector list is counted once — the
- * root, which carries `data-testid` and `data-viewport-id` on the SAME node, is
- * the common case — and `matchCount` stays truthful.
- *
- * THAT COMPENSATING CONTROL DOES NOT REACH EVERY CALLER. `paneDiagnostics` makes
- * the guess visible only to callers that spread it into a payload — the DRIVE
- * tools. `buildSelectorPredicate` takes `el` and drops the rest, and the two
- * tools built on it report no viewportId/matchCount by design, so on the OBSERVE
- * path first-match is a SILENT guess rather than a reported one. How it misleads
- * is enumerated once in docs/debug-mcp-recipe.md under "wait_for_selector: the
- * unscoped-wait trap"; widening this resolver to expose the full match list is
- * tracked by #6564. Any such fix must leave the DRIVE path first-match — that is
- * #5891's back-compat promise, argued in the divergence note above.
+ * First-match serves the DRIVE tools only — #5891's back-compat promise, argued
+ * in the divergence note above. The OBSERVE path does not pick at all:
+ * `buildSelectorPredicate` quantifies over `queryAllByTestId`'s full set.
  */
 function resolveByTestId(
   testId: string,
-  viewportId: unknown,
+  rawViewportId: unknown,
 ): ResolvedByTestId | { error: string } {
-  const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
-
-  let matches: NodeListOf<Element>;
-  if (viewportId !== undefined) {
-    if (typeof viewportId !== 'string') {
-      return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
-    }
-    const vpSel = `[data-viewport-id="${escapeAttrValue(viewportId)}"]`;
-    matches = document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`);
-    if (matches.length === 0) {
-      return { error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport(testId, viewportId) };
-    }
-  } else {
-    matches = document.querySelectorAll(idSel);
-    if (matches.length === 0) {
-      return { error: RESOLVE_BY_TESTID_ERRORS.notFound(testId) };
-    }
+  const narrowed = narrowViewportId(rawViewportId);
+  if ('error' in narrowed) return narrowed;
+  const { viewportId } = narrowed;
+  const matches = queryAllByTestId(testId, viewportId);
+  if (matches.length === 0) {
+    return {
+      error: viewportId === undefined
+        ? RESOLVE_BY_TESTID_ERRORS.notFound(testId)
+        : RESOLVE_BY_TESTID_ERRORS.notFoundForViewport(testId, viewportId),
+    };
   }
 
   const el = matches[0];
@@ -483,16 +488,13 @@ function paneDiagnostics(
 }
 
 // Shared element descriptor used by query_selector and query_selector_all.
-// Mirrors the bounds + visible formula from dom_query for cross-tool consistency.
+// The bounds/visible/hitTestable trio comes from describePlacement.
 function describeElement(el: HTMLElement) {
-  const rect = el.getBoundingClientRect();
-  const style = window.getComputedStyle(el);
   return {
     tagName: el.tagName.toLowerCase(),
     testId: el.getAttribute('data-testid'),
     text: el.innerText?.slice(0, 500) ?? '',
-    bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-    visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
+    ...describePlacement(el),
   };
 }
 
@@ -528,9 +530,10 @@ function shapeDiagnostic(d: DiagnosticInfo) {
 
 /**
  * Returns true iff the element is visible in the render tree.
- * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
- * panels count as not-visible) plus the rect.width>0 convention shared with
- * describeElement/dom_query/list_elements.
+ * Walks ancestors via isEffectivelyHidden(), so an element inside a collapsed
+ * panel is NOT visible here. This intentionally differs from describePlacement's
+ * `visible`, which reads only the element's own display/visibility (the R1
+ * payload meaning, contract §3); only the rect.width>0 test is shared.
  */
 function isElementVisible(el: Element): boolean {
   return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
@@ -559,44 +562,29 @@ async function pollUntil(
 
 /**
  * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
- * Resolves el through `resolveByTestId(testId, viewportId)`, so an optional
- * `viewportId` scopes the wait to one pane (#5891).
- * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
- * 'gone':    el===null OR !isElementVisible(el)
+ * The quantified rule it implements, and the residual unscoped-wait caveat, are
+ * stated in docs/debug-mcp-recipe.md "wait_for_selector: the unscoped-wait trap".
  *
  * Returns `{error}` INSTEAD of a predicate when `viewportId` is present but not a
  * string. That check is hoisted out of the closure deliberately: a malformed
  * param is a property of the REQUEST, not a DOM state that could become true on
  * a later tick, so re-deciding it every 16 ms would burn the caller's whole
  * timeout budget only to report the same rejection. Both call sites return it
- * immediately. Every other resolver error — `notFound`, `notFoundForViewport` —
- * IS a transient DOM state and is folded into `el === null`, which is exactly
- * what 'gone' waits for and what 'visible' polls past.
+ * immediately. An absent testid or pane IS a transient DOM state: it is just an
+ * empty match set, which is exactly what 'gone' waits for and what 'visible'
+ * polls past.
  *
  * ASYMMETRY WORTH KNOWING (documented on both tools' schemas, pinned by
- * waitFor.test.ts case (g)): because `notFoundForViewport` folds into
- * `el === null`, a `viewportId` naming a pane that does not exist AT ALL — not
- * yet mounted, or simply a typo — satisfies 'gone' vacuously and resolves at
- * waited_ms 0, indistinguishably from a real teardown. That is deliberate, not
- * an oversight: a pane torn down WITH its contents is a legitimate way for an
+ * waitFor.test.ts case (g)): because zero matches makes `every` vacuously true,
+ * a `viewportId` naming a pane that does not exist AT ALL — not yet mounted, or
+ * simply a typo — satisfies 'gone' and resolves at waited_ms 0,
+ * indistinguishably from a real teardown. That is deliberate, not an
+ * oversight: a pane torn down WITH its contents is a legitimate way for an
  * element to be gone from it, and demanding the pane still exist would make
  * "wait for this pane to disappear" un-expressible and turn a correct green into
  * a timeout. The cost is that a typo'd id reads as instant success, so callers
  * proving a teardown should confirm the pane exists first. Under 'visible' the
  * same typo fails loudly (timeout), which is why only this arm needs the note.
- *
- * THE OTHER KNOWN TRAP, and the one this predicate OWNS — the UNSCOPED path.
- * With no `viewportId`, `resolveByTestId` commits to the document-order-FIRST
- * match and only THEN does this closure evaluate `state` on that one element;
- * it never looks for the first element that SATISFIES the state. So an unscoped
- * wait is not proof about any one pane in either direction. It misleads in three
- * distinct ways, enumerated once in docs/debug-mcp-recipe.md under
- * "wait_for_selector: the unscoped-wait trap" and pinned as behaviour by
- * waitFor.test.ts cases (h)/(i)/(j) — do not read the asymmetry above as the
- * whole list. Unlike that asymmetry this is a known limitation rather than a
- * deliberate contract: first-match is #5891's back-compat promise for the DRIVE
- * tools, but this predicate only OBSERVES, so quantifying over all matches here
- * would break no caller. That fix is tracked by #6564.
  */
 function buildSelectorPredicate(opts: {
   testId: string;
@@ -604,25 +592,21 @@ function buildSelectorPredicate(opts: {
   text?: string;
   viewportId?: unknown;
 }): (() => boolean) | { error: string } {
-  const { testId, state, text, viewportId } = opts;
-  if (viewportId !== undefined && typeof viewportId !== 'string') {
-    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
-  }
+  const { testId, state, text } = opts;
+  const narrowed = narrowViewportId(opts.viewportId);
+  if ('error' in narrowed) return narrowed;
+  const { viewportId } = narrowed;
   return () => {
-    // Re-resolve on EVERY tick rather than hoisting the lookup: this predicate
+    // Re-query on EVERY tick rather than hoisting the lookup: this predicate
     // exists to observe an element appearing or disappearing mid-poll, so a
-    // resolution captured once at t=0 would freeze the answer.
-    const r = resolveByTestId(testId, viewportId);
-    const el = 'error' in r ? null : r.el;
+    // match set captured once at t=0 would freeze the answer.
+    const matches = queryAllByTestId(testId, viewportId);
     if (state === 'gone') {
-      return el === null || !isElementVisible(el);
+      return matches.every((el) => !isElementVisible(el));
     }
-    // state === 'visible'
-    if (!el || !isElementVisible(el)) return false;
-    if (text !== undefined) {
-      return (el as HTMLElement).textContent?.trim() === text;
-    }
-    return true;
+    return matches.some(
+      (el) => isElementVisible(el) && (text === undefined || el.textContent?.trim() === text),
+    );
   };
 }
 
@@ -976,14 +960,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
 
       const el = r.el as HTMLElement;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
       return {
         exists: true,
-        visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
         text: el.innerText?.slice(0, 500) ?? '',
         tagName: el.tagName.toLowerCase(),
-        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...describePlacement(el),
         ...paneDiagnostics(r),
       };
     },
@@ -992,13 +973,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const elements = document.querySelectorAll('[data-testid]');
       const result: Array<Record<string, unknown>> = [];
       elements.forEach((el) => {
-        const rect = (el as HTMLElement).getBoundingClientRect();
-        const style = window.getComputedStyle(el);
         result.push({
           testId: el.getAttribute('data-testid'),
           tagName: el.tagName.toLowerCase(),
-          visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
-          bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          ...describePlacement(el),
         });
       });
       return { elements: result };
@@ -1036,10 +1014,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if ('error' in r) return { error: r.error };
       if (!r.el) return { exists: false };
       const h = r.el as HTMLElement;
-      const rect = h.getBoundingClientRect();
       return {
         exists: true,
-        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...describePlacement(h),
         scroll: { top: h.scrollTop, left: h.scrollLeft, width: h.scrollWidth, height: h.scrollHeight },
         client: { width: h.clientWidth, height: h.clientHeight },
         overflow: {
@@ -1306,10 +1283,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
     // NOTE (contract §4 fidelity): these tools fire JS handlers (onClick,
-    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes
-    // and do NOT trigger native OS hit-testing. document.elementFromPoint is
-    // used for target resolution. See docs/debug-mcp-contract.md §4 for the
-    // full fidelity-gaps table.
+    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes.
+    // The coordinate tools resolve their target with the webview's own
+    // document.elementFromPoint and dispatch on it, skipping native OS input
+    // delivery. See docs/debug-mcp-contract.md §4 for the full fidelity-gaps
+    // table.
 
     click_at: (params) => {
       if (!validXY(params)) return { error: 'x and y must be finite numbers' };
@@ -1756,26 +1734,17 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- C2: layout-control tools (task-4302) ---
 
     resize_panes: (params) => {
-      const DIMS = [
-        ['editorWidth',      'setEditorWidth'],
-        ['sideWidth',        'setSideWidth'],
-        ['designTreeHeight', 'setDesignTreeHeight'],
-        ['propertyHeight',   'setPropertyHeight'],
-        ['constraintHeight', 'setConstraintHeight'],
-        ['problemsHeight',   'setProblemsHeight'],
-      ] as const;
-
       // Validate first pass — reject any invalid value before applying anything.
-      let anyProvided = false;
-      for (const [dim] of DIMS) {
-        const raw = params[dim];
+      const resizes: { key: PxLayoutKey; value: number }[] = [];
+      for (const { key } of PX_LAYOUT_DIMENSIONS) {
+        const raw = params[key];
         if (raw === undefined) continue;
-        anyProvided = true;
         if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
-          return { error: `${dim} must be a non-negative finite number` };
+          return { error: `${key} must be a non-negative finite number` };
         }
+        resizes.push({ key, value: raw });
       }
-      if (!anyProvided) return { error: 'no pane dimensions provided' };
+      if (resizes.length === 0) return { error: 'no pane dimensions provided' };
 
       // Apply pass — all values validated.
       // NOTE: Values are applied as-is without clamping to the interactive splitter
@@ -1784,12 +1753,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // the caller full programmatic control; the caller is responsible for staying in a
       // valid range. Setting a dimension to 0 is allowed (e.g. to collapse a pane
       // programmatically) even though the splitter UI prevents this interactively.
-      const layout = ctx.stores.layout;
-      for (const [dim, setter] of DIMS) {
-        const raw = params[dim];
-        if (raw !== undefined) {
-          (layout[setter] as (v: number) => void)(raw as number);
-        }
+      for (const { key, value } of resizes) {
+        ctx.stores.layout.set(key, value);
       }
 
       return { ok: true, layout: { ...ctx.stores.layout.state } };
@@ -2120,11 +2085,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       engine.setCompileDiagnostics([]);
       engine.setTessellationDiagnostics([]);
 
-      layout.setEditorWidth(DEFAULT_EDITOR_WIDTH);
-      layout.setSideWidth(DEFAULT_SIDE_WIDTH);
-      layout.setDesignTreeHeight(DEFAULT_DESIGN_TREE_HEIGHT);
-      layout.setPropertyHeight(DEFAULT_PROPERTY_HEIGHT);
-      layout.setConstraintHeight(DEFAULT_CONSTRAINT_HEIGHT);
+      layout.reset();
 
       return { ok: true };
     },

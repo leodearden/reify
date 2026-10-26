@@ -33,7 +33,7 @@ vi.mock('html-to-image', () => ({
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
-import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import type { DebugStores } from '../debug/types';
 
 type DebugRequestHandler = (event: {
@@ -89,20 +89,7 @@ function makeStores(): DebugStores {
       },
     },
     viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout: makeLayoutStore(),
   };
 }
 

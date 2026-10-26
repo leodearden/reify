@@ -1,0 +1,26 @@
+module s8_sweep_malformed
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: delta (rejections for sweep / sweep_grid / dim).
+// Pins: malformed mechanism-sweep value calls (negative steps, wrong-dimension
+// range, non-joint joint argument, non-list dims, non-joint dim). A control
+// well-formed sweep and dim are included. Mechanism sweep is the 4-argument
+// form; the 2-argument sweep(profile, path) is the unrelated geometry sweep.
+
+structure def S8SweepMalformed {
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "head", j_x)
+
+    let ok_sweep = sweep(m1, j_x, 0mm .. 500mm, 3)
+    let ok_dim = dim(j_x, 0mm .. 500mm, 3)
+
+    let neg_steps = sweep(m1, j_x, 0mm .. 500mm, -1)
+    let bad_range_dim = sweep(m1, j_x, 0deg .. 90deg, 3)
+    let not_joint = sweep(m1, 5, 0mm .. 500mm, 3)
+    let not_mech = sweep(5, j_x, 0mm .. 500mm, 3)
+    let grid_not_list = sweep_grid(m1, 5)
+    let grid_bad_entry = sweep_grid(m1, [5])
+    let dim_not_joint = dim(5, 0mm .. 500mm, 3)
+    let dim_arity = dim(j_x, 0mm .. 500mm)
+}

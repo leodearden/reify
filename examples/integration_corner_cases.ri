@@ -4,7 +4,7 @@
 //
 // Features covered:
 //   1. 3-deep type alias chain (Velocity → Acceleration → Jerk)
-//   2. Trait with all member kinds (param, let, constraint, port)
+//   2. Trait with all member kinds (param, let, constraint)
 //   3. Vacuous constraint def with 0 predicates
 //   4. Empty list .count
 //   5. Undef propagation (arithmetic, comparison, negation)
@@ -42,7 +42,6 @@ trait FullTrait {
     param size : Length
     let doubled = size * 2
     constraint size > 0mm
-    port output : out FullTrait
 }
 
 structure def FullTraitImpl : FullTrait {

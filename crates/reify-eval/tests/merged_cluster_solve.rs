@@ -95,7 +95,7 @@ fn merged_cluster_dispatches_single_solve_with_union_auto_params() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problems = captured.lock().unwrap();
@@ -150,7 +150,7 @@ fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -238,7 +238,7 @@ fn merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.eval(&module);
 
     let snapshot = engine
@@ -322,7 +322,7 @@ fn merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let out_val = result
@@ -443,7 +443,7 @@ fn merged_cluster_objective_passed_through_opaquely() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problem = captured
@@ -517,7 +517,7 @@ fn merged_cluster_objective_provenance_populated_for_every_resolved_cell() {
     let spy = SpyConstraintSolver::new_solved(solved);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     for (id, want_scope) in [
@@ -628,7 +628,7 @@ fn merged_cluster_inherited_objective_folded_once() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured
@@ -718,7 +718,7 @@ fn run_merged_cluster_once(
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(module);
 
     let problems = captured.lock().unwrap();
@@ -801,7 +801,7 @@ fn uncoupled_module_solves_per_template_not_merged() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problems = captured.lock().unwrap();
@@ -902,7 +902,7 @@ fn over_cap_cluster_still_solves_per_template() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problems = captured.lock().unwrap();
@@ -997,7 +997,7 @@ fn merged_cluster_excludes_strict_connector_instance_auto() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     // (a) absent from the captured merged problem's auto_params.
@@ -1101,7 +1101,7 @@ fn merged_cluster_first_found_lambda_wins_with_divergence_warning() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured
@@ -1164,7 +1164,7 @@ fn merged_cluster_infeasible_propagates_diagnostics_and_failed_autos_for_every_m
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
@@ -1217,7 +1217,7 @@ fn merged_cluster_no_progress_propagates_diagnostic_and_failed_autos_for_every_m
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
@@ -1287,6 +1287,10 @@ impl ConstraintSolver for BestFoundRankedSolver {
             optimality: OptimalityStatus::BestFound {
                 reason: self.reason,
             },
+            // BT13 (#6706): an overriding mock that establishes nothing about the
+            // solution set. The engine must IGNORE this field at task α — every
+            // merged-cluster expectation below is asserted unchanged.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -1315,7 +1319,7 @@ fn merged_cluster_iteration_limit_emits_solver_optimality_unproven() {
     };
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let warnings: Vec<_> = result
@@ -1356,7 +1360,7 @@ fn merged_cluster_enumeration_budget_emits_solver_optimality_unproven() {
     };
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let warnings: Vec<_> = result
@@ -1449,7 +1453,7 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -1578,7 +1582,7 @@ fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -1660,7 +1664,7 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     // Establish the warm precondition: cold eval() populates eval_state (and
     // demand) so the subsequent eval_cached() wave-2 can re-eval downstream
     // lets. Mirrors warm_eval_cached_with_solver + the LSP consumer's
@@ -1734,7 +1738,7 @@ fn eval_cached_second_consecutive_call_downstream_let_stays_stale_pending_5224()
     ]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Establish the warm precondition (see SCOPE NOTE above): cold eval()
     // populates eval_state so the FIRST eval_cached's wave-2 can re-eval
@@ -1796,7 +1800,7 @@ fn eval_cached_skips_solver_when_every_auto_is_excluded() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -1871,7 +1875,7 @@ fn eval_cached_merged_cluster_infeasible_propagates_diagnostics() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -1918,7 +1922,7 @@ fn eval_cached_merged_cluster_no_progress_propagates_diagnostic() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -2006,7 +2010,7 @@ fn eval_vs_eval_cached_merged_cluster_values_equal() {
     // Cold eval() -- baseline.
     let solver_a = SpyConstraintSolver::new_solved(solved.clone());
     let mut engine_a =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
     let result_a = engine_a.eval(&module);
 
     // Warm eval_cached() -- an independent engine with an identically-seeded
@@ -2015,7 +2019,7 @@ fn eval_vs_eval_cached_merged_cluster_values_equal() {
     let solver_b = SpyConstraintSolver::new_solved(solved.clone());
     let captured_b = solver_b.captured_problem();
     let mut engine_b =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
     let result_b1 = engine_b.eval_cached(&module, VersionId(1));
 
     // Direct governance-threading check (see NOTE above): the warm merged
@@ -2111,6 +2115,10 @@ impl ConstraintSolver for DivergentRankedSolver {
             optimality: OptimalityStatus::BestFound {
                 reason: BestFoundReason::IterationLimit,
             },
+            // BT13 (#6706): an overriding mock that establishes nothing about the
+            // solution set. The engine must IGNORE this field at task α — every
+            // merged-cluster expectation below is asserted unchanged.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -2155,7 +2163,7 @@ fn eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_ent
         ranked_values: ranked_values.clone(),
     };
     let mut engine_a =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
     let result_a = engine_a.eval(&module);
 
     // Warm eval_cached(): merged dispatch always calls plain `.solve()` -> the
@@ -2165,7 +2173,7 @@ fn eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_ent
         ranked_values: ranked_values.clone(),
     };
     let mut engine_b =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
     for (id, cold_want, warm_want) in [
@@ -2264,7 +2272,7 @@ fn merged_cluster_preserves_lexicographic_combination_from_single_owner() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problem = captured
@@ -2343,7 +2351,7 @@ fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured
@@ -2432,7 +2440,7 @@ fn eval_cached_merged_cluster_co_solve_records_commit_provenance() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Establish the warm precondition: a prior cold eval() seeds self.eval_state
     // + the engine snapshot (see the step-5 test's doc for the LSP

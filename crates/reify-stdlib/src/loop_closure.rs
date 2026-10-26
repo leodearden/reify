@@ -203,10 +203,7 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
             let mid = range_midpoint(map, "range")?;
             Some(JointValue::Scalar(mid))
         }
-        JointKind::Coupling => {
-            let parent = map.get(&Value::String("parent".to_string()))?;
-            joint_range_midpoint(parent)
-        }
+        JointKind::Coupling => joint_range_midpoint(coupling_parent(joint)?),
         // 0-DOF — empty free-variable space; no midpoint to seed.
         JointKind::Fixed => None,
         JointKind::Planar => {
@@ -285,7 +282,9 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
 /// the central-difference column.  This is symmetric-error O(ε²) and works
 /// for every joint kind `value_for_joint` handles (all seven JOINT_KINDS post
-/// KCC-γ widening).
+/// KCC-γ widening).  Each column is the derivative w.r.t. free joint `i`'s
+/// motion variable, so every coupling of `chain[i]` in the chain moves with it
+/// (`propagate_to_couplings`).
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
@@ -324,6 +323,8 @@ pub fn chain_jacobian_fd(
             let mut minus = values.to_vec();
             perturb_storage_component(&mut plus[i], c, eps);
             perturb_storage_component(&mut minus[i], c, -eps);
+            propagate_to_couplings(chain, &mut plus, i);
+            propagate_to_couplings(chain, &mut minus, i);
             let t_plus = chain_transform(chain, &plus)?;
             let t_minus = chain_transform(chain, &minus)?;
             let t_minus_inv = eval_builtin("transform_inverse", &[t_minus]);
@@ -505,10 +506,12 @@ pub type LoopClosureSolverInputs = (
 ///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
 ///     a direct binding entry use the bound value; otherwise they resolve
 ///     through the same `resolve_joint_value` ladder as `chain_a`
-///     (coupling → parent, `fixed` → `0.0` sentinel, else range midpoint).
-///   * `free_b`          — positions in `chain_b` whose joints are free
-///     (no direct binding entry AND not the 0-DOF `fixed` kind); the solver
-///     iterates these.
+///     (coupling → its parent's value, `fixed` → `0.0` sentinel, else range
+///     midpoint).
+///   * `free_b`          — positions in `chain_b` with no direct binding
+///     whose joint is a driving joint (`joints::is_driving_joint`): `fixed`
+///     and `coupling` contribute no free variable.  The solver iterates
+///     these.
 ///
 /// Returns `None` on:
 ///   * non-Map record,
@@ -579,20 +582,13 @@ pub fn extract_loop_closure_chains(
     // `append_body` produces: it means a hand-built chain_a carrying such a
     // link would still resolve.
     //
-    // **Caveat — an unbound `coupling` in chain_b is UNDER-CONSTRAINED.**
-    // `is_zero_dof_joint` answers for `JointKind::Fixed` alone, so an unbound
-    // coupling lands in `free_b` and Newton iterates it as an INDEPENDENT
-    // variable: its ratio/offset relative to its parent is ignored, and the
-    // parent-tracked value `resolve_joint_value` returns serves only as the
-    // initial seed.  `bind` / `dim` / `sweep` reject that same joint outright
-    // via `make_nondriving_joint_error` ("nondriving_joint", joints.rs); the
-    // closure path does not reject it, it merely fails to enforce the
-    // coupling relation.  Honouring the ratio needs the coupled value
-    // re-derived INSIDE each Newton step, which this resolver — which
-    // computes `vals_b_initial` once, before the solve — cannot express.
-    // Tracked as #7497; the behaviour above is PINNED by
-    // `extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b`,
-    // so closing that gap reds a named test rather than drifting silently.
+    // Free-variable membership is `is_driving_kind`, so `fixed` and
+    // `coupling` never get a free variable.  A coupling's slot carries its
+    // parent's value; when that parent is free, the solver keeps chain_b's
+    // coupled slots in step with it (`propagate_to_couplings`).  chain_a is
+    // held fixed for the solve, so a chain_a coupling of a free chain_b joint
+    // keeps its parent's seed: making both chains' unbound joints unknowns is
+    // #8837 (R8).
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -616,7 +612,7 @@ pub fn extract_loop_closure_chains(
             // KIND, not by the resolved value: a genuinely free prismatic
             // whose range midpoint happens to be 0.0 must stay free, so
             // matching on `JointValue::Scalar(0.0)` would be wrong.
-            if !is_zero_dof_joint(joint) {
+            if joint_kind(joint).is_some_and(is_driving_kind) {
                 free_b.push(i);
             }
         }
@@ -627,10 +623,11 @@ pub fn extract_loop_closure_chains(
 
 /// Read a joint Map's declared `kind` as the typed [`JointKind`].
 ///
-/// SPOT for this module's kind DISCRIMINATION — [`is_zero_dof_joint`] and
-/// [`joint_range_midpoint`] both dispatch through it, so the fixed/coupling
-/// split lives in one place rather than in scattered `== "fixed"` literals, and
-/// an added kind is a compile error in `joint_range_midpoint`'s typed match.
+/// SPOT for loop-closure kind DISCRIMINATION — [`joint_range_midpoint`],
+/// [`resolve_joint_value`], free-variable membership and the solver's input
+/// validation all dispatch through it, so the fixed/coupling split lives in one
+/// place rather than in scattered `== "fixed"` literals, and an added kind is a
+/// compile error in `joint_range_midpoint`'s typed match.
 ///
 /// It is NOT the SPOT for the per-kind VALUE encodings ([`value_for_joint`],
 /// [`jointvalue_from_bound_value`]): those match the kind string jointly with a
@@ -640,7 +637,7 @@ pub fn extract_loop_closure_chains(
 /// string [`JointKind::from_str`] does not recognise. All three collapse to the
 /// same "no typed kind" answer because every caller here handles an
 /// unrecognised joint exactly as it handles a recognised one it has no arm for.
-fn joint_kind(joint: &Value) -> Option<JointKind> {
+pub(crate) fn joint_kind(joint: &Value) -> Option<JointKind> {
     match joint {
         Value::Map(m) => match m.get(&Value::String("kind".to_string())) {
             Some(Value::String(s)) => JointKind::from_str(s),
@@ -650,21 +647,23 @@ fn joint_kind(joint: &Value) -> Option<JointKind> {
     }
 }
 
-/// Returns `true` when `joint` is the 0-DOF [`JointKind::Fixed`] kind — a rigid
-/// link that contributes a transform to a chain but no free variable to the
-/// solver.
+/// Whether a joint of `kind` has a motion variable of its own, and so may be a
+/// loop-closure free variable: a `coupling` takes its parent's motion and a
+/// `fixed` link has none.
 ///
-/// Read from the joint Map's declared `kind` rather than inferred from a
-/// resolved `JointValue::Scalar(0.0)`: the fixed sentinel and a genuinely
-/// free prismatic seeded at a 0.0 midpoint are indistinguishable by value.
-///
-/// `JointKind::Coupling` is deliberately NOT included, even though its DOF is
-/// derived rather than independent: excluding it from `free_b` would freeze it
-/// at its seed instead of tracking its parent, which is a different wrong
-/// answer, not a fix. See the coupling caveat in
-/// [`extract_loop_closure_chains`].
-fn is_zero_dof_joint(joint: &Value) -> bool {
-    matches!(joint_kind(joint), Some(JointKind::Fixed))
+/// The typed twin of `joints::is_driving_joint`, which gates `bind` / `dim` /
+/// `sweep`. It is not called from here because `joints` sits in a module cycle
+/// this module stays out of (`scripts/assert-module-scc.py`);
+/// `is_driving_kind_agrees_with_is_driving_joint` pins the two together.
+pub(crate) fn is_driving_kind(kind: JointKind) -> bool {
+    match kind {
+        JointKind::Prismatic
+        | JointKind::Revolute
+        | JointKind::Cylindrical
+        | JointKind::Planar
+        | JointKind::Spherical => true,
+        JointKind::Coupling | JointKind::Fixed => false,
+    }
 }
 
 /// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
@@ -824,18 +823,42 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
     if let Some(v) = direct_binding_value(joint, bindings) {
         return Some(v);
     }
-    match joint_kind(joint) {
-        Some(JointKind::Coupling) => {
-            if let Value::Map(map) = joint
-                && let Some(parent) = map.get(&Value::String("parent".to_string()))
-            {
-                return resolve_joint_value(parent, bindings);
-            }
-        }
-        Some(JointKind::Fixed) => return Some(JointValue::Scalar(0.0)),
-        _ => {}
+    if let Some(parent) = coupling_parent(joint) {
+        return resolve_joint_value(parent, bindings);
+    }
+    if joint_kind(joint) == Some(JointKind::Fixed) {
+        return Some(JointValue::Scalar(0.0));
     }
     joint_range_midpoint(joint)
+}
+
+/// The `parent` joint of a coupling; `None` for every other kind.
+fn coupling_parent(joint: &Value) -> Option<&Value> {
+    match (joint_kind(joint)?, joint) {
+        (JointKind::Coupling, Value::Map(m)) => m.get(&Value::String("parent".to_string())),
+        _ => None,
+    }
+}
+
+/// A coupling has no motion variable of its own: its slot carries its parent's
+/// (as in [`resolve_joint_value`] and snapshot's `value_for`), so when slot
+/// `driver` moves, every slot of `chain` coupled to `chain[driver]` moves with
+/// it (#7497).  Slots of any other chain are untouched.
+pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue], driver: usize) {
+    let (Some(parent), Some(driven)) = (chain.get(driver), values.get(driver).cloned()) else {
+        return;
+    };
+    for (joint, slot) in chain.iter().zip(values.iter_mut()) {
+        if coupling_parent(joint) == Some(parent) {
+            *slot = driven.clone();
+        }
+    }
+}
+
+/// Whether `joint`'s slot moves with `target`'s motion variable: it is `target`
+/// itself, or a coupling of it, whose slot carries its parent's value.
+fn moves_with(joint: &Value, target: &Value) -> bool {
+    joint == target || coupling_parent(joint) == Some(target)
 }
 
 /// Compute the loop-closure residual Jacobian with respect to caller-supplied
@@ -850,7 +873,15 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
 /// is applied **everywhere that joint appears in either chain** (located by
 /// structural `Value::Eq`) so that a joint shared between chain_a and chain_b
 /// (a world-rooted prefix joint) is perturbed consistently in both chains,
-/// yielding the correct total derivative.
+/// yielding the correct total derivative.  Every slot coupled to the target
+/// is perturbed with it, in either chain, because a coupling's slot carries
+/// its parent's value: as in [`chain_jacobian_fd`], a column is the derivative
+/// w.r.t. the target's motion variable.
+///
+/// A target is expected to be a driving joint.  A coupling target is perturbed
+/// as given, as though it were independent.  `closed_chain_inverse_dynamics`
+/// never passes one: a coupling body has no motion subspace, so that solve is
+/// undef before it gets here, and #8847 makes that a coded refusal.
 ///
 /// The closing joint is **not** excluded from `target_joints`. In the
 /// parent-conflict shape it IS a spanning-tree `at` joint — its
@@ -877,9 +908,9 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
 /// - `target_joints`: the ordered list of tree `at` joints to differentiate
 ///   w.r.t.  Each single-DOF joint contributes one `[f64; 6]` column;
 ///   multi-DOF joints contribute `JointValue::as_f64_slice().len()` columns.
-///   A joint **absent from both chains** contributes a zero column (it has no
-///   perturbation site — the resulting constraint Jacobian column is genuinely
-///   zero for that coordinate).
+///   A joint that **neither chain carries**, itself or through a coupling,
+///   contributes a zero column (it has no perturbation site — the resulting
+///   constraint Jacobian column is genuinely zero for that coordinate).
 /// - `eps`: central-difference step size.  Must be positive and finite.
 ///
 /// # Returns
@@ -910,18 +941,18 @@ pub fn loop_residual_jacobian_by_joint(
 
     for target in target_joints {
         // Determine the storage width for this target by scanning either chain
-        // for a matching joint (same structural value).  If absent from both,
-        // the width defaults to 1 (scalar single-DOF fallback); the resulting
+        // for a slot that moves with it.  If neither chain carries it, the
+        // width defaults to 1 (scalar single-DOF fallback); the resulting
         // zero perturbation produces a zero column regardless.
         let width: usize = chain_a
             .iter()
             .zip(vals_a.iter())
-            .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+            .find_map(|(j, v)| moves_with(j, target).then(|| v.as_f64_slice().len()))
             .or_else(|| {
                 chain_b
                     .iter()
                     .zip(vals_b.iter())
-                    .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+                    .find_map(|(j, v)| moves_with(j, target).then(|| v.as_f64_slice().len()))
             })
             .unwrap_or(1);
 
@@ -931,16 +962,16 @@ pub fn loop_residual_jacobian_by_joint(
             let mut vb_plus = vals_b.to_vec();
             let mut vb_minus = vals_b.to_vec();
 
-            // Perturb every occurrence of `target` in chain_a.
+            // Perturb every slot of chain_a that moves with `target`.
             for (i, j) in chain_a.iter().enumerate() {
-                if j == target {
+                if moves_with(j, target) {
                     perturb_storage_component(&mut va_plus[i], c, eps);
                     perturb_storage_component(&mut va_minus[i], c, -eps);
                 }
             }
-            // Perturb every occurrence of `target` in chain_b.
+            // Perturb every slot of chain_b that moves with `target`.
             for (i, j) in chain_b.iter().enumerate() {
-                if j == target {
+                if moves_with(j, target) {
                     perturb_storage_component(&mut vb_plus[i], c, eps);
                     perturb_storage_component(&mut vb_minus[i], c, -eps);
                 }
@@ -2261,60 +2292,25 @@ mod tests {
         );
     }
 
-    /// **Pins the coupling caveat (#7497), not an endorsement of it.** An
-    /// unbound `coupling` in `path_b` is UNDER-CONSTRAINED: `is_zero_dof_joint`
-    /// answers only for `JointKind::Fixed`, so the coupling lands in `free_b`
-    /// and Newton iterates it as an INDEPENDENT variable — its ratio and offset
-    /// relative to its parent are never enforced, and the parent-tracked value
-    /// `resolve_joint_value` returns serves only as the seed.
-    ///
-    /// Both halves are asserted so that closing #7497 reds this test
-    /// deliberately rather than changing the answer silently:
-    ///   * the seed TRACKS the bound parent (0.4 m), unscaled by the 2.0 ratio
-    ///     — `resolve_joint_value`'s coupling arm returns the parent's value
-    ///     verbatim, and it is a seed, not a constraint;
-    ///   * `free_b` CONTAINS the coupling's index.
-    ///
-    /// Excluding couplings from `free_b` instead would freeze one at its seed
-    /// rather than tracking its parent — a different wrong answer, not a fix —
-    /// so the real remedy re-derives the coupled value inside each Newton step.
+    /// The loop-closure solve and `bind` / `dim` / `sweep` agree on which
+    /// joint kinds drive, kind by kind.
     #[test]
-    fn extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b() {
-        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        // The coupling's parent, bound — so the seed is demonstrably
-        // parent-derived rather than the coupling's own range midpoint.
-        let j_p = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
-        let j_c = eval_builtin("couple", &[j_p.clone(), Value::Real(2.0)]);
-        let bindings = vec![
-            eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]),
-            eval_builtin("bind", &[j_p.clone(), Value::length(0.4)]),
-        ];
-
-        let record = loop_closure_record(
-            vec![world_sentinel(), j_a.clone()],
-            vec![world_sentinel(), j_c.clone()],
-            j_a.clone(),
-        );
-
-        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
-            super::extract_loop_closure_chains(&record, &bindings)
-                .expect("an unbound coupling in path_b must resolve through its parent");
-
-        assert_eq!(chain_b, vec![j_c.clone()]);
-        match &vals_b_initial[0] {
-            JointValue::Scalar(s) => assert!(
-                (s - 0.4).abs() < 1e-12,
-                "the coupling seeds from its BOUND parent (0.4), with the 2.0 \
-                 ratio not applied, got Scalar({s})"
-            ),
-            other => panic!("expected JointValue::Scalar(0.4), got {other:?}"),
+    fn is_driving_kind_agrees_with_is_driving_joint() {
+        for &tag in crate::joints::JOINT_KINDS {
+            let kind = super::JointKind::from_str(tag)
+                .unwrap_or_else(|| panic!("JOINT_KINDS tag {tag:?} has no JointKind"));
+            let mut fields = std::collections::BTreeMap::new();
+            fields.insert(
+                Value::String("kind".to_string()),
+                Value::String(tag.to_string()),
+            );
+            let joint = Value::Map(fields);
+            assert_eq!(
+                super::is_driving_kind(kind),
+                crate::joints::is_driving_joint(&joint),
+                "kind {tag:?}"
+            );
         }
-        assert_eq!(
-            free_b,
-            vec![0],
-            "under-constrained today (#7497): the coupling is iterated \
-             as an independent free variable, got {free_b:?}"
-        );
     }
 
     /// A synthetic 0-DOF link evaluates to exactly its `origin` pose under

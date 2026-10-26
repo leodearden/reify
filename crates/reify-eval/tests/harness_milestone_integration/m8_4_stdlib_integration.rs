@@ -47,7 +47,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     // these fixtures parse in-process exactly as the product parses them.
     // Required once a fixture stops re-declaring the stdlib enum locally: the
     // bare `reify_syntax::parse` would degrade `MaterialCondition.RFS` to a
-    // `MemberAccess`.  Precedent: crates/reify-compiler/tests/examples_smoke.rs.
+    // `MemberAccess`.  Precedent: crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs.
     let parsed =
         reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
     assert!(
@@ -216,7 +216,7 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     Some(engine.build(&compiled, ExportFormat::Step))
 }
 
