@@ -4466,18 +4466,13 @@ mod tests {
     /// stack holds, so without `stacker::maybe_grow` this SIGSEGVs the test
     /// binary exactly as the GUI did.
     ///
-    /// Why the cap is not exercised end-to-end here: an expression deeper than
-    /// 256 trips `compile_builder::dot_chain_lint` / `shadow_lint`, whose own
-    /// `MAX_EXPR_DEPTH = 256` fires a deliberate `debug_assert!(false, …)` in
-    /// debug/test builds (they pre-walk the parsed module in `lib.rs`, before
-    /// expression compilation). So the >256 path through `compile()` panics in
-    /// a *lint* before this task's cap can answer, and only the internal-entry
-    /// tests above can pin the cap's diagnostic. Parse-time recursion (a deep
-    /// source overflows the recursive-descent parser, which is why the parse
-    /// below runs on its own big stack) and drop-time AST recursion are the two
-    /// other unguarded surfaces on this input class. All three are deferred to
-    /// the follow-up filed from this task's amendment pass (fused-memory ticket
-    /// `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
+    /// The over-cap case through `compile()` is pinned by
+    /// `recursion_guard::tests::over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking`.
+    /// Parse-time recursion (a deep source overflows the recursive-descent
+    /// parser, which is why the parse below runs on its own big stack) and
+    /// drop-time AST recursion are separate unguarded surfaces on this input
+    /// class, deferred to the follow-up filed from this task's amendment pass
+    /// (fused-memory ticket `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
     /// `agent-followup-5337-recursion-surfaces`), not fixed here.
     #[test]
     fn deeply_nested_geometry_source_compiles_via_public_api_on_2mb_stack() {
