@@ -7,10 +7,28 @@ use reify_ir::{GeometryHandleId, Value};
 /// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
 pub fn read_f64(v: &Value, label: &str) -> f64 {
     match v {
-        Value::Real(r) => *r,
-        Value::Scalar { si_value, .. } => *si_value,
         Value::Int(i) => *i as f64,
-        other => panic!("{label}: expected numeric component, got {other:?}"),
+        other => real_or_scalar_si(other)
+            .unwrap_or_else(|| panic!("{label}: expected numeric component, got {other:?}")),
+    }
+}
+
+/// Read a Real, or a Scalar of any dimension, as its f64 SI value, REJECTING
+/// `Value::Int`: for measured quantities, where an Int is a representation
+/// regression. [`read_f64`] is the variant that also accepts Int.
+#[track_caller]
+pub fn read_real_or_scalar(v: &Value, label: &str) -> f64 {
+    match real_or_scalar_si(v) {
+        Some(x) => x,
+        None => panic!("{label}: expected a Real or Scalar component, got {v:?}"),
+    }
+}
+
+fn real_or_scalar_si(v: &Value) -> Option<f64> {
+    match v {
+        Value::Real(r) => Some(*r),
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        _ => None,
     }
 }
 
