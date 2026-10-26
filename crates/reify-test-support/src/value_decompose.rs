@@ -115,7 +115,7 @@ mod tests {
 
     use super::{
         assert_leaf_node_targeting, assert_selector_leaf, assert_selector_leaf_targeting,
-        assert_selector_value, decompose_point3, read_f64,
+        assert_selector_value, decompose_point3, read_f64, read_real_or_scalar,
     };
 
     // ── read_f64 tests ────────────────────────────────────────────────────────
@@ -143,6 +143,34 @@ mod tests {
     #[should_panic(expected = "lbl: expected numeric component")]
     fn read_f64_panics_on_non_numeric_with_label() {
         read_f64(&Value::Bool(true), "lbl");
+    }
+
+    // ── read_real_or_scalar tests ─────────────────────────────────────────────
+
+    #[test]
+    fn read_real_or_scalar_real_returns_inner_f64() {
+        assert_eq!(read_real_or_scalar(&Value::Real(2.5), "x"), 2.5);
+    }
+
+    #[test]
+    fn read_real_or_scalar_scalar_of_any_dimension_returns_si_value() {
+        let v = Value::Scalar {
+            si_value: 1.5,
+            dimension: DimensionVector::FORCE,
+        };
+        assert_eq!(read_real_or_scalar(&v, "y"), 1.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: expected a Real or Scalar component")]
+    fn read_real_or_scalar_rejects_int_with_label() {
+        read_real_or_scalar(&Value::Int(7), "lbl");
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: expected a Real or Scalar component")]
+    fn read_real_or_scalar_panics_on_non_numeric_with_label() {
+        read_real_or_scalar(&Value::Bool(true), "lbl");
     }
 
     // ── decompose_point3 tests ────────────────────────────────────────────────
