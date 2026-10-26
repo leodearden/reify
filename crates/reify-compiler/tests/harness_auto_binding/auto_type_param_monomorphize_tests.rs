@@ -1424,14 +1424,18 @@ fn unseedable_explicit_type_arg_emits_diagnostic_rather_than_silent_leak() {
 }
 
 /// Accepting-side pin for the seeding predicate (#7318), the counterpart of
-/// the un-seedable test above: a type-arg whose head names a KNOWN template is
-/// seeded, so `sub w` gets a monomorph rather than a diagnostic. `Type::Applied`
-/// cannot reach the predicate today because lowering keeps only the head name
-/// (#7839), so neither the mangle name nor `slot_t`'s exact type is pinned. If
-/// #7839 preserves nested args, this pin goes RED until seeding learns
-/// `Type::Applied` — the intended forcing function.
+/// the un-seedable test above: `Widget<Box<SealA>, auto: Gasket>()` is a valid
+/// use-site, so it must get a monomorph rather than a diagnostic.
+///
+/// Known limitation (#7839): lowering keeps only the head name, so the
+/// predicate sees a bare `Box` — `SealA` is dropped and the still-generic
+/// `Box<X>` is seeded as if it were concrete. That is harmless here only
+/// because `Box` never uses `X`; this test does not endorse it, and so pins
+/// neither the mangle name nor `slot_t`'s type. Once lowering preserves
+/// `Type::Applied`, this goes RED until seeding learns it — the intended
+/// forcing function.
 #[test]
-fn explicit_applied_type_arg_with_known_head_is_seeded_into_monomorph() {
+fn explicit_applied_type_arg_is_seeded_by_head_only_known_limitation() {
     let source = r#"
         trait Gasket {}
         structure def GasketA : Gasket { param g : Real = 1.0 }
@@ -1628,6 +1632,53 @@ fn explicit_type_arg_naming_local_occurrence_seeds_like_a_resolved_candidate() {
     assert_eq!(
         explicit, resolved,
         "an explicit local-occurrence type-arg must seed the monomorph the resolver picks"
+    );
+}
+
+/// Known limitation (#8151): an `auto:` clause that itself fails reports only
+/// the resolver's error. The residual un-seedable diagnostic fires only after
+/// the resolver has bound every `auto:` param, so an undefined name on a
+/// sibling position goes unreported here and surfaces once the `auto:` clause
+/// resolves, where the rejecting-side pin above applies. No monomorph is
+/// minted either way. Diagnosing the name where it is lowered adds a second
+/// error to this use-site, which is the cue to update this pin.
+#[test]
+fn undefined_type_arg_beside_a_failing_auto_clause_is_not_reported_known_limitation() {
+    // No structure implements `Gasket`, so `auto: Gasket` has no candidate.
+    let source = r#"
+        trait Gasket {}
+        structure def Widget<T, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<Nonexistent, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected only the resolver's error, got: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "the one error must be the resolver's, got: {:?}",
+        errors[0]
+    );
+    assert!(
+        !compiled
+            .templates
+            .iter()
+            .any(|t| t.name.starts_with("Widget$")),
+        "a failing `auto:` clause must NOT synthesize a 'Widget$...' monomorph; \
+         got templates: {:?}",
+        template_names(&compiled)
+    );
+    assert_eq!(
+        sub_component(&compiled, "WidgetAssembly", "w").structure_name,
+        "Widget",
+        "sub 'w' must still reference the generic 'Widget' template"
     );
 }
 
