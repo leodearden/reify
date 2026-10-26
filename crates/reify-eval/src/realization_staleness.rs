@@ -613,6 +613,39 @@ mod tests {
         assert!(verdict.unstamp.is_empty(), "{:?}", verdict.unstamp);
     }
 
+    /// `A` and `B` both export `body`, so the index drops `C`'s `a.body` edge.
+    fn a_dropped_operand_consumer_graph() -> EvaluationGraph {
+        graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("B", 0, "body", a_box()),
+            ("C", 0, "moved", translate_of("a.body")),
+            ("X", 0, "shell", a_box()),
+            ("Y", 0, "other", a_box()),
+        ])
+    }
+
+    /// A dropped-operand consumer is seeded stale by any edit, so it re-runs and
+    /// needs every realization its operand may name.
+    #[test]
+    fn an_unrelated_edit_runs_the_possible_producers_of_a_dropped_operand_consumer() {
+        let graph = a_dropped_operand_consumer_graph();
+        let demanded = rids(&[("A", 0), ("B", 0), ("C", 0), ("X", 0), ("Y", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("X", 0)]));
+
+        assert_eq!(verdict.exempt, rids(&[("Y", 0)]));
+    }
+
+    #[test]
+    fn a_dropped_operand_consumer_edit_runs_its_possible_producers() {
+        let graph = a_dropped_operand_consumer_graph();
+        let demanded = rids(&[("A", 0), ("B", 0), ("C", 0), ("X", 0), ("Y", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("C", 0)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0), ("Y", 0)]));
+    }
+
     #[test]
     fn includes_the_entity_of_every_seed() {
         let seeds = HashSet::from([rid("PartA"), rid("PartB")]);
