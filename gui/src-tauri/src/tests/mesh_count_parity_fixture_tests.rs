@@ -52,7 +52,11 @@ const PARITY_SMOKE_FIXTURES: &[FixtureComposition] = &[
 fn session_for(src: &str, module: &str) -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(checker),
+        Some(Box::new(kernel)),
+    );
     session
         .load_from_source(src, module)
         .unwrap_or_else(|e| panic!("{module}: load_from_source must succeed: {e:?}"));
