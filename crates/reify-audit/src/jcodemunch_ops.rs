@@ -194,9 +194,9 @@ pub struct LayerViolation {
 }
 
 /// A [`JCodemunchOps`] query that failed outright, as distinct from one that
-/// answered with nothing. Carried by
-/// [`JCodemunchOps::get_changed_symbols`]'s `Err` so a caller can report the
-/// range it could not examine instead of reading the failure as empty.
+/// answered with nothing. Carried by every [`JCodemunchOps`] method's `Err`
+/// so a caller can report what it could not examine instead of reading the
+/// failure as empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JCodemunchCallFailed {
     /// The jcodemunch tool whose call failed, e.g. `"get_changed_symbols"`.
@@ -224,6 +224,12 @@ impl std::error::Error for JCodemunchCallFailed {}
 /// Object-safe by design — `AuditContext` holds `&'a dyn JCodemunchOps` so
 /// the production and mock impls coexist behind the same vtable (mirrors
 /// [`GitOps`](crate::GitOps)).
+///
+/// A query's `Ok` is the serve's answer, possibly empty. Its `Err`
+/// ([`JCodemunchCallFailed`]) means the call itself failed — unreachable
+/// mid-sweep, timed out, an error envelope — and must never be read as an
+/// empty answer: whatever the query was about went unexamined, and the
+/// caller reports it as such.
 pub trait JCodemunchOps {
     /// Equivalent of `mcp__jcodemunch__get_changed_symbols(since_sha, until_sha)`
     /// (jcodemunch v1.108.27+): the public symbols introduced/changed in the
@@ -231,10 +237,8 @@ pub trait JCodemunchOps {
     /// and `until_sha = "{commit}"` for a single merged commit (mirrors the
     /// `^1..commit` convention from `RealGitOps::diff_added_lines_in_commit`).
     ///
-    /// `Ok` with an empty vec means the range introduced nothing (or its
-    /// commits are not in the index). `Err` means the query itself failed —
-    /// unreachable mid-sweep, timed out, an error envelope — and must never
-    /// be read as empty: the range went unexamined.
+    /// An empty vec means the range introduced nothing (or its commits are
+    /// not in the index).
     fn get_changed_symbols(
         &self,
         since_sha: &str,
@@ -259,31 +263,37 @@ pub trait JCodemunchOps {
     ///
     /// Returns an empty vec when the symbol has no callers (an orphan
     /// candidate). Per `f-infra-design.md` §5 P1.
-    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
+    fn find_references(
+        &self,
+        symbol: &ChangedSymbol,
+    ) -> Result<Vec<SymbolReference>, JCodemunchCallFailed>;
 
     /// Equivalent of `mcp__jcodemunch__get_dead_code_v2(min_confidence)`:
     /// public symbols with no callers whose confidence score meets or exceeds
     /// `min_confidence` (0.0–1.0). Returns an empty vec when none found.
     /// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §4-b.
-    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol>;
+    fn get_dead_code(&self, min_confidence: f64) -> Result<Vec<DeadSymbol>, JCodemunchCallFailed>;
 
     /// Equivalent of `mcp__jcodemunch__get_untested_symbols(min_confidence)`:
     /// symbols not reached by any test whose confidence score meets or exceeds
     /// `min_confidence`. Returns an empty vec when none found. Per PRD §4-b.
-    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol>;
+    fn get_untested_symbols(
+        &self,
+        min_confidence: f64,
+    ) -> Result<Vec<UntestedSymbol>, JCodemunchCallFailed>;
 
     /// Equivalent of `mcp__jcodemunch__get_layer_violations()`: all detected
     /// imports that violate the project's layering rules. Returns an empty vec
     /// when none found. Per PRD §4-b.
-    fn get_layer_violations(&self) -> Vec<LayerViolation>;
+    fn get_layer_violations(&self) -> Result<Vec<LayerViolation>, JCodemunchCallFailed>;
 }
 
 /// Inert [`JCodemunchOps`] — every query answers "nothing".
 ///
-/// Its `Ok(vec![])` from `get_changed_symbols` is not a statement about any
-/// range: no query was made. Unlike [`MockJCodemunchOps`] this is NOT
-/// test-support: it is the production binding whenever a run has no live
-/// seam, and it is ungated for exactly that reason. Its production call sites:
+/// Its empty answers are not statements about the code: no query was made.
+/// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the
+/// production binding whenever a run has no live seam, and it is ungated for
+/// exactly that reason. Its production call sites:
 ///
 /// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
 ///    produces zero findings without opening a socket.
@@ -306,17 +316,23 @@ impl JCodemunchOps for NoopJCodemunchOps {
     ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
         Ok(vec![])
     }
-    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
-        vec![]
+    fn find_references(
+        &self,
+        _symbol: &ChangedSymbol,
+    ) -> Result<Vec<SymbolReference>, JCodemunchCallFailed> {
+        Ok(vec![])
     }
-    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
-        vec![]
+    fn get_dead_code(&self, _min_confidence: f64) -> Result<Vec<DeadSymbol>, JCodemunchCallFailed> {
+        Ok(vec![])
     }
-    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
-        vec![]
+    fn get_untested_symbols(
+        &self,
+        _min_confidence: f64,
+    ) -> Result<Vec<UntestedSymbol>, JCodemunchCallFailed> {
+        Ok(vec![])
     }
-    fn get_layer_violations(&self) -> Vec<LayerViolation> {
-        vec![]
+    fn get_layer_violations(&self) -> Result<Vec<LayerViolation>, JCodemunchCallFailed> {
+        Ok(vec![])
     }
 }
 
@@ -332,18 +348,36 @@ impl JCodemunchOps for NoopJCodemunchOps {
 /// jcodemunch-backed impl cannot provide.
 /// Dead-code / untested-symbol data is stored as a flat Vec and filtered by
 /// `min_confidence` at query time (mirrors the real tool's semantics).
+///
+/// Every canned answer is a `Result`: a `set_*` setter stores the serve's
+/// answer, a `fail_*` setter makes that call fail, and a query nothing was
+/// set for answers `Ok(vec![])`.
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MockJCodemunchOps {
     get_changed_symbols:
         HashMap<(String, String), Result<Vec<ChangedSymbol>, JCodemunchCallFailed>>,
-    find_references: HashMap<(String, String), Vec<SymbolReference>>,
-    dead_code: Vec<DeadSymbol>,
-    untested: Vec<UntestedSymbol>,
-    layer_violations: Vec<LayerViolation>,
+    find_references: HashMap<(String, String), Result<Vec<SymbolReference>, JCodemunchCallFailed>>,
+    dead_code: Result<Vec<DeadSymbol>, JCodemunchCallFailed>,
+    untested: Result<Vec<UntestedSymbol>, JCodemunchCallFailed>,
+    layer_violations: Result<Vec<LayerViolation>, JCodemunchCallFailed>,
     // Records the min_confidence last passed to get_dead_code() so tests can
     // assert the detector passes the intended threshold to the seam.
     last_dead_code_min_confidence: std::cell::Cell<Option<f64>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Default for MockJCodemunchOps {
+    fn default() -> Self {
+        Self {
+            get_changed_symbols: HashMap::new(),
+            find_references: HashMap::new(),
+            dead_code: Ok(vec![]),
+            untested: Ok(vec![]),
+            layer_violations: Ok(vec![]),
+            last_dead_code_min_confidence: std::cell::Cell::new(None),
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -366,22 +400,34 @@ impl MockJCodemunchOps {
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn fail_changed_symbols(&mut self, since_sha: &str, until_sha: &str, detail: &str) {
-        let failure = JCodemunchCallFailed {
-            tool: "get_changed_symbols",
-            detail: detail.to_string(),
-        };
-        self.get_changed_symbols
-            .insert((since_sha.to_string(), until_sha.to_string()), Err(failure));
+        self.get_changed_symbols.insert(
+            (since_sha.to_string(), until_sha.to_string()),
+            Err(Self::canned_failure("get_changed_symbols", detail)),
+        );
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_find_references(&mut self, file: &str, name: &str, refs: Vec<SymbolReference>) {
-        self.find_references.insert((file.to_string(), name.to_string()), refs);
+        self.find_references
+            .insert((file.to_string(), name.to_string()), Ok(refs));
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_find_references(&mut self, file: &str, name: &str, detail: &str) {
+        self.find_references.insert(
+            (file.to_string(), name.to_string()),
+            Err(Self::canned_failure("find_references", detail)),
+        );
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_dead_code(&mut self, symbols: Vec<DeadSymbol>) {
-        self.dead_code = symbols;
+        self.dead_code = Ok(symbols);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_dead_code(&mut self, detail: &str) {
+        self.dead_code = Err(Self::canned_failure("get_dead_code_v2", detail));
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -391,12 +437,31 @@ impl MockJCodemunchOps {
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_untested_symbols(&mut self, symbols: Vec<UntestedSymbol>) {
-        self.untested = symbols;
+        self.untested = Ok(symbols);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_untested_symbols(&mut self, detail: &str) {
+        self.untested = Err(Self::canned_failure("get_untested_symbols", detail));
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_layer_violations(&mut self, violations: Vec<LayerViolation>) {
-        self.layer_violations = violations;
+        self.layer_violations = Ok(violations);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_layer_violations(&mut self, detail: &str) {
+        self.layer_violations = Err(Self::canned_failure("get_layer_violations", detail));
+    }
+
+    /// The canned failure a `fail_*` setter stores: `tool` is the wire tool
+    /// name `RealJCodemunchOps` reports for the same op.
+    fn canned_failure(tool: &'static str, detail: &str) -> JCodemunchCallFailed {
+        JCodemunchCallFailed {
+            tool,
+            detail: detail.to_string(),
+        }
     }
 }
 
@@ -413,31 +478,39 @@ impl JCodemunchOps for MockJCodemunchOps {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
-    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
+    fn find_references(
+        &self,
+        symbol: &ChangedSymbol,
+    ) -> Result<Vec<SymbolReference>, JCodemunchCallFailed> {
         self.find_references
             .get(&(symbol.file.clone(), symbol.name.clone()))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| Ok(vec![]))
     }
 
-    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
+    fn get_dead_code(&self, min_confidence: f64) -> Result<Vec<DeadSymbol>, JCodemunchCallFailed> {
         self.last_dead_code_min_confidence.set(Some(min_confidence));
-        self.dead_code
+        let symbols = self.dead_code.as_ref().map_err(Clone::clone)?;
+        Ok(symbols
             .iter()
             .filter(|s| s.confidence >= min_confidence)
             .cloned()
-            .collect()
+            .collect())
     }
 
-    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol> {
-        self.untested
+    fn get_untested_symbols(
+        &self,
+        min_confidence: f64,
+    ) -> Result<Vec<UntestedSymbol>, JCodemunchCallFailed> {
+        let symbols = self.untested.as_ref().map_err(Clone::clone)?;
+        Ok(symbols
             .iter()
             .filter(|s| s.confidence >= min_confidence)
             .cloned()
-            .collect()
+            .collect())
     }
 
-    fn get_layer_violations(&self) -> Vec<LayerViolation> {
+    fn get_layer_violations(&self) -> Result<Vec<LayerViolation>, JCodemunchCallFailed> {
         self.layer_violations.clone()
     }
 }

@@ -26,7 +26,7 @@
 //!   rather than downgraded, since unknown is not "no opt-out"; an opt-out the
 //!   located declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
 //!   a non-blank `// G-allow:` marker ([`crate::ChangedSymbol::opts_out`]);
-//!   a non-test workspace caller.
+//!   a non-test workspace caller ([`crate::caller_lookup::has_non_test_caller`]).
 //! - Surviving symbols: severity is Medium only once *strictly more than*
 //!   14 days have elapsed since the done-flip (design §5 P1, line 83:
 //!   ">14 days"); at exactly the boundary and anywhere inside the window it
@@ -35,13 +35,18 @@
 //! A task whose `get_changed_symbols` query FAILS is not a task that
 //! introduced nothing: it yields one Low [`Pattern::P1TaskUnexamined`]
 //! ([`task_unexamined`]) and the sweep moves on, so the failure shows in the
-//! findings rather than hiding among the clean tasks. A run with no usable
-//! jcodemunch session at all records P1 once, run-level ([`run_unexamined`]).
+//! findings rather than hiding among the clean tasks. Likewise a symbol whose
+//! `find_references` lookup FAILS is not a symbol with no caller: it is
+//! skipped, the task's other symbols are still examined, and the task yields
+//! one Low [`Pattern::P1TaskUnexamined`] naming every skipped symbol
+//! ([`symbols_unexamined`]). A run with no usable jcodemunch session at all
+//! records P1 once, run-level ([`run_unexamined`]).
 //!
 //! When the FIRST of those per-symbol guards eats a task's entire symbol list,
 //! zero findings means "examined nothing", not "corpus clean", so
 //! [`unexamined_sweep_breadcrumb`] annotates it on stderr.
 
+use crate::caller_lookup::CallerLookups;
 use crate::{
     AuditContext, ChangedSymbol, EvidenceRef, Finding, JCodemunchCallFailed, Pattern, Severity,
 };
@@ -149,7 +154,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             eprintln!("{msg}");
         }
 
-        for symbol in symbols {
+        let examinable = symbols.into_iter().filter(|symbol| {
             // Per-symbol guard: the declaration could not be located, so whether
             // its author opted out is UNKNOWN, not "no". Reporting here is what
             // turns a jcodemunch grammar drift (a release that stops emitting
@@ -157,66 +162,74 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             // index, or an unreadable file into a false-positive storm over
             // every intentionally suppressed symbol. The enrichment pass has
             // already told the operator.
-            if !symbol.decl_located() {
-                continue;
-            }
+            //
             // Per-symbol guard: an intentional-orphan opt-out the located
             // declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
             // a non-blank `// G-allow:` marker, whose shared rule (and the
             // orphan-script regex it mirrors) lives in `DeclSuppression`
             // (design §5 P1).
-            if symbol.opts_out() {
-                continue;
-            }
-            // A non-test workspace caller proves the symbol is consumed —
-            // suppress (design §5 P1: refs filtered to non-`*/tests/*`).
-            let has_non_test_caller = ctx
-                .jcodemunch
-                .find_references(&symbol)
+            symbol.decl_located() && !symbol.opts_out()
+        });
+        // A non-test workspace caller proves the symbol is consumed —
+        // suppress. A failed lookup proves nothing either way, so the
+        // symbol is skipped and recorded, never reported as an orphan;
+        // the task's remaining symbols are still examined.
+        let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch, examinable);
+        let age = now_secs.saturating_sub(done_at);
+        findings.extend(
+            lookups
+                .unconsumed
                 .iter()
-                .any(|r| !crate::is_test_path(&r.file));
-            if has_non_test_caller {
-                continue;
-            }
-
-            let age = now_secs.saturating_sub(done_at);
-            // Strict `>` per design §5 P1 line 83 (">14 days"): at exactly
-            // the boundary the finding stays Low (still inside the window).
-            let (severity, summary) = if age > GRACE_WINDOW_SECS {
-                (
-                    Severity::Medium,
-                    format!(
-                        "producer-orphan: public symbol `{}` introduced by done task {} \
-                         at {}:{}; {} days past done-flip (beyond the 14-day grace window)",
-                        symbol.name,
-                        meta.task_id,
-                        symbol.file,
-                        symbol.line,
-                        age / 86_400
-                    ),
-                )
-            } else {
-                (
-                    Severity::Low,
-                    format!(
-                        "producer-orphan: public symbol `{}` introduced by done task {} \
-                         at {}:{}; within the 14-day grace window; log only \
-                         (per f-infra-design.md §5 P1)",
-                        symbol.name, meta.task_id, symbol.file, symbol.line
-                    ),
-                )
-            };
-            findings.push(Finding {
-                pattern: Pattern::P1ProducerOrphan,
-                severity,
-                task_id: meta.task_id.clone(),
-                summary,
-                evidence: vec![EvidenceRef::File { path: symbol.file.clone() }],
-            });
-        }
+                .map(|symbol| orphan_finding(&meta.task_id, symbol, age)),
+        );
+        findings.extend(symbols_unexamined(
+            &meta.task_id,
+            &since_sha,
+            until_sha,
+            &lookups,
+        ));
     }
 
     findings
+}
+
+/// The producer-orphan finding for `symbol`, introduced by done task
+/// `task_id` `age` seconds ago: Medium only strictly past the grace window
+/// (design §5 P1 line 83, ">14 days"), Low at the boundary and inside it.
+fn orphan_finding(task_id: &str, symbol: &ChangedSymbol, age: i64) -> Finding {
+    let (severity, summary) = if age > GRACE_WINDOW_SECS {
+        (
+            Severity::Medium,
+            format!(
+                "producer-orphan: public symbol `{}` introduced by done task {} \
+                 at {}:{}; {} days past done-flip (beyond the 14-day grace window)",
+                symbol.name,
+                task_id,
+                symbol.file,
+                symbol.line,
+                age / 86_400
+            ),
+        )
+    } else {
+        (
+            Severity::Low,
+            format!(
+                "producer-orphan: public symbol `{}` introduced by done task {} \
+                 at {}:{}; within the 14-day grace window; log only \
+                 (per f-infra-design.md §5 P1)",
+                symbol.name, task_id, symbol.file, symbol.line
+            ),
+        )
+    };
+    Finding {
+        pattern: Pattern::P1ProducerOrphan,
+        severity,
+        task_id: task_id.to_string(),
+        summary,
+        evidence: vec![EvidenceRef::File {
+            path: symbol.file.clone(),
+        }],
+    }
 }
 
 /// The finding for a done task P1 could not examine because its
@@ -244,6 +257,40 @@ fn task_unexamined(
         ),
         evidence: vec![],
     }
+}
+
+/// The finding for a done task some of whose symbols P1 could not examine
+/// because their `find_references` lookups failed, or `None` when every
+/// lookup answered. Low, so it never moves the exit code, and worded so that
+/// those symbols' lack of producer-orphan findings cannot be read as a clean
+/// result. The task's other symbols were examined, so an orphan reported
+/// beside it is genuine.
+///
+/// One finding per task however many lookups failed: the summary names every
+/// skipped symbol and the first failure, and `evidence` cites each skipped
+/// symbol's declaration ([`crate::caller_lookup::SkippedSymbols`]).
+fn symbols_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    lookups: &CallerLookups,
+) -> Option<Finding> {
+    let skipped = lookups.skipped()?;
+    Some(Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "task-unexamined: P1 could not examine {count} symbol(s) of done \
+             task {task_id} from {since_sha}..{until_sha} ({names}): \
+             {first_failure}; zero producer-orphan findings for them are not a \
+             clean result — re-run once jcodemunch answers",
+            count = skipped.count,
+            names = skipped.names,
+            first_failure = skipped.first_failure,
+        ),
+        evidence: skipped.evidence,
+    })
 }
 
 /// The finding for a run in which P1 had no usable jcodemunch session at all,

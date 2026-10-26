@@ -31,10 +31,17 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
-/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — P1 / P5 H2 examined
-///   nothing where it should have. Per-task form: that task's
-///   `get_changed_symbols` query failed. Run-level form, `task_id` empty: the
-///   run had no usable jcodemunch seam from the start.
+/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — P1 / P5 H2 left
+///   unexamined something it should have examined. Per-task form: that
+///   task's `get_changed_symbols` query failed, or `find_references` failed
+///   for some of its symbols. Run-level form, `task_id` empty: the run had no
+///   usable jcodemunch seam from the start.
+/// - `PDeadCodeUnexamined` / `PUntestedUnexamined` /
+///   `PLayerViolationUnexamined` — PDEAD / PUNTESTED / PLAYER examined
+///   nothing this run because its single jcodemunch query failed after a
+///   successful handshake. A seam unavailable from the start of the run
+///   records none of them: that construction layer is separate, and those
+///   detectors then report zero findings with no such record.
 /// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
@@ -61,12 +68,16 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
-    /// P1 — task-unexamined: P1 examined nothing where it should have. Two
-    /// forms, told apart by `task_id` alone:
+    /// P1 — task-unexamined: P1 left unexamined something it should have
+    /// examined. Two forms, told apart by `task_id` alone:
     ///
-    /// - **per-task** (`task_id` = the task): a `done` task P1 could not
-    ///   examine because its `get_changed_symbols` query failed (see
-    ///   [`JCodemunchCallFailed`](crate::JCodemunchCallFailed));
+    /// - **per-task** (`task_id` = the task), at most one per task, for
+    ///   either of two failed calls (see
+    ///   [`JCodemunchCallFailed`](crate::JCodemunchCallFailed)): the task's
+    ///   `get_changed_symbols` query failed, so none of it was examined; or
+    ///   `find_references` failed for one or more of its symbols, which are
+    ///   named in the summary and cited as [`EvidenceRef::FileLine`]
+    ///   evidence, while its other symbols were examined as usual;
     /// - **run-level** (`task_id` empty, the convention the corpus-level
     ///   detectors use): the run had no usable jcodemunch seam from the start
     ///   — unreachable, handshake refused, or an unusable index — so P1
@@ -86,14 +97,31 @@ pub enum Pattern {
     /// threshold, as reported by `mcp__jcodemunch__get_dead_code_v2`.
     /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
     PDeadCode,
+    /// P-dead-code-unexamined: PDEAD's one `get_dead_code_v2` query failed
+    /// after a successful handshake, so PDEAD examined nothing this run.
+    /// Always Low (exit-neutral), `task_id` empty, at most one per run; its
+    /// presence stops zero [`Pattern::PDeadCode`] findings reading as clean.
+    PDeadCodeUnexamined,
     /// P-untested — symbol not reached by any test above a minimum confidence
     /// threshold, as reported by `mcp__jcodemunch__get_untested_symbols`.
     /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
     PUntested,
+    /// P-untested-unexamined: PUNTESTED's one `get_untested_symbols` query
+    /// failed after a successful handshake, so PUNTESTED examined nothing
+    /// this run. Always Low (exit-neutral), `task_id` empty, at most one per
+    /// run; its presence stops zero [`Pattern::PUntested`] findings reading
+    /// as clean.
+    PUntestedUnexamined,
     /// P-layer-violation — an import that violates the project's layer rules,
     /// as reported by `mcp__jcodemunch__get_layer_violations`.
     /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
     PLayerViolation,
+    /// P-layer-violation-unexamined: PLAYER's one `get_layer_violations`
+    /// query failed after a successful handshake, so PLAYER examined nothing
+    /// this run. Always Low (exit-neutral), `task_id` empty, at most one per
+    /// run; its presence stops zero [`Pattern::PLayerViolation`] findings
+    /// reading as clean.
+    PLayerViolationUnexamined,
     /// P5 — tests-assert-empty: a `done` task whose added test function BOTH
     /// (a) carries a placeholder/empty/not_yet/notyet/stub/todo/unimplemented
     /// marker in its fn name AND (b) asserts an empty/vacuous result
@@ -113,12 +141,13 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
-    /// P5 — live-path-unexamined: H2 examined nothing where it should have.
-    /// H2's counterpart of [`Pattern::P1TaskUnexamined`], with the same two
-    /// forms told apart by `task_id`:
+    /// P5 — live-path-unexamined: H2 left unexamined something it should
+    /// have examined. H2's counterpart of [`Pattern::P1TaskUnexamined`], with
+    /// the same two forms told apart by `task_id`:
     ///
     /// - **per-task**: a cross-crate `done` task whose `get_changed_symbols`
-    ///   query failed;
+    ///   query failed, or for some of whose symbols `find_references` failed
+    ///   (named and cited as for P1). At most one per task;
     /// - **run-level** (`task_id` empty): the run had no usable jcodemunch
     ///   seam from the start, and it sweeps at least one task H2 would have
     ///   queried for. At most one per run.
@@ -329,6 +358,32 @@ pub struct Finding {
 // -----------------------------------------------------------------------
 // Public surface — input shape
 // -----------------------------------------------------------------------
+
+/// The finding for a run in which a corpus-level detector's single
+/// jcodemunch query failed, so it examined nothing: `pattern` is that
+/// detector's `*Unexamined` variant, `flag` its `--pattern` token, and `noun`
+/// what its findings report. Low (exit-neutral), repo-wide (empty
+/// `task_id`), and without evidence, since the failed query returned nothing
+/// to cite. Worded so that the run's zero `noun` findings cannot be read as a
+/// clean result.
+pub(crate) fn corpus_unexamined(
+    pattern: Pattern,
+    flag: &str,
+    noun: &str,
+    failure: &crate::JCodemunchCallFailed,
+) -> Finding {
+    Finding {
+        pattern,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "{noun}-unexamined: {flag} examined nothing this run ({failure}); \
+             zero {noun} findings are not a clean result — re-run once \
+             jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
 
 /// Subset of Taskmaster's `tasks.json` schema needed by P5.
 ///
