@@ -3671,6 +3671,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Foreground watcher-rearm run with --timeout 1800 died at exit 137 (turn 142, the session's only tool_error). The entry describes this failure mode of the foreground bounded-wait re-arm. The digest does not show whether the agent then switched to background, so that part is unconfirmed.
+  - date: '2026-10-25'
+    project: reify
+    session: 1b4174b7-88fb-430a-8495-e6717f732412
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 1119: a foreground bounded wait (`timeout 1380 tail --pid=516972 -f /dev/null`) exited 137. The digest shows no retry, so this is a weak match to the watcher re-arm exit-137 entry; the entry''s retry-versus-background-switch behaviour is not evidenced here.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260722-3
@@ -4584,6 +4590,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'watcher-rearm.sh with --timeout 3600 hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) at turns 73, 79 and 125. The identical command was re-issued each time, matching the entry''s pattern of re-issuing a bounded rearm wait after its ceiling.'
+  - date: '2026-10-25'
+    project: reify
+    session: 31d09ed5-02d6-4088-bae3-e3cd70d150d1
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The identical watcher-rearm.sh bounded wait (--level 1 --timeout 3600) was re-issued after hitting its own CEILING (exit 124) at turns 110 and 178. A third attempt at turn 163 added an exclude-file entry but kept the same ceiling-bounded wait.
+  - date: '2026-10-25'
+    project: reify
+    session: afb68806-9cf0-415f-8e70-f7398b19ea2f
+    origin_phase: ops
+    manifested_phase: ops
+    note: The Bash watcher-rearm.sh bounded wait (--timeout 3600) was re-issued with an identical command 5 times in the retry loop, after each run hit its own ceiling. The digest does not show the exit code, so the match rests on the identical re-issue pattern.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260726-8
@@ -8652,6 +8670,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: A `tail -c 1500 .task/iterations.jsonl` probe in the lane-8 worktree returned 'No such file or directory' (exit 1) while the agent was investigating the post-merge verify failure, matching the missing per-lane task-meta iterations.jsonl at the expected path.
+  - date: '2026-10-25'
+    project: reify
+    session: 1b4174b7-88fb-430a-8495-e6717f732412
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 67: `tail -c 6000 $d/iterations.jsonl 2>/dev/null` exited 1 because the per-lane iterations.jsonl is absent from the resolved .task-meta/_lane-35 directory, whose listing shows only agent_session.json, metadata.json, plan.json, plan.json.mutex, plan.lock, reviews and verdicts.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260727-8
@@ -10659,6 +10683,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Multi-line python3 -c script embedded in Bash command with incomplete second for loop ('for s in p.get...') causes exit code 1 SyntaxError; first for loop successfully read and printed design_decisions before truncation error
+  - date: '2026-10-25'
+    project: reify
+    session: 5cae02c6-7b8c-4aa6-b55b-8588e638d837
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Partial match: Glob with recursive patterns over broad roots (/home/leo, /tmp, the worktree) timed out three times (turns 48, 66, 67), and the agent retried with different broad roots instead of narrowing the search. The digest does not show the phase, so both phases are unknown.'
 - id: entry-cand-20260911-22
   title: add_memory content field carries a leaked tool-call envelope closing tag, rejected by mcp_markup_detected guard
   severity: medium
@@ -11078,6 +11108,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Weak match. The session runs in a warm-lane worktree (cwd .../worktrees/_lane-1), and the agent probed repo-root-relative paths (scripts/lib_event_log.sh, tests/infra/verify_events.py) that do not exist, producing repeated not-found and exit-2 errors. The digest does not show the cause directly, so this is a partial match.
+  - date: '2026-10-25'
+    project: reify
+    session: 492f673c-35a6-4931-aeae-62190af65d7d
+    origin_phase: unknown
+    manifested_phase: recon
+    note: Session cwd is nested under warm-lanes/worktrees/_lane-10, and the agent repeatedly guessed repo-root-relative paths (crates/reify-compiler/src/types.rs, crates/reify-cli/src/lib.rs) that returned no such file (turns 275, 291, 307).
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -12059,6 +12095,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Same missing plan.json artifact in the warm-lane task-meta directory at bootstrap; the not-found error surfaces at turn 387 when the agent probes for it.
+  - date: '2026-10-25'
+    project: reify
+    session: 492f673c-35a6-4931-aeae-62190af65d7d
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The first error (turn 204) is a python3 read of .task/plan.json, which does not exist at the path the command resolved to. The digest does not show the phase where the bootstrap artifact went missing.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -30674,6 +30716,32 @@ candidates:
     origin_phase: unknown
     manifested_phase: review
     evidence_quote: 'The review missed a real bug. The live path''s comment says an empty spacing vector gives h=+∞ and a "BelowResolution" result "rather than panicking". That''s wrong: `reify_shell_extract::min_wall_thickness` reads `spacing[0..3]` before the field is validated.'
+- id: cand-20261025-1
+  title: Merge phase reports success with no merge_sha, leaving the landing unattributable
+  cause: A merge that completes without a merge_sha is routed through TaskWorkflow._finalise_without_merge_sha as a success, so the journal cannot attribute the landing and the work's presence on main cannot be verified.
+  area: orchestrator
+  first_seen: '2026-10-25'
+  disposition: pending
+  sightings:
+  - date: '2026-10-25'
+    project: reify
+    session: 2701c541-d5c8-4333-8317-6efbb51ec053
+    origin_phase: merge
+    manifested_phase: merge
+    evidence_quote: 'Block reason: Merge phase reported success with no merge_sha and the landing could not be attributed'
+- id: cand-20261025-2
+  title: Failed find_references call returns an empty Vec that reads as a 'no callers' answer
+  cause: On error, the call logs a stderr breadcrumb and returns an empty result, which the orphan and stranded checks treat as a real answer and turn into false-positive findings that get auto-filed as tasks.
+  area: reify-audit
+  first_seen: '2026-10-25'
+  disposition: pending
+  sightings:
+  - date: '2026-10-25'
+    project: reify
+    session: 2701c541-d5c8-4333-8317-6efbb51ec053
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: When it errors, RealJCodemunchOps::find_references (crates/reify-audit/src/jcodemunch_client.rs) logs a stderr breadcrumb and returns Vec::new().
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
