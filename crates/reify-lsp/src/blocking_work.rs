@@ -130,11 +130,11 @@ pub mod test_support {
     /// this long.
     pub const IDLE_POOL_WOULD_HAVE_RUN_IT_BY: Duration = Duration::from_millis(500);
 
-    /// The definition, prepareRename, rename and references requests for the
-    /// document at `uri`, each at a position that resolves when that document
-    /// holds `reify_test_support::bracket_source()`, so a panic swallowed into
+    /// Every query request whose handler runs blocking work, for the document
+    /// at `uri`, each at a position that resolves when that document holds
+    /// `reify_test_support::bracket_source()`, so a panic swallowed into
     /// `None` shows as a null answer.
-    pub fn blocking_work_requests(uri: &str) -> [(&'static str, Value); 4] {
+    pub fn blocking_work_requests(uri: &str) -> [(&'static str, Value); 8] {
         let at = |line: u32, character: u32| {
             json!({
                 "textDocument": { "uri": uri },
@@ -150,6 +150,13 @@ pub mod test_support {
             ("textDocument/prepareRename", at(7, 17)),
             ("textDocument/rename", rename),
             ("textDocument/references", references),
+            ("textDocument/hover", at(7, 17)),
+            ("textDocument/completion", at(7, 17)),
+            (
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": uri } }),
+            ),
+            ("textDocument/documentHighlight", at(7, 17)),
         ]
     }
 }
