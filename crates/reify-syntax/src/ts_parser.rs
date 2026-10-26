@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
+mod detached_unit;
 mod fault_diagnosis;
 
 use fault_diagnosis::{
@@ -143,6 +144,28 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     }
 }
 
+/// A short, single-line excerpt of `text`, safe to interpolate into a diagnostic message.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+/// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
+/// the node in question can span an entire declaration. Truncates at the first newline,
+/// then to at most 40 characters, appending an ellipsis when anything was cut.
+///
+/// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
+/// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+fn bounded_excerpt(text: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let (first_line, had_newline) = match text.find('\n') {
+        Some(i) => (&text[..i], true),
+        None => (text, false),
+    };
+    match first_line.char_indices().nth(MAX_CHARS) {
+        Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
+        None if had_newline => format!("{first_line}…"),
+        None => first_line.to_string(),
+    }
+}
+
 /// Classification of an out-of-range numeric literal parse result.
 ///
 /// Used by [`Lowering::classify_number_range`] and consumed by
@@ -241,9 +264,24 @@ impl<'a> Lowering<'a> {
     /// multi-line slice of source is what made these diagnostics unreadable and
     /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
     /// (see [`Self::push_fault_error_with_excerpt`]).
+    ///
+    /// When the anchor is a detached unit suffix, [`Self::with_detached_unit_hint`] appends a
+    /// remedy.
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
-        self.push_error(message.into(), self.span(anchor));
+        let message = self.with_detached_unit_hint(message.into(), anchor);
+        self.push_error(message, self.span(anchor));
+    }
+
+    /// `message` with [`detached_unit::remedy_hint`] appended when `fault` is a unit detached
+    /// from its number (`1000.0 N/m`, rejected on purpose by docs/prds/unit-expressions.md
+    /// §3.1, task #7190), else `message` unchanged. The one append rule shared by every place
+    /// a fault becomes a message; the hint quotes through [`bounded_excerpt`].
+    fn with_detached_unit_hint(&self, mut message: String, fault: tree_sitter::Node) -> String {
+        if let Some(hint) = detached_unit::remedy_hint(fault, self.source, bounded_excerpt) {
+            message.push_str(&hint);
+        }
+        message
     }
 
     /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
@@ -397,7 +435,7 @@ impl<'a> Lowering<'a> {
         for &fault in &generic[..generic_kept] {
             reports.push((
                 fault.start_byte(),
-                format!("syntax error in {context}"),
+                self.with_detached_unit_hint(format!("syntax error in {context}"), fault),
                 self.span(fault),
             ));
         }
@@ -470,27 +508,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// A short, single-line excerpt of a node's source text, safe to interpolate into a
-    /// diagnostic message.
-    ///
-    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
-    /// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
-    /// the node in question can span an entire declaration. Truncates at the first newline,
-    /// then to at most 40 characters, appending an ellipsis when anything was cut.
-    ///
-    /// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
-    /// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+    /// diagnostic message: [`bounded_excerpt`] of the node's text.
     fn snippet(&self, node: tree_sitter::Node) -> String {
-        const MAX_CHARS: usize = 40;
-        let text = self.node_text(node);
-        let (first_line, had_newline) = match text.find('\n') {
-            Some(i) => (&text[..i], true),
-            None => (text, false),
-        };
-        match first_line.char_indices().nth(MAX_CHARS) {
-            Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
-            None if had_newline => format!("{first_line}…"),
-            None => first_line.to_string(),
-        }
+        bounded_excerpt(self.node_text(node))
     }
 
     /// Emit a diagnostic for an unexpected named child in a lowering context.
