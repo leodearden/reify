@@ -251,27 +251,28 @@ impl FusedMemoryClient {
             "get_tasks",
             json!({"project_root": project_root, "with_subtasks": true}),
         )?;
-        // Refuse to treat a missing/non-array `tasks` field as an
-        // (empty) success — a server response like `{}` or an
-        // unexpectedly-shaped success payload would otherwise let the
-        // sweep silently return zero tasks and exit 0 (looking
-        // healthy). Raising Protocol routes through the binary's
-        // load-error arm and exits 125, matching the get_task
-        // refuse-on-malformed contract.
-        let tasks = v
-            .get("tasks")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| {
-                LoadError::Protocol(format!(
-                    "get_tasks: missing or non-array `tasks` field in response: {v}"
-                ))
-            })?;
-        let mut out = Vec::new();
-        for t in tasks {
-            collect_tasks_recursive(t, &mut out);
-        }
-        Ok(out)
+        tasks_from_get_tasks_reply(&v)
     }
+}
+
+/// `get_tasks`' `{"tasks": [...]}` reply → every task and subtask, flattened.
+///
+/// Total per row: a row [`task_metadata_from_wire`] cannot decode is skipped
+/// and the rest of the corpus is kept. A missing or non-array `tasks` field is
+/// refused as `Protocol` rather than read as an empty corpus, which would
+/// otherwise let a sweep exit 0 looking healthy; the binary maps it to 125,
+/// matching `get_task`'s refuse-on-malformed contract.
+fn tasks_from_get_tasks_reply(v: &Value) -> Result<Vec<TaskMetadata>, LoadError> {
+    let tasks = v.get("tasks").and_then(|t| t.as_array()).ok_or_else(|| {
+        LoadError::Protocol(format!(
+            "get_tasks: missing or non-array `tasks` field in response: {v}"
+        ))
+    })?;
+    let mut out = Vec::new();
+    for t in tasks {
+        collect_tasks_recursive(t, &mut out);
+    }
+    Ok(out)
 }
 
 fn collect_tasks_recursive(node: &Value, out: &mut Vec<TaskMetadata>) {
@@ -660,11 +661,11 @@ mod tests {
         let mut malformed =
             done_task_wire(json!("garbage"), json!({"done_at": "2026-01-01T00:00:00Z"}));
         malformed["id"] = json!("8076");
+        let undecodable = json!({"title": "no id", "status": "done"});
         let neighbour = done_task_wire(json!("2026-05-16T07:39:04Z"), json!({}));
-        let mut out = Vec::new();
-        for row in [&malformed, &neighbour] {
-            collect_tasks_recursive(row, &mut out);
-        }
+        let out =
+            tasks_from_get_tasks_reply(&json!({"tasks": [malformed, undecodable, neighbour]}))
+                .expect("a well-formed get_tasks envelope decodes");
         let done_at_by_id: Vec<(&str, Option<i64>)> = out
             .iter()
             .map(|tm| (tm.task_id.as_str(), tm.done_at))
