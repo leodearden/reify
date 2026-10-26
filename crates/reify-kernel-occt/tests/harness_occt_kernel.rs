@@ -18,8 +18,14 @@ mod input_validation;
 mod kernel_contract;
 #[path = "harness_occt_kernel/lifecycle.rs"]
 mod lifecycle;
+#[path = "harness_occt_kernel/mass_properties.rs"]
+mod mass_properties;
 #[path = "harness_occt_kernel/modify_ops.rs"]
 mod modify_ops;
+#[path = "harness_occt_kernel/primitives_profiles.rs"]
+mod primitives_profiles;
+#[path = "harness_occt_kernel/queries_export.rs"]
+mod queries_export;
 #[path = "harness_occt_kernel/support.rs"]
 mod support;
 #[path = "harness_occt_kernel/sweeps.rs"]

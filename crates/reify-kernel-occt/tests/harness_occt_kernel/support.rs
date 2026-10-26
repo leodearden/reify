@@ -3,7 +3,21 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryError, GeometryHandle, GeometryOp, Value};
+use reify_ir::{GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, Value};
+use reify_kernel_occt::OcctKernel;
+
+/// Create the canonical 20×10×5 axis-aligned box used by the InertiaTensor
+/// density/analytic tests and store it in `kernel`. Returns the handle ID.
+pub(crate) fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::Box {
+            size_x: Value::Real(20.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(5.0),
+        })
+        .expect("Box creation must succeed")
+        .id
+}
 
 /// Assert that a `Result` is an `Err(GeometryError::OperationFailed(msg))` where
 /// `msg` contains the given `expected_substring`. Panics on `Ok` or wrong error variant.
