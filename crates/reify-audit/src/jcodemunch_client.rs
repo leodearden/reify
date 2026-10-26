@@ -66,9 +66,10 @@ const HTTP_TIMEOUT_SECS: u64 = 60;
 // LoadError
 // -----------------------------------------------------------------------
 
-/// Errors returned by [`JcodemunchClient`]. Variants map to fail-soft empty
-/// results at the [`RealJCodemunchOps`] boundary (per design decision:
-/// a down serve must not crash the sweep).
+/// Errors returned by [`JcodemunchClient`]. At the [`RealJCodemunchOps`]
+/// boundary a per-call error becomes a [`JCodemunchCallFailed`], which its
+/// detector records as unexamined, so a down serve never crashes the sweep
+/// (per design decision).
 #[derive(Debug)]
 pub enum LoadError {
     /// Transport-level failure — the endpoint never answered: connection
@@ -1512,6 +1513,29 @@ impl RealJCodemunchOps {
             project_root: project_root.into(),
         })
     }
+
+    /// Calls `tool`, or reports why it failed: the per-call fail-soft
+    /// breadcrumb `jcodemunch <tool>: <error>` on stderr — or
+    /// `jcodemunch <tool>(<subject>): <error>` for a call about one `subject`
+    /// — and the [`JCodemunchCallFailed`] every op returns instead of an
+    /// answer.
+    fn call_or_fail(
+        &self,
+        tool: &'static str,
+        subject: Option<&str>,
+        arguments: Value,
+    ) -> Result<Value, JCodemunchCallFailed> {
+        self.client.call_tool(tool, arguments).map_err(|e| {
+            match subject {
+                Some(subject) => eprintln!("jcodemunch {tool}({subject}): {e}"),
+                None => eprintln!("jcodemunch {tool}: {e}"),
+            }
+            JCodemunchCallFailed {
+                tool,
+                detail: e.to_string(),
+            }
+        })
+    }
 }
 
 impl JCodemunchOps for RealJCodemunchOps {
@@ -1520,23 +1544,15 @@ impl JCodemunchOps for RealJCodemunchOps {
         since_sha: &str,
         until_sha: &str,
     ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
-        let decoded = match self.client.call_tool(
+        let decoded = self.call_or_fail(
             "get_changed_symbols",
+            None,
             json!({
                 "repo": self.repo,
                 "since_sha": since_sha,
                 "until_sha": until_sha,
             }),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("jcodemunch get_changed_symbols: {e}");
-                return Err(JCodemunchCallFailed {
-                    tool: "get_changed_symbols",
-                    detail: e.to_string(),
-                });
-            }
-        };
+        )?;
         let mut symbols = changed_symbols_from_wire(&decoded);
         // A dropped row means a MANDATORY column (`name`/`file`) the wire
         // no longer carries. Reported once per call, never once per row.
@@ -1555,25 +1571,24 @@ impl JCodemunchOps for RealJCodemunchOps {
         Ok(symbols)
     }
 
-    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
-        let decoded = match self.client.call_tool(
+    fn find_references(
+        &self,
+        symbol: &ChangedSymbol,
+    ) -> Result<Vec<SymbolReference>, JCodemunchCallFailed> {
+        let decoded = self.call_or_fail(
             "find_references",
+            Some(&symbol.name),
             json!({
                 "repo": self.repo,
                 "identifier": symbol.name,
             }),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("jcodemunch find_references({}): {e}", symbol.name);
-                return Vec::new();
-            }
-        };
+        )?;
         // Diagnosed against the table the decoder ACTUALLY read, which is
         // why it travels back with the rows: `__rows__` today, any other
         // table on the fallback scan. Rows the decoder could not read must
-        // be loud, because an empty answer is indistinguishable from the
-        // genuine zero-reference answer P1 reads as a producer orphan.
+        // be loud: unlike a failed call, which returns `Err`, they leave an
+        // `Ok` answer indistinguishable from the genuine zero-reference one
+        // P1 reads as a producer orphan.
         match find_references_from_wire(&decoded) {
             Some(DecodedReferences { table, refs }) => {
                 if let Some(msg) =
@@ -1581,28 +1596,23 @@ impl JCodemunchOps for RealJCodemunchOps {
                 {
                     eprintln!("{msg}");
                 }
-                refs
+                Ok(refs)
             }
-            // No table carried references at all, so there were no rows to
-            // drop and nothing to report.
-            None => Vec::new(),
+            // No table carried references at all: the serve answered, with
+            // no rows to drop and nothing to report.
+            None => Ok(Vec::new()),
         }
     }
 
-    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
-        let decoded = match self.client.call_tool(
+    fn get_dead_code(&self, min_confidence: f64) -> Result<Vec<DeadSymbol>, JCodemunchCallFailed> {
+        let decoded = self.call_or_fail(
             "get_dead_code_v2",
+            None,
             json!({
                 "repo": self.repo,
                 "min_confidence": min_confidence,
             }),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("jcodemunch get_dead_code_v2: {e}");
-                return Vec::new();
-            }
-        };
+        )?;
         let symbols = dead_symbols_from_wire(&decoded);
         // `confidence` is mandatory here (it is what `min_confidence`
         // filters on), so its drift would empty the whole PDEAD corpus and
@@ -1612,46 +1622,39 @@ impl JCodemunchOps for RealJCodemunchOps {
         {
             eprintln!("{msg}");
         }
-        symbols
+        Ok(symbols)
     }
 
-    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol> {
-        let decoded = match self.client.call_tool(
+    fn get_untested_symbols(
+        &self,
+        min_confidence: f64,
+    ) -> Result<Vec<UntestedSymbol>, JCodemunchCallFailed> {
+        let decoded = self.call_or_fail(
             "get_untested_symbols",
+            None,
             json!({
                 "repo": self.repo,
                 "min_confidence": min_confidence,
             }),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("jcodemunch get_untested_symbols: {e}");
-                return Vec::new();
-            }
-        };
+        )?;
         let symbols = untested_symbols_from_wire(&decoded);
         if let Some(msg) =
             dropped_rows_diagnostic("get_untested_symbols", &decoded, "symbols", symbols.len())
         {
             eprintln!("{msg}");
         }
-        symbols
+        Ok(symbols)
     }
 
-    fn get_layer_violations(&self) -> Vec<LayerViolation> {
-        let decoded = match self.client.call_tool(
+    fn get_layer_violations(&self) -> Result<Vec<LayerViolation>, JCodemunchCallFailed> {
+        let decoded = self.call_or_fail(
             "get_layer_violations",
+            None,
             json!({
                 "repo": self.repo,
             }),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("jcodemunch get_layer_violations: {e}");
-                return Vec::new();
-            }
-        };
-        layer_violations_from_wire(&decoded)
+        )?;
+        Ok(layer_violations_from_wire(&decoded))
     }
 }
 
@@ -2530,15 +2533,14 @@ mod tests {
     /// 1.108.54 already shipped for `line` — yields a `Vec` that is
     /// byte-for-byte indistinguishable from the genuine "this symbol has
     /// zero references" answer the empty-`__rows__` case deliberately
-    /// preserves. `p1_producer_orphan::check`'s
-    /// `has_non_test_caller` would then evaluate false for EVERY symbol
-    /// and P1 would emit a producer-orphan finding for every
-    /// well-referenced public symbol in a done task — a false-POSITIVE
-    /// storm, the opposite direction to the decoy-table hazard the
-    /// selector's doc reasons about.
+    /// preserves. `crate::has_non_test_caller` would then answer
+    /// `Ok(false)` for EVERY symbol and P1 would emit a producer-orphan
+    /// finding for every well-referenced public symbol in a done task — a
+    /// false-POSITIVE storm, the opposite direction to the decoy-table
+    /// hazard the selector's doc reasons about.
     ///
     /// Dropping the rows stays correct: a reference with no file cannot be
-    /// classified test/non-test by P1's `has_non_test_caller`. Dropping
+    /// classified test/non-test by `has_non_test_caller`. Dropping
     /// them SILENTLY is not, so this pins the diagnostic rather than the
     /// empty vec alone.
     #[test]
@@ -4143,7 +4145,9 @@ mod tests {
                 line: 1,
                 suppression: None,
             };
-            let refs = ops.find_references(&symbol);
+            let refs = ops
+                .find_references(&symbol)
+                .expect("the stub answers find_references");
 
             let files: Vec<&str> = refs.iter().map(|r| r.file.as_str()).collect();
             assert_eq!(

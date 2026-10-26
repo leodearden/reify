@@ -73,6 +73,8 @@ mod git_ops;
 mod jcodemunch_ops;
 /// Crate-internal: the finding and input shapes; re-exported below.
 mod model;
+/// Crate-internal: the caller lookup P1 and P5 H2 share.
+pub(crate) mod caller_lookup;
 
 pub use git_ops::{GitCommit, GitOps, RealGitOps, LOG_GREP_FORMAT};
 #[cfg(any(test, feature = "test-support"))]
