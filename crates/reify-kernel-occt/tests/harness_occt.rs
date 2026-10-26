@@ -32,18 +32,20 @@
 //! other side of the seam and why the consumers were the side that moved.
 //!
 //! cfg retention: every module here carries a crate-level `#![cfg(has_occt)]` unless named
-//! otherwise in this paragraph; 3 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
-//! (boolean_parallel_determinism, conformance_integration, curve_curvature_integration), and 1 carries
+//! otherwise in this paragraph; 4 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
+//! (boolean_parallel_determinism, conformance_integration, curve_curvature_integration,
+//! step_document_integration), and 1 carries
 //! `#![cfg(all(has_occt, feature = "mesh-morph"))]` (projector_impl). These inner attributes
 //! are retained VERBATIM on the moved submodules rather than hoisted to an outer `#[cfg]` on
 //! the `mod` declarations below — an inner `#![cfg(...)]` on a `#[path]`-loaded submodule
 //! compiles correctly in every cfg state and preserves the `<file>::<test>` module path, so
-//! hoisting would have bought nothing while costing error-prone body edits. The remaining 3
-//! files (dispatcher_integration, inventory_registration, warm_startable_registration) carry
-//! no crate-level cfg and compile/run without OCCT today. Accordingly THIS harness root is
-//! deliberately NOT `#![cfg(has_occt)]`-gated — gating it would drop those 3 modules' tests
-//! whenever `has_occt` is unset, a regression. All three stayed here through the #7466 split,
-//! so that reasoning is unchanged by it. Each module's own retained inner attribute reproduces
+//! hoisting would have bought nothing while costing error-prone body edits. The remaining 4
+//! files (dispatcher_integration, inline_pattern_ratchet, inventory_registration,
+//! warm_startable_registration) carry no crate-level cfg and compile/run without OCCT today.
+//! Accordingly THIS harness root is deliberately NOT `#![cfg(has_occt)]`-gated — gating it
+//! would drop those 4 modules' tests whenever `has_occt` is unset, a regression. Three of them
+//! stayed here through the #7466 split, and inline_pattern_ratchet is a pure source lint, so
+//! that reasoning is unchanged by either. Each module's own retained inner attribute reproduces
 //! the exact pre-consolidation compile matrix.
 
 #[path = "harness_occt/apply_transform_integration.rs"]
@@ -58,6 +60,8 @@ mod boolean_single_build_guard;
 mod conformance_integration;
 #[path = "harness_occt/contains.rs"]
 mod contains;
+#[path = "harness_occt/curated_selection_membership.rs"]
+mod curated_selection_membership;
 #[path = "harness_occt/curve_constructors_integration.rs"]
 mod curve_constructors_integration;
 #[path = "harness_occt/curve_curvature_integration.rs"]
@@ -68,6 +72,8 @@ mod dispatcher_integration;
 mod draft_integration;
 #[path = "harness_occt/empty_shape_consumer_guard_integration.rs"]
 mod empty_shape_consumer_guard_integration;
+#[path = "harness_occt/execute_with_history_lowering.rs"]
+mod execute_with_history_lowering;
 #[path = "harness_occt/extrude_integration.rs"]
 mod extrude_integration;
 #[path = "harness_occt/extrude_with_history_integration.rs"]
@@ -82,6 +88,8 @@ mod gtransform_tessellation_ordering_integration;
 mod half_space_integration;
 #[path = "harness_occt/helix_sweep_integration.rs"]
 mod helix_sweep_integration;
+#[path = "harness_occt/inline_pattern_ratchet.rs"]
+mod inline_pattern_ratchet;
 #[path = "harness_occt/interference_integration.rs"]
 mod interference_integration;
 #[path = "harness_occt/inventory_registration.rs"]
@@ -96,6 +104,8 @@ mod nurbs_surface_integration;
 mod offset_solid_integration;
 #[path = "harness_occt/offset_surface_integration.rs"]
 mod offset_surface_integration;
+#[path = "harness_occt/op_args_entry_point_parity.rs"]
+mod op_args_entry_point_parity;
 #[path = "harness_occt/pattern_differential_integration.rs"]
 mod pattern_differential_integration;
 #[path = "harness_occt/pattern_single_pass_counter.rs"]
@@ -108,14 +118,20 @@ mod point_on_shape_integration;
 mod projection_trait_delegation;
 #[path = "harness_occt/projector_impl.rs"]
 mod projector_impl;
+#[path = "harness_occt/repr_policy_table.rs"]
+mod repr_policy_table;
 #[path = "harness_occt/revolve_with_history_integration.rs"]
 mod revolve_with_history_integration;
 #[path = "harness_occt/shell_shape_oob_face_index_integration.rs"]
 mod shell_shape_oob_face_index_integration;
 #[path = "harness_occt/split_integration.rs"]
 mod split_integration;
+#[path = "harness_occt/step_document_integration.rs"]
+mod step_document_integration;
 #[path = "harness_occt/surface_angle_integration.rs"]
 mod surface_angle_integration;
+#[path = "harness_occt/sweep_pose_guard_integration.rs"]
+mod sweep_pose_guard_integration;
 #[path = "harness_occt/sweep_with_history_integration.rs"]
 mod sweep_with_history_integration;
 #[path = "harness_occt/tessellate_sphere_nondegenerate_integration.rs"]

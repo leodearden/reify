@@ -1091,15 +1091,15 @@ mod tests {
             kind: PrimitiveKind::Box,
             args: vec![
                 (
-                    "width".to_string(),
+                    "size_x".to_string(),
                     CompiledExpr::literal(Value::length(0.08), Type::length()),
                 ),
                 (
-                    "height".to_string(),
+                    "size_y".to_string(),
                     CompiledExpr::literal(Value::length(0.10), Type::length()),
                 ),
                 (
-                    "depth".to_string(),
+                    "size_z".to_string(),
                     CompiledExpr::literal(Value::length(0.005), Type::length()),
                 ),
             ],
@@ -1957,15 +1957,15 @@ mod tests {
             kind: PrimitiveKind::Box,
             args: vec![
                 (
-                    "width".to_string(),
+                    "size_x".to_string(),
                     CompiledExpr::literal(Value::length(0.08), Type::length()),
                 ),
                 (
-                    "height".to_string(),
+                    "size_y".to_string(),
                     CompiledExpr::literal(Value::length(0.10), Type::length()),
                 ),
                 (
-                    "depth".to_string(),
+                    "size_z".to_string(),
                     CompiledExpr::literal(Value::length(0.005), Type::length()),
                 ),
             ],

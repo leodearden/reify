@@ -48,6 +48,7 @@
 /// panic-on-double-registration contract is never at risk.
 pub fn gate_engine(register_compute: bool) -> reify_eval::Engine {
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(reify_test_support::MockGeometryKernel::new())),
     );

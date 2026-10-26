@@ -1,0 +1,66 @@
+# tests/infra/adoption-ratchet.manifest — adoption-ratchet rows (PRD
+# docs/prds/v0_6/run-all-runner-infra-harness.md §3 D9), evaluated by
+# tests/infra/adoption_ratchet.py and gated by test_infra_adoption_ratchet.sh.
+#
+# Row: pattern-id | ERE | path | ceiling | owner leaf
+#   - columns are separated by ' | ' (space, pipe, space); the ERE is every
+#     column between the pattern-id and the last three, taken verbatim, so it
+#     may itself contain '|';
+#   - the engine reads the ERE with Python re, and it must read the same as a
+#     POSIX ERE so `git grep -E` can locate a hit: the engine rejects an
+#     escape before a letter or digit (\d, \b, a backreference), a backslash
+#     inside [...], a [:class:] / [.coll.] / [=equiv=] bracket, a (?...)
+#     group and a lazy or possessive quantifier;
+#   - only code lines count: a line whose first non-blank character is '#'
+#     never counts;
+#   - path is a repo-root-relative glob and must match at least one file;
+#   - the ratchet reds only when a count EXCEEDS its ceiling;
+#   - a leaf that extracts a construct adds its row at the post-extraction
+#     count and names the row in its done-criteria.
+# Measure: python3 tests/infra/adoption_ratchet.py
+# inline-discovery-loop: discovery's one home is classification_discovered_set,
+# so no run_all.sh code line spells a test_* glob -- a for loop, compgen -G,
+# find -name or ls alike.
+inline-discovery-loop | test_["']?[*] | tests/infra/run_all.sh | 0 | α #8678
+# member-spawn-site: every run_all member spawn goes through _ra_spawn_member,
+# the one line carrying the member budget, git-env scrub, env isolation and FD
+# hygiene.
+member-spawn-site | bash "[$]INFRA_DIR/ | tests/infra/run_all.sh | 1 | β #8681
+# result-fail-recorder: a member FAIL verdict is printed only by
+# _ra_record_result.
+result-fail-recorder | RESULT: FAIL | tests/infra/run_all.sh | 1 | β #8681
+# theta-embedded-normal-closure: the one closure is reify_path_attribution.py's.
+theta-embedded-normal-closure | def normal_closure[(] | scripts/*.sh | 0 | θ #8662
+# theta-crate-path-case-arm-{affected,occt}: path attribution lives in
+# reify_path_attribution.py, so neither lib carries a crate-path case arm.
+theta-crate-path-case-arm-affected | ^ *["']?(crates|gui/src-tauri|examples|tree-sitter-reify)/[^)]*[)] | scripts/affected-crates-lib.sh | 0 | θ #8662
+theta-crate-path-case-arm-occt | ^ *["']?(crates|gui/src-tauri|examples|tree-sitter-reify)/[^)]*[)] | scripts/occt-scope-lib.sh | 0 | θ #8662
+# side-panel-track-iife: side-panel tracks derive from the one entry list in
+# gui/src/app/sidePanel.ts, so App.tsx builds no grid-template-rows IIFE.
+side-panel-track-iife | grid-template-rows': \(\(\) => | gui/src/App.tsx | 0 | β #9063
+# app-unsub-slot: initApp's subscriptions live in one SubscriptionSet
+# (gui/src/app/subscriptionSet.ts), so App.tsx holds no per-subscription unsub slot.
+app-unsub-slot | let [a-zA-Z]*[uU]nsub[:;= ] | gui/src/App.tsx | 0 | γ #9064
+# tree-generation-{app,stores}: tree reactivity is viewStateStore's treeVersion
+# (PRD gui-frontend-wire-bindings-bridge-port §4.5), so neither App nor a store
+# threads a tree counter.
+tree-generation-app | [tT]reeGeneration | gui/src/App.tsx | 0 | δ #9065
+tree-generation-stores | [tT]reeGeneration | gui/src/stores/*.ts | 0 | δ #9065
+# layout-default-import-debug: layout defaults live in LAYOUT_DIMENSIONS
+# (gui/src/stores/layoutStore.ts); the debug bridge resets through layout.reset().
+layout-default-import-debug | DEFAULT_[A-Z_]+(WIDTH|HEIGHT|COLLAPSED) | gui/src/debug/*.ts | 0 | ε #9066
+# sidecar-args-literal: the claude CLI argv is built only by buildClaudeArgs
+# (gui/sidecar/src/claudeArgs.ts); the ceiling is that file's one argv literal.
+sidecar-args-literal | --output-format | gui/sidecar/src/*.ts | 1 | ζ #9067
+# gc-inline-gen-layout: test_warm_lane_gc.sh builds refresh-warm-base.sh's
+# base-generation layout (target -> target.gen.1 plus target.gen.1.lock) only in
+# make_gc_fixture, whose own touch is the one allowed hit.
+gc-inline-gen-layout | touch .*target\.gen\.1\.lock | tests/infra/test_warm_lane_gc.sh | 1 | ν #8721
+# gc-inline-seed-stub: every test_warm_lane_gc.sh seed stub is printed by a
+# named *_seed_stub_body emitter and redirected by its block, so no line writes
+# a heredoc straight into a *SEED_STUB file, whichever of the redirect and the
+# heredoc comes first.
+gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<<|<<.*> *"?[$][{]?[A-Z0-9_]*SEED_STUB | tests/infra/test_warm_lane_gc.sh | 0 | ν #8721
+# ordered-scope-grep: scope-decision fields are read with plan_capture_lib.sh's
+# plan_header_field, order-independently; ξ #9113 lowers this to 0.
+ordered-scope-grep | RUN_RUST=[01] RUN_GUI=[01] | tests/infra/test_*.sh | 82 | θ #9105

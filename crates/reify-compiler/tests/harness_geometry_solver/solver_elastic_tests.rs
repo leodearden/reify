@@ -1537,14 +1537,9 @@ fn elastic_result_aposteriori_field_defaults_match_spec() {
 /// defaults and no constraints — it is a data-only output container analogous
 /// to `ElasticResult` (no user-configurable knobs).
 ///
-/// For tet results the engine populates all three channels with the same field
-/// (no through-thickness variation); for shell results the MITC3+ kernel
-/// produces distinct top/mid/bottom integration-point stress distributions.
-///
-/// Rust-side sibling: `crates/reify-solver-elastic/src/shell_result.rs::ShellStress`.
-/// Both definitions must stay shape-aligned (top/mid/bottom only); a parity
-/// cross-check will be added in engine-integration tasks T18-T20 when both
-/// sides are actually consumed together.
+/// Tet results leave `ElasticResult.shell_channels` Undef; shell results carry
+/// distinct MITC3+ top/mid/bottom layers (see the `ShellStress` block in
+/// stdlib solver_elastic.ri).
 #[test]
 fn shell_stress_struct_has_top_mid_bottom_field_params() {
     let template = find_structure("ShellStress");

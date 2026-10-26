@@ -24,7 +24,7 @@ use crate::constitutive::IsotropicElastic;
 use crate::elements::membrane_cst::{
     element_stiffness_membrane_cst_with_frame, rotate_membrane_local_to_global,
 };
-use crate::shell_assembly::{build_shell_frame, ShellFrame};
+use crate::elements::shell_frame::{ShellFrame, build_shell_frame};
 use crate::shell_kinematics::shell_kinematics;
 
 /// In-plane membrane stress **resultant** (force/length) in the element local
@@ -364,7 +364,7 @@ mod tests {
         let t = 0.2_f64;
         let mat = nu_zero_material(1.0e5);
         let n = 350.0_f64;
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
         let tilted = [
             apply_q(&q, UNIT_TRI[0]),
             apply_q(&q, UNIT_TRI[1]),

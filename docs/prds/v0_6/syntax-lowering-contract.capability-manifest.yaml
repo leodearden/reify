@@ -1,0 +1,329 @@
+prd: docs/prds/v0_6/syntax-lowering-contract.md
+schema_version: 1
+signal_leaves:
+- β
+- ε
+tasks:
+- label: α
+  task_id: 9343
+  title: 'Tracked-.ri parse guard and the declared must-error list (the corpus sweep)'
+  note: 'K2-D1 sweep leaf, landed first as a standing guard (PRD §5 D12). Measured 2026-10-17 over 867 tracked .ri: 16 CST-faulty in the Rust runtime, 13 already loud; the 3 silent ones are the two #7809 examples and S9 γ''s B4 fixture.'
+  capabilities:
+  - name: tracked-ri-silent-set-measured
+    binding: 'probe (scratch Rust prober on tree-sitter 0.24.7, the production runtime; debug reify built 2026-10-16 14:45) — 16 tracked .ri have root.has_error(); `reify check` rc 0 with no parse error on examples/m9_trait_conformance.ri, examples/integration_corner_cases.ri and tests/prd-gate/fixtures/decl_passes_purpose_body_sub_swallowed.ri; the other 13 already print a parse error.'
+    verdict: PASS
+  - name: clean-cst-errors-only-entry
+    binding: 'probe (decompose-verify workflow wf_0066c884-b8a, 2026-10-18) — of the 851 tracked .ri with a clean CST, exactly one prints a Parse error under reify check: docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri (the live #5482 interim rejection in lower_sub). It is declared as an ErrorsOnly entry (PRD §5 D12).'
+    verdict: PASS
+  - name: examples-corrected-upstream
+    binding: 'producer:task-7809 upstream (pending; branch task/7809 removes the trait-body `port` lines per esc-7809-5). Wired as a real dependency because harness_milestone_integration/m9_trait_conformance.rs and harness_corpus_gates/eval_invariant_corpus_sweep.rs evaluate both examples.'
+    verdict: PASS
+  - name: must-error-list
+    binding: 'producer-self — const MUST_ERROR_RI_FIXTURES (path, reason) in a reify-syntax harness test; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MUST_ERROR_RI_FIXTURES
+      expect: present
+      paths:
+      - crates/reify-syntax/tests
+- label: β
+  task_id: 9344
+  title: 'fault_backstop at the parse entry, debug_assert, root-ERROR handling, corpus and probe must-error test'
+  capabilities:
+  - name: silent-accepts-on-main
+    binding: 'probe (debug reify 2026-10-16) — reify check rc 0 "All constraints satisfied." on tests/prd-gate/fixtures/slc_purpose_param_missing.ri, slc_purpose_body_error.ri, slc_trait_body_port.ri, slc_struct_header_fault.ri, slc_annotation_arg_fault.ri (only "unknown annotation @foo"), slc_field_analytical_fault.ri; each has a CST fault in the Rust runtime. Rejection mechanism absent today = the motivation; after β the backstop is the rejection mechanism.'
+    verdict: PASS
+  - name: no-module-level-check-today
+    binding: 'existing-substrate — parse_with_prelude_enums lowers, appends member_continuation::check_member_continuations, returns; no has_error() ⇒ !errors.is_empty() check (ts_parser.rs at baff3ed38b).'
+    verdict: PASS
+  - name: consumers-gate-on-errors
+    binding: 'existing-substrate — reify-cli parse_and_compile, gui engine.rs compile_single_file_with_stdlib and reify-lsp diagnostics.rs compute_diagnostics_with_state each return before compiling when parsed.errors is non-empty (compile_builder/pre_pass.rs::forward_parse_errors doc). One backstop error therefore refuses the module everywhere.'
+    verdict: PASS
+  - name: corpus-fault-entries
+    binding: 'measured — 263 corpus entries, 8 with ERROR/MISSING in the expected tree (auto_operand_rejection.txt x6, imaginary_literal.txt x1, interpolated_string.txt x1). Corpus trees are tree-sitter CLI 0.26.8 output and the CLI recovers differently from the Rust runtime 0.24.7, so the test asserts the Rust tree has_error() first and reports a divergence separately (PRD §6.1).'
+    verdict: PASS
+  - name: root-error-fixture
+    binding: 'probe — tests/prd-gate/fixtures/slc_root_error.ri is root=ERROR in the Rust runtime; reify check rc 1 with 8 errors including `unexpected ''identifier'' in source file`, `unexpected ''type_arg_list'' …`, `unexpected ''number_literal'' …` (#7810 debris cascade).'
+    verdict: PASS
+  - name: backstop-fn
+    binding: 'producer-self — fault_backstop in ts_parser/fault_diagnosis.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn fault_backstop
+      expect: present
+      paths:
+      - crates/reify-syntax/src/ts_parser/fault_diagnosis.rs
+  - name: use-site-assert
+    binding: 'producer-self — debug_assert!(!root.has_error() || !errors.is_empty()) in parse_with_prelude_enums; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: debug_assert![(]!root[.]has_error
+      expect: present
+      paths:
+      - crates/reify-syntax/src/ts_parser.rs
+  - name: probes-loud
+    binding: 'behavioural — every CST-faulty §2.2 fixture gives reify check rc 1 with a parse error whose span intersects the fault.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the must-error probe table in tests/harness_syntax (PRD §6.1) is the behavioural cover; a grep cannot run the CLI.'
+- label: γ
+  task_id: 9346
+  title: 'lower_guarded: one refusal policy over leaf nodes; check_and_lower!, lower_function_checked and lower_enum''s guard deleted'
+  capabilities:
+  - name: three-mechanisms-on-main
+    binding: 'existing-substrate — macro check_and_lower! (pre-refuse), Lowering::lower_function_checked (run-then-refuse), lower_enum / lower_type_args_from_node (report-and-keep) at baff3ed38b.'
+    verdict: PASS
+  - name: message-strings-unpinned
+    binding: 'measured — `syntax error in function definition` and `syntax error in enum declaration` appear in no test under crates/reify-syntax/tests, reify-compiler, reify-eval or reify-lsp. The `invalid <label>: <excerpt>` shape survives for faults no inner arm reports (the MISSING-only connect cases in check_and_lower_snippet_bound_tests.rs); three cases in check_and_lower_fault_location_tests.rs (port-body ERROR, connect-body ERROR, guarded-block MISSING let) are re-pinned by γ to the inner message under R1 (PRD §5 D4).'
+    verdict: PASS
+  - name: combinator
+    binding: 'producer-self — fn lower_guarded (name kept through ω₁, PRD §6.2); absent on main (lower_guarded_block does not match the pattern).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn lower_guarded[<(]
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+  - name: macro-gone
+    binding: 'producer-self — macro_rules! check_and_lower deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: macro_rules! check_and_lower
+      expect: absent
+      paths:
+      - crates/reify-syntax/src
+  - name: fn-checked-gone
+    binding: 'producer-self — lower_function_checked folded into the combinator.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn lower_function_checked
+      expect: absent
+      paths:
+      - crates/reify-syntax/src
+- label: δ
+  task_id: 9347
+  title: 'lower_member_list + MemberListSpec over every member body; pragmas rejected in guards and specialization bodies, annotations in specialization bodies'
+  capabilities:
+  - name: silent-pragma-drops-on-main
+    binding: 'probe (debug reify 2026-10-16) — tests/prd-gate/fixtures/slc_where_pragma_dropped.ri and slc_spec_body_pragma_dropped.ri parse clean and give rc 0 with no diagnostic; the same `#frobnicate(1)` in a structure body (control) warns "unknown pragma #frobnicate".'
+    verdict: PASS
+  - name: grammar-admits-them
+    binding: 'node-types.json (generated, 2026-10-17) — guarded_block and specialization_body both list annotation and pragma as children; GuardedGroupDecl and SubDecl specialization members have no pragmas field in reify-ast decl.rs, hence Reject (R7′).'
+    verdict: PASS
+  - name: where-annotations-kept
+    binding: 'existing-substrate (R7′) — lower_guarded_block attaches annotations to Param/Let today; pinned by crates/reify-compiler/tests/harness_geometry_solver/solver_hint_tests.rs::solver_hint_in_guarded_block_compiles and harness_statement_semantics/display_annotation_tests.rs::display_wrong_ladder_on_guarded_param_errors, which must stay green.'
+    verdict: PASS
+  - name: spec-type
+    binding: 'producer-self — struct MemberListSpec in ts_parser/member_list.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct MemberListSpec
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+  - name: reject-policy-used
+    binding: 'producer-self — PragmaPolicy::Reject in the guarded-block and specialization-body specs (R7); absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PragmaPolicy::Reject
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+  - name: trait-body-interim-kept
+    binding: 'producer:task-7809 upstream — its trait_tests.rs cases must stay green after the trait body becomes a spec.'
+    verdict: PASS
+- label: ε
+  task_id: 9348
+  title: 'Grammar contract: supertypes, dispatch tables, grammar_contract, node-types and grammar.json contract test (absorbs #7676); wrong-node-kind tests deleted'
+  capabilities:
+  - name: supertypes-accepted
+    binding: 'probe (scratch copy, tree-sitter CLI 0.26.8) — supertypes [_expression, _member, _guard_member, _declaration] generate rc 0; unchanged corpus 263/263; Rust-runtime root.to_sexp() byte-identical over all 867 tracked .ri; node-types.json gains 4 subtypes entries (_declaration 15, _expression 28, _guard_member 18, _member 20).'
+    verdict: PASS
+  - name: node-types-present-at-test-time
+    binding: 'existing-substrate — tree-sitter-reify/build.rs regenerates src/node-types.json and src/grammar.json (gitignored) before any dependent test links; #7676 already relies on grammar.json being present.'
+    verdict: PASS
+  - name: supertypes-declared
+    binding: 'producer-self — grammar.js declares supertypes; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'supertypes:'
+      expect: present
+      paths:
+      - tree-sitter-reify/grammar.js
+  - name: contract-surface
+    binding: 'producer-self — pub mod grammar_contract in reify-syntax lib.rs (PRD §6.4); absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub mod grammar_contract
+      expect: present
+      paths:
+      - crates/reify-syntax/src/lib.rs
+  - name: hand-lexer-gone
+    binding: 'producer-self (absorbs #7676) — the grammar.js re-lexer helpers in member_continuation_ambiguity_tests.rs are deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn mask_noncode
+      expect: absent
+      paths:
+      - crates/reify-syntax/tests
+  - name: drift-reds
+    binding: 'behavioural — a kind added to commonMembers without a lowering arm reds grammar_contract_tests naming container and kind; the reverse direction reds too.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the contract test is the cover; demonstrated in the leaf by a scratch grammar edit, not expressible as a grep.'
+- label: ζ
+  task_id: 9349
+  title: 'Unit operator from the CST: anonymous op alias; UnitOp, classify_unit_op, collect_unit_op_comment_spans, strip_unit_op_comments deleted (K2-D6)'
+  capabilities:
+  - name: alias-premise
+    binding: 'probe (scratch copy) — field(''op'', choice(alias($._unit_mul_op, ''*''), alias($._unit_div_op, ''/''))) generates rc 0; corpus 263/263 unchanged; Rust to_sexp identical over 867 .ri; child_by_field_name("op") returns an anonymous node of kind "*" or "/" ("·" is kind "*", text "·"); in `5(m)/*c*/*(s)` the op node excludes the comment; parser.c diff 8 lines.'
+    verdict: PASS
+  - name: alias-declared
+    binding: 'producer-self — the alias in grammar.js unit_expr; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: alias[(][$][.]_unit_mul_op
+      expect: present
+      paths:
+      - tree-sitter-reify/grammar.js
+  - name: classifier-gone
+    binding: 'producer-self — classify_unit_op deleted (pattern is the fn definition, so a re-expressed test named after it does not keep the check red).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn classify_unit_op[(]
+      expect: absent
+      paths:
+      - crates/reify-syntax/src
+  - name: stripper-gone
+    binding: 'producer-self — strip_unit_op_comments deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn strip_unit_op_comments[<(]
+      expect: absent
+      paths:
+      - crates/reify-syntax/src
+  - name: no-operand-slice
+    binding: 'producer-self — lower_unit_expr no longer computes `let op_start = left_node.end_byte()` to slice source between operands (1 hit on main, inside lower_unit_expr). Construct-bound per overlay rule 1; the value-equality signal is only a no-regression floor (#6952 already fixed the value).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: op_start = left_node[.]end_byte
+      expect: absent
+      paths:
+      - crates/reify-syntax/src
+- label: η
+  task_id: 9350
+  title: 'Message quality: field definitions and config entries, declaration headers, purpose params; backstop gets UnattributedFault; backstop-never-sole ratchet'
+  capabilities:
+  - name: field-faults-on-main
+    binding: 'probe (debug reify 2026-10-16) — slc_field_analytical_fault.ri rc 0, no diagnostic; slc_field_imported_fault.ri rc 1 only via two compiler errors, "imported field source is missing required key: ''format''" and "… ''grid''" (the faulty entry is dropped by lower_field_source''s config loop).'
+    verdict: PASS
+  - name: kind-variant-upstream
+    binding: 'producer:task-8742 upstream (S9 μ, ParseErrorKind; UnattributedFault requested per ruling R8). Wired as a real dependency.'
+    verdict: PASS
+  - name: backstop-kind
+    binding: 'producer-self — the backstop constructs ParseErrorKind::UnattributedFault in reify-syntax; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: UnattributedFault
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+  - name: never-sole
+    binding: 'behavioural — every probe-table row carries at least one error whose kind is not UnattributedFault.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'asserted by the probe-table test itself (PRD §7 η rows).'
+- label: ω₁
+  task_id: 9351
+  title: 'Close 1/2: freeze pass-1 into FileScope; DiagSink; the guard combinator over the sink'
+  capabilities:
+  - name: pass-one-tables-mutable
+    binding: 'existing-substrate — known_enums, namespace_bindings, entity_bindings are mutable Lowering fields written only by lower_source_file''s first pass and collect_import_bindings; the expression partition is all &self (survey measurement, fk-258131627845, re-read at baff3ed38b).'
+    verdict: PASS
+  - name: file-scope
+    binding: 'producer-self — struct FileScope in ts_parser/scope.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct FileScope
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+  - name: diag-sink
+    binding: 'producer-self — struct DiagSink in ts_parser/diag.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct DiagSink
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+- label: ω₂
+  task_id: 9352
+  title: 'Close 2/2: ExprLowering in ts_parser/expr.rs, literals.rs, tests.rs dissolved, two ratchet rows, K2-D7 prose and INV-SF-7 rehoming'
+  capabilities:
+  - name: ratchet-mechanism
+    binding: 'existing-substrate — tests/infra/adoption-ratchet.manifest rows `id | ERE | glob | ceiling | owner`, evaluated by tests/infra/adoption_ratchet.py; `#`-first lines never count. Rows anchored at column 0 so fault_diagnosis.rs''s nested `mod tests { use super::*; }` does not count.'
+    verdict: PASS
+  - name: expr-lowering
+    binding: 'producer-self — struct ExprLowering in ts_parser/expr.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct ExprLowering
+      expect: present
+      paths:
+      - crates/reify-syntax/src
+  - name: ratchet-rows
+    binding: 'producer-self — the three ts-parser-child-* rows (impl-lowering, lowering-import, glob-import) at 0; absent on main. EREs checked against adoption_ratchet.py::_non_portable_construct 2026-10-18.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ts-parser-child-impl-lowering
+      expect: present
+      paths:
+      - tests/infra/adoption-ratchet.manifest
+  - name: merge-surface-prose-gone
+    binding: 'producer-self (K2-D7) — the task/5392 merge-surface sentences in parse_with_prelude_enums and member_continuation.rs are deleted; 2 hits on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: task/5392
+      expect: absent
+      paths:
+      - crates/reify-syntax/src
+  - name: upstream-one-hunk-editors
+    binding: 'producer:task-8904 and producer:task-9322 upstream — both edit expression lowerers (lower_binary_expr, lower_function_call) that ω₂ moves into expr.rs; wired as real dependencies.'
+    verdict: PASS
+- label: Ω
+  task_id: 9353
+  title: 'PRD close — SHIPPED header, landed ids, freeze map'
+  capabilities:
+  - name: terminal-stamp
+    binding: 'overlay "PRD terminal status" — closed vocabulary; the close leaf depends on every sibling.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\*\*Status:\*\* \*\*SHIPPED'
+      expect: present
+      paths:
+      - docs/prds/v0_6/syntax-lowering-contract.md

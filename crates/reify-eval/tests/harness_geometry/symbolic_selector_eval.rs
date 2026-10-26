@@ -90,7 +90,7 @@ fn top_eval_yields_symbolic_selector() {
     );
 
     // Engine::eval — kernel-free.
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let cell_id = ValueCellId::new("Widget", "top");
@@ -141,7 +141,7 @@ fn eval_and_build_selectors_are_content_hash_equal() {
     let cell_id = ValueCellId::new("Widget", "top");
 
     // Path A: pure eval (no kernel) — symbolic selector.
-    let mut eval_engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut eval_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
 
@@ -157,7 +157,7 @@ fn eval_and_build_selectors_are_content_hash_equal() {
     // Path B: build with mock kernel — realized selector.
     let kernel = MockGeometryKernel::new();
     let mut build_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -205,7 +205,7 @@ fn eval_selector_content_hash_is_cross_run_stable() {
     let cell_id = ValueCellId::new("Widget", "top");
 
     // Run 1 — fresh Engine.
-    let mut engine1 = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine1 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result1 = engine1.eval(&compiled);
     let value1 = result1.values.get_or_undef(&cell_id);
     let ch1 = match &value1 {
@@ -214,7 +214,7 @@ fn eval_selector_content_hash_is_cross_run_stable() {
     };
 
     // Run 2 — separate Engine instance, same compiled module.
-    let mut engine2 = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine2 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result2 = engine2.eval(&compiled);
     let value2 = result2.values.get_or_undef(&cell_id);
     let ch2 = match &value2 {

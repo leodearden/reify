@@ -122,7 +122,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 |------|------|---------|
 | `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, …) |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
-| `get_layout_metrics` | `{selector}` | `{exists, width, height, overflow:{horizontal,vertical}}` |
+| `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
 ### R2 — Diagnostics & outline
 
@@ -225,7 +225,7 @@ when omitted, the first populated viewport is targeted.
 | `reify_update_source` | `{file_path, content}` | `{success, diagnostics_count, diagnostics}` — active file only, in memory; writes no disk |
 | `reify_open_file` | `{file_path}` | `{success, source}` |
 | `reify_save_file` | `{file_path?}` | `{success}` — saves the active file when `file_path` is omitted |
-| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is `step`, `stp` or `stl` |
+| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is one of the tool schema's `format` enum, derived from `EXPORT_FORMAT_SPELLINGS` in `gui/src-tauri/src/commands.rs`; the geometry kernel refuses a format it cannot write |
 
 Their write semantics are specified in
 [debug-mcp-contract.md](debug-mcp-contract.md) §0 "AI write tools" and are not
@@ -344,16 +344,21 @@ design-facing subset of `tool_defs()`: tools to inspect the design, to change it
 (including the five AI write tools, §3 W) and to look at the result. That file
 is the list; it is not restated here.
 
-Every other tool stays callable, because `ALLOWED_TOOLS` in
-`gui/sidecar/src/session.ts` grants the whole `mcp__reify-debug__*` glob, but is
-deliberately not advertised.
+Every other tool stays callable, because the sidecar's `--allowed-tools` grant
+(`allowedTools` in `gui/sidecar/src/tool-surface.ts`) covers the whole
+`mcp__reify-debug__*` glob whenever the server is live, but is deliberately not
+advertised.
 
 `gui/src/__tests__/sidecarPromptParity.test.ts` enforces the split. A new
 `ToolDef` must get a row in the prompt's tool table or be added to that file's
 `NOT_ADVERTISED_TO_SIDECAR`, or the gui suite goes red (see the checklist in
 [debug-mcp-contract.md](debug-mcp-contract.md) §1 "Defining a new tool").
 
-**Reachability caveat.** The sidecar reaches these tools only while the GUI runs
-with `REIFY_DEBUG=1`, because `gui/src-tauri/src/main.rs` spawns the debug
-server only then. Release launches (`scripts/run-gui.sh`) have none, yet the
-prompt still advertises them. This is known and tracked by #7816.
+**Debug launches only.** The sidecar has these tools only while the GUI runs
+with `REIFY_DEBUG=1` and has bound its debug server: the host then passes the
+server's URL as `REIFY_DEBUG_MCP_URL`, and only with that URL does the sidecar
+register the `reify-debug` MCP entry, grant `mcp__reify-debug__*` and include
+the tool section in its prompt. Release launches (`scripts/run-gui.sh`,
+`reify gui`) do none of the three: the assistant edits the `.ri` files with its
+file tools, and the GUI reloads them. The rule and its guards:
+[debug-mcp-contract.md](debug-mcp-contract.md) §0 "AI write tools".

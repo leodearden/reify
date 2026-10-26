@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use reify_eval::CancellationHandle;
+use reify_ir::ExportFormat;
 use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
@@ -305,8 +306,8 @@ pub fn update_source_impl(
 /// directly without requiring the `gui` feature gate or a Tauri runtime.
 ///
 /// Returns a `serde_json::Value` containing:
-/// * Existing keys: `meshes` (entity path + vertex/face counts), `values`,
-///   `constraints`, `files`.
+/// * Existing keys: `meshes` (entity path + vertex/face counts +
+///   `default_visible`), `values`, `constraints`, `files`.
 /// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
 ///   `stale` (bool), `reload_error` (string or null).
 ///
@@ -320,6 +321,11 @@ pub fn update_source_impl(
 /// snapshot so `engine_state` (and the `mesh_stats` tool, which shares the same
 /// builder) stays consistent with `viewport_state.meshCount` — the complete scene
 /// the frontend accumulates — regardless of the live selective-demand scope.
+///
+/// Each mesh entry's `default_visible` is the ENGINE's hidden-by-default verdict
+/// for its realization (see [`realization_default_visibility`]), shared with
+/// [`mesh_stats_json`]. It is not what is drawn: user toggles, views and
+/// DisplayOutput routing live in the frontend, and `viewport_state` reports them.
 ///
 /// # One-snapshot invariant (task 4258)
 ///
@@ -357,6 +363,7 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
     let gui_state = session
         .build_gui_state_full_scene()
         .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
+    let default_visible = realization_default_visibility(session);
 
     let meshes: Vec<serde_json::Value> = gui_state
         .meshes
@@ -367,6 +374,7 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
                 "vertex_count": m.vertices.len() / 3,
                 "face_count": m.indices.len() / 3,
                 "has_normals": m.normals.is_some(),
+                "default_visible": default_visible.get(&m.entity_path).copied(),
             })
         })
         .collect();
@@ -411,6 +419,29 @@ pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Valu
     }))
 }
 
+/// Each realization's hidden-by-default verdict, keyed by the realization
+/// node's `entity_path` — the `Entity#realization[N]` key its mesh carries as
+/// `MeshData.entity_path`, and the key the frontend's auto-view joins on.
+/// `false` for aux and consumed-intermediate realizations (#5195).
+fn realization_default_visibility(session: &EngineSession) -> HashMap<String, bool> {
+    let mut visibility = HashMap::new();
+    let mut pending = session.get_entity_tree();
+    while let Some(node) = pending.pop() {
+        let crate::types::EntityTreeNode {
+            entity_path,
+            kind,
+            default_visible,
+            children,
+            ..
+        } = node;
+        if kind == "realization" {
+            visibility.insert(entity_path, default_visible);
+        }
+        pending.extend(children);
+    }
+    visibility
+}
+
 /// Histogram of a mesh's per-face `element_kind` bytes.
 ///
 /// Returns an empty map when `element_kind` is `None` (tet-only / non-shell meshes
@@ -442,18 +473,26 @@ pub(crate) fn element_kind_count(
 /// `handle_mesh_stats` delegates here.
 ///
 /// Uses [`EngineSession::build_gui_state_full_scene`] so the stats cover the FULL
-/// realized scene — one entry per rendered body — not the frontend's selective-
+/// realized scene — one entry per realized body — not the frontend's selective-
 /// demand incremental delta (the task 5348 under-report fix). Shares that builder
-/// with [`engine_state_json`], so the two debug reads can never drift apart.
+/// and [`realization_default_visibility`] with [`engine_state_json`], so the two
+/// debug reads cannot disagree about which meshes exist or which are hidden by
+/// default.
 ///
 /// Each entry carries `entity_path`, `vertex_count` (`vertices.len() / 3`),
 /// `face_count` (`indices.len() / 3`), `element_kind_count` (the per-face
-/// element-kind histogram via [`element_kind_count`]), and `bounding_box`
-/// (`{min, max}`, or `null` when the mesh has zero vertices).
+/// element-kind histogram via [`element_kind_count`]), `bounding_box`
+/// (`{min, max}`, or `null` when the mesh has zero vertices), and
+/// `default_visible` — the ENGINE's hidden-by-default verdict (`false` for aux
+/// and consumed-intermediate realizations, #5195; `null` if no entity-tree
+/// realization matched). What is actually drawn also depends on user toggles,
+/// views and DisplayOutput routing, all frontend-only; `viewport_state` reports
+/// that.
 pub fn mesh_stats_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
     let gui_state = session
         .build_gui_state_full_scene()
         .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
+    let default_visible = realization_default_visibility(session);
 
     let stats: Vec<serde_json::Value> = gui_state
         .meshes
@@ -489,7 +528,8 @@ pub fn mesh_stats_json(session: &mut EngineSession) -> Result<serde_json::Value,
                     serde_json::json!({"min": min, "max": max})
                 } else {
                     serde_json::json!(null)
-                }
+                },
+                "default_visible": default_visible.get(&m.entity_path).copied(),
             })
         })
         .collect();
@@ -666,28 +706,29 @@ pub fn disk_reload_edit(engine: Arc<Mutex<EngineSession>>, path: PathBuf) -> Eva
     })
 }
 
-/// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.
+/// Every export-format spelling a GUI export surface accepts, paired with the
+/// format it names; `stp` is an alias of `step`.
+pub(crate) const EXPORT_FORMAT_SPELLINGS: [(&str, ExportFormat); 5] = [
+    ("step", ExportFormat::Step),
+    ("stp", ExportFormat::Step),
+    ("stl", ExportFormat::Stl),
+    ("obj", ExportFormat::Obj),
+    ("3mf", ExportFormat::ThreeMF),
+];
+
+/// The ONE map from an export-format spelling to the [`ExportFormat`] it
+/// names, read by every GUI export surface: [`export_impl`],
+/// `TauriToolContext::export`, and the `reify_export` debug tool.
 ///
-/// Extracted from [`export_impl`] so the Tauri command and the reify-debug
-/// `reify_export` write tool (task 5097 δ) consult ONE map: which spellings
-/// are accepted is a contract an AI client and the GUI must agree on, and two
-/// hand-copied `match`es have nothing structural stopping one from gaining a
-/// format the other lacks.
+/// It names every format. Whether a format can be WRITTEN is the geometry
+/// kernel's decision, refused by the kernel itself.
 ///
-/// `mcp_context.rs`'s `TauriToolContext::export` calls this too, so all three
-/// export surfaces read ONE map. Re-homing that context is η's Phase 3, but
-/// the format map is not waiting on it: leaving a third hand-copied `match`
-/// there is exactly the drift this extraction exists to prevent.
-///
-/// The `Err` text is the message every caller surfaces verbatim —
-/// `TauriToolContext::export` wraps it in `ToolError::InvalidParams`
-/// unchanged.
-pub fn parse_export_format(format: &str) -> Result<reify_ir::ExportFormat, String> {
-    match format {
-        "step" | "stp" => Ok(reify_ir::ExportFormat::Step),
-        "stl" => Ok(reify_ir::ExportFormat::Stl),
-        _ => Err(format!("Unknown export format: {}", format)),
-    }
+/// Callers surface the `Err` text verbatim.
+pub fn parse_export_format(format: &str) -> Result<ExportFormat, String> {
+    EXPORT_FORMAT_SPELLINGS
+        .iter()
+        .find_map(|&(spelling, named)| (spelling == format).then_some(named))
+        .ok_or_else(|| format!("Unknown export format: {format}"))
 }
 
 /// Export geometry to a file.

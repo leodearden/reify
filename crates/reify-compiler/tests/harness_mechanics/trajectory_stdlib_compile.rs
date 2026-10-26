@@ -1560,16 +1560,11 @@ fn revolute_tots_half() -> TotsShaperHalf {
 /// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
 /// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
 ///
-/// ⚠ Duplicate-Mode note: the stdlib has TWO `structure def Mode` declarations
-/// with different field shapes — `modal_analysis.ri:187` (frequency, shape,
-/// participation_mass, damping_ratio) and `solver_buckling.ri:148` (eigenvalue,
-/// mode_shape). `Type::StructureRef("Mode")` carries only the name, so the
-/// assertion below cannot distinguish which Mode was bound by name resolution.
-/// Correct resolution is guaranteed by load order: slot 16 (std.modal.analysis)
-/// is compiled before slot 17 (std.trajectory), so the modal-analysis Mode wins
-/// the first-wins shadow rule. `modal_analysis.ri:137-141` documents this
-/// coexistence; if name-shadowing ever surfaces as a problem, the fallback is a
-/// one-line rename in `trajectory.ri`.
+/// `Type::StructureRef("Mode")` carries only the name, which is unambiguous:
+/// `Mode` is the stdlib's sole structure of that name (buckling's eigenpair
+/// is `BucklingMode` since task 5496), as the `Mode` block comment in
+/// `modal_analysis.ri` records, and the NS-P2 duplicate-pub-name scan in
+/// `stdlib_loader::build_stdlib_modules` keeps it so.
 ///
 /// Does NOT assert defaults or constraints — those are the other two bodies.
 /// Mirrors `piecewise_polynomial_profile_has_correct_param_shape` (step-17)
@@ -1681,8 +1676,8 @@ fn assert_tots_shaper_param_shape(half: TotsShaperHalf) {
 /// guarantees mechanically.
 ///
 /// Decimal-encoding discipline: Reify's grammar has no scientific notation,
-/// so 1e-6 is spelled as `0.000001` (same convention as modal_analysis.ri
-/// tol = 0.000000001 = 1e-9 at modal_analysis.ri:356). IEEE-754
+/// so 1e-6 is spelled as `0.000001` (same convention as `ModalOptions.tol =
+/// 0.000000001` = 1e-9 in modal_analysis.ri). IEEE-754
 /// round-to-nearest of these exact decimal literals is deterministic, so
 /// strict equality is safe.
 ///

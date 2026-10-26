@@ -583,6 +583,20 @@ assert "E: the same stale citation is ignored inside the baseline/lib/gate and r
     _expect_scan "$FIX_SELF" \
     "$(_rec docs/elsewhere.md crates/mycrate/tests/moved_test.rs stale crates/mycrate/tests/harness_sub/moved_test.rs)"
 
+# PLINECITE's ledger quotes the source cites it tracks, so it is a mention of
+# the citation the scanned source comment still carries.
+FIX_LEDGER="$(_mktmpd)/repo"
+_fixture_init "$FIX_LEDGER"
+_fixture_write "$FIX_LEDGER" crates/mycrate/tests/harness_sub/moved_test.rs '// moved here'
+_fixture_write "$FIX_LEDGER" crates/reify-audit/plinecite-baseline.txt \
+    'crates/mycrate/src/lib.rs :: crates/mycrate/tests/moved_test.rs:12'
+_fixture_write "$FIX_LEDGER" docs/elsewhere.md 'see crates/mycrate/tests/moved_test.rs'
+_fixture_commit "$FIX_LEDGER"
+
+assert "E: the same stale citation is ignored inside the PLINECITE ledger and reported everywhere else" \
+    _expect_scan "$FIX_LEDGER" \
+    "$(_rec docs/elsewhere.md crates/mycrate/tests/moved_test.rs stale crates/mycrate/tests/harness_sub/moved_test.rs)"
+
 # The codebook, in its own fixture so its exclusion is proved independently of
 # the gate's three artifacts: a sighting quoting the stale path is the record,
 # not a reference, while the identical citation in ordinary prose still reds.

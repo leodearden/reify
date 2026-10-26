@@ -54,6 +54,8 @@ No `cost_hint`, no `error_factor` — both were speculation without telemetry. T
 
 **Kernel registration mechanism (resolves arch §16 open Q #8).** Compile-time only. Each kernel adapter lives in a separate crate (`reify-kernel-occt`, `reify-kernel-manifold`, `reify-kernel-fidget`, `reify-kernel-openvdb`) gated by Cargo features. All implemented kernels default-on; opt-out via feature flag. Adapters register through a static linker-collection mechanism (`inventory` or equivalent) read once at engine startup. No dylib loading, no runtime plugin discovery for v0.2 — those are v0.3+ concerns if they materialise.
 
+> **Superseded (Fidget only) by `docs/prds/v0_6/implicit-solids.md` §11 (2026-10-08).** "All implemented kernels default-on" no longer applies to `reify-kernel-fidget`: Fidget is not *implemented* in this decision's sense (unroutable from `.ri`; metre-scale domain), so it is not linked into the production CLI/GUI (task #8010 cancelled). The live owner of the Fidget evaluator re-open decision is #8411. The other kernels' default-on policy is unchanged.
+
 **Project pin.** `reify.toml` declares which kernels the project requires and pins versions. Determinism follows from the pin; the cache does not need to know about kernel versions because a version change forces a process restart.
 
 **Long-chain diagnostic.** When the dispatcher selects a chain longer than 2 conversion stages **and** elapsed realization time for the chain exceeds 500 ms wall (configurable), emit a diagnostic naming the chain so users can see budget pressure. Short-chain pain is not worth nagging about.

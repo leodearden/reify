@@ -85,7 +85,7 @@ tasks:
       kind: grep
       pattern: compile_program
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: cfg-threading-substrate
     binding: substrate — check's --cfg via build_cfg_set (conditional-compilation.md,

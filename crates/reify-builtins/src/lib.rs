@@ -25,27 +25,25 @@
 //!   `eval_builtin("name", …)` call, direct or one hop through a
 //!   `&str`-forwarding helper — may live outside this crate.
 //!   Enforced by `tests/i_reg_1_seed_string_dispatch_gate.rs`, which is
-//!   **seed-scoped and ledgered**: it sweeps the names [`rows`] actually
+//!   **registry-scoped and ledgered**: it sweeps the names [`rows`] actually
 //!   registers (so each later τ migration is covered automatically, never a
-//!   restated list) across `crates/*/src/`, and the residue α cannot re-home
-//!   is COUNTED entry-by-entry in that file's `SEED_STRING_DISPATCH_LEDGER`,
-//!   each entry naming the leaf that owns it — eight today, all in
-//!   `reify-expr` (four `Value::Field` intercepts awaiting
-//!   [`BindingKind::ExprIntercept`] in τ-fea/analysis, and four re-entrant
-//!   calls awaiting `CompiledExpr` carrying a `BuiltinId` in leaf β, three of
-//!   which reach eval one hop later through a `&str`-forwarding helper). An
-//!   UNLEDGERED site fails. The **workspace-wide** grep gate — every builtin
-//!   name, not just the seeds — arrives at task ω.
+//!   restated list) across `crates/*/src/`, and the residue no leaf has
+//!   re-homed yet is COUNTED in that file's `SEED_STRING_DISPATCH_LEDGER`, one
+//!   entry per (file, name) pair with its exact site count and the leaf that
+//!   owns retiring it. An UNLEDGERED site fails, and so does a count that no
+//!   longer matches. The **workspace-wide** grep gate — every builtin name,
+//!   not just the registered ones — arrives at task ω.
 //! - **I-REG-2**: every `BuiltinId` is bound exactly once in its
 //!   [`BindingKind`]'s owning dispatcher, via an exhaustive match with no `_`
-//!   arm. The per-kind sub-enums this crate generates (`EvalBuiltinId`, …) are
-//!   what give that requirement teeth: a row added to a group adds a variant
-//!   to its sub-enum and stops the owning crate compiling until it is bound,
-//!   and an arm with no row has no variant to match, so it cannot be written
-//!   at all. Drift is therefore UNREPRESENTABLE rather than test-caught — see
-//!   the "Negative-test proof recipe" section on `reify-stdlib`'s
-//!   `registry_dispatch` module, whose E0004 text was observed by temporary
-//!   mutation-then-revert, not guessed.
+//!   arm. The per-kind sub-enums this crate generates (`EvalBuiltinId`,
+//!   `RelationKind`, …) are what give that requirement teeth: a row added to a
+//!   group adds a variant to its sub-enum and stops the owning crate compiling
+//!   until it is bound, and an arm with no row has no variant to match, so it
+//!   cannot be written at all. Drift is therefore UNREPRESENTABLE rather than
+//!   test-caught — see the "Negative-test proof recipe" section on
+//!   `reify-stdlib`'s `registry_dispatch` module, whose E0004 text was observed
+//!   by temporary mutation-then-revert, not guessed. `RelationKind` has no
+//!   exhaustive dispatcher yet; that binding is S6 γ #8830's.
 //! - **I-REG-7**: every row carries a `basis`; the `Artifact` count is a
 //!   visible, reviewed ratchet toward zero (see [`artifact_basis_rows`]).
 //!
@@ -73,7 +71,7 @@ pub mod row;
 // re-exported here is spelled `row`: `row` is the MODULE, and the accessor is
 // `row_for(id)`.
 pub use registry::{
-    BuiltinId, EvalBuiltinId, artifact_basis_rows, lookup, name_group, row_for, rows,
+    BuiltinId, EvalBuiltinId, RelationKind, artifact_basis_rows, lookup, name_group, row_for, rows,
 };
 pub use resolvers::scalar_or_real;
 pub use row::{Arity, ArgSlot, Basis, BindingKind, BuiltinRow, Family, ResultSpec};

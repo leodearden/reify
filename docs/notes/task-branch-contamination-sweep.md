@@ -98,13 +98,14 @@ One row per audited branch, `key=value` pairs (table) or one object under `branc
 | `changed` | files in `git diff <merge_base> <branch>` |
 | `foreign` | changed files absent from this task's `metadata.files` |
 | `peer_files` | foreign files declared by a live task that is not this one |
-| `peers` | the union of implicated task ids, sorted-unique, or `-` |
+| `peers` | the union of implicated task ids, sorted-unique and comma-joined (table), or `-` when there are none |
 | `scope` | the file cross-check verdict (below) |
 | `signature` | `SUSPECT` or `-` (below) |
 
 A branch that could not be measured reports `-` in every count. Under `--format json` a count is a
-JSON **number** and the unmeasured placeholder is the **string** `"-"`, so a consumer never parses
-`-` out of an integer field.
+JSON **number**, `peers` is an **array** of task-id numbers (`[]` when there are none), and the
+unmeasured placeholder is the **string** `"-"` in both, so a consumer never parses a comma-joined
+list or a `-` out of a typed field.
 
 ### `scope` — the declared-scope cross-check
 
@@ -189,6 +190,8 @@ something the store positively said, never a guess standing in for an answer it 
 * `skipped_nonnumeric` — a ref whose suffix is not a number (`task/1741-recovered`,
   `task/208-merge`, `task/2962-20260530T173412Z`). **48 of the live pool's 1095 `task/*` refs** are
   in this class; they are skipped with a note on stderr, never silently dropped and never an error.
+
+Fleet rows are emitted in ascending task id, whatever `--branch-prefix` is.
 
 A task with no branch ref produces no row at all in fleet mode. In `--task` mode it *does* get a
 row — a degraded `UNKNOWN` one — because the caller asked about that branch by name and is owed an

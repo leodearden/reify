@@ -23,6 +23,7 @@
 
 pub mod ast;
 pub mod decl;
+pub mod type_param_syntax;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────
 // Flat re-export so code using `reify_ast::Expr` (etc.) resolves alongside the
@@ -53,3 +54,5 @@ pub use decl::{
     find_param_default_span, has_test_annotation,
     walk_all_member_bodies, walk_specialization_scope_members,
 };
+
+pub use type_param_syntax::render_type_param;

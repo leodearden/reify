@@ -1,0 +1,15 @@
+// compiler-declaration-passes PRD §2.2 / leaf γ: a `sub` in a purpose body. The purpose_member
+// grammar rule does not admit it (tree-sitter parse reports an ERROR node), and
+// lower_purpose_members skips ERROR children, so the declaration vanishes.
+// Main: `reify check` exits 0, "All constraints satisfied.", no parse error.
+// After γ: exits 1 with a parse error located at the `sub` line.
+module decl_passes_purpose_body_sub_swallowed
+
+structure Plate {
+    param t : Length = 2mm
+}
+
+purpose Stiff(p: Plate) {
+    sub q = Plate()
+    constraint p.t > 1mm
+}

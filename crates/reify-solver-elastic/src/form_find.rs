@@ -25,9 +25,11 @@
 //!
 //! # Sign convention
 //!
-//! Cables carry tension (`q > 0`), struts carry compression (`q < 0`). See the
-//! validation guards in [`form_find_anchored`] for the enforced contract; the
-//! free-standing eigenvalue/ratio form-finding variant is deferred to T1b.
+//! Cables carry tension (`q > 0`), struts carry compression (`q < 0`):
+//! [`MemberKind::admits`]. Every entry (e.g. [`form_find_anchored`]) first
+//! builds a `ForceDensityProblem`, which enforces it with the rest of the
+//! [`ForceDensityInputError`] contract; the free-standing eigenvalue/ratio
+//! form-finding variant is deferred to T1b.
 //!
 //! # Scope
 //!
@@ -35,6 +37,7 @@
 //! auto-scaling, the free-standing (unanchored) eigenvalue case, external loads,
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
+use crate::fd_matrix::assemble_d;
 use faer::Mat;
 use faer::linalg::solvers::Solve;
 
@@ -48,31 +51,94 @@ pub enum MemberKind {
     Cable,
 }
 
+impl MemberKind {
+    /// Whether force density `q` carries this kind's sense: cables tension
+    /// (`q > 0`), struts compression (`q < 0`); NaN is never admitted.
+    pub fn admits(self, q: f64) -> bool {
+        match self {
+            MemberKind::Cable => q > 0.0,
+            MemberKind::Strut => q < 0.0,
+        }
+    }
+}
+
+/// The indexed input an out-of-range node index was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexedInput {
+    /// An endpoint of `members[member]`.
+    MemberEndpoint {
+        /// Position in `members`.
+        member: usize,
+    },
+    /// The entry `anchors[anchor]`.
+    Anchor {
+        /// Position in `anchors`.
+        anchor: usize,
+    },
+    /// A corner of `surfaces[surface]`.
+    SurfaceCorner {
+        /// Position in `surfaces`.
+        surface: usize,
+    },
+}
+
+/// Why a force-density input is malformed: the one input vocabulary every
+/// form-finding entry (anchored, anisotropic, free-standing) reports, nested
+/// as `Input(..)` in each solver's own error enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForceDensityInputError {
+    /// `members`, `kinds` and the per-member force densities disagree in length.
+    DimensionMismatch,
+    /// A node index read from `what` is not below the node count `len`.
+    IndexOutOfRange {
+        /// The input the index was read from.
+        what: IndexedInput,
+        /// The offending node index.
+        index: usize,
+        /// The node count.
+        len: usize,
+    },
+    /// The force density of `members[member]` is not admitted by its kind
+    /// ([`MemberKind::admits`]).
+    SignViolation {
+        /// Position in `members`.
+        member: usize,
+    },
+    /// `surfaces` and the per-surface stresses disagree in length.
+    SurfaceCountMismatch,
+    /// The stress of `surfaces[surface]` is not tension (`σ ≤ 0` or NaN).
+    NonTensionSurfaceStress {
+        /// Position in `surfaces`.
+        surface: usize,
+    },
+    /// `surfaces[surface]` has collinear / zero-area corners in the input geometry.
+    DegenerateTriangle {
+        /// Position in `surfaces`.
+        surface: usize,
+    },
+}
+
 /// Reason an anchored form-find solve is infeasible. Surfaced by the trampoline
 /// as an `E_FormFindInfeasible` diagnostic (PRD §8.1 contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormFindError {
-    /// A member's force density violates its kind's sign contract
-    /// (a cable with `q ≤ 0` or a strut with `q ≥ 0`).
-    SignViolation,
+    /// The input violates the force-density input contract.
+    Input(ForceDensityInputError),
     /// The reduced force-density stiffness `D_ff` is singular or
     /// ill-conditioned (e.g. a free node with no path to any anchor).
     SingularReducedStiffness,
     /// Every node is anchored — there is no free node to solve for.
     EmptyFreeSet,
-    /// Input arrays disagree in length (`members`, `kinds`, `q`).
-    DimensionMismatch,
-    /// A surface triangle is degenerate (collinear / zero-area corners), so its
-    /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge as `2·Area → 0`.
-    /// Surfaced instead of assembling a NaN/∞ stencil. (γ / NFDM surfaces.)
+    /// A surface triangle valid at input degenerated (collinear / zero-area
+    /// corners) during the cotangent fixed point, where its weights
+    /// `cot(θ) = (e_a·e_b)/(2·Area)` diverge. (γ / NFDM surfaces.)
     DegenerateTriangle,
-    /// A membrane surface stress `σ ≤ 0` — a non-tension (slack/compressed)
-    /// surface is infeasible prestress input, the surface analogue of a cable
-    /// with `q ≤ 0`. (γ / NFDM surfaces.)
-    NonTensionSurfaceStress,
-    /// `surfaces` and `surface_stresses` disagree in length — each triangle
-    /// needs exactly one isotropic σ. (γ / NFDM surfaces.)
-    SurfaceCountMismatch,
+}
+
+impl From<ForceDensityInputError> for FormFindError {
+    fn from(input: ForceDensityInputError) -> Self {
+        FormFindError::Input(input)
+    }
 }
 
 /// Result of an anchored Force-Density form-find solve.
@@ -95,6 +161,243 @@ pub struct FormFindSolve {
     pub converged: bool,
 }
 
+// ── The validated force-density problem (solver-crates-layering D1, leaf η) ──
+
+/// A per-triangle membrane stencil: the prestress it takes, its tension rule
+/// and its local force-density matrix.
+pub(crate) trait TriangleStencil {
+    /// Per-triangle prestress.
+    type Stress;
+    /// Why no local matrix exists at a geometry.
+    type Error;
+    /// Whether `stress` is tension; NaN never is.
+    fn is_tension(stress: &Self::Stress) -> bool;
+    /// The triangle's symmetric, zero-row-sum local 3×3 at corners
+    /// `pi, pj, pk`, rows/cols in corner order.
+    fn local_matrix(
+        pi: [f64; 3],
+        pj: [f64; 3],
+        pk: [f64; 3],
+        stress: &Self::Stress,
+    ) -> Result<[[f64; 3]; 3], Self::Error>;
+}
+
+/// The isotropic cotangent-Laplacian stencil: one surface stress `σ > 0`.
+pub(crate) enum IsotropicStencil {}
+
+impl TriangleStencil for IsotropicStencil {
+    type Stress = f64;
+    type Error = ZeroAreaTriangle;
+    fn is_tension(stress: &f64) -> bool {
+        *stress > 0.0
+    }
+    fn local_matrix(
+        pi: [f64; 3],
+        pj: [f64; 3],
+        pk: [f64; 3],
+        sigma: &f64,
+    ) -> Result<[[f64; 3]; 3], ZeroAreaTriangle> {
+        triangle_cotangent_laplacian(pi, pj, pk, *sigma)
+    }
+}
+
+/// The anisotropic warp/weft stencil: `σ_w > 0` and `σ_f > 0` in a material frame.
+pub(crate) enum AnisotropicStencil {}
+
+impl TriangleStencil for AnisotropicStencil {
+    type Stress = AnisotropicSurfaceStress;
+    type Error = AnisoFormFindError;
+    fn is_tension(stress: &AnisotropicSurfaceStress) -> bool {
+        stress.sigma_warp > 0.0 && stress.sigma_weft > 0.0
+    }
+    fn local_matrix(
+        pi: [f64; 3],
+        pj: [f64; 3],
+        pk: [f64; 3],
+        stress: &AnisotropicSurfaceStress,
+    ) -> Result<[[f64; 3]; 3], AnisoFormFindError> {
+        triangle_anisotropic_laplacian(pi, pj, pk, stress)
+    }
+}
+
+/// A triangle whose corners are collinear or coincident, so it has no stencil:
+/// the verdict of [`triangle_area_vector`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ZeroAreaTriangle;
+
+impl From<ZeroAreaTriangle> for FormFindError {
+    fn from(_: ZeroAreaTriangle) -> Self {
+        FormFindError::DegenerateTriangle
+    }
+}
+
+impl From<ZeroAreaTriangle> for AnisoFormFindError {
+    fn from(_: ZeroAreaTriangle) -> Self {
+        AnisoFormFindError::DegenerateTriangle
+    }
+}
+
+/// A force-density problem whose inputs satisfy the input contract: lengths
+/// agree, every node index is in range, every density is admitted by its kind,
+/// every surface stress is tension and no input triangle is degenerate. Only
+/// [`ForceDensityProblem::new`] builds one, so solvers index it unguarded.
+pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil> {
+    nodes: &'a [[f64; 3]],
+    members: &'a [(usize, usize)],
+    kinds: &'a [MemberKind],
+    q: &'a [f64],
+    anchors: &'a [usize],
+    surfaces: &'a [(usize, usize, usize)],
+    surface_stresses: &'a [S::Stress],
+}
+
+impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
+    /// Checks the input contract; the first failure wins, in the order
+    /// lengths, member endpoints, signs, surface count, surface tension,
+    /// surface corners, anchors, input-triangle degeneracy.
+    pub(crate) fn new(
+        nodes: &'a [[f64; 3]],
+        members: &'a [(usize, usize)],
+        kinds: &'a [MemberKind],
+        q: &'a [f64],
+        anchors: &'a [usize],
+        surfaces: &'a [(usize, usize, usize)],
+        surface_stresses: &'a [S::Stress],
+    ) -> Result<Self, ForceDensityInputError> {
+        let n = nodes.len();
+        if members.len() != kinds.len() || members.len() != q.len() {
+            return Err(ForceDensityInputError::DimensionMismatch);
+        }
+        for (member, &(j, k)) in members.iter().enumerate() {
+            for index in [j, k] {
+                node_index_in_range(IndexedInput::MemberEndpoint { member }, index, n)?;
+            }
+        }
+        if let Some(member) = (0..q.len()).find(|&i| !kinds[i].admits(q[i])) {
+            return Err(ForceDensityInputError::SignViolation { member });
+        }
+        if surfaces.len() != surface_stresses.len() {
+            return Err(ForceDensityInputError::SurfaceCountMismatch);
+        }
+        if let Some(surface) = surface_stresses.iter().position(|s| !S::is_tension(s)) {
+            return Err(ForceDensityInputError::NonTensionSurfaceStress { surface });
+        }
+        for (surface, &(i, j, k)) in surfaces.iter().enumerate() {
+            for index in [i, j, k] {
+                node_index_in_range(IndexedInput::SurfaceCorner { surface }, index, n)?;
+            }
+        }
+        for (anchor, &index) in anchors.iter().enumerate() {
+            node_index_in_range(IndexedInput::Anchor { anchor }, index, n)?;
+        }
+        if let Some(surface) = surfaces
+            .iter()
+            .position(|&(i, j, k)| triangle_area_vector(nodes[i], nodes[j], nodes[k]).is_err())
+        {
+            return Err(ForceDensityInputError::DegenerateTriangle { surface });
+        }
+        Ok(Self {
+            nodes,
+            members,
+            kinds,
+            q,
+            anchors,
+            surfaces,
+            surface_stresses,
+        })
+    }
+
+    /// The same problem at force densities `q`, checked by the same contract.
+    pub(crate) fn with_densities<'b>(
+        &self,
+        q: &'b [f64],
+    ) -> Result<ForceDensityProblem<'b, S>, ForceDensityInputError>
+    where
+        'a: 'b,
+    {
+        ForceDensityProblem::new(
+            self.nodes,
+            self.members,
+            self.kinds,
+            q,
+            self.anchors,
+            self.surfaces,
+            self.surface_stresses,
+        )
+    }
+
+    pub(crate) fn nodes(&self) -> &'a [[f64; 3]] {
+        self.nodes
+    }
+
+    pub(crate) fn members(&self) -> &'a [(usize, usize)] {
+        self.members
+    }
+
+    pub(crate) fn q(&self) -> &'a [f64] {
+        self.q
+    }
+
+    /// Node indices split into `(free, anchored)`, both ascending; an
+    /// all-anchored network leaves nothing to solve for.
+    fn anchor_partition(&self) -> Result<(Vec<usize>, Vec<usize>), ReducedSolveFailure> {
+        let mut is_anchor = vec![false; self.nodes.len()];
+        for &a in self.anchors {
+            is_anchor[a] = true;
+        }
+        let (free, anchored): (Vec<usize>, Vec<usize>) =
+            (0..self.nodes.len()).partition(|&i| !is_anchor[i]);
+        if free.is_empty() {
+            return Err(ReducedSolveFailure::EmptyFreeSet);
+        }
+        Ok((free, anchored))
+    }
+}
+
+/// `Ok` when `index` names one of `len` nodes.
+fn node_index_in_range(
+    what: IndexedInput,
+    index: usize,
+    len: usize,
+) -> Result<(), ForceDensityInputError> {
+    if index < len {
+        Ok(())
+    } else {
+        Err(ForceDensityInputError::IndexOutOfRange { what, index, len })
+    }
+}
+
+/// Why the reduced anchored system `D_ff X_f = −D_fa X_a` has no solution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReducedSolveFailure {
+    /// Every node is anchored.
+    EmptyFreeSet,
+    /// `D_ff` is singular or ill-conditioned.
+    SingularReducedStiffness,
+}
+
+impl From<ReducedSolveFailure> for FormFindError {
+    fn from(failure: ReducedSolveFailure) -> Self {
+        match failure {
+            ReducedSolveFailure::EmptyFreeSet => FormFindError::EmptyFreeSet,
+            ReducedSolveFailure::SingularReducedStiffness => {
+                FormFindError::SingularReducedStiffness
+            }
+        }
+    }
+}
+
+impl From<ReducedSolveFailure> for AnisoFormFindError {
+    fn from(failure: ReducedSolveFailure) -> Self {
+        match failure {
+            ReducedSolveFailure::EmptyFreeSet => AnisoFormFindError::EmptyFreeSet,
+            ReducedSolveFailure::SingularReducedStiffness => {
+                AnisoFormFindError::SingularReducedStiffness
+            }
+        }
+    }
+}
+
 /// Solve the anchored Force-Density form-finding problem.
 ///
 /// `nodes` are the node coordinates (free-node entries are an unused initial
@@ -104,7 +407,9 @@ pub struct FormFindSolve {
 /// indices.
 ///
 /// Returns the solved [`FormFindSolve`] on success, or a [`FormFindError`]
-/// describing why the input is infeasible.
+/// describing why the input is infeasible (e.g. a member endpoint or anchor
+/// index past `nodes`). The surface-free case of [`form_find_anchored_surfaces`]:
+/// `D = CᵀQC` is geometry-independent, so one reduced solve is exact.
 pub fn form_find_anchored(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -112,86 +417,7 @@ pub fn form_find_anchored(
     q: &[f64],
     anchors: &[usize],
 ) -> Result<FormFindSolve, FormFindError> {
-    let n = nodes.len();
-
-    // ---- Up-front feasibility guards (PRD §8.1: infeasible input must yield a
-    // clean diagnostic, never a silent wrong answer or a panic). ----
-
-    // `members`, `kinds`, and `q` describe the same member set in the same
-    // (struts-then-cables) order; disagreeing lengths mean the caller mis-built
-    // the problem, so reject before indexing them together below.
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(FormFindError::DimensionMismatch);
-    }
-
-    // Sign convention (PRD §4), enforced as a HARD per-member constraint:
-    // cables carry tension (q > 0), struts carry compression (q < 0). A
-    // violation is *infeasible input*, not something to silently coerce — the
-    // FD system would still factor and return a geometry, but it would be a
-    // sign-inconsistent (physically meaningless) one, so we surface a clean
-    // diagnostic instead of a silent wrong answer. The deferred T1b alternative
-    // is the free-standing eigenvalue/ratio search, which *solves for* a
-    // feasible q (and the self-stress mode) rather than taking q as given here.
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(FormFindError::SignViolation);
-        }
-    }
-
-    // Force-density Laplacian D = CᵀQC for the line members (no surfaces on
-    // this entry). Assembled by the shared `assemble_d` so the surface-aware
-    // entry adds Σ_T σ_T·L_T into the identical matrix before the same solve.
-    let d = assemble_d(n, members, q, &[], &[], nodes)?;
-
-    // Partition node indices into anchored A and free F (both ascending).
-    let mut is_anchor = vec![false; n];
-    for &a in anchors {
-        is_anchor[a] = true;
-    }
-    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
-    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
-    let nf = free_indices.len();
-
-    // Every node anchored ⇒ no free DOF to solve for. Guard before assembling a
-    // 0×0 system (whose LU/solve is degenerate).
-    if nf == 0 {
-        return Err(FormFindError::EmptyFreeSet);
-    }
-
-    // Reduced free-node system D_ff X_f = −D_fa X_a (prestress-only: no external
-    // load term), solved once via the shared `solve_reduced` core (partition →
-    // faer partial-pivot LU → non-finite + scaled-residual guard). The
-    // surface-aware entry reuses the identical core per fixed-point iteration.
-    let out_nodes = solve_reduced(&d, nodes, &free_indices, &anchor_indices)?;
-
-    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
-    // struts-then-cables member order (the input ordering).
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = out_nodes[j];
-            let pk = out_nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
-
-    Ok(FormFindSolve {
-        nodes: out_nodes,
-        member_forces,
-        force_densities: q.to_vec(),
-        // Line-only path carries no surfaces.
-        surface_stresses: Vec::new(),
-        converged: true,
-    })
+    form_find_anchored_surfaces(nodes, members, kinds, q, &[], &[], anchors)
 }
 
 // ── NFDM surface assembly (γ / task 4414) ─────────────────────────────────────
@@ -253,13 +479,9 @@ const MAX_SURFACE_ITERS: usize = 5000;
 /// [`FormFindSolve`] whose `surface_stresses` echoes the prescribed σ.
 ///
 /// # Errors
-/// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree, or
-///   a `surfaces` triangle corner indexes past `nodes`.
-/// - [`FormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
-///   disagree.
-/// - [`FormFindError::SignViolation`] — a member violates its q-sign contract.
-/// - [`FormFindError::NonTensionSurfaceStress`] — a surface `σ ≤ 0`.
-/// - [`FormFindError::DegenerateTriangle`] — a zero-area surface triangle.
+/// - [`FormFindError::Input`] — the input violates the [`ForceDensityInputError`]
+///   contract (lengths, node indices, q signs, σ tension, input triangles).
+/// - [`FormFindError::DegenerateTriangle`] — a triangle degenerated mid-iteration.
 /// - [`FormFindError::EmptyFreeSet`] — every node anchored.
 /// - [`FormFindError::SingularReducedStiffness`] — rank-deficient `D_ff`.
 pub fn form_find_anchored_surfaces(
@@ -271,61 +493,63 @@ pub fn form_find_anchored_surfaces(
     surface_stresses: &[f64],
     anchors: &[usize],
 ) -> Result<FormFindSolve, FormFindError> {
-    let n = nodes.len();
+    let problem = ForceDensityProblem::<IsotropicStencil>::new(
+        nodes,
+        members,
+        kinds,
+        q,
+        anchors,
+        surfaces,
+        surface_stresses,
+    )?;
+    let equilibrium = anchored_fixed_point::<_, FormFindError>(&problem)?;
 
-    // ---- Feasibility guards (mirror the line contract; PRD §8.1). ----
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(FormFindError::DimensionMismatch);
-    }
-    if surfaces.len() != surface_stresses.len() {
-        return Err(FormFindError::SurfaceCountMismatch);
-    }
-    // Member sign contract: cables carry tension (q > 0), struts compression.
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(FormFindError::SignViolation);
-        }
-    }
-    // Surface tension contract: isotropic prestress σ must be strictly positive
-    // (a slack / compressed membrane is infeasible — the surface analogue of the
-    // cable q > 0 rule).
-    for &s in surface_stresses {
-        if s <= 0.0 {
-            return Err(FormFindError::NonTensionSurfaceStress);
-        }
-    }
-    // Surface node-index contract: a triangle corner past `nodes` would panic
-    // on the `nodes[i]` index in `assemble_d`. PRD §8.1 promises a clean
-    // diagnostic, never a panic.
-    if !surface_indices_in_range(surfaces, n) {
-        return Err(FormFindError::DimensionMismatch);
-    }
+    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
+    // struts-then-cables member order (the input ordering).
+    let member_forces = member_axial_forces(members, q, &equilibrium.nodes);
 
-    // Partition node indices into anchored A and free F (both ascending).
-    let mut is_anchor = vec![false; n];
-    for &a in anchors {
-        is_anchor[a] = true;
-    }
-    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
-    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
-    if free_indices.is_empty() {
-        return Err(FormFindError::EmptyFreeSet);
-    }
+    Ok(FormFindSolve {
+        nodes: equilibrium.nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        surface_stresses: surface_stresses.to_vec(),
+        converged: equilibrium.converged,
+    })
+}
 
-    // Iterate the cotangent fixed point. With no surfaces `D` is
-    // geometry-independent, so a single solve is exact (the line-only case);
-    // with surfaces the cotangent weights depend on geometry, so re-assemble and
-    // re-solve until the free-node net force ‖(D·x)_free‖ settles to ~0
-    // (prestress-only equilibrium).
-    let mut current = nodes.to_vec();
+/// Where the anchored fixed point stopped.
+struct AnchoredEquilibrium {
+    /// Node coordinates in input order, anchors unchanged.
+    nodes: Vec<[f64; 3]>,
+    /// Whether the free rows reached equilibrium within the iteration cap.
+    converged: bool,
+}
+
+/// The one anchored force-density fixed point, for any surface stencil `S`.
+///
+/// Assemble `D` at the current geometry, stop once the free rows are in
+/// equilibrium, otherwise solve the reduced anchored system
+/// `D_ff X_f = −D_fa X_a` for the free nodes and repeat. With no surfaces `D`
+/// is geometry-independent, so a single solve is exact (the line-only case);
+/// with surfaces the stencil weights depend on geometry, so it re-assembles and
+/// re-solves until the free-node net force ‖(D·x)_free‖ settles to ~0
+/// (prestress-only equilibrium).
+fn anchored_fixed_point<S, E>(
+    problem: &ForceDensityProblem<'_, S>,
+) -> Result<AnchoredEquilibrium, E>
+where
+    S: TriangleStencil,
+    E: From<S::Error> + From<ReducedSolveFailure>,
+{
+    let (free_indices, anchor_indices) = problem.anchor_partition()?;
+    let n = problem.nodes.len();
+    let surfaces = problem.surfaces;
+
+    let mut current = problem.nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
     // TODO(perf, scalability ceiling): each iteration re-allocates a fresh dense // ptodo:allow permanent perf note, no live owner task
-    // n×n `D` in `assemble_d` (via `Mat::zeros`) and re-factors a fresh nf×nf
+    // n×n `D` in `assemble_combined_d` (via `Mat::zeros`) and re-factors a fresh nf×nf
     // partial-pivot LU in `solve_reduced`. That is O(iters·n²) allocation churn
     // and O(iters·nf³) factorization — fine for the small DSL-level examples and
     // goldens here, but on a refined membrane mesh (where ~1–2k iterations are
@@ -334,7 +558,14 @@ pub fn form_find_anchored_surfaces(
     // across iterations (clear-and-refill instead of `zeros()`) and move to a
     // sparse assembly + factor-reuse strategy for large meshes.
     for _ in 0..max_iters {
-        let d = assemble_d(n, members, q, surfaces, surface_stresses, &current)?;
+        let d = assemble_combined_d::<S>(
+            n,
+            problem.members,
+            problem.q,
+            surfaces,
+            problem.surface_stresses,
+            &current,
+        )?;
 
         // Convergence is judged on the GAUGE-RELATIVE EQUILIBRIUM RESIDUAL of the
         // current geometry under the freshly-assembled `D` — the honest physical
@@ -361,80 +592,23 @@ pub fn form_find_anchored_surfaces(
             break;
         }
     }
-    let out_nodes = current;
-
-    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry.
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = out_nodes[j];
-            let pk = out_nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
-
-    Ok(FormFindSolve {
-        nodes: out_nodes,
-        member_forces,
-        force_densities: q.to_vec(),
-        surface_stresses: surface_stresses.to_vec(),
+    Ok(AnchoredEquilibrium {
+        nodes: current,
         converged,
     })
 }
 
-/// True when every surface triangle corner indexes a real node (`< n`).
-///
-/// [`assemble_d`], [`assemble_d_aniso`] and `form_find_free`'s
-/// `assemble_surface_matrix` all index `nodes[i]` directly, so an out-of-range
-/// corner would panic. The three surface-aware entries call this up front and
-/// map `false` to their own `DimensionMismatch`, mirroring the member-index
-/// guard in `form_find_free::validate_explicit`.
-pub(crate) fn surface_indices_in_range(surfaces: &[(usize, usize, usize)], n: usize) -> bool {
-    surfaces.iter().all(|&(i, j, k)| i < n && j < n && k < n)
-}
-
-/// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`
-/// with force density `qᵢ`, adds `+qᵢ` to the diagonal entries `D[j,j]`,
-/// `D[k,k]` and `−qᵢ` to the off-diagonal pairs `D[j,k]`, `D[k,j]`.
-///
-/// Shared by [`assemble_d`] and [`assemble_d_aniso`] so a future change to the
-/// FDM rank-1 update propagates to both surface and anisotropic paths
-/// automatically.
-fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
-}
-
-/// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
-/// σ_T·L_T` (surface cotangent-Laplacians, at the given geometry) into a dense
-/// `n×n` faer matrix. Shared by both anchored entries; the line loop is the
-/// landed FDM rank-1 update (via [`scatter_line_members`]), the surface loop
-/// scatters each per-triangle local 3×3 into the triangle's global node
-/// indices. Propagates [`FormFindError::DegenerateTriangle`] from a zero-area
-/// triangle.
-fn assemble_d(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
+/// Scatter each surface triangle's local stencil `L_T` (at `nodes`) into `d` at
+/// the triangle's global node indices — the one surface-stencil scatter,
+/// shared by [`assemble_combined_d`] and `form_find_free`'s surface matrix.
+pub(crate) fn scatter_surface_stencils<S: TriangleStencil>(
+    d: &mut Mat<f64>,
     surfaces: &[(usize, usize, usize)],
-    surface_stresses: &[f64],
+    surface_stresses: &[S::Stress],
     nodes: &[[f64; 3]],
-) -> Result<Mat<f64>, FormFindError> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    // Line members: rank-1 FDM update.
-    scatter_line_members(&mut d, members, q);
-    // Surface triangles: add σ_T·L_T into the SAME matrix.
-    for (&(i, j, k), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
-        let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], sigma)?;
+) -> Result<(), S::Error> {
+    for (&(i, j, k), stress) in surfaces.iter().zip(surface_stresses.iter()) {
+        let l = S::local_matrix(nodes[i], nodes[j], nodes[k], stress)?;
         let idx = [i, j, k];
         for a in 0..3 {
             for b in 0..3 {
@@ -442,23 +616,59 @@ fn assemble_d(
             }
         }
     }
+    Ok(())
+}
+
+/// Assemble the combined force-density matrix `D = CᵀQC` (line members) `+ Σ_T
+/// L_T` (surface stencils `S`, at the given geometry) into a dense `n×n` faer
+/// matrix: the line-member [`assemble_d`], then [`scatter_surface_stencils`].
+/// Propagates the stencil's error.
+fn assemble_combined_d<S: TriangleStencil>(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[S::Stress],
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, S::Error> {
+    let mut d = assemble_d(n, members, q);
+    scatter_surface_stencils::<S>(&mut d, surfaces, surface_stresses, nodes)?;
     Ok(d)
+}
+
+/// Per-member axial force `Nᵢ = qᵢ · Lᵢ` at `nodes`, in member order — the one
+/// member-force pass every form-finding entry reports.
+pub(crate) fn member_axial_forces(
+    members: &[(usize, usize)],
+    q: &[f64],
+    nodes: &[[f64; 3]],
+) -> Vec<f64> {
+    members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = nodes[j];
+            let pk = nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2) + (pj[1] - pk[1]).powi(2) + (pj[2] - pk[2]).powi(2))
+                .sqrt();
+            qi * len
+        })
+        .collect()
 }
 
 /// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
 /// (already-assembled) `D` and geometry, scattering the solved free rows back
 /// into a full node vector. The partition → faer partial-pivot LU → non-finite +
 /// scaled-residual guard ([`is_singular_reduced_solve`]) is the landed
-/// line-solve core, extracted so the line and surface entries share it (the
-/// surface entry calls it once per fixed-point iteration). Returns
-/// [`FormFindError::SingularReducedStiffness`] when the reduced system is
+/// line-solve core, called once per iteration by [`anchored_fixed_point`]. Returns
+/// [`ReducedSolveFailure::SingularReducedStiffness`] when the reduced system is
 /// rank-deficient.
 fn solve_reduced(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
     anchor_indices: &[usize],
-) -> Result<Vec<[f64; 3]>, FormFindError> {
+) -> Result<Vec<[f64; 3]>, ReducedSolveFailure> {
     let nf = free_indices.len();
     // All three coordinate axes are solved at once as an |F|×3 RHS so D_ff is
     // factored only once.
@@ -488,7 +698,7 @@ fn solve_reduced(
     }
 
     if is_singular_reduced_solve(d, &out_nodes, free_indices, anchor_indices) {
-        return Err(FormFindError::SingularReducedStiffness);
+        return Err(ReducedSolveFailure::SingularReducedStiffness);
     }
 
     Ok(out_nodes)
@@ -528,7 +738,7 @@ fn is_singular_reduced_solve(
 
 /// The stop criterion's measure ([`SURFACE_EQUILIBRIUM_REL_TOL`]): the per-row
 /// residual at the geometry's own coordinate scale, ~0 at a fixed point.
-fn free_equilibrium_residual_relative(
+pub(crate) fn free_equilibrium_residual_relative(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
@@ -594,6 +804,27 @@ fn max_abs_coordinate<'a>(points: impl IntoIterator<Item = &'a [f64; 3]>) -> f64
 /// shape are judged identically.
 const DEGENERATE_AREA_EPS: f64 = 1e-10;
 
+/// The corner cross product `(pj − pi) × (pk − pi)`, whose length is `2·Area`,
+/// or [`ZeroAreaTriangle`] when `2·Area ≤ DEGENERATE_AREA_EPS · max|e|²` — the
+/// one degeneracy predicate shared by both stencils and the input contract.
+fn triangle_area_vector(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+) -> Result<[f64; 3], ZeroAreaTriangle> {
+    let eij = v_sub(pj, pi);
+    let eik = v_sub(pk, pi);
+    let ejk = v_sub(pk, pj);
+    let cross = v_cross(eij, eik);
+    let two_area = v_dot(cross, cross).sqrt();
+    let scale = v_dot(eij, eij).max(v_dot(eik, eik)).max(v_dot(ejk, ejk));
+    if two_area <= DEGENERATE_AREA_EPS * scale {
+        Err(ZeroAreaTriangle)
+    } else {
+        Ok(cross)
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // ε (task 4416): anisotropic warp/weft NFDM extension
 // ══════════════════════════════════════════════════════════════════════════════
@@ -608,7 +839,8 @@ const DEGENERATE_AREA_EPS: f64 = 1e-10;
 // When σ_w = σ_f = σ, S = σI and L_T collapses EXACTLY to the cotangent
 // Laplacian — a frame-independent mathematical identity (step-1 RED test).
 //
-// API: additive sibling entry points; isotropic γ/δ code paths UNTOUCHED.
+// API: an additive sibling entry point; it shares the isotropic entries' anchored
+// fixed point (`anchored_fixed_point`), parameterised by the stencil.
 
 /// Per-triangle anisotropic surface stress specification (ε / task 4416).
 ///
@@ -627,30 +859,29 @@ pub struct AnisotropicSurfaceStress {
 
 /// Reason an anisotropic anchored form-find solve is infeasible.
 ///
-/// A **separate** enum from [`FormFindError`] — adding a variant to that enum
-/// would break the exhaustive match in
-/// `reify-eval/src/compute_targets/form_find.rs:308`, which is out of scope
-/// for this leaf (ε plan.json D1). Mirrors the precedent set by δ (task 4415),
-/// which introduced `FreeFormError` as a separate enum for the same reason.
+/// Separate from [`FormFindError`] because the anisotropic stencil has a
+/// failure mode of its own, [`AnisoFormFindError::DegenerateMaterialFrame`];
+/// the input vocabulary is shared through [`ForceDensityInputError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnisoFormFindError {
-    /// `members` / `kinds` / `q` disagree in length.
-    DimensionMismatch,
-    /// A member's force density violates its kind's sign contract.
-    SignViolation,
+    /// The input violates the force-density input contract.
+    Input(ForceDensityInputError),
     /// Every node is anchored — no free node to solve for.
     EmptyFreeSet,
     /// The reduced stiffness `D_ff` is singular or ill-conditioned.
     SingularReducedStiffness,
-    /// `surfaces` and `surface_prestress` disagree in length.
-    SurfaceCountMismatch,
-    /// A surface has `σ_w ≤ 0` or `σ_f ≤ 0` (non-tension).
-    NonTensionSurfaceStress,
-    /// A triangle is degenerate (collinear / zero-area corners).
+    /// A triangle valid at input is degenerate (collinear / zero-area corners)
+    /// at an iterate or at the solved geometry.
     DegenerateTriangle,
     /// `warp_dir` is parallel (or nearly so) to the triangle normal, so its
     /// in-plane projection is negligible and the material frame is undefined.
     DegenerateMaterialFrame,
+}
+
+impl From<ForceDensityInputError> for AnisoFormFindError {
+    fn from(input: ForceDensityInputError) -> Self {
+        AnisoFormFindError::Input(input)
+    }
 }
 
 /// Result of an anisotropic anchored Force-Density form-find solve (ε / task 4416).
@@ -670,66 +901,23 @@ pub struct AnisoFormFindSolve {
     pub converged: bool,
 }
 
-/// Map a [`FormFindError`] from the shared `solve_reduced` core to an
-/// [`AnisoFormFindError`] at the aniso boundary. Only `SingularReducedStiffness`
-/// and `EmptyFreeSet` can arise from that function; the rest are pre-checked.
-fn map_ff_error(e: FormFindError) -> AnisoFormFindError {
-    match e {
-        FormFindError::SingularReducedStiffness => AnisoFormFindError::SingularReducedStiffness,
-        FormFindError::EmptyFreeSet => AnisoFormFindError::EmptyFreeSet,
-        // Remaining variants are pre-checked above solve_reduced; map defensively.
-        FormFindError::DimensionMismatch => AnisoFormFindError::DimensionMismatch,
-        FormFindError::SignViolation => AnisoFormFindError::SignViolation,
-        FormFindError::DegenerateTriangle => AnisoFormFindError::DegenerateTriangle,
-        FormFindError::NonTensionSurfaceStress => AnisoFormFindError::NonTensionSurfaceStress,
-        FormFindError::SurfaceCountMismatch => AnisoFormFindError::SurfaceCountMismatch,
-    }
-}
-
-/// Assemble `D = CᵀQC` (line members) `+ Σ_T L_T(aniso)` (anisotropic surface
-/// stencils) into a dense `n×n` faer matrix. Parallels `assemble_d` but
-/// scatters `triangle_anisotropic_laplacian` instead of the cotangent stencil.
-/// Line-member contributions share [`scatter_line_members`] with `assemble_d`.
-fn assemble_d_aniso(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
-    surfaces: &[(usize, usize, usize)],
-    surface_prestress: &[AnisotropicSurfaceStress],
-    nodes: &[[f64; 3]],
-) -> Result<Mat<f64>, AnisoFormFindError> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    scatter_line_members(&mut d, members, q);
-    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
-        let l = triangle_anisotropic_laplacian(nodes[i], nodes[j], nodes[k], spec)?;
-        let idx = [i, j, k];
-        for a in 0..3 {
-            for b in 0..3 {
-                d[(idx[a], idx[b])] += l[a][b];
-            }
-        }
-    }
-    Ok(d)
-}
-
 /// Solve the anchored Force-Density form-finding problem with ANISOTROPIC NFDM
 /// surface contributions (ε / task 4416).
 ///
 /// Mirrors [`form_find_anchored_surfaces`] but accepts an
 /// [`AnisotropicSurfaceStress`] per triangle (warp direction + `σ_w`, `σ_f`)
-/// instead of a single isotropic `σ`. The fixed-point loop, convergence
-/// criterion, and all line-member machinery are reused unchanged.
+/// instead of a single isotropic `σ`; it runs the same anchored fixed point
+/// ([`anchored_fixed_point`]) with the anisotropic stencil.
 ///
 /// `principal_stresses` on the returned [`AnisoFormFindSolve`] is populated
 /// per triangle on the solved geometry by [`recover_principal_stress`].
 ///
 /// # Errors
-/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree,
-///   or a `surfaces` triangle corner indexes past `nodes`.
-/// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
-/// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
-/// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
-/// - [`AnisoFormFindError::DegenerateTriangle`] — zero-area surface triangle.
+/// - [`AnisoFormFindError::Input`] — the input violates the
+///   [`ForceDensityInputError`] contract (lengths, node indices, q signs,
+///   `σ_w`/`σ_f` tension, input triangles).
+/// - [`AnisoFormFindError::DegenerateTriangle`] — a triangle degenerated
+///   mid-iteration or at the solved geometry.
 /// - [`AnisoFormFindError::DegenerateMaterialFrame`] — `warp_dir ∥ n` for a triangle.
 /// - [`AnisoFormFindError::EmptyFreeSet`] — every node anchored.
 /// - [`AnisoFormFindError::SingularReducedStiffness`] — rank-deficient `D_ff`.
@@ -742,85 +930,19 @@ pub fn form_find_anchored_surfaces_aniso(
     surface_prestress: &[AnisotropicSurfaceStress],
     anchors: &[usize],
 ) -> Result<AnisoFormFindSolve, AnisoFormFindError> {
-    let n = nodes.len();
+    let problem = ForceDensityProblem::<AnisotropicStencil>::new(
+        nodes,
+        members,
+        kinds,
+        q,
+        anchors,
+        surfaces,
+        surface_prestress,
+    )?;
+    let equilibrium = anchored_fixed_point::<_, AnisoFormFindError>(&problem)?;
+    let out_nodes = equilibrium.nodes;
 
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(AnisoFormFindError::DimensionMismatch);
-    }
-    if surfaces.len() != surface_prestress.len() {
-        return Err(AnisoFormFindError::SurfaceCountMismatch);
-    }
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(AnisoFormFindError::SignViolation);
-        }
-    }
-    for spec in surface_prestress {
-        if spec.sigma_warp <= 0.0 || spec.sigma_weft <= 0.0 {
-            return Err(AnisoFormFindError::NonTensionSurfaceStress);
-        }
-    }
-    // Surface node-index contract: mirrors form_find_anchored_surfaces — an
-    // out-of-range corner would panic on the `nodes[i]` index in
-    // `assemble_d_aniso`.
-    if !surface_indices_in_range(surfaces, n) {
-        return Err(AnisoFormFindError::DimensionMismatch);
-    }
-
-    let mut is_anchor = vec![false; n];
-    for &a in anchors {
-        is_anchor[a] = true;
-    }
-    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
-    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
-    if free_indices.is_empty() {
-        return Err(AnisoFormFindError::EmptyFreeSet);
-    }
-
-    let mut current = nodes.to_vec();
-    let mut converged = false;
-    let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    for _ in 0..max_iters {
-        let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
-
-        // Same gauge-relative criterion as form_find_anchored_surfaces (task
-        // 6119) — shared function, so both entry points inherit the fix.
-        if !surfaces.is_empty()
-            && free_equilibrium_residual_relative(&d, &current, &free_indices)
-                <= SURFACE_EQUILIBRIUM_REL_TOL
-        {
-            converged = true;
-            break;
-        }
-
-        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)
-            .map_err(map_ff_error)?;
-        current = solved;
-
-        if surfaces.is_empty() {
-            converged = true;
-            break;
-        }
-    }
-    let out_nodes = current;
-
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = out_nodes[j];
-            let pk = out_nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &out_nodes);
 
     // Populate principal stresses per triangle on the solved geometry (declaration
     // order). Since S = diag(σ_w, σ_f) is diagonal in the material frame, recovery
@@ -844,7 +966,7 @@ pub fn form_find_anchored_surfaces_aniso(
         member_forces,
         force_densities: q.to_vec(),
         principal_stresses,
-        converged,
+        converged: equilibrium.converged,
     })
 }
 
@@ -858,17 +980,9 @@ fn build_material_frame(
     pk: [f64; 3],
     warp_dir: [f64; 3],
 ) -> Result<([f64; 3], [f64; 3], [f64; 3]), AnisoFormFindError> {
-    let eij = v_sub(pj, pi);
-    let eik = v_sub(pk, pi);
-    let ejk = v_sub(pk, pj);
-
     // Unit normal and 2·Area.
-    let cross = v_cross(eij, eik);
+    let cross = triangle_area_vector(pi, pj, pk)?;
     let two_area = v_dot(cross, cross).sqrt();
-    let scale = v_dot(eij, eij).max(v_dot(eik, eik)).max(v_dot(ejk, ejk));
-    if two_area <= DEGENERATE_AREA_EPS * scale {
-        return Err(AnisoFormFindError::DegenerateTriangle);
-    }
     let n = [cross[0] / two_area, cross[1] / two_area, cross[2] / two_area];
 
     // In-plane projection of warp_dir.
@@ -1036,7 +1150,7 @@ fn v_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// caller scatters `L[a][b]` into the global `D` at the triangle's global node
 /// indices, exactly as the line loop scatters its member rank-1 update.
 ///
-/// Returns `Err(FormFindError::DegenerateTriangle)` when `2·Area` is negligible
+/// Returns `Err(ZeroAreaTriangle)` when `2·Area` is negligible
 /// relative to the triangle's edge scale (collinear / zero-area corners), where
 /// the cotangents would diverge — a clean diagnostic rather than a NaN/∞ stencil
 /// that would silently poison the assembled system.
@@ -1045,7 +1159,7 @@ pub(crate) fn triangle_cotangent_laplacian(
     pj: [f64; 3],
     pk: [f64; 3],
     sigma: f64,
-) -> Result<[[f64; 3]; 3], FormFindError> {
+) -> Result<[[f64; 3]; 3], ZeroAreaTriangle> {
     // The six directed edge vectors (two out of each vertex).
     let eij = v_sub(pj, pi); // i → j
     let eik = v_sub(pk, pi); // i → k
@@ -1055,14 +1169,9 @@ pub(crate) fn triangle_cotangent_laplacian(
     let ekj = v_sub(pj, pk); // k → j
 
     // 2·Area = |e_a × e_b| is invariant to which vertex's edge pair we cross.
-    let cross = v_cross(eij, eik);
-    let two_area = v_dot(cross, cross).sqrt();
-
     // Degenerate guard (relative): reject before the divisions below blow up.
-    let scale = v_dot(eij, eij).max(v_dot(eik, eik)).max(v_dot(ejk, ejk));
-    if two_area <= DEGENERATE_AREA_EPS * scale {
-        return Err(FormFindError::DegenerateTriangle);
-    }
+    let cross = triangle_area_vector(pi, pj, pk)?;
+    let two_area = v_dot(cross, cross).sqrt();
 
     // cot(θ_v) = (e_a · e_b) / (2·Area), e_a/e_b the two edges out of v.
     let cot_i = v_dot(eij, eik) / two_area;
@@ -1298,7 +1407,7 @@ mod tests {
 
         assert_eq!(
             form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::SignViolation,
+            FormFindError::Input(ForceDensityInputError::SignViolation { member: 1 }),
         );
     }
 
@@ -1317,7 +1426,7 @@ mod tests {
 
         assert_eq!(
             form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::SignViolation,
+            FormFindError::Input(ForceDensityInputError::SignViolation { member: 0 }),
         );
     }
 
@@ -1424,7 +1533,60 @@ mod tests {
 
         assert_eq!(
             form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::DimensionMismatch,
+            FormFindError::Input(ForceDensityInputError::DimensionMismatch),
+        );
+    }
+
+    // (d2) A member endpoint past `nodes` is infeasible input, not a panic in
+    // the `D` scatter (PRD §8.1: clean diagnostic). Index 5 is the FIRST invalid
+    // one for 5 nodes, in the END (k) position.
+    #[test]
+    fn out_of_range_member_index_is_index_out_of_range() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 5)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0; 4];
+        let anchors = [1, 2, 3, 4];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::MemberEndpoint { member: 3 },
+                index: 5,
+                len: 5,
+            }),
+        );
+    }
+
+    // (d3) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). Every
+    // valid anchor is present too, so silently dropping index 5 would solve and fail here.
+    #[test]
+    fn out_of_range_anchor_index_is_index_out_of_range() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0; 4];
+        let anchors = [1, 2, 3, 4, 5];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::Anchor { anchor: 4 },
+                index: 5,
+                len: 5,
+            }),
         );
     }
 
@@ -1507,7 +1669,7 @@ mod tests {
 
         assert_eq!(
             triangle_cotangent_laplacian(a, b, c, 1.0).unwrap_err(),
-            FormFindError::DegenerateTriangle,
+            ZeroAreaTriangle,
         );
     }
 
@@ -1674,7 +1836,7 @@ mod tests {
         assert_eq!(
             form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
                 .unwrap_err(),
-            FormFindError::NonTensionSurfaceStress,
+            FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 2 }),
         );
     }
 
@@ -1691,15 +1853,15 @@ mod tests {
         assert_eq!(
             form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
                 .unwrap_err(),
-            FormFindError::SurfaceCountMismatch,
+            FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
         );
     }
 
     // (c2) A surface triangle corner that indexes past `nodes` is infeasible
-    // input — `assemble_d` would panic on its `nodes[i]` index. PRD 8.1
+    // input — `assemble_combined_d` would panic on its `nodes[i]` index. PRD 8.1
     // promises a clean diagnostic, never a panic.
     #[test]
-    fn surfaces_out_of_range_index_is_dimension_mismatch() {
+    fn surfaces_out_of_range_index_is_index_out_of_range() {
         let (nodes, _surfaces, anchors) = tent_membrane();
         // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
         // this pins the `≥ n` comparison that a `> n` typo would let pass.
@@ -1715,7 +1877,56 @@ mod tests {
         assert_eq!(
             form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
                 .unwrap_err(),
-            FormFindError::DimensionMismatch,
+            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::SurfaceCorner { surface: 0 },
+                index: 5,
+                len: 5,
+            }),
+        );
+    }
+
+    // (c3) A member endpoint past `nodes` is infeasible input, not a panic in
+    // the `D` scatter (PRD §8.1: clean diagnostic). The bad index is the START
+    // (j) endpoint; the line-only test above covers the END (k) one.
+    #[test]
+    fn surfaces_out_of_range_member_index_is_index_out_of_range() {
+        let (nodes, surfaces, anchors) = tent_membrane();
+        let sigmas = vec![1.0; surfaces.len()];
+        let members = vec![(5usize, 0usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q = vec![1.0];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::MemberEndpoint { member: 0 },
+                index: 5,
+                len: 5,
+            }),
+        );
+    }
+
+    // (c4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
+    // valid anchors stay, so silently dropping index 5 would solve and fail here.
+    #[test]
+    fn surfaces_out_of_range_anchor_index_is_index_out_of_range() {
+        let (nodes, surfaces, mut anchors) = tent_membrane();
+        let bad_anchor = anchors.len();
+        anchors.push(5);
+        let sigmas = vec![1.0; surfaces.len()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::Anchor { anchor: bad_anchor },
+                index: 5,
+                len: 5,
+            }),
         );
     }
 
@@ -1844,7 +2055,7 @@ mod tests {
         const LAMBDA: f64 = 1_048_576.0; // 2^20
 
         let (nodes, surfaces, anchors) = tent_membrane();
-        // Note: `assemble_d` (unlike the public entry points) does not take
+        // Note: `assemble_combined_d` (unlike the public entry points) does not take
         // `kinds` — it has no sign contract to enforce — so no MemberKind
         // value is needed here.
         let members = [(0usize, 1usize)];
@@ -1858,14 +2069,14 @@ mod tests {
         }
         let free_indices: Vec<usize> = (0..nodes.len()).filter(|&i| !is_anchor[i]).collect();
 
-        let d_base = assemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
+        let d_base = assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
             .expect("non-degenerate fixture");
         let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
 
         let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
         let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
         let d_scaled =
-            assemble_d(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
+            assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
                 .expect("non-degenerate fixture");
         let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
 
@@ -1881,7 +2092,7 @@ mod tests {
     // rejection, since every comparison against NaN (including `<=`) is
     // false — the NaN row's ratio would then vanish into the NaN-transparent
     // max and could read as converged. Calls the private function directly
-    // with hand-built `Mat<f64>` inputs (no `assemble_d` involved), so both
+    // with hand-built `Mat<f64>` inputs (no `assemble_combined_d` involved), so both
     // branches are exercised in isolation.
     #[test]
     fn free_equilibrium_residual_relative_returns_infinity_on_zero_or_nan_free_row() {
@@ -1962,7 +2173,7 @@ mod tests {
 
         for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
             let q = [BASE_Q * lambda; 3];
-            let d = assemble_d(4, &members, &q, &[], &[], &exact).expect("line-only D");
+            let d = assemble_combined_d::<IsotropicStencil>(4, &members, &q, &[], &[], &exact).expect("line-only D");
             assert!(
                 !is_singular_reduced_solve(&d, &exact, &free_indices, &anchor_indices),
                 "λ={lambda:e}: the exact chain solution must be accepted",
@@ -2341,15 +2552,15 @@ mod tests {
                 &nodes, &members, &kinds, &q, &surfaces, &short_prestress, &anchors
             )
             .unwrap_err(),
-            AnisoFormFindError::SurfaceCountMismatch,
+            AnisoFormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
         );
     }
 
     // (a2) A surface triangle corner that indexes past `nodes` is infeasible
-    // input — `assemble_d_aniso` would panic on its `nodes[i]` index. Mirrors
+    // input — the stencil scatter would panic on its `nodes[i]` index. Mirrors
     // the isotropic entry's guard.
     #[test]
-    fn aniso_solve_out_of_range_surface_index_is_dimension_mismatch() {
+    fn aniso_solve_out_of_range_surface_index_is_index_out_of_range() {
         let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
         // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
         // this pins the `≥ n` comparison that a `> n` typo would let pass.
@@ -2366,7 +2577,56 @@ mod tests {
                 &nodes, &members, &kinds, &q, &surfaces, &pres, &anchors
             )
             .unwrap_err(),
-            AnisoFormFindError::DimensionMismatch,
+            AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::SurfaceCorner { surface: 0 },
+                index: 5,
+                len: 5,
+            }),
+        );
+    }
+
+    // (a3) A member endpoint past `nodes` is infeasible input, not a panic in
+    // the `D` scatter (PRD §8.1: clean diagnostic). Mirrors the isotropic
+    // entry's guard; 5 is the first invalid index for the 5-node tent.
+    #[test]
+    fn aniso_solve_out_of_range_member_index_is_index_out_of_range() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let members = vec![(0usize, 5usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q = vec![1.0_f64];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::MemberEndpoint { member: 0 },
+                index: 5,
+                len: 5,
+            }),
+        );
+    }
+
+    // (a4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
+    // valid anchors stay, so silently dropping index 5 would solve and fail here.
+    #[test]
+    fn aniso_solve_out_of_range_anchor_index_is_index_out_of_range() {
+        let (nodes, surfaces, prestress, mut anchors) = tent_aniso_fixture();
+        let bad_anchor = anchors.len();
+        anchors.push(5);
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::Anchor { anchor: bad_anchor },
+                index: 5,
+                len: 5,
+            }),
         );
     }
 
@@ -2382,7 +2642,7 @@ mod tests {
                 &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
             )
             .unwrap_err(),
-            AnisoFormFindError::DimensionMismatch,
+            AnisoFormFindError::Input(ForceDensityInputError::DimensionMismatch),
         );
     }
 
@@ -2398,7 +2658,7 @@ mod tests {
                 &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
             )
             .unwrap_err(),
-            AnisoFormFindError::SignViolation,
+            AnisoFormFindError::Input(ForceDensityInputError::SignViolation { member: 0 }),
         );
     }
 
@@ -2422,7 +2682,7 @@ mod tests {
                 &nodes, &members, &kinds, &q, &surfaces, &bad_prestress, &anchors
             )
             .unwrap_err(),
-            AnisoFormFindError::NonTensionSurfaceStress,
+            AnisoFormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 0 }),
         );
     }
 

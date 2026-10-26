@@ -359,7 +359,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 /// `cfg(test)` for in-crate tests); not part of the released public API.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #6001 (registry α) — test-support-gated eval-seam shim,
+// G-allow: task #6001 (registry α, done) — test-support-gated eval-seam shim,
 // consumed by tests/registry_dispatch_seed_parity.rs (the §7.3(3) I-REG-2
 // dispatch-parity pin).
 pub fn __registry_dispatch_for_test(id: reify_builtins::EvalBuiltinId, args: &[Value]) -> Value {
@@ -389,7 +389,7 @@ pub fn __registry_dispatch_for_test(id: reify_builtins::EvalBuiltinId, args: &[V
 /// tests).
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #6001 (registry α) — test-support-gated eval-seam shim,
+// G-allow: task #6001 (registry α, done) — test-support-gated eval-seam shim,
 // consumed by tests/registry_dispatch_seed_parity.rs (the §7.3(3) no-shadowing
 // sweep over the name path).
 pub fn __try_dispatch_for_test(name: &str, args: &[Value]) -> Option<Value> {

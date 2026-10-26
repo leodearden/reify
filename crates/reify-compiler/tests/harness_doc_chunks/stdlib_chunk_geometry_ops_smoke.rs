@@ -530,7 +530,7 @@ fn chunk_mentions(markdown: &str, name: &str) -> bool {
 ///    been closed, so the entry is stale and would otherwise exempt the name
 ///    from class 1 forever, masking a later regression. This class reads the
 ///    WHOLE chunk corpus, not just the two chunks above, because the known-gap
-///    claim is "documented in NO chunk": checking two of seventeen would let a
+///    claim is "documented in NO chunk": checking two of nineteen would let a
 ///    name documented in, say, `types.md` stay permanently exempt.
 ///
 /// Each line names its own corrective action, so a failure tells a maintainer

@@ -1,0 +1,13 @@
+// /prd generic-instantiation-and-call-binding α₁ evidence (probe a, K1-D3):
+// a defaulted type parameter may be omitted in annotation position exactly as
+// in instantiation position. Today the annotation is rejected with a code-less
+// "wrong number of type arguments" while `Holder<Bolt>()` is accepted.
+module gicb_alpha_default_padding
+
+trait Rigid {}
+structure def Bolt : Rigid { param d : Real = 5.0 }
+structure def Steel : Rigid { param e : Real = 200.0 }
+structure def Holder<U: Rigid, T: Rigid = Steel> { param u : Real = 1.0 }
+
+structure def UseSub { sub part = Holder<Bolt>() }
+structure def UseParam { param h : Holder<Bolt> }

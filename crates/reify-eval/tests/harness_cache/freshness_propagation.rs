@@ -50,7 +50,7 @@ fn two_cell_module() -> reify_compiler::CompiledModule {
 fn let_binding_freshness_is_final_after_cold_start_eval() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
 
     let b_id = ValueCellId::new("T", "b");
@@ -75,7 +75,7 @@ fn let_binding_freshness_is_final_after_cold_start_eval() {
 fn derive_output_freshness_for_node_implements_arch_7_2_over_synthetic_graph() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval to populate the cache with b's dependency_trace.reads = [a]
     engine.eval(&module);

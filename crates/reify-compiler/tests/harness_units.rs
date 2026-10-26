@@ -66,3 +66,6 @@ mod unit_middot_mul_tests;
 
 #[path = "harness_units/volume_unit_tests.rs"]
 mod volume_unit_tests;
+
+#[path = "harness_units/curvature_dimension_tests.rs"]
+mod curvature_dimension_tests;

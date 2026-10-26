@@ -32,8 +32,8 @@
 # Comment lines (^\s*#) and blank lines are ignored (same stripping style as
 # run-all-classification-lib.sh).
 #
-crates/reify-audit/src/lib.rs :: crates/reify-compiler/tests/geometry_chunk_smoke.rs
-crates/reify-audit/src/lib.rs :: crates/reify-compiler/tests/harness_doc_chunks/mod.rs
+crates/reify-audit/src/git_ops.rs :: crates/reify-compiler/tests/geometry_chunk_smoke.rs
+crates/reify-audit/src/git_ops.rs :: crates/reify-compiler/tests/harness_doc_chunks/mod.rs
 crates/reify-audit/src/ptodo.rs :: crates/reify-eval/tests/engine_eval_commit_migration.rs
 crates/reify-builtins/src/macros.rs :: crates/reify-eval/tests/snapshot_cache_divergence_gate.rs
 crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs :: crates/reify-compiler/tests/mul_div_static_runtime_parity.rs

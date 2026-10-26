@@ -114,7 +114,7 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
         errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -209,7 +209,7 @@ fn example_lambda_sweep_cost_optimum_blend_centre() {
     );
 
     // ── eval ───────────────────────────────────────────────────────────────────
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 

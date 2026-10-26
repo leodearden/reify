@@ -602,19 +602,13 @@ measured and, more importantly, what its closure does *not* buy.
    running it every acquire is free regardless: `check` is sub-second on the live 253-lane store
    (0.082–0.180s, measured §7) and `arm` is a byte-level no-op once the pin is in place.
 
-   **Known gap, left deliberately.** The merge-spec lane is not covered: dark-factory's
-   `acquire_spec_lane` (in `orchestrator/src/orchestrator/git_ops.py`) calls
-   `_seed_warm_lane(lane, '--reset-in-place')` at an indent common to BOTH its create-once and its
-   reset branch, so a merge-spec acquire is **always** `--reset-in-place` and never reaches the
-   block. Cited by SYMBOL deliberately: this claim carried `git_ops.py:5923` / `:6076` when it was
-   measured on 2026-08-30, and both had drifted by 2026-09-11 (`:5949` / `:6102`) — twelve days,
-   26 lines, and the whole reason task 7045 existed. The function name plus the both-branches
-   indent is what actually pins it, and it survives any refactor that does not change the
-   behaviour described. Re-measured 2026-09-11: still holds. That is harmless for this defence,
-   which is why the gate was left as-is rather than widened: the pin is a property of the **one
-   shared `.git/config`**, not of a lane, so any acquire that pins it pins it for every lane
-   including the spec lane — and task-lane acquires dominate by volume. It would matter for a
-   lane-scoped write; it does not for a shared-store one.
+   **Former gap, closed 2026-10-11.** The merge-spec `_spec-` acquire (dark-factory
+   `acquire_spec_lane`, cited by SYMBOL) seeded with `--reset-in-place`, and so skipped this block,
+   from at least 2026-08-30 until dark_factory:5380 moved it to `--fresh-checkout`. Lane-cadence
+   `arm` now runs on every production pool acquire, task and merge-spec alike. The gap cost this
+   defence little while it was open, because the pin lives in the **one shared `.git/config`**:
+   any task-lane acquire pinned it for every lane, and task-lane acquires dominate by volume. Record:
+   `docs/prds/warm-lane-pool-cow-seeding.md` §9.5, 2026-10-11 ledger entry.
 
 ## Pointers
 

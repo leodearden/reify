@@ -547,12 +547,12 @@ convention changes:
 
 | Primitive | Anchor | Notes |
 |---|---|---|
-| `box` | centred at origin, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally |
+| `box` | centred at origin, all 3 axes | corner at `(-width/2, -depth/2, -height/2)` — width/depth/height are the X/Y/Z extents, which diagnostics and completion name `size_x`/`size_y`/`size_z` |
 | `box_centered` | centred at origin, all 3 axes | op-identical alias of `box`, for symmetry with `cylinder_centered` |
 | `sphere` | centred at origin | |
 | `torus` | centred at origin; axis is +Z | |
 | `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
-| `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
+| `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `translate(cylinder(radius, height), 0mm, 0mm, -height/2)`, composed for you |
 | `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
 | `tube` | base at z=0, axis +Z, x/y centred | outer `cylinder` minus inner `cylinder` (§3.3), so it inherits `cylinder`'s anchor |
 | `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
@@ -718,6 +718,23 @@ fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
 ```
 
 The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.2, beside `half_space`, the other unbounded producer.
+
+`sweep` transports the profile **exactly as posed**. It never re-orients the
+profile onto the path's start frame, so the body encloses
+`(profile area) x (spine displacement . profile normal)` — pose the profile
+yourself, and a profile lying in the spine's own plane sweeps edge-on and
+encloses nothing. `pipe` (§3.3) is the contrasting member: it *does* build its
+circle on the path's start frame, which is why it needs no posing.
+
+A profile posed so the path's start tangent sits less than **4 degrees** out of
+the profile's plane is rejected with a typed error rather than silently
+realizing a degenerate body. The error reports the path's measured start
+tangent, and the rotation that aligns the profile with it follows from that
+tangent; for a **+Y** one it is:
+
+```
+sweep(rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg), path)
+```
 
 ### 3.7 `std.geometry.transform`
 
@@ -1090,13 +1107,13 @@ trait MotivePort : MechanicalPort
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait GuidePort : MechanicalPort {
     param degrees_of_freedom : Int
@@ -2093,6 +2110,12 @@ This hierarchy is enforced via nominal conformance, not merely declared: `bind`/
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
 `Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Dimensionless>`-shaped value today (a unit direction — the joint constructors reject a dimensioned axis), and its promotion to a distinct nominal type is tracked there.
+
+**Joint compliance — free vs constrained DOFs.** Each joint structure splits its six relative DOFs into *free* DOFs, which are its motion, and *constrained* DOFs. A free DOF may carry a spring (`spring_rate`; `none` means genuinely free, not rigid). Each symmetry group of constrained DOFs has one optional, isotropic compliance field, such as `radial_stiffness` or `tilt_stiffness`. Its default, `none`, is an ideal-rigid constraint. A free DOF has no compliance field, so `Prismatic(…, axial_stiffness: …)` is rejected with `E_CTOR_UNKNOWN_FIELD`. Only assembly modal analysis reads these fields, and kinematics ignores them. Joints built by the lowercase constructors below carry none and are ideal-rigid. A kind's groups are its declared `*_stiffness` params in `crates/reify-compiler/stdlib/kinematic.ri`, and the "Constrained-DOF compliance" block there gives each group's DOF directions.
+
+```
+let bearing = Prismatic(axis: vec3(1.0, 0.0, 0.0), radial_stiffness: some(200N/um), tilt_stiffness: some(5000N*m/rad^2))
+```
 
 **Constructors:**
 

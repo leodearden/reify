@@ -814,7 +814,7 @@ fn lexicographic_epsilon_band_anchor_is_folded_like_the_stage_it_constrains() {
 // dependent cell land in SEPARATE components. Two consequences, both here:
 //
 //   * the objective is attached by the hardcoded `0` fallthrough (registry.rs
-//     :202-211) to a NONDETERMINISTIC component, so the other component's
+//     :202-211) to component `0` whatever it owns, so the other component's
 //     autos are solved feasibility-only against stale seeds; and
 //   * each sub-problem is handed `dependent_cells` WHOLESALE, so the component
 //     owning only `a` folds `total = A_COEFF*a + B_COEFF*b` with `b` unbound —
@@ -893,9 +893,8 @@ fn cross_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId, Val
 /// gradient, so a silently suboptimal feasibility-only answer.)
 ///
 /// No assertion here touches component ORDER or WHICH component receives the
-/// objective: `decompose_into_components` iterates its component map, a
-/// `HashMap`, so that is nondeterministic. The bad outcome is deterministic
-/// regardless of which component wins, because NEITHER owns both autos.
+/// objective: the bad outcome holds regardless of which component wins,
+/// because NEITHER owns both autos.
 #[test]
 fn cross_component_dependent_cell_resolves_to_the_joint_argmin() {
     let (problem, a_id, b_id) = cross_component_joint_drive_problem();
@@ -954,9 +953,9 @@ fn cross_component_dependent_cell_resolves_to_the_joint_argmin() {
          is a bare read of `total`), so `decompose_into_components` unioned \
          nothing, `a` and `b` landed in separate components, and \
          `objective_component`'s lookup fell through to the hardcoded `0` \
-         in `SolverRegistry::solve_inner` — attaching the objective to an arbitrary \
-         component of a nondeterministic `HashMap` iteration and leaving the \
-         other component's auto pinned near its stale start."
+         in `SolverRegistry::solve_inner` — attaching the objective to component \
+         `0` whatever it reads and leaving the other component's auto pinned \
+         near its stale start."
     );
 
     // Fixture integrity: the stale seed must still be sitting in
@@ -1165,10 +1164,10 @@ fn capture_subproblems(problem: &ResolutionProblem) -> Vec<ResolutionProblem> {
     guard.clone()
 }
 
-/// The ids of a sub-problem's autos, as a set — the ONLY safe way to identify a
-/// captured component. `decompose_into_components` iterates its component map,
-/// a `HashMap`, so capture ORDER is nondeterministic and an index-based
-/// assertion would be intermittently red.
+/// The ids of a sub-problem's autos, as a set. Identifying a captured component
+/// by its autos rather than by capture index keeps these assertions independent
+/// of component order, which they do not pin (tests/resolution_seam_determinism.rs
+/// does).
 fn auto_id_set(p: &ResolutionProblem) -> std::collections::HashSet<ValueCellId> {
     p.auto_params.iter().map(|ap| ap.id.clone()).collect()
 }
@@ -1398,12 +1397,12 @@ fn single_component_subproblem_still_receives_the_full_dependent_cells_list() {
 /// Pins the expansion → union → `objective_component` chain that the hardcoded
 /// `0` fallthrough in `SolverRegistry::solve_inner` used to short-circuit. Pre-expansion,
 /// `obj_refs` held no auto ids at all — the objective is a bare read of `total`
-/// — so no component matched, the lookup fell through to component `0` of a
-/// NONDETERMINISTIC `HashMap` iteration, and the objective could land on `{c}`,
+/// — so no component matched, the lookup fell through to component `0`
+/// whatever it owned, and the objective could land on `{c}`,
 /// leaving `a` and `b` solved feasibility-only against stale seeds. A silently
 /// suboptimal answer on exactly the production path β exists to enable.
 ///
-/// Identified by auto SET, never by capture index, for the same reason.
+/// Identified by auto SET, never by capture index (see `auto_id_set`).
 #[test]
 fn objective_reaching_an_auto_only_through_a_dependent_cell_attaches_to_that_autos_component() {
     let fx = two_component_dependent_cell_problem();
@@ -1433,11 +1432,9 @@ fn objective_reaching_an_auto_only_through_a_dependent_cell_attaches_to_that_aut
          {:?} instead. Without the `obj_refs` expansion, \
          `decompose_into_components` unions nothing, `a` and `b` never share a \
          component with each other, and `objective_component` falls through to \
-         the hardcoded `0` — handing the objective to whichever component \
-         `decompose_into_components`' component-map iteration happened to \
-         yield first, and \
-         leaving the unattached autos solved feasibility-only against their \
-         stale seeds.",
+         the hardcoded `0` — handing the objective to component `0` whatever \
+         it owns, and leaving the unattached autos solved feasibility-only \
+         against their stale seeds.",
         auto_id_set(with_objective[0])
     );
 

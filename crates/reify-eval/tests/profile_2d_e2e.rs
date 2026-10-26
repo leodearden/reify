@@ -132,7 +132,7 @@ fn rectangle_profile_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -222,7 +222,7 @@ fn circle_profile_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -389,7 +389,7 @@ fn polygon_profile_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -495,7 +495,7 @@ fn ellipse_profile_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();

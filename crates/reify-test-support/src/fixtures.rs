@@ -458,9 +458,9 @@ pub fn bracket_compiled_module() -> CompiledModule {
             vec![CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".to_string(), width_ref()),
-                    ("height".to_string(), height_ref()),
-                    ("depth".to_string(), thickness_ref()),
+                    ("size_x".to_string(), width_ref()),
+                    ("size_y".to_string(), height_ref()),
+                    ("size_z".to_string(), thickness_ref()),
                 ],
             }],
         )
@@ -1240,7 +1240,7 @@ pub fn sorted_values(r: &reify_eval::EvalResult) -> Vec<(String, Value)> {
 pub fn bracket_engine() -> reify_eval::Engine {
     let module = bracket_compiled_module();
     let checker = crate::mocks::MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
     engine
 }
@@ -1250,7 +1250,7 @@ pub fn bracket_engine() -> reify_eval::Engine {
 pub fn two_body_engine() -> reify_eval::Engine {
     let module = two_body_module();
     let checker = crate::mocks::MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
     engine
 }

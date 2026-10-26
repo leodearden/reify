@@ -127,7 +127,7 @@ mk_git_advancing() {
     local lane_dir="$parent_dir/lane"
     mkdir -p "$lane_dir"
     printf 'placeholder\n' > "$lane_dir/.placeholder"
-    git -C "$lane_dir" init -q
+    git -C "$lane_dir" init -q -b main
     git -C "$lane_dir" add -- .placeholder
     git -C "$lane_dir" \
         -c user.email="warm-lane-test@localhost" \

@@ -63,7 +63,7 @@ structure def TotsOptimalPtp {
 
     // ── Per-joint actuator limit ──────────────────────────────────────────────
     // One JointLimit for the single translational DOF.
-    // max_force > 0 ctor constraint (trajectory.ri:530) is satisfied.
+    // max_force > 0 ctor constraint (`JointLimit`, trajectory.ri) is satisfied.
     // `max_force` is a dimensioned `Scalar<Force>` literal: `1000N` is 1000 N in
     // SI, exactly what the previous bare `1000.0` was already being read as, so
     // this spelling is magnitude-preserving.

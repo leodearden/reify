@@ -237,7 +237,8 @@
 //! exists to prevent.
 
 use crate::comment_lex::{BlockDepth, char_literal_len, lex_line};
-use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger, parse_baseline};
+use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, parse_baseline};
+use crate::ratchet_ledger::{Ledger, committed_rows};
 use crate::scan_util::{
     allow_marker_body, contains_word, find_word_boundary_token, is_identifier_shaped, is_word_byte,
 };
@@ -1344,7 +1345,7 @@ fn is_chunk_path(path: &str) -> bool {
 /// untracked `units.rs.orig` or a scratch chunk never perturbs the census.
 ///
 /// The committed ledger is deliberately NOT an input: both lanes are blind to
-/// it, and only [`audit`] reads it, via [`committed_baseline`].
+/// it, and only [`audit`] reads it, via [`committed_rows`].
 fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
     let mut tracked: Vec<String> = ctx.git.ls_files();
     tracked.sort();
@@ -1368,17 +1369,6 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
         registries,
         chunk_sources,
     }
-}
-
-/// The committed ledger's rows — none when the file is absent, untracked,
-/// unreadable or empty (an untracked copy is inert, like every input).
-fn committed_baseline(ctx: &AuditContext<'_>, tracked: &[String]) -> BTreeSet<BaselineRow> {
-    if !tracked.iter().any(|p| p == BASELINE_PATH) {
-        return BTreeSet::new();
-    }
-    ctx.read_relative(BASELINE_PATH)
-        .map(|c| parse_baseline(&c))
-        .unwrap_or_default()
 }
 
 /// Read the fabrication lane's existence-oracle corpus.
@@ -1760,7 +1750,7 @@ impl fmt::Display for DegenerateInputs {
 /// [`baseline_ledger`], and so the one place a degenerate tree is refused.
 struct Audit {
     lanes: LaneResults,
-    ledger: Ledger,
+    ledger: Ledger<BaselineRow>,
 }
 
 fn audit(ctx: &AuditContext<'_>) -> Result<Audit, DegenerateInputs> {
@@ -1777,7 +1767,7 @@ fn audit(ctx: &AuditContext<'_>) -> Result<Audit, DegenerateInputs> {
     lanes.debt.extend(fabrication.debt);
     let ledger = Ledger {
         live: lanes.debt.keys().cloned().collect(),
-        committed: committed_baseline(ctx, &inputs.tracked),
+        committed: committed_rows(ctx, &inputs.tracked, BASELINE_PATH, parse_baseline),
     };
     Ok(Audit { lanes, ledger })
 }
@@ -1848,7 +1838,7 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// derivation [`check`] settles, so a regenerated ledger is by construction
 /// one the ratchet accepts. Refuses a degenerate tree rather than deriving a
 /// ledger that would wipe the committed one.
-pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInputs> {
+pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger<BaselineRow>, DegenerateInputs> {
     audit(ctx).map(|audit| audit.ledger)
 }
 

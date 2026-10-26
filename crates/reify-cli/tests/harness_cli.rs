@@ -89,6 +89,8 @@ mod cli_dfm_overhang;
 mod cli_dfm_thickness;
 #[path = "harness_cli/cli_doc.rs"]
 mod cli_doc;
+#[path = "harness_cli/cli_eval_annotation_after_valued_member.rs"]
+mod cli_eval_annotation_after_valued_member;
 #[path = "harness_cli/cli_eval_auto_resolve.rs"]
 mod cli_eval_auto_resolve;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
@@ -101,6 +103,8 @@ mod cli_eval_fallback_recovery;
 mod cli_eval_generic_enum;
 #[path = "harness_cli/cli_eval_geometry.rs"]
 mod cli_eval_geometry;
+#[path = "harness_cli/cli_eval_registry_determinism.rs"]
+mod cli_eval_registry_determinism;
 #[path = "harness_cli/cli_eval_result_fallback.rs"]
 mod cli_eval_result_fallback;
 #[path = "harness_cli/cli_eval_result_match.rs"]

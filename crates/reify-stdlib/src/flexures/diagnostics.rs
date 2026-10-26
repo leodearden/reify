@@ -44,12 +44,17 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// dedup is the reify-expr emission layer's responsibility (step-10), not this
 /// classifier's.
 pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
-    // Disposition 5 (task 4547): the `__flexure_compliance_get` accessor intrinsic
-    // backs the DSL `flexure_compliance(joint: Length)` accessor. Its declared
-    // `Length` arg type cannot statically distinguish a real PRB-ctor joint from
-    // any other length, so the intrinsic silently returns a sentinel-zero record
-    // for a non-joint arg (see `mod.rs::flexure_compliance_get`). Surface that
-    // documented type-lie here at eval time: warn when args[0] is NOT a joint
+    // Disposition 5 (task 4547), RETAINED as defense-in-depth by task #5476
+    // (PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.6): the
+    // `__flexure_compliance_get` accessor intrinsic backs the DSL
+    // `flexure_compliance(joint: FlexureJoint)` accessor. The declared arg type is
+    // now the nominal `FlexureJoint` marker, so a bare `Length` (the old
+    // `joint: Length` placeholder's hole) is rejected at COMPILE time with
+    // `DiagnosticCode::NoMatchingOverload`. But `FlexureJoint` is necessarily
+    // spellable, so a fabricated `FlexureJoint()` still reaches the intrinsic
+    // carrying no `__flexure_compliance` record, and the intrinsic still returns a
+    // sentinel-zero record for it (see `mod.rs::flexure_compliance_get`). Surface
+    // that residual case here at eval time: warn when args[0] is NOT a joint
     // `Value::Map` carrying the cached `__flexure_compliance` record; a real joint
     // arg emits nothing. This dedicated arm sits BEFORE the `is_flexure_ctor`
     // short-circuit below — the accessor is not a ctor, and adding it to
@@ -152,28 +157,56 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
 }
 
 /// The 13 PRB flexure constructor names (beam / notch / hinge / prismatic /
-/// compound). Only these surface the ctor success/Undef flexure diagnostics;
-/// plain builtins short-circuit to an empty `Vec`. The
-/// `__flexure_compliance_get` accessor intrinsic is NOT a ctor and is
-/// intercepted earlier by a dedicated arm in [`flexure_diagnose`] (it surfaces
-/// `W_FlexureNonJointArg` for a non-joint arg), so it never reaches this guard.
+/// compound) — runtime-side single source of truth, consulted by
+/// [`is_flexure_ctor`].
+///
+/// Deliberately a SLICE rather than the `matches!` arm it replaced. A `matches!`
+/// arm can only be probed one name at a time, so the fixture test over it could
+/// assert "every expected name is accepted" but never "no UNEXPECTED name is
+/// accepted" — leaving the paired-fixture anti-drift guard one-directional. With
+/// the names in a slice, `is_flexure_ctor_matches_independent_fixture` can and
+/// does assert set-EQUALITY in both directions, which is what makes the
+/// "duplication is safe because both sides are fixture-guarded" claim in
+/// `reify-compiler/src/flexure_signatures.rs`'s module doc actually true.
+///
+/// Compiler-side twin: `flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES`. Adding a
+/// ctor here without adding it there makes the compiler type the new ctor via
+/// the first-arg fallback (`Scalar[LENGTH]`), which then fails to overload-match
+/// `flexure_compliance(joint: FlexureJoint)` — the exact regression the
+/// no-extras assertion now catches at test time instead.
+const PRB_CTOR_NAMES: &[&str] = &[
+    // beam.rs (2)
+    "prb_cantilever_beam",
+    "prb_fixed_fixed_beam",
+    // notch.rs (3)
+    "prb_notch_circular",
+    "prb_notch_elliptical",
+    "prb_notch_right_circular",
+    // hinge.rs (3)
+    "prb_living_hinge",
+    "prb_cross_spring_pivot",
+    "prb_let_joint",
+    // prismatic.rs (2)
+    "prb_prismatic_blade",
+    "prb_two_axis_pivot",
+    // compound.rs (3)
+    "prb_parallelogram_flexure",
+    "prb_double_parallelogram_flexure",
+    "prb_cartwheel_flexure",
+];
+
+/// Is `name` one of the 13 PRB flexure constructors ([`PRB_CTOR_NAMES`])?
+///
+/// Only these surface the ctor success/Undef flexure diagnostics; plain builtins
+/// short-circuit to an empty `Vec`. The `__flexure_compliance_get` accessor
+/// intrinsic is NOT a ctor and is intercepted earlier by a dedicated arm in
+/// [`flexure_diagnose`] (it surfaces `W_FlexureNonJointArg` for a non-joint
+/// arg), so it never reaches this guard.
+///
+/// Exact-name match, never a `prb_` PREFIX match: `prb_validity_range` shares
+/// the prefix but is a `FlexureCompliance` field.
 fn is_flexure_ctor(name: &str) -> bool {
-    matches!(
-        name,
-        "prb_cantilever_beam"
-            | "prb_fixed_fixed_beam"
-            | "prb_notch_circular"
-            | "prb_notch_elliptical"
-            | "prb_notch_right_circular"
-            | "prb_living_hinge"
-            | "prb_cross_spring_pivot"
-            | "prb_let_joint"
-            | "prb_prismatic_blade"
-            | "prb_two_axis_pivot"
-            | "prb_parallelogram_flexure"
-            | "prb_double_parallelogram_flexure"
-            | "prb_cartwheel_flexure"
-    )
+    PRB_CTOR_NAMES.contains(&name)
 }
 
 /// Build the `W_FlexureYielding` warning from the cached compliance record.
@@ -646,11 +679,12 @@ mod tests {
         assert!(!msg.contains('°'), "prismatic suggestion does not cite degrees: {msg}");
     }
 
-    /// Disposition 5 (task 4547): the `flexure_compliance(joint: Length)` accessor
-    /// (body `__flexure_compliance_get(joint)`) is a documented type-lie — the
-    /// intrinsic silently returns a sentinel-zero record for ANY bare `Length`
-    /// arg, since only a joint `Value::Map` carrying `__flexure_compliance`
-    /// resolves a real record. `flexure_diagnose` surfaces that lie at eval time
+    /// Disposition 5 (task 4547), RETAINED by task #5476 (PRD §3.6): the
+    /// `flexure_compliance(joint: FlexureJoint)` accessor (body
+    /// `__flexure_compliance_get(joint)`) still returns a sentinel-zero record for
+    /// an arg that is not a joint `Value::Map` carrying `__flexure_compliance` —
+    /// reachable now only via a fabricated `FlexureJoint()`, since a bare `Length`
+    /// is rejected at compile time. `flexure_diagnose` surfaces that at eval time
     /// via a dedicated `__flexure_compliance_get` arm (placed BEFORE the
     /// `is_flexure_ctor` short-circuit), emitting `W_FlexureNonJointArg`
     /// (Warning) when `args[0]` is not a joint Map carrying the compliance record.
@@ -695,6 +729,125 @@ mod tests {
         assert!(
             !has_code(&diags, DiagnosticCode::FlexureNonJointArg),
             "a real joint arg does not trigger FlexureNonJointArg"
+        );
+    }
+
+    // ── PRB ctor name family — runtime half of the cross-crate drift guard ───
+    //
+    // Task #5476 (placeholder-ratchet α) added a COMPILER-side twin of this
+    // list: `crates/reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES`,
+    // which types every one of these ctors as `StructureRef("FlexureJoint")`.
+    //
+    // The two lists are deliberately duplicated rather than shared: `reify-compiler`
+    // depends only on reify-core + reify-ir, NOT on reify-stdlib, so a shared
+    // constant would need either a cross-crate dependency in the wrong direction
+    // or a widening of reify-compiler's public API. The house precedent for this
+    // is `JOINT_TYPED_FN_NAMES`, which restates the runtime joint names the same
+    // way.
+    //
+    // The safety property that makes duplication acceptable is that BOTH sides
+    // carry an INDEPENDENT fixture test asserting SET-EQUALITY against it —
+    // this one and `flexure_ctor_fn_names_match_independent_fixture` over
+    // there. Each test checks both directions (every fixture name present AND
+    // no entry beyond the fixture), so neither list can gain, lose, or rename a
+    // ctor without failing its own test. A one-directional "all fixture names
+    // are accepted" check would NOT be sufficient: it lets a list GROW
+    // silently, and a compiler-side list that is missing a runtime ctor is
+    // precisely how a legitimate `flexure_compliance(prb_new_ctor(...))` starts
+    // failing with `no matching overload`.
+
+    /// Independent fixture — the 13 PRB flexure constructor names, hard-coded
+    /// rather than derived from `is_flexure_ctor`, so a drift in that function
+    /// is caught against this list.
+    ///
+    /// Compiler-side twin:
+    /// `crates/reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES`.
+    /// Keep the two in lockstep; each is guarded by its own fixture test.
+    const EXPECTED_PRB_CTOR_NAMES: [&str; 13] = [
+        // beam.rs (2)
+        "prb_cantilever_beam",
+        "prb_fixed_fixed_beam",
+        // notch.rs (3)
+        "prb_notch_circular",
+        "prb_notch_elliptical",
+        "prb_notch_right_circular",
+        // hinge.rs (3)
+        "prb_living_hinge",
+        "prb_cross_spring_pivot",
+        "prb_let_joint",
+        // prismatic.rs (2)
+        "prb_prismatic_blade",
+        "prb_two_axis_pivot",
+        // compound.rs (3)
+        "prb_parallelogram_flexure",
+        "prb_double_parallelogram_flexure",
+        "prb_cartwheel_flexure",
+    ];
+
+    /// `is_flexure_ctor` accepts exactly the 13 names in the fixture — no
+    /// fewer AND no more — and rejects the two near-misses that must never be
+    /// treated as ctors.
+    ///
+    /// SET-EQUALITY, both directions. The "no extras" half is the load-bearing
+    /// one for the cross-crate lockstep claim: without it, a future task could
+    /// add (say) `prb_torsion_bar` to `PRB_CTOR_NAMES` and the runtime dispatch,
+    /// leave `FLEXURE_CTOR_FN_NAMES` at 13, and pass BOTH crates' suites
+    /// unchanged — while the compiler silently typed `prb_torsion_bar(...)` via
+    /// the first-arg fallback as `Scalar[LENGTH]`, so the wholly legitimate
+    /// `flexure_compliance(prb_torsion_bar(...))` failed with
+    /// `no matching overload`. (That direction was only assertable once
+    /// `is_flexure_ctor` was backed by a slice instead of a `matches!` arm; a
+    /// `matches!` arm is not enumerable.)
+    ///
+    /// - **`prb_validity_range`** shares the `prb_` prefix but is a
+    ///   `FlexureCompliance` FIELD emitted by all five family modules — not a
+    ///   ctor.
+    /// - **`__flexure_compliance_get`** is the accessor intrinsic, intercepted
+    ///   by a dedicated arm in `flexure_diagnose` placed BEFORE this
+    ///   short-circuit, per the doc comment on `is_flexure_ctor`.
+    #[test]
+    fn is_flexure_ctor_matches_independent_fixture() {
+        // (a) Every expected name is accepted.
+        for name in EXPECTED_PRB_CTOR_NAMES {
+            assert!(
+                super::is_flexure_ctor(name),
+                "is_flexure_ctor({name:?}) must be true — it is one of the 13 PRB \
+                 ctors; if this fails the compiler-side twin \
+                 (reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES) \
+                 has drifted out of lockstep with this list"
+            );
+        }
+        // (b) …and NOTHING beyond them is (mirrors the compiler-side no-extras
+        // loop in flexure_ctor_fn_names_match_independent_fixture).
+        assert_eq!(
+            super::PRB_CTOR_NAMES.len(),
+            EXPECTED_PRB_CTOR_NAMES.len(),
+            "PRB_CTOR_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_PRB_CTOR_NAMES.len(),
+            super::PRB_CTOR_NAMES
+        );
+        for name in super::PRB_CTOR_NAMES {
+            assert!(
+                EXPECTED_PRB_CTOR_NAMES.contains(name),
+                "PRB_CTOR_NAMES has unexpected entry {name:?} not in the independent \
+                 fixture. A ctor added here MUST also be added to the compiler-side \
+                 twin (reify-compiler/src/flexure_signatures.rs::FLEXURE_CTOR_FN_NAMES) \
+                 and to both fixtures — otherwise the compiler types it via the \
+                 first-arg fallback and flexure_compliance() rejects it with \
+                 `no matching overload`"
+            );
+        }
+        assert!(
+            !super::is_flexure_ctor("prb_validity_range"),
+            "must reject 'prb_validity_range' — a FlexureCompliance FIELD, not a \
+             ctor; matching it would mean this guard is matching the `prb_` PREFIX \
+             rather than exact names"
+        );
+        assert!(
+            !super::is_flexure_ctor("__flexure_compliance_get"),
+            "must reject '__flexure_compliance_get' — the accessor intrinsic is \
+             intercepted by its own earlier arm in flexure_diagnose and must never \
+             reach this ctor guard"
         );
     }
 }

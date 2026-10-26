@@ -1,0 +1,8 @@
+module auto_reach_cross_scope_child_auto
+pub structure Leaf {
+    param k : Length = auto
+}
+pub structure P {
+    sub l = Leaf()
+    constraint self.l.k == 4mm
+}

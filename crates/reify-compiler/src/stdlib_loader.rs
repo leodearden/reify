@@ -59,7 +59,10 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// is what is *resolvable* during the sequential prelude build (the footgun
 /// above), not what a resolvable name *means*.  That inertness is the §5
 /// precondition the ζ task consumes.
-pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
+///
+/// Public for `reify_doc_build::build_stdlib_doc_model`, which pairs each
+/// compiled stdlib module with its source by module path.
+pub fn stdlib_sources() -> Vec<(&'static str, String)> {
     let si_units_source = si_units::build_si_units_source();
     vec![
         ("std.units", include_str!("../stdlib/units.ri").to_owned()),
@@ -233,17 +236,6 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fdm.slice",
             include_str!("../stdlib/fdm_slice.ri").to_owned(),
         ),
-        // `std.flexures` — single module containing the FlexureCompliance
-        // structure_def and the flexure_compliance() accessor (the former
-        // RotationalStiffness=Real alias was removed in task 4547 — the built-in
-        // ROTATIONAL_STIFFNESS dimension shadowed it). The same-module skeleton
-        // pre-pass (task 3895) makes
-        // the structure_def visible to the accessor fn body in the same
-        // module, so no split is needed.
-        (
-            "std.flexures",
-            include_str!("../stdlib/flexures.ri").to_owned(),
-        ),
         // `std.tensegrity` depends on `std.units` (Length, Area, Force),
         // `std.si_units` (0N literal), and `std.materials.fea`
         // (ElasticMaterial trait) — all earlier in the prelude sequence.
@@ -274,6 +266,27 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.kinematic",
             include_str!("../stdlib/kinematic.ri").to_owned(),
         ),
+        // `std.flexures` — single module containing the FlexureCompliance
+        // structure_def, the `FlexureJoint` marker, and the
+        // flexure_compliance() accessor (the former RotationalStiffness=Real
+        // alias was removed in task 4547 — the built-in ROTATIONAL_STIFFNESS
+        // dimension shadowed it). The same-module skeleton pre-pass (task 3895)
+        // makes the structure_def visible to the accessor fn body in the same
+        // module, so no split is needed.
+        //
+        // MUST follow `std.kinematic` (task #5476, placeholder-ratchet α) —
+        // `structure def FlexureJoint : DrivingJoint` references the
+        // `DrivingJoint` trait declared in kinematic.ri, resolved via the
+        // growing sequential prelude. Declares no `import`, so the topo-sort
+        // stays the identity permutation and registration order IS visibility
+        // order. Moved down from its former slot before `std.tensegrity`: the
+        // only modules stepped over are `std.tensegrity` and `std.process`,
+        // neither of which references `FlexureCompliance` / `flexure_compliance`
+        // / `FlexureJoint`, so nothing earlier in the sequence loses visibility.
+        (
+            "std.flexures",
+            include_str!("../stdlib/flexures.ri").to_owned(),
+        ),
         // `std.joints` defines the standard kinematic joint set (revolute /
         // prismatic / cylindrical / planar / spherical / ball) as `joint … with`
         // declarations over the relation vocabulary (geometric-joints γ, task
@@ -288,7 +301,8 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
         ("std.joints", include_str!("../stdlib/joints.ri").to_owned()),
         // `std.ports` declares the Directionality enum, the Port base trait,
-        // and the `Frame3` structure (origin + x/y/z axes, all Vector3<Length>).
+        // and the `Frame3` structure (a `Vec3<Length>` origin, which is a
+        // position, and `Vec3<Dimensionless>` x/y/z axes, which are directions).
         // No inter-module dependencies beyond built-in types.
         // Reconstruction of lost work per PRD task α.
         //

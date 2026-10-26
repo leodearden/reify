@@ -95,6 +95,13 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   (`crates/reify-eval/src/engine_eval.rs:1553`, #5188 done — same evidence
   DIC's manifest binds); §7.1.3's cycle check extends this graph with
   `pose(s) → .world_frame(s)` edges.
+- `carried-frame-cross-sub-geometry-read` (§7.1.5; ported #6583 acceptance (a)) → PASS,
+  producer-self. `delivered_check`: `distance\(` present in
+  `crates/reify-eval/tests/harness_engine/cross_sub_posed_geometry_reads.rs` (β's declared test
+  file; absent on main, so the gate is not vacuous). Guards P2 ο #6683, which depends on β for
+  posed operands. *Added 2026-10-11*: the check previously lived only in #5436's task metadata as a
+  bare `cross_sub` grep that already matched on main. Accepted gap: proves the acceptance test
+  exists and exercises `distance`, not the composed value — the test's own assertion is the cover.
 - `pose-cycle-rejection` (G6 branch 4, B5) → PASS, producer-self:
   `E_POSE_CYCLE` is β's own deliverable; β's boundary test observes the
   diagnostic fire and nonzero exit. Compile-phase Error-severity already
@@ -307,3 +314,11 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   (intent queries → new idioms surfaced) runs against ν/ξ's landed content
   (hard edges ν→ο, ξ→ο). Committed transcript is the deliverable —
   producer-self.
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| γ #5439 | `snapshot-substrate` (`fn try_eval_kinematic_query`, present) | + `crates/reify-eval/src/geometry_ops/` |

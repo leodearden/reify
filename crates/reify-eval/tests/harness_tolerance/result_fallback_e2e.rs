@@ -50,7 +50,7 @@ fn result_fallback_example_evals_end_to_end() {
         "examples/m6_result_fallback.ri should compile with no Error diagnostics, got: {errors:?}"
     );
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

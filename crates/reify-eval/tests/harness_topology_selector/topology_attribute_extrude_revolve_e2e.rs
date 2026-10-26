@@ -306,6 +306,7 @@ fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entr
         )
         .with_extrude_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -425,6 +426,7 @@ fn engine_build_partial_revolve_populates_cap_start_end_and_revolved_face() {
         )
         .with_revolve_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -522,6 +524,7 @@ fn engine_build_full_revolve_populates_only_revolved_face_no_caps() {
         )
         .with_revolve_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

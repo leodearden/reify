@@ -2007,7 +2007,7 @@ run_background_verify_check_no_bypass() {
 # Section H: background non-exemption (execute mode; task 5210)
 # ===========================================================================
 # Contrasts Section B's merge exemption: DF_VERIFY_ROLE=background must NOT
-# bypass test_semaphore_acquire — lib_test_semaphore.sh:91 is a strict
+# bypass test_semaphore_acquire — the merge check in lib_test_semaphore.sh test_semaphore_acquire is a strict
 # `= "merge"` check, so background falls through to the real acquire path
 # unchanged. Proven two ways: the event log (R-technique, load-independent)
 # records a real ACQUIRE, and stderr (S-technique) LACKS the merge-bypass

@@ -51,7 +51,7 @@ const NOT_SIGNATURES: &[ProseMention] = &[
               table, not a builtin",
     },
     ProseMention {
-        chunk: "geometry",
+        chunk: "topology",
         span: "single()",
         why: "names the function in prose — `single` takes one selector argument",
     },
@@ -149,15 +149,19 @@ pub(crate) fn unfenced_signature_violations(
 /// protocol stated once next to `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
 const MINIMUM_UNFENCED_FORMS: usize = 119;
 
-/// One form per chunk family that prose extraction must reach. The geometry one
-/// sits in the Topology Selectors table at the END of geometry.md, so reading it
-/// proves the extraction survived every fence and note above it.
+/// One form per chunk family that prose extraction must reach. The geometry
+/// and topology ones each sit after every fence and maintainer note in their
+/// chunk — trap 5's `min_clearance(s, id, id)` closes geometry.md, and
+/// `faces_by_normal` is a row of topology.md's selector table — so reading them
+/// proves the extraction survived everything above them.
 const SENTINELS: &[(&str, &str, Arity)] = &[
     ("collections", "generate", Arity::Exact(2)),
     ("enums", "unwrap_or", Arity::Exact(2)),
     ("fields", "constant_field", Arity::Exact(1)),
     ("stdlib", "rotate", Arity::Exact(5)),
-    ("geometry", "faces_by_normal", Arity::Exact(3)),
+    ("geometry", "min_clearance", Arity::Exact(3)),
+    ("measurement", "max_deviation", Arity::Exact(2)),
+    ("topology", "faces_by_normal", Arity::Exact(3)),
 ];
 
 /// Every signature in any chunk's unfenced prose is exercised, at its documented

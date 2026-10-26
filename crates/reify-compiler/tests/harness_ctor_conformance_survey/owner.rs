@@ -135,7 +135,7 @@ const FEA_STDLIB_MODULES: &[&str] = &[
 /// and enumerates it as "`fea_multi_case.ri`, `fea.ri`, `solver_*.ri`, …".
 /// `modal_analysis.ri` is structural dynamics, not that migration's surface: its
 /// forcing-function defs already declare selector-typed fields
-/// (`structure def StepForce { param at : Selector … }`, `modal_analysis.ri:490`),
+/// (`structure def StepForce { param at : Selector … }` in `modal_analysis.ri`),
 /// so a ctor row against one of them is ordinary call-site work for γ, with no
 /// field-type flip to defer. The two `modal_*_fns` modules declare no
 /// `structure def` at all, so their placement is inert either way and is

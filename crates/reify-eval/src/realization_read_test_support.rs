@@ -26,6 +26,7 @@ pub(crate) fn engine_with_kernel(name: &str, kernel: Box<dyn GeometryKernel>) ->
     let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
     kernels.insert(name.to_string(), kernel);
     Engine::with_test_kernels_and_registry(
+        crate::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         kernels,
         BTreeMap::new(),

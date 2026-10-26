@@ -9,7 +9,11 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
-use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
+use crate::caller_lookup::CallerLookups;
+use crate::{
+    AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, JCodemunchCallFailed, Pattern,
+    Severity, TaskMetadata,
+};
 use std::collections::HashMap;
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
@@ -175,6 +179,13 @@ enum CheckMode {
     PreDone,
 }
 
+impl CheckMode {
+    /// Whether [`check_task`] runs its passes on `meta` at all under this mode.
+    fn audits(self, meta: &TaskMetadata) -> bool {
+        self == CheckMode::PreDone || meta.status == "done"
+    }
+}
+
 /// Production SQL used by [`has_task_completed_event`] to corroborate a
 /// merged task's `task_completed` event in runs.db. Hoisted to a `pub const`
 /// so the integration test `p5::tests::runs_db_schema_pin` can pin the test
@@ -260,19 +271,20 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
 /// D-1 hot path stays constant-time rather than paying the O(n) iteration cost
 /// of this loop. Borrows the context (no clone of `task_metadata`).
 fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
-    let mut findings = Vec::new();
+    swept_tasks(ctx, target_task_id)
+        .flat_map(|meta| check_task(ctx, meta, CheckMode::Sweep))
+        .collect()
+}
 
-    for meta in ctx.task_metadata.values() {
-        if let Some(target) = target_task_id
-            && meta.task_id != target
-        {
-            continue;
-        }
-
-        findings.extend(check_task(ctx, meta, CheckMode::Sweep));
-    }
-
-    findings
+/// The tasks [`check_with_target`] hands to [`check_task`]: every task in
+/// `ctx.task_metadata`, or only `target_task_id` when the caller names one.
+fn swept_tasks<'a>(
+    ctx: &'a AuditContext,
+    target_task_id: Option<&'a str>,
+) -> impl Iterator<Item = &'a TaskMetadata> {
+    ctx.task_metadata
+        .values()
+        .filter(move |meta| target_task_id.is_none_or(|target| meta.task_id == target))
 }
 
 /// Per-task pass set shared by [`check_pre_done`] (D-1 hot path, O(1) lookup)
@@ -289,7 +301,7 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
     // ("in-progress"/"review"). Requiring `status == "done"` here made the gate
     // structurally unable to fire on the one transition it exists to guard —
     // every pre-done invocation returned `[]` unconditionally.
-    if mode == CheckMode::Sweep && meta.status != "done" {
+    if !mode.audits(meta) {
         return vec![];
     }
     // ONE `git check-ignore` fork per declared file for the whole task. Both
@@ -1601,86 +1613,194 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///    - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
 ///    - Non-blank `// G-allow:` marker (the last two via
 ///      [`crate::DeclSuppression::opts_out`]).
-/// 5. **No non-test workspace caller**: `find_references` returns only test-path
-///    refs (or none) for the symbol.
+/// 5. **No non-test workspace caller**: `find_references` answers with only
+///    test-path refs (or none) for the symbol ([`crate::caller_lookup::has_non_test_caller`]).
+///    A lookup that FAILS answers nothing: the symbol is skipped, not
+///    stranded.
 ///
 /// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
 /// suppression guards keep H2 and P1 semantically consistent. Task 4140 §H2.
 ///
 /// ## 4141 live-corpus validation note
 ///
-/// Task 4141 confirmed that H2 **cannot be live-validated** against the current
-/// corpus. `needs_jcodemunch()` in `bin/reify-audit.rs:433–443` returns `false`
-/// for `--pattern P5` (and for `--pre-done`) → the binary always wires
-/// `NoopJCodemunchOps` for P5 runs. A default sweep attempts
-/// `RealJCodemunchOps` but fail-softs to `NoopJCodemunchOps` because
-/// `jcodemunch-serve` is not yet deployed in reify
-/// (`bin/reify-audit.rs:547–567`). With `NoopJCodemunchOps`,
-/// `get_changed_symbols` returns `vec![]` → this function iterates nothing →
-/// zero H2 findings regardless of real cross-crate stranding. A zero-finding
-/// H2 sweep is therefore **vacuous** and cannot justify a `Medium → High`
-/// promotion. H2 remains at `Severity::Medium` (non-blocking for the D-1
-/// hook) pending the real jcodemunch JCodemunchOps implementation. Future
-/// promotion task must meet the criteria in
-/// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
-/// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
-/// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
+/// Task 4141 found H2 could not be live-validated: every P5 run bound
+/// `NoopJCodemunchOps`, whose `get_changed_symbols` answers nothing, so a
+/// zero-finding H2 sweep was **vacuous**. A `--pattern P5` run (and a default
+/// sweep) now handshakes for H2 (the bin's `needs_jcodemunch`), and a run
+/// whose seam is unavailable, and which sweeps a task H2 would examine,
+/// records H2 as one run-level [`Pattern::P5LivePathUnexamined`]
+/// ([`live_path_run_unexamined`]) rather than reading as clean. `--pre-done` and `--no-jcodemunch` still bind the
+/// stub. H2 stays `Severity::Medium` (non-blocking for the D-1 hook) until a
+/// promotion meets `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6: a
+/// non-vacuous live sweep with a measured FP rate ≤ 5%.
 ///
-/// When this pass examines nothing — `get_changed_symbols` returned an empty
-/// slice, or every symbol it returned had an unlocatable declaration — a
-/// stderr vacuous breadcrumb is emitted via [`h2_vacuous_breadcrumb`]
-/// (task 4144).
+/// A FAILED `get_changed_symbols` query yields one Low
+/// [`Pattern::P5LivePathUnexamined`] ([`live_path_unexamined`]), as P1 does.
+/// So does a task with one or more FAILED `find_references` lookups
+/// ([`live_path_symbols_unexamined`]): one finding naming every skipped
+/// symbol, while the task's other symbols are still examined. An answered
+/// query that left nothing to examine — an empty slice, or every
+/// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
+/// via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
-    // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
-    if crate_root_count(&meta.files) < 2 {
-        return vec![];
-    }
-
-    let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
+    let Some((since_sha, until_sha)) = h2_range(meta) else {
         return vec![];
     };
-    let since_sha = format!("{commit}^1");
-    let until_sha = commit;
 
-    let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+    let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+        Ok(symbols) => symbols,
+        Err(failure) => {
+            return vec![live_path_unexamined(
+                &meta.task_id,
+                &since_sha,
+                until_sha,
+                &failure,
+            )];
+        }
+    };
     if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
         eprintln!("{msg}");
     }
-    let mut findings = Vec::new();
-    for symbol in symbols {
+    let examinable = symbols.into_iter().filter(|symbol| {
         // Same three-state reading as p1_producer_orphan: an unlocatable
         // declaration means UNKNOWN, not "no opt-out". Skip rather than strand.
-        if !symbol.decl_located() {
-            continue;
-        }
+        //
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
         // (#[allow(dead_code)], #[cfg(test)]), and non-blank G-allow marker.
-        // Delegated to crate::is_symbol_suppressed so that P1 and P5 H2 share
+        // Delegated to crate::jcodemunch_ops::is_symbol_suppressed so that P1 and P5 H2 share
         // the same opt-out semantics and cannot drift independently.
-        if crate::is_symbol_suppressed(&symbol) {
-            continue;
-        }
-        let has_non_test_caller = ctx
-            .jcodemunch
-            .find_references(&symbol)
-            .iter()
-            .any(|r| !crate::is_test_path(&r.file));
-        if !has_non_test_caller {
-            findings.push(Finding {
-                pattern: Pattern::P5LivePathStranded,
-                severity: Severity::Medium,
-                task_id: meta.task_id.clone(),
-                summary: format!(
-                    "changed symbol `{}` at {}:{} has no non-test workspace caller — \
-                     possible live-path stranding from a cross-crate relocation \
-                     (task 4140 H2)",
-                    symbol.name, symbol.file, symbol.line
-                ),
-                evidence: vec![EvidenceRef::File { path: symbol.file.clone() }],
-            });
-        }
-    }
+        symbol.decl_located() && !crate::jcodemunch_ops::is_symbol_suppressed(symbol)
+    });
+    // A failed lookup is not "no caller": skip and record the symbol,
+    // as p1_producer_orphan does, and examine the rest.
+    let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch, examinable);
+    let mut findings: Vec<Finding> = lookups
+        .unconsumed
+        .iter()
+        .map(|symbol| stranded_finding(&meta.task_id, symbol))
+        .collect();
+    findings.extend(live_path_symbols_unexamined(
+        &meta.task_id,
+        &since_sha,
+        until_sha,
+        &lookups,
+    ));
     findings
+}
+
+/// The Medium `P5LivePathStranded` finding for a changed `symbol` of done
+/// task `task_id` that has no non-test workspace caller.
+fn stranded_finding(task_id: &str, symbol: &ChangedSymbol) -> Finding {
+    Finding {
+        pattern: Pattern::P5LivePathStranded,
+        severity: Severity::Medium,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "changed symbol `{}` at {}:{} has no non-test workspace caller — \
+             possible live-path stranding from a cross-crate relocation \
+             (task 4140 H2)",
+            symbol.name, symbol.file, symbol.line
+        ),
+        evidence: vec![EvidenceRef::File {
+            path: symbol.file.clone(),
+        }],
+    }
+}
+
+/// The `get_changed_symbols` range `(since, until)` H2 queries for `meta`, or
+/// `None` when H2 does not examine it: a task whose `metadata.files` span
+/// fewer than two `crates/<name>/` roots (P1's single-crate domain), or one
+/// with no provenance commit.
+fn h2_range(meta: &TaskMetadata) -> Option<(String, &str)> {
+    if crate_root_count(&meta.files) < 2 {
+        return None;
+    }
+    let commit = meta.done_provenance.as_ref()?.commit.as_deref()?;
+    Some((format!("{commit}^1"), commit))
+}
+
+/// The finding for a cross-crate done task H2 could not examine because its
+/// `get_changed_symbols` query failed. Low, so it never moves the exit code,
+/// and worded so that the task's lack of `P5LivePathStranded` findings
+/// cannot be read as a clean result. `evidence` is empty: the failed query
+/// returned no symbol or file to cite.
+fn live_path_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    failure: &JCodemunchCallFailed,
+) -> Finding {
+    Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "live-path-unexamined: H2 could not examine done task {task_id}: \
+             the {since_sha}..{until_sha} query failed ({failure}); zero \
+             live-path-stranded findings for this task are not a clean result \
+             — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// The finding for a cross-crate done task some of whose symbols H2 could
+/// not examine because their `find_references` lookups failed, or `None`
+/// when every lookup answered. Low, and worded so that those symbols' lack
+/// of `P5LivePathStranded` findings cannot be read as a clean result; the
+/// task's other symbols were examined, so a stranded finding beside it is
+/// genuine.
+///
+/// One finding per task however many lookups failed: the summary names every
+/// skipped symbol and the first failure, and `evidence` cites each skipped
+/// symbol's declaration ([`crate::caller_lookup::SkippedSymbols`]).
+fn live_path_symbols_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    lookups: &CallerLookups,
+) -> Option<Finding> {
+    let skipped = lookups.skipped()?;
+    Some(Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "live-path-unexamined: H2 could not examine {count} symbol(s) of \
+             done task {task_id} from {since_sha}..{until_sha} ({names}): \
+             {first_failure}; zero live-path-stranded findings for them are \
+             not a clean result — re-run once jcodemunch answers",
+            count = skipped.count,
+            names = skipped.names,
+            first_failure = skipped.first_failure,
+        ),
+        evidence: skipped.evidence,
+    })
+}
+
+/// The finding for a sweep in which H2 had no usable jcodemunch session at
+/// all, so it examined no task: `reason` says why. Low, run-level (empty
+/// `task_id`), and worded so that the run's lack of `P5LivePathStranded`
+/// findings cannot be read as a clean result.
+///
+/// `None` when no task [`check`] sweeps is one H2 would have queried
+/// jcodemunch for (done, with an `h2_range`): its zero H2 findings are then
+/// clean whatever the seam, so a spot-check of a single-crate task records
+/// nothing.
+pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Finding> {
+    let reaches_h2 = swept_tasks(ctx, ctx.target_task_id.as_deref())
+        .any(|meta| CheckMode::Sweep.audits(meta) && h2_range(meta).is_some());
+    reaches_h2.then(|| Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "live-path-unexamined: H2 ran without jcodemunch this run ({reason}); \
+             zero live-path-stranded findings are not a clean result — re-run \
+             once jcodemunch answers"
+        ),
+        evidence: vec![],
+    })
 }
 
 /// Returns a `reify-audit:` prefixed stderr breadcrumb message when H2's
@@ -1691,7 +1811,7 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
 /// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
 ///   range really does introduce no symbol.
 /// - Symbols arrived but not one declaration was locatable
-///   ([`crate::wholly_unlocatable_count`]), so the guard below skipped every
+///   ([`crate::jcodemunch_ops::wholly_unlocatable_count`]), so the guard below skipped every
 ///   row. This one is the quiet failure: the jcodemunch grammar drift that
 ///   produces it used to announce itself as a false-positive storm.
 ///
@@ -1710,7 +1830,7 @@ fn h2_vacuous_breadcrumb(
              (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
         )
     } else {
-        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        let unlocatable = crate::jcodemunch_ops::wholly_unlocatable_count(symbols)?;
         format!(
             "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
              unlocatable declaration and were skipped unexamined (jcodemunch \

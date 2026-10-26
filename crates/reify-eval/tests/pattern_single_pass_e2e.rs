@@ -210,7 +210,7 @@ fn perforated_plate_builds_to_step_occt() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let build_errs = error_msgs(&result.diagnostics);
@@ -257,9 +257,9 @@ fn perforated_plate_volume_and_topology_occt() {
     // The solid plate — a proper closed solid (watertight anchor).
     let plate = kernel
         .execute(&GeometryOp::Box {
-            width: v(PLATE_SIZE),
-            height: v(PLATE_SIZE),
-            depth: v(THICKNESS),
+            size_x: v(PLATE_SIZE),
+            size_y: v(PLATE_SIZE),
+            size_z: v(THICKNESS),
         })
         .expect("plate box should succeed")
         .id;
