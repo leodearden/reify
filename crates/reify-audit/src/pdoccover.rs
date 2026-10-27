@@ -2036,10 +2036,7 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
     fn strip_comments_is_char_literal_aware() {
         let mut depth = BlockDepth::default();
         let got = strip_comments("let q = '\"'; /* \"phantom\" */ \"b\",", &mut depth);
-        assert!(
-            !got.contains("phantom"),
-            "the block comment leaked: {got:?}"
-        );
+        assert_eq!(got, "let q = '\"';   \"b\",");
         assert_eq!(depth, BlockDepth::default());
     }
 
@@ -2049,7 +2046,8 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
     fn strip_comments_drops_a_line_comment_after_a_char_literal() {
         let mut depth = BlockDepth::default();
         let got = strip_comments("    '\"' => \"x\", // renamed from \"y\"", &mut depth);
-        assert!(!got.contains("\"y\""), "the `//` tail leaked: {got:?}");
+        assert_eq!(got, "    '\"' => \"x\", ");
+        assert_eq!(depth, BlockDepth::default());
     }
 
     /// Three spellings that mean exactly what `pub const X_NAMES: &[&str]`
