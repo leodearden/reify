@@ -12,6 +12,8 @@ use reify_core::{
 use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
 pub mod cell_contributions;
+#[cfg(test)]
+mod value_cell_fold_tests;
 
 use cell_contributions::{ContributedCell, SubShape, contributed_cells};
 

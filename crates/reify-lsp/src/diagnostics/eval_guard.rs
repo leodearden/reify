@@ -132,9 +132,11 @@ fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
 /// of the enumeration `from_templates` itself folds into `graph.value_cells` —
 /// so "every contributed type representable" implies "every graph cell
 /// representable" by construction. That view collapses each sub's instances
-/// to one, so the scan stays linear in declared cells however large a
-/// collection's literal count. reify-eval owns the enumeration's arms and the
-/// test that replaying it reproduces the graph; the guarded-member arm a
+/// to one, so a collection's literal count adds nothing: the scan is linear in
+/// declared cells plus one by-name template lookup per sub (subs × templates
+/// name comparisons, stdlib templates included). reify-eval owns the
+/// enumeration's arms and the test that replaying it reproduces the graph
+/// (`graph/value_cell_fold_tests.rs`); the guarded-member arm a
 /// narrower scan once missed is pinned here by case (5) of
 /// `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`
 /// and by `tests::stage_one_proves_absence_only_where_the_graph_is_safe`.
