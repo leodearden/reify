@@ -1,13 +1,77 @@
 //! No chunk fence declares a `fn` under a name a compiler builtin already owns.
+//!
+//! A user fn named like a builtin REPLACES it for the whole module, so a reader
+//! who copies such a documented declaration silently loses the builtin.
+//!
+//! # What is NOT established
+//!
+//! - **Prose code spans.** They are never read, because a chunk may document a
+//!   builtin's OWN signature in `fn` notation (topology.md's `faces`).
+//! - **Scope.** A trait-body `fn` member is read like a top-level one; a text
+//!   scan cannot tell them apart.
+//! - **Stdlib `.ri` functions and stdlib intrinsics.** They are outside
+//!   `reify_compiler::is_known_builtin`'s world (#8897's).
+//! - **Anything beyond the name.** Parameter and return types are not compared.
+
+use reify_compiler::is_known_builtin;
 
 use crate::chunk_io::chunk_label;
 use crate::module_compile::{ModuleCompile, compile_module};
+use crate::written_calls::{CallSource, WrittenCall, chunk_written_calls};
+
+/// Whether `call` is a `fn` declaration head written in a copyable FENCE — the
+/// gate's one statement of what it reads.
+fn is_fenced_declaration(call: &WrittenCall) -> bool {
+    call.declaration
+        && match call.source {
+            CallSource::ReifyFence | CallSource::FragmentFence | CallSource::SchematicListing => {
+                true
+            }
+            CallSource::ProseSpan => false,
+        }
+}
+
+/// Every violation in the chunk `stem` holding `markdown`: one per fenced
+/// declaration of a builtin's name, or one saying the chunk cannot be read.
+fn chunk_violations(stem: &str, markdown: &str) -> Vec<String> {
+    match chunk_written_calls(markdown) {
+        Err(error) => vec![format!(
+            "{}: {error} — so no fn declaration in it is checked. FIX: repair the markup.",
+            chunk_label(stem)
+        )],
+        Ok(calls) => calls
+            .iter()
+            .filter(|call| is_fenced_declaration(call) && is_known_builtin(&call.name))
+            .map(|call| shadowing_violation(stem, call))
+            .collect(),
+    }
+}
+
+/// The violation line for `call`, a fenced `fn` declaration in chunk `stem`
+/// whose name a builtin owns.
+fn shadowing_violation(stem: &str, call: &WrittenCall) -> String {
+    format!(
+        "{}:{} — `fn {}` is declared in a {:?} under a name a compiler builtin already owns \
+         (reify_compiler::is_known_builtin). A user fn named like a builtin REPLACES it for the \
+         whole module — a reader who copies this declaration silently loses the builtin. FIX: \
+         rename the example off the builtin's name (functions.md's `align`, task #6890).",
+        chunk_label(stem),
+        call.line,
+        call.name,
+        call.source
+    )
+}
 
 /// Everything wrong across `chunks` (`(stem, markdown)`), one line each, sorted
 /// and deduped. Pure — no file I/O.
 pub(crate) fn builtin_shadowing_violations(chunks: &[(&str, &str)]) -> Vec<String> {
-    let _ = chunks;
-    Vec::new()
+    let mut violations: Vec<String> = chunks
+        .iter()
+        .flat_map(|(stem, markdown)| chunk_violations(stem, markdown))
+        .collect();
+    violations.sort();
+    violations.dedup();
+    violations
 }
 
 /// The violations of the one chunk `demo` holding `markdown`.
@@ -76,6 +140,10 @@ fn a_call_to_a_builtin_is_not_a_declaration() {
 
 #[test]
 fn a_prose_code_span_is_never_read() {
+    assert!(
+        is_known_builtin("faces"),
+        "control: `faces` must be a builtin, or the case below proves nothing"
+    );
     assert_eq!(
         demo_violations("Signature: `fn faces(solid: Solid) -> List<Surface>`.\n"),
         Vec::<String>::new(),
