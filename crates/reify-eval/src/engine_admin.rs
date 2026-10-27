@@ -645,6 +645,16 @@ impl Engine {
         self.achieved_repr_tol.get(occurrence).copied()
     }
 
+    /// Every recorded `(occurrence, deviation)` pair, in ascending
+    /// occurrence-key order. Same map, population and freshness rules as
+    /// [`achieved_repr_tol`](Self::achieved_repr_tol).
+    ///
+    /// Each value is the exact f64 the `RepresentationWithin` comparator
+    /// reads; `reify check --verbose` prints these.
+    pub fn achieved_repr_tol_by_occurrence(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
+        self.achieved_repr_tol.iter().map(|(k, v)| (k.as_str(), *v))
+    }
+
     /// The static-relate consumption ledger produced by the LAST build — one
     /// `(scope_name, facts)` row per ZERO-AUTO relate scope, in `solve_scopes`
     /// order (DIC α, task 5415).
