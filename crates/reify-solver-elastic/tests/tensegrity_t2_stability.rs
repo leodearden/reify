@@ -30,7 +30,7 @@ use reify_solver_elastic::{StabilityResult, analyze_prestress_stability};
 use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
 // ---------------------------------------------------------------------------
-// Fixtures (re-declared — integration tests cannot reach #[cfg(test)] helpers)
+// Fixtures
 // ---------------------------------------------------------------------------
 
 /// The complete 9-cable triplex topology in struts-then-cables member order

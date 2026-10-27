@@ -292,6 +292,7 @@ fn tube_node_id(n_theta: usize, ring: usize, j: usize) -> usize {
 }
 
 /// A triangulated catenoid tube built by [`catenoid_tube`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct CatenoidTube {
     /// Ring-major: ring 0 (`z = −H`) first, azimuth fastest.
     pub nodes: Vec<[f64; 3]>,
