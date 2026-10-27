@@ -3271,8 +3271,10 @@ impl OcctKernel {
                 // surface-area centroid. Every other repr (Solid, Compound,
                 // Wire, Edge, Shell, …) keeps the legacy volume-based path,
                 // preserving existing semantics validated by tests like
-                // `center_of_mass_on_non_solid_wire_returns_origin` and
-                // `sweep_guided_orientation_differs_from_plain_sweep`.
+                // `center_of_mass_on_non_solid_wire_returns_origin`
+                // (`tests/harness_occt_kernel/mass_properties.rs`) and
+                // `sweep_guided_orientation_differs_from_plain_sweep`
+                // (`tests/harness_occt_measurement/sweep_guided_integration.rs`).
                 let shape = self.get_shape(*id)?;
                 let pt = if self.repr_of(*id) == Some(BRepKind::Face) {
                     ffi::ffi::query_face_centroid(shape)
@@ -4524,6 +4526,10 @@ mod tests {
 
     /// Create the canonical 20×10×5 axis-aligned box used by the InertiaTensor
     /// density/analytic tests and store it in `kernel`. Returns the handle ID.
+    ///
+    /// Twin: `tests/harness_occt_kernel/support.rs` holds a byte-identical
+    /// copy for the moved tests. Edit both until #8659 moves this module's
+    /// remaining users and deletes this one.
     fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
         kernel
             .execute(&GeometryOp::Box {
@@ -4552,6 +4558,10 @@ mod tests {
 
     /// Assert that the volume of the shape at `handle_id` is within `tolerance`
     /// relative error of `expected`. Panics with a descriptive message including `label`.
+    ///
+    /// Twin: `tests/harness_occt_kernel/primitives_profiles.rs` holds a byte-identical
+    /// copy for the moved tests. Edit both until #8659 moves this module's
+    /// remaining users and deletes this one.
     fn assert_volume_near(
         kernel: &mut OcctKernel,
         handle_id: GeometryHandleId,
@@ -4574,6 +4584,10 @@ mod tests {
     /// Parse a `{"x":_,"y":_,"z":_}` JSON string into `(x, y, z)`.
     /// Used by `CenterOfMass` query tests to decode the `Value::String` encoding returned
     /// by `query_centroid`.
+    ///
+    /// Twin: `tests/harness_occt_kernel/support.rs` holds a byte-identical
+    /// copy for the moved tests. Edit both until #8659 moves this module's
+    /// remaining users and deletes this one.
     fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
         let parse_field = |field: &str| -> f64 {
             let needle = format!("\"{field}\":");
@@ -4594,6 +4608,10 @@ mod tests {
     /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
     /// a `[[f64;3];3]` array.  Panics with a descriptive message if the structure does not
     /// match the expected nested-list shape.
+    ///
+    /// Twin: `tests/harness_occt_kernel/mass_properties.rs` holds a byte-identical
+    /// copy for the moved tests. Edit both until #8659 moves this module's
+    /// remaining users and deletes this one.
     fn extract_3x3_tensor_entries(value: &Value) -> [[f64; 3]; 3] {
         let rows = match value {
             Value::List(rows) => {
@@ -4709,6 +4727,7 @@ mod tests {
         for _ in 0..4 {
             // Re-seeds parent_handle against the cleared idempotency cache,
             // mirroring the extract-after-restore pattern from
+            // `tests/harness_occt_kernel/lifecycle.rs`'s
             // `owner_body_survives_warm_start`; no mid-cycle checks needed here.
             let (next, shapes_len, reprs_len, _shape_ids) =
                 warm_state_reextract_cycle(kernel, box_id, |_next| {});
@@ -5180,6 +5199,7 @@ mod tests {
         }
 
         // Seed a stale parent_handle entry, mirroring
+        // `tests/harness_occt_kernel/lifecycle.rs`'s
         // `owner_body_survives_warm_start`, so this PARTIAL-deserialization
         // restore (some shapes fail, `staged` non-empty) is pinned to clear
         // parent_handle too — not just the full-swap (all-shapes-succeed)
@@ -5219,6 +5239,7 @@ mod tests {
         // parent_handle must be cleared even on a PARTIAL-deserialization
         // restore — the clear rides along the same `if !staged.is_empty()`
         // branch as the full-swap path pinned by
+        // `tests/harness_occt_kernel/lifecycle.rs`'s
         // `owner_body_survives_warm_start`. stale_child's underlying shape
         // (an old box face) is gone regardless post-swap, but OwnerBody
         // looks up `parent_handle` directly (see the query handler), so

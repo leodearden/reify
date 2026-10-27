@@ -7430,7 +7430,8 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
 /// Lists EVERY unit, not just the angular subset: when a context reaches no
 /// angular unit the diagnostic question is "then what DID it reach?", and a
 /// pre-filtered list answers that with an empty string. Same reasoning as
-/// `resolved_units_summary` on the #6184 text-level walk in src/handle.rs.
+/// `resolved_units_summary` on the #6184 text-level walk in
+/// tests/harness_occt_kernel/handle_step_export.rs.
 std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model,
                                    const Handle(StepBasic_HArray1OfNamedUnit)& units) {
     std::ostringstream oss;

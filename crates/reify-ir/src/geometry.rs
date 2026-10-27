@@ -964,7 +964,7 @@ pub enum GeometryOp {
         /// `Value` layer by `angle_and_real_agree_bit_exactly_under_as_f64`
         /// (`reify-ir/src/value.rs`) and at real OCCT output by
         /// `draft_angle_dimensioned_matches_bare_real_volume`
-        /// (`reify-kernel-occt/src/lib.rs`).
+        /// (`crates/reify-kernel-occt/tests/harness_occt_kernel/modify_ops.rs`).
         ///
         /// Since the gate below landed, that equivalence reaches only
         /// DIRECTLY-CONSTRUCTED IR — which is exactly what both pins build.

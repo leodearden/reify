@@ -11,6 +11,10 @@ use reify_kernel_occt::OcctKernel;
 
 /// Assert that the volume of the shape at `handle_id` is within `tolerance`
 /// relative error of `expected`. Panics with a descriptive message including `label`.
+///
+/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
+/// for the private-reach tests that stayed. Edit both until #8659 moves
+/// those tests and deletes that copy.
 fn assert_volume_near(
     kernel: &mut OcctKernel,
     handle_id: GeometryHandleId,
