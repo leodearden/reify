@@ -24,15 +24,15 @@ fn as_percent(fraction : Real) -> Real = fraction * 100
 - **No `return` keyword** — last expression is the return value
 - **Type annotations mandatory** on parameters and return type
 - **Can be `pub`** for cross-module reuse
-- **Type parameters supported:** `fn distance<Q: Dimension>(a: Point3<Q>, b: Point3<Q>) -> Scalar<Q>`
+- **Type parameters supported:** `fn gap<Q: Dimension>(a: Point3<Q>, b: Point3<Q>) -> Scalar<Q>`
 - **Recursion permitted** (infinite recursion is a runtime error)
 
 ## Overloading
 
 Function overloading by parameter types IS permitted:
 ```reify-schematic
-fn area(surface: Surface) -> Scalar<Area> { ... }
-fn area(solid: Solid) -> Scalar<Area> { ... }
+fn footprint(surface: Surface) -> Scalar<Area> { ... }
+fn footprint(solid: Solid) -> Scalar<Area> { ... }
 
 fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
 fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }

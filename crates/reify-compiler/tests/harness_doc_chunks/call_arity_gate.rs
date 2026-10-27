@@ -274,7 +274,7 @@ fn an_unreadable_chunk_is_reported_never_skipped() {
 /// The exact number of distinct `(name, arity)` forms the live chunks write —
 /// the anti-vacuity floor on the scan. Re-measured by the protocol stated once
 /// beside `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const MINIMUM_WRITTEN_CALL_FORMS: usize = 166;
+const MINIMUM_WRITTEN_CALL_FORMS: usize = 168;
 
 /// A form chunk `stem` writes at the `documented` arity in a `source`, whose
 /// name the compiler rejects at the `rejected` arity.

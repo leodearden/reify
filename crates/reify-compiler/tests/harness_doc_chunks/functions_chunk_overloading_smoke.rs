@@ -9,9 +9,9 @@
 //! # What is NOT established
 //!
 //! - **Overloading by parameter TYPE.** Declarations are compared by name and
-//!   arity only, so the chunk's two `fn area(…) -> Scalar<Area>` declarations —
-//!   the by-TYPE illustration the Overloading section opens by promising — are
-//!   guarded by nothing.
+//!   arity only, so the chunk's two `fn footprint(…) -> Scalar<Area>`
+//!   declarations — the by-TYPE illustration the Overloading section opens by
+//!   promising — are guarded by nothing.
 //! - **That the overload pair sits in the Overloading section.** The scan is
 //!   chunk-wide, since selecting a section would pin heading text, so an
 //!   arity-overloaded pair declared anywhere holds this green.
