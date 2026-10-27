@@ -5,11 +5,12 @@ use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue}
 use reify_ir::{GeometryHandleId, Value};
 
 /// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
+#[track_caller]
 pub fn read_f64(v: &Value, label: &str) -> f64 {
-    match v {
-        Value::Int(i) => *i as f64,
-        other => real_or_scalar_si(other)
-            .unwrap_or_else(|| panic!("{label}: expected numeric component, got {other:?}")),
+    match (v, real_or_scalar_si(v)) {
+        (Value::Int(i), _) => *i as f64,
+        (_, Some(x)) => x,
+        (other, None) => panic!("{label}: expected numeric component, got {other:?}"),
     }
 }
 
@@ -33,6 +34,7 @@ fn real_or_scalar_si(v: &Value) -> Option<f64> {
 }
 
 /// Decompose a `Value::Point` of three numeric components into `[f64; 3]` (SI).
+#[track_caller]
 pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
     let comps = match v {
         Value::Point(c) if c.len() == 3 => c,
@@ -42,6 +44,22 @@ pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
         read_f64(&comps[0], &format!("{label}.p[0]")),
         read_f64(&comps[1], &format!("{label}.p[1]")),
         read_f64(&comps[2], &format!("{label}.p[2]")),
+    ]
+}
+
+/// Decompose a 3-component `Value::Point` or `Value::Vector` into `[f64; 3]`
+/// (SI) through [`read_real_or_scalar`], so an Int component is rejected.
+/// Component `k` is labelled `{label}[k]`.
+#[track_caller]
+pub fn read_real_or_scalar3(v: &Value, label: &str) -> [f64; 3] {
+    let comps = match v {
+        Value::Point(c) | Value::Vector(c) if c.len() == 3 => c,
+        other => panic!("{label}: expected a 3-component Point or Vector, got {other:?}"),
+    };
+    [
+        read_real_or_scalar(&comps[0], &format!("{label}[0]")),
+        read_real_or_scalar(&comps[1], &format!("{label}[1]")),
+        read_real_or_scalar(&comps[2], &format!("{label}[2]")),
     ]
 }
 
@@ -134,6 +152,7 @@ mod tests {
     use super::{
         assert_leaf_node_targeting, assert_selector_leaf, assert_selector_leaf_targeting,
         assert_selector_value, decompose_point3, read_f64, read_real_or_scalar,
+        read_real_or_scalar3,
     };
 
     // ── read_f64 tests ────────────────────────────────────────────────────────
@@ -237,6 +256,44 @@ mod tests {
     fn decompose_point3_panics_on_non_numeric_component() {
         let v = Value::Point(vec![Value::Bool(true), Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "pt");
+    }
+
+    // ── read_real_or_scalar3 tests ────────────────────────────────────────────
+
+    #[test]
+    fn read_real_or_scalar3_point_of_reals_returns_array() {
+        let v = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_eq!(read_real_or_scalar3(&v, "pt"), [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn read_real_or_scalar3_vector_of_scalars_returns_si_array() {
+        let length = |si_value| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::LENGTH,
+        };
+        let v = Value::Vector(vec![length(0.001), length(0.002), length(0.003)]);
+        assert_eq!(read_real_or_scalar3(&v, "u"), [0.001, 0.002, 0.003]);
+    }
+
+    #[test]
+    #[should_panic(expected = "u[1]: expected a Real or Scalar component")]
+    fn read_real_or_scalar3_rejects_int_component_with_indexed_label() {
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Int(0), Value::Real(0.0)]);
+        read_real_or_scalar3(&v, "u");
+    }
+
+    #[test]
+    #[should_panic(expected = "u: expected a 3-component Point or Vector")]
+    fn read_real_or_scalar3_panics_on_wrong_length() {
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]);
+        read_real_or_scalar3(&v, "u");
+    }
+
+    #[test]
+    #[should_panic(expected = "u: expected a 3-component Point or Vector")]
+    fn read_real_or_scalar3_panics_on_non_point_or_vector() {
+        read_real_or_scalar3(&Value::Real(0.0), "u");
     }
 
     // ── assert_selector_leaf tests ────────────────────────────────────────────
