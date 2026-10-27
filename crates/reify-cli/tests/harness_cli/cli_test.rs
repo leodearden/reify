@@ -1,26 +1,10 @@
 use crate::common;
 
-use std::process::Command;
-
-/// Run `reify test <fixture>` and return (status, stdout, stderr).
-fn run_test(fixture: &str) -> (std::process::ExitStatus, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["test", fixture])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    (output.status, stdout, stderr)
-}
-
 // Step 6: passing file exits success, shows PASS and test name
 #[test]
 fn test_command_on_passing_file_exits_success() {
-    let (status, stdout, stderr) = run_test(&common::fixture_path("test_all_pass.ri"));
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_all_pass.ri"));
 
     assert!(
         status.success(),
@@ -39,7 +23,8 @@ fn test_command_on_passing_file_exits_success() {
 // Step 8: failing file exits with failure, shows FAIL and the failing test name
 #[test]
 fn test_command_on_failing_file_exits_failure() {
-    let (status, stdout, stderr) = run_test(&common::fixture_path("test_one_fail.ri"));
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_one_fail.ri"));
 
     assert!(
         !status.success(),
@@ -58,7 +43,8 @@ fn test_command_on_failing_file_exits_failure() {
 // Step 9: indeterminate file exits success (indeterminate is non-violating)
 #[test]
 fn test_command_on_indeterminate_file_exits_success() {
-    let (status, stdout, stderr) = run_test(&common::fixture_path("test_indeterminate.ri"));
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_indeterminate.ri"));
 
     assert!(
         status.success(),
@@ -73,7 +59,8 @@ fn test_command_on_indeterminate_file_exits_success() {
 // Step 10: mixed file — exits failure (has FAIL), shows all three statuses and summary counts
 #[test]
 fn test_command_on_mixed_file_shows_summary() {
-    let (status, stdout, stderr) = run_test(&common::fixture_path("test_mixed.ri"));
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_mixed.ri"));
 
     assert!(
         !status.success(),
@@ -105,7 +92,8 @@ fn test_command_on_mixed_file_shows_summary() {
 // Step 11: no-tests file exits success (vacuously passing)
 #[test]
 fn test_command_on_no_tests_file_exits_success() {
-    let (status, stdout, stderr) = run_test(&common::fixture_path("test_none.ri"));
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_none.ri"));
 
     assert!(
         status.success(),
@@ -121,19 +109,12 @@ fn test_command_on_no_tests_file_exits_success() {
 // Step 12: no arguments shows usage on stderr
 #[test]
 fn test_command_no_args_shows_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["test"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (status, _stdout, stderr) = common::run_with_args(&["test"]);
 
     assert!(
-        !output.status.success(),
-        "reify test with no args should exit non-zero"
+        !status.success(),
+        "reify test with no args should exit non-zero; got exit {:?}",
+        status.code()
     );
     assert!(
         stderr.contains("Usage"),
@@ -144,7 +125,8 @@ fn test_command_no_args_shows_usage() {
 // Step 13: nonexistent file exits failure with error message
 #[test]
 fn test_command_nonexistent_file_exits_failure() {
-    let (status, _stdout, stderr) = run_test("nonexistent_file_that_does_not_exist.ri");
+    let (status, _stdout, stderr) =
+        common::run_subcommand("test", "nonexistent_file_that_does_not_exist.ri");
 
     assert!(
         !status.success(),
