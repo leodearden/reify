@@ -7,7 +7,7 @@ use crate::support::assert_operation_fails_with;
 use reify_ir::{
     BRepKind, ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value,
 };
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
+use reify_kernel_occt::OcctKernel;
 
 /// Assert that the volume of the shape at `handle_id` is within `tolerance`
 /// relative error of `expected`. Panics with a descriptive message including `label`.
@@ -36,10 +36,6 @@ fn assert_volume_near(
 fn kernel_tube_volume_matches_pi_r2_minus_r2_h() {
     // Volume formula: π*(R² - r²)*h. With R=0.010, r=0.005, h=0.020 →
     // π*(1e-4 - 2.5e-5)*0.020 ≈ 4.712e-6 m³.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Tube {
@@ -113,9 +109,6 @@ fn torus_execute_volume() {
     // the same analytic VolumeProperties path as the FFI test, so the
     // result is machine-exact (measured rel_err ≈ 1.8e-16); a 1e-9 tolerance
     // pins the radius wiring with ample margin above the f64 floor.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Torus {
@@ -172,7 +165,7 @@ fn torus_nonfinite_or_zero_radius_returns_error() {
 
 /// step-1 (RED) — `make_compound` primitive.
 ///
-/// Gated on `OCCT_AVAILABLE` because compound assembly and STEP export
+/// Gated on `has_occt` because compound assembly and STEP export
 /// require the real OCCT kernel.
 ///
 /// Asserts:
@@ -189,11 +182,6 @@ fn torus_nonfinite_or_zero_radius_returns_error() {
 #[cfg(has_occt)]
 #[test]
 fn make_compound_two_boxes_and_empty_err() {
-    if !OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let mut kernel = OcctKernel::new();
 
     // Build two distinct box handles.
@@ -262,11 +250,6 @@ fn make_compound_two_boxes_and_empty_err() {
 #[cfg(has_occt)]
 #[test]
 fn make_compound_same_handle_twice_yields_two_solids() {
-    if !OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
     let mut kernel = OcctKernel::new();
 
     // Build ONE box handle — used as BOTH inputs to make_compound.
@@ -309,10 +292,6 @@ fn kernel_cone_frustum_volume_matches_closed_form() {
     // Frustum: bottom_r=0.010, top_r=0.005, height=0.020.
     // Volume = (π/3)·h·(r1²+r1·r2+r2²)
     //        = (π/3)·0.020·(1e-4 + 5e-5 + 2.5e-5) ≈ 3.665e-6 m³.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Cone {
@@ -334,10 +313,6 @@ fn kernel_cone_frustum_volume_matches_closed_form() {
 fn kernel_cone_pointed_volume_matches_closed_form() {
     // Pointed cone: bottom_r=0.010, top_r=0.0, height=0.020.
     // Volume = (π/3)·h·r1² ≈ 2.094e-6 m³.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Cone {
@@ -430,10 +405,6 @@ fn kernel_cone_non_positive_height_returns_error() {
 #[test]
 #[cfg(has_occt)]
 fn kernel_wedge_volume_and_face_count_match_expected() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Wedge {
@@ -463,10 +434,6 @@ fn kernel_wedge_volume_and_face_count_match_expected() {
 #[test]
 #[cfg(has_occt)]
 fn kernel_wedge_zero_top_width_degenerate_succeeds() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::Wedge {
         width: Value::Real(0.020),
@@ -561,10 +528,6 @@ fn kernel_wedge_negative_top_width_returns_error() {
 /// RED until step-4 adds GeometryOp::RectangleProfile.
 #[test]
 fn rectangle_profile_executes_and_extrude_volume() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let profile_h = kernel
         .execute(&GeometryOp::RectangleProfile {
@@ -598,10 +561,6 @@ fn rectangle_profile_executes_and_extrude_volume() {
 /// RED until step-4 adds GeometryOp::CircleProfile.
 #[test]
 fn circle_profile_executes_surface_area() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let profile_h = kernel
         .execute(&GeometryOp::CircleProfile {
@@ -626,10 +585,6 @@ fn circle_profile_executes_surface_area() {
 /// RED until step-4 adds GeometryOp::RectangleProfile.
 #[test]
 fn rectangle_profile_zero_width_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::RectangleProfile {
         width: Value::Real(0.0),
@@ -645,10 +600,6 @@ fn rectangle_profile_zero_width_returns_error() {
 /// RED until step-4 adds GeometryOp::CircleProfile.
 #[test]
 fn circle_profile_negative_radius_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::CircleProfile {
         radius: Value::Real(-0.008),
@@ -671,10 +622,6 @@ fn circle_profile_negative_radius_returns_error() {
 /// RED until step-4 adds GeometryOp::PolygonProfile.
 #[test]
 fn polygon_profile_executes_and_extrude_volume() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let profile_h = kernel
         .execute(&GeometryOp::PolygonProfile {
@@ -705,10 +652,6 @@ fn polygon_profile_executes_and_extrude_volume() {
 /// RED until step-4 adds GeometryOp::EllipseProfile.
 #[test]
 fn ellipse_profile_executes_surface_area() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let profile_h = kernel
         .execute(&GeometryOp::EllipseProfile {
@@ -734,10 +677,6 @@ fn ellipse_profile_executes_surface_area() {
 /// RED until step-4 adds GeometryOp::PolygonProfile.
 #[test]
 fn polygon_profile_too_few_points_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::PolygonProfile {
         points: vec![[0.0, 0.0], [0.01, 0.0]],
@@ -754,10 +693,6 @@ fn polygon_profile_too_few_points_returns_error() {
 /// RED until step-4 adds GeometryOp::EllipseProfile.
 #[test]
 fn ellipse_profile_nonpositive_axis_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let result = kernel.execute(&GeometryOp::EllipseProfile {
         semi_major: Value::Real(0.0),
@@ -782,10 +717,6 @@ fn ellipse_profile_nonpositive_axis_returns_error() {
 /// this test adds coverage at the kernel-execute layer.
 #[test]
 fn polygon_profile_collinear_points_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     // Three collinear points on the X-axis → zero area → degenerate face
     let result = kernel.execute(&GeometryOp::PolygonProfile {

@@ -216,10 +216,6 @@ fn new_ops_export_stl() {
 /// does not exist → workspace compile fails.
 #[test]
 fn new_ops_export_3mf() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -263,10 +259,6 @@ fn new_ops_export_3mf() {
 /// export() (default ThreeMfOptions), ignoring color entirely.
 #[test]
 fn export_with_options_3mf_threads_color() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {

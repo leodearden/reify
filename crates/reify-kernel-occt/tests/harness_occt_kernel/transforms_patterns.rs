@@ -508,10 +508,6 @@ fn mirror_near_zero_normal_rejected() {
 
 #[test]
 fn scale_doubles_volume() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     // Create a 10x10x10 box, volume = 1000
     let box_h = kernel
@@ -542,10 +538,6 @@ fn scale_doubles_volume() {
 
 #[test]
 fn scale_identity_preserves_volume() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -574,10 +566,6 @@ fn scale_identity_preserves_volume() {
 
 #[test]
 fn scale_zero_factor_rejected() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -606,10 +594,6 @@ fn scale_zero_factor_rejected() {
 
 #[test]
 fn scale_nan_factor_rejected() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -640,10 +624,6 @@ fn scale_nan_factor_rejected() {
 
 #[test]
 fn rotate_around_non_origin_differs_from_rotate_at_origin() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     // Create a 10x10x10 box centered at origin.
     let box_h = kernel
@@ -768,10 +748,6 @@ fn execute_apply_transform_dispatches_correctly() {
 /// vertex-exact mapping `x ↦ linear·x` within tessellation tolerance.
 #[test]
 fn execute_affine_apply_non_uniform_scale_maps_tessellated_aabb() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -812,10 +788,6 @@ fn execute_affine_apply_non_uniform_scale_maps_tessellated_aabb() {
 /// Identity linear part + zero translation must be an AABB no-op.
 #[test]
 fn execute_affine_apply_identity_is_aabb_noop() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -861,10 +833,6 @@ fn execute_affine_apply_identity_is_aabb_noop() {
 /// "flips" (which a centered, axis-aligned box cannot show).
 #[test]
 fn execute_affine_apply_reflection_produces_valid_mirrored_solid() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -899,10 +867,6 @@ fn execute_affine_apply_reflection_produces_valid_mirrored_solid() {
 /// `Err(GeometryError::OperationFailed)`, not panic.
 #[test]
 fn execute_affine_apply_non_finite_component_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -939,10 +903,6 @@ fn execute_affine_apply_non_finite_component_returns_error() {
 /// the dedicated per-axis `scale` surface (task 4167).
 #[test]
 fn scale_non_uniform_maps_tessellated_aabb() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -985,10 +945,6 @@ fn scale_non_uniform_maps_tessellated_aabb() {
 /// (mirrors `scale_doubles_volume`).
 #[test]
 fn scale_non_uniform_volume_preserved() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -1019,10 +975,6 @@ fn scale_non_uniform_volume_preserved() {
 
 #[test]
 fn scale_non_uniform_zero_component_rejected() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -1053,10 +1005,6 @@ fn scale_non_uniform_zero_component_rejected() {
 
 #[test]
 fn scale_non_uniform_nan_component_rejected() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {

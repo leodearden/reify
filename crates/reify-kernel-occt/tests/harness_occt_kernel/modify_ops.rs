@@ -12,10 +12,6 @@ use reify_kernel_occt::OcctKernel;
 /// Diagnostic test: does negative Thicken offset work on a box?
 #[test]
 fn thicken_solid_negative_offset_diagnostic() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     // Create a 10x10x10mm box (10mm = 0.010m)
     let box_h = kernel
@@ -98,10 +94,6 @@ fn thicken_solid_increases_volume() {
 /// RED until step-2 adds GeometryOp::ZoneSlab.
 #[test]
 fn zone_slab_planar_face_volume_identity() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     // Rectangle face: width=0.040 m, height=0.020 m → A = 8e-4 m²
     let face_h = kernel

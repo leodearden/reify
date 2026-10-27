@@ -11,10 +11,6 @@ use reify_kernel_occt::OcctKernel;
 
 #[test]
 fn extrude_zero_distance_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     // Create a box as a stand-in profile (provides a valid handle)
     let box_h = kernel
@@ -43,10 +39,6 @@ fn extrude_zero_distance_returns_error() {
 
 #[test]
 fn extrude_nan_distance_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -73,10 +65,6 @@ fn extrude_nan_distance_returns_error() {
 
 #[test]
 fn extrude_inf_distance_returns_error() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
@@ -305,10 +293,6 @@ fn revolve_near_degenerate_axis_rejected() {
 fn kernel_pipe_straight_path_volume_matches_pi_r2_l() {
     // Path: straight line from (0,0,0) to (0,0,0.020), radius=0.002 →
     // Volume ≈ π*r²*L = π*(0.002)²*0.020 ≈ 2.513e-7 m³.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let mut kernel = OcctKernel::new();
     let wire_handle = kernel
         .execute(&GeometryOp::LineSegment {
@@ -348,10 +332,6 @@ fn kernel_pipe_straight_path_volume_matches_pi_r2_l() {
 fn kernel_pipe_non_positive_radius_returns_error() {
     // radius=0 and radius=-1 must both be rejected with "pipe radius"
     // in the error message.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     for r in [0.0, -1.0] {
         let mut kernel = OcctKernel::new();
         let wire_handle = kernel
@@ -392,10 +372,6 @@ fn kernel_pipe_arbitrary_orientation_volume_matches_pi_r2_l() {
     // Before the oriented-profile rewire the profile is an XY circle at the
     // origin, so every in-plane (non-perpendicular) case sweeps a
     // degenerate/offset solid and fails this assertion (RED).
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let r = 0.002_f64;
     // (label, [x1, y1, z1, x2, y2, z2])
     let cases: &[(&str, [f64; 6])] = &[
@@ -452,10 +428,6 @@ fn kernel_pipe_xy_arc_quarter_torus_volume() {
     // This case also guards the wire_start_point plumbing: the arc does NOT
     // start at the origin, so a start-point-ignoring profile would sweep
     // from the wrong location. RED until the oriented-profile rewire lands.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
     let r = 0.002_f64;
     let bend_r = 0.010_f64;
     let theta = std::f64::consts::FRAC_PI_2;
