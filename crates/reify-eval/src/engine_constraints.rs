@@ -226,7 +226,7 @@ fn overlay_live_geometry(
 #[derive(Debug, Clone)]
 pub(crate) struct DfmThicknessSpec {
     /// The geometry handle ref for the rule's `subject` Solid.
-    /// Used by `measure_min_wall`/`measure_min_feature` (both consume `GeometryHandleRef`).
+    /// Passed to `Engine::measure_thickness_pair`.
     pub subject_ref: reify_ir::value::GeometryHandleRef,
     /// Process minimum feature size in SI metres (from `applies_to.min_feature_size`).
     ///
@@ -296,8 +296,9 @@ pub(crate) fn dfm_thickness_spec(v: &Value) -> Option<DfmThicknessSpec> {
 
 /// Compute the min-wall-thickness verdict for `diagnose("min_wall_thickness", ...)`.
 ///
-/// Maps the `Option<MinWallThickness>` from `Engine::measure_min_wall` to a
-/// `Value` verdict that `dfm_diagnose` can bridge to a diagnostic:
+/// Maps the `Option<MinWallThickness>` from the wall slot of
+/// `Engine::measure_thickness_pair` to a `Value` verdict that `dfm_diagnose`
+/// can bridge to a diagnostic:
 ///
 /// - `Some(Measured(t))` → `Value::Bool(t < min_feature_size_m)`: the only path
 ///   that can produce `Bool(true)` (violation) — a sub-`min_feature_size` wall.
@@ -1858,7 +1859,7 @@ impl Engine {
 
         // ── Overhang / draft pass ─────────────────────────────────────────────
         // Scoped so the mutable geometry_kernels borrow ends before the thickness
-        // pass calls `&mut self` via measure_min_wall / measure_min_feature.
+        // pass calls `&mut self` via measure_thickness_pair.
         if !specs.is_empty()
             && let Some(kernel) = self.geometry_kernels.get_mut(&kernel_name)
         {
@@ -1932,9 +1933,7 @@ impl Engine {
         // ── Thickness pass (measure_thickness_pair) ───────────────────────────
         // `measure_thickness_pair` calls `realize_solid_sdf` ONCE per subject and
         // runs both min_wall_thickness + min_feature_size_measure on the single
-        // SampledField — halving voxelization cost vs. back-to-back
-        // `measure_min_wall` / `measure_min_feature` (each internally calls
-        // `realize_solid_sdf`). The geometry_kernels borrow above is fully released
+        // SampledField. The geometry_kernels borrow above is fully released
         // so the `&mut self` call here has no borrow conflict.
         // On every degradation path (no OpenVDB kernel / BelowResolution /
         // NoMeasurement / None) the verdict is Value::Undef → dfm_diagnose emits
@@ -3373,7 +3372,11 @@ mod thickness_pair_tests {
         for spacing in [vec![], vec![1.0, 1.0]] {
             let case = format!("spacing {spacing:?}");
             let (mut engine, subject) = engine_and_subject(Some(spacing));
-            assert_eq!(engine.measure_thickness_pair(subject), (None, None), "{case}");
+            assert_eq!(
+                engine.measure_thickness_pair(subject),
+                (None, None),
+                "{case}"
+            );
         }
     }
 }
