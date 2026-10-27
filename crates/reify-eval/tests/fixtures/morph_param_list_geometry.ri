@@ -1,10 +1,7 @@
-// Test fixture for task 7486: end-to-end pin of task 7016's `List<Geometry>`
-// Rule-4 arm, driven by morph_arm_e2e.rs. Kernel-free by design, like
-// morph_derived_let.ri, so its guard runs in every build profile. `items` is a
-// Param-kind LEAF of `List<Geometry>` whose value changes on a pure `width`
-// tick. Its default is a list literal because `adjacent_faces(...)` and `auto`
-// are Undef on the eval surface Stage A reads, so they never differ there
-// (structural_classifier.rs, `### List<Geometry>` note on `classify_cell`).
+// Fixture for morph_arm_e2e.rs's task-7486 pin: `items` is a Param-kind
+// List<Geometry> leaf that differs on a pure `width` tick. Why its default is a
+// list literal: structural_classifier.rs, `### List<Geometry>` note on
+// `classify_cell`.
 
 structure MorphParamListGeometry {
     param width: Length = 10mm

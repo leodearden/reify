@@ -613,13 +613,17 @@ struct DimensionalTick {
     values_after: reify_ir::ValueMap,
 }
 
-/// Compile `src`, evaluate it cold, then tick `<structure>.width` from 10mm to
-/// 10.5mm through `Engine::edit_param`, as production drives a dimensional
-/// edit. Both sides are read from the engine snapshot (see [`value_map_of`]).
+/// Compile `src`, evaluate it cold, then set the `leaf` param to `new_value`
+/// through `Engine::edit_param`, as production drives a dimensional edit. Both
+/// sides are read from the engine snapshot (see [`value_map_of`]).
 ///
 /// The engine is solver-free and kernel-free (`None` for the geometry kernel):
 /// Stage A reads the eval-surface ValueMap, which no kernel populates.
-fn dimensional_tick(src: &str, structure: &str) -> DimensionalTick {
+fn dimensional_tick(
+    src: &str,
+    leaf: reify_core::ValueCellId,
+    new_value: reify_ir::Value,
+) -> DimensionalTick {
     let compiled = reify_test_support::parse_and_compile_with_stdlib(src);
     let mut engine = reify_eval::Engine::new(
         reify_eval::SolverPosture::SolverFree,
@@ -634,11 +638,8 @@ fn dimensional_tick(src: &str, structure: &str) -> DimensionalTick {
     let graph_before = before.graph.clone();
     let values_before = value_map_of(before);
 
-    if let Err(e) = engine.edit_param(
-        reify_core::ValueCellId::new(structure, "width"),
-        reify_ir::Value::length(0.0105),
-    ) {
-        panic!("edit_param must succeed against the {structure}.width Length param: {e:?}");
+    if let Err(e) = engine.edit_param(leaf.clone(), new_value) {
+        panic!("edit_param must succeed against the {leaf} param: {e:?}");
     }
     let after = engine
         .snapshot()
@@ -677,6 +678,7 @@ fn dimensional_tick(src: &str, structure: &str) -> DimensionalTick {
 fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() {
     use reify_compiler::ValueCellKind;
     use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
 
     // (1) The dimensional tick, width 10mm → 10.5mm. The fixture realizes no
     //     geometry.
@@ -687,7 +689,8 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
         values_after,
     } = dimensional_tick(
         include_str!("fixtures/morph_derived_let.ri"),
-        "MorphDerivedLet",
+        ValueCellId::new("MorphDerivedLet", "width"),
+        Value::length(0.0105),
     );
 
     // (2) PREMISE assertions against the REAL compiled graph. These are the
@@ -756,16 +759,9 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
 }
 
 /// Task 7486: a purely DIMENSIONAL tick must stay Stage-A eligible when a
-/// `Param`-kind LEAF of type `List<Geometry>` differs. This pins task 7016's
-/// Rule-4 arm end to end, against a real compiled module and the eval-surface
-/// ValueMap that production Stage A reads.
-///
-/// Leaf scoping (task 6643) admits a differing DERIVED cell whatever its type,
-/// so only a LEAF exercises the 7016 arm, and only one whose value differs on
-/// the eval surface. A kernel-backed producer (`adjacent_faces`, ...) or `auto`
-/// is `Value::Undef` on both sides of this tick, so a test built on either
-/// would pass with the arm deleted; the fixture's list-literal default `[body]`
-/// is the leaf that actually differs. Why, and the arm's own rationale:
+/// `Param`-kind LEAF of type `List<Geometry>` differs, pinning task 7016's
+/// Rule-4 arm end to end against a real compiled module and the eval-surface
+/// ValueMap that production Stage A reads. Why the leaf is a list literal:
 /// `structural_classifier`'s `### List<Geometry>` note on `classify_cell`.
 #[test]
 fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module() {
@@ -781,7 +777,8 @@ fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_m
         values_after,
     } = dimensional_tick(
         include_str!("fixtures/morph_param_list_geometry.ri"),
-        "MorphParamListGeometry",
+        ValueCellId::new("MorphParamListGeometry", "width"),
+        Value::length(0.0105),
     );
 
     // (2) PREMISES against the REAL compiled graph.
@@ -830,9 +827,7 @@ fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_m
                     .all(|e| matches!(e, Value::GeometryHandle { .. })) => {}
         other => panic!(
             "premise: `items` must hold a non-empty List of GeometryHandles on the eval \
-             surface, got {other:?}. A param-default position gets no Selector -> \
-             List<Geometry> coercion, and kernel-bearing producers (adjacent_faces, `auto`) \
-             are Undef here, so neither can reach Stage A as a differing value"
+             surface, got {other:?}"
         ),
     }
 
@@ -877,7 +872,8 @@ fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_m
 #[test]
 fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
     use reify_compiler::ValueCellKind;
-    use reify_core::Type;
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
 
     // (1) The dimensional tick, width 10mm → 10.5mm.
     let DimensionalTick {
@@ -887,7 +883,8 @@ fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
         values_after,
     } = dimensional_tick(
         include_str!("fixtures/morph_derived_let_guarded.ri"),
-        "MorphDerivedLetGuarded",
+        ValueCellId::new("MorphDerivedLetGuarded", "width"),
+        Value::length(0.0105),
     );
 
     // (2) PREMISE: the production compiler routed the `where` guard into

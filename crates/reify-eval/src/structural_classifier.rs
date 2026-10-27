@@ -256,10 +256,11 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// (`adjacent_faces` and the rest) or an `auto` sub-field is `Value::Undef` on
 /// both sides of a tick: geometry-consumer builtins need a realized kernel, and
 /// even under a kernel build the hydrated list lives only in
-/// `BuildResult::values`, which the morph arm does not hand Stage A. Today the only such leaf that differs there is a
-/// list-literal default, e.g. `param items: List<Geometry> = [body]`, whose
-/// handles' `upstream_values_hash` moves with the dimensions `body` is built
-/// from. Pinned end to end by `tests/morph_arm_e2e.rs`'s
+/// `BuildResult::values`, which the morph arm does not hand Stage A. A leaf that
+/// does differ there is a list-literal default, e.g.
+/// `param items: List<Geometry> = [body]`, whose handles' `upstream_values_hash`
+/// moves with the dimensions `body` is built from. Pinned end to end by
+/// `tests/morph_arm_e2e.rs`'s
 /// `stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module`.
 ///
 /// #### A change to the list's LENGTH defers to Stage B
