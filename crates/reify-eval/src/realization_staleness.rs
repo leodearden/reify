@@ -4,8 +4,7 @@
 //! `docs/prds/v0_6/selective-realization-eviction.md`).
 //!
 //! Pure functions over the evaluation graph: no engine state is read or
-//! written here. `engine_edit` runs them at its two compare sites and applies
-//! the result to the cache.
+//! written here. Callers apply the results to the cache.
 
 use std::collections::{HashMap, HashSet};
 
@@ -146,8 +145,7 @@ pub(crate) fn stale_realization_entities<'a>(
         .collect()
 }
 
-/// The selective-tessellate hash gate's decision, applied by
-/// `Engine::refresh_and_gate_demanded_realizations`.
+/// The selective-tessellate hash gate's decision for one pass.
 #[derive(Debug)]
 pub(crate) struct HashGateVerdict {
     /// Demanded realizations the pass may skip.
@@ -166,7 +164,7 @@ pub(crate) struct HashGateVerdict {
 /// stale demanded realization must run along with every realization each of
 /// its `GeomRef::Sub` operands may name, transitively, since it can only
 /// resolve an operand from this pass's steps; every other demanded realization
-/// is exempt. Sole caller: `Engine::refresh_and_gate_demanded_realizations`.
+/// is exempt.
 pub(crate) fn hash_gate_verdict(
     demanded: &HashSet<RealizationNodeId>,
     moved: &HashSet<RealizationNodeId>,
@@ -192,6 +190,9 @@ fn with_sub_producers(
     roots: &HashSet<RealizationNodeId>,
     graph: &EvaluationGraph,
 ) -> HashSet<RealizationNodeId> {
+    if roots.is_empty() {
+        return HashSet::new();
+    }
     let candidates = SubOperandCandidates::of(graph);
     let mut visited = roots.clone();
     let mut worklist: Vec<RealizationNodeId> = roots.iter().cloned().collect();
