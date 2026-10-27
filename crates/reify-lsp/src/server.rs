@@ -11,7 +11,7 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::blocking_work::BlockingWorkPlacement;
 use crate::diagnostics::EvalState;
-use crate::document::DocumentStore;
+use crate::document::{DocumentState, DocumentStore};
 
 /// One server log line, addressed to the client rather than to a stream.
 ///
@@ -208,6 +208,25 @@ impl ReifyLanguageServer {
     /// Access server state (for testing and embedding).
     pub fn state(&self) -> &Arc<RwLock<ServerState>> {
         &self.state
+    }
+
+    /// Run `work` on the open document at `uri` per the server's
+    /// [`BlockingWorkPlacement`]. `None` means no such document is open, or
+    /// the work panicked.
+    ///
+    /// The [`ServerState`] read lock is held for the lookup only. `work`
+    /// receives the document itself, so its parse (the per-document cache,
+    /// filled by the first request after an edit; see
+    /// [`DocumentState::parsed_module`]) and everything computed from it run
+    /// inside the placement, never inline on the async executor.
+    async fn on_document<T: Send + 'static>(
+        &self,
+        uri: &Url,
+        label: &'static str,
+        work: impl FnOnce(Arc<DocumentState>) -> T + Send + 'static,
+    ) -> Option<T> {
+        let doc = self.state.read().await.documents.get(uri)?;
+        self.blocking_work.run(label, move || work(doc)).await
     }
 
     /// Lock `eval_state`, recovering from a poisoned mutex and reporting the
@@ -565,19 +584,8 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // The per-document cached parse (one parse per edit; cache-filling on
-        // the first request after an edit) and the per-request compile+check
-        // run per the server's BlockingWorkPlacement (see crate::blocking_work).
         let hover = self
-            .blocking_work
-            .run("hover", move || {
+            .on_document(&uri, "hover", move |doc| {
                 let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
                 crate::hover::compute_hover_in_context(&ctx, &doc.text, position)
             })
@@ -663,19 +671,8 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // The per-document cached parse (one parse per edit; cache-filling on
-        // the first request after an edit) and the per-request compile+check
-        // run per the server's BlockingWorkPlacement (see crate::blocking_work).
         let items = self
-            .blocking_work
-            .run("completion", move || {
+            .on_document(&uri, "completion", move |doc| {
                 let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
                 crate::completion::compute_completions_in_context(&ctx, &doc.text, position)
             })
@@ -689,21 +686,8 @@ impl LanguageServer for ReifyLanguageServer {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
 
-        // Brief read lock: look up the document, then release it before the
-        // parse and symbol walk.
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // The per-document cached parse (one parse per edit; cache-filling on
-        // the first request after an edit) and the symbol walk run per the
-        // server's BlockingWorkPlacement (see crate::blocking_work).
         let symbols = self
-            .blocking_work
-            .run("document_symbol", move || {
+            .on_document(&uri, "document_symbol", move |doc| {
                 crate::symbols::compute_document_symbols_from_parsed(
                     &doc.parsed_module(),
                     &doc.text,
@@ -720,27 +704,12 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        // Brief read lock: look up the document, then drop it before the parse
-        // and scope walk — mirrors document_symbol/prepare_rename.
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // The per-document cached parse (one parse per edit; cache-filling on
-        // the first request after an edit) — prelude-aware for AST-shape
-        // consistency with goto_def/rename — and the scope walk run per the
-        // server's BlockingWorkPlacement (see crate::blocking_work).
-        //
         // The δ producer returns None for non-resolvable positions (keywords/
         // literals/types/declaration names), which the editor renders as "no
         // occurrences". Its spans are inherently in-document (boundary row 7),
         // so no active-doc filtering is needed.
         let highlights = self
-            .blocking_work
-            .run("document_highlight", move || {
+            .on_document(&uri, "document_highlight", move |doc| {
                 crate::references::compute_document_highlights(
                     &doc.text,
                     &doc.parsed_module(),
