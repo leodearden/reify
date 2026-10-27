@@ -9,7 +9,8 @@
 //! change had to be mirrored across all of them or they silently drifted apart.
 //! Its raw coordinates are also exposed, as [`triplex_node_coords`], because
 //! reify-solver-elastic's integration tests consume the prism below the `Value`
-//! layer.
+//! layer. So is [`zero_twist_prism_node_coords`], the same nodes with every strut
+//! stood vertical, as a starting guess far from the free-standing equilibrium.
 //!
 //! The "tent" is the minimal fixed-boundary membrane: four anchored corners in
 //! one plane, fanned around one free node seeded off that plane (see
@@ -97,12 +98,29 @@ pub const TALL_TRIPLEX_BOTTOM_Z: f64 = -1.0;
 /// (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°. Callers pass
 /// [`CANONICAL_TRIPLEX_BOTTOM_Z`] or [`TALL_TRIPLEX_BOTTOM_Z`].
 pub fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
+    prism_node_coords(30.0, bottom_z)
+}
+
+/// The triplex's six nodes, in its node order, with the bottom ring turned back
+/// 150° to azimuth 120°·i − 120°. Both rings then sit at 0°/120°/240° and every
+/// strut of [`TRIPLEX_MEMBERS`] stands vertical, where at the triplex each strut
+/// spans 150° of azimuth: a starting guess far from the free-standing
+/// equilibrium. Callers pass [`CANONICAL_TRIPLEX_BOTTOM_Z`] or
+/// [`TALL_TRIPLEX_BOTTOM_Z`].
+pub fn zero_twist_prism_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
+    prism_node_coords(-120.0, bottom_z)
+}
+
+/// Six nodes at circumradius 1: top triangle (nodes 0, 1, 2) at
+/// [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom triangle (nodes 3, 4, 5) at
+/// `bottom_z` and azimuth 120°·i + `bottom_twist_degrees`.
+fn prism_node_coords(bottom_twist_degrees: f64, bottom_z: f64) -> Vec<[f64; 3]> {
     let ring = |i: usize, twist: f64, z: f64| {
         let a = (120.0 * (i as f64) + twist).to_radians();
         [a.cos(), a.sin(), z]
     };
     let mut coords: Vec<[f64; 3]> = (0..3).map(|i| ring(i, 0.0, TRIPLEX_TOP_Z)).collect();
-    coords.extend((0..3).map(|i| ring(i, 30.0, bottom_z)));
+    coords.extend((0..3).map(|i| ring(i, bottom_twist_degrees, bottom_z)));
     coords
 }
 
@@ -480,6 +498,49 @@ mod tests {
                 ("bottom", TALL_TRIPLEX_BOTTOM_Z)
             };
             assert_bits_eq(tall[i][2], want_z, &format!("{ring} node {i} z"));
+        }
+    }
+
+    /// The zero-twist prism keeps the triplex's top ring and bottom height and
+    /// turns only the bottom ring, until each strut's two ends share x and y.
+    /// That compare uses an epsilon, not bits: azimuth 240° on the top ring and
+    /// −120° on the bottom ring round differently.
+    #[test]
+    fn zero_twist_prism_stands_every_strut_vertical() {
+        for bottom_z in [CANONICAL_TRIPLEX_BOTTOM_Z, TALL_TRIPLEX_BOTTOM_Z] {
+            let triplex = triplex_node_coords(bottom_z);
+            let zero_twist = zero_twist_prism_node_coords(bottom_z);
+            assert_eq!(
+                zero_twist.len(),
+                6,
+                "the zero-twist prism has exactly 6 nodes"
+            );
+
+            for i in 0..3 {
+                for c in 0..3 {
+                    assert_bits_eq(
+                        zero_twist[i][c],
+                        triplex[i][c],
+                        &format!("bottom_z={bottom_z}: top node {i} must not move"),
+                    );
+                }
+            }
+            for (i, [x, y, z]) in zero_twist.iter().copied().enumerate().skip(3) {
+                assert_bits_eq(z, bottom_z, &format!("bottom node {i} z"));
+                assert!(
+                    (x * x + y * y - 1.0).abs() < 1e-15,
+                    "bottom_z={bottom_z}: node {i} must sit at circumradius 1, got r² = {}",
+                    x * x + y * y
+                );
+            }
+            for &[top, bottom] in &TRIPLEX_MEMBERS[..TRIPLEX_STRUTS] {
+                let (t, b) = (zero_twist[top as usize], zero_twist[bottom as usize]);
+                assert!(
+                    (t[0] - b[0]).abs() < 1e-15 && (t[1] - b[1]).abs() < 1e-15,
+                    "bottom_z={bottom_z}: strut ({top}, {bottom}) must stand vertical, \
+                     got top {t:?} over bottom {b:?}",
+                );
+            }
         }
     }
 
