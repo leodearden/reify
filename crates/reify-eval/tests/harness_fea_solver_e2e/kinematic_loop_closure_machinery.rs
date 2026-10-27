@@ -1,12 +1,12 @@
 //! End-to-end smoke test for the v0.2 loop-closure residual machinery (task 2584).
 //!
-//! Drives the new `reify_constraints::loop_closure::solve_loop_closure` API
+//! Drives the new `reify_stdlib::loop_closure_solver::solve_loop_closure` API
 //! against joint Maps materialised from a Reify source via the full
 //! `parse → compile_with_stdlib → eval` pipeline, exercising the integration
 //! point future task 2585's snapshot evaluator will plug into.
 //!
 //! Mirrors the structure of `kinematic_stdlib_smoke.rs` but on the
-//! `reify-constraints`-side API.  Verifies:
+//! reify-stdlib loop-closure solver API.  Verifies:
 //!   * joint Maps emitted by `prismatic(...)` flow through
 //!     `solve_loop_closure` without conversion glue;
 //!   * a single-loop problem with `StartStrategy::WarmStart(vec![0.0])` from
@@ -17,12 +17,13 @@
 //!
 //! See docs/prds/v0_2/kinematic-constraints.md, §"Decomposition plan", task 2.
 
-use reify_constraints::{
-    JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
-};
 use reify_core::ValueCellId;
 use reify_ir::{Value, ValueMap};
 use reify_stdlib::loop_closure::loop_residual_twist;
+use reify_stdlib::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
+use reify_stdlib::loop_closure_value::JointValue;
 use reify_test_support::{
     CapturingSubscriberBuilder, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
 };

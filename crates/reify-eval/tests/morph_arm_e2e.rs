@@ -39,7 +39,7 @@ extern crate reify_kernel_occt as _;
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Serializes every test in this binary that touches the **process-global**
@@ -617,11 +617,12 @@ struct DimensionalTick {
 /// 10.5mm through `Engine::edit_param`, as production drives a dimensional
 /// edit. Both sides are read from the engine snapshot (see [`value_map_of`]).
 ///
-/// The engine is kernel-free (`None` for the geometry kernel): Stage A reads
-/// the eval-surface ValueMap, which no kernel populates.
+/// The engine is solver-free and kernel-free (`None` for the geometry kernel):
+/// Stage A reads the eval-surface ValueMap, which no kernel populates.
 fn dimensional_tick(src: &str, structure: &str) -> DimensionalTick {
     let compiled = reify_test_support::parse_and_compile_with_stdlib(src);
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
         None,
     );

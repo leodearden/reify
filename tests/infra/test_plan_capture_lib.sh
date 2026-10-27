@@ -15,6 +15,8 @@
 #   plan_narrowing_axis_match / plan_offaxis_match / plan_narrowing_axis_count
 #                         — dump-level axis predicates (#6391)
 #   plan_strip_comments   — fork-free comment stripper (#6247)
+#   plan_header_field     — typed, order-independent plan header field reader
+#   plan_step_index       — 0-based index of a matching step in the commands block
 
 set -euo pipefail
 
@@ -143,9 +145,9 @@ assert "plan_capture_complete: markers present with nothing after the commands m
     refute plan_capture_complete "$_MARKER_ONLY_DUMP"
 
 # (f) Regression pin for (e)'s fix, stated adjacent to it: the docs-only dump is
-# NOT the truncation in (e) — verify.sh:3663 unconditionally emits either real
-# command lines or the comment "# (no commands — nothing to verify for this
-# action/scope)" after the marker, so a COMMENT line after the marker is a
+# NOT the truncation in (e) — verify.sh's --print-plan printer unconditionally
+# emits either real command lines or the comment "# (no commands — nothing to
+# verify for this action/scope)" after the marker, so a COMMENT line after the marker is a
 # complete plan. A fix that demanded a non-comment command line would red this.
 assert "plan_capture_complete: a comment-only line after the commands marker still returns 0" \
     plan_capture_complete "$_EMPTY_PLAN_DUMP"
@@ -371,14 +373,14 @@ assert "plan_count_noncomment_lines: single command line -> 1" \
 # Every case below is a VERBATIM line shape captured from `verify.sh --print-plan`
 # (merge-gate `--profile both --scope all` and narrowing-active `--profile both
 # --scope branch` runs of the same fixture) — not invented. The `cargo test`
-# twin in (g) is the NEXTEST=0 fallback built at scripts/verify.sh:1944+1950.
+# twin in (g) is emit_nextest_pass's NEXTEST=0 `cargo test` fallback.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- plan_is_narrowing_axis_line: narrowing-axis classification ---"
 
 # --- ON-AXIS: one case per AFFECTED_ALL_FLAGS consumption site --------------
 
-# (a) clippy site (verify.sh:2563), non-narrowed twin — scope=all -> --workspace.
+# (a) clippy site (build_plan's lint add), non-narrowed twin — scope=all -> --workspace.
 assert "plan_is_narrowing_axis_line (a): clippy --workspace is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 5 cargo clippy --workspace --all-targets -- -D warnings"
 
@@ -386,7 +388,7 @@ assert "plan_is_narrowing_axis_line (a): clippy --workspace is ON-axis" \
 assert "plan_is_narrowing_axis_line (b): clippy -p <affected> is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 15 ionice -c 2 -n 7 cargo clippy -p reify-doc -p reify-ir --all-targets -- -D warnings"
 
-# (c) DEBUG nextest site (verify.sh:2133), non-narrowed twin.
+# (c) DEBUG nextest site (add_test_passes's debug arm), non-narrowed twin.
 assert "plan_is_narrowing_axis_line (c): nextest --workspace (debug) is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 5 cargo nextest run --workspace --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
 
@@ -394,7 +396,7 @@ assert "plan_is_narrowing_axis_line (c): nextest --workspace (debug) is ON-axis"
 assert "plan_is_narrowing_axis_line (d): nextest -p <affected> (debug) is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo nextest run -p reify-doc -p reify-ir --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
 
-# (e) typecheck site (verify.sh:2414), narrowed.
+# (e) typecheck site (build_plan's typecheck add), narrowed.
 assert "plan_is_narrowing_axis_line (e): cargo check -p <affected> --tests is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 20m cargo check -p reify-doc -p reify-ir --tests"
 
@@ -402,15 +404,15 @@ assert "plan_is_narrowing_axis_line (e): cargo check -p <affected> --tests is ON
 assert "plan_is_narrowing_axis_line (f): cargo check --workspace --tests is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 20m cargo check --workspace --tests"
 
-# (g) DEBUG nextest site, NEXTEST=0 `cargo test` fallback twin (verify.sh:1944).
+# (g) DEBUG nextest site, emit_nextest_pass's NEXTEST=0 `cargo test` fallback twin.
 assert "plan_is_narrowing_axis_line (g): cargo test -p <affected> fallback is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo test -p reify-doc -p reify-ir -- --test-threads=1 9<&-"
 
 # --- OFF-AXIS: one case per non-narrowed ` -p `-bearing axis ----------------
 
-# (h) THE load-bearing case. The release-sensitivity pass (verify.sh:2098-2128)
-# is scoped by scripts/release-sensitive-crates.txt and is deliberately NOT
-# narrowed. Its ` -p reify-ir` is exactly what a blanket whole-plan
+# (h) THE load-bearing case. The release-sensitivity pass (add_test_passes's
+# release arm) is scoped by scripts/release-sensitive-crates.txt and is
+# deliberately NOT narrowed. Its ` -p reify-ir` is exactly what a blanket whole-plan
 # `! grep -qE " -p reify-ir"` conflated with a narrowing leak — the conflation
 # that stalled task 5166 (2026-07-20 -> 2026-08-20).
 assert "plan_is_narrowing_axis_line (h): release-sensitivity nextest pass is OFF-axis" \
@@ -450,8 +452,9 @@ assert "plan_is_narrowing_axis_line (o): empty line is OFF-axis" \
 # runs BEFORE the cargo-subcommand allowlist, so a narrowable subcommand that
 # ALSO carries ` --release` classifies OFF-axis. That is correct for verify.sh as
 # it stands — $AFFECTED_ALL_FLAGS reaches nextest only in the DEBUG branch
-# (verify.sh:2133, rel=""), and the check/clippy sites never take --release — but
-# it is an assumption about verify.sh, not a property of the line, and it is
+# (add_test_passes's debug arm, rel=""), and the check/clippy sites never take
+# --release — but it is an assumption about verify.sh, not a property of the
+# line, and it is
 # fragile in exactly one direction: a future --release-bearing narrowing site
 # would be silently misclassified as off-axis, quietly emptying the axis subset
 # that MG-B5/MG-B6a assert an absence over.
@@ -561,11 +564,12 @@ assert "plan_narrowing_axis_count (j): comment-only dump -> 0" \
 # assertion failure.  The two operations only compose one way round: certify
 # completeness on the RAW dump first, THEN reduce to command lines.  This helper
 # is the second half, kept fork-free for the same esc-4574-42 reason as the rest
-# of the lib (plan_capture_lib.sh:8-14).
+# of the lib (see the fork-free rationale in plan_capture_lib.sh's header).
 #
 # Comment stripping is load-bearing for the migration, not cosmetic: several occt
-# assertions (test_occt_flock_gate.sh:131,148,296,299,302) assert a pattern is
-# ABSENT, and a retained comment line could satisfy the pattern and flip them.
+# assertions (test_occt_flock_gate.sh's comment-stripped absence checks) assert a
+# pattern is ABSENT, and a retained comment line could satisfy the pattern and
+# flip them.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- plan_strip_comments: fork-free comment stripping ---"
@@ -677,5 +681,344 @@ _body_has() { declare -f "$1" | grep -qF -- "$2"; }
 
 assert "plan_strip_comments (f2): body contains no command substitution" \
     refute _body_has plan_strip_comments '$('
+
+# ---------------------------------------------------------------------------
+# Section 10: plan_header_field — typed plan header field reader
+#
+# Callers used to classify the header with ordered substrings over the whole
+# dump, which a reordering or a newly inserted field silently breaks and which a
+# lookalike token on any other line satisfies. plan_header_field locates the one
+# header line of a kind by its label and reads a field by exact name, so every
+# case below is about that contract: order-independence, exact names, content
+# keying, and an absent field that reads differently from an empty one.
+#
+# Every header fixture line starts its physical line with '#', and none of the
+# case labels repeats the ordered scope adjacency: the ordered-scope-grep
+# ratchet counts code lines only.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_header_field: typed header field reader ---"
+
+# _field_is <dump> <kind> <NAME> <want> — the field is present (rc 0) and reads
+# exactly <want>.
+_field_is() {
+    local _got _rc=0
+    _got="$(plan_header_field "$1" "$2" "$3")" || _rc=$?
+    printf 'got [%s] rc=%s, want [%s] rc=0\n' "$_got" "$_rc" "$4"
+    [ "$_rc" -eq 0 ] && [ "$_got" = "$4" ]
+}
+
+# _field_absent <dump> <kind> <NAME> — rc is exactly 1 and stdout is empty.
+_field_absent() {
+    local _got _rc=0
+    _got="$(plan_header_field "$1" "$2" "$3")" || _rc=$?
+    printf 'got [%s] rc=%s, want [] rc=1\n' "$_got" "$_rc"
+    [ "$_rc" -eq 1 ] && [ -z "$_got" ]
+}
+
+# _field_is_bit <dump> <kind> <NAME> — the field is present and reads 0 or 1.
+_field_is_bit() {
+    local _got _rc=0
+    _got="$(plan_header_field "$1" "$2" "$3")" || _rc=$?
+    printf 'got [%s] rc=%s, want [0|1] rc=0\n' "$_got" "$_rc"
+    [ "$_rc" -eq 0 ] && [[ "$_got" == [01] ]]
+}
+
+# _refused_naming <needle>... -- <cmd...> — <cmd> returns exactly 2, prints
+# nothing on stdout, and its stderr contains every needle.
+_refused_naming() {
+    local -a _needles=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do _needles+=("$1"); shift; done
+    shift
+    local _out _err _rc=0 _n
+    _err="$("$@" 2>&1 >/dev/null)" || true
+    _out="$("$@" 2>/dev/null)" || _rc=$?
+    printf 'rc=%s stdout [%s] stderr [%s]\n' "$_rc" "$_out" "$_err"
+    [ "$_rc" -eq 2 ] && [ -z "$_out" ] || return 1
+    for _n in "${_needles[@]}"; do
+        [[ "$_err" == *"$_n"* ]] || { printf 'stderr lacks [%s]\n' "$_n"; return 1; }
+    done
+}
+
+# _ran_fork_free <fn> <calls-file> — <fn> is defined AND the shadowed filters
+# recorded no call, so an undefined function cannot pass by recording nothing.
+_ran_fork_free() { declare -F "$1" >/dev/null && [ ! -s "$2" ]; }
+
+# _defined_without <fn> <needle> — <fn> is defined AND its body lacks <needle>.
+_defined_without() { declare -F "$1" >/dev/null && refute _body_has "$1" "$2"; }
+
+# A realistic dump in today's field order, with a lookalike on every line that
+# is not the header being read: the preamble, the retry marker printed BEFORE
+# the header (nextest_debug=), a NOTE carrying role=, and a command line that
+# repeats RUN_RUST=, HEAVY= and nextest= with other values. The narrowing header
+# spans three physical lines: its affected/closure lists are newline-separated
+# today (PRD §2.4 defect 7).
+_HDR_DUMP="warning: apply_env — REIFY_TEST_SEMAPHORE_WAIT unset, using the default
+@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=0 nextest_release=0 run_all=0 gui=0
+# verify.sh plan — action=all profile=both scope=branch include_infra=1 nextest=1 role=merge
+# NOTE: include_infra=1 under role=task gets the selective per-artifact infra subset only
+# scope decision — RUN_RUST=1 RUN_GUI=0 RUN_OCCT_GATE=1 RUN_GUI_VITEST=0
+# narrowing — NARROW_ACTIVE=1 affected=reify-doc
+reify-ir closure=reify-doc
+reify-ir from_diff=1
+# heavy partition — HEAVY=excluded
+# --- environment (process-level; inherited by every command below) ---
+# CARGO_INCREMENTAL=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+echo RUN_RUST=0 HEAVY=only nextest=0"
+
+# (a) plan header: first field, last field, and a name another line shadows.
+assert "plan_header_field (a1): plan action -> all" \
+    _field_is "$_HDR_DUMP" plan action all
+assert "plan_header_field (a2): plan role -> merge (the line's last token; the NOTE's role= is not the header)" \
+    _field_is "$_HDR_DUMP" plan role merge
+assert "plan_header_field (a3): plan nextest -> 1 (not the retry marker's nextest_debug, not the command line's nextest=0)" \
+    _field_is "$_HDR_DUMP" plan nextest 1
+
+# (b) scope decision header.
+assert "plan_header_field (b1): scope RUN_RUST -> 1 (not the command line's RUN_RUST=0)" \
+    _field_is "$_HDR_DUMP" scope RUN_RUST 1
+assert "plan_header_field (b2): scope RUN_GUI -> 0" \
+    _field_is "$_HDR_DUMP" scope RUN_GUI 0
+assert "plan_header_field (b3): scope RUN_GUI_VITEST -> 0" \
+    _field_is "$_HDR_DUMP" scope RUN_GUI_VITEST 0
+
+# (c) heavy partition header.
+assert "plan_header_field (c): heavy HEAVY -> excluded (not the command line's HEAVY=only)" \
+    _field_is "$_HDR_DUMP" heavy HEAVY excluded
+
+# (d) narrowing header, including its continuation lines.
+assert "plan_header_field (d1): narrowing NARROW_ACTIVE -> 1" \
+    _field_is "$_HDR_DUMP" narrowing NARROW_ACTIVE 1
+assert "plan_header_field (d2): narrowing from_diff -> 1 (the field on the last continuation line)" \
+    _field_is "$_HDR_DUMP" narrowing from_diff 1
+assert "plan_header_field (d3): narrowing affected -> the whole crate list, single-space joined" \
+    _field_is "$_HDR_DUMP" narrowing affected "reify-doc reify-ir"
+assert "plan_header_field (d4): narrowing closure -> the whole crate list, single-space joined" \
+    _field_is "$_HDR_DUMP" narrowing closure "reify-doc reify-ir"
+
+# (e) PRESENT BUT EMPTY is not ABSENT: verify.sh prints `closure=` with nothing
+# after it when no closure was computed, and a caller asserting on "" must not
+# pass against a plan that lacks the field altogether.
+_HDR_EMPTY_FIELDS="# verify.sh plan — action=lint profile=debug scope=all include_infra=0 nextest=1 role=task
+# narrowing — NARROW_ACTIVE=0 affected= closure= from_diff=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (e1): narrowing closure= -> present and empty (rc 0)" \
+    _field_is "$_HDR_EMPTY_FIELDS" narrowing closure ""
+assert "plan_header_field (e2): narrowing affected= -> present and empty (rc 0)" \
+    _field_is "$_HDR_EMPTY_FIELDS" narrowing affected ""
+assert "plan_header_field (e3): an empty field does not swallow the next one (from_diff -> 0)" \
+    _field_is "$_HDR_EMPTY_FIELDS" narrowing from_diff 0
+
+# (f) ABSENT: rc 1 and nothing on stdout.
+assert "plan_header_field (f1): an unknown NAME on a present header line is absent" \
+    _field_absent "$_HDR_DUMP" scope RUN_MISSING
+assert "plan_header_field (f2): a NAME that is only a prefix of real fields (RUN) is absent" \
+    _field_absent "$_HDR_DUMP" scope RUN
+assert "plan_header_field (f3): heavy on a dump with no heavy partition line is absent" \
+    _field_absent "$_HDR_EMPTY_FIELDS" heavy HEAVY
+assert "plan_header_field (f4): any field of an empty dump is absent" \
+    _field_absent "" plan action
+
+# (g) REORDERED scope header. The values are chosen so that a positional reader
+# and a prefix-matching reader each read a different, wrong value.
+_HDR_REORDERED="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_GUI_VITEST=1 RUN_OCCT_GATE=1 RUN_GUI=0 RUN_RUST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (g1): reordered scope RUN_RUST -> 0" \
+    _field_is "$_HDR_REORDERED" scope RUN_RUST 0
+assert "plan_header_field (g2): reordered scope RUN_GUI -> 0 (exact name: not RUN_GUI_VITEST)" \
+    _field_is "$_HDR_REORDERED" scope RUN_GUI 0
+assert "plan_header_field (g3): reordered scope RUN_GUI_VITEST -> 1" \
+    _field_is "$_HDR_REORDERED" scope RUN_GUI_VITEST 1
+
+# (h) THE USER-OBSERVABLE SIGNAL: a field added to the scope decision — at the
+# front, or between two existing fields — leaves every existing read unchanged.
+_HDR_FRONT_INSERT="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_NEW_AXIS=1 RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+_HDR_MID_INSERT="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_RUST=0 RUN_NEW_AXIS=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (h1): a field inserted at the front leaves RUN_RUST -> 0" \
+    _field_is "$_HDR_FRONT_INSERT" scope RUN_RUST 0
+assert "plan_header_field (h2): a field inserted at the front leaves RUN_GUI -> 1" \
+    _field_is "$_HDR_FRONT_INSERT" scope RUN_GUI 1
+assert "plan_header_field (h3): a field inserted between two fields leaves RUN_RUST -> 0" \
+    _field_is "$_HDR_MID_INSERT" scope RUN_RUST 0
+assert "plan_header_field (h4): a field inserted between two fields leaves RUN_GUI -> 1" \
+    _field_is "$_HDR_MID_INSERT" scope RUN_GUI 1
+
+# (i) CONTENT-KEYED, NOT POSITIONAL: the header is found by its label wherever it
+# sits — (a) already reads it from under a preamble and a retry marker — and
+# when a kind's label starts two lines, the first one is the header.
+_HDR_TWO_SCOPE="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_RUST=1
+# scope decision — RUN_RUST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (i): the first line carrying a kind's label wins" \
+    _field_is "$_HDR_TWO_SCOPE" scope RUN_RUST 1
+
+# (j) An unknown line-kind is refused, naming the kind and the accepted set.
+assert "plan_header_field (j): unknown line-kind -> rc 2, empty stdout, stderr naming it and the accepted kinds" \
+    _refused_naming plan_header_field "'bogus'" plan scope narrowing heavy -- \
+        plan_header_field "$_HDR_DUMP" bogus action
+
+# (k) REAL-PRINTER CONTROL on Section 9's certified `verify.sh lint` capture: the
+# labels the reader keys on are pinned against verify.sh's actual output, not
+# only against fixtures written by the reader's author.
+assert "plan_header_field (k1): real plan header action -> lint" \
+    _field_is "$_REAL_DUMP" plan action lint
+for _scope_field in RUN_RUST RUN_GUI RUN_OCCT_GATE RUN_GUI_VITEST; do
+    assert "plan_header_field (k2): real scope decision $_scope_field is present and reads 0 or 1" \
+        _field_is_bit "$_REAL_DUMP" scope "$_scope_field"
+done
+for _narrowing_field in NARROW_ACTIVE from_diff; do
+    assert "plan_header_field (k3): real narrowing header $_narrowing_field is present and reads 0 or 1" \
+        _field_is_bit "$_REAL_DUMP" narrowing "$_narrowing_field"
+done
+
+# (l) FORK-FREEDOM, by Section 9's (f1)/(f2) technique. Neither check subsumes the
+# other: (l1) alone sees an uncaptured `printf … | grep …` pipeline, (l2) alone
+# sees a `$( … )` that calls no filter.
+assert "plan_header_field (l0): is defined (precondition for l1/l2)" \
+    declare -F plan_header_field
+_HDR_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_HDR_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_HDR_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_HDR_FILTER_CALLS"; }
+    plan_header_field "$_HDR_DUMP" narrowing closure >/dev/null
+) || true
+assert "plan_header_field (l1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    _ran_fork_free plan_header_field "$_HDR_FILTER_CALLS"
+rm -f "$_HDR_FILTER_CALLS"
+assert "plan_header_field (l2): body contains no command substitution" \
+    _defined_without plan_header_field '$('
+
+# ---------------------------------------------------------------------------
+# Section 11: plan_step_index — step order without byte offsets
+#
+# Ordering claims ("generate runs before the first cargo leaf", "the freshness
+# check runs after every cargo leaf") used to compare byte offsets into a slice
+# of the dump. plan_step_index names the unit those claims are about: the plan's
+# steps, i.e. the non-empty, non-comment lines after the commands marker.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_step_index: step order ---"
+
+# _step_is <dump> <ERE> <from-or-empty> <want> — rc 0 and the index reads <want>.
+_step_is() {
+    local _got _rc=0
+    if [ -n "$3" ]; then
+        _got="$(plan_step_index "$1" "$2" "$3")" || _rc=$?
+    else
+        _got="$(plan_step_index "$1" "$2")" || _rc=$?
+    fi
+    printf 'got [%s] rc=%s, want [%s] rc=0\n' "$_got" "$_rc" "$4"
+    [ "$_rc" -eq 0 ] && [ "$_got" = "$4" ]
+}
+
+# Above the commands marker sit a preamble line and a defect-7 narrowing
+# continuation line, neither a step though both are non-comment lines. Inside the
+# block, a comment line and an empty line must not advance the index.
+_STEP_DUMP="warning: cargo nextest availability probe retried once
+# verify.sh plan — action=all profile=debug scope=branch include_infra=0 nextest=1 role=task
+# narrowing — NARROW_ACTIVE=1 affected=reify-doc
+reify-ir closure=reify-doc
+reify-ir from_diff=1
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+./scripts/tree-sitter-generate.sh
+./scripts/tree-sitter-freshness.sh ensure
+# ---- test region: cargo nextest run -p reify-ir runs below ----
+
+timeout --kill-after=60 45m cargo clippy -p reify-doc -p reify-ir --all-targets -- -D warnings
+timeout --kill-after=60 60m cargo nextest run -p reify-doc -p reify-ir 9<&-
+./scripts/tree-sitter-freshness.sh check"
+
+assert "plan_step_index (a): tree-sitter-generate -> step 0" \
+    _step_is "$_STEP_DUMP" 'tree-sitter-generate' '' 0
+assert "plan_step_index (b): tree-sitter-freshness -> step 1 (the first of two)" \
+    _step_is "$_STEP_DUMP" 'tree-sitter-freshness' '' 1
+assert "plan_step_index (c): 'cargo ' -> step 2 (the in-block comment and the blank line are not steps)" \
+    _step_is "$_STEP_DUMP" 'cargo ' '' 2
+assert "plan_step_index (d): cargo nextest run -> step 3" \
+    _step_is "$_STEP_DUMP" 'cargo nextest run' '' 3
+assert "plan_step_index (e): an absent ERE -> -1" \
+    _step_is "$_STEP_DUMP" 'cargo build --release' '' -1
+
+# (f) Lines above the commands marker are never steps.
+assert "plan_step_index (f1): a narrowing continuation line is not a step -> -1" \
+    _step_is "$_STEP_DUMP" '^reify-ir closure=' '' -1
+assert "plan_step_index (f2): the preamble's 'cargo nextest' is not a step -> step 3" \
+    _step_is "$_STEP_DUMP" 'cargo nextest' '' 3
+
+# (g) <from> asks for the first match at or after a step index. "X after every Y"
+# is (Y, i_X) -> -1: no Y at or after X.
+assert "plan_step_index (g1): ('cargo ', from 3) -> step 3 (from is inclusive)" \
+    _step_is "$_STEP_DUMP" 'cargo ' 3 3
+assert "plan_step_index (g2): ('cargo ', from 4) -> -1 (no cargo step at or after the check)" \
+    _step_is "$_STEP_DUMP" 'cargo ' 4 -1
+assert "plan_step_index (g3): ('tree-sitter-freshness', from 2) -> step 4 (the check, not the ensure)" \
+    _step_is "$_STEP_DUMP" 'tree-sitter-freshness' 2 4
+
+# (h) Per-line matching, like plan_match: '.' never crosses a line.
+assert "plan_step_index (h): 'clippy.*nextest' spans two steps -> -1" \
+    _step_is "$_STEP_DUMP" 'clippy.*nextest' '' -1
+
+# (i) No commands marker means no steps, whatever the lines say.
+_STEP_NO_MARKER="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+./scripts/tree-sitter-generate.sh
+timeout --kill-after=60 45m cargo clippy --workspace --all-targets -- -D warnings"
+assert "plan_step_index (i1): a dump with no commands marker -> -1 although its lines match" \
+    _step_is "$_STEP_NO_MARKER" 'cargo ' '' -1
+assert "plan_step_index (i2): an empty dump -> -1 even for the match-anything ERE" \
+    _step_is "" '' '' -1
+
+# (j) An invalid <from> is refused, naming the function and the bad value.
+assert "plan_step_index (j1): from 'x' -> rc 2, empty stdout, stderr naming it" \
+    _refused_naming plan_step_index "'x'" -- plan_step_index "$_STEP_DUMP" 'cargo ' x
+assert "plan_step_index (j2): from '-1' -> rc 2, empty stdout, stderr naming it" \
+    _refused_naming plan_step_index "'-1'" -- plan_step_index "$_STEP_DUMP" 'cargo ' -1
+
+# A malformed ERE is refused, not read as "no such step": -1 is the passing answer
+# of "X after every Y", so a typo in Y would otherwise pass vacuously. (j4) is that
+# idiom's own shape, a <from> past the last step, where no step is ever matched.
+assert "plan_step_index (j3): ERE 'cargo (' -> rc 2, empty stdout, stderr naming it" \
+    _refused_naming plan_step_index "'cargo ('" -- plan_step_index "$_STEP_DUMP" 'cargo ('
+assert "plan_step_index (j4): ERE 'cargo (' from past the last step -> still rc 2" \
+    _refused_naming plan_step_index "'cargo ('" -- plan_step_index "$_STEP_DUMP" 'cargo (' 5
+
+# (k) REAL-PRINTER CONTROL on Section 9's certified `verify.sh lint` capture.
+# That plan has no retry marker and no narrowing continuation line, so every
+# non-comment line is a step and plan_count_noncomment_lines counts the steps.
+_REAL_STEPS="$(plan_count_noncomment_lines "$_REAL_DUMP")"
+assert "plan_step_index (k1): the real plan's first step -> 0" \
+    _step_is "$_REAL_DUMP" '' '' 0
+assert "plan_step_index (k2): the real plan's last step -> plan_count_noncomment_lines - 1" \
+    _step_is "$_REAL_DUMP" '' "$((_REAL_STEPS - 1))" "$((_REAL_STEPS - 1))"
+assert "plan_step_index (k3): from the real plan's step count -> -1 (no step past the last)" \
+    _step_is "$_REAL_DUMP" '' "$_REAL_STEPS" -1
+
+# (l) FORK-FREEDOM, by Section 9's (f1)/(f2) technique.
+assert "plan_step_index (l0): is defined (precondition for l1/l2)" \
+    declare -F plan_step_index
+_STEP_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_STEP_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_STEP_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_STEP_FILTER_CALLS"; }
+    plan_step_index "$_STEP_DUMP" 'tree-sitter-freshness' 2 >/dev/null
+) || true
+assert "plan_step_index (l1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    _ran_fork_free plan_step_index "$_STEP_FILTER_CALLS"
+rm -f "$_STEP_FILTER_CALLS"
+assert "plan_step_index (l2): body contains no command substitution" \
+    _defined_without plan_step_index '$('
 
 test_summary

@@ -7,27 +7,34 @@
 //! the verbatim copies it replaced had to be edited in lockstep on every
 //! grammar change.
 //!
-//! Declared from `analysis.rs` rather than the crate root, so the path is
-//! `crate::analysis::test_fixtures`.
+//! Declared from `decl_oracle.rs` rather than the crate root, so the path is
+//! `crate::decl_oracle::test_fixtures`.
 
-use reify_ast::ParsedModule;
-use reify_core::ModulePath;
+use reify_ast::{Declaration, MemberDecl, ParsedModule, SubDecl};
+use reify_core::{ModulePath, SourceSpan};
+use tower_lsp::lsp_types::Url;
+
+/// The URI a single-document test opens its source under; its module name is
+/// `test`.
+pub(crate) fn test_uri() -> Url {
+    Url::parse("file:///test.ri").unwrap()
+}
 
 /// One verified-parseable snippet per NAMED `Declaration` variant, paired with
 /// the name that variant declares — the shared fixture behind
-/// [`crate::analysis::decl_name_and_span`]'s wildcard-free match.
+/// [`crate::decl_oracle::decl_name_and_span`]'s wildcard-free match.
 ///
 /// Consumers, each a per-kind loop over this table except where noted:
-/// - `analysis::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
-/// - `analysis::tests::named_decl_snippets_cover_every_named_kind` — also asserts
+/// - `decl_oracle::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
+/// - `symbols::tests::named_decl_snippets_cover_every_named_kind` — also asserts
 ///   this table is row-for-row aligned with `OUTLINE_SYMBOL_KIND_BY_NAME`, so a
 ///   new row needs a per-kind `SymbolKind` verdict too
-/// - `analysis::tests::every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span`
-/// - `analysis::tests::document_symbols_map_every_named_kind_to_its_symbol_kind` — looks
+/// - `symbols::tests::every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span`
+/// - `symbols::tests::document_symbols_map_every_named_kind_to_its_symbol_kind` — looks
 ///   rows up BY NAME via `named_decl_snippet`, so renaming a row's declared name
 ///   panics there rather than silently shrinking its loop
 /// - `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind`
-/// - `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+/// - `references::cross_file::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
 ///
 /// ADDING A ROW is what a newly-named `Declaration` variant needs after its
 /// `decl_name_and_span` and `kind_index` arms: the loop consumers then cover it
@@ -93,4 +100,28 @@ pub(crate) fn parse_one_clean(source: &str, module: &str) -> ParsedModule {
         "fixture must hold exactly one declaration: {source}"
     );
     parsed
+}
+
+/// Build the name-token span `[start, start + text.len())`.
+pub(crate) fn span_of(start: usize, text: &str) -> SourceSpan {
+    SourceSpan::new(start as u32, (start + text.len()) as u32)
+}
+
+/// Locate the `MemberDecl::Sub` named `sub_name` among the parsed
+/// module's top-level structure members. Used to assert directly on an
+/// AST field (e.g. `index_domain.is_some()`) instead of on an interim
+/// parser diagnostic's wording, which is not the behavior under test and
+/// would break for an unrelated reason once that diagnostic is retired.
+pub(crate) fn find_sub<'a>(parsed: &'a ParsedModule, sub_name: &str) -> &'a SubDecl {
+    parsed
+        .declarations
+        .iter()
+        .find_map(|decl| match decl {
+            Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                MemberDecl::Sub(sub) if sub.name == sub_name => Some(sub),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no `sub {sub_name}` found in parsed module"))
 }

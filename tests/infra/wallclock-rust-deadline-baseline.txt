@@ -14,9 +14,9 @@
 #     Nothing listed below is blessed. Each one is a real hand-rolled
 #     deadline or elapsed upper bound -- a flake waiting for a loaded host --
 #     that predates the guard's widened scope and was baselined rather than
-#     converted, because converting 19 sites spans 5 crates plus
-#     tree-sitter-reify and needs per-site judgement (several are subprocess
-#     reaping with no WaitClock seam available in those crates).
+#     converted, because converting them spans several crates and needs
+#     per-site judgement (several are subprocess reaping with no WaitClock
+#     seam available in those crates).
 #
 # THE RATCHET IS TWO-DIRECTIONAL, i.e. SHRINK-ONLY:
 #   * A live violation NOT listed here is reported `+` and REDS the gate.
@@ -67,5 +67,3 @@ crates/reify-eval/tests/harness_stress_scenarios/stress_large_assembly.rs :: ela
 crates/reify-fdm/tests/slice.rs :: elapsed < Duration::from_secs(10),
 crates/reify-fdm/tests/slice.rs :: elapsed < Duration::from_secs(10),
 tree-sitter-reify/tests/build_logic_tests.rs :: elapsed.as_secs() < 5,
-tree-sitter-reify/tests/build_logic_tests.rs :: if Instant::now() >= deadline {
-tree-sitter-reify/tests/build_logic_tests.rs :: let deadline = Instant::now() + Duration::from_secs(timeout_secs);

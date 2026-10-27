@@ -87,6 +87,7 @@ B9: "OK Bar#constraint[0]", exit 0). Machine-readable twin:
   `nested_constructor_arg_threads_through_two_levels`
   (`crates/reify-eval/tests/harness_engine/nested_sub_derived_let_e2e.rs`),
   kernel-less; the geometry-plane siblings ε adds attach here. PASS.
+  (2026-10-15, S2 realization-pipeline decompose: the delivered check's paths are widened to `crates/reify-eval/src/engine_build.rs` + `crates/reify-eval/src/realization_seeding.rs`, because ι₁ #9161 moves the override realization there; .yaml, this twin and #6610/#6926's metadata changed together.)
 
 ## ζ — integration gate
 
@@ -146,3 +147,9 @@ by the IVF-sequencing study against main `181d1ec24c`/`62a47674fd` — memo in
 
 - No capabilities: docs stamp per overlay decompose-close obligations
   (terminal vocabulary; AS-AUTHORED freeze; ID backfill).
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `fixture-registration-mechanism`: paths now `scripts/verify.sh`, `gui/src/__tests__/reifyGrammarCorpus.test.ts`, `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`, `crates/reify-cli/tests/`; pattern now `instantiation_value_flow_probe.ri`.

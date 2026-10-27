@@ -4441,14 +4441,14 @@
         };
         CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
-            args: vec![arg("width"), arg("height"), arg("depth")],
+            args: vec![arg("size_x"), arg("size_y"), arg("size_z")],
         }
     }
 
     /// Contract C1's THREE-STATE mapping at every `box` length slot, asserted
     /// through `compile_geometry_op` — the sole IR-build funnel (contract C2).
     ///
-    /// Each of `width` / `height` / `depth` is exercised independently, so a
+    /// Each of `size_x` / `size_y` / `size_z` is exercised independently, so a
     /// gate applied to only one slot cannot pass this test.
     ///
     /// (i)  ACCEPTED — a LENGTH `Scalar` yields `Ok`, and the stored
@@ -4464,7 +4464,7 @@
     ///      well-meaning "but zero has no units" patch to carve out, and
     ///      carving it out reopens the hazard for `box(0, 0, 0)`.
     /// (iii) UNDEFINED — `Value::Undef` yields `Err` whose message is the
-    ///      EXISTING distinct `"argument 'width' for box is unresolved (Undef)"`
+    ///      EXISTING distinct `"argument 'size_x' for box is unresolved (Undef)"`
     ///      wording, NOT the "missing or non-Length" text, and pushes NO
     ///      rejection diagnostic (D10 / INV-SF-1: loud at the chokepoint, quiet
     ///      at `accept_arg`). During solver iteration an Undef cell is expected
@@ -4478,7 +4478,7 @@
     fn compile_geometry_op_box_length_slots_follow_the_three_state_contract() {
         let values = ValueMap::new();
 
-        for slot in ["width", "height", "depth"] {
+        for slot in ["size_x", "size_y", "size_z"] {
             // (i) ACCEPTED.
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
@@ -4493,17 +4493,17 @@
             let op = result
                 .unwrap_or_else(|e| panic!("{slot}: a LENGTH Scalar must be accepted, got: {e}"));
             let reify_ir::GeometryOp::Box {
-                width,
-                height,
-                depth,
+                size_x,
+                size_y,
+                size_z,
             } = op
             else {
                 panic!("{slot}: expected GeometryOp::Box, got {op:?}");
             };
             let stored = match slot {
-                "width" => width,
-                "height" => height,
-                _ => depth,
+                "size_x" => size_x,
+                "size_y" => size_y,
+                _ => size_z,
             };
             assert_eq!(
                 stored,
@@ -7586,13 +7586,13 @@
         let step_handles: Vec<GeometryHandleId> = vec![];
         let values = ValueMap::new();
 
-        // Box with height and depth present, but 'width' deliberately omitted
+        // Box with size_y and size_z present, but 'size_x' deliberately omitted
         let op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
-                // width deliberately omitted
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
+                // size_x deliberately omitted
             ],
         };
 
@@ -7613,11 +7613,11 @@
             "compile_geometry_op should return None when a required arg is missing"
         );
 
-        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        // Exactly one diagnostic warning should have been emitted for the missing 'size_x'
         assert_eq!(
             diagnostics.len(),
             1,
-            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            "expected exactly one diagnostic for missing 'size_x', got: {:?}",
             diagnostics
         );
         assert_eq!(
@@ -7626,8 +7626,8 @@
             "expected Warning severity"
         );
         assert!(
-            diagnostics[0].message.contains("width"),
-            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message.contains("size_x"),
+            "diagnostic message should mention 'size_x', got: {}",
             diagnostics[0].message
         );
         assert!(
@@ -7701,9 +7701,9 @@
         let box_op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::Box,
             args: vec![
-                ("width".into(), literal_length(0.10)),
-                ("height".into(), literal_length(0.05)),
-                ("depth".into(), literal_length(0.04)),
+                ("size_x".into(), literal_length(0.10)),
+                ("size_y".into(), literal_length(0.05)),
+                ("size_z".into(), literal_length(0.04)),
             ],
         };
 
@@ -22607,18 +22607,13 @@
     // Step-5 RED: these tests compile but FAIL until step-6 adds the
     // "curvature" → TopologySelectorHelper::Curvature arm to the dispatcher.
     // Modelled on the `normal` tests above (lines ~10006-10319).
-
-    // DimensionVector for curvature = 1/Length = Length^-1.
-    // Constructed directly (from_exps is private); index-0 is the LENGTH basis.
-    const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
-        let mut d = [reify_core::dimension::Rational::ZERO; 10];
-        d[0] = reify_core::dimension::Rational::new(-1, 1);
-        reify_core::dimension::DimensionVector(d)
-    };
+    // The next two tests are the production-tag drift pin (task #6179): each fails
+    // if a dispatch site tags anything other than `DimensionVector::CURVATURE`.
 
     /// `curvature(surface, point)` with a fake kernel staging a 2×2 nested-List
     /// [[kappa_max, 0], [0, kappa_min]] must yield `Some(Value::Matrix(...))` where
-    /// every cell is a `Value::Scalar` with dimension = 1/Length (Curvature), and
+    /// every cell is a `Value::Scalar` with dimension `DimensionVector::CURVATURE`
+    /// (rad·m⁻¹), and
     /// the matrix diagonal mean (trace/2) equals the expected curvature.
     #[test]
     fn try_eval_topology_selector_curvature_surface_returns_matrix() {
@@ -22672,11 +22667,11 @@
         // Expect a 2×2 Value::Matrix of curvature-dimensioned scalars.
         let expected_cell = reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         };
         let expected_zero = reify_ir::Value::Scalar {
             si_value: 0.0,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         };
         let expected = Some(reify_ir::Value::Matrix(vec![
             vec![expected_cell.clone(), expected_zero.clone()],
@@ -22684,7 +22679,8 @@
         ]));
         assert_eq!(
             result, expected,
-            "curvature(surface, point) must return Some(Value::Matrix([[κ,0],[0,κ]])); got {:?}",
+            "curvature(surface, point) must return Some(Value::Matrix([[κ,0],[0,κ]])) of \
+             DimensionVector::CURVATURE (rad·m⁻¹) cells; got {:?}",
             result
         );
         assert!(
@@ -22695,7 +22691,8 @@
     }
 
     /// `curvature(curve, point)` with a fake kernel staging `Value::Real(κ)` must
-    /// yield `Some(Value::Scalar{ si_value: κ, dimension: 1/Length })`.
+    /// yield `Some(Value::Scalar{ si_value: κ, dimension: DimensionVector::CURVATURE })`
+    /// (rad·m⁻¹).
     #[test]
     fn try_eval_topology_selector_curvature_curve_returns_scalar() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -22738,11 +22735,11 @@
 
         let expected = Some(reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         });
         assert_eq!(
             result, expected,
-            "curvature(curve, point) must return Some(Value::Scalar{{κ, 1/m}}); got {:?}",
+            "curvature(curve, point) must return Some(Value::Scalar{{κ, DimensionVector::CURVATURE (rad·m⁻¹)}}); got {:?}",
             result
         );
         assert!(
@@ -28917,6 +28914,7 @@
 
         let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -28969,6 +28967,7 @@
 
         let kernel = reify_test_support::mocks::MockGeometryKernel::new(); // UNSTAGED
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

@@ -82,7 +82,6 @@ const NOT_ADVERTISED_TO_SIDECAR = {
     'screenshot_window',
     'element_screenshot',
     'demand_dispatch',
-    'morph_stats',
     'mesh_morph_stats',
   ],
   editorProbes: ['hover_at', 'completion_at', 'definition_at'],

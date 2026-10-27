@@ -1,0 +1,100 @@
+E3 §7 ANALYSIS — as of 2026-10-10T20:00:00Z
+LABEL: DESCRIPTIVE — stop rule not met: no trigger instant, no confirmatory look
+Protocol: docs/prds/v0_6/e3-decomposition-granularity-ab.md §7 + §10 addendum 2026-10-10
+Task snapshot: fused-memory MCP get_statuses + get_task, fetched 2026-10-10T23:26:19Z, project_root /home/leo/src/reify
+Attribution: coarse 25 tasks, standard 59 tasks
+Freeze-window check: passed — derived {6668, 6672, 6706, 6768, 6798} equals the pre-registered set
+
+== STOP-RULE PROBE (addendum (a); k=2) ==
+  coarse   gui-on-demand-measurement                0/2 qualifying  —
+  coarse   solution-set-completeness                0/2 qualifying  —
+  coarse   gui-purpose-surface                      0/2 qualifying  —
+  coarse   spec-conformance-suite                   0/2 qualifying  —
+  standard solver-driver-parity                     0/2 qualifying  —
+  standard geometry-algebra-solver-unification      0/2 qualifying  —
+  standard driver-contract-implementation           1/2 qualifying  #6801 (2026-09-27T20:10:57Z)
+  rule (ii) landing floor in every PRD: not met
+  rule (i) every close leaf terminal: not met
+  rule (iii) human re-review 2027-01-09: an operator decision, not probed
+  trigger instant: none
+
+== CONFIRMATORY VERDICT (§7.3) ==
+  label: DESCRIPTIVE
+  reason: stop rule not met: no trigger instant, no confirmatory look
+
+== CENSORING (addendum (b)3: three separate counts per arm) ==
+  coarse   freeze-window excluded 2 tasks | right-censored 23 tasks | drain-censored attempts 0
+  standard freeze-window excluded 3 tasks | right-censored 55 tasks | drain-censored attempts 8
+
+== PER-PRD ENDPOINTS AS OF 2026-10-10T20:00:00Z — INTERIM DESCRIPTIVE ==
+  PRD                                    arm      land/cens/excl    cost $     LOC   $/kLOC att/task att/kLOC blk/task blk/kLOC  scope share
+  gui-on-demand-measurement              coarse            0/4/0      0.00       0        —        —        —        —        —  0 (0.000)
+  solution-set-completeness              coarse            0/5/1      0.00       0        —        —        —        —        —  0 (0.000)
+  gui-purpose-surface                    coarse            0/5/0      0.00       0        —        —        —        —        —  0 (0.000)
+  spec-conformance-suite                 coarse            0/9/1      0.00       0        —        —        —        —        —  0 (0.000)
+  solver-driver-parity                   standard         0/15/0      0.00       0        —        —        —        —        —  0 (0.000)
+  geometry-algebra-solver-unification    standard         0/17/2      0.00       0        —        —        —        —        —  0 (0.000)
+  driver-contract-implementation         standard         1/23/1     31.05     512    60.64     1.00     1.95     0.00     0.00  1/24 (0.042)
+      #6801 landed 2026-09-27T20:10:57Z: cost $31.05, LOC 512, attempts 1, blocking esc 0, era straddle
+
+== ARM MEDIANS + BOOTSTRAP (90% interval, 10000 resamples by PRD; DESCRIPTIVE) ==
+  usd_per_kloc           coarse — [—, —] n=0                       standard 60.64 [60.64, 60.64] n=1
+  attempts_per_task      coarse — [—, —] n=0                       standard 1.00 [1.00, 1.00] n=1
+  attempts_per_kloc      coarse — [—, —] n=0                       standard 1.95 [1.95, 1.95] n=1
+  blocking_esc_per_task  coarse — [—, —] n=0                       standard 0.00 [0.00, 0.00] n=1
+  blocking_esc_per_kloc  coarse — [—, —] n=0                       standard 0.00 [0.00, 0.00] n=1
+
+== STRATUM-B PAIR (closest-matched; DESCRIPTIVE) ==
+  PRD                                    arm      land/cens/excl    cost $     LOC   $/kLOC att/task att/kLOC blk/task blk/kLOC  scope share
+  spec-conformance-suite                 coarse            0/9/1      0.00       0        —        —        —        —        —  0 (0.000)
+  driver-contract-implementation         standard         1/23/1     31.05     512    60.64     1.00     1.95     0.00     0.00  1/24 (0.042)
+
+== ERA SPLIT (§7.6 at 2026-09-01T00:00:00Z (timeouts.architect 2400->7200, task 7182, merge 9be8de5f, §7.6); landed eligible tasks; DESCRIPTIVE) ==
+  coarse   pre       n=0   $/kLOC        —  att/task      —  blk/task      —
+  coarse   post      n=0   $/kLOC        —  att/task      —  blk/task      —
+  coarse   straddle  n=0   $/kLOC        —  att/task      —  blk/task      —
+  standard pre       n=0   $/kLOC        —  att/task      —  blk/task      —
+  standard post      n=0   $/kLOC        —  att/task      —  blk/task      —
+  standard straddle  n=1   $/kLOC    60.64  att/task   1.00  blk/task   0.00
+
+== SENSITIVITY (addendum (b)4: amended tasks dropped; DESCRIPTIVE) ==
+  dropped: #6898 (§10 A5-R, 2026-09-01), #6899 ((c), 2026-08-28/2026-10-05), #6781 ((c), 2026-09-11), #6911 ((c), 2026-09-16), #6683 ((c), 2026-09-21), #6901 ((c), 2026-09-28), #6903 ((c), 2026-09-28), #6678 ((c), 2026-09-28), #6902 ((c), 2026-10-08), #6681 ((c), 2026-10-08), #6690 ((c), 2026-10-08), #6908 ((e), 2026-10-10), #6909 ((e), 2026-10-10)
+  PRD                                    arm      land/cens/excl    cost $     LOC   $/kLOC att/task att/kLOC blk/task blk/kLOC  scope share
+  gui-on-demand-measurement              coarse            0/2/0      0.00       0        —        —        —        —        —  0 (0.000)
+  solution-set-completeness              coarse            0/2/1      0.00       0        —        —        —        —        —  0 (0.000)
+  gui-purpose-surface                    coarse            0/5/0      0.00       0        —        —        —        —        —  0 (0.000)
+  spec-conformance-suite                 coarse            0/6/1      0.00       0        —        —        —        —        —  0 (0.000)
+  solver-driver-parity                   standard         0/14/0      0.00       0        —        —        —        —        —  0 (0.000)
+  geometry-algebra-solver-unification    standard         0/14/2      0.00       0        —        —        —        —        —  0 (0.000)
+  driver-contract-implementation         standard         1/22/1     31.05     512    60.64     1.00     1.95     0.00     0.00  1/23 (0.043)
+  usd_per_kloc           coarse — [—, —] n=0                       standard 60.64 [60.64, 60.64] n=1
+
+== EXCLUDED TASKS (descriptive only; never in an endpoint) ==
+  #6668 standard geometry-algebra-solver-unification freeze-window: status pending, landed —, cost $11.22, LOC 0, attempts counted 1 / drain-censored 0 / in-flight 0, blocking esc 0
+  #6672 standard geometry-algebra-solver-unification freeze-window: status done, landed 2026-09-18T23:55:36Z, cost $192.73, LOC 9267, attempts counted 3 / drain-censored 10 / in-flight 0, blocking esc 2
+  #6706 coarse solution-set-completeness freeze-window: status done, landed 2026-10-05T08:45:38Z, cost $53.99, LOC 1609, attempts counted 2 / drain-censored 3 / in-flight 0, blocking esc 0
+  #6768 coarse spec-conformance-suite freeze-window: status done, landed 2026-09-18T22:46:58Z, cost $26.18, LOC 233, attempts counted 3 / drain-censored 1 / in-flight 0, blocking esc 1
+  #6798 standard driver-contract-implementation freeze-window: status done, landed 2026-09-12T07:35:09Z, cost $107.58, LOC 2425, attempts counted 2 / drain-censored 16 / in-flight 0, blocking esc 0
+  #6758 carve-out (§7.1): status done, landed —, cost $53.12, LOC 0, attempts counted 2 / drain-censored 0 / in-flight 0, blocking esc 1
+  #6759 carve-out (§7.1): status done, landed 2026-09-27T22:44:04Z, cost $94.06, LOC 450, attempts counted 3 / drain-censored 15 / in-flight 0, blocking esc 2
+
+== UNLANDED (addendum (b)1: right-censored; never in a per-kLOC figure) ==
+  gui-on-demand-measurement              coarse   right-censored 4 tasks, attempts 0, blocking esc 0
+  solution-set-completeness              coarse   right-censored 5 tasks, attempts 0, blocking esc 0
+  gui-purpose-surface                    coarse   right-censored 5 tasks, attempts 0, blocking esc 0
+  spec-conformance-suite                 coarse   right-censored 9 tasks, attempts 1, blocking esc 0
+  solver-driver-parity                   standard right-censored 15 tasks, attempts 0, blocking esc 0
+  geometry-algebra-solver-unification    standard right-censored 17 tasks, attempts 0, blocking esc 0
+  driver-contract-implementation         standard right-censored 23 tasks, attempts 1, blocking esc 0
+
+== ENDPOINT 5 (defect escape: PRD close + 30 days) ==
+  gui-on-demand-measurement              close leaf #6748: not closed — not yet available
+  solution-set-completeness              close leaf #6719: not closed — not yet available
+  gui-purpose-surface                    close leaf #6839: not closed — not yet available
+  spec-conformance-suite                 close leaf #6791: not closed — not yet available
+  solver-driver-parity                   close leaf #6704: not closed — not yet available
+  geometry-algebra-solver-unification    close leaf #6687: not closed — not yet available
+  driver-contract-implementation         close leaf #6808: not closed — not yet available
+
+== DATA INTEGRITY ==
+  done-without-merge: #6758 is done with no task merge

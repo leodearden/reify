@@ -51,8 +51,10 @@
 //   3. TYPE-ALIAS TIGHTENING (partial — Pose3/Vec3 only): `Pose3` is now
 //      aliased to the core `Transform3` rigid-transform type (rotation +
 //      translation), making Pose3 nominally distinct from `Real` (task 4577).
-//      `Vec3` is `Vector3<Length>` (tightened by task #4575, per
-//      affine-map-type.md §4.2), also nominally distinct from Real/Pose3.
+//      `Vec3<Q>` aliases `Vector3<Q>`: tightened from `Real` by task #4575
+//      (per affine-map-type.md §4.2) and generalised over any Dimension by
+//      task #4794; which Q a field takes is the RULING on the alias block
+//      below. Also nominally distinct from Real/Pose3.
 //      `LocationId` is now a `FaceSelector` (resolved #4655 / R3c): routing it
 //      to the topology-`Selector` substrate was deliberately split out of task
 //      4577 because the trajectory accessors run on the VALUE-EVAL path, where a

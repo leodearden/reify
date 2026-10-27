@@ -1,0 +1,12 @@
+module auto_reach_conn_free
+trait Signal {}
+
+structure ConnFree {
+    param gain : Length = auto
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnFree { gain = auto }
+}

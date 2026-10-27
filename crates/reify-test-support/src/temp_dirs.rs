@@ -268,11 +268,10 @@ pub fn check_temp_dir_hygiene(source: &str, display_path: &str) -> Result<(), St
 /// hygiene violation, panicking with every violation and the remediation if it
 /// does.
 ///
-/// The repo root is resolved at compile time from `env!("CARGO_MANIFEST_DIR")`
-/// evaluated inside **this** crate, which always sits at
-/// `<repo>/crates/reify-test-support/`; two `.parent()` walks reach the root.
-/// This is the same resolution [`crate::orphan_audit::run_orphan_audit`] uses,
-/// so a guard here can scan a file owned by any other crate.
+/// The repo root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], the same resolver
+/// [`crate::orphan_audit::run_orphan_audit`] uses, so a guard here can scan a
+/// file owned by any other crate.
 ///
 /// Passing an ABSOLUTE path is also supported — [`Path::join`] discards the base
 /// when its argument is absolute — which is how this function's own tests point
@@ -285,12 +284,7 @@ pub fn check_temp_dir_hygiene(source: &str, display_path: &str) -> Result<(), St
 /// a moved or renamed file must fail loudly rather than turn this guard into a
 /// vacuous pass. Panics with the collected violations if any are found.
 pub fn assert_no_unguarded_temp_dir_sites(repo_relative_path: &str) {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates/reify-test-support has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (the repo root)");
-    let absolute = repo_root.join(repo_relative_path);
+    let absolute = crate::workspace_root::workspace_root().join(repo_relative_path);
 
     let source = std::fs::read_to_string(&absolute).unwrap_or_else(|e| {
         panic!(
@@ -902,8 +896,9 @@ mod tests {
         std::fs::write(&file, format!("fn t() {{\n    let d = std::{call};\n}}\n"))
             .expect("write the synthetic fixture");
 
-        // An absolute path survives `repo_root.join(..)` unchanged, which is how
-        // this test reaches a fixture that is not a tracked workspace file.
+        // An absolute path survives the workspace-root `join(..)` unchanged,
+        // which is how this test reaches a fixture that is not a tracked
+        // workspace file.
         let path = file.display().to_string();
         let err = with_silent_panic_hook(|| {
             std::panic::catch_unwind(|| assert_no_unguarded_temp_dir_sites(&path))
@@ -935,6 +930,40 @@ mod tests {
             .expect("write the synthetic fixture");
 
         assert_no_unguarded_temp_dir_sites(&file.display().to_string());
+    }
+
+    /// The relative path exists ONLY in the fixture tree, so returning without
+    /// a panic proves the fixture, not the compile-time tree, was read.
+    #[test]
+    fn anuts_reads_the_runtime_workspace_tree_child() {
+        crate::workspace_root::reexec::in_child(|_root| {
+            assert_no_unguarded_temp_dir_sites("crates/consumer/src/only_in_fixture.rs");
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart.
+    #[test]
+    fn anuts_reads_the_runtime_workspace_tree() {
+        use crate::workspace_root::reexec::{
+            FIXTURE_CONSUMER, Launch, fixture_workspace, run_child,
+        };
+
+        let fixture = fixture_workspace("temp-dirs-runtime-root-");
+        let src = fixture.path().join(FIXTURE_CONSUMER).join("src");
+        std::fs::create_dir_all(&src).expect("create the fixture consumer's src/");
+        std::fs::write(
+            src.join("only_in_fixture.rs"),
+            "fn t() {\n    let d = 1;\n}\n",
+        )
+        .expect("write the clean fixture source");
+
+        run_child(
+            "temp_dirs::tests::anuts_reads_the_runtime_workspace_tree_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
+        );
     }
 
     // ── collect_workspace_unguarded_temp_dirs ────────────────────────────────
@@ -1260,14 +1289,7 @@ mod tests {
     /// asserted too.
     #[test]
     fn workspace_has_no_unguarded_temp_dirs() {
-        // Same resolution as `assert_no_unguarded_temp_dir_sites`: this crate's
-        // CARGO_MANIFEST_DIR is always `<repo>/crates/reify-test-support`, so
-        // two `.parent()` walks reach the repo root.
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates/reify-test-support has a parent (crates/)")
-            .parent()
-            .expect("crates/ has a parent (the repo root)");
+        let repo_root = crate::workspace_root::workspace_root();
 
         // Walker-health guard FIRST, mirroring the two-part check in
         // `tests/ignore_reason_hygiene.rs`: a walk that silently breaks (a

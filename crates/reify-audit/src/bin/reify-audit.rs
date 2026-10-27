@@ -71,7 +71,8 @@ use reify_audit::{
     jcodemunch_index,
     jcodemunch_seam::{Seam, SeamUnavailable},
     p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, pprdstatus, ptodo,
+    puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -773,6 +774,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check),                  jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PLINECITE,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(plinecite::check),                jcodemunch: JcodemunchUse::Never },
 ];
 
 /// What one detector run produced.
@@ -2273,6 +2275,43 @@ mod tests {
                 "--pattern {pattern:?} must not refuse an empty task corpus"
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // PLINECITE (task #6935) — hard line cites in source comments
+    // -------------------------------------------------------------------
+
+    /// PLINECITE is OPT-IN although it cannot move the exit code (Medium
+    /// only): new cites accrue weekly, so a pattern-less sweep would turn
+    /// every bare run into follow-up traffic.
+    #[test]
+    fn plinecite_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PLINECITE, None),
+            "PLINECITE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PLINECITE, Some("PLINECITE")),
+            "PLINECITE must activate when --pattern PLINECITE is given"
+        );
+        assert!(
+            !selects(pattern_flag::PLINECITE, Some("P2")),
+            "PLINECITE must be excluded when a named non-PLINECITE pattern is given"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_plinecite_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PLINECITE"))),
+            "PLINECITE reads the tracked tree only; it must not open a jcodemunch \
+             connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PLINECITE"))),
+            "a PLINECITE-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
     }
 
     // -------------------------------------------------------------------

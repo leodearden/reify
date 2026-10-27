@@ -1899,9 +1899,9 @@ mod tests {
         // The profile handle resolves to a Box (a solid primitive, not a 2-D
         // profile op) → the sampler rejects it.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
-            width: Value::length(0.04),
-            height: Value::length(0.02),
-            depth: Value::length(0.03),
+            size_x: Value::length(0.04),
+            size_y: Value::length(0.02),
+            size_z: Value::length(0.03),
         });
         assert_eq!(
             swept_kind_to_profile_boundary(&kind, &ops, &handles).err(),
@@ -2377,9 +2377,9 @@ mod tests {
         // Profile handle resolves to a Box (non-profile op) → producer
         // Err(NotAProfileOp) → Err(ProfileUnresolvable), before any Gmsh call.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::Box {
-            width: Value::length(0.04),
-            height: Value::length(0.02),
-            depth: Value::length(0.03),
+            size_x: Value::length(0.04),
+            size_y: Value::length(0.02),
+            size_z: Value::length(0.03),
         });
         let result = build_fixture_mesh(&kind, &ops, &handles);
         assert!(

@@ -32,9 +32,9 @@ fn make_sub_ref_module(result_ops: Vec<CompiledGeometryOp>) -> reify_compiler::C
     let body_ops = vec![CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(20.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(20.0)),
+            ("size_x".into(), mm_lit(20.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(20.0)),
         ],
     }];
 
@@ -90,7 +90,7 @@ fn sketch_with_multiple_named_sub_refs_resolves_correctly() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) No "not yet implemented" warning should appear.
@@ -187,7 +187,7 @@ fn sketch_with_unknown_sub_ref_returns_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Must have exactly one Error containing the unresolvable message.

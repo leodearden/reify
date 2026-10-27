@@ -27,6 +27,8 @@ mod let_scope_tests;
 mod let_type_disambiguation_tests;
 #[path = "harness_langcore/member_continuation_hard_error_tests.rs"]
 mod member_continuation_hard_error_tests;
+#[path = "harness_langcore/overload_resolution_compile_eval_parity.rs"]
+mod overload_resolution_compile_eval_parity;
 #[path = "harness_langcore/parametric_alias_def_site_validation_tests.rs"]
 mod parametric_alias_def_site_validation_tests;
 #[path = "harness_langcore/parametric_field_resolution_tests.rs"]

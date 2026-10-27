@@ -1,0 +1,16 @@
+// /prd S27 tooling-front-end evidence: one declaration of each named kind
+// that hover does not render today (field def, purpose, constraint def, joint).
+module tooling_fe_hover_decl_kinds
+
+field def heat : Real -> Real { source = analytical { |x| 300.0 + 50.0 * x } }
+
+purpose lightweight(subject : Structure) { minimize subject.mass }
+
+constraint def Positive {
+    param x : Real
+    x > 0
+}
+
+joint pin_joint(c: Point3<Length>, d: Point3<Length>)
+    with orientation: Orientation
+    = coincident(c, d)

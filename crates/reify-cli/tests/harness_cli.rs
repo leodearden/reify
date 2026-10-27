@@ -103,6 +103,8 @@ mod cli_eval_fallback_recovery;
 mod cli_eval_generic_enum;
 #[path = "harness_cli/cli_eval_geometry.rs"]
 mod cli_eval_geometry;
+#[path = "harness_cli/cli_eval_registry_determinism.rs"]
+mod cli_eval_registry_determinism;
 #[path = "harness_cli/cli_eval_result_fallback.rs"]
 mod cli_eval_result_fallback;
 #[path = "harness_cli/cli_eval_result_match.rs"]
@@ -145,6 +147,8 @@ mod cli_module_decl_remedy;
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
 mod cli_objective_inheritance_golden;
+#[path = "harness_cli/cli_one_sided_auto.rs"]
+mod cli_one_sided_auto;
 #[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
 mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]

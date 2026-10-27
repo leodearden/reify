@@ -34,7 +34,8 @@
 #                       (default: <mount>/worktrees/_merge-verify)
 #   --build-cmd CMD     Cold-build command run inside <merge-verify>
 #                       (env: REIFY_SEED_BUILD_CMD; default: cargo build --release)
-#   --landed-commit SHA Assert advancing HEAD == SHA (passed to refresh-warm-base.sh
+#   --landed-commit SHA Assert advancing HEAD == SHA AND that SHA has landed (is an
+#                       ancestor of refs/heads/main) (passed to refresh-warm-base.sh
 #                       inv.9 provenance guard; default: HEAD of the --merge-verify
 #                       worktree (git -C <merge-verify> rev-parse HEAD))
 #   --rustflags VALUE   RUSTFLAGS stamp for the base (default: ${RUSTFLAGS:-})
@@ -49,7 +50,7 @@
 #   - provision-warm-lane-fs.sh (R2): XFS mount at <mount> with reflink support.
 #   - relocate-worktrees-to-warm-lane.sh (R3): worktrees on XFS.
 #   - _merge-verify worktree must be a clean git worktree (no uncommitted tracked
-#     changes) at the intended landed HEAD.
+#     changes) at a commit already on refs/heads/main.
 
 set -euo pipefail
 
@@ -102,7 +103,8 @@ Usage: $(basename "$0") [OPTIONS]
     --merge-verify DIR  _merge-verify worktree (default: <mount>/worktrees/_merge-verify)
     --build-cmd CMD     Build command run inside <merge-verify>
                         (env: REIFY_SEED_BUILD_CMD; default: cargo build --release)
-    --landed-commit SHA Assert advancing HEAD == SHA
+    --landed-commit SHA Assert advancing HEAD == SHA AND that SHA has landed
+                        (is an ancestor of refs/heads/main)
                         (default: HEAD of the --merge-verify worktree:
                          git -C <merge-verify> rev-parse HEAD)
     --rustflags VALUE   RUSTFLAGS stamp (default: \${RUSTFLAGS:-})
@@ -115,7 +117,7 @@ Usage: $(basename "$0") [OPTIONS]
   Prerequisites:
     - XFS mount at <mount> with reflink support (provision-warm-lane-fs.sh)
     - _merge-verify worktree on XFS (relocate-worktrees-to-warm-lane.sh)
-    - _merge-verify must be a clean git worktree at the intended landed HEAD
+    - _merge-verify must be a clean git worktree at a commit already on refs/heads/main
 EOF
 }
 

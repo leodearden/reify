@@ -1,0 +1,13 @@
+module auto_reach_conn_let_unpinned_root
+trait Signal {}
+
+structure ConnLet2 {
+    param base : Length = auto
+    let gain : Length = self.base * 2.0
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnLet2 { gain = auto }
+}

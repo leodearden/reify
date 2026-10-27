@@ -75,7 +75,7 @@ describe('parseInboundMessage', () => {
     expect(() => parseInboundMessage(line)).toThrow(/text/i);
   });
 
-  it('correctly parses tool_result inbound message', () => {
+  it('rejects tool_result as an unknown inbound type (the host never sends one)', () => {
     const line = JSON.stringify({
       type: 'tool_result',
       id: 'msg-1',
@@ -83,56 +83,7 @@ describe('parseInboundMessage', () => {
       tool_name: 'reify_get_diagnostics',
       result: { ok: true },
     });
-    const msg = parseInboundMessage(line);
-    expect(msg).toEqual({
-      type: 'tool_result',
-      id: 'msg-1',
-      tool_use_id: 'toolu_x',
-      tool_name: 'reify_get_diagnostics',
-      result: { ok: true },
-    });
-  });
-
-  it('throws on tool_result missing id field', () => {
-    const line = JSON.stringify({ type: 'tool_result', tool_name: 'reify_get_diagnostics', result: {} });
-    expect(() => parseInboundMessage(line)).toThrow(/id/i);
-  });
-
-  it('throws on tool_result with empty id', () => {
-    const line = JSON.stringify({ type: 'tool_result', id: '', tool_name: 'reify_get_diagnostics', result: {} });
-    expect(() => parseInboundMessage(line)).toThrow(/id/i);
-  });
-
-  it('throws on tool_result missing tool_name field', () => {
-    const line = JSON.stringify({ type: 'tool_result', id: 'msg-1', result: {} });
-    expect(() => parseInboundMessage(line)).toThrow(/tool_name/i);
-  });
-
-  it('throws on tool_result missing result field', () => {
-    const line = JSON.stringify({ type: 'tool_result', id: 'msg-1', tool_name: 'reify_get_diagnostics' });
-    expect(() => parseInboundMessage(line)).toThrow(/result/i);
-  });
-
-  it('throws on tool_result missing tool_use_id field', () => {
-    const line = JSON.stringify({
-      type: 'tool_result',
-      id: 'msg-1',
-      tool_name: 'reify_get_diagnostics',
-      result: { ok: true },
-      // tool_use_id intentionally omitted
-    });
-    expect(() => parseInboundMessage(line)).toThrow(/tool_use_id/i);
-  });
-
-  it('throws on tool_result with empty tool_use_id', () => {
-    const line = JSON.stringify({
-      type: 'tool_result',
-      id: 'msg-1',
-      tool_use_id: '',
-      tool_name: 'reify_get_diagnostics',
-      result: { ok: true },
-    });
-    expect(() => parseInboundMessage(line)).toThrow(/tool_use_id/i);
+    expect(() => parseInboundMessage(line)).toThrow(/Unknown inbound message type: tool_result/);
   });
 });
 

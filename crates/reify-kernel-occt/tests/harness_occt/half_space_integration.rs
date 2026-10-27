@@ -112,9 +112,9 @@ fn half_space_intersection_with_box_has_half_volume() {
     // Build the box: 2a × 2a × 2a, centered at origin → [-a,a]^3
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(2.0 * a),
-            height: Value::Real(2.0 * a),
-            depth: Value::Real(2.0 * a),
+            size_x: Value::Real(2.0 * a),
+            size_y: Value::Real(2.0 * a),
+            size_z: Value::Real(2.0 * a),
         })
         .expect("box should build");
 

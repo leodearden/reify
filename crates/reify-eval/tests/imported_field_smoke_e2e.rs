@@ -157,7 +157,7 @@ field def prov_test : Point3 -> Length {{
 
     // Eval on a fresh Engine.
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let _ = engine.eval(&compiled);
 
     // Provenance must be recorded.
@@ -253,7 +253,7 @@ field def smoke_sdf : Point3 -> Length {{
     );
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No runtime errors.
@@ -387,7 +387,7 @@ field def malformed : Point3 -> Length {{
     );
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Field lambda must be Undef (graceful failure, not a panic).
@@ -476,7 +476,7 @@ field def wrong_grid : Point3 -> Length {{
     );
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Field lambda must be Undef.

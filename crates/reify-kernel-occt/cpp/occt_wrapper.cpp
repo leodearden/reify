@@ -273,7 +273,7 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
 
 /// Canonical display name for a `TopAbs_ShapeEnum` ("Solid", "Face", …, or
 /// "Shape" for the abstract fallback). Single source for both the
-/// `shape_type_name` FFI entry point and error messages built in this file.
+/// `body_type_name` FFI entry point and error messages built in this file.
 static const char* topabs_name(TopAbs_ShapeEnum type) {
     switch (type) {
         case TopAbs_COMPOUND:  return "Compound";
@@ -635,10 +635,10 @@ static gp_Vec face_outward_unit_normal(const TopoDS_Face& face, const char* who)
 
 // --- Primitive construction ---
 
-std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
+std::unique_ptr<OcctShape> make_box(double size_x, double size_y, double size_z) {
     return wrap_occt_call("make_box", [&]() {
-        gp_Pnt corner(-width / 2.0, -height / 2.0, -depth / 2.0);
-        BRepPrimAPI_MakeBox maker(corner, width, height, depth);
+        gp_Pnt corner(-size_x / 2.0, -size_y / 2.0, -size_z / 2.0);
+        BRepPrimAPI_MakeBox maker(corner, size_x, size_y, size_z);
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeBox failed");
@@ -1313,17 +1313,15 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
     });
 }
 
-// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
-// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-// "Vertex", or "Shape" for the abstract fallback).  Lets the Rust side stamp
-// the correct BRepKind on a fuse/pattern result instead of assuming Solid: a
-// single-pass fuse yields a SOLID (overlapping inputs), a COMPSOLID (disjoint
-// inputs, rewrapped by fuse_shape_list), or — in the 1-element identity path —
-// the sole input shape unchanged, which may be any kind (task 5213 amendment).
-rust::String shape_type_name(const OcctShape& shape) {
-    return wrap_occt_call("shape_type_name", [&]() -> rust::String {
-        // Delegates to topabs_name so the enum -> name table exists once.
-        return rust::String(topabs_name(shape.shape.ShapeType()));
+// The TopAbs name of `shape`'s BODY type: the top-level type after
+// unwrap_boolean_compound's single-body rule, so OCCT's 1-solid COMPOUND
+// wrappers (fillet, chamfer, draft, thicken) name "Solid".
+rust::String body_type_name(const OcctShape& shape) {
+    return wrap_occt_call("body_type_name", [&]() -> rust::String {
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("cannot name the body type of a null shape");
+        }
+        return rust::String(topabs_name(unwrap_boolean_compound(shape.shape).ShapeType()));
     });
 }
 
@@ -2654,10 +2652,10 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
             // A present-but-empty selection must never silently fall through to
             // the all-edges behaviour (the anti-zero-edges contract is enforced
             // in eval; this is defense-in-depth for direct kernel callers). The
-            // all-edges path is `fillet_all_edges`, not this function.
+            // all-edges path is `make_fillet_with_history`, not this function.
             throw std::runtime_error(
                 "make_fillet_edges_with_history: edge_indices must be non-empty "
-                "(the all-edges path uses fillet_all_edges)");
+                "(the all-edges path uses make_fillet_with_history)");
         }
         return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
             // Build the canonical 1-based edge map. TopExp::MapShapes is
@@ -2721,10 +2719,10 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
             // A present-but-empty selection must never silently fall through to
             // the all-edges behaviour (the anti-zero-edges contract is enforced
             // in eval; this is defense-in-depth for direct kernel callers). The
-            // all-edges path is `chamfer_all_edges`, not this function.
+            // all-edges path is `make_chamfer_with_history`, not this function.
             throw std::runtime_error(
                 "make_chamfer_edges_with_history: edge_indices must be non-empty "
-                "(the all-edges path uses chamfer_all_edges)");
+                "(the all-edges path uses make_chamfer_with_history)");
         }
         return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
             // Build the canonical 1-based edge map. TopExp::MapShapes is
@@ -2855,40 +2853,6 @@ rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHi
 }
 uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history) {
     return history.silent_drop_count;
-}
-
-// --- Modifications ---
-
-std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius) {
-    return wrap_occt_call("fillet_all_edges", [&]() {
-        BRepFilletAPI_MakeFillet fillet(shape.shape);
-        for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
-            fillet.Add(radius, TopoDS::Edge(ex.Current()));
-        }
-        fillet.Build();
-        if (!fillet.IsDone()) {
-            throw std::runtime_error("BRepFilletAPI_MakeFillet failed");
-        }
-        auto result = std::make_unique<OcctShape>();
-        result->shape = fillet.Shape();
-        return result;
-    });
-}
-
-std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance) {
-    return wrap_occt_call("chamfer_all_edges", [&]() {
-        BRepFilletAPI_MakeChamfer chamfer(shape.shape);
-        for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
-            chamfer.Add(distance, TopoDS::Edge(ex.Current()));
-        }
-        chamfer.Build();
-        if (!chamfer.IsDone()) {
-            throw std::runtime_error("BRepFilletAPI_MakeChamfer failed");
-        }
-        auto result = std::make_unique<OcctShape>();
-        result->shape = chamfer.Shape();
-        return result;
-    });
 }
 
 // --- Transforms ---

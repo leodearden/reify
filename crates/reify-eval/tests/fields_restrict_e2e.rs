@@ -69,7 +69,7 @@ fn engine_containment_query_impl_dispatches_correctly() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Obtain the `solid` GeometryHandle from the built value map.
@@ -161,7 +161,7 @@ fn restrict_field_b5_integration() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Helper: look up a value cell.
@@ -208,7 +208,7 @@ fn restrict_field_b5_integration() {
 fn engine_containment_query_no_kernel_short_circuits() {
     // Build an Engine with NO geometry planner / kernel so that
     // `default_query_kernel()` always returns `None`.
-    let engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
     // A fake GeometryHandle — the kernel_handle value is irrelevant because
     // the kernel is never reached (no kernel registered).

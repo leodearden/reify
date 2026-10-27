@@ -515,7 +515,7 @@ mod tests {
             .map(|cell| CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![(
-                    "width".to_string(),
+                    "size_x".to_string(),
                     CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
                 )],
             })
@@ -725,14 +725,14 @@ mod tests {
                 CompiledGeometryOp::Primitive {
                     kind: PrimitiveKind::Box,
                     args: vec![(
-                        "width".to_string(),
+                        "size_x".to_string(),
                         CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
                     )],
                 },
                 CompiledGeometryOp::Primitive {
                     kind: PrimitiveKind::Box,
                     args: vec![(
-                        "width".to_string(),
+                        "size_x".to_string(),
                         CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
                     )],
                 },

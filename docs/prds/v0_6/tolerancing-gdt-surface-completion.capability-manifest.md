@@ -1,6 +1,6 @@
 # Capability manifest — `tolerancing-gdt-surface-completion`
 
-Mechanizes G3 + G6 per leaf for the PRD `docs/prds/v0_6/tolerancing-gdt-surface-completion.md`.
+**AS-AUTHORED GATE ARTIFACT (2026-06-03) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (α #4265, β #4266, γ #4267, δ #3116, ε #4268) — see the parent PRD's SHIPPED header (`docs/prds/v0_6/tolerancing-gdt-surface-completion.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-06-03 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 + G6 per leaf for the PRD `docs/prds/v0_6/tolerancing-gdt-surface-completion.md`.
 Each row binds a leaf's asserted capability to on-disk evidence. **Any FAIL binding blocks the
 batch from being queued.** Evidence forms per the reify `/prd` overlay (anti-orphan/wired,
 field-population, grammar-fixture, numeric-floor).
