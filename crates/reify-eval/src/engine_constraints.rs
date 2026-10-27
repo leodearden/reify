@@ -1717,24 +1717,21 @@ impl Engine {
         (constraint_results, diagnostics, dfm_build_diagnostics)
     }
 
-    /// Realize the subject SDF **once** and run both min-wall-thickness and
-    /// min-feature-size extraction on the single [`reify_ir::SampledField`].
+    /// Realize the subject's field **once** and run both
+    /// [`reify_shell_extract::min_wall_thickness`] and
+    /// [`reify_shell_extract::min_feature_size_measure`] on that one
+    /// [`reify_ir::SampledField`] at one resolution floor `h`, so each
+    /// thickness spec costs one voxelization.
     ///
-    /// Avoids the double-voxelization that calling [`measure_min_wall`] and
-    /// [`measure_min_feature`] sequentially would incur — each internally calls
-    /// `realize_solid_sdf`, which runs the full
-    /// BRep → tessellate → ingest_mesh → densify_grid pipeline on every invocation.
-    /// With N thickness specs in `measure_dfm_rules` this pair helper halves
-    /// voxelization cost compared to two independent calls per spec.
-    ///
-    /// The voxel-spacing floor `h` is derived once from the realized grid and
-    /// shared between both extraction calls — they see the same field and the
-    /// same resolution floor.
+    /// `h` is the smallest of the field's three axis spacings. A field that
+    /// does not carry exactly three spacings is structurally invalid, so both
+    /// slots are `None` and neither extractor runs.
     ///
     /// # D5 invariant
     ///
     /// Every degradation path (`realize_solid_sdf` → `None`, OpenVDB kernel
-    /// absent, extraction `Err`) maps the corresponding slot to `None`.
+    /// absent, a field without exactly three spacings, extraction `Err`) maps
+    /// the corresponding slot to `None`.
     /// Callers map `None` / `BelowResolution` / `NoMeasurement` →
     /// `Value::Undef` (Indeterminate) — never a fabricated number or false
     /// Violated verdict.
@@ -1750,11 +1747,11 @@ impl Engine {
             return (None, None);
         };
 
-        // Derive h from the realized grid's own spacing.
-        // Uses the safe `iter().fold` form: returns f64::INFINITY on an empty
-        // spacing vec, which makes both extraction functions report BelowResolution
-        // (Indeterminate) rather than panicking — still preserves the D5 invariant.
-        let h = sdf.spacing.iter().copied().fold(f64::INFINITY, f64::min);
+        // A Regular3D field has exactly three axis spacings; any other length is invalid.
+        let &[sx, sy, sz] = sdf.spacing.as_slice() else {
+            return (None, None);
+        };
+        let h = sx.min(sy).min(sz);
 
         let wall = reify_shell_extract::min_wall_thickness(&sdf, h).ok();
         let feat = reify_shell_extract::min_feature_size_measure(&sdf, h).ok();
