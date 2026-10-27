@@ -1626,7 +1626,8 @@ For the full-precision `a` (#7462), add `--verbose`: stdout gains one line per m
 occurrence, `  <occurrence>: sampled facet deviation: <X> m`, with `<X>` the shortest
 round-trip f64. The validity line above still gates the probe — the readout does not
 replace it as the guard against §0 Caveat 2's `OK` trap — and the colon after `deviation`
-keeps the readout out of the ladder loop's `deviation [0-9.e+-]+ m` grep.
+keeps the readout out of the ladder loop's `deviation [0-9.e+-]+ m` grep. `check`
+refuses `--verbose` together with `--purpose`: that path measures no deviation.
 
 **A `d` ladder** (the `module` declaration must match the file's basename, so rewrite in
 place under a same-named temp file — a bare `sed > /tmp/x.ri` fails with

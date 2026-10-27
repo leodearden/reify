@@ -725,3 +725,42 @@ fn check_verbose_readout_agrees_with_the_violation_diagnostic() {
          stdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// The `--purpose` path never measures a deviation, so `--verbose` there could
+/// only print nothing; `check` refuses the pair, in either flag order, before
+/// it reads the file.
+#[test]
+fn check_refuses_verbose_with_purpose() {
+    let path = common::example_path("representation_within.ri");
+    for args in [
+        [
+            "check",
+            "--verbose",
+            "--purpose",
+            "p=CurvedBall",
+            path.as_str(),
+        ],
+        [
+            "check",
+            "--purpose",
+            "p=CurvedBall",
+            "--verbose",
+            path.as_str(),
+        ],
+    ] {
+        let (status, stdout, stderr) = common::run_with_args(&args);
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "{args:?} must be refused.\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("Error: --verbose cannot be combined with --purpose"),
+            "{args:?} must name the conflicting flags.\nstderr: {stderr}"
+        );
+        assert_eq!(
+            stdout, "",
+            "{args:?}: a refused check prints nothing to stdout"
+        );
+    }
+}

@@ -456,9 +456,7 @@ pub fn eval_representation_within(
                 } else {
                     ""
                 };
-                // This `.3e` text is byte-stable by contract (fixture headers and
-                // the calibration note grep it). The full-precision value is
-                // `Engine::achieved_repr_tol_by_occurrence`, i.e. `reify check --verbose`.
+                // Full precision: `reify check --verbose` (docs/notes/precision-refine-envelope-calibration.md §4).
                 let diag = Diagnostic::error(format!(
                     "RepresentationWithin: sampled facet deviation {achieved:.3e} m \
                      exceeds bound {eff:.3e} m{floor_note} for {}",

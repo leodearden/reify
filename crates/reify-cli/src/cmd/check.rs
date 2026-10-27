@@ -20,7 +20,9 @@ use crate::parse_and_compile_with_cfg;
 /// `reify check <file>` — lightweight static constraint checker.
 ///
 /// `--verbose` adds a full-precision achieved-deviation readout to stdout
-/// ([`report_achieved_deviations`]) and changes nothing else.
+/// ([`report_achieved_deviations`]) and changes nothing else. It is refused
+/// with `--purpose`: that path never measures a deviation, so it would print
+/// nothing.
 ///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
@@ -114,6 +116,14 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
                 i += 1;
             }
         }
+    }
+
+    if verbose && !purpose_values.is_empty() {
+        eprintln!(
+            "Error: --verbose cannot be combined with --purpose (the --purpose path measures no achieved deviation)"
+        );
+        eprintln!("{}", CHECK_USAGE);
+        return ExitCode::FAILURE;
     }
 
     let file = match file {
@@ -223,7 +233,16 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // `tessellate_realizations` side effect). Consumed by
         // `merge_post_build_verdicts` after the authoritative `check()`.
         let mut build_result: Option<reify_eval::BuildResult> = None;
-        let (result, engine) = if has_geometric_conforms
+        // Copied out so the engine — and any live B-rep state — drops with its arm.
+        let take_deviation_readout = |engine: &reify_eval::Engine| -> Option<Vec<(String, f64)>> {
+            verbose.then(|| {
+                engine
+                    .achieved_repr_tol_by_occurrence()
+                    .map(|(occurrence, deviation)| (occurrence.to_owned(), deviation))
+                    .collect()
+            })
+        };
+        let (result, deviation_readout) = if has_geometric_conforms
             || has_representation_within
             || has_dfm_rule
             || has_geometry
@@ -314,11 +333,13 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
             // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
             // reads the map its side effect populated.
-            (engine.check(&compiled), engine)
+            let result = engine.check(&compiled);
+            (result, take_deviation_readout(&engine))
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
             let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-            (engine.check(&compiled), engine)
+            let result = engine.check(&compiled);
+            (result, take_deviation_readout(&engine))
         };
 
         let mut result = result;
@@ -356,11 +377,8 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stdout(),
             &mut std::io::stderr(),
         );
-        if verbose {
-            report_achieved_deviations(
-                engine.achieved_repr_tol_by_occurrence(),
-                &mut std::io::stdout(),
-            );
+        if let Some(readout) = deviation_readout {
+            report_achieved_deviations(readout, &mut std::io::stdout());
         }
 
         let exit = finish_check(
@@ -593,12 +611,6 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stdout(),
             &mut std::io::stderr(),
         );
-        if verbose {
-            report_achieved_deviations(
-                engine.achieved_repr_tol_by_occurrence(),
-                &mut std::io::stdout(),
-            );
-        }
 
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure

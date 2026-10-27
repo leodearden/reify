@@ -202,22 +202,16 @@ pub(crate) fn report_eval_output(
     outcome
 }
 
-/// Write one `  {occurrence}: sampled facet deviation: {deviation} m` line per
-/// measured occurrence, in input order (`reify check --verbose`).
-///
-/// The number is bare `{:e}`, Rust's shortest round-trip form, so it parses
-/// back to exactly the f64 that was measured — unlike the Violated
-/// diagnostic's 4-significant-figure `.3e`.
-///
-/// The colon after `deviation` is deliberate: it keeps these lines from
-/// matching the diagnostic-datum greps (`sampled facet deviation <X> m exceeds
-/// bound`, `deviation [0-9.e+-]+ m`), so adding `--verbose` to an existing
-/// calibration harness cannot double-count a measurement.
-pub(crate) fn report_achieved_deviations<'a>(
-    deviations: impl IntoIterator<Item = (&'a str, f64)>,
+/// Write one `  {occurrence}: sampled facet deviation: {deviation:e} m` line per
+/// measured occurrence, in input order (`reify check --verbose`); `{:e}`
+/// round-trips the f64 exactly. Line grammar rationale:
+/// docs/notes/precision-refine-envelope-calibration.md §4.
+pub(crate) fn report_achieved_deviations<S: AsRef<str>>(
+    deviations: impl IntoIterator<Item = (S, f64)>,
     out: &mut impl std::io::Write,
 ) {
     for (occurrence, deviation) in deviations {
+        let occurrence = occurrence.as_ref();
         let _ = writeln!(
             out,
             "  {occurrence}: sampled facet deviation: {deviation:e} m"
