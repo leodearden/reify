@@ -118,12 +118,12 @@ Route each finding by its `severity` field immediately after parsing the CLI's J
 | Severity | Action | Tool |
 |---|---|---|
 | **High** | Escalate (advisory, non-blocking) | `mcp__escalation__escalate_info` |
-| **Medium** | File a deferred follow-up task | `mcp__fused-memory__submit_task(planning_mode=True)` |
+| **Medium** | File a deferred follow-up task, then re-stamp it as a human-owned hold | `mcp__fused-memory__submit_task(planning_mode=True)`, then `mcp__fused-memory__commit_planning(target_status='deferred', deferral={'kind': 'until_condition', 'condition': 'awaiting human triage of an audit proposal'})` (check the response echoes `deferral`; release = `set_task_status(status='pending')`) |
 | **Low** | Log into per-run JSON only | _(no side effects)_ |
 
-The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage. See `references/severity-routing.md` for dedupe contract, per-pattern task-title templates, and the do-not-flip-status invariant.
+The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage; a human releases a triaged proposal with `set_task_status(status='pending')` (`commit_planning` refuses a non-planning hold). See `references/severity-routing.md` for dedupe contract, per-pattern task-title templates, and the do-not-flip-status invariant.
 
-**PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
+**PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task, re-stamped as an `until_condition` hold exactly as for any Medium finding (`references/severity-routing.md` §1). The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
 
 **Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PCITE / PPRDSTATUS / PLINECITE):** route each finding by its own `severity` field, like every other pattern, with two exceptions, the batched patterns: PDOCCOVER's findings and PPRDSTATUS's findings each go out as **one batched escalation per run**, not one per finding. PPRDSTATUS's is filed by running `scripts/pprdstatus-escalate.py`, never by a hand-built `escalate_info`, and it files no follow-up tasks (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
 

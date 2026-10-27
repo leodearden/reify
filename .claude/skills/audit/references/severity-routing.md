@@ -32,7 +32,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | Severity | Action | Tool | Parameters |
 |----------|--------|------|------------|
 | **High** | Escalate (advisory, non-blocking) | `mcp__escalation__escalate_info` | `task_id=<subject>` (see below), `agent_role="audit"`, `category="risk_identified"`, `summary="[<finding.pattern>] <finding.task_id>: <finding.summary>"`, `detail=<json of finding.evidence>`, `terminal_state_is_the_bug=True` |
-| **Medium** | File deferred follow-up task (with dedupe) | `mcp__fused-memory__submit_task` | `planning_mode=True` (synchronous, curator-bypassing); see §2 for title template and metadata |
+| **Medium** | File deferred follow-up task (with dedupe) | `mcp__fused-memory__submit_task` | `planning_mode=True` (synchronous, curator-bypassing), then re-stamp via `commit_planning(..., target_status='deferred', deferral={'kind': 'until_condition', ...})` (see "Medium severity" below); see §2 for title template and metadata |
 | **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **`P1TaskUnexamined`, `P5LivePathUnexamined`, `PDeadCodeUnexamined`, `PUntestedUnexamined` and `PLayerViolationUnexamined` are always Low** too, and likewise never filed or escalated (§2 unexamined-task and corpus-level unexamined notes). **PTODO findings are severity-split by kind (task η, #4559):** a High kind escalates and every other kind files a task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See §2 for PTODO title template and per-kind routing. |
 
 ### High severity — escalation details
@@ -85,6 +85,22 @@ mcp__fused-memory__submit_task(
 (Note: `planning_mode=True` implies `deferred` status — the tool flips to `deferred` automatically. Do NOT add an explicit `status=` kwarg. See the `submit_task` docstring in `fused-memory/src/fused_memory/server/tools.py`.)
 
 `planning_mode=True` is **synchronous** (curator-bypassing) and returns `task_id` directly — no `resolve_ticket` round trip. This is the same pattern used by `/prd` decompose mode (see `.claude/skills/prd/references/decompose-mode.md` Step 3); the contract is captured in fused-memory entity `feedback_planning_mode_scope`. Tasks are filed as `deferred` (not `pending`), awaiting human triage. The skill does **not** call `set_task_status` to flip them to `pending`.
+
+**Re-stamp as a human-owned hold (every Medium filing, including PTODO non-High kinds).** fused-memory stamps each `planning_mode=True` birth with `metadata.deferral {kind: 'planning'}`, and a `planning` hold older than 24 h reads as a stale planning batch on the dashboard and in the census. A proposal awaiting triage is not a planning batch, so right after the submit returns its `task_id`, re-stamp it:
+
+```python
+mcp__fused-memory__commit_planning(
+    project_root="/home/leo/src/reify",
+    task_ids="<task_id>",
+    target_status="deferred",
+    deferral={"kind": "until_condition",
+              "condition": "awaiting human triage of an audit proposal"},
+)
+```
+
+**Echo check.** Confirm the response echoes `deferral`. If it does not, fused-memory predates the deferral-records change: leave the proposal as submitted and say so in the audit report. Do not retry.
+
+**Release.** A human releases a triaged proposal with `set_task_status(status='pending')`. `commit_planning` now refuses a non-planning hold, so it cannot release an `until_condition` proposal. Proposals filed before this change are re-stamped by dark_factory's gate ζ; do not touch them from this skill.
 
 ---
 
@@ -199,13 +215,13 @@ The `index.json` file is **append-only within a run** (entries from prior runs a
 ## §4 Do-not-flip-status invariant
 
 The `/audit` skill **never** calls:
-- `set_task_status` on any task (not the offending task, not the filed follow-up)
+- `set_task_status` on any task (not the offending task, not the filed follow-up; releasing a proposal to `pending` is the human's call)
 - `mcp__fused-memory__update_task` to alter the offending task's status
 - Any operation that transitions a `done` task to `deferred`, `pending`, or `blocked`
 
 The skill is **advisory** in periodic-sweep context:
 - **High** findings raise an escalation alert. A human (Leo) decides whether to act.
-- **Medium** findings file a new `deferred` task for triage. The new task is a proposal, not an instruction.
+- **Medium** findings file a new `deferred` task for triage, re-stamped as an `until_condition` hold (§1). The new task is a proposal, not an instruction.
 - **Low** findings are logged only — no follow-up at all.
 
 State-blocking is exclusively D-1 hook territory (non-zero exit from `--pre-done` prevents the orchestrator from marking the task done). Outside the hook context, the skill observes and reports; it does not mutate.
