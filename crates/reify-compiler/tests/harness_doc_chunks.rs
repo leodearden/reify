@@ -61,6 +61,8 @@
 //!   arity gate rejects.
 //! - `call_arity_gate` (#7232) — every call form any chunk writes passes the
 //!   compiler's arity gate.
+//! - `fence_builtin_shadowing_gate` (#7382) — no chunk fence declares a `fn`
+//!   under a name a compiler builtin already owns.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
@@ -84,6 +86,8 @@ mod chunk_prose;
 mod doc_forms;
 #[path = "harness_doc_chunks/enums_chunk_option_smoke.rs"]
 mod enums_chunk_option_smoke;
+#[path = "harness_doc_chunks/fence_builtin_shadowing_gate.rs"]
+mod fence_builtin_shadowing_gate;
 #[path = "harness_doc_chunks/fence_gate.rs"]
 mod fence_gate;
 #[path = "harness_doc_chunks/functions_chunk_overloading_smoke.rs"]
