@@ -75,13 +75,15 @@ a drift surface.  The invariant is enforced at test time (see below).
 > The smoke first requires `demand_dispatch.full_scope === false`, because under
 > full scope `build_gui_state` and `build_gui_state_full_scene` agree by
 > construction, so the parity would be trivially true and prove nothing.
-> It runs two fixtures from `gui/test/fixtures/`: `large_assembly.ri` (aux-free,
-> 7 rendered) and `aux_assembly.ri` (aux-bearing, 3 rendered + 4 hidden). The
+> It runs every fixture listed in `gui/test/visual/meshCountParityFixtures.json`,
+> an aux-free one (`large_assembly.ri`) and an aux-bearing one (`aux_assembly.ri`),
+> each with floors on its rendered and hidden counts. The
 > `default_visible == false` counts are floor-gated per fixture, never compared,
 > because `viewport_state.meshCount` counts only `show`-state meshes
 > (`meshManager.getSceneMeshes()`) and so cannot see hidden bodies; the hidden
 > floor keeps the aux fixture non-vacuous (aux bodies vanishing from the reads
-> fails) and pins the 6752 flag end to end. Each fixture's exact composition is
+> fails) and pins the 6752 flag end to end. Each fixture's exact composition (which
+> binding of which entity renders) and its floors' agreement with it are
 > CI-pinned by `gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs`.
 > The remaining legitimate breakers of the equality are frontend state: user eye
 > toggles (ghost/hide), the selected view, and DisplayOutput routing that shows a

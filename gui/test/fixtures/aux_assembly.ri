@@ -15,9 +15,7 @@ module aux_assembly
 // geometries and the spacer) + 4 hidden (default_visible false: the 2 aux
 // lets of each capstan).
 //
-// MUST carry NO DisplayOutput: autoViewGenerator rule -1 shows a named
-// subject even when it is hidden by default, which would legitimately make
-// viewport_state.meshCount exceed the default_visible == true count.
+// MUST carry NO DisplayOutput (docs/debug-mcp-contract.md, "Full realized scene").
 
 structure def Capstan : Physical {
     aux let drum_blank = cylinder(10mm, 30mm)

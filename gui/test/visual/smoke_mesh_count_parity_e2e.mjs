@@ -7,18 +7,11 @@
  * gui/test/visual/run.ts). Its ONLY assertion is the numeric one below, taken
  * across three layers that a headless test cannot reach at once.
  *
- * Follow-up from task 5348, which routed `engine_state` and `mesh_stats` through
- * `build_gui_state_full_scene` so both report the whole realized scene rather
- * than only the currently-demanded subset. That scene includes hidden-by-default
- * (aux, consumed-intermediate) realizations the viewport never draws, so each
- * read is partitioned by its per-mesh `default_visible` (task 6752) and this
- * smoke ENFORCES, end-to-end (task 6498):
- *
- *   viewport_state.meshCount === count(mesh_stats.meshes,   default_visible === true)
- *                            === count(engine_state.meshes, default_visible === true)
- *
- * and, per fixture, a floor on each read's `default_visible === false` count, so
- * an aux-bearing fixture whose hidden bodies vanished from the reads cannot pass.
+ * It enforces, end to end, the invariant `./meshCountParity.mjs` decides
+ * (tasks 5367, 6498): the viewport's mesh count equals each debug read's
+ * `default_visible === true` count, and each read's hidden count clears its
+ * per-fixture floor. Rationale and the legitimate breakers:
+ * `docs/debug-mcp-contract.md`, "Full realized scene".
  *
  * LIVE-ONLY — NOT verify/CI-gated. Requires a running reify-gui launched with
  * REIFY_DEBUG=1 (real webview + OCCT). The deterministic CI backstops are:
@@ -27,7 +20,8 @@
  *     pure data.
  *   * gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs — the exact
  *     rendered/hidden composition of every FIXTURES row, through the same two
- *     debug projections this smoke reads.
+ *     debug projections this smoke reads, and that each row's floors are those
+ *     counts.
  * Everything below is thin glue around that already-covered logic.
  *
  * Usage:
@@ -44,22 +38,19 @@
  * scope flag. Opening each fixture is a cold load that resets the scope to full,
  * which is why the poll runs per fixture.
  *
- * THREE THINGS THIS DRIVER AND ITS FIXTURES MUST NOT DO:
- *   * Toggle visibility. `viewport_state.meshCount` counts
- *     `meshManager.getSceneMeshes()`, which includes only `show`-state meshes, and
- *     the comparison assumes the engine's default verdict is what is shown. Nothing
- *     needs hiding: `set_demand_selective` builds a fresh DemandRegistry with
- *     `full_scope: false`, so the load-triggered sync already yields the state
- *     under test.
+ * THREE THINGS THIS DRIVER AND ITS FIXTURES MUST NOT DO (why: the contract doc
+ * above, except where noted):
+ *   * Toggle visibility. Nothing needs hiding either: `set_demand_selective`
+ *     builds a fresh DemandRegistry with `full_scope: false`, so the
+ *     load-triggered sync already yields the state under test.
  *   * Edit source before the parity read. A cold `eval()` resets `full_scope`
  *     back to `true` and would re-trip the precondition.
- *   * Carry a DisplayOutput. autoViewGenerator's rule -1 shows a named subject
- *     even when it is hidden by default, which would legitimately make the
- *     viewport draw more than the `default_visible === true` count.
+ *   * Carry a DisplayOutput.
  *
  * Exit 0 on all-pass, non-zero on any failure.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -76,12 +67,10 @@ const FIXTURES_DIR = path.join(REPO_ROOT, 'gui', 'test', 'fixtures');
 
 /**
  * The fixtures this run opens, in order, each with its non-vacuity floors: the
- * fixture's KNOWN rendered and hidden body counts. Their exact composition is
- * CI-pinned by gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs.
- *
- *   large_assembly.ri — aux-free: 7 plain Physical subs, all rendered.
- *   aux_assembly.ri   — aux-bearing: 2 Capstans + 1 Spacer render 3 bodies, and
- *                       the Capstans' aux lets (2 each) realize 4 hidden ones.
+ * fixture's KNOWN rendered and hidden body counts. The table lives in
+ * ./meshCountParityFixtures.json so that
+ * gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs can hold every row
+ * to its CI-pinned composition; a JSON row with no pin there reds.
  *
  * Why not the module default floor (MESH_COUNT_PARITY_MIN_RENDERED_BODIES = 2)?
  * That generic floor only catches a TOTAL load failure. A PARTIAL load — say 2
@@ -91,10 +80,11 @@ const FIXTURES_DIR = path.join(REPO_ROOT, 'gui', 'test', 'fixtures');
  * window. They stay FLOORS, not equalities, so a fixture that legitimately grows
  * still passes.
  */
-const FIXTURES = Object.freeze([
-  Object.freeze({ file: 'large_assembly.ri', minRenderedBodies: 7, minHiddenBodies: 0 }),
-  Object.freeze({ file: 'aux_assembly.ri', minRenderedBodies: 3, minHiddenBodies: 4 }),
-]);
+const FIXTURES = Object.freeze(
+  JSON.parse(fs.readFileSync(path.join(__dirname, 'meshCountParityFixtures.json'), 'utf8')).map(
+    row => Object.freeze(row),
+  ),
+);
 
 // ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ─────────────
 

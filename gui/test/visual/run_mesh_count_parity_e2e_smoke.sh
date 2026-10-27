@@ -4,8 +4,8 @@
 #
 # NOT a visual-regression gate, despite the directory it shares: the driver
 # captures no screenshot and diffs no baseline (that is gui/test/visual/run.ts).
-# Its only assertion is the three-way numeric parity check (viewport against
-# each debug read's default_visible == true count), plus per-fixture floors.
+# Its only assertion is the driver's mesh-count parity check; the invariant and
+# its rationale live in docs/debug-mcp-contract.md, "Full realized scene".
 #
 # Usage:
 #   bash gui/test/visual/run_mesh_count_parity_e2e_smoke.sh
