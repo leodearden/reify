@@ -1,4 +1,5 @@
-//! Renders constraint verdicts and undef causes to the CLI's stdout/stderr writers.
+//! Renders constraint verdicts, undef causes and the measured-deviation readout
+//! to the CLI's stdout/stderr writers.
 
 use reify_ir::{Satisfaction, UndefCause};
 
@@ -199,6 +200,29 @@ pub(crate) fn report_eval_output(
         let _ = writeln!(err, "{}: {}", diag.severity, diag.message);
     }
     outcome
+}
+
+/// Write one `  {occurrence}: sampled facet deviation: {deviation} m` line per
+/// measured occurrence, in input order (`reify check --verbose`).
+///
+/// The number is bare `{:e}`, Rust's shortest round-trip form, so it parses
+/// back to exactly the f64 that was measured — unlike the Violated
+/// diagnostic's 4-significant-figure `.3e`.
+///
+/// The colon after `deviation` is deliberate: it keeps these lines from
+/// matching the diagnostic-datum greps (`sampled facet deviation <X> m exceeds
+/// bound`, `deviation [0-9.e+-]+ m`), so adding `--verbose` to an existing
+/// calibration harness cannot double-count a measurement.
+pub(crate) fn report_achieved_deviations<'a>(
+    deviations: impl IntoIterator<Item = (&'a str, f64)>,
+    out: &mut impl std::io::Write,
+) {
+    for (occurrence, deviation) in deviations {
+        let _ = writeln!(
+            out,
+            "  {occurrence}: sampled facet deviation: {deviation:e} m"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -689,6 +713,57 @@ mod tests {
             assert_eq!(outcome, ConstraintOutcome::SomeIndeterminate(2));
         }
     }
+
+    /// Capture `report_achieved_deviations` output as a `String`.
+    fn run_readout(deviations: &[(&str, f64)]) -> String {
+        let mut buf = Vec::new();
+        report_achieved_deviations(deviations.iter().copied(), &mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// The number a readout line carries, parsed back to f64.
+    fn readout_value(line: &str) -> f64 {
+        let number = line
+            .strip_suffix(" m")
+            .and_then(|rest| rest.rsplit_once(": "))
+            .map(|(_, number)| number)
+            .unwrap_or_else(|| panic!("not a readout line: {line:?}"));
+        number.parse().unwrap_or_else(|e| panic!("{number:?}: {e}"))
+    }
+
+    #[test]
+    fn achieved_deviation_readout_renders_one_line_per_occurrence_in_input_order() {
+        let output = run_readout(&[
+            ("Ball#realization[0]", 1.2345678901234e-4),
+            ("Cube#realization[0]", 1e-6),
+        ]);
+        assert_eq!(
+            output,
+            "  Ball#realization[0]: sampled facet deviation: 1.2345678901234e-4 m\n  \
+             Cube#realization[0]: sampled facet deviation: 1e-6 m\n"
+        );
+    }
+
+    #[test]
+    fn achieved_deviation_readout_resolves_values_the_diagnostic_rounds_together() {
+        let a = 1.19541e-4_f64;
+        let b = 1.19549e-4_f64;
+        assert_eq!(format!("{a:.3e}"), "1.195e-4");
+        assert_eq!(format!("{b:.3e}"), "1.195e-4");
+
+        let output = run_readout(&[("A#realization[0]", a), ("B#realization[0]", b)]);
+        let parsed: Vec<f64> = output.lines().map(readout_value).collect();
+
+        assert_eq!(parsed.len(), 2, "one line per input, got: {output:?}");
+        assert_eq!(parsed[0].to_bits(), a.to_bits());
+        assert_eq!(parsed[1].to_bits(), b.to_bits());
+        assert_ne!(parsed[0], parsed[1]);
+    }
+
+    #[test]
+    fn achieved_deviation_readout_is_empty_for_no_measurements() {
+        assert_eq!(run_readout(&[]), "");
+    }
 }
 
 // ── format_undef_cause unit tests (task 4327 / undef-self-describing δ) ──────
@@ -758,56 +833,5 @@ mod format_undef_cause_tests {
             rendered.contains("contract"),
             "rendered string must contain \"contract\", got: {rendered:?}"
         );
-    }
-
-    /// Capture `report_achieved_deviations` output as a `String`.
-    fn run_readout(deviations: &[(&str, f64)]) -> String {
-        let mut buf = Vec::new();
-        report_achieved_deviations(deviations.iter().copied(), &mut buf);
-        String::from_utf8(buf).unwrap()
-    }
-
-    /// The number a readout line carries, parsed back to f64.
-    fn readout_value(line: &str) -> f64 {
-        let number = line
-            .strip_suffix(" m")
-            .and_then(|rest| rest.rsplit_once(": "))
-            .map(|(_, number)| number)
-            .unwrap_or_else(|| panic!("not a readout line: {line:?}"));
-        number.parse().unwrap_or_else(|e| panic!("{number:?}: {e}"))
-    }
-
-    #[test]
-    fn achieved_deviation_readout_renders_one_line_per_occurrence_in_input_order() {
-        let output = run_readout(&[
-            ("Ball#realization[0]", 1.2345678901234e-4),
-            ("Cube#realization[0]", 1e-6),
-        ]);
-        assert_eq!(
-            output,
-            "  Ball#realization[0]: sampled facet deviation: 1.2345678901234e-4 m\n  \
-             Cube#realization[0]: sampled facet deviation: 1e-6 m\n"
-        );
-    }
-
-    #[test]
-    fn achieved_deviation_readout_resolves_values_the_diagnostic_rounds_together() {
-        let a = 1.19541e-4_f64;
-        let b = 1.19549e-4_f64;
-        assert_eq!(format!("{a:.3e}"), "1.195e-4");
-        assert_eq!(format!("{b:.3e}"), "1.195e-4");
-
-        let output = run_readout(&[("A#realization[0]", a), ("B#realization[0]", b)]);
-        let parsed: Vec<f64> = output.lines().map(readout_value).collect();
-
-        assert_eq!(parsed.len(), 2, "one line per input, got: {output:?}");
-        assert_eq!(parsed[0].to_bits(), a.to_bits());
-        assert_eq!(parsed[1].to_bits(), b.to_bits());
-        assert_ne!(parsed[0], parsed[1]);
-    }
-
-    #[test]
-    fn achieved_deviation_readout_is_empty_for_no_measurements() {
-        assert_eq!(run_readout(&[]), "");
     }
 }
