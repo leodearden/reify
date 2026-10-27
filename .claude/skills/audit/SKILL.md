@@ -97,7 +97,7 @@ Lanes added after η emit kinds this table does not list, `g-allow-orphaned` (Hi
 
 ## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PCITE, PPRDSTATUS, PLINECITE
 
-Seven more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the loaded task corpus (the fused-memory live loader, or `--tasks-file`), never `tasks.db`:
+Seven more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the task corpus the fused-memory live loader returns, never `tasks.db`:
 
 | Pattern | Detects |
 |---|---|

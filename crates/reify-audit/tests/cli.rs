@@ -1446,10 +1446,11 @@ mod cli {
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
-    /// passes `--tasks-file <snapshot> --runs-db <db> --project-root <root>`
-    /// *before* forwarding `$@`. Callers can override any of those defaults by
-    /// appending their own flags. This test locks that the last `--tasks-file`
-    /// occurrence wins, so the wrapper's assumption never silently breaks.
+    /// passes `--runs-db <db> --project-root <root>` *before* forwarding
+    /// `$@`. Callers can override any of those defaults by
+    /// appending their own flags. This test observes last-wins through
+    /// `--tasks-file`, the one flag a hermetic fixture can observe, so the
+    /// wrapper's assumption never silently breaks.
     ///
     /// See the `parse_args` doc-comment in `src/bin/reify-audit.rs` for the
     /// authoritative description of the last-wins contract.
@@ -3879,6 +3880,73 @@ mod http_loader {
             Some(125),
             "connection refused must exit 125; stderr: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Pre-done via HTTP loader: a fused-memory that accepts the call but
+    /// stalls its `get_task` reply must cost the hook a diagnosable 125,
+    /// not dark-factory's 30 s hook kill (`pre_done_hook_timeout`), which
+    /// would also hold the project's task-mutation write lock for all 30 s.
+    ///
+    /// The reply is held for [`STALL`]: past the pre-done fetch budget, yet
+    /// inside the 30 s per-request cap, so only a pre-done budget cuts it
+    /// short. It is a corroborated task, so a binary that waited it out
+    /// would exit 0, not 125. The test therefore pins the budget below
+    /// `STALL`. It asserts no elapsed time; `released` only lets the mock
+    /// stop waiting once the binary has exited.
+    #[test]
+    fn pre_done_via_http_loader_stalled_get_task_exits_125_inside_the_hook_timeout() {
+        const STALL: Duration = Duration::from_secs(20);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        insert_completed_event(&runs_db, "9999");
+
+        let released = Arc::new(AtomicBool::new(false));
+        let released_in_mock = Arc::clone(&released);
+        let mock = spawn_mock_mcp(move |_args| {
+            let stalled_at = std::time::Instant::now();
+            while !released_in_mock.load(Ordering::Relaxed) && stalled_at.elapsed() < STALL {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Some(serde_json::json!({
+                "id": "9999",
+                "title": "Mock task 9999",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9999",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        released.store(true, Ordering::Relaxed);
+        mock.stop();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "a get_task reply stalled past the pre-done budget must exit 125; stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("error loading task 9999 from fused-memory")
+                && stderr.contains("timed out"),
+            "the 125 must name the stalled fetch as a timeout; stderr: {stderr}"
         );
     }
 

@@ -280,22 +280,22 @@ If the pre-done hook returns Err, `set_task_status` raises an exception; the orc
 | ID | Description | Who lands it | Blocking? |
 |---|---|---|---|
 | D-1 | dark-factory: pre-write validator hook on `set_task_status(done)` in fused-memory MCP. Configurable per-project via env var: `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done`. On exit-code ≠ 0, the MCP call raises and the done-flip is refused. Landed upstream as `fused_memory.middleware.pre_done_hook`. | dark-factory side; implement session queues the task. | **Done 2026-05-16:** D-1 shipped upstream; activated on Reify host via T-8. Subsequently rewired 2026-05-16+ to flow through `scripts/reify-audit-predone-wrapper.sh` (task 3731) after the Taskmaster removal (2026-05-12) left the CLI's dead default pointing at a non-existent path. |
-| T-8 | Reify-side activation: set `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done` in `/home/leo/.config/systemd/user/fused-memory.service`; reload + restart fused-memory; verify via `bash scripts/smoke-predone-hook.sh`. Hook invocation flows through `scripts/reify-audit-predone-wrapper.sh`, which materializes a TaskMetadata snapshot from `mcp__fused-memory__get_tasks` before invoking `reify-audit --tasks-file <tempfile>`. | Reify side; this task (3675); rewired by task 3731. | **Done 2026-05-16.** The systemd env var was rewired to the wrapper path and the binary reinstalled on 2026-08-30 via `scripts/deploy-reify-audit-predone-hook.sh` (tasks 6939, 6362) — see §11.1.3. |
+| T-8 | Reify-side activation: set `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done` in `/home/leo/.config/systemd/user/fused-memory.service`; reload + restart fused-memory; verify via `bash scripts/smoke-predone-hook.sh`. Hook invocation flows through `scripts/reify-audit-predone-wrapper.sh`, which since task 9269 runs the freshness guard and hands the task to the binary's live fused-memory loader (one `get_task`, no snapshot). | Reify side; this task (3675); rewired by task 3731. | **Done 2026-05-16.** The systemd env var was rewired to the wrapper path and the binary reinstalled on 2026-08-30 via `scripts/deploy-reify-audit-predone-hook.sh` (tasks 6939, 6362) — see §11.1.3. |
 | D-2 | jcodemunch repo index reasonably fresh (≤24h). F's invocation triggers `mcp__jcodemunch__index_repo` if stale. | F itself manages this. | Non-blocking. |
 | D-3 | Confirm `runs.db` schema (task_results, events tables) stable enough to pin SQL queries. | Verify during implementation. | Non-blocking; SQL embedded in T-1. |
 | D-4 | `/prd`-decomposed tasks already carry consumer_ref / user_observable_signal / grammar_confirmed. | Already shipped (per `procedural_prd_skill.md`). | Done. |
 
 ### 11.1 Activation status (2026-05-16; updated post-task-3731)
 
-The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-infra T-8, task 3675). The hook command was subsequently rewired to flow through a snapshot-materializer wrapper (task 3731, 2026-05-16+) after the Taskmaster removal (2026-05-12) left the direct binary invocation pointing at a non-existent default path.
+The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-infra T-8, task 3675). The hook command was subsequently rewired to flow through a snapshot-materializer wrapper (task 3731, 2026-05-16+) after the Taskmaster removal (2026-05-12) left the direct binary invocation pointing at a non-existent default path. Since task 9269 that wrapper materializes no snapshot: it hands the task to the binary's live loader.
 
 - **Systemd unit:** `/home/leo/.config/systemd/user/fused-memory.service`
 - **Env var (live, as measured 2026-08-30 — see §11.1.3):** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`
-- **Wrapper (snapshot + invoke):** `/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh` — materializes a TaskMetadata JSON snapshot from `mcp__fused-memory__get_tasks`, then invokes `reify-audit` with `--tasks-file <tempfile>` (snapshot cleaned up on EXIT). → uses `scripts/reify-audit-snapshot-filter.jq`; see §11.2 for the `done_at` proxy rationale.
-- **Binary:** `/home/leo/.cargo/bin/reify-audit` (installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`). `--tasks-file` defaults to `None`, which loads live from fused-memory MCP at `--fused-memory-url` (env `FUSED_MEMORY_URL`) via `load_tasks_from_fused_memory`; `--tasks-file` is now an opt-in override for fixtures/tests, per the binary's own `--help` ("JSON array of TaskMetadata (overrides live loader; for tests)") — see `crates/reify-audit/src/bin/reify-audit.rs` (default :295, doc :236-242, dispatch :704-713, help :107) and the live loader `crates/reify-audit/src/fused_memory_client.rs`; the raw-binary measurement already recorded in §11.1.3 (`0 findings`, exit 0, no `--tasks-file` needed) corroborates this.
+- **Wrapper (freshness guard + invoke):** `/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh` — runs the freshness guard, then `reify-audit --runs-db … --project-root … "$@"`, so on `--pre-done` the binary's live loader fetches the one flipping task with `get_task` (task 9269). The endpoint is the binary's alone (`FUSED_MEMORY_URL`, else its built-in default): the wrapper passes no `--fused-memory-url`, so the env var reaches the binary unshadowed. Before task 9269 the wrapper pulled the whole corpus with `get_tasks` and mapped it through a jq filter into a `--tasks-file` snapshot; under load that fetch measured 87 MB and 12.4 s, past its 10 s curl budget. See §11.2 for the one task-corpus adapter and the `done_at` proxy.
+- **Binary:** `/home/leo/.cargo/bin/reify-audit` (installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`). With no `--tasks-file` it loads live from fused-memory MCP at `--fused-memory-url` (env `FUSED_MEMORY_URL`) via `load_tasks_from_fused_memory` in `crates/reify-audit/src/bin/reify-audit.rs` and the adapter in `crates/reify-audit/src/fused_memory_client.rs`. `--tasks-file` reads TaskMetadata test fixtures only, per the binary's own `--help`. The raw-binary measurement already recorded in §11.1.3 (`0 findings`, exit 0, no `--tasks-file` needed) corroborates this.
 - **Smoke test:** `bash scripts/smoke-predone-hook.sh` (exits 0 when wiring AND wrapper round-trip both succeed; assertion 2.6 catches re-drift back to the raw binary; assertion 4 round-trips the binary directly with an explicit `--tasks-file` — 4a checks a known-pass case exits 0, 4b checks a known-fail case exits non-zero and not 125 — so per §11.1.3 it exercises neither the wrapper nor the live loader and cannot evidence the rewire on its own). Gated hermetically on every merge by `tests/infra/test_smoke_predone_hook.sh`.
 - **Reload command:** `systemctl --user daemon-reload && systemctl --user restart fused-memory`
-- **Re-deploy path:** `bash scripts/deploy-reify-audit-predone-hook.sh` (task 6939) — idempotent: installs the binary, asserts freshness, rewrites the systemd `Environment=` line (backing the unit up and refusing ambiguous or duplicated hook lines), reloads + restarts, and re-probes end-to-end. Use it rather than hand-editing the unit; confirm with `bash scripts/smoke-predone-hook.sh`. What the wrapper still uniquely buys over pointing the hook straight at the raw binary — narrower justification than before the crate's live loader shipped, but still live: (1) the freshness guard (`scripts/reify-audit-freshness.sh`, wrapper :80), bypassed entirely by a raw invocation, which under the current warn-open policy (§11.1.5) emits an `E_AUDIT_BIN_STALE` advisory and still runs the detector against a stale-but-runnable binary, exiting 125 only for an unrunnable binary (`E_AUDIT_BIN_MISSING`) or an operator-armed `REIFY_AUDIT_FRESHNESS_STRICT=1` — so the raw path's loss is no staleness signal at all, not a lost refusal; and (2) the wrapper's loud-fail stderr WARNING for snapshot rows with `status=="done"` and `done_at==null` (§11.2, "Loud-fail mode"). (The `.metadata.done_at` precedence tier, formerly a third item here, is now implemented by the live loader too since task 7233 — §11.2.1.)
+- **Re-deploy path:** `bash scripts/deploy-reify-audit-predone-hook.sh` (task 6939) — idempotent: installs the binary, asserts freshness, rewrites the systemd `Environment=` line (backing the unit up and refusing ambiguous or duplicated hook lines), reloads + restarts, and re-probes end-to-end. Use it rather than hand-editing the unit; confirm with `bash scripts/smoke-predone-hook.sh`. What the wrapper still uniquely buys over pointing the hook straight at the raw binary is one thing: the freshness guard (`scripts/reify-audit-freshness.sh`), bypassed entirely by a raw invocation, which under the current warn-open policy (§11.1.5) emits an `E_AUDIT_BIN_STALE` advisory and still runs the detector against a stale-but-runnable binary, exiting 125 only for an unrunnable binary (`E_AUDIT_BIN_MISSING`) or an operator-armed `REIFY_AUDIT_FRESHNESS_STRICT=1` — so the raw path's loss is no staleness signal at all, not a lost refusal. Its former second purchase, a stderr WARNING for snapshot rows with `status=="done"` and `done_at==null`, went with the snapshot in task 9269, and dropping it loses nothing: the pre-done path loads only the flipping task, whose pre-transition status is not `done`, so `done_at` is never consulted there, and dark-factory discards the stderr of an rc-0 hook run anyway (§11.1.4). (The `.metadata.done_at` precedence tier, formerly a third item here, has been implemented by the live loader since task 7233 — §11.2.)
 - **Procedural memory:** entry keyed `FUSED_MEMORY_PREDONE_HOOK_REIFY systemd activation` in fused-memory memory store
 
 #### 11.1.1 Why the snapshot wrapper? (task 3731; superseded by task 3736)
@@ -310,6 +310,20 @@ substitutes exactly one placeholder, `{id}`, over the `shlex.split` tokens
 one; there is no `.format(`, `%`, or `string.Template` in the module). Launch
 is `asyncio.create_subprocess_exec` with no `env=` kwarg, no stdin written,
 stdout captured-and-discarded, a 30 s timeout, and `cwd=project_root`.
+
+**The fused-memory fetch gets 10 s of those 30 s (task 9269).** The hook
+holds the project's task-mutation write lock for as long as it runs, and a
+kill at 30 s surfaces only as `pre_done_hook_timeout`. Before task 9269 the
+wrapper's own `get_tasks` curl had a 10 s budget. Now the binary fetches, and
+on `--pre-done` it gives its whole fused-memory session (`initialize`,
+`notifications/initialized`, `get_task`) one 10 s budget
+(`PRE_DONE_FUSED_MEMORY_BUDGET` in `crates/reify-audit/src/bin/reify-audit.rs`).
+A stalled fused-memory therefore exits 125 naming the timeout, with the rest of
+the 30 s left for the freshness guard and P5's git legs. The sweep path has no
+session budget: each request is capped at 30 s, the ceiling on every path.
+Pinned by `pre_done_via_http_loader_stalled_get_task_exits_125_inside_the_hook_timeout`
+in `crates/reify-audit/tests/cli.rs`, which holds a corroborated `get_task`
+reply for 20 s and requires a 125.
 
 `task_interceptor.py` calls the hook at step "2d", BEFORE the write, and
 accumulates `done_provenance` in an in-memory `audit_fields` dict that is
@@ -585,92 +599,29 @@ a content-derived one (the case where a stale binary looks FRESH). This task
 changes the POLICY applied once staleness is detected. They are orthogonal and
 compose.
 
-### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
+### 11.2 The one task-corpus adapter and the `updatedAt`→`done_at` proxy
 
-`scripts/reify-audit-predone-wrapper.sh` and the `/audit` skill both materialize their TaskMetadata snapshots through a single canonical jq filter at `scripts/reify-audit-snapshot-filter.jq`. The filter takes a fused-memory `tools/call get_tasks` JSON-RPC response on stdin and emits a JSON array of TaskMetadata-shaped objects (matching `crates/reify-audit/src/lib.rs:127-158`).
+`crates/reify-audit/src/fused_memory_client.rs::task_metadata_from_wire` is the only mapping from a fused-memory task to the `TaskMetadata` struct in `crates/reify-audit/src/lib.rs`. Both production callers reach it through the binary's live loader: the pre-done wrapper (one `get_task` on `--pre-done`) and the `/audit` skill (one `get_tasks` on a sweep). `--tasks-file` reads already-`TaskMetadata`-shaped test fixtures only.
 
 **The `done_at` derivation.** Fused-memory MCP does NOT currently expose an explicit done-flip timestamp on its task records (probed 2026-05-16; only `updatedAt` is available). P1's orphan-export grace window (see §5 P1) compares `ctx.now - done_at` against 14 days — so without a `done_at` value P1 silently skips every done task and becomes a no-op (this was the reviewer-blocking bug uncovered in task 3731 review cycle 1).
 
-The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string, accepting the same shapes as the crate's live loader (`Z`, `±HH:MM`, `±HH`, or no TZ read as UTC; optional fractional seconds), and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
+The adapter uses `updatedAt` as a proxy: for tasks with `status=="done"`, `parse_iso8601_to_epoch` parses the ISO-8601 string (`Z`, `±HH:MM`, `±HH`, or no TZ read as UTC; optional fractional seconds) and emits epoch-seconds. For non-done tasks `done_at` is always `None` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
 
-Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback), and the crate's live loader implements the same precedence (`done_flip_epoch`, called from `task_metadata_from_wire`; task 7233). If fused-memory ever exposes an explicit done-flip timestamp on the task record, both load paths pick it up automatically and the `updatedAt` fallback becomes unreachable, with no code change on either path (one latent divergence for non-integer stamps remains — see §11.2.1).
+**Precedence and per-row totality** (`done_flip_epoch`, task 7233; pinned by task 9269). An integer epoch-seconds `metadata.done_at` wins. Any other stamp (a string, a float, `null`, `false`, or an absent key) falls back to `updatedAt` for THAT row, and an unparseable or non-string `updatedAt` yields `None` for that row only. A malformed row is degraded, never dropped, and never fails the corpus. If fused-memory ever exposes an explicit done-flip timestamp on the task record, the adapter picks it up automatically and the `updatedAt` fallback becomes unreachable, with no code change.
 
 **Approximation skew.** `updatedAt` is "when the task record was last written," which equals the done-flip time only when nothing further has been written to that task (status, metadata, etc.) after the flip. In practice this is true for most done tasks; the typical skew is hours-to-days, well inside P1's 14-day grace window.
 
-**Loud-fail mode.** The wrapper post-checks the snapshot for any task with `status=="done"` and `done_at==null` (rows where the fallback also failed, e.g. legacy entries with no `updatedAt`) and emits a WARNING line to stderr listing the affected task ids. The wrapper does NOT block in this case — the warning is observability, not gating — so legacy data flows through but the silent-skip mode of the original bug is no longer reachable.
+**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, `done_flip_epoch` picks it up automatically, and the `updatedAt` fallback can be deleted. Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
 
-**Single point of truth.** The filter is referenced from both the wrapper and the audit-skill references (`references/cli-invocation.md` §2, `references/modes.md` §§1-4). This prevents copy-paste drift: fixing the filter in one place fixes all consumers. The regression-guard assertion (5e) in `tests/infra/test_reify_audit_predone_wrapper.sh` ensures the wrapper continues referencing the sidecar rather than an inlined copy.
+#### 11.2.1 One adapter, so no divergence (task 9269)
 
-**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence and the live loader's `done_flip_epoch` pick it up automatically, and the `updatedAt` fallback can be deleted on both load paths. Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
+Until task 9269 a second adapter existed: a jq filter that materialized a `--tasks-file` snapshot for the pre-done wrapper and the `/audit` skill. Tasks 6985, 7236, 7280 and 7233 re-paired the two one case at a time (the ISO-8601 shapes, the per-row failure tier, the `metadata.done_at` precedence), and one latent divergence was still open: the jq filter passed a non-integer stamp through verbatim, so the `--tasks-file` decode rejected the whole file. Task 9269 deleted the jq filter (plans/gap-fill-deliberation-reify-20261016.md §K9-D9), so there is no second path left to diverge from. A non-integer stamp is now just the per-row fallback above.
 
-#### 11.2.1 Do the two load paths derive `done_at` equivalently? (2026-09-03, task 6985; updated tasks 7236/7280/7233)
+The pins are the `wire_adapter_*` and `corpus_one_malformed_row_does_not_cost_its_neighbour` unit tests in `crates/reify-audit/src/fused_memory_client.rs`, including the string/float/absent stamp × garbage/non-string `updatedAt` matrix, and the `iso8601_*` parser tests, which pin the instant 1778917144. The corpus test drives `get_tasks`' own envelope decode (`tasks_from_get_tasks_reply`) with a degraded row, an undecodable row and a healthy one, so a decode that aborted on its first bad row would fail it.
 
-**Equivalent on the shared tier.** For `status == "done"`, both the jq
-sidecar and the crate's live loader derive `done_at` from the same
-top-level `updatedAt` field. Since task 7280 both loaders map `Z`,
-`±HH:MM`, `±HH` and no-TZ (read as UTC) timestamps, with or without a
-fractional-second suffix, to the same epoch: the sidecar's
-`iso8601_to_epoch_or_null` mirrors
-`crates/reify-audit/src/fused_memory_client.rs` `parse_iso8601_to_epoch` /
-`split_tz`. The pin is a shared instant, not a differential test: Check 5h
-of `tests/infra/test_reify_audit_predone_wrapper.sh` pins every sidecar
-shape to 1778917144, the instant the crate's `iso8601_*` unit tests pin,
-but those unit tests cover only the `Z`-with-fraction, `±HH:MM` and no-TZ
-shapes, so the `±HH`, half-hour-offset and fraction-plus-offset shapes are
-pinned on the sidecar side only. Both yield
-`null`/`None` for non-done tasks and for an absent or `null` `updatedAt`.
-The residual difference is one-directional: the Rust parser also accepts
-some non-ISO input (text after `Z`, a non-numeric fraction, unpadded or
-out-of-range fields) and mis-reads a basic-format `±HHMM` offset, where the
-sidecar yields `null` and the wrapper warns. Tightening the Rust side is
-follow-up ticket `tkt_0RVBKGK1V4N31Q6T8XV5GEC3B9`.
+**Parser leniency (not a divergence).** `parse_iso8601_to_epoch` also accepts some non-ISO input (text after `Z`, a non-numeric fraction, unpadded or out-of-range fields) and mis-reads a basic-format `±HHMM` offset. Tightening it is follow-up ticket `tkt_0RVBKGK1V4N31Q6T8XV5GEC3B9`.
 
-**Equivalent on the precedence tier (task 7233).** Both paths prefer an
-explicit integer epoch-seconds `metadata.done_at` over `updatedAt`. jq:
-the `.metadata.done_at //` precedence in
-`scripts/reify-audit-snapshot-filter.jq`. Rust: `done_flip_epoch`, called
-from `task_metadata_from_wire`, which reads `metadata.done_at` with
-`Value::as_i64` and only then falls back to the `updatedAt` parse. `null`,
-`false` and an absent key fall through to `updatedAt` on both (jq `//`;
-`as_i64` is `None` for them), an integer stamp wins even over an
-unparseable `updatedAt`, and a row whose status is not `done` ignores the
-stamp. Pinned on the Rust side by the `wire_adapter_*` unit tests in
-`fused_memory_client.rs` and on the jq side by Check 5f-g of
-`tests/infra/test_reify_audit_predone_wrapper.sh`.
-
-**One residual, latent divergence: a non-integer stamp.** jq passes
-`metadata.done_at` through verbatim, so a stamp that is not a JSON
-integer — a string such as `"2026-01-01T00:00:00Z"`, or a float — lands
-in the snapshot as-is, and the `--tasks-file` loader's `Option<i64>`
-decode rejects the WHOLE file (exit 125, a project-wide blocked done-flip
-through the wrapper). The live loader instead falls back to `updatedAt`
-for that one row: an unusable stamp is not a stamp, and the loader stays
-total per row in the spirit of task 7236. Latent because nothing stamps
-`metadata.done_at` today; it disappears with the jq adapter itself, which
-task 9269 deletes (plans/gap-fill-deliberation-reify-20261016.md §K9-D9).
-
-**Equivalent on the failure tier (since task 7236).** On an unparseable
-`updatedAt` both paths degrade per row. The sidecar's
-`iso8601_to_epoch_or_null` is total, so that row alone gets
-`done_at = null` and stays in the snapshot (Check 5f of
-`tests/infra/test_reify_audit_predone_wrapper.sh`), where the wrapper's
-missing-`done_at` WARNING names it; `parse_iso8601_to_epoch` returns
-`None` for that row alone and every other task still loads.
-*History (measured under task 6985, before 7236):* the sidecar's
-`fromdateiso8601` raised uncaught on such a row, so jq exited with no
-output, the wrapper took its `exit 125` infrastructure-error arm, and one
-malformed row lost the whole snapshot.
-
-**Consequence: the forward-compatibility hazard is closed (task 7233).**
-§11.2's priority rule — once fused-memory exposes an explicit
-`metadata.done_at`, it is picked up with no code change — now holds for
-both load paths. Before task 7233 it held for the wrapper path only: had
-§11.2's logged upstream follow-up landed, the wrapper path would have
-switched to the true done-flip timestamp while the live-loader path —
-which is what the live systemd hook actually runs, per §11.1.3 — silently
-kept the `updatedAt` proxy, and the two would have disagreed by the full
-post-done edit skew for exactly the tasks P1 grades against its 14-day
-grace window (§5 P1).
+*History.* Task 6985 compared the two load paths (2026-09-03). Before task 7236 the jq filter's `fromdateiso8601` raised uncaught on an unparseable `updatedAt`, so jq exited with no output, the wrapper took its `exit 125` arm, and one malformed row lost the whole snapshot; task 7236 made the filter total per row. Task 7233 gave the live loader the `metadata.done_at` precedence the filter already had, closing the hazard that the two paths would have disagreed once fused-memory stamped `metadata.done_at`.
 
 ## 12. Implementation cost budget
 

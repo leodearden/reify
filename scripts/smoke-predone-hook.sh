@@ -69,12 +69,11 @@ fi
 SERVICE="fused-memory"
 ENV_VAR="FUSED_MEMORY_PREDONE_HOOK_REIFY"
 MCP_URL="http://localhost:8002/mcp"
-# Per-attempt curl budget, overridable consistently with
-# scripts/reify-audit-predone-wrapper.sh's FUSED_MEMORY_MCP_TIMEOUT (default
-# 10 there; 5 here since this is a foreground operator check, not a hot-path
-# hook). Assertion 3 below retries several attempts at this budget rather than
-# leaning on one large timeout, so raising this only matters if a healthy
-# server routinely takes longer than a few seconds to answer.
+# Per-attempt curl budget for this script's own MCP probe (5 s: a foreground
+# operator check, not a hot-path hook). Assertion 3 below retries several
+# attempts at this budget rather than leaning on one large timeout, so raising
+# this only matters if a healthy server routinely takes longer than a few
+# seconds to answer.
 MCP_TIMEOUT="${FUSED_MEMORY_MCP_TIMEOUT:-5}"
 if [[ ! "$MCP_TIMEOUT" =~ ^[0-9]+$ ]]; then
     echo "FAIL: FUSED_MEMORY_MCP_TIMEOUT must be an integer number of seconds; got '$MCP_TIMEOUT'." >&2
@@ -157,9 +156,8 @@ fi
 
 # ── Assertion 2.6: hook first token is the WRAPPER, not the raw binary ───────
 # The hook MUST route through scripts/reify-audit-predone-wrapper.sh. Only the
-# wrapper (a) runs the REFUSE-mode freshness guard from
-# scripts/reify-audit-freshness.sh and (b) materializes the TaskMetadata
-# snapshot from the fused-memory MCP. Wiring the env var straight at
+# wrapper runs the freshness guard from scripts/reify-audit-freshness.sh.
+# Wiring the env var straight at
 # /home/leo/.cargo/bin/reify-audit is executable, survives --help and carries
 # every template token — so assertions 1, 2 and 2.5 all stay green while the
 # freshness guard is silently bypassed. That is exactly how the raw-binary
@@ -287,13 +285,13 @@ fi
 # .taskmaster/tasks/tasks.json default and output-format regressions.
 #
 # The target is $RAW_BIN and MUST NOT follow the hook env var, even though the
-# two were the same path historically. Routing 4a/4b through the wrapper would:
-#   - inject the wrapper's OWN --tasks-file/--runs-db/--project-root ahead of
-#     the seeded fixture's, leaving the fixture to win only by clap's last-wins
-#     argument precedence — so the round-trip would stop proving that an
-#     explicit --tasks-file is honoured, which is the whole point; and
-#   - make a self-contained fixture round-trip depend on a live fused-memory
-#     MCP, since the wrapper materializes a snapshot before invoking.
+# two were the same path historically. Routing 4a/4b through the wrapper would
+# prepend the wrapper's OWN --runs-db/--project-root ahead
+# of the seeded fixture's flags, leaving the fixture's --runs-db and
+# --project-root to win only by reify-audit's last-wins argument precedence —
+# so the round-trip would stop proving how the binary itself handles an
+# explicit fixture invocation. (Before task 9269 the wrapper also injected its
+# own --tasks-file, built from a live fused-memory MCP.)
 # Assertion 2.6 above already covers the hook target's identity; this assertion
 # covers the binary's behaviour. Keeping the two decoupled is deliberate.
 #
