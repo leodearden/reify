@@ -99,7 +99,7 @@ Additional decisions resolved in this session:
 | Question | Resolution |
 |---|---|
 | Element coverage for K_g | **P1 tet only** for v0.5. P2 tet + P1 hex/wedge K_g are mechanical extensions deferred to a follow-up PRD or to the hex/wedge meshing PRD's decomposition. |
-| Shell-element K_g | **Out of scope; stubbed with `E_BucklingShellNotImplemented` diagnostic citing task 3392.** Bare-MITC3 has the same flat-facet under-prediction that motivated MITC3+ (shells audit M-005); shipping shell-K_g on bare-MITC3 would replicate the band-widening pattern documented in task 3034. The diagnostic catches the failure shape early and points the user at the prereq. |
+| Shell-element K_g | **Out of scope; stubbed with `E_BucklingShellNotImplemented` diagnostic citing task 3392.** *(never built — see the §13 Phase 6 status note)* Bare-MITC3 has the same flat-facet under-prediction that motivated MITC3+ (shells audit M-005); shipping shell-K_g on bare-MITC3 would replicate the band-widening pattern documented in task 3034. The diagnostic catches the failure shape early and points the user at the prereq. |
 | Multi-load-case coupling | **Parallel `MultiCaseBucklingResult` struct** with `cases : Map<String, BucklingResult>`. Sibling to `MultiCaseResult`. Composes with `multi-load-case-fea.md` patterns. |
 | Solver mode default | **Shift-invert Lanczos at σ=0**, using SPD K's Cholesky factor for the inner solve. Override via `BucklingOptions.mode` (String-typed; see §4). Dense generalized EVD fallback when total DOF ≤ ~200 (via faer's `linalg/gevd` QZ surface). |
 | GUI ownership of mode-shape animation | **GR-016 owns the `mode-shape-frame` channel contract; this PRD owns the implementation slice** (backend emitter + frontend `BucklingPanel` animator). GR-016's deferred bookmark task λ is replaced by this PRD's §13 phase-9 task. |
@@ -280,6 +280,8 @@ the diagnostic shape.
 **Hex / wedge stub.** Same pattern. Diagnostic `E_BucklingHexWedgeNotImplemented` cites
 `hex-wedge-meshing.md`.
 
+*(Shell and hex/wedge stubs: never built — see the §13 Phase 6 status note.)*
+
 ## §7 — Multi-load-case coupling
 
 **Parallel struct.** Declared in `crates/reify-compiler/stdlib/solver_buckling.ri`:
@@ -376,7 +378,7 @@ each side.
 
 > **P1-tet accuracy note (G6 / esc-3453-5,6).** The 5% bounds and the **fixed-fixed (k=0.5)** third variant originally stated here are *not achievable* at practical mesh density: P1-tet bending lock at this slenderness (L/r≈138) yields 9–10% error on every BC variant, and pointwise Dirichlet BCs impose no rotational restraint, so a clamped-clamped attempt realizes **fixed-pin (k≈0.6992)**, not fixed-fixed. Bounds reconciled to the shipped test (`euler_column_pin_pin.rs`: pin-pin 10%, fixed-free 11%, fixed-pin 10%). MPCs (`u_z` equal across the top face) **do** realize a true fixed-fixed (k=0.5) BC — verified in `euler_column_pin_pin.rs::fixed_guided_euler_column_within_nine_percent` (constraint satisfaction is bit-exact). The MPC alone does **not** reach 5%, however: P1-tet bending lock floors the error at ~6.8% (asymptote of `error = a + b/nx²`; 8.46% at nx=ny=10), so the MPC variant is bounded at **9%** to match the P1-tet tolerance family. **The original 5% has been achieved** by the P2-tet path (task 4052, esc-3813-117): `fixed_guided_euler_column_p2_within_five_percent` uses `solve_buckling_kernel_p2` with a `nx=ny=2, nz=32` P2 mesh and reaches **0.06% error** in 2.2 s release wall time (see §13 task δ).
 | **n_modes degeneracy on square cross-section.** Pinned-pinned column with square box (20×20×L). | Same. | First two eigenvalues are within tolerance of each other (in-plane / out-of-plane mode pair). `modes[0].mode_shape` and `modes[1].mode_shape` are orthogonal in displacement space. |
-| **Shell input emits clean diagnostic.** Call `solve_buckling` on a shell-classified body. | Body classifier returns Shell. | Trampoline returns `ComputeOutcome::Failed { diagnostics: [E_BucklingShellNotImplemented { cite_task: "3392", ... }] }`. No panic. |
+| **Shell input emits clean diagnostic.** Call `solve_buckling` on a shell-classified body. | Body classifier returns Shell. | Trampoline returns `ComputeOutcome::Failed { diagnostics: [E_BucklingShellNotImplemented { cite_task: "3392", ... }] }`. No panic. *(never built — see the §13 Phase 6 status note)* |
 | **Cancellation under design loop.** Synthetic large-DOF column; auto-resolve drives a non-structural param; rapid input changes mid-solve. | Trampoline registered; ≥ 100 ms per Lanczos iteration. | Cancellation observed within 2× poll budget (≤ 200 ms). Prior cache entry intact. No orphaned solver threads. |
 | **Warm state across small perturbation.** Solve column; perturb length by 1 mm; re-solve. | Same mesh sparsity pattern. | Second solve reuses symbolic factorization (verified via OpaqueState lifecycle test). Total wall-clock ≤ 0.5× cold-start. |
 | **Dense fallback at tiny DOF.** Solve `auto_dense = true` problem with 50 DOF. | `dof ≤ 200`. | `BucklingResult.converged = true`; iterations = 0 (dense path doesn't iterate). Result agrees with shift-invert path on the same problem to 8 digits. |
@@ -402,8 +404,8 @@ each side.
 | `docs/prds/v0_3/multi-load-case-fea.md` | this composes with | `LoadCase` struct, envelope helpers, accessor patterns (`case_names`, `result_for`) | multi-load-case PRD | sibling design; this PRD authors parallel `MultiCaseBucklingResult` per §7 |
 | `docs/prds/v0_3/gui-event-channel-inventory.md` (GR-016) | this implements | `mode-shape-frame` channel + payload | GR-016 owns the channel contract; this PRD owns the implementation slice | replaces GR-016's deferred bookmark task λ |
 | `docs/prds/v0_3/fea-gui-rendering.md` | this extends | Deformed-shape rendering pipeline; adds time-domain animation primitive | this PRD (animation primitive); fea-gui-rendering (underlying renderer) | extends; no contested ownership |
-| `docs/prds/v0_4/structural-analysis-shells.md` | this stubs out | Shell-element K_g | this PRD stubs; full implementation deferred to MITC3+ work | task 3392 cited in diagnostic |
-| `docs/prds/v0_3/hex-wedge-meshing.md` | this stubs out | Hex / wedge K_g | this PRD stubs; full implementation deferred to hex-wedge work | follow-up PRD if/when needed |
+| `docs/prds/v0_4/structural-analysis-shells.md` | this stubs out | Shell-element K_g | this PRD stubs; full implementation deferred to MITC3+ work | task 3392 cited in diagnostic *(never built — see the §13 Phase 6 status note)* |
+| `docs/prds/v0_3/hex-wedge-meshing.md` | this stubs out | Hex / wedge K_g | this PRD stubs; full implementation deferred to hex-wedge work | follow-up PRD if/when needed *(never built — see the §13 Phase 6 status note)* |
 | `docs/prds/v0_3/mesh-morphing.md` | future-PRD pointer | Imperfection seeding (mode-shape × small-amplitude perturbation) | future-PRD | out of scope for v0.5 |
 | `structural-analysis-modal.md` (unfiled) | future shared infra | faer-rs Lanczos infrastructure (modal: `(K − ω²M)φ = 0`) | unfiled | comment in §5 only |
 
@@ -428,9 +430,9 @@ No reciprocal "the other owns it" pairs surfaced in this PRD's design.
 
 - **Non-linear (Riks / arc-length) buckling.** Future-PRD pointer; same as parent PRD.
 - **Imperfection-sensitivity workflow.** Future-PRD pointer; gated on shells K_g.
-- **Shell-element K_g.** Stubbed with `E_BucklingShellNotImplemented`; full impl deferred
+- **Shell-element K_g.** *(never built — see the §13 Phase 6 status note)* Stubbed with `E_BucklingShellNotImplemented`; full impl deferred
   to MITC3+ work (task 3392).
-- **Hex / wedge K_g.** Stubbed; future-PRD or extension of hex-wedge meshing decomp.
+- **Hex / wedge K_g.** *(never built — see the §13 Phase 6 status note)* Stubbed; future-PRD or extension of hex-wedge meshing decomp.
 - **P2 tet K_g.** Landed in task 4052 (esc-3813-117 follow-up): `geometric_element_stiffness_tet_p2` (30×30 K_g) + `element_stress_p2` + `solve_buckling_kernel_p2` are now the production P2 buckling pipeline. `fixed_guided_euler_column_p2_within_five_percent` achieves **0.06% error** at `nx=ny=2, nz=32` in 2.2 s — see §9.1 / §13 task δ.
 - **Thermal buckling / dynamic instability / flutter.** Separate physics.
 - **Modal (vibration) analysis.** Shares the eigensolver but is a different formulation
@@ -528,6 +530,14 @@ isolation are not acceptable (`feedback_task_chain_user_observable`).
     payload. Same for hex/wedge body. No panic.
   - **Prereqs:** ε.
   - **Crates touched:** reify-solver-elastic, reify-stdlib (trampoline error path).
+
+> **Status note (2026-10-27, #9213): task ζ was never implemented.** No `E_BucklingShellNotImplemented`
+> or `E_BucklingHexWedgeNotImplemented` diagnostic code exists. The `solve_buckling` trampoline has no
+> non-tet filter because it meshes only its own structured P1/P2 tet box, so no shell, hex or wedge cell
+> reaches K_g. Task ζ's tracker #3455 is marked done with no implementing commit (phantom-done). The
+> always-panicking `geometric_element_stiffness_{shell,hex_p1,wedge_p1}` stubs that task γ shipped had
+> no caller and were removed by #9213. Shell, hex and wedge buckling are unsupported today; a task that
+> adds one owns both its K_g kernel and any diagnostic.
 
 ### Phase 7 — Multi-load-case coupling
 
