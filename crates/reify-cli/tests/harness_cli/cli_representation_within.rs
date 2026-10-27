@@ -638,8 +638,7 @@ fn parse_readout_line(line: &str) -> Option<(String, f64)> {
 #[test]
 fn check_verbose_adds_only_the_deviation_readout() {
     let path = common::example_path("representation_within.ri");
-    let (default_status, default_stdout, default_stderr) =
-        common::run_with_args(&["check", &path]);
+    let (default_status, default_stdout, default_stderr) = common::run_with_args(&["check", &path]);
     let (verbose_status, verbose_stdout, verbose_stderr) =
         common::run_with_args(&["check", "--verbose", &path]);
 
@@ -648,7 +647,10 @@ fn check_verbose_adds_only_the_deviation_readout() {
         default_status.code(),
         "--verbose must not change the exit code.\nverbose stderr: {verbose_stderr}"
     );
-    assert_eq!(verbose_stderr, default_stderr, "--verbose must not change stderr");
+    assert_eq!(
+        verbose_stderr, default_stderr,
+        "--verbose must not change stderr"
+    );
     let verbose_stdout_without_readout: String = verbose_stdout
         .split_inclusive('\n')
         .filter(|line| parse_readout_line(line.trim_end_matches('\n')).is_none())
