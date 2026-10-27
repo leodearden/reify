@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::dependent_reads::{CellReads, DependentCellReads};
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
+use reify_core::diagnostics::{BoundSide, UnboundedSide, unbounded_auto_clause};
 use reify_core::{
     ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash,
 };
@@ -2247,27 +2248,53 @@ impl DefaultBoundedParam {
         })
     }
 
+    /// The model bounds this param on exactly one side; the other fell back to
+    /// the solver default.
+    fn is_one_sided(&self) -> bool {
+        self.default_lo.is_some() != self.default_hi.is_some()
+    }
+
+    /// The solve put this param ON a default bound it fell back to. `false`
+    /// for a missing or non-numeric solved value.
+    fn solved_on_default_edge(&self, solved: &HashMap<ValueCellId, Value>) -> bool {
+        let Some(value) = solved.get(&self.id).and_then(Value::as_f64) else {
+            return false;
+        };
+        [self.default_lo, self.default_hi]
+            .into_iter()
+            .flatten()
+            .any(|edge| within_uniqueness_tol(value, edge))
+    }
+
     /// The user-facing clause naming this param, each side no constraint
-    /// bounded, and the solver-internal bound used there.
+    /// bounded, and the solver-internal bound used there, in the wording the
+    /// compile-time arm shares ([`unbounded_auto_clause`]).
     ///
-    /// ONE rendering path for one, two or both sides — the invariant above makes
-    /// `sides` non-empty, so there is no empty-list case to special-case. Each
-    /// bound renders through `Value`'s `Display`, the same `Value::Scalar` shape
+    /// The invariant above makes the side list non-empty. Each bound renders
+    /// through `Value`'s `Display`, the same `Value::Scalar` shape
     /// [`build_solved_values`] reports a resolved value in, so the unit label is
     /// the one the user sees on every other value.
     fn clause(&self) -> String {
-        let quantity = |si_value: f64| Value::Scalar {
-            si_value,
-            dimension: self.dimension,
+        let quantity = |si_value: f64| {
+            Value::Scalar {
+                si_value,
+                dimension: self.dimension,
+            }
+            .to_string()
         };
-        let mut sides = Vec::with_capacity(2);
-        if let Some(lo) = self.default_lo {
-            sides.push(format!("below (solver default {})", quantity(lo)));
-        }
-        if let Some(hi) = self.default_hi {
-            sides.push(format!("above (solver default {})", quantity(hi)));
-        }
-        format!("no constraint bounds `{}` {}", self.id, sides.join(" or "))
+        let unbounded: Vec<UnboundedSide> = [
+            (BoundSide::Below, self.default_lo),
+            (BoundSide::Above, self.default_hi),
+        ]
+        .into_iter()
+        .filter_map(|(side, default)| {
+            default.map(|bound| UnboundedSide {
+                side,
+                solver_default: Some(quantity(bound)),
+            })
+        })
+        .collect();
+        unbounded_auto_clause(&self.id, &unbounded)
     }
 }
 
@@ -2283,11 +2310,11 @@ enum Determinedness {
     /// Every listed param is bounded on a side only by a solver-internal
     /// default — genuine non-determinedness, with the measurement to prove it.
     ///
-    /// Reachable ONLY from the γ `cost_robustness_tradeoff` branch, which is the
-    /// only route that computes per-param evidence. That is a statement about
-    /// where the evidence comes from, not a general capability: the perturbation
-    /// path answers §11.6 by re-solving, and a re-solve disagreeing says nothing
-    /// about WHICH bound was responsible.
+    /// Two producers, both of which compute per-param evidence: the γ
+    /// `cost_robustness_tradeoff` bracketing branch, and the synthetic-centrality
+    /// corner-pick screen ([`centrality_corner_picks`], #6692). The perturbation
+    /// path cannot produce it: it answers §11.6 by re-solving, and a re-solve
+    /// disagreeing says nothing about WHICH bound was responsible.
     DefaultBoundsDetermined(Vec<DefaultBoundedParam>),
     /// Non-determinedness with no per-param evidence: the perturbation re-solve
     /// disagreed, or the missing/non-numeric solved-value guard fired.
@@ -2303,6 +2330,8 @@ enum Determinedness {
 /// optimal under the applicable objective") for the γ `cost_robustness_tradeoff`
 /// path, where the perturbation machinery `verify_uniqueness` normally uses is
 /// structurally inapplicable (see that function's doc for the measured ruling).
+/// Its second consumer, [`centrality_corner_picks`] (#6692), projects it onto
+/// the one-sided entries the solve landed on the default edge of.
 ///
 /// - Both sides constraint-derived ⇒ NO entry. The objective's argmin is taken
 ///   over an interval the USER authored, so the resolved value is fixed by the
@@ -2336,11 +2365,11 @@ enum Determinedness {
 ///
 /// MONOTONE in `underivable`: growing that set can only move a param from
 /// "reported" to "abstained", never the reverse, so the returned list can only
-/// SHRINK. `verify_uniqueness` RELIES on this — it evaluates against an empty
-/// set first and only builds the (per-conjunct, eval-heavy) evidence set if that
-/// first answer is NON-EMPTY. Keep the `underivable` filter AHEAD of the
-/// per-param evidence step; a rule that let the evidence set ADD an entry would
-/// silently break that short-circuit.
+/// SHRINK. [`default_bounded_after_abstention`] RELIES on this — it evaluates
+/// against an empty set first and only builds the (per-conjunct, eval-heavy)
+/// evidence set if that first answer is NON-EMPTY. Keep the `underivable`
+/// filter AHEAD of the per-param evidence step; a rule that let the evidence
+/// set ADD an entry would silently break that short-circuit.
 /// `default_bounded_strict_autos_abstains_for_underivable_param` pins both
 /// directions on one fixture.
 ///
@@ -2437,6 +2466,61 @@ fn default_bounded_strict_autos(
             DefaultBoundedParam::new(p, &intervals.get(i).copied().unwrap_or_default())
         })
         .collect()
+}
+
+/// [`default_bounded_strict_autos`] restricted to the entries `keep` accepts,
+/// with the esc-5711-3 abstention ([`params_in_underivable_constraints`])
+/// applied LAZILY.
+///
+/// The abstention set re-runs `derive_from_expr`, and through it `eval_expr`,
+/// once per leaf conjunct, so it is built only when the raw derivation already
+/// reports something. That skip is sound because the detector is MONOTONE in
+/// the abstention set and `keep` judges each entry alone: the second answer can
+/// only shrink the first, so an empty first answer is final.
+fn default_bounded_after_abstention(
+    problem: &ResolutionProblem,
+    intervals: &[DerivedInterval],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+    keep: impl Fn(&DefaultBoundedParam) -> bool,
+) -> Vec<DefaultBoundedParam> {
+    let kept = |underivable: &HashSet<usize>| -> Vec<DefaultBoundedParam> {
+        default_bounded_strict_autos(&problem.auto_params, intervals, underivable)
+            .into_iter()
+            .filter(|param| keep(param))
+            .collect()
+    };
+    let raw = kept(&HashSet::new());
+    if raw.is_empty() {
+        return raw;
+    }
+    kept(&params_in_underivable_constraints(
+        &problem.auto_params,
+        &problem.constraints,
+        &problem.dependent_cells,
+        &problem.current_values,
+        &problem.functions,
+        dispatch,
+    ))
+}
+
+/// The strict autos the synthetic centrality objective CORNER-PICKED (#6692):
+/// bounded by the model on one side only, and solved onto the solver-default
+/// edge of the other. Centrality is monotone in such a param, so its argmax is
+/// that edge — an artifact of [`default_bounds_for`], not a designed value.
+///
+/// A projection of [`default_bounded_strict_autos`], never a second detector.
+/// The on-edge filter is a trust check on the solve RESULT: a param the
+/// syntactic derivation reads as one-sided, but which a derived cell bounds on
+/// the other side (#7727), resolves off the edge and is not reported.
+fn centrality_corner_picks(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+    intervals: &[DerivedInterval],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Vec<DefaultBoundedParam> {
+    default_bounded_after_abstention(problem, intervals, dispatch, |param| {
+        param.is_one_sided() && param.solved_on_default_edge(solved_values)
+    })
 }
 
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
@@ -4268,31 +4352,10 @@ fn verify_uniqueness(
         // esc-5711-3: a param whose missing side is attributable to a
         // constraint the derivation could not READ abstains rather than
         // reporting non-uniqueness — see `params_in_underivable_constraints`.
-        //
-        // Computed LAZILY (review suggestion 1). The predicate is MONOTONE in
-        // its `underivable` argument — that set can only move a param from
-        // "not bracketed" to "abstain", never the reverse — so when the raw
-        // derivation already brackets every strict auto the evidence set cannot
-        // change the verdict, and the per-conjunct re-derivation (which re-runs
-        // `derive_from_expr`, and through it `eval_expr`, once per leaf
-        // conjunct) is skipped entirely. That is the common case: the γ models
-        // this branch exists to keep green.
-        let mut default_bounded =
-            default_bounded_strict_autos(&problem.auto_params, &intervals, &HashSet::new());
-        if !default_bounded.is_empty() {
-            default_bounded = default_bounded_strict_autos(
-                &problem.auto_params,
-                &intervals,
-                &params_in_underivable_constraints(
-                    &problem.auto_params,
-                    &problem.constraints,
-                    &problem.dependent_cells,
-                    &problem.current_values,
-                    &problem.functions,
-                    dispatch,
-                ),
-            );
-        }
+        // The common case, where the raw derivation already brackets every
+        // strict auto, skips that evidence set entirely (review suggestion 1).
+        let default_bounded =
+            default_bounded_after_abstention(problem, &intervals, dispatch, |_| true);
         // debug!, deliberately NOT warn!: solver_tracing.rs's
         // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
         // assertion must both stay untouched by this branch.
@@ -4307,6 +4370,23 @@ fn verify_uniqueness(
         } else {
             Determinedness::DefaultBoundsDetermined(default_bounded)
         };
+    }
+
+    // #6692: with no explicit objective the solve was steered by the synthetic
+    // centrality objective, which drives a one-sided strict auto onto its
+    // default edge — and a perturbation re-solve lands on the same edge and
+    // calls it unique. An explicit objective governs its own solve and is left
+    // to the perturbation path (#5975 owns the unbounded-objective case).
+    if problem.objective.is_none() {
+        let corner_picks = centrality_corner_picks(problem, solved_values, &intervals, dispatch);
+        // debug!, NOT warn!: solver_tracing.rs pins this module's warn counts.
+        tracing::debug!(
+            corner_picks = corner_picks.len(),
+            "uniqueness check: screening for centrality corner-picks of one-sided strict autos"
+        );
+        if !corner_picks.is_empty() {
+            return Determinedness::DefaultBoundsDetermined(corner_picks);
+        }
     }
 
     tracing::debug!(
@@ -4475,11 +4555,12 @@ fn finalise_uniqueness(
                     .with_code(DiagnosticCode::ConstraintNonUnique),
                 ],
             },
-            // The γ branch DID measure a cause, so report it: which param,
-            // which side no constraint bounded, the bound the solve fell back
-            // to, and the fix. The `not uniquely determined` diagnosis phrase is
-            // shared with the arm above, so the diagnosis is ONE phrase rather
-            // than two dialects.
+            // Both producers (γ bracketing, the centrality corner-pick screen)
+            // measured a cause, so report it: which param, which side no
+            // constraint bounded, the bound the solve fell back to, and the
+            // fix. The `not uniquely determined` diagnosis phrase is shared
+            // with the arm above, so the diagnosis is ONE phrase rather than
+            // two dialects.
             //
             // `reify_core::Diagnostic` has no note/help channel and its
             // `candidates` field carries a bare-FQN-only invariant, so the cause

@@ -147,6 +147,8 @@ mod cli_module_decl_remedy;
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
 mod cli_objective_inheritance_golden;
+#[path = "harness_cli/cli_one_sided_auto.rs"]
+mod cli_one_sided_auto;
 #[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
 mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]

@@ -49,6 +49,10 @@
 //! resolved boundary value, and the strict-auto `ConstraintNonUnique` verdict that two of
 //! the modules above already substring-match.
 //!
+//! `one_sided_auto_refusal_e2e` (task #6692) was likewise authored here. It embeds its
+//! three prd-gate fixtures with `include_str!`, whose path is relative to the module
+//! file rather than the crate root.
+//!
 //! Module order: alphabetical by stem. No module here carries a rationale comment whose
 //! ordering matters, and no module here is used by another, so there is no accretion
 //! order to preserve.
@@ -70,3 +74,5 @@ mod auto_type_param_value_population_e2e;
 mod cost_robustness_tradeoff_boundary_e2e;
 #[path = "harness_auto_resolution/cost_robustness_tradeoff_underdetermined_diagnostic.rs"]
 mod cost_robustness_tradeoff_underdetermined_diagnostic;
+#[path = "harness_auto_resolution/one_sided_auto_refusal_e2e.rs"]
+mod one_sided_auto_refusal_e2e;

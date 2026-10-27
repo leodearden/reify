@@ -3832,7 +3832,7 @@ structure def Probe {
     param act : Geometry = box(1mm, 1mm, 1mm)
     param slack : Length = auto
     constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
-    constraint slack > 0.1mm
+    constraint slack > 0.1mm && slack < 1m
 }
 "#;
 
@@ -3841,9 +3841,9 @@ structure def Probe {
     param a : Length = auto
     param b : Length = auto
     param c : Length = auto
-    constraint a < 1mm
-    constraint b > 0mm
-    constraint c > 0mm
+    constraint a < 1mm && a > 0mm
+    constraint b > 0mm && b < 1m
+    constraint c > 0mm && c < 1m
 }
 "#;
 
@@ -4032,7 +4032,7 @@ structure def Probe {
     param b : Length = auto
     param k : Length = 1mm
     constraint k > 0mm
-    constraint a < 1mm
+    constraint a < 1mm && a > 0mm
     constraint k < 2mm
     constraint k >= 1mm
     constraint k <= 1mm
@@ -4041,7 +4041,7 @@ structure def Probe {
     constraint k > 0.2mm
     constraint k < 4mm
     constraint k > 0.3mm
-    constraint b > 0mm
+    constraint b > 0mm && b < 1m
 }
 "#;
 
@@ -4162,7 +4162,7 @@ structure def Probe {
     const SHARED_LABEL_SOURCE: &str = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2mm
+    wall > 2mm && wall < 1m
 }
 structure def A {
     param a : Length = auto

@@ -71,9 +71,10 @@ fn load_from_source_returns_gui_state_with_constraints() {
 ///   - `thickness > 2mm`     — Violated  (1mm ≯ 2mm). A statically-violated
 ///     constraint does not block the load: `ConstraintViolated` never reaches
 ///     `Severity::Error` (see `bracket_source_violating`'s tests below).
-///   - `tolerance > 0.1mm`   — Indeterminate. `EngineSession::new` installs no
-///     solver, so `= auto` stays `Value::Undef` and `SimpleConstraintChecker`
-///     returns Indeterminate. The cell is not geometry-derived, so
+///   - `tolerance > 0.1mm && tolerance < 1m` — Indeterminate. Bounded on both
+///     sides, so the compiler does not refuse it as a one-sided strict auto
+///     (#6692). `EngineSession::new` installs no solver, so `= auto` stays
+///     `Value::Undef` and `SimpleConstraintChecker` returns Indeterminate. The cell is not geometry-derived, so
 ///     `surface_geometry_derived_cells`' re-check re-evaluates it to
 ///     Indeterminate and leaves it alone — this leg does not flip.
 const TRI_VERDICT_SRC: &str = r#"structure def TriVerdict {
@@ -83,7 +84,7 @@ const TRI_VERDICT_SRC: &str = r#"structure def TriVerdict {
 
     constraint width > 10mm
     constraint thickness > 2mm
-    constraint tolerance > 0.1mm
+    constraint tolerance > 0.1mm && tolerance < 1m
 }"#;
 
 /// End-to-end fidelity of all three verdict tokens on a real load, and the
@@ -10089,7 +10090,7 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
 
     let source = r#"structure S {
     param thickness: Length = auto
-    constraint thickness > 2mm
+    constraint thickness > 2mm && thickness < 1m
 }"#;
 
     let thickness_id = ValueCellId::new("S", "thickness");

@@ -68,10 +68,11 @@ structure def Pedestal {
 // ── Feature 3: @test with auto param — constraint is Indeterminate ────────────
 // load = auto means the solver has not resolved it yet.
 // load > 0 cannot be evaluated → Indeterminate.  → INDETERMINATE
+// The upper bound keeps `load` a legal two-sided strict auto (#6692).
 
 @test structure TestUnknownLoad {
     param load: Length = auto
-    constraint load > 0
+    constraint load > 0 && load < 10mm
 }
 
 // ── Feature 4: @test exercising a constraint def reference (pass) ─────────────
