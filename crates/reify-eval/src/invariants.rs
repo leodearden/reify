@@ -77,21 +77,18 @@ pub struct StaleUndefViolation {
 ///    STRUCTURAL rule (task γ / #4954): a call that *consumes* a geometry/
 ///    selector value (`geometry_ops::consumes_geometry_or_selector` — keyed
 ///    on argument static types) but is NOT one of the kernel-free symbolic-
-///    eval-wired selector ctors
-///    (`geometry_ops::is_symbolic_eval_wired_selector_ctor`, the single
-///    EVAL_WIRED map) resolves only against a realized kernel; likewise a
-///    feature→datum projection (`geometry_ops::is_feature_datum_projection_call`)
-///    or an ad-hoc topology selector (`CompiledExprKind::AdHocSelector`,
-///    e.g. `body @ face("top")`). This rule CLOSES the class the old name
-///    lists missed — GD&T `max_deviation`, `split`, `feature`, the
-///    conformance queries, and any FUTURE geometry-arg consumer — with no
-///    per-name upkeep. (The `face`/`edge`/`solid_body`/`vertex` named-leaf
-///    ctors and the `union`/`intersect`/`difference` compositions were in this
-///    class at γ but have been eval-wired since task #5120 R2c, so they are
-///    NOT exempt: a still-`Undef` one is a `StaleUndefViolation`.) The
-///    eval-wired guard
-///    keeps the net tight (a well-formed `faces_by_normal` &c. that stays
-///    `Undef` is a real bug, not exempt). The kernel geometry-query family
+///    eval-wired selector ctors (the single list of those is
+///    `geometry_ops::symbolic_eval_helper_for_name`, read through
+///    `geometry_ops::is_symbolic_eval_wired_selector_ctor`) resolves only
+///    against a realized kernel; likewise a feature→datum projection
+///    (`geometry_ops::is_feature_datum_projection_call`) or an ad-hoc
+///    topology selector (`CompiledExprKind::AdHocSelector`, e.g.
+///    `body @ face("top")`). This rule CLOSES the class the old name lists
+///    missed — GD&T `max_deviation`, `split`, `feature`, the conformance
+///    queries, and any FUTURE geometry-arg consumer — with no per-name
+///    upkeep, while the eval-wired guard keeps the net tight (a well-formed
+///    `faces_by_normal` &c. that stays `Undef` is a real bug, not exempt).
+///    The kernel geometry-query family
 ///    (`is_geometry_consumer_call`: `volume`/`centroid`/…, `angle`) and the
 ///    kinematic/dynamics queries stay REGISTRY-keyed: they are build()-only
 ///    but consume ABSTRACTED handles (direction vectors, mechanism snapshots,
@@ -220,12 +217,7 @@ pub fn check_no_stale_undef(
         // top_frame = body @ face("top")`, `ad_hoc_face_selector.ri`) —
         // cannot be resolved on the kernel-less `eval()`/`eval_cached()`
         // surface at all: these require a realized geometry kernel and are
-        // only resolvable via `build()`/`tessellate()`. NOT in this class: a
-        // named-leaf selector constructor (`let s = face(b, "tag")`) — since
-        // task #5120 R2c it is eval-wired
-        // (`geometry_ops::is_symbolic_eval_wired_selector_ctor`) and resolves
-        // to a `Value::Selector` kernel-free, so a still-Undef one is
-        // deliberately NOT exempted here. This is the exact
+        // only resolvable via `build()`/`tessellate()`. This is the exact
         // class `engine_eval.rs`'s `detect_unresolved_geometry_consumers`
         // (task #4651 R1a / DD-4) already diagnoses at `EvalUnresolved` for
         // the direct-call case; generalized here to nested/UserFunctionCall
@@ -233,7 +225,11 @@ pub fn check_no_stale_undef(
         // design, top-level-builtin-only — does not catch, matching
         // `geometry_ops::try_eval_geometry_query`'s own DIRECT/NESTED split
         // for the build-path fold). A documented, standing eval-surface
-        // limitation, not staleness.
+        // limitation, not staleness. NOT build()-only: a selector
+        // constructor the kernel-free symbolic eval resolves to a
+        // `Value::Selector` (the single list of them is
+        // `geometry_ops::symbolic_eval_helper_for_name`), so clause 8
+        // deliberately does not exempt a still-Undef one.
         if expr_requires_build_only_resolution(expr, functions) {
             continue;
         }
@@ -309,16 +305,14 @@ const KINEMATIC_QUERY_NAMES: &[&str] = &["interferes", "interferes_with", "min_c
 ///    geometry/selector value ([`geometry_ops::consumes_geometry_or_selector`],
 ///    keyed on argument static types) but is NOT one of the kernel-free
 ///    symbolic-eval-wired selector ctors
-///    ([`geometry_ops::is_symbolic_eval_wired_selector_ctor`], the single
-///    EVAL_WIRED map). This CLOSES the class the old clause-8 name lists
-///    missed — GD&T `max_deviation`, `split`, `feature`, the conformance
-///    queries, AND any future geometry-arg consumer — with no per-name upkeep.
-///    The eval-wired guard keeps the α net tight: a well-formed leaf ctor
-///    (`faces_by_normal`, and, since task #5120 R2c, the `face`/`edge`/
-///    `solid_body`/`vertex` named-leaf ctors and the `union`/`intersect`/
-///    `difference` compositions) still `Undef` post-eval with all deps
-///    resolved is a genuine arity/scheduling bug and stays a violation, NOT
-///    an exemption.
+///    ([`geometry_ops::is_symbolic_eval_wired_selector_ctor`], which reads the
+///    single list of them, `geometry_ops::symbolic_eval_helper_for_name`).
+///    This CLOSES the class the old clause-8 name lists missed — GD&T
+///    `max_deviation`, `split`, `feature`, the conformance queries, AND any
+///    future geometry-arg consumer — with no per-name upkeep. The eval-wired
+///    guard keeps the α net tight: a well-formed leaf ctor (`faces_by_normal`
+///    &c.) still `Undef` post-eval with all deps resolved is a genuine
+///    arity/scheduling bug and stays a violation, NOT an exemption.
 ///
 /// 3. Registry recognition for the kernel geometry-query family
 ///    (`geometry_ops::is_geometry_consumer_call` — `volume`/`centroid`/… and
