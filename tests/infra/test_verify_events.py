@@ -3,8 +3,9 @@
 test_verify_events.py — the REIFY_VERIFY_EVENT_LOG verify event channel
 (PRD docs/prds/v0_6/run-all-runner-infra-harness.md §4, task 8685).
 
-ReaderTests drive tests/infra/verify_events.py, the stdlib reader and CLI,
-over channel files written by hand. EncoderTests drive the writer,
+ReaderTests drive the stdlib reader over channel files written by hand: the
+parser scripts/verify_events_lib.py and the query module and CLI
+tests/infra/verify_events.py. EncoderTests drive the writer,
 scripts/lib_event_log.sh, from bash and read its output back with that reader.
 SlotTimeoutRecordTests force real finite-WAIT deadlines through
 scripts/lib_slot_acquire.sh and every wrapper that calls it (PRD §9 R-1).
@@ -39,7 +40,9 @@ from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
+sys.path.insert(0, str(INFRA_DIR.parents[1] / "scripts"))
 import verify_events  # noqa: E402  (imported after sys.path manipulation)
+from verify_events_lib import read_events  # noqa: E402
 from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +51,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 RUN_ALL = REPO_ROOT / "tests" / "infra" / "run_all.sh"
 LIB = SCRIPTS / "lib_event_log.sh"
 CHANNEL_VAR = "REIFY_VERIFY_EVENT_LOG"
+COPY_VAR = "EVENT_LOG_COPY_TO"
 LINE_MAX = 4000
 DETAIL_ENTRY_MAX = 400
 
@@ -92,6 +96,13 @@ def lib_bash(snippet, *args, env, cwd=None, strict=False):
         ["bash", "-c", prologue + 'source "$1"; shift; ' + snippet, "_", str(LIB), *args],
         env=env,
         cwd=cwd,
+    )
+
+
+def lib_bash_with_copy(snippet, copy, *args, env, cwd=None, strict=False):
+    """lib_bash with the copy sink set to `copy` as a shell variable, never exported."""
+    return lib_bash(
+        f'{COPY_VAR}="$1"; shift; ' + snippet, str(copy), *args, env=env, cwd=cwd, strict=strict
     )
 
 
@@ -200,7 +211,7 @@ class ReaderTests(unittest.TestCase):
             + ONE_RUN[2:],
             tail=b'{"v":1,"ts_ns":1,"pid":1,"event":"run_fin',
         )
-        events = verify_events.read_events(path)
+        events = read_events(path)
         self.assertEqual(
             [r["event"] for r in events.records],
             ["run_start", "member_start", "member_finish", "slot_timeout", "run_finish"],
@@ -210,12 +221,12 @@ class ReaderTests(unittest.TestCase):
 
     def test_records_without_run_start_are_channel_absent(self):
         path = self.files.write("no-start.jsonl", ONE_RUN[1:])
-        events = verify_events.read_events(path)
+        events = read_events(path)
         self.assertEqual(len(events.records), 4)
         self.assertFalse(events.channel_present)
 
     def test_missing_file_is_an_empty_absent_channel(self):
-        events = verify_events.read_events(self.files.dir / "never-written.jsonl")
+        events = read_events(self.files.dir / "never-written.jsonl")
         self.assertEqual(events.records, ())
         self.assertEqual(events.skipped_lines, 0)
         self.assertFalse(events.channel_present)
@@ -227,14 +238,14 @@ class ReaderTests(unittest.TestCase):
             b'"waited":0,"disposition":"fatal","lock":"' + raw_lock + b'","emitter":"x"}'
         )
         path = self.files.write("bytes.jsonl", [run_start(0), line])
-        events = verify_events.read_events(path)
+        events = read_events(path)
         self.assertEqual(events.skipped_lines, 0)
         (timeout,) = verify_events.select(events, event="slot_timeout")
         self.assertEqual(timeout["lock"].encode("utf-8", "surrogateescape"), raw_lock)
 
     def test_summarize_aggregates_every_run_in_file_order(self):
         path = self.files.write("two-runs.jsonl", TWO_RUNS + ["garbage"])
-        summary = verify_events.summarize(verify_events.read_events(path))
+        summary = verify_events.summarize(read_events(path))
         self.assertEqual(
             summary,
             {
@@ -254,7 +265,7 @@ class ReaderTests(unittest.TestCase):
 
     def test_summarize_an_absent_channel(self):
         summary = verify_events.summarize(
-            verify_events.read_events(self.files.dir / "never-written.jsonl")
+            read_events(self.files.dir / "never-written.jsonl")
         )
         self.assertEqual(summary["channel"], "absent")
         self.assertEqual(summary["runs"], 0)
@@ -262,7 +273,7 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(summary["interrupted"])
 
     def test_select_compares_non_strings_by_their_json_spelling(self):
-        events = verify_events.read_events(self.files.write("two-runs.jsonl", TWO_RUNS))
+        events = read_events(self.files.write("two-runs.jsonl", TWO_RUNS))
         cases = [
             ({"event": "member_finish", "where": {"member": "test_a.sh", "rc": "1"}}, 1),
             ({"event": "member_finish", "where": {"rc": "0"}}, 1),
@@ -387,16 +398,24 @@ EMITTER_SHAPES = [
     ),
     (
         "member_finish",
-        ["test_a.sh", "2", "1", "FAIL", "17", "3", "  FAIL: x", "  FAIL: y"],
+        ["test_a.sh", "2", "1", "FAIL", "17", "1000", "2000", "5000", "3", "  FAIL: x", "  FAIL: y"],
         {
             "member": "test_a.sh",
             "attempt": 2,
             "rc": 1,
             "verdict": "FAIL",
             "duration_ms": 17,
+            "queued_ns": 1000,
+            "started_ns": 2000,
+            "ended_ns": 5000,
             "fail_detail": ["  FAIL: x", "  FAIL: y"],
             "fail_detail_omitted": 3,
         },
+    ),
+    (
+        "phase_finish",
+        ["pool", "1000", "5000"],
+        {"phase": "pool", "started_ns": 1000, "ended_ns": 5000},
     ),
     (
         "slot_timeout",
@@ -428,10 +447,14 @@ EMITTER_SHAPES = [
 ALL_EMITTERS_ONCE = (
     "event_log_emit_run_start r all pool 1; "
     "event_log_emit_member_start m 1 capture; "
-    "event_log_emit_member_finish m 1 0 PASS 1 0; "
+    "event_log_emit_member_finish m 1 0 PASS 1 - 1 2 0; "
+    "event_log_emit_phase_finish p 1 2; "
     "event_log_emit_slot_timeout r 1 1 fatal /l e; "
     "event_log_emit_run_finish 1 0 false 0 0 0"
 )
+ALL_EMITTER_NAMES = [
+    "run_start", "member_start", "member_finish", "phase_finish", "slot_timeout", "run_finish",
+]
 
 AWKWARD = 'sp ace "quote" back\\slash\nnew\rline\ttab\x01ctl\x1fus été del\x7f'
 
@@ -456,7 +479,7 @@ class EncoderTests(unittest.TestCase):
         self.env = channel_env(self.channel)
 
     def read(self):
-        return verify_events.read_events(self.channel)
+        return read_events(self.channel)
 
     def physical_lines(self):
         return self.channel.read_bytes().split(b"\n")[:-1]
@@ -484,7 +507,12 @@ class EncoderTests(unittest.TestCase):
         calls = [
             ("slot_timeout", ["r", "1", "0", "fatal", AWKWARD, "e"], lambda r: r["lock"]),
             ("member_start", [AWKWARD, "1", "stream"], lambda r: r["member"]),
-            ("member_finish", ["m", "1", "1", "FAIL", "1", "0", AWKWARD], lambda r: r["fail_detail"][0]),
+            (
+                "member_finish",
+                ["m", "1", "1", "FAIL", "1", "-", "-", "-", "0", AWKWARD],
+                lambda r: r["fail_detail"][0],
+            ),
+            ("phase_finish", [AWKWARD, "1", "2"], lambda r: r["phase"]),
             ("run_finish", ["1", "1", "false", "1", AWKWARD, "0", "0"], lambda r: r["failed"][0]),
         ]
         for emitter, args, field in calls:
@@ -502,10 +530,30 @@ class EncoderTests(unittest.TestCase):
             ("member_start", ["m", "two", "capture"], {"attempt": None}),
             (
                 "member_finish",
-                ["m", "0", "", "SKIP", "", "0"],
-                {"attempt": 0, "rc": None, "duration_ms": None, "fail_detail": []},
+                ["m", "0", "", "SKIP", "", "", "", "", "0"],
+                {
+                    "attempt": 0,
+                    "rc": None,
+                    "duration_ms": None,
+                    "queued_ns": None,
+                    "started_ns": None,
+                    "ended_ns": None,
+                    "fail_detail": [],
+                },
             ),
-            ("member_finish", ["m", "1", "abc", "FAIL", "1.5", "x"], {"rc": None, "duration_ms": None, "fail_detail_omitted": None}),
+            (
+                "member_finish",
+                ["m", "1", "abc", "FAIL", "1.5", "-", "1.5", "-", "x"],
+                {
+                    "rc": None,
+                    "duration_ms": None,
+                    "queued_ns": None,
+                    "started_ns": None,
+                    "ended_ns": None,
+                    "fail_detail_omitted": None,
+                },
+            ),
+            ("phase_finish", ["retry", "-", "1.5"], {"phase": "retry", "started_ns": None, "ended_ns": None}),
             ("slot_timeout", ["r", "12x", "-3", "fatal", "/l", "e"], {"slots": None, "waited": -3}),
             ("run_finish", ["007", "-0", "maybe", "0", "0", "0"], {"discovered": 7, "failures": 0, "interrupted": None}),
         ]
@@ -521,7 +569,9 @@ class EncoderTests(unittest.TestCase):
 
     def test_member_finish_keeps_the_newest_detail_within_the_line_cap(self):
         detail = [f"{i:02d}" + "x" * 898 for i in range(30)]
-        result = emit("member_finish", "m", "1", "1", "FAIL", "9", "4", *detail, env=self.env)
+        result = emit(
+            "member_finish", "m", "1", "1", "FAIL", "9", "1", "2", "3", "4", *detail, env=self.env
+        )
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         (line,) = self.physical_lines()
         self.assertLessEqual(len(line) + 1, LINE_MAX)
@@ -541,7 +591,9 @@ class EncoderTests(unittest.TestCase):
                 with self.subTest(char=ascii(char), prefix=prefix):
                     self.channel.unlink(missing_ok=True)
                     entry = "x" * prefix + char + "tail"
-                    result = emit("member_finish", "m", "1", "1", "FAIL", "1", "0", entry, env=env)
+                    result = emit(
+                        "member_finish", "m", "1", "1", "FAIL", "1", "-", "-", "-", "0", entry, env=env
+                    )
                     self.assertEqual((result.returncode, result.stderr), (0, ""))
                     (line,) = self.physical_lines()
                     rec = json.loads(line.decode("utf-8"))
@@ -622,15 +674,23 @@ class EncoderTests(unittest.TestCase):
                 rec = self.emit_run_finish_strictly("3", "1", "false", *lists)
                 self.assertEqual((rec["failed"], rec["flaky"], rec["skipped"]), (["a"], [], []))
 
-    def test_an_unwritable_channel_is_silent_and_never_changes_control_flow(self):
+    def unwritable_paths(self):
         regular = self.files.dir / "regular-file"
         regular.write_text("not a dir\n")
-        unwritable = {
+        self.addCleanup(lambda: self.assertEqual(regular.read_text(), "not a dir\n"))
+        return {
             "parent is a regular file": regular / "channel.jsonl",
             "path is a directory": self.files.dir,
             "parent dir is missing": self.files.dir / "missing" / "channel.jsonl",
         }
-        for label, path in unwritable.items():
+
+    def assert_strict_run_continues(self, result):
+        self.assertEqual(
+            (result.returncode, result.stdout, result.stderr), (0, "next-command-ran\n", "")
+        )
+
+    def test_an_unwritable_channel_is_silent_and_never_changes_control_flow(self):
+        for label, path in self.unwritable_paths().items():
             for emitter, args, _ in EMITTER_SHAPES:
                 with self.subTest(label, emitter=emitter):
                     result = emit(emitter, *args, env=channel_env(path))
@@ -644,7 +704,73 @@ class EncoderTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, "next-command-ran\n")
                 self.assertEqual(result.stderr, "")
-        self.assertEqual(regular.read_text(), "not a dir\n")
+
+    def test_an_unwritable_sink_never_starves_the_other_one(self):
+        copy = self.files.dir / "copy.jsonl"
+        for label, path in self.unwritable_paths().items():
+            cases = {
+                "copy unwritable, channel unset": (None, path, None),
+                "copy unwritable, channel writable": (self.channel, path, self.channel),
+                "channel unwritable, copy writable": (path, copy, copy),
+            }
+            for case, (channel, copy_to, written) in cases.items():
+                with self.subTest(label, case=case):
+                    self.channel.unlink(missing_ok=True)
+                    copy.unlink(missing_ok=True)
+                    result = lib_bash_with_copy(
+                        ALL_EMITTERS_ONCE + "; echo next-command-ran",
+                        copy_to,
+                        env=channel_env(channel),
+                        strict=True,
+                    )
+                    self.assert_strict_run_continues(result)
+                    if written is not None:
+                        events = read_events(written)
+                        self.assertEqual(
+                            ([r["event"] for r in events.records], events.skipped_lines),
+                            (ALL_EMITTER_NAMES, 0),
+                        )
+
+    def test_both_sinks_get_byte_identical_records(self):
+        copy = self.files.dir / "copy.jsonl"
+        result = lib_bash_with_copy(ALL_EMITTERS_ONCE, copy, env=self.env, strict=True)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        events = self.read()
+        self.assertEqual(
+            ([r["event"] for r in events.records], events.skipped_lines), (ALL_EMITTER_NAMES, 0)
+        )
+        self.assertEqual(copy.read_bytes(), self.channel.read_bytes())
+
+    def test_the_copy_sink_alone_gets_every_record_and_creates_nothing_else(self):
+        cwd = self.files.dir / "cwd"
+        tmp = self.files.dir / "tmp"
+        cwd.mkdir()
+        tmp.mkdir()
+        copy = self.files.dir / "copy.jsonl"
+        env = channel_env(None, TMPDIR=str(tmp))
+        assert_channel_unset(self, env)
+        result = lib_bash_with_copy(ALL_EMITTERS_ONCE, copy, env=env, cwd=cwd, strict=True)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        events = read_events(copy)
+        self.assertEqual(
+            ([r["event"] for r in events.records], events.skipped_lines), (ALL_EMITTER_NAMES, 0)
+        )
+        self.assertEqual((list(cwd.iterdir()), list(tmp.iterdir())), ([], []))
+
+    def test_ts_ns_and_the_ns_fields_read_the_one_public_clock(self):
+        result = lib_bash(
+            "event_log_clock_ns a; event_log_emit_member_start m 1 capture; "
+            'event_log_clock_ns b; printf "%s %s\\n" "$a" "$b"',
+            env=self.env,
+            strict=True,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        before, after = result.stdout.split()
+        self.assertRegex(before, r"^[0-9]+$")
+        self.assertRegex(after, r"^[0-9]+$")
+        (rec,) = self.read().records
+        self.assertLessEqual(int(before), rec["ts_ns"])
+        self.assertLessEqual(rec["ts_ns"], int(after))
 
     def test_unset_channel_creates_nothing_and_prints_nothing(self):
         cwd = self.files.dir / "cwd"
@@ -653,6 +779,7 @@ class EncoderTests(unittest.TestCase):
         tmp.mkdir()
         env = channel_env(None, TMPDIR=str(tmp))
         assert_channel_unset(self, env)
+        self.assertNotIn(COPY_VAR, env)
         result = lib_bash(ALL_EMITTERS_ONCE, env=env, cwd=cwd, strict=True)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
         self.assertEqual((list(cwd.iterdir()), list(tmp.iterdir())), ([], []))
@@ -663,6 +790,7 @@ class EncoderTests(unittest.TestCase):
             self.skipTest(reason)
         env = channel_env(None)
         assert_channel_unset(self, env)
+        self.assertNotIn(COPY_VAR, env)
         loop = 'for ((i = 0; i < $1; i++)); do ' + ALL_EMITTERS_ONCE + "; done"
         counts = {}
         for calls in (0, 25):
@@ -787,7 +915,7 @@ class SlotTimeoutRecordTests(unittest.TestCase):
         self.locks.mkdir()
 
     def timeouts(self):
-        return verify_events.select(verify_events.read_events(self.channel), event="slot_timeout")
+        return verify_events.select(read_events(self.channel), event="slot_timeout")
 
     def assert_one_timeout(self, lock, **fields):
         records = self.timeouts()
@@ -1020,7 +1148,7 @@ class RunAllFixture:
             test.assertEqual(run([*git, *args]).returncode, 0, args)
 
     def events(self):
-        return verify_events.read_events(self.channel)
+        return read_events(self.channel)
 
 
 # (run_start.branch, extra run_all flags, knobs) for the B1 member set.
