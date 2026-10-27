@@ -4,23 +4,23 @@ Functions (`fn`) are non-entity declarations: no identity, no determinacy state.
 
 ## Syntax
 
-```reify-fragment
-fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
-    let dx = t.xx - t.yy;
-    let dy = t.yy - t.zz;
-    let dz = t.zz - t.xx;
-    sqrt(0.5 * (dx^2 + dy^2 + dz^2))
+```reify
+fn hoop_stress(p : Scalar<Pressure>, r : Length, t : Length) -> Scalar<Pressure> {
+    let ratio = r / t;
+    p * ratio
 }
 
-fn clamp(x : Real, lo : Real, hi : Real) -> Real {
-    if x < lo then lo else if x > hi then hi else x
+fn friction_factor(re : Real) -> Real {
+    if re < 2300 then 64 / re else 0.316 / re^0.25
 }
+
+fn as_percent(fraction : Real) -> Real = fraction * 100
 ```
 
 ## Properties
 
 - **Pure** — no side effects, no state
-- **Block body** — `{ }` with `let` bindings and a final expression (return value)
+- **Block body** — `{ }` with `let` bindings, each terminated by `;`, and a final expression (the return value); a body with no bindings may instead be written `= expr` (as `as_percent` shows)
 - **No `return` keyword** — last expression is the return value
 - **Type annotations mandatory** on parameters and return type
 - **Can be `pub`** for cross-module reuse
