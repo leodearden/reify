@@ -24,13 +24,14 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 /// Panics listing every available module path on a miss, so a module rename
 /// fails loudly instead of making every test below vacuous.
 fn load_stdlib_module() -> &'static CompiledModule {
-    stdlib_loader::load_stdlib()
+    let stdlib = stdlib_loader::load_stdlib();
+    stdlib
         .iter()
         .find(|m| m.path.to_string() == "std/modal/analysis/fns")
         .unwrap_or_else(|| {
             panic!(
                 "stdlib should contain std/modal/analysis/fns module; available paths: {:?}",
-                stdlib_loader::load_stdlib()
+                stdlib
                     .iter()
                     .map(|m| m.path.to_string())
                     .collect::<Vec<_>>()
