@@ -610,3 +610,116 @@ fn build_dash_o_still_exports_a_module_without_a_bound() {
         result.stderr
     );
 }
+
+// ── `reify check --verbose` achieved-deviation readout (task #7462) ─────────
+
+/// The `--verbose` readout lines in `stdout`, as `(occurrence, deviation)`:
+/// `  <occurrence>: sampled facet deviation: <X> m`.
+fn readout_lines(stdout: &str) -> Vec<(String, f64)> {
+    stdout.lines().filter_map(parse_readout_line).collect()
+}
+
+fn parse_readout_line(line: &str) -> Option<(String, f64)> {
+    let (occurrence, number) = line
+        .strip_prefix("  ")?
+        .strip_suffix(" m")?
+        .split_once(": sampled facet deviation: ")?;
+    let deviation = number
+        .parse()
+        .unwrap_or_else(|e| panic!("readout number {number:?} must parse as f64: {e}"));
+    Some((occurrence.to_string(), deviation))
+}
+
+/// `--verbose` is purely additive: same exit code, byte-identical stderr, and a
+/// stdout that equals the default one once the readout lines are removed.
+/// Stub mode has nothing measured, so it must print no readout at all; under
+/// OCCT the sphere IS measured, so at least one line keeps the comparison from
+/// passing vacuously.
+#[test]
+fn check_verbose_adds_only_the_deviation_readout() {
+    let path = common::example_path("representation_within.ri");
+    let (default_status, default_stdout, default_stderr) =
+        common::run_with_args(&["check", &path]);
+    let (verbose_status, verbose_stdout, verbose_stderr) =
+        common::run_with_args(&["check", "--verbose", &path]);
+
+    assert_eq!(
+        verbose_status.code(),
+        default_status.code(),
+        "--verbose must not change the exit code.\nverbose stderr: {verbose_stderr}"
+    );
+    assert_eq!(verbose_stderr, default_stderr, "--verbose must not change stderr");
+    let verbose_stdout_without_readout: String = verbose_stdout
+        .split_inclusive('\n')
+        .filter(|line| parse_readout_line(line.trim_end_matches('\n')).is_none())
+        .collect();
+    assert_eq!(
+        verbose_stdout_without_readout, default_stdout,
+        "--verbose stdout minus readout lines must equal the default stdout"
+    );
+
+    let readout = readout_lines(&verbose_stdout);
+    if reify_kernel_occt::OCCT_AVAILABLE {
+        assert!(
+            !readout.is_empty(),
+            "OCCT mode: the measured sphere must produce a readout line.\n\
+             stdout: {verbose_stdout}"
+        );
+    } else {
+        assert!(
+            readout.is_empty(),
+            "stub mode measures nothing, so it must print no readout; got {readout:?}"
+        );
+    }
+}
+
+/// OCCT-gated: the readout reports the same measurement the comparator used —
+/// it rounds to the Violated diagnostic's `.3e` datum — and it is not itself
+/// counted as a second datum by the calibration note's `deviation <number>`
+/// grep shape across both streams.
+#[test]
+fn check_verbose_readout_agrees_with_the_violation_diagnostic() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping check_verbose_readout_agrees_with_the_violation_diagnostic: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+    let path = common::example_path("representation_within.ri");
+    let (_, stdout, stderr) = common::run_with_args(&["check", "--verbose", &path]);
+
+    let (_, measured) = readout_lines(&stdout)
+        .into_iter()
+        .find(|(occurrence, _)| occurrence == "CurvedBall#realization[0]")
+        .unwrap_or_else(|| panic!("no CurvedBall#realization[0] readout.\nstdout: {stdout}"));
+    let diagnostic_datum = stderr
+        .split("sampled facet deviation ")
+        .nth(1)
+        .and_then(|rest| rest.split_once(" m exceeds bound"))
+        .map(|(datum, _)| datum)
+        .unwrap_or_else(|| panic!("no Violated deviation datum on stderr: {stderr}"));
+    assert_eq!(
+        format!("{measured:.3e}"),
+        diagnostic_datum,
+        "the readout must be the value the Violated diagnostic rounded"
+    );
+
+    let datum_lines = stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|line| {
+            line.match_indices("deviation ").any(|(at, needle)| {
+                line[at + needle.len()..]
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_digit())
+            })
+        })
+        .count();
+    assert_eq!(
+        datum_lines, 1,
+        "exactly one `deviation <number>` datum line across both streams.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
