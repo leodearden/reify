@@ -1325,6 +1325,8 @@ a < b       a > b       a <= b      a >= b
 
 Equality is structural for value types, identity for structure references.
 
+`==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
+
 **Chained comparisons:** `a < b < c` desugars to `a < b and b < c`. Any comparison operators may chain.
 
 ```
@@ -3108,6 +3110,8 @@ From highest to lowest precedence:
 | 15 (lowest) | `implies` | Right | Logical implication |
 
 Chained comparisons: `a < b < c` desugars to `a < b and b < c`.
+
+Binder bodies have no row because they are not operators. That covers a quantifier predicate (the expression after `forall`/`exists` … `:`), a conditional's `else` branch and a lambda body. Each body extends as far right as possible, past every operator in the table, `implies` included. So `forall v in xs: v > 0 and v < 3` means `forall v in xs: (v > 0 and v < 3)`, and `if c then a else b and d` means `if c then a else (b and d)`. To end a body early, parenthesise the binder: `(forall v in xs: p) and q`.
 
 ---
 

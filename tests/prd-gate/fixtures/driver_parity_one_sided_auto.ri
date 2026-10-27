@@ -8,7 +8,8 @@ module driver_parity_one_sided_auto
 //   reify eval -> OneSided.rod.length = 10 m   (1250x the intended scale, exit 0)
 // Target after this PRD: every driver emits the coded one-sided diagnostic and
 // `reify check` exits nonzero. No driver reports 10 m.
-// See driver_parity_two_sided_auto.ri for the discriminating negative case.
+// See driver_parity_two_sided_auto.ri for the discriminating negative case,
+// and driver_parity_one_sided_auto_free.ri for its auto(free) twin (never refused).
 pub structure Rod {
     param length : Length = 5mm
     let body = cylinder(3mm, length)

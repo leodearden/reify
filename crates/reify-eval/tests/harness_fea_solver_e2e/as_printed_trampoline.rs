@@ -18,8 +18,10 @@
 
 use std::sync::Arc;
 
-use crate::common::as_printed::{as_printed_options, box_mesh, fdm_process, BOX_MAX, BOX_MIN};
-use reify_core::{ContentHash, RealizationNodeId, Type};
+use crate::common::as_printed::{
+    BOX_MAX, BOX_MIN, as_printed_options, box_mesh, coupon_default, fdm_process, scalar, with_field,
+};
+use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};
 use reify_ir::{FieldSourceKind, Value};
@@ -149,4 +151,139 @@ fn as_printed_trampoline_produces_as_printed_zones_field_with_distinct_zone_mate
             "{name}: build-Z (axial {e_axial}) must be weaker than in-plane ({e_in_plane})"
         );
     }
+}
+
+// ── task 6922 η: the as-printed readers reject a wrong dimension ─────────────
+
+fn run_r_fast(options: Value) -> ComputeOutcome {
+    run_r_fast_with(fdm_process(), options)
+}
+
+fn run_r_fast_with(process: Value, options: Value) -> ComputeOutcome {
+    as_printed_material_r_fast_trampoline(
+        &[Value::Undef, process, options],
+        &[body_handle()],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    )
+}
+
+/// `outcome` is `Failed` with exactly one `DimensionedArgRejected` Error
+/// naming `path` (the code is the contract; the path is a naming check).
+fn assert_rejects(outcome: ComputeOutcome, path: &str) {
+    let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+        panic!("a refused {path} must yield Failed, got {outcome:?}");
+    };
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one diagnostic, got {diagnostics:?}"
+    );
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.severity, Severity::Error);
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::DimensionedArgRejected)
+    );
+    assert!(
+        diagnostic.message.contains(path),
+        "the rejection must name {path:?}, got {:?}",
+        diagnostic.message
+    );
+}
+
+/// The infill zone's in-plane modulus of a `Completed` run with no diagnostics.
+fn infill_e_in_plane(outcome: ComputeOutcome) -> f64 {
+    match outcome {
+        ComputeOutcome::Completed {
+            result: Value::Field { lambda, .. },
+            diagnostics,
+            ..
+        } => {
+            assert!(
+                diagnostics.is_empty(),
+                "no diagnostics expected, got {diagnostics:?}"
+            );
+            let Value::List(items) = lambda.as_ref() else {
+                panic!("expected the 7-element zone payload, got {lambda:?}");
+            };
+            law_constant(&items[6], "e_in_plane")
+        }
+        other => panic!("expected Completed with a Field, got {other:?}"),
+    }
+}
+
+fn coupon_with_ex(ex: Value) -> Value {
+    with_field(coupon_default(), "ex", Value::Option(Some(Box::new(ex))))
+}
+
+#[test]
+fn as_printed_trampoline_rejects_a_bare_line_width() {
+    let options = with_field(as_printed_options(), "line_width", Value::Real(0.4));
+    assert_rejects(run_r_fast(options), "AsPrintedOptions.line_width");
+}
+
+#[test]
+fn as_printed_trampoline_rejects_a_length_coupon_modulus() {
+    let coupon = coupon_with_ex(scalar(0.002, DimensionVector::LENGTH));
+    let options = with_field(as_printed_options(), "coupon", coupon);
+    assert_rejects(run_r_fast(options), "FDMCouponOverride.ex");
+}
+
+#[test]
+fn as_printed_trampoline_rejects_a_non_numeric_line_width() {
+    let options = with_field(as_printed_options(), "line_width", Value::Bool(true));
+    assert_rejects(run_r_fast(options), "AsPrintedOptions.line_width");
+}
+
+#[test]
+fn as_printed_trampoline_rejects_a_length_infill_density() {
+    let process = with_field(
+        fdm_process(),
+        "infill_density",
+        scalar(0.2, DimensionVector::LENGTH),
+    );
+    assert_rejects(
+        run_r_fast_with(process, as_printed_options()),
+        "FDMProcess.infill_density",
+    );
+}
+
+#[test]
+fn as_printed_trampoline_reads_a_bare_gibson_ashby_coefficient() {
+    let baseline = infill_e_in_plane(run_r_fast(as_printed_options()));
+    let coupon = with_field(
+        coupon_default(),
+        "infill_gibson_ashby_c",
+        Value::Option(Some(Box::new(Value::Real(2.0)))),
+    );
+    let overridden = infill_e_in_plane(run_r_fast(with_field(
+        as_printed_options(),
+        "coupon",
+        coupon,
+    )));
+    assert_ne!(
+        overridden, baseline,
+        "a bare dimensionless C must be read, not refused or ignored"
+    );
+}
+
+#[test]
+fn as_printed_trampoline_applies_a_pressure_coupon_modulus_without_diagnostics() {
+    let baseline = infill_e_in_plane(run_r_fast(as_printed_options()));
+    let coupon = coupon_with_ex(scalar(2.0e9, DimensionVector::PRESSURE));
+    let overridden = infill_e_in_plane(run_r_fast(with_field(
+        as_printed_options(),
+        "coupon",
+        coupon,
+    )));
+    assert_eq!(
+        overridden, 2.0e9,
+        "the ex override sets the in-plane modulus"
+    );
+    assert_ne!(
+        overridden, baseline,
+        "the override must change the infill law"
+    );
 }

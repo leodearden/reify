@@ -314,3 +314,11 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   (intent queries → new idioms surfaced) runs against ν/ξ's landed content
   (hard edges ν→ο, ξ→ο). Committed transcript is the deliverable —
   producer-self.
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| γ #5439 | `snapshot-substrate` (`fn try_eval_kinematic_query`, present) | + `crates/reify-eval/src/geometry_ops/` |

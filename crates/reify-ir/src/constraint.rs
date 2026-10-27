@@ -165,13 +165,10 @@ impl ObjectiveSet {
 /// Extracts the `DimensionVector` from a `Type`, defaulting to `DIMENSIONLESS`
 /// for any non-`Scalar` type. STATIC (no eval) — reads only `Type::Scalar { dimension }`.
 ///
-/// Canonical shared home (PRD `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`
-/// task α, #5018) for this extraction, reachable from reify-compiler (compile-time gate),
-/// reify-constraints / reify-eval (fold-site backstops), and any future solve-time
-/// consumer (e.g. #4785's merged cross-scope objective builder). The pre-existing
-/// private copy in `reify-constraints/src/solver.rs` (`dimension_of`, serving the hot
-/// `AutoParam.param_type` extraction path in `build_trial_values`) is intentionally left
-/// in place — de-duplicating that copy is out of scope for this task (see design notes).
+/// The single home (PRD `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`
+/// task α, #5018) for this extraction: [`objective_terms_coherent`] below and
+/// reify-constraints' `solver` (e.g. the `AutoParam.param_type` path in
+/// `build_trial_values`) and `solvespace` all call it rather than restating the match.
 pub fn dimension_of(ty: &Type) -> DimensionVector {
     match ty {
         Type::Scalar { dimension } => *dimension,

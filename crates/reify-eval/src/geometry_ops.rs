@@ -12,6 +12,7 @@ use reify_ir::{
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
 use crate::eval_ctx_with_meta;
+use crate::kernel_owner::resolve_owning_kernel_name;
 
 /// Minimum meaningful distance in meters (1 picometer).
 ///
@@ -585,7 +586,7 @@ pub(crate) fn optional_length_value(
 /// [`required_length_values`] (which this delegates to at `N == 1`, so
 /// `reify_ir::Value::length` is still called from exactly one site) — the IR
 /// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
-/// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
+/// primitive and profile dimensions (`Box` size_x/size_y/size_z, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
 /// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
 /// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
@@ -826,7 +827,7 @@ fn required_angle_args<const N: usize>(
 /// the `N == 1` special case of it, not a second minting site.
 ///
 /// ALL FAILURES AT ONCE, restated here because it is the reason this exists
-/// (reviewer amendment, task 5743): a primitive's `width`/`height`/`depth` and
+/// (reviewer amendment, task 5743): a box's `size_x`/`size_y`/`size_z` and
 /// a profile's `semi_major`/`semi_minor` are written as ONE gesture, exactly
 /// like a `translate` triple, so a bare primitive is usually bare in EVERY
 /// dimension. Reading them through per-field `?`-chained
@@ -2908,8 +2909,8 @@ fn prim_box(
     // ONE grouped read, not three `?`-chained ones: a bare `box(20, 20, 10)`
     // is bare in every dimension, so every failing slot must be diagnosed in a
     // single build (see `required_length_values`).
-    let [width, height, depth] = required_length_values(
-        ["width", "height", "depth"],
+    let [size_x, size_y, size_z] = required_length_values(
+        ["size_x", "size_y", "size_z"],
         kind,
         args,
         values,
@@ -2918,9 +2919,9 @@ fn prim_box(
         diagnostics,
     )?;
     Ok(reify_ir::GeometryOp::Box {
-        width,
-        height,
-        depth,
+        size_x,
+        size_y,
+        size_z,
     })
 }
 
@@ -6871,30 +6872,12 @@ fn resolve_int_value_ref(
     }
 }
 
-/// Dimension-qualified label for a `Value::Scalar`, mirroring
-/// `arg_acceptance::value_short_label` so the `got` payload of task ε's
-/// non-scalar resolvers (int / point / vec3 / range / string) reports the
-/// SAME dimension-qualified Scalar wording as the density / scalar-dim paths
-/// that route through `accept_arg` — e.g. `"MASS_DENSITY Scalar"`,
-/// `"dimensionless Scalar"`, `"dimensioned Scalar"`. `value_short_label` is
-/// module-private to `arg_acceptance` (owned by task δ, not modified here), so
-/// the Scalar arm is replicated rather than shared.
-fn scalar_got_label(dimension: &reify_core::DimensionVector) -> String {
-    if dimension.is_dimensionless() {
-        "dimensionless Scalar".to_string()
-    } else if let Some(name) = dimension.canonical_name() {
-        format!("{name} Scalar")
-    } else {
-        "dimensioned Scalar".to_string()
-    }
-}
-
 /// Short human-readable label for a `Value` that failed Int classification,
 /// used as the `got` field of the rejection diagnostic (task ε).
 fn int_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::String(_) => "String".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -10083,8 +10066,9 @@ enum TopologySelectorHelper {
     /// `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` —
     /// at-point curvature (task 3621, KGQ-μ, PRD §9). For a surface (face),
     /// returns a 2×2 `Value::Matrix` of principal curvatures [[κ_max,0],[0,κ_min]]
-    /// as `Value::Scalar{ dimension: 1/Length }` cells; for a curve (edge),
-    /// returns `Value::Scalar{ si_value: κ, dimension: 1/Length }`. Dispatches
+    /// as `Value::Scalar{ dimension: DimensionVector::CURVATURE }` (rad·m⁻¹) cells;
+    /// for a curve (edge), returns
+    /// `Value::Scalar{ si_value: κ, dimension: DimensionVector::CURVATURE }`. Dispatches
     /// `GeometryQuery::SurfaceCurvatureAt` first; on error retries as
     /// `GeometryQuery::CurveCurvatureAt`. Backed by `OcctKernel::curvature_at`
     /// (surface) and `OcctKernel::curve_curvature_at` (curve).
@@ -10375,7 +10359,7 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
         }
         reify_ir::Value::Point(_) => "Point with a non-Length or non-Scalar component".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -10581,7 +10565,7 @@ fn vec3_got_label(value: &reify_ir::Value) -> String {
             "Vector with a dimensioned or non-numeric component".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Point(_) => "Point".to_string(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
@@ -10816,7 +10800,7 @@ fn range_got_label(value: &reify_ir::Value) -> String {
             "Range with a wrong-dimension or non-Scalar bound".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -11103,15 +11087,6 @@ fn dispatch_normal_vector3(
     }
 }
 
-/// Curvature dimension constant: 1/Length = Length^-1 (m⁻¹ in SI).
-/// Used by `dispatch_curvature` to tag scalar and matrix cells.
-/// The curvature dimension is LENGTH^-1. index 0 = LENGTH in DimensionVector.
-const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
-    let mut d = [reify_core::dimension::Rational::ZERO; 10];
-    d[0] = reify_core::dimension::Rational::new(-1, 1);
-    reify_core::dimension::DimensionVector(d)
-};
-
 /// Dispatch a `length(curve)` query for `TopologySelectorHelper::Length`
 /// (task 3622, KGQ-ν).
 ///
@@ -11201,10 +11176,15 @@ fn dispatch_perimeter(
 ///
 /// Strategy: try `SurfaceCurvatureAt{handle, u=px, v=py}` first. If the kernel
 /// returns Ok, decode the `[[κ_max,0],[0,κ_min]]` nested-List wire value into a
-/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells. If
-/// the kernel returns Err, retry as `CurveCurvatureAt{handle,px,py,pz}` and
-/// return `Value::Scalar{si_value: κ, dimension: 1/Length}`. If both fail, emit
-/// exactly one Warning naming `helper_name` and return `Some(Value::Undef)`.
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: DimensionVector::CURVATURE}`
+/// (rad·m⁻¹) cells. If the kernel returns Err, retry as
+/// `CurveCurvatureAt{handle,px,py,pz}` and return
+/// `Value::Scalar{si_value: κ, dimension: DimensionVector::CURVATURE}`. If both
+/// fail, emit exactly one Warning naming `helper_name` and return
+/// `Some(Value::Undef)`.
+///
+/// The kernel's raw κ is tagged here, and this is where the arc measure is
+/// asserted: η = 1, so the value passes through unchanged.
 ///
 /// The surface wire note: the kernel encodes the principal-curvature matrix as a
 /// diagonal `[[kappa_max, 0.0], [0.0, kappa_min]]` (InertiaTensor wire convention)
@@ -11241,7 +11221,7 @@ fn dispatch_curvature(
     match kernel.query(&curve_query) {
         Ok(reify_ir::Value::Real(kappa)) => Some(reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         }),
         Ok(unexpected) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -11260,7 +11240,8 @@ fn dispatch_curvature(
 }
 
 /// Decode the kernel's `[[κ_max, 0.0], [0.0, κ_min]]` nested-List reply into a
-/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells.
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: DimensionVector::CURVATURE}`
+/// (rad·m⁻¹) cells.
 ///
 /// On any parse failure emits a Warning and returns `Value::Undef` (same
 /// defensive-downgrade contract as `dispatch_normal_vector3`).
@@ -11304,7 +11285,7 @@ fn parse_curvature_matrix_reply(
             };
             matrix_row.push(reify_ir::Value::Scalar {
                 si_value,
-                dimension: CURVATURE_DIM,
+                dimension: reify_core::DimensionVector::CURVATURE,
             });
         }
         matrix_rows.push(matrix_row);
@@ -11831,7 +11812,7 @@ fn string_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -12390,24 +12371,6 @@ fn fold_pose_chain<'a>(poses: impl Iterator<Item = &'a reify_ir::Value>) -> reif
     })
 }
 
-/// Human-readable label for a [`reify_core::DimensionVector`], suitable for a
-/// user-facing diagnostic.
-///
-/// [`reify_core::DimensionVector::canonical_name`] deliberately excludes
-/// `DIMENSIONLESS` from its named-singleton table and returns `None` for it —
-/// which is precisely the case task 6099 is about — so the dimensionless check
-/// comes FIRST and yields the literal `"dimensionless"`. Unnamed composite
-/// dimensions (e.g. `MONEY/MASS`) fall through to the `Display` exponent form.
-fn dimension_label(d: reify_core::DimensionVector) -> String {
-    if d.is_dimensionless() {
-        return "dimensionless".to_string();
-    }
-    match d.canonical_name() {
-        Some(name) => name.to_string(),
-        None => format!("{d}"),
-    }
-}
-
 /// The translation dimension of a pose [`reify_ir::Value::Transform`], if it has one.
 ///
 /// Goes through the `translation` field on purpose: `Value::dimension()` called
@@ -12539,8 +12502,8 @@ pub(crate) fn diagnose_pose_composition_failure(
              cannot be composed, so `{sub_name}` would be placed at the origin. \
              Give the pose length-dimensioned components, e.g. \
              `vec3(5.0mm, 0.0mm, 0.0mm)`.",
-            dimension_label(sd),
-            dimension_label(pd),
+            sd.diagnostic_dimension_label(),
+            pd.diagnostic_dimension_label(),
         )));
     }
 
@@ -12681,13 +12644,17 @@ pub(crate) type PlacedPreFilter<'a> = Option<&'a dyn Fn(usize, usize, &str) -> b
 /// Placed-product body collected by the T7 export walk (`surface_export_bodies`).
 ///
 /// The `entity_path` is the composed PRD §11.2 path; `handle_id` is the
-/// `GeometryHandleId` of the placed BRep (world transform already baked in via
-/// `ApplyTransform`); `default_visible` follows the same OR-of-aux rule as
-/// `surface_subtree` (`false` iff aux or under-aux-sub).
+/// `GeometryHandleId` of the placed body (world transform already baked in via
+/// `ApplyTransform`) and `kernel` is the kernel that owns it. Handle ids are
+/// kernel-local, so `handle_id` means nothing without `kernel`: resolve the
+/// serving map entry with `crate::kernel_owner::resolve_owning_kernel_name`.
+/// `default_visible` follows the same OR-of-aux rule as `surface_subtree`
+/// (`false` iff aux or under-aux-sub).
 #[derive(Debug)]
 pub(crate) struct ExportBody {
     pub entity_path: String,
     pub handle_id: GeometryHandleId,
+    pub kernel: KernelId,
     pub default_visible: bool,
 }
 
@@ -12700,13 +12667,13 @@ pub(crate) struct ExportBody {
 ///
 /// # Visitor
 ///
-/// `visit_realization(kernel, placed_id, entity_path, default_visible, t_idx, r_idx, diagnostics)`
+/// `visit_realization(kernel, placed, entity_path, default_visible, t_idx, r_idx, diagnostics)`
 /// — called once per realization that produced a handle, after the composed world
 /// transform is applied:
-/// - `kernel`: mutable borrow of the default kernel (over the visit call; released before
-///   recursion so the sub loop can re-borrow).
-/// - `placed_id`: the `GeometryHandleId` after `ApplyTransform` (or the source handle for
-///   identity/undecomposable poses — no extra kernel op).
+/// - `kernel`: mutable borrow of the kernel that OWNS the handle (over the visit call;
+///   released before recursion so the sub loop can re-borrow).
+/// - `placed`: the handle after `ApplyTransform` (or the source handle for
+///   identity/undecomposable poses — no extra kernel op), tagged with its owning kernel.
 /// - `entity_path`: PRD §11.2 composed path (owned `String`).
 /// - `default_visible`: `false` iff aux or under-aux-sub (same OR rule as the callers).
 /// - `t_idx`, `r_idx`: template and realization indices (for budget lookup in the
@@ -12756,7 +12723,7 @@ pub(crate) fn walk_placed_realizations<V>(
 ) where
     V: FnMut(
         &mut dyn GeometryKernel,
-        GeometryHandleId,
+        KernelHandle,
         String,
         bool,
         usize,
@@ -12799,25 +12766,10 @@ pub(crate) fn walk_placed_realizations<V>(
         if pre_filter.is_some_and(|f| !f(t_idx, r_idx, &entity_path)) {
             continue;
         }
-        // Task 5033 Gap D: resolve the kernel that actually OWNS this handle
-        // (`handle.kernel`), not unconditionally `default_kernel_name`. Every
-        // pre-5033 realization dispatched at BRep demand (task 4050 step-8
-        // design_decision 4), so `handle.kernel` was always the default
-        // kernel and this lookup was a no-op in practice. `tessellate_from_values`
-        // now demands Voxel for an isosurface operand (Gap D sibling fix,
-        // `voxel_demanded_realization_indices`), so a handle reaching this
-        // walk can legitimately live on a non-default kernel (e.g. OpenVDB);
-        // tessellating it via the wrong kernel's disjoint id space would
-        // panic or silently mistessellate. Same registry-name-vs-map-key
-        // fallback used by `engine_build.rs`'s Voxel/VolumeMesh post-loop
-        // edges (backward-compat sentinel mode keys the default kernel's
-        // handle under `default_kernel_name`, not its own registry name).
+        // Task 5033 Gap D: resolve the kernel that OWNS this handle, not
+        // unconditionally the default kernel.
         let resolved_kernel_name =
-            if geometry_kernels.contains_key(handle.kernel.as_registry_name()) {
-                handle.kernel.as_registry_name()
-            } else {
-                default_kernel_name
-            };
+            resolve_owning_kernel_name(geometry_kernels, handle.kernel, default_kernel_name);
         let resolved_kernel = geometry_kernels
             .get_mut(resolved_kernel_name)
             .expect("resolved kernel must remain in the map across the surfacing walk");
@@ -12848,7 +12800,10 @@ pub(crate) fn walk_placed_realizations<V>(
         // `&mut **resolved_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
         visit_realization(
             &mut **resolved_kernel,
-            placed_id,
+            KernelHandle {
+                kernel: handle.kernel,
+                id: placed_id,
+            },
             entity_path,
             default_visible,
             t_idx,
@@ -13013,10 +12968,11 @@ pub(crate) fn non_final_realization_indices(
         .collect()
 }
 
-/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+/// T7 export walk (task 3905): collect placed product bodies for Phase-B export.
 ///
 /// Thin wrapper over `walk_placed_realizations` that pushes each placed realization
-/// as an `ExportBody` (handle_id + entity_path + default_visible) without tessellating.
+/// as an `ExportBody` tagged with the kernel that owns it (handle_id + kernel +
+/// entity_path + default_visible) without tessellating.
 ///
 /// `skip` (indexed by `t_idx`) lists realization indices to exclude — every
 /// non-final intra-template realization (see [`non_final_realization_indices`]) —
@@ -13081,13 +13037,14 @@ pub(crate) fn surface_export_bodies(
         meta_map,
         diagnostics,
         Some(combined_filter),
-        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+        &mut |_kernel, placed, entity_path, default_visible, _t, _r, _diag| {
             // The combined pre_filter already excluded non-final / non-target
             // realizations before the transform, so every body reaching this
             // visitor should be collected unconditionally.
             export_bodies.push(ExportBody {
                 entity_path,
-                handle_id: placed_id,
+                handle_id: placed.id,
+                kernel: placed.kernel,
                 default_visible,
             });
         },
@@ -13162,7 +13119,7 @@ pub(crate) fn surface_subtree(
     capture_repr_tol: bool,
     // Determinacy β (task 4198): per-build map from realized-occurrence name
     // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
-    // in SI metres. Populated here (the unique site holding kernel + placed_id
+    // in SI metres. Populated here (the unique site holding kernel + placed handle
     // + fresh mesh + entity_path simultaneously) when `capture_repr_tol` is
     // true. Recording is skip-on-None and skip-on-empty-mesh so the map never
     // contains misleading 0.0 entries (honest absence = missing key, B3).
@@ -13197,9 +13154,9 @@ pub(crate) fn surface_subtree(
         meta_map,
         diagnostics,
         Some(&not_query_only),
-        &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
+        &mut |kernel, placed, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
-            match kernel.tessellate(placed_id, budget) {
+            match kernel.tessellate(placed.id, budget) {
                 Ok(mesh) => {
                     // Determinacy β (task 4198): record the sampled max
                     // facet-chord deviation BEFORE moving entity_path into
@@ -13214,7 +13171,7 @@ pub(crate) fn surface_subtree(
                     // facet-chord error, NOT the configured deflection budget.
                     if capture_repr_tol
                         && !mesh.indices.is_empty()
-                        && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
+                        && let Some(dev) = kernel.measure_mesh_deviation(placed.id, &mesh)
                     {
                         achieved_repr_tol.insert(entity_path.clone(), dev);
                     }

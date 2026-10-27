@@ -209,9 +209,9 @@ fn my_design_template_with_union_realization() -> reify_compiler::TopologyTempla
     let box_op = || CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     let union_op = CompiledGeometryOp::Boolean {
@@ -302,6 +302,7 @@ fn tessellate_handoff_warn_mode_warns_without_aborting() {
     );
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry(),
@@ -367,6 +368,7 @@ fn tessellate_handoff_warn_mode_warns_without_aborting() {
     );
     let valid_checker = MockConstraintChecker::new();
     let mut valid_engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(valid_checker),
         valid_kernels,
         registry(),
@@ -450,6 +452,7 @@ fn tessellate_handoff_enforce_mode_aborts_the_build() {
     );
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry(),
@@ -523,6 +526,7 @@ fn tessellate_handoff_enforce_mode_aborts_the_build() {
     );
     let valid_checker = MockConstraintChecker::new();
     let mut valid_engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(valid_checker),
         valid_kernels,
         registry(),

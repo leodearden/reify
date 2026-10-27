@@ -18,6 +18,11 @@
 //!   ¬do_not_complete) suffices to track a marker. The lane degrades fail-soft
 //!   (§6.7): a missing/unreadable DB is skipped with a single stderr breadcrumb
 //!   while the structural lane still runs in full.
+//! - **Owner-position prose cites (lane δ-C)** — an ordinary `//` comment
+//!   naming a task as the owner of future work (`owned by #N`, `deferred to
+//!   task N`, `#N will …`, `until #N lands`) feeds that cite to β, while a
+//!   provenance mention (`introduced by #N`) stays silent. Grammar:
+//!   [`crate::ptodo_promise`]; PRD §8.1, §21.
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
@@ -27,6 +32,7 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
+use crate::ptodo_promise::is_owner_position;
 use crate::scan_util::{contains_word, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
@@ -391,69 +397,97 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
     prd_relative_cite_family(bytes, cite_start, id).is_some()
 }
 
-/// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
-/// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
-/// the line, in source order.
-///
-/// [`has_canonical_cite`], [`extract_cites`] (both via
-/// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
-/// all expressed over this one iterator, so the grammar they share —
-/// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
-/// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
-/// CONSTRUCTION. It was previously three hand-rolled copies required to stay
-/// lock-step by three doc comments, which is a promise rather than a guarantee.
-/// The three callers now differ in exactly one thing: what each does with a
-/// [`prd_relative_cite`] occurrence — skip it, drop it, or report it.
-///
-/// A consumed digit run is skipped whole; a malformed run (a bare `#`, `#abc`,
-/// `#123456`) advances one byte, so a `#N` immediately after it is still seen.
-///
-/// The G-allow owner-cite lane deliberately does NOT scan through here — see
-/// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
-fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
-    let bytes = line.as_bytes();
+/// The scan loop behind both §8.2 cite spellings ([`cite_occurrences`],
+/// [`legacy_task_cite_occurrences`]): every position where `cite_at` matches,
+/// as `(head, end, id)` in source order. A match resumes the scan at its `end`;
+/// a miss advances one byte.
+fn occurrences_by<'a>(
+    bytes: &'a [u8],
+    cite_at: impl Fn(&[u8], usize) -> Option<(usize, u32)> + 'a,
+) -> impl Iterator<Item = (usize, usize, u32)> + 'a {
     let mut i = 0;
     std::iter::from_fn(move || {
         while i < bytes.len() {
-            if bytes[i] != b'#' {
-                i += 1;
-                continue;
-            }
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if !(1..=5).contains(&(j - (i + 1))) {
-                i += 1;
-                continue;
-            }
-            let at = i;
-            i = j; // skip past the consumed digit run
-            // A 1..=5-digit ASCII run always fits in u32 (max 99999), so the
-            // parse cannot fail. `#0`/`#00` parses to 0 — task ids start at 1,
-            // so it is not a cite and is dropped here for every caller.
-            if let Ok(id) = line[at + 1..j].parse::<u32>()
-                && id >= 1
-            {
-                return Some((at, id));
+            let head = i;
+            i += 1;
+            if let Some((end, id)) = cite_at(bytes, head) {
+                i = end;
+                return Some((head, end, id));
             }
         }
         None
     })
 }
 
-/// §8.2 canonical cite occurrences: every [`cite_occurrences`] cite (`#` +
-/// 1..=5 digits, value ≥1) that is NOT a PRD-relative index, yielded as
-/// `(byte_offset_of_the_hash, id)` in source order.
+/// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
+/// `(head, end, id)` for every numerically well-formed cite on the line, in
+/// source order: `head` the byte offset of the `#`, `end` one past the last
+/// digit — the [`occurrences_by`] span shape [`legacy_task_cite_occurrences`]
+/// shares.
+///
+/// [`has_canonical_cite`], [`extract_cites`] (both via
+/// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
+/// all expressed over this one iterator, and the id after the `#` is read by
+/// [`digit_run_id`], so the grammar they share holds by CONSTRUCTION. It was
+/// previously three hand-rolled copies required to stay lock-step by three doc
+/// comments, which is a promise rather than a guarantee. The three callers now
+/// differ in exactly one thing: what each does with a [`prd_relative_cite`]
+/// occurrence — skip it, drop it, or report it.
+///
+/// A malformed run (a bare `#`, `#abc`, `#123456`) advances one byte, so a
+/// `#N` immediately after it is still seen.
+///
+/// The G-allow owner-cite lane deliberately does NOT scan through here — see
+/// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
+fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
+    occurrences_by(line.as_bytes(), |bytes, head| {
+        (bytes[head] == b'#')
+            .then(|| digit_run_id(bytes, head + 1))
+            .flatten()
+    })
+}
+
+/// §8.2 task-id digit run — the ONE id grammar behind both cite spellings
+/// ([`cite_occurrences`]' `#N`, [`legacy_task_cite_at`]'s `task N`). The
+/// maximal ASCII digit run starting at `start`, as `(end, id)`, when it is
+/// 1..=5 digits long and its value is ≥1: a 6-digit number is *not* matched on
+/// its 5-digit prefix, and `0`/`00` is not a task id (ids start at 1). Each
+/// spelling adds its own boundary rules around the run, never inside it.
+fn digit_run_id(bytes: &[u8], start: usize) -> Option<(usize, u32)> {
+    let len = bytes
+        .get(start..)?
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if !(1..=5).contains(&len) {
+        return None;
+    }
+    let end = start + len;
+    let id = bytes[start..end]
+        .iter()
+        .fold(0u32, |acc, &d| acc * 10 + u32::from(d - b'0'));
+    (id >= 1).then_some((end, id))
+}
+
+/// §8.2 canonical cite spans: every [`cite_occurrences`] cite (`#` + a
+/// [`digit_run_id`]) that is NOT a PRD-relative index, yielded as
+/// `(head, end, id)` in source order.
 ///
 /// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
 /// document, not a task, so it cannot anchor tracking. The filter is applied
 /// per-OCCURRENCE, so a line carrying both idioms still yields the genuine
 /// cite. This is the ONE definition of a canonical task cite, shared by
+/// [`canonical_cite_occurrences`] and lane δ-C's [`promise_owner_cites`],
+/// which needs the whole span to read the text on both sides of the cite.
+fn canonical_cite_spans(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
+    cite_occurrences(line).filter(|&(head, _, id)| !prd_relative_cite(line.as_bytes(), head, id))
+}
+
+/// [`canonical_cite_spans`] as `(byte_offset_of_the_hash, id)`, for
 /// [`has_canonical_cite`], [`extract_cites`] and PPRDSTATUS's cite lane, which
 /// needs the offset to find the cite's adjacent status parenthetical.
 pub(crate) fn canonical_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
-    cite_occurrences(line).filter(|&(at, id)| !prd_relative_cite(line.as_bytes(), at, id))
+    canonical_cite_spans(line).map(|(head, _, id)| (head, id))
 }
 
 /// §8.2 canonical citation: `true` when the line carries at least one
@@ -530,7 +564,7 @@ fn has_malformed_cite(line: &str) -> bool {
     // fn's rustdoc and [`PrdCiteFamily`].
     let bytes = line.as_bytes();
     if cite_occurrences(line)
-        .any(|(at, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
+        .any(|(at, _, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
         && !has_canonical_cite(line)
     {
         return true;
@@ -573,6 +607,44 @@ fn has_malformed_cite(line: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// §8.2 legacy `task NNNN` spelling as a RESOLVABLE cite: every `task N`,
+/// `task-N`, `task_N` or `tasks N` (case-insensitive, word-bounded on both
+/// sides, `N` per [`digit_run_id`]), yielded as `(head, end, id)` in source order —
+/// `head` the byte offset of the `t`, `end` one past the last digit. Consumed
+/// only by lane δ-C (PRD §8.2, §21).
+///
+/// [`has_malformed_cite`]'s pass 2 is the deliberately BROADER recogniser of a
+/// citation ATTEMPT (any digit, no right boundary, no length cap) and stays
+/// separate, so the marker lanes' `malformed-cite` verdicts are unaffected by
+/// this stricter contract.
+fn legacy_task_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
+    occurrences_by(line.as_bytes(), legacy_task_cite_at)
+}
+
+/// The legacy cite starting exactly at `head`, as `(end, id)`; see
+/// [`legacy_task_cite_occurrences`] for the grammar. Byte-level, so it never
+/// slices inside a multi-byte character.
+fn legacy_task_cite_at(bytes: &[u8], head: usize) -> Option<(usize, u32)> {
+    if head > 0 && is_word_byte(bytes[head - 1]) {
+        return None;
+    }
+    let mut sep = head + 4;
+    if !bytes.get(head..sep)?.eq_ignore_ascii_case(b"task") {
+        return None;
+    }
+    if bytes
+        .get(sep)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&b's'))
+    {
+        sep += 1;
+    }
+    if !matches!(bytes.get(sep), Some(b' ' | b'-' | b'_')) {
+        return None;
+    }
+    let (end, id) = digit_run_id(bytes, sep + 1)?;
+    (!bytes.get(end).is_some_and(|&b| is_word_byte(b))).then_some((end, id))
 }
 
 // -----------------------------------------------------------------------
@@ -1011,17 +1083,20 @@ fn has_deferral_prose(text: &str) -> bool {
 
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
-fn line_escaped(line: &str) -> bool {
+pub(crate) fn line_escaped(line: &str) -> bool {
     line.contains("ptodo:allow")
 }
+
+/// The detector's own crate: its pattern string-literals (`TODO`/`FIXME`/
+/// `HACK`, `task δ`, the phantom phrases, …) and the committed fixtures under
+/// `tests/fixtures/ptodo/` would otherwise self-match. Exempt from this sweep
+/// (an [`ALLOWLIST_PREFIXES`] entry) and from P2's.
+pub(crate) const AUDIT_CRATE_PREFIX: &str = "crates/reify-audit/";
 
 /// §6.8 allowlist path prefixes — paths starting with any entry are exempt
 /// from the sweep so the tool never flags its own machinery or test data.
 const ALLOWLIST_PREFIXES: &[&str] = &[
-    // The detector's own crate: its pattern string-literals (`TODO`/`FIXME`/
-    // `HACK`, `task δ`, the phantom phrases, …) and the committed fixtures
-    // under `tests/fixtures/ptodo/` would otherwise self-match.
-    "crates/reify-audit/",
+    AUDIT_CRATE_PREFIX,
     // The `#[ignore]`-reason extraction tool: carries `#[ignore]` markers and
     // reason strings as the data it operates on.
     "crates/reify-test-support/src/ignore_hygiene.rs",
@@ -1042,20 +1117,59 @@ pub fn is_allowlisted(path: &str) -> bool {
     ALLOWLIST_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
 
-/// §6.8 swept extensions — the exact set the structural lane scans:
-/// `.rs .ri .sh .py .ts .tsx .js`. Non-code/config files (`.md`, `.toml`,
-/// `.yaml`, `.json`, …) carry prose, not tracked-work markers, and are skipped
-/// (PRD §13 Q1 defers `.toml`/`.yml`/`.yaml` to θ).
+/// The language a swept file is scanned as: which line-comment syntax it has
+/// and whether the `.rs`-only lanes apply. Derived once per path by
+/// [`SweptLang::of_path`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweptLang {
+    /// `.rs`: `//` comments plus the Rust-only lanes — stub macros,
+    /// `#[ignore]`, δ-A, δ-B and G-allow.
+    Rust,
+    /// `.ri .ts .tsx .js`: `//` line comments, no Rust-only lane.
+    SlashComment,
+    /// `.sh .py`: `#` line comments.
+    HashComment,
+}
+
+/// §6.8 swept extensions — the exact set the structural lane scans, each with
+/// its [`SweptLang`]. Non-code/config files (`.md`, `.toml`, `.yaml`, `.json`,
+/// …) carry prose, not tracked-work markers, and are skipped (PRD §13 Q1
+/// defers `.toml`/`.yml`/`.yaml` to θ).
+const SWEPT_EXTENSIONS: &[(&str, SweptLang)] = &[
+    (".rs", SweptLang::Rust),
+    (".ri", SweptLang::SlashComment),
+    (".ts", SweptLang::SlashComment),
+    (".tsx", SweptLang::SlashComment),
+    (".js", SweptLang::SlashComment),
+    (".sh", SweptLang::HashComment),
+    (".py", SweptLang::HashComment),
+];
+
+impl SweptLang {
+    /// The language of `path` by its (case-insensitive) extension; `None`
+    /// when the path is not swept at all.
+    fn of_path(path: &str) -> Option<SweptLang> {
+        let lower = path.to_lowercase();
+        SWEPT_EXTENSIONS
+            .iter()
+            .find(|(ext, _)| lower.ends_with(ext))
+            .map(|&(_, lang)| lang)
+    }
+
+    fn is_rust(self) -> bool {
+        self == SweptLang::Rust
+    }
+
+    /// Whether the language writes line comments as `//`.
+    fn has_slash_line_comments(self) -> bool {
+        matches!(self, SweptLang::Rust | SweptLang::SlashComment)
+    }
+}
+
+/// §6.8 swept-extension membership — see [`SWEPT_EXTENSIONS`].
 // G-allow: reused by tests/ptodo_baseline.rs well-formedness test.
 pub fn is_swept_ext(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.ends_with(".rs")
-        || lower.ends_with(".ri")
-        || lower.ends_with(".sh")
-        || lower.ends_with(".py")
-        || lower.ends_with(".ts")
-        || lower.ends_with(".tsx")
-        || lower.ends_with(".js")
+    SweptLang::of_path(path).is_some()
 }
 
 // -----------------------------------------------------------------------
@@ -1151,8 +1265,8 @@ enum LineClass {
 
 /// §8 per-file scan: walk `content` line-by-line and return one `(line_no,
 /// class, marker_text)` entry per offending OR tracked line (1-based line
-/// numbers, `marker_text` is the trimmed line). `is_rust` gates the `.rs`-only
-/// macro and `#[ignore]` rules. This is the single precedence-correct pass
+/// numbers, `marker_text` is the trimmed line). `lang` gates the `.rs`-only
+/// rules ([`SweptLang::is_rust`]). This is the single precedence-correct pass
 /// shared by the structural lane and the liveness lane (both driven from
 /// [`check`]) so the two never drift.
 ///
@@ -1180,7 +1294,10 @@ enum LineClass {
 ///    and deferral prose, and is not a `// G-allow:` marker →
 ///    `Cited(on-line cites)`. Cite-ANCHORED: it emits no structural kind, so an
 ///    uncited deferral comment produces no entry.
-fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
+/// 8. lane δ-C (`//`-comment languages): an ordinary full-line `//` comment,
+///    not a `// G-allow:` marker → `Cited(owner-position cites)`, via
+///    [`promise_owner_cites`]; no entry when it has none. PRD §8.1, §21.
+fn scan_file(content: &str, lang: SweptLang) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
     for (i, line) in content.lines().enumerate() {
@@ -1194,7 +1311,9 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
 
         let has_canon = has_canonical_cite(line);
 
-        if is_rust && let Some(form) = ignore_attr(line) {
+        if lang.is_rust()
+            && let Some(form) = ignore_attr(line)
+        {
             // (2) #[ignore] (.rs only). γ reason policy (cite-first, §8.3):
             //   bare → Structural(BareIgnore);
             //   reason-bearing: extract reason;
@@ -1230,7 +1349,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
-        } else if is_rust && find_macro_stub(line) {
+        } else if lang.is_rust() && find_macro_stub(line) {
             // (4) stub macros (.rs only) with above-line cite lookback.
             let cited_above = prev.is_some_and(has_canonical_cite);
             if has_canon || cited_above {
@@ -1244,7 +1363,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
-        } else if is_rust
+        } else if lang.is_rust()
             && let Some(rationale) = allow_dead_code_attr(line)
             && has_deferral_prose(rationale)
         {
@@ -1299,7 +1418,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // re-checks it as arm (3) does (PRD §19(d)). A `// G-allow:` line
             // stays with its own lane, as in arm (7) choice (iii).
             out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
-        } else if is_rust
+        } else if lang.is_rust()
             && line.trim_start().starts_with("//")
             && has_canon
             && has_deferral_prose(line)
@@ -1352,6 +1471,15 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
             out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
+        } else if lang.has_slash_line_comments()
+            && line.trim_start().starts_with("//")
+            && g_allow_marker_body(line).is_none()
+        {
+            // (8) lane δ-C — PRD §8.1; appended last, cite-anchored.
+            let ids = promise_owner_cites(line);
+            if !ids.is_empty() {
+                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            }
         }
 
         prev = Some(line);
@@ -1365,6 +1493,26 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
 /// same id twice would otherwise report it twice.
 fn on_line_cites(line: &str) -> Vec<u32> {
     let mut ids = extract_cites(line);
+    dedup_in_place(&mut ids);
+    ids
+}
+
+/// Lane δ-C's payload: the cites on `line` in owner position
+/// ([`is_owner_position`]), each id once, in source order. A cite is canonical
+/// ([`canonical_cite_spans`], which drops a PRD-relative `#N` by its left
+/// context) or the legacy `task N` spelling ([`legacy_task_cite_occurrences`]).
+/// The legacy spelling reuses the same [`PRD_RELATIVE_MAX_ID`] bound, applied
+/// unconditionally because the spelling is itself the `task N` register. Only
+/// this lane resolves it: the marker lanes report it as `malformed-cite`.
+fn promise_owner_cites(line: &str) -> Vec<u32> {
+    let legacy = legacy_task_cite_occurrences(line).filter(|&(_, _, id)| id > PRD_RELATIVE_MAX_ID);
+    let mut spans: Vec<(usize, usize, u32)> = canonical_cite_spans(line).chain(legacy).collect();
+    spans.sort_by_key(|&(head, _, _)| head);
+    let mut ids: Vec<u32> = spans
+        .into_iter()
+        .filter(|&(head, end, _)| is_owner_position(line, head, end))
+        .map(|(_, _, id)| id)
+        .collect();
     dedup_in_place(&mut ids);
     ids
 }
@@ -1885,7 +2033,7 @@ pub fn is_g_allow_finding(f: &Finding) -> bool {
 /// are 1-based (mirrors [`scan_file`]).
 ///
 /// Used by [`check`] to collect the G-allow advisory lane input before the
-/// task-DB open; the caller gates the call on `is_rust` (.rs files only).
+/// task-DB open; the caller gates the call on [`SweptLang::Rust`] (.rs files only).
 fn scan_g_allow_markers(content: &str) -> Vec<(usize, Vec<u32>, String)> {
     let mut out = Vec::new();
     for (i, line) in content.lines().enumerate() {
@@ -2026,7 +2174,10 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
     let tracked_set: HashSet<String> = tracked_files.iter().cloned().collect();
 
     for path in &tracked_files {
-        if !is_swept_ext(path) || is_allowlisted(path) {
+        let Some(lang) = SweptLang::of_path(path) else {
+            continue;
+        };
+        if is_allowlisted(path) {
             continue;
         }
         // Read the working tree directly (only enumeration is a git seam). Skip
@@ -2037,8 +2188,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         // Counted only after a successful read, so fail-safe skips above are
         // excluded from the §6.6 scan evidence by construction.
         stats.files_scanned += 1;
-        let is_rust = path.ends_with(".rs");
-        for (line_no, class, text) in scan_file(&content, is_rust) {
+        for (line_no, class, text) in scan_file(&content, lang) {
             stats.markers_examined += 1;
             match class {
                 LineClass::Structural(kind) => struct_hits.push((path.clone(), line_no, kind, text)),
@@ -2046,9 +2196,9 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
             }
         }
         // G-allow advisory lane: scan // G-allow: owner-cite lines (.rs only).
-        // The walk already applies is_swept_ext + is_allowlisted, so reify-audit's
-        // own markers (allowlisted) self-exclude — consistent with §6.8.
-        if is_rust {
+        // The walk already applies the swept-extension + allowlist filters, so
+        // reify-audit's own markers (allowlisted) self-exclude — consistent with §6.8.
+        if lang.is_rust() {
             for (line_no, owners, text) in scan_g_allow_markers(&content) {
                 g_allow_cited.push((path.clone(), line_no, owners, text));
             }
@@ -2155,8 +2305,8 @@ mod tests {
     /// Production [`check`] drives [`scan_file`] directly (it needs the `Cited`
     /// markers this filter discards), so this "structural = scan_file ∩ Structural"
     /// view lives here purely to exercise α's precedence unit tests.
-    fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
-        scan_file(content, is_rust)
+    fn classify_file(content: &str, lang: SweptLang) -> Vec<(usize, Kind, String)> {
+        scan_file(content, lang)
             .into_iter()
             .filter_map(|(line_no, class, text)| match class {
                 LineClass::Structural(kind) => Some((line_no, kind, text)),
@@ -2542,6 +2692,17 @@ mod tests {
         assert_eq!(extract_cites("// TODO(#00): x"), Vec::<u32>::new());
     }
 
+    #[test]
+    fn canonical_cite_spans_run_from_hash_through_last_digit() {
+        let line = "// see #4553, #007 and #123456; PRD task #10";
+        let (h1, e1) = span_of(line, "#4553");
+        let (h2, e2) = span_of(line, "#007");
+        assert_eq!(
+            canonical_cite_spans(line).collect::<Vec<_>>(),
+            vec![(h1, e1, 4553), (h2, e2, 7)]
+        );
+    }
+
     // -------------------------------------------------------------------
     // §8.2 PRD-relative indices — the non-canonical `#N` register
     //
@@ -2731,12 +2892,12 @@ mod tests {
         // silent (it discards `Cited`), which is what excludes `MalformedCite`.
         let marker = "// TODO: the invariant #5238 nearly lost";
         assert_eq!(
-            scan_file(marker, true),
+            scan_file(marker, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![5238]), marker.to_string())],
             "family 2 must not swallow a four-digit cite on a marker line"
         );
         assert_eq!(
-            classify_file(marker, true),
+            classify_file(marker, SweptLang::Rust),
             vec![],
             "a genuine cite must not degrade to Kind::MalformedCite: {marker}"
         );
@@ -2748,7 +2909,7 @@ mod tests {
         // assertion can actually fail.
         let delta_b = "/// hydration is blocked on the invariant #5238 landing";
         assert_eq!(
-            scan_file(delta_b, true),
+            scan_file(delta_b, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![5238]), delta_b.to_string())],
             "cite-anchored δ-B must still see a four-digit cite in family-2 register"
         );
@@ -2758,7 +2919,7 @@ mod tests {
         // cite.  That equality is the property under test.
         let control = "// TODO: see task #5238 nearly lost";
         assert_eq!(
-            scan_file(control, true),
+            scan_file(control, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![5238]), control.to_string())],
             "family 3's existing bound must keep this line's cite canonical"
         );
@@ -2860,10 +3021,10 @@ mod tests {
         // …and end to end, the marker stays `Cited` on its genuine id alone —
         // reaching the β liveness lane, not the structural taxonomy.
         assert_eq!(
-            scan_file(mixed, true),
+            scan_file(mixed, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![4553]), mixed.to_string())]
         );
-        assert!(classify_file(mixed, true).is_empty());
+        assert!(classify_file(mixed, SweptLang::Rust).is_empty());
         // The control: strip the genuine cite and the same line IS malformed,
         // so the guard suppresses nothing it should not.
         assert!(has_malformed_cite("// TODO: supersedes PRD task #10"));
@@ -2881,7 +3042,7 @@ mod tests {
     /// lane δ-A's malformed branch.
     #[test]
     fn classify_file_marker_with_prd_relative_cite_is_malformed() {
-        let got = classify_file("// TODO: deferred to PRD task #10", true);
+        let got = classify_file("// TODO: deferred to PRD task #10", SweptLang::Rust);
         assert_eq!(
             got,
             vec![(
@@ -2917,10 +3078,85 @@ mod tests {
             "// TODO: widen boundary #3 once the shape settles",
         ] {
             assert_eq!(
-                classify_file(line, true),
+                classify_file(line, SweptLang::Rust),
                 vec![(1, Kind::Untracked, line.to_string())],
                 "a PRD reference is not a citation attempt: {line}"
             );
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // §8.2 legacy `task NNNN` spelling as a resolvable cite (lane δ-C)
+    // -------------------------------------------------------------------
+
+    /// The `(head, end)` byte span of `needle`'s first occurrence in `line`,
+    /// so the expected offsets below are exact without being hand-counted.
+    fn span_of(line: &str, needle: &str) -> (usize, usize) {
+        let head = line.find(needle).expect("needle present in line");
+        (head, head + needle.len())
+    }
+
+    fn legacy_cites(line: &str) -> Vec<(usize, usize, u32)> {
+        legacy_task_cite_occurrences(line).collect()
+    }
+
+    #[test]
+    fn legacy_task_cite_positives() {
+        for (line, needle, id) in [
+            ("// cite task 4578.", "task 4578", 4578),
+            ("/// Task 4262 will add", "Task 4262", 4262),
+            ("/// RED until task-3512 step-2 lands", "task-3512", 3512),
+            ("// see task_4578 here", "task_4578", 4578),
+            ("// tasks 4578 and", "tasks 4578", 4578),
+            ("κ — task 4578", "task 4578", 4578),
+        ] {
+            let (head, end) = span_of(line, needle);
+            assert_eq!(legacy_cites(line), vec![(head, end, id)], "{line}");
+        }
+    }
+
+    #[test]
+    fn legacy_task_cites_yield_in_source_order() {
+        let line = "// deferred to task 3477, then task-3558";
+        let (h1, e1) = span_of(line, "task 3477");
+        let (h2, e2) = span_of(line, "task-3558");
+        assert_eq!(legacy_cites(line), vec![(h1, e1, 3477), (h2, e2, 3558)]);
+    }
+
+    #[test]
+    fn canonical_and_legacy_cites_share_one_id_grammar() {
+        for (digits, want) in [
+            ("1", Some(1)),
+            ("007", Some(7)),
+            ("99999", Some(99_999)),
+            ("0", None),
+            ("00", None),
+            ("123456", None),
+        ] {
+            let canonical: Vec<u32> = cite_occurrences(&format!("// see #{digits} here"))
+                .map(|(_, _, id)| id)
+                .collect();
+            let legacy: Vec<u32> =
+                legacy_task_cite_occurrences(&format!("// see task {digits} here"))
+                    .map(|(_, _, id)| id)
+                    .collect();
+            assert_eq!(canonical, Vec::from_iter(want), "#{digits}");
+            assert_eq!(legacy, canonical, "task {digits}");
+        }
+    }
+
+    #[test]
+    fn legacy_task_cite_negatives() {
+        for line in [
+            "multitask 4578",
+            "task_4578_regression",
+            "task #4578",
+            "task 123456",
+            "task 0",
+            "task δ",
+            "taskforce 12",
+        ] {
+            assert_eq!(legacy_cites(line), vec![], "{line}");
         }
     }
 
@@ -3000,6 +3236,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn swept_lang_of_path_classifies_every_swept_extension() {
+        for (p, lang) in [
+            ("a.rs", SweptLang::Rust),
+            ("X.RS", SweptLang::Rust),
+            ("b.ri", SweptLang::SlashComment),
+            ("e.ts", SweptLang::SlashComment),
+            ("f.tsx", SweptLang::SlashComment),
+            ("g.js", SweptLang::SlashComment),
+            ("c.sh", SweptLang::HashComment),
+            ("d.py", SweptLang::HashComment),
+        ] {
+            assert_eq!(SweptLang::of_path(p), Some(lang), "{p}");
+        }
+        for p in ["a.md", "b.toml"] {
+            assert_eq!(SweptLang::of_path(p), None, "{p}");
+        }
+        assert!(SweptLang::Rust.is_rust());
+        assert!(!SweptLang::SlashComment.is_rust());
+        assert!(!SweptLang::HashComment.is_rust());
+        assert!(SweptLang::Rust.has_slash_line_comments());
+        assert!(SweptLang::SlashComment.has_slash_line_comments());
+        assert!(!SweptLang::HashComment.has_slash_line_comments());
+    }
+
     // -------------------------------------------------------------------
     // §8 per-file classification orchestration (precedence)
     // -------------------------------------------------------------------
@@ -3007,7 +3268,7 @@ mod tests {
     #[test]
     fn classify_file_precedence_rust() {
         // Each line exercises exactly one §8 precedence rule; line numbers are
-        // 1-based. is_rust=true so macro/ignore rules are live.
+        // 1-based. SweptLang::Rust so macro/ignore rules are live.
         let lines = [
             "// TODO(#4553): cited",              // 1 (a) canonical cite -> no entry
             "// tracked as a follow-up task",     // 2 (b) phantom, no cite -> PhantomTracking
@@ -3021,7 +3282,7 @@ mod tests {
             "    todo!(\"later\")",               // 10 macro, no cite above -> Untracked
         ];
         let content = lines.join("\n");
-        let got = classify_file(&content, true);
+        let got = classify_file(&content, SweptLang::Rust);
 
         let expected: Vec<(usize, Kind, String)> = vec![
             (2, Kind::PhantomTracking, "// tracked as a follow-up task".to_string()),
@@ -3050,7 +3311,7 @@ mod tests {
             "#[ignore]",                              // 3 bare -> Structural(BareIgnore)
         ];
         let content = lines.join("\n");
-        let got = scan_file(&content, true);
+        let got = scan_file(&content, SweptLang::Rust);
 
         let expected: Vec<(usize, LineClass, String)> = vec![
             (1, LineClass::Structural(Kind::Untracked),
@@ -3066,7 +3327,7 @@ mod tests {
     #[test]
     fn scan_file_ignore_non_canonical_form_blocker_prose() {
         let content = "#[ignore=\"pending fillet binding\"]";
-        let got = scan_file(content, true);
+        let got = scan_file(content, SweptLang::Rust);
         assert_eq!(
             got,
             vec![(
@@ -3083,7 +3344,7 @@ mod tests {
 
     #[test]
     fn scan_file_emits_cited_and_structural() {
-        // is_rust=true so the macro / #[ignore] rules are live.
+        // SweptLang::Rust so the macro / #[ignore] rules are live.
         let lines = [
             "// TODO(#4553): x",          // 1 comment marker + canonical cite -> Cited([4553])
             "// #42",                     // 2 cite-only, no marker -> no entry (prev for 3)
@@ -3094,7 +3355,7 @@ mod tests {
         ];
         let content = lines.join("\n");
 
-        let got = scan_file(&content, true);
+        let got = scan_file(&content, SweptLang::Rust);
         let expected: Vec<(usize, LineClass, String)> = vec![
             (1, LineClass::Cited(vec![4553]), "// TODO(#4553): x".to_string()),
             (3, LineClass::Cited(vec![42]), "todo!()".to_string()),
@@ -3107,7 +3368,7 @@ mod tests {
         // Regression: classify_file is exactly scan_file filtered to its
         // Structural variants — the Cited markers (1, 3, 4) and the suppressed
         // lines (2, 6) drop out, leaving byte-identical α output.
-        let classified = classify_file(&content, true);
+        let classified = classify_file(&content, SweptLang::Rust);
         let expected_structural: Vec<(usize, Kind, String)> =
             vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
         assert_eq!(classified, expected_structural);
@@ -3125,7 +3386,7 @@ mod tests {
     fn scan_file_allow_dead_code_cited() {
         let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![4744]), line.to_string())]
         );
     }
@@ -3136,7 +3397,7 @@ mod tests {
     fn scan_file_allow_dead_code_uncited() {
         let line = "#[allow(dead_code)] // wiring pending the morph rewrite";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Structural(Kind::Untracked), line.to_string())]
         );
     }
@@ -3161,7 +3422,7 @@ mod tests {
         let line =
             "#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Structural(Kind::MalformedCite), line.to_string())]
         );
     }
@@ -3180,7 +3441,7 @@ mod tests {
             // (crates/reify-eval/src/cache.rs:968, :1013).
             "#[allow(dead_code)] // superseded by mark_pending_with_cause",
         ];
-        assert_eq!(scan_file(&lines.join("\n"), true), vec![]);
+        assert_eq!(scan_file(&lines.join("\n"), SweptLang::Rust), vec![]);
     }
 
     /// SCOPE-3: the §6.8 inline escape is precedence arm (1), ahead of every
@@ -3189,7 +3450,7 @@ mod tests {
     #[test]
     fn scan_file_allow_dead_code_escape_wins() {
         let line = "#[allow(dead_code)] // pending #1234  // ptodo:allow";
-        assert_eq!(scan_file(line, true), vec![]);
+        assert_eq!(scan_file(line, SweptLang::Rust), vec![]);
     }
 
     /// δ-A is `.rs`-gated, keeping the `.sh`/`.py`/`.ts`/`.ri` blast radius at
@@ -3198,7 +3459,7 @@ mod tests {
     #[test]
     fn scan_file_allow_dead_code_non_rust() {
         let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
-        assert_eq!(scan_file(line, false), vec![]);
+        assert_eq!(scan_file(line, SweptLang::SlashComment), vec![]);
     }
 
     /// Precedence: a line carrying BOTH an allow-attribute and a real comment
@@ -3209,7 +3470,7 @@ mod tests {
     fn scan_file_allow_dead_code_marker_lane_wins() {
         let line = "#[allow(dead_code)] // TODO(#1234): pending the rewrite";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![1234]), line.to_string())]
         );
     }
@@ -3237,7 +3498,7 @@ mod tests {
             "/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will",
         ] {
             assert_eq!(
-                scan_file(line, true),
+                scan_file(line, SweptLang::Rust),
                 vec![(1, LineClass::Cited(vec![2947]), line.trim().to_string())],
                 "δ-B positive not classified Cited([2947]): {line}"
             );
@@ -3254,7 +3515,7 @@ mod tests {
             "//! Envelope assembly is deferred to task #2947.",
         ] {
             assert_eq!(
-                scan_file(line, true),
+                scan_file(line, SweptLang::Rust),
                 vec![(1, LineClass::Cited(vec![2947]), line.trim().to_string())],
                 "δ-B opener not recognised: {line}"
             );
@@ -3276,7 +3537,7 @@ mod tests {
             "    // --- mark_pruned_pending producer tests (task #4739 γ) ---",
         ] {
             assert_eq!(
-                scan_file(line, true),
+                scan_file(line, SweptLang::Rust),
                 vec![],
                 "δ-B over-fired on an identifier-class line: {line}"
             );
@@ -3308,7 +3569,7 @@ mod tests {
             "    /// rather than partially constructing a sub-handle (PRD invariant #2).",
         ] {
             assert_eq!(
-                scan_file(line, true),
+                scan_file(line, SweptLang::Rust),
                 vec![],
                 "δ-B over-fired on a PRD-relative line: {line}"
             );
@@ -3327,7 +3588,7 @@ mod tests {
             "// the envelope path is blocked on the solver rewrite",
         ] {
             assert_eq!(
-                scan_file(line, true),
+                scan_file(line, SweptLang::Rust),
                 vec![],
                 "δ-B is cite-anchored and must not emit a structural kind: {line}"
             );
@@ -3346,7 +3607,7 @@ mod tests {
     fn scan_file_delta_b_negative_g_allow_line() {
         let line = "// G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![],
             "δ-B must delegate G-allow lines to their owner lane"
         );
@@ -3374,7 +3635,7 @@ mod tests {
         );
         // …and so is δ-B, by the `g_allow_marker_body` guard.
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![],
             "an owner-less G-allow line stays delegated to the G-allow lane"
         );
@@ -3382,7 +3643,7 @@ mod tests {
         // so the guard, not the prose or the cites, is what silences it.
         let plain = "// envelope assembly is deferred to #4092";
         assert_eq!(
-            scan_file(plain, true),
+            scan_file(plain, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![4092]), plain.to_string())]
         );
     }
@@ -3402,7 +3663,7 @@ mod tests {
     fn scan_file_delta_b_negative_trailing_comment() {
         let trailing = "let x = f(); // wiring is deferred to task #2947";
         assert_eq!(
-            scan_file(trailing, true),
+            scan_file(trailing, SweptLang::Rust),
             vec![],
             "a trailing comment after code is out of δ-B's scope"
         );
@@ -3410,7 +3671,7 @@ mod tests {
         // code prefix is the only difference the assertion above turns on.
         let full_line = "// wiring is deferred to task #2947";
         assert_eq!(
-            scan_file(full_line, true),
+            scan_file(full_line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![2947]), full_line.to_string())]
         );
     }
@@ -3423,7 +3684,7 @@ mod tests {
     fn scan_file_delta_b_marker_lane_wins() {
         let line = "// TODO(#1234): blocked on task #2947 landing";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![1234, 2947]), line.to_string())]
         );
     }
@@ -3436,7 +3697,7 @@ mod tests {
     fn scan_file_delta_b_allow_dead_code_lane_wins() {
         let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![4744]), line.to_string())]
         );
     }
@@ -3446,18 +3707,31 @@ mod tests {
     #[test]
     fn scan_file_delta_b_escape_wins() {
         let line = "/// wiring is blocked on task #2947 // ptodo:allow";
-        assert_eq!(scan_file(line, true), vec![]);
+        assert_eq!(scan_file(line, SweptLang::Rust), vec![]);
     }
 
-    /// δ-B is `.rs`-only. Asserted through `scan_file` rather than
+    /// δ-B is `.rs`-only; δ-C is not. Asserted through `scan_file` rather than
     /// `classify_file`, because `classify_file` discards `Cited` entries and so
-    /// would report "nothing" even if the lane HAD fired — the assertion has to
+    /// would report "nothing" even if a lane HAD fired — the assertion has to
     /// be able to fail.
     #[test]
-    fn scan_file_delta_b_non_rust() {
-        let line = "// wiring is blocked on task #2947";
-        assert_eq!(scan_file(line, false), vec![]);
-        assert_eq!(classify_file(line, false), vec![]);
+    fn scan_file_delta_b_is_rust_only_delta_c_is_not() {
+        // `blocked on task #2947` is owner-position, so δ-C claims it in every
+        // `//`-comment language and in none other.
+        let owner = "// wiring is blocked on task #2947";
+        assert_eq!(scan_file(owner, SweptLang::HashComment), vec![]);
+        assert_eq!(
+            scan_file(owner, SweptLang::SlashComment),
+            vec![(1, LineClass::Cited(vec![2947]), owner.to_string())]
+        );
+        assert_eq!(classify_file(owner, SweptLang::SlashComment), vec![]);
+        // A deferral whose cite is NOT owner-position is δ-B's alone: Rust only.
+        let deferral = "// wiring is pending (see #2947)";
+        assert_eq!(scan_file(deferral, SweptLang::SlashComment), vec![]);
+        assert_eq!(
+            scan_file(deferral, SweptLang::Rust),
+            vec![(1, LineClass::Cited(vec![2947]), deferral.to_string())]
+        );
     }
 
     /// A repeated cite id on one line yields ONE id, not two. `resolve_liveness`
@@ -3469,19 +3743,19 @@ mod tests {
     fn scan_file_dedups_repeated_cite_on_one_line() {
         let delta_b = "/// blocked on #2947; #2947 tracks the dispatcher";
         assert_eq!(
-            scan_file(delta_b, true),
+            scan_file(delta_b, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![2947]), delta_b.to_string())]
         );
         let marker = "// TODO(#2947): see #2947 for the dispatcher";
         assert_eq!(
-            scan_file(marker, true),
+            scan_file(marker, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![2947]), marker.to_string())]
         );
         // Distinct ids still come through in source order — the dedup drops
         // repeats, never collapses the multi-cite case.
         let two = "/// blocked on #2947 and #4092; #2947 first";
         assert_eq!(
-            scan_file(two, true),
+            scan_file(two, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![2947, 4092]), two.to_string())]
         );
     }
@@ -3499,7 +3773,168 @@ mod tests {
             "//! Envelope assembly is deferred to task #2947.",
         ]
         .join("\n");
-        assert_eq!(classify_file(&content, true), vec![]);
+        assert_eq!(classify_file(&content, SweptLang::Rust), vec![]);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.1 lane δ-C — owner-position task cites in ordinary comments
+    // -------------------------------------------------------------------
+
+    /// The `scan_file` result for a one-line `content` that arm (8) — or any
+    /// other `Cited` arm — claims with `ids`.
+    fn cited_line(line: &str, ids: &[u32]) -> Vec<(usize, LineClass, String)> {
+        vec![(1, LineClass::Cited(ids.to_vec()), line.trim().to_string())]
+    }
+
+    /// The `.ri` worked-case shapes, one per rule: (L), (S), (R).
+    #[test]
+    fn scan_file_delta_c_positives_slash_comment() {
+        for line in [
+            "// Growth of `Part` is owned by #4578.",
+            "//                          grows once task 4578 lands the registry.",
+            "/// Task 4578 will grow `Part` into a full structure.",
+        ] {
+            assert_eq!(
+                scan_file(line, SweptLang::SlashComment),
+                cited_line(line, &[4578]),
+                "{line}"
+            );
+        }
+    }
+
+    /// On Rust, the legacy spelling reaches lines δ-B cannot: neither carries
+    /// a canonical cite.
+    #[test]
+    fn scan_file_delta_c_positives_legacy_spelling_on_rust() {
+        for (line, id) in [
+            (
+                "// resolution semantics are deferred to task 3477/3558.",
+                3477,
+            ),
+            ("/// validation is owned by task 4092).", 4092),
+        ] {
+            assert!(
+                !has_canonical_cite(line),
+                "δ-B must not be able to claim: {line}"
+            );
+            assert_eq!(
+                scan_file(line, SweptLang::Rust),
+                cited_line(line, &[id]),
+                "{line}"
+            );
+        }
+    }
+
+    /// Wherever arm (8) claims a line, its payload is the OWNER cites only: a
+    /// provenance cite sharing the line does not reach β through δ-C. On Rust
+    /// that holds only on lines δ-B leaves alone; a δ-B line keeps δ-B's
+    /// all-cites payload, pinned by `scan_file_delta_c_precedence`.
+    #[test]
+    fn scan_file_delta_c_mixed_line_yields_only_the_owner() {
+        let line = "// introduced by #4578; growth owned by #7097";
+        assert!(!has_deferral_prose(line), "δ-B must not claim: {line}");
+        for lang in [SweptLang::Rust, SweptLang::SlashComment] {
+            assert_eq!(scan_file(line, lang), cited_line(line, &[7097]), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn scan_file_delta_c_dedups_canonical_and_legacy_cites() {
+        let line = "// owned by #4578 and Task 4578 will grow it";
+        assert_eq!(
+            scan_file(line, SweptLang::SlashComment),
+            cited_line(line, &[4578])
+        );
+    }
+
+    #[test]
+    fn scan_file_delta_c_negatives() {
+        for line in [
+            // Provenance.
+            "// introduced by #4578",
+            "// marker declared in this module (task 4578, per",
+            "// was a placeholder until #4578 renamed it",
+            // PRD-relative: canonical and legacy spellings share §8.2's bound.
+            "/// Diagnostic emission is owned by PRD task #10",
+            "// deferred to task 10",
+            // A trailing comment after code is out of scope.
+            "let x = 1; // owned by #4578",
+            // The `// G-allow:` register is delegated to its own lane.
+            "// G-allow: shared seam; owned by #4578 — no caller yet",
+            // The §6.8 escape.
+            "// owned by #4578 // ptodo:allow",
+        ] {
+            for lang in [SweptLang::Rust, SweptLang::SlashComment] {
+                assert_eq!(scan_file(line, lang), vec![], "{lang:?}: {line}");
+            }
+        }
+    }
+
+    /// `#`-comment languages are out of scope: `//` there is not a comment of
+    /// the file's own language (heredoc-embedded code, fixture data).
+    #[test]
+    fn scan_file_delta_c_skips_hash_comment_languages() {
+        for line in ["// owned by #4578", "# owned by #4578"] {
+            assert_eq!(scan_file(line, SweptLang::HashComment), vec![], "{line}");
+        }
+    }
+
+    /// δ-C is appended LAST: every earlier arm keeps its lines, and a line
+    /// still yields at most one entry.
+    #[test]
+    fn scan_file_delta_c_precedence() {
+        // Arm (3): same payload, owned by the marker lane, pushed once.
+        let marker = "// TODO(#4578): owned by #4578";
+        assert_eq!(
+            scan_file(marker, SweptLang::SlashComment),
+            cited_line(marker, &[4578])
+        );
+        // Arm (3): a marker with only a legacy cite stays malformed-cite.
+        let malformed = "// TODO: owned by task 4578";
+        assert_eq!(
+            scan_file(malformed, SweptLang::SlashComment),
+            vec![(
+                1,
+                LineClass::Structural(Kind::MalformedCite),
+                malformed.to_string()
+            )]
+        );
+        // Arm (7): on Rust δ-B wins, keeping its ALL-canonical-cites payload;
+        // where δ-B does not run, δ-C resolves the owner alone.
+        let delta_b = "/// introduced by #2330; wiring is blocked on task #2947";
+        assert_eq!(
+            scan_file(delta_b, SweptLang::Rust),
+            cited_line(delta_b, &[2330, 2947])
+        );
+        assert_eq!(
+            scan_file(delta_b, SweptLang::SlashComment),
+            cited_line(delta_b, &[2947])
+        );
+        // Arm (6): an uncited phantom claim stays structural.
+        let phantom = "// tracked separately, owned by task 4578";
+        assert_eq!(
+            scan_file(phantom, SweptLang::SlashComment),
+            vec![(
+                1,
+                LineClass::Structural(Kind::PhantomTracking),
+                phantom.to_string()
+            )]
+        );
+    }
+
+    /// δ-C emits NO structural kind, so §8.3's taxonomy, `STRUCTURAL_KINDS`
+    /// and `fingerprint` are untouched by it.
+    #[test]
+    fn scan_file_delta_c_emits_no_structural_kind() {
+        let content = [
+            "// Growth of `Part` is owned by #4578.",
+            "// grows once task 4578 lands the registry.",
+            "/// Task 4578 will grow `Part` into a full structure.",
+            "// resolution semantics are deferred to task 3477/3558.",
+        ]
+        .join("\n");
+        assert_eq!(classify_file(&content, SweptLang::SlashComment), vec![]);
+        assert_eq!(scan_file(&content, SweptLang::SlashComment).len(), 4);
     }
 
     // -------------------------------------------------------------------
@@ -3515,7 +3950,7 @@ mod tests {
             "#[ignore = \"see #42\"]",          // 2 cite, no blocker-prose → Cited([42])
         ];
         let content = lines.join("\n");
-        let got = scan_file(&content, true);
+        let got = scan_file(&content, SweptLang::Rust);
 
         let expected: Vec<(usize, LineClass, String)> = vec![
             (1, LineClass::Cited(vec![4444]), "#[ignore = \"blocked on #4444\"]".to_string()),
@@ -3630,16 +4065,16 @@ mod tests {
 
     #[test]
     fn classify_file_non_rust_skips_macro_and_ignore() {
-        // is_rust=false: comment markers and phantom phrases still fire (all
+        // Non-Rust: comment markers and phantom phrases still fire (all
         // swept exts), but the .rs-only macro and #[ignore] rules do NOT.
         let lines = [
             "# TODO: wire this sh script", // 1 comment marker -> Untracked
-            "todo!()",                     // 2 macro -> suppressed (is_rust=false)
-            "#[ignore]",                   // 3 ignore -> suppressed (is_rust=false)
+            "todo!()",                     // 2 macro -> suppressed (non-Rust)
+            "#[ignore]",                   // 3 ignore -> suppressed (non-Rust)
             "tracked separately",          // 4 phantom -> PhantomTracking
         ];
         let content = lines.join("\n");
-        let got = classify_file(&content, false);
+        let got = classify_file(&content, SweptLang::HashComment);
 
         let expected: Vec<(usize, Kind, String)> = vec![
             (1, Kind::Untracked, "# TODO: wire this sh script".to_string()),
@@ -3663,7 +4098,7 @@ mod tests {
             "δ-B must not be able to claim this line"
         );
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![5835]), line.to_string())]
         );
     }
@@ -3677,7 +4112,7 @@ mod tests {
             ("  // so the fix is tracked separately, by #6564.", 6564),
         ] {
             assert_eq!(
-                scan_file(line, false),
+                scan_file(line, SweptLang::SlashComment),
                 vec![(1, LineClass::Cited(vec![id]), line.trim().to_string())],
                 "discharged phantom line not classified Cited([{id}]): {line}"
             );
@@ -3690,7 +4125,7 @@ mod tests {
     fn scan_file_discharged_phantom_tracking_dedups_cites() {
         let line = "/// tracked separately as #6156 (see #6156) and #7756";
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(1, LineClass::Cited(vec![6156, 7756]), line.to_string())]
         );
     }
@@ -3705,7 +4140,7 @@ mod tests {
             "§7#5 must be PRD-relative for this test to mean anything"
         );
         assert_eq!(
-            scan_file(line, true),
+            scan_file(line, SweptLang::Rust),
             vec![(
                 1,
                 LineClass::Structural(Kind::PhantomTracking),
@@ -3720,8 +4155,8 @@ mod tests {
     fn scan_file_discharged_phantom_g_allow_line_is_delegated() {
         let line = "// G-allow: wiring tracked separately as #5235 — no non-test caller until then";
         assert!(g_allow_marker_body(line).is_some());
-        for is_rust in [true, false] {
-            assert_eq!(scan_file(line, is_rust), vec![], "is_rust={is_rust}");
+        for lang in [SweptLang::Rust, SweptLang::SlashComment] {
+            assert_eq!(scan_file(line, lang), vec![], "lang={lang:?}");
         }
     }
 
@@ -3735,7 +4170,7 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(
-            classify_file(&content, true),
+            classify_file(&content, SweptLang::Rust),
             vec![(
                 1,
                 Kind::PhantomTracking,
@@ -3932,14 +4367,14 @@ mod tests {
         for vocab in ASSESSED_REJECTED_VOCAB {
             let rust_line = format!("// this uses {vocab} in a comment");
             assert_eq!(
-                scan_file(&rust_line, true),
+                scan_file(&rust_line, SweptLang::Rust),
                 vec![],
                 "vocab {:?} must not trigger the detector in a Rust comment",
                 vocab,
             );
             let non_rust_line = format!("# {vocab} mentioned here");
             assert_eq!(
-                scan_file(&non_rust_line, false),
+                scan_file(&non_rust_line, SweptLang::HashComment),
                 vec![],
                 "vocab {:?} must not trigger the detector in a non-Rust comment",
                 vocab,
@@ -3953,7 +4388,7 @@ mod tests {
         for vocab in ASSESSED_REJECTED_VOCAB {
             let marker_like = format!("// {vocab}: some description");
             assert_eq!(
-                scan_file(&marker_like, true),
+                scan_file(&marker_like, SweptLang::Rust),
                 vec![],
                 "vocab {:?} in marker-like position must not trigger the detector",
                 vocab,
@@ -3963,10 +4398,10 @@ mod tests {
         // Concrete real-corpus benign forms that must also stay silent.
 
         // (a) mktemp XXXXXX template — the dominant "XXX" corpus class (~100% FP).
-        //     Shell context (is_rust=false).
+        //     Shell context.
         let mktemp_line = "TMPDIR=$(mktemp -d /tmp/reify-XXXXXX)";
         assert_eq!(
-            scan_file(mktemp_line, false),
+            scan_file(mktemp_line, SweptLang::HashComment),
             vec![],
             "mktemp XXXXXX template line must not trigger the detector",
         );
@@ -3975,7 +4410,7 @@ mod tests {
         //     corpus class (type-system/UI vocabulary, ~100% FP).  Rust context.
         let placeholder_line = "/// Uses an ephemeral placeholder for the auto-generated type param.";
         assert_eq!(
-            scan_file(placeholder_line, true),
+            scan_file(placeholder_line, SweptLang::Rust),
             vec![],
             "doc-comment with 'placeholder' must not trigger the detector",
         );
@@ -3984,7 +4419,7 @@ mod tests {
         //     (stub-mode architectural concept, ~100% FP).  Rust context.
         let stub_mode_line = "/// Returns `None` in stub mode (OCCT/OpenVDB absent builds).";
         assert_eq!(
-            scan_file(stub_mode_line, true),
+            scan_file(stub_mode_line, SweptLang::Rust),
             vec![],
             "doc-comment with 'stub mode' must not trigger the detector",
         );

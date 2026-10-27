@@ -369,7 +369,14 @@ WARN_PCT=90
 # Empty is the healthy end state. The array stays DECLARED because Section 5d
 # expands it under `set -u`, and lives in-script beside CAP_LINES and WARN_PCT
 # rather than in a manifest file.
-_KLOC_WARN_KNOWN=()
+#
+# harness_syntax.rs measured 18072/20000 = 90% at task #7809 (root 146 + 17856
+# across 55 module files + 70 external); bare main was already 17994, 6 under
+# the warn line. Its rule (a) split is #9402. #9398 moves the root to
+# harness_syntax/main.rs and must re-path this row in the same diff.
+_KLOC_WARN_KNOWN=(
+    "crates/reify-syntax/tests/harness_syntax.rs"
+)
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
@@ -3012,7 +3019,8 @@ assert "9: missing baseline surfaces an explicit FAIL (missing-baseline)" \
 #     read off harness_layout_baseline_rows's EXIT STATUS, which is exactly why
 #     that lib function narrowly propagates grep's error exit (>= 2) instead of
 #     swallowing it alongside the no-lines-matched exit 1
-#     (tests/infra/harness-layout-lib.sh:252-260). ---
+#     (harness_layout_baseline_rows → _harness_layout_baseline_load in
+#     tests/infra/harness-layout-lib.sh). ---
 if [ "$(id -u)" -eq 0 ]; then
     echo "  (skipped: running as uid 0 — chmod 000 does not deny root reads)"
 else
@@ -3293,7 +3301,7 @@ assert "10: live scan actually visited harness roots (>= 13 found, non-vacuity)"
 assert "10: live scan emits the new aggregate PASS grammar (crate=C scan=undeclared-members roots=N members=N)" \
     grep -Eq '^HARNESS_KLOC_CAP PASS crate=[A-Za-z0-9_-]+ scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out"
 
-# `|| true` (the Section 4 idiom, tests/infra/test_harness_kloc_cap.sh:1315):
+# `|| true` (the Section 4 idiom: its `_s4_summary_count` grep -c):
 # under `set -o pipefail` a legitimate zero-match grep exits 1, and awk's
 # unconditional `END { print sum + 0 }` never masks that — without `|| true`
 # this whole command substitution would abort the script here, before

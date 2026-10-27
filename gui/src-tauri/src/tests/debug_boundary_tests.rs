@@ -100,6 +100,7 @@ fn boundary_gui_state_from(source: &str) -> crate::types::GuiState {
     use reify_test_support::MockGeometryKernel;
 
     let mut session = crate::engine::EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

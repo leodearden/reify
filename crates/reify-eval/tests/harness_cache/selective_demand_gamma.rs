@@ -40,6 +40,7 @@ fn warm_tessellate_snapshot_marks_hidden_body_cell_pending_and_preserves_last_va
     let sb = NodeId::Value(ValueCellId::new(e, "sb")); // body_b exclusive cell
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

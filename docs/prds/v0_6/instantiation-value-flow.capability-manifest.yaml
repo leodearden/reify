@@ -118,6 +118,7 @@ tasks:
       pattern: one level of override depth only
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/realization_seeding.rs
       expect: absent
 - label: ζ
   task_id: 6611
@@ -141,6 +142,9 @@ tasks:
       pattern: instantiation_value_flow_probe.ri
       paths:
       - scripts/verify.sh
+      - gui/src/__tests__/reifyGrammarCorpus.test.ts
+      - gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
+      - crates/reify-cli/tests/
       expect: present
   - name: oracle-harness-premise
     binding: 'signal premise — the Shape-A oracle (instance ≡ hand-specialized twin)

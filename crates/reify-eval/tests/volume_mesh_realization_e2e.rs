@@ -50,7 +50,7 @@ fn ensure_gmsh_kernel_adds_gmsh_and_is_idempotent() {
     use reify_kernel_gmsh::register::GMSH_KERNEL_NAME;
     use reify_test_support::mocks::MockConstraintChecker;
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
     // Baseline: `Engine::new(checker, None)` holds zero kernels; gmsh absent.
     let baseline = engine.kernel_count();
@@ -101,7 +101,7 @@ fn ensure_gmsh_kernel_adds_gmsh_and_is_idempotent() {
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// `cfg(has_gmsh)`: the demand → execute call edge writes VolumeMesh + Gmsh.
@@ -407,6 +407,230 @@ fn e2e_vm_probe_reads_back_tet_volume_mesh_from_demanded_body() {
     );
 }
 
+/// The `volume_mesh_box.ri` shape plus a tolerance contract, so the
+/// VolumeMesh-demanded `body` terminal is written to the realization cache.
+///
+/// The terminal cache insert is gated on `is_terminal_realization &&
+/// demanded_tol.is_some() && realization_name.is_some()`; the
+/// `RepresentationWithin` bound declared inside the SAME structure is what
+/// makes `demanded_tol` Some (the shape proven in
+/// `solve_elastic_static_body_e2e.rs::NON_PRISMATIC_ONE_CASE_BODY_SOURCE`).
+#[cfg(has_gmsh)]
+const CACHED_VOLUME_MESH_BOX_SOURCE: &str = r#"
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Int {
+    0
+}
+
+structure FeaMeshTolerance {
+    param nominal : Real = 1.0
+}
+
+structure CachedVolumeMeshBox {
+    param mesh_tol : FeaMeshTolerance = FeaMeshTolerance()
+    constraint RepresentationWithin(mesh_tol, 100um)
+
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+    let probe = vm_probe(body)
+}
+"#;
+
+/// OCCT names every exported product `Open CASCADE STEP translator <version>
+/// <n>`, where `<n>` counts the STEP writes made by this process.
+#[cfg(has_gmsh)]
+const OCCT_PRODUCT_NAME: &str = "Open CASCADE STEP translator ";
+
+/// The STEP text without its two per-write markers, so two exports of the
+/// same body compare equal: the header line carrying the write timestamp, and
+/// the version and write count after [`OCCT_PRODUCT_NAME`].
+#[cfg(has_gmsh)]
+fn step_without_write_markers(step: &[u8]) -> String {
+    String::from_utf8_lossy(step)
+        .lines()
+        .filter(|line| !line.contains("FILE_NAME("))
+        .map(|line| {
+            let mut pieces = line.split(OCCT_PRODUCT_NAME);
+            let mut kept = pieces.next().unwrap_or_default().to_string();
+            for piece in pieces {
+                kept.push_str(OCCT_PRODUCT_NAME);
+                kept.push_str(&piece[piece.find('\'').unwrap_or(piece.len())..]);
+            }
+            kept
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `cfg(has_gmsh)`: a cache-served VolumeMesh terminal exports the same body
+/// the cold build exported.
+///
+/// The cold build meshes the OCCT `box` into a gmsh VolumeMesh and caches that
+/// terminal; Phase-B egress reads the body the VolumeMesh was meshed from. The
+/// warm build is served from the realization cache without the VolumeMesh edge
+/// running, so it must find the same meshed-from body rather than handing the
+/// gmsh VolumeMesh to the exporter.
+#[cfg(has_gmsh)]
+#[test]
+fn cache_served_volume_mesh_terminal_exports_the_body_the_cold_build_exported() {
+    use reify_core::{KernelId, Severity};
+    use reify_ir::{ExportFormat, ReprKind};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping cache_served_volume_mesh_terminal_exports_the_body_the_cold_build_exported: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(CACHED_VOLUME_MESH_BOX_SOURCE);
+
+    let mut engine = make_occt_engine();
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let before = engine.cache_stats().realization_entries;
+    let cold = engine.build(&compiled, ExportFormat::Step);
+    let mid = engine.cache_stats().realization_entries;
+    let warm = engine.build(&compiled, ExportFormat::Step);
+    let after = engine.cache_stats().realization_entries;
+
+    assert!(
+        mid - before >= 1,
+        "precondition: the cold build must cache the toleranced VolumeMesh terminal; \
+         realization_entries went {before} -> {mid}"
+    );
+    assert_eq!(
+        after, mid,
+        "precondition: the warm build must be cache-served and realize nothing new"
+    );
+    let provenance = engine.realization_kernel_provenance();
+    assert!(
+        provenance
+            .iter()
+            .any(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh),
+        "precondition: after the warm build a (VolumeMesh, Gmsh) realization must \
+         still be reported. provenance: {:?}",
+        provenance
+            .iter()
+            .map(|p| (p.realization.clone(), p.repr, p.kernel))
+            .collect::<Vec<_>>()
+    );
+
+    let mut exports = Vec::new();
+    for (label, result) in [("cold", &cold), ("warm", &warm)] {
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the {label} build must report no Error diagnostic. got: {errors:?}"
+        );
+        let bytes = result
+            .geometry_output
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+            .unwrap_or_else(|| panic!("the {label} build must export non-empty STEP geometry"));
+        exports.push(step_without_write_markers(bytes));
+    }
+    assert_eq!(
+        exports[0], exports[1],
+        "the cache-served build must export the same body the cold build exported"
+    );
+}
+
+/// The `[x, y, z]` extents of `mesh`'s vertices, in metres.
+#[cfg(has_gmsh)]
+fn axis_extents_m(mesh: &reify_ir::Mesh) -> [f64; 3] {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for vertex in mesh.vertices.chunks_exact(3) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(f64::from(vertex[axis]));
+            max[axis] = max[axis].max(f64::from(vertex[axis]));
+        }
+    }
+    [0, 1, 2].map(|axis| max[axis] - min[axis])
+}
+
+/// `cfg(has_gmsh)`: after a build has cached a body's gmsh VolumeMesh terminal,
+/// the tessellate walk (the GUI viewport surface) still draws that body as the
+/// 10 mm box it was meshed from.
+///
+/// The VolumeMesh is an FEA representation the viewport cannot draw. The
+/// tessellate walk demands BRep, so it is not served the cached VolumeMesh;
+/// this pins the drawn outcome, not that mechanism.
+#[cfg(has_gmsh)]
+#[test]
+fn tessellate_walk_draws_a_volume_mesh_demanded_body_as_its_box() {
+    use reify_core::{KernelId, Severity};
+    use reify_ir::{ExportFormat, ReprKind};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping tessellate_walk_draws_a_volume_mesh_demanded_body_as_its_box: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+    const BOX_EDGE_M: f64 = 0.010;
+    const EXTENT_TOLERANCE_M: f64 = 1e-6;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(CACHED_VOLUME_MESH_BOX_SOURCE);
+    let mut engine = make_occt_engine();
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    engine.build(&compiled, ExportFormat::Step);
+    assert!(
+        engine
+            .realization_kernel_provenance()
+            .iter()
+            .any(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh),
+        "precondition: the build must realize `body` as a gmsh VolumeMesh"
+    );
+    let result = engine.tessellate_realizations(&compiled);
+
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the tessellate walk must report no Error diagnostic. got: {errors:?}"
+    );
+    let surfaces: Vec<_> = result.meshes.iter().map(|s| &s.entity_path).collect();
+    let [body] = result.meshes.as_slice() else {
+        panic!("the tessellate walk must draw exactly the `body` surface. got: {surfaces:?}");
+    };
+    assert!(
+        !body.mesh.indices.is_empty(),
+        "the `body` surface must have triangles"
+    );
+    let extents = axis_extents_m(&body.mesh);
+    assert!(
+        extents
+            .iter()
+            .all(|extent| (extent - BOX_EDGE_M).abs() <= EXTENT_TOLERANCE_M),
+        "the `body` surface must span the 10 mm box on every axis. extents (m): {extents:?}"
+    );
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub.
 ///
 /// When the gmsh adapter is absent (no `has_gmsh` cfg), the registry does not
@@ -421,7 +645,7 @@ fn ensure_gmsh_kernel_returns_false_without_gmsh() {
          (stub-mode build); ensure_gmsh_kernel() must return false"
     );
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     assert!(
         !engine.ensure_gmsh_kernel(),
         "stub mode: ensure_gmsh_kernel() must return false when the gmsh adapter \

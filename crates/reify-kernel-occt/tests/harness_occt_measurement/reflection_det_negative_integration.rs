@@ -282,9 +282,9 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 /// the measured concave-fixture counter-example.
 // Fixture dimensions, used by `convex_fixtures` and by `build_cylinder`, which
 // builds its `cylinder_r6_h20`.
-const BOX_WIDTH: f64 = 0.010;
-const BOX_HEIGHT: f64 = 0.020;
-const BOX_DEPTH: f64 = 0.030;
+const BOX_SIZE_X: f64 = 0.010;
+const BOX_SIZE_Y: f64 = 0.020;
+const BOX_SIZE_Z: f64 = 0.030;
 const BOX_DX: f64 = 0.050;
 
 const CYLINDER_RADIUS: f64 = 0.006;
@@ -303,9 +303,9 @@ const SPHERE_DX: f64 = 0.030;
 fn convex_fixtures(kernel: &mut OcctKernel) -> Vec<(&'static str, GeometryHandleId)> {
     let box_src = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_WIDTH),
-            height: Value::Real(BOX_HEIGHT),
-            depth: Value::Real(BOX_DEPTH),
+            size_x: Value::Real(BOX_SIZE_X),
+            size_y: Value::Real(BOX_SIZE_Y),
+            size_z: Value::Real(BOX_SIZE_Z),
         })
         .expect("box_10x20x30 should build");
     let box_id = kernel

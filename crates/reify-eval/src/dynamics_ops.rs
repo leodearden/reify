@@ -28,7 +28,7 @@ use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::dynamics::eval::{
-    default_frame3, inverse_dynamics_sample, motion_trajectory_samples,
+    cell_f64, default_frame3, inverse_dynamics_sample, motion_trajectory_samples,
 };
 use reify_stdlib::dynamics::mass_props::{resolve_density, resolve_density_strict};
 use reify_stdlib::dynamics::rnea::default_gravity;
@@ -42,18 +42,6 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// source of truth for downstream hooks (the MassProperties PSD validator keys
 /// on `type_name == "MassProperties"`, not on the id).
 const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
-
-/// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
-/// `Scalar`). Mirrors `dynamics_psd`'s `cell_f64`; non-numeric cells yield
-/// `None`.
-fn cell_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Int(n) => Some(*n as f64),
-        Value::Real(r) => Some(*r),
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        _ => None,
-    }
-}
 
 /// Read `body.material.density` as an `f64`, if the body is a StructureInstance
 /// whose `material` field is itself a StructureInstance carrying a numeric
@@ -762,9 +750,9 @@ mod tests {
     }
 
     /// Extract an f64 from a numeric cell (`Real` / `Int` / `Scalar`),
-    /// delegating to the module's `cell_f64` (shared via `use super::*`) so the
-    /// numeric-extraction logic is single-sourced within this module rather than
-    /// re-spelled in the tests. Panics on a non-numeric cell (the tests want a
+    /// delegating to the shared `cell_f64` (imported via `use super::*`) so the
+    /// numeric-extraction logic is single-sourced rather than re-spelled in the
+    /// tests. Panics on a non-numeric cell (the tests want a
     /// hard failure, not the `None` the production helper returns).
     fn num(v: &Value) -> f64 {
         cell_f64(v).unwrap_or_else(|| panic!("expected numeric value, got {v:?}"))

@@ -4,10 +4,8 @@
 //! The file lists PDOCCOVER's accepted debt, one [`BaselineRow`] per line, in
 //! two kinds: a bare `<name>` is omission debt (a registry name no chunk
 //! documents) and `<chunk path>:<name>` is fabrication debt (a call-shaped name
-//! that chunk claims but no source declares). [`Ledger`] is the set algebra
-//! the ratchet and its generator share: live debt the ledger already holds is
-//! kept, live debt it lacks is new, and a committed row no live debt matches
-//! is stale.
+//! that chunk claims but no source declares). The ratchet and its generator
+//! settle these rows with [`crate::ratchet_ledger::Ledger`]'s set algebra.
 //!
 //! This module knows nothing about how debt is found — `pdoccover.rs` derives
 //! the live rows; this is only the format of one committed file.
@@ -32,8 +30,8 @@ pub const BASELINE_HEADER: &str = "\
 #                        stdlib source declares (fabricated-name)
 #
 # GENERATED — do not hand-edit. Regenerate with:
-#   cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . \\
-#     > crates/reify-audit/pdoccover-baseline.txt
+#   cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . --write
+# Never redirect its stdout into this file: the shell truncates it first.
 #
 # The default regeneration only DROPS stale rows. `--admit-new` is the only way
 # to add debt, and every row it adds must be justified in review; the real fix
@@ -109,34 +107,6 @@ pub fn render_baseline(rows: &BTreeSet<BaselineRow>) -> String {
         out.push_str(&format!("{row}\n"));
     }
     out
-}
-
-/// Live debt (what the lanes find today) against committed debt (the ledger
-/// file). The three views are disjoint: `kept ∪ new_debt == live` and
-/// `kept ∪ stale == committed`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ledger {
-    pub live: BTreeSet<BaselineRow>,
-    pub committed: BTreeSet<BaselineRow>,
-}
-
-impl Ledger {
-    /// Live debt the ledger already accounts for — what a shrink-only
-    /// regeneration writes.
-    pub fn kept(&self) -> BTreeSet<BaselineRow> {
-        self.live.intersection(&self.committed).cloned().collect()
-    }
-
-    /// Live debt the ledger lacks — reported by the ratchet.
-    pub fn new_debt(&self) -> BTreeSet<BaselineRow> {
-        self.live.difference(&self.committed).cloned().collect()
-    }
-
-    /// Committed rows no live debt matches — removing one would change no
-    /// other finding, so each is reported as dead weight.
-    pub fn stale(&self) -> BTreeSet<BaselineRow> {
-        self.committed.difference(&self.live).cloned().collect()
-    }
 }
 
 #[cfg(test)]
@@ -259,26 +229,5 @@ mod tests {
     fn an_empty_ledger_renders_the_header_alone() {
         assert_eq!(render_baseline(&BTreeSet::new()), BASELINE_HEADER);
         assert!(parse_baseline(BASELINE_HEADER).is_empty());
-    }
-
-    #[test]
-    fn the_ledger_partitions_live_and_committed_debt() {
-        let kept = undocumented("kept_op");
-        let new = fabricated(GEOMETRY_CHUNK, "ghost_op");
-        let stale = undocumented("vanished_op");
-        let ledger = Ledger {
-            live: rows([kept.clone(), new.clone()]),
-            committed: rows([kept.clone(), stale.clone()]),
-        };
-
-        assert_eq!(ledger.kept(), rows([kept]));
-        assert_eq!(ledger.new_debt(), rows([new]));
-        assert_eq!(ledger.stale(), rows([stale]));
-
-        let (kept, new_debt, stale) = (ledger.kept(), ledger.new_debt(), ledger.stale());
-        assert!(kept.is_disjoint(&new_debt) && kept.is_disjoint(&stale));
-        assert!(new_debt.is_disjoint(&stale));
-        assert_eq!(&kept | &new_debt, ledger.live);
-        assert_eq!(&kept | &stale, ledger.committed);
     }
 }

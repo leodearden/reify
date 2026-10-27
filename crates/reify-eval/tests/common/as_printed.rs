@@ -24,6 +24,17 @@ pub fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     }))
 }
 
+/// `value` (a StructureInstance fixture) with its `key` field replaced.
+pub fn with_field(value: Value, key: &str, field: Value) -> Value {
+    match value {
+        Value::StructureInstance(mut data) => {
+            data.fields.insert(key.to_string(), field);
+            Value::StructureInstance(data)
+        }
+        other => panic!("with_field expects a StructureInstance, got {other:?}"),
+    }
+}
+
 pub fn scalar(si: f64, dim: DimensionVector) -> Value {
     Value::Scalar {
         si_value: si,

@@ -206,6 +206,7 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
     // IS registered, exactly as on a `reify build` run. `capture_repr_tol`
     // stays false — nobody asked for a measurement on this surface.
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(NoRealizationStubKernel)),
     );
@@ -612,7 +613,7 @@ fn registered_kernel_that_cannot_tessellate_is_not_measurement_capable() {
 /// together with `Engine::has_repr_capable_kernel`.
 #[test]
 fn production_engine_kernel_names_are_absent_from_the_inventory_registry() {
-    let engine = reify_eval::Engine::with_registered_kernel(Box::new(
+    let engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(
         reify_constraints::SimpleConstraintChecker,
     ));
     let registry = reify_eval::kernel_registry::registry();
@@ -668,7 +669,7 @@ fn registered_kernel_shape_names_a_remedy_this_binary_can_honour() {
 
     // The `reify build` surface: registered kernels, capture never enabled.
     let mut engine =
-        reify_eval::Engine::with_registered_kernel(Box::new(reify_constraints::SimpleConstraintChecker));
+        reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker));
     let result = engine.check(&compiled);
 
     let attributions: Vec<&reify_core::Diagnostic> = result
@@ -782,6 +783,7 @@ fn kernel_present_but_nothing_tessellated_does_not_blame_the_kernel() {
     // IS registered.  The subject declares no realization, so nothing is ever
     // tessellated and the map stays empty for a reason that is NOT the kernel.
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(NoRealizationStubKernel)),
     );
@@ -1479,7 +1481,7 @@ fn dispatch_interception_no_entry_yields_indeterminate() {
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Compile `source` (no stdlib) and assert no error-severity diagnostics.
@@ -1578,14 +1580,10 @@ structure SphereCheck {
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
-/// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, below the ~2.5e-4 floor
-/// where a separate third branch ALSO appears, per
-/// `precision-nominal-representation-guarantee.md` §2 — but this row's own
-/// 2.078x reading shows it sits on the envelope, not that branch, in this
-/// regime. Do not read it as extending the envelope/tooth characterization
-/// that low: a third branch is known to exist down there too; see
-/// `docs/notes/occt-precision-deviation-staircase.md` for that branch, its
-/// ratio and its do-not-extrapolate rule.
+/// The 0.10mm row (`d/R` = 1e-4) sits below the ~2.52e-4 onset of the ~1.49x
+/// third branch and reads as a tread: treads persist below that onset,
+/// interleaved with third-branch windows; see
+/// `docs/notes/occt-precision-deviation-staircase.md` §1.
 ///
 /// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep —
 /// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"

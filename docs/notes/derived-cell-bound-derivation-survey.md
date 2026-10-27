@@ -55,8 +55,8 @@ only to hand-built Rust fixtures, never to a real `.ri` model.**
 The claim that autos and ref-vs-ref constraints are DISJOINT POPULATIONS at the FILE
 level is **too strong, and this survey corrects it**: two files carry both.
 
-- `examples/integration_corner_cases.ri` — autos `x`/`y` (`auto(free)`, :175–176, no
-  constraint names either); the ref-vs-ref constraint is `constraint a < d` (:134) over
+- `examples/integration_corner_cases.ri` — autos `x`/`y` (`auto(free)`, :174–175, no
+  constraint names either); the ref-vs-ref constraint is `constraint a < d` (:133) over
   `param a…d`, literal-defaulted params in a different scope.
 - `examples/integration_full_v01.ri` — autos `load_auto` (:136, never constrained) and
   `load_free` (:137, constrained only against LITERALS at :295–296); the ref-vs-ref

@@ -71,6 +71,7 @@ pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
     use reify_constraints::SimpleConstraintChecker;
 
     crate::engine::EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(seeded_rigid_mass_props_kernel(1..=16))),
     )
@@ -151,7 +152,7 @@ pub(crate) fn rigid_mass_props_session_seeded_then_failing(
     let ceiling = *good_ids.end();
     let kernel = seeded_rigid_mass_props_kernel(good_ids).fail_after_n_dispatches(ceiling);
     let dispatch_log = kernel.operations_ref();
-    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     (session, dispatch_log)
 }
 

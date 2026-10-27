@@ -115,6 +115,7 @@ fn build_and_capture_root(source: &str) -> RootSignal {
     let bboxes_ref = recording_kernel.bboxes_ref();
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(recording_kernel)),
     );

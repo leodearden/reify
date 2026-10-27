@@ -341,6 +341,9 @@ export async function claudeClearSession(): Promise<void> {
 
 /** Forward a permission decision to the Tauri backend.
  *
+ * The command takes one named argument, `decision` (`PermissionDecisionArgs`); Tauri keys
+ * arguments by parameter name, so the snake_case serde fields travel inside that envelope.
+ *
  * Translates camelCase arguments to snake_case for Rust serde deserialization,
  * following the same omit-undefined discipline as mapContextToWire so that
  * Rust's `skip_serializing_if = "Option::is_none"` round-trips correctly.
@@ -358,14 +361,14 @@ export async function claudePermissionDecision({
   updatedInput?: unknown;
   remember?: boolean;
 }): Promise<void> {
-  const payload: Record<string, unknown> = {
+  const decision: Record<string, unknown> = {
     request_id: requestId,
     behavior,
   };
-  if (message !== undefined) payload.message = message;
-  if (updatedInput !== undefined) payload.updated_input = updatedInput;
-  if (remember !== undefined) payload.remember = remember;
-  return invoke('claude_permission_decision', payload);
+  if (message !== undefined) decision.message = message;
+  if (updatedInput !== undefined) decision.updated_input = updatedInput;
+  if (remember !== undefined) decision.remember = remember;
+  return invoke('claude_permission_decision', { decision });
 }
 
 // ── Debug ───────────────────────────────────────────────────────────

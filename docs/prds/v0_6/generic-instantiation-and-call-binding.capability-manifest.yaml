@@ -1,0 +1,405 @@
+prd: docs/prds/v0_6/generic-instantiation-and-call-binding.md
+schema_version: 1
+signal_leaves:
+- α₂
+- β₁
+- γ₂
+- δ
+tasks:
+- label: α₁
+  task_id: 9358
+  title: 'One type-argument binder: type_args.rs, padded Applied, coded arity diagnostic'
+  note: 'Absorbs #7337, #8098 (position 1), #9329 (K1-D3) and #8214 (R14); deletes #9169''s alias_arity_accepts after #9169 lands. The CLI prints {severity}: {message} with no code->mnemonic map, so the message carries the E_TYPE_ARG_ARITY prefix (PRD §5 D3). Evidence measured at main baff3ed38b (2026-10-17) with target/debug/reify built 2026-10-16 14:45; decompose-verify run wf_73385a73-006.'
+  capabilities:
+  - name: annotation-default-rejected-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_alpha_default_padding.ri: "error: wrong number of type arguments for ''Holder'': expected 2, got 1" rc 1, while the same file''s `sub part = Holder<Bolt>()` is accepted (probe a).'
+    verdict: PASS
+  - name: nested-alias-arity-silent-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_alpha_nested_alias_arity.ri: only "error: unresolved type: Q<Int>" rc 1 (probe c, without the survey''s `= [1]` default, whose list-literal cascade would make "exactly one error" unachievable); the direct P<Int, Int> prints "type alias ''P'' expects 1 type argument(s), got 2". #9169 (lands first) adds the code-less naming; α₁ adds the E_TYPE_ARG_ARITY prefix and shape.'
+    verdict: PASS
+  - name: nongeneric-builtin-args-silent-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_alpha_nongeneric_builtin_args.ri: "All constraints satisfied." rc 0 for Int<Real>, Length<Int>, Bool<Length>, String<Int>, Orientation<2> (probe e, #7337). Rejection mechanism absent today = the motivation; after α₁ bind_type_args(Fixed(0), ..) is the rejection mechanism.'
+    verdict: PASS
+  - name: nested-applied-enum-unresolved-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_alpha_nested_generic_enum.ri: "unresolved type: Option<Ge<Real>>", "unresolved type: List<Ge<Real>>", "unresolved type: W" rc 1 (#8214); the top-level param p : Ge<Real> resolves only through the caller-level resolve_enum_type_with_args fallback (decompose-verify wf_73385a73-006, δ adversary).'
+    verdict: PASS
+  - name: resolution-ctx-upstream
+    binding: 'producer:task-8643 upstream (S7 μ ResolutionCtx; pending). α₁ adds the constructor (structure + enum) type-param table to it (PRD §5 D2).'
+    verdict: PASS
+  - name: builtin-arity-table-upstream
+    binding: 'producer:task-8903 upstream (S8 ο ParamBuiltin.arity; pending). If ο lands with hand-written arms, α₁ hoists one check above the match (PRD §5 D5).'
+    verdict: PASS
+  - name: any-descendant-upstream
+    binding: 'producer:task-8638 upstream (S7 λ Type::any_descendant; pending) — Sigma::is_concrete.'
+    verdict: PASS
+  - name: enum-bare-arity-upstream
+    binding: 'producer:task-8013 upstream (generic-enum-type-arg-retention α2; pending, branch task/8013 5 commits at 2026-10-18) — the zero-argument generic-enum arity rule in resolve_enum_type_with_args; α₁ routes it through bind_type_args.'
+    verdict: PASS
+  - name: binder-fn
+    binding: 'producer-self — bind_type_args in crates/reify-compiler/src/type_args.rs; absent on main (0 lines).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn bind_type_args
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: strict-applied-arity-gone
+    binding: 'producer-self — check_applied_type_arg_bounds'' strict `args.len() != target.type_params.len()` (1 line at main) is deleted (INV-α2).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: args\.len\(\) != target\.type_params\.len\(\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/type_resolution.rs
+  - name: builtin-guard-arms-gone
+    binding: 'producer-self — the 24 per-builtin `" if type_args.len() == N` guard arms (24 lines at main) die for one bind_type_args(Fixed(row.arity), ..) before dispatch (PRD §5 D5).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '" if type_args\.len\(\) == [0-9]'
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/type_resolution.rs
+  - name: default-type-arg-equivalence-test
+    binding: 'producer-self — a compile test that reads tests/prd-gate/fixtures/gicb_alpha_default_padding.ri and asserts Holder<Bolt> == Holder<Bolt, Steel> as Types (ported from #9329). Scoped to the fixture read, not the bare type spelling #9329''s check used, which any comment satisfies; the read also forces the _RUST_COUPLED_RI_FIXTURES registration (PRD §5 D15). 0 lines at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: gicb_alpha_default_padding
+      expect: present
+      paths:
+      - crates/reify-compiler/tests
+- label: α₂
+  task_id: 9359
+  title: 'Bind type args at instantiation and pattern sites; delete effective_arg copies'
+  note: 'Absorbs #8229. Closes fk-4bd738a79576.'
+  capabilities:
+  - name: sub-arity-codeless-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_alpha2_sub_arity_excess.ri: code-less "error: too many type arguments for ''Holder'': expected 2, got 3" rc 1.'
+    verdict: PASS
+  - name: binder-upstream
+    binding: 'producer:α₁ (intra-batch) — bind_type_args.'
+    verdict: PASS
+  - name: variant-construct-upstream
+    binding: 'producer:task-8018 upstream (generic-enum-type-arg-retention δ; pending) — the Applied exits of compile_variant_construct, which α₂''s A9 rewrite follows.'
+    verdict: PASS
+  - name: effective-arg-copies-gone
+    binding: 'producer-self — the two `let effective_arg:` copies (entity.rs::check_type_param_bounds, auto_type_param_phase.rs seeding; 2 lines at main) die. The colon excludes conformance/mod.rs''s unrelated `let effective_arg_type` (decompose-verify wf_73385a73-006).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'let effective_arg:'
+      expect: absent
+      paths:
+      - crates/reify-compiler/src
+  - name: hand-too-many-check-gone
+    binding: 'producer-self — check_type_param_bounds'' `type_args.len() > type_params.len()` (1 line at main) is replaced by bind_type_args.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: type_args\.len\(\) > type_params\.len\(\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/entity.rs
+- label: β₁
+  task_id: 9360
+  title: 'Extract monomorph.rs: instantiate_template, re-key, one instantiation pass, concrete hydration'
+  note: 'Absorbs #6853 and #7225; ports #6851''s evidence without cancelling it (C14). Closes fk-7bf9e6299eca. Concreteness per R13: no type params and every hydrated cell representable (shallow, one home beside Type); a deep postcondition rejects only the generic''s own parameters.'
+  capabilities:
+  - name: declared-generic-panics-today
+    binding: 'probe — reify check and reify eval on tests/prd-gate/fixtures/tooling_fe_unrepresentable_generic.ri both panic rc 101 (debug): "unrepresentable cell_type: value cell `Bearing.seal` has cell_type TypeParam(\"T\")" at engine_eval.rs.'
+    verdict: PASS
+  - name: explicit-instantiation-panics-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_beta_explicit_instantiation.ri panics rc 101 on `Holder.seal`; reify eval panics on `Top.h.seal` (#6853).'
+    verdict: PASS
+  - name: monomorph-collision-today
+    binding: 'probe — reify eval tests/prd-gate/fixtures/gicb_beta_two_monomorph_collision.ri prints `Top.w1.slot_t = SealA { a: 1 }`, `Top.w2.slot_t = SealB { b: 2 }` and `Widget.slot_t = SealB { b: 2 }` (probe k; last write wins).'
+    verdict: PASS
+  - name: upstream-walkers
+    binding: 'producer:task-8638 (Type::any_descendant), producer:task-8743 (TopologyTemplate::all_value_cells), producer:task-8704 (InstancePath) upstream; all pending. #8704 is in #8612''s closure; β₁ depends on it, which G1 allows.'
+    verdict: PASS
+  - name: hydration-has-no-diag-channel
+    binding: 'existing-substrate — EvaluationGraph::from_templates(&[TopologyTemplate]) -> Self (reify-eval graph.rs) has no diagnostics channel; Engine::eval returns EvalResult with diagnostics, so the check runs beside Snapshot::from_compiled_module (PRD §5 D8).'
+    verdict: PASS
+  - name: instantiate-fn
+    binding: 'producer-self — instantiate_template in compile_builder/monomorph.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn instantiate_template
+      expect: present
+      paths:
+      - crates/reify-compiler/src/compile_builder
+  - name: instantiation-pass
+    binding: 'producer-self — phase_instantiate_generics in compile_builder/instantiate_phase.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn phase_instantiate_generics
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: representability-home-moved
+    binding: 'producer-self — reify-eval''s pub fn is_representable_cell_type( (engine_eval.rs; 1 line at main) moves beside Type as Type::has_value_representation (reify-core; 0 lines at main). The fn( pattern excludes the is_representable_cell_type_* unit-test names.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn has_value_representation
+      expect: present
+      paths:
+      - crates/reify-core/src
+  - name: representability-eval-copy-gone
+    binding: 'producer-self — the reify-eval definition is gone (1 line at main).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn is_representable_cell_type\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: identifier-safe-mono-names
+    binding: 'producer-self — mangle_type_arg, an injective identifier-alphabet encoding (Type::Display emits Scalar[Length], Map<K, V>, Base::member; InstancePath uses . and [ as delimiters); 0 lines at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn mangle_type_arg
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: placeholders-in-derived-types-hydrate
+    binding: 'behavioural (R13) — a monomorph whose let cell type carries __unbound_E (generic-enum R1) hydrates with no diagnostic.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'needs a compiled generic structure with a placeholder-typed let cell; β₁''s compile/eval test is the cover.'
+  - name: concreteness-predicate
+    binding: 'producer-self — pub fn template_is_concrete beside TopologyTemplate; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn template_is_concrete
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: clone-and-clear-gone
+    binding: 'producer-self — the auto phase''s `mono.type_params.clear()` (1 line at main) dies with the clone-and-substitute block.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mono\.type_params\.clear\(\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/compile_builder
+  - name: invariant-row
+    binding: 'producer-self — INV-COMP-4 row in docs/invariants.md; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-COMP-4
+      expect: present
+      paths:
+      - docs/invariants.md
+  - name: fixtures-evaluate
+    binding: 'behavioural — the three fixtures above give rc 0 with no debug panic and no Undef in release; generic templates'' own cells are absent from reify eval output.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'needs reify check/eval runs on the fixtures; the β₁ e2e tests in reify-eval are the behavioural cover.'
+- label: β₂
+  task_id: 9361
+  title: 'One representability definition; delete the debug-only assert'
+  note: 'Follow-on form under G1: after #8761 and #8860 (both in #8612''s closure; β₂ depends on them, never the reverse). A consolidation and deletion leaf (R4, R11): β₁ already makes hydration always-on and flips the LSP cases.'
+  capabilities:
+  - name: predicate-upstream
+    binding: 'producer:task-8761 upstream (S27 β moves first_unrepresentable_cell into reify-eval; today it is private in crates/reify-lsp/src/diagnostics/eval_guard.rs).'
+    verdict: PASS
+  - name: partition-upstream
+    binding: 'producer:task-8860 upstream (S4 ν moves the assert to cell_type_invariants.rs).'
+    verdict: PASS
+  - name: assert-callers-gone
+    binding: 'producer-self — the two callers `assert_value_cell_types_representable(&snapshot.graph)` / `(&new_snapshot.graph)` (engine_eval.rs, engine_edit.rs; 2 lines at main) are deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: assert_value_cell_types_representable\(&(snapshot|new_snapshot)\.graph\)
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: assert-fn-gone
+    binding: 'producer-self — the #[cfg(debug_assertions)] fn itself (1 line at main) is deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn assert_value_cell_types_representable
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: γ₁
+  task_id: 9362
+  title: 'Record callee and type_args on UserFunctionCall; bind_user_call at all five sites'
+  note: 'FnRef is a signature key (R5); content_hash folds it always (R6).'
+  capabilities:
+  - name: trait-method-arg-unchecked-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_gamma_trait_method_arg_conformance.ri: "All constraints satisfied." rc 0; reify eval prints `Top.bad = 1`. The control tests/prd-gate/fixtures/gicb_gamma_free_fn_arg_conformance_control.ri (free-function spelling) errors "type ''Foam'' does not conform to trait ''Rigid'' required by param ''other''" rc 1. Cause: phase_register_instance_assoc_fns runs after phase_fn_arg_conformance.'
+    verdict: PASS
+  - name: padded-calls-checked-today
+    binding: 'probe (correction to the brief) — fn weigh<T: Rigid>(x: T, scale: Real = 1.0); weigh(Foam()) errors "type argument ''Foam'' does not satisfy bound ''Rigid'' on type parameter ''T'' of ''weigh''": the padded node re-resolves, so the padded site is NOT the observable.'
+    verdict: PASS
+  - name: intrinsic-stamp-upstream
+    binding: 'producer:task-8897 upstream (S8 ζ intrinsic: Option<StdlibIntrinsic> on UserFunctionCall; pending; not on main).'
+    verdict: PASS
+  - name: fnref-type
+    binding: 'producer-self — pub struct FnRef in crates/reify-ir/src/fn_ref.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct FnRef
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: variant-carries-callee
+    binding: 'producer-self — `callee: FnRef` in the UserFunctionCall variant; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'callee: FnRef'
+      expect: present
+      paths:
+      - crates/reify-ir/src/expr.rs
+  - name: name-only-variant-gone
+    binding: 'producer-self — `function_name: String,` (2 lines at main: the variant field and the user_function_call constructor parameter) is gone.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'function_name: String,'
+      expect: absent
+      paths:
+      - crates/reify-ir/src/expr.rs
+  - name: binder-fn
+    binding: 'producer-self — bind_user_call in crates/reify-compiler/src/call_binding.rs; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn bind_user_call
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: post-pass-reresolve-gone
+    binding: 'producer-self — check_expr_fn_calls'' re-resolve, the only `resolve_function_overload(` call in entities_phase.rs (1 line at main; the import does not match), is deleted. Not scoped to the `function_name` binding: renaming the destructure to `callee` would satisfy that pattern while the re-resolve survived (decompose-verify wf_73385a73-006).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: resolve_function_overload\(
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/compile_builder/entities_phase.rs
+- label: γ₂
+  task_id: 9363
+  title: 'Dispatch on callee at eval; delete find_matching_compiled_function and merge_functions'
+  note: 'Deletion leaf (R11). Depends on #5992 so its parity test and shim exist to delete (R1). Closes fk-1b3f91469997.'
+  capabilities:
+  - name: overload-output-today
+    binding: 'probe — reify eval tests/prd-gate/fixtures/gicb_gamma_overload_dispatch.ri prints `S.a = 1` and `S.b = 2` rc 0; γ₂ must keep it byte-identical.'
+    verdict: PASS
+  - name: parity-test-upstream
+    binding: 'producer:task-5992 upstream (branch task/5992, 14 commits ahead at 2026-10-17; pending).'
+    verdict: PASS
+  - name: eval-resolver-gone
+    binding: 'producer-self — fn find_matching_compiled_function (1 line at main, reify-expr lib.rs) is deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn find_matching_compiled_function
+      expect: absent
+      paths:
+      - crates/reify-expr/src
+  - name: second-merge-gone
+    binding: 'producer-self — fn merge_functions( (1 line at main, reify-eval lib.rs) is deleted for FnTable::merge.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn merge_functions\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: δ
+  task_id: 9364
+  title: 'Resolve alias bodies through the one resolver (TypeParamEnv on ResolutionCtx)'
+  note: 'Absorbs #7573. Closes fk-7eb49b30a889.'
+  capabilities:
+  - name: alias-body-gap-today
+    binding: 'probe — reify check tests/prd-gate/fixtures/gicb_delta_alias_body_deferred_entity.ri: "error: unresolved type: Outer<Real>" rc 1; gicb_delta_alias_body_generic_enum.ri: "error: unresolved type: W<Real>" rc 1. The direct spellings resolve.'
+    verdict: PASS
+  - name: pin-test-vacuous-today
+    binding: 'existing-substrate — mod parametric_alias_deferred_alias_body_known_gap asserts `alias_ty == direct_ty || !alias_errs.is_empty()`, green whether or not the gap closes (PRD §5 D13).'
+    verdict: PASS
+  - name: ctx-upstream
+    binding: 'producer:task-8643 and producer:task-8903 upstream (ResolutionCtx; D13 subst parameter); producer:α₁ (Sigma).'
+    verdict: PASS
+  - name: twin-resolver-gone
+    binding: 'producer-self — fn resolve_type_alias_expr_with_subst( (1 line at main) is deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn resolve_type_alias_expr_with_subst\(
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/type_resolution.rs
+  - name: env-type
+    binding: 'producer-self — enum TypeParamEnv on ResolutionCtx; absent on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum TypeParamEnv
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: known-gap-pin-retired
+    binding: 'producer-self — mod parametric_alias_deferred_alias_body_known_gap (1 line at main) is replaced by a parity module asserting equality and no errors.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod parametric_alias_deferred_alias_body_known_gap
+      expect: absent
+      paths:
+      - crates/reify-compiler/tests
+- label: ε
+  task_id: 9365
+  title: 'Docs truth: defaults in annotations, explicit instantiation, one arity diagnostic'
+  capabilities:
+  - name: orientation-arg-spellings-today
+    binding: 'measured — 63 lines match (Orientation|Frame|Transform3?)<[0-9N]> over docs/reify-stdlib-reference.md, docs/reify-language-spec.md, crates/reify-mcp/src/tools/chunks (48), crates/reify-lsp/src/completion.rs, crates/reify-eval/src/geometry_ops.rs and crates/reify-compiler/src/geometry.rs (15 user-visible strings and comments) (2026-10-18); no .ri code writes the spelling. Comments count too: ε respells them.'
+    verdict: PASS
+  - name: orientation-arg-spellings-gone
+    binding: 'producer-self — every documented type-argument spelling of the family is respelled (R9). Paths widened 2026-10-20 (retro-critic R9 M6) to include crates/reify-eval/src/geometry_ops/, because S13 δ #8750 moves transform_rotate/transform_apply/pattern_arbitrary into geometry_ops/compile/*.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (Orientation|Frame|Transform3?)<[0-9N]>
+      expect: absent
+      paths:
+      - docs/reify-stdlib-reference.md
+      - docs/reify-language-spec.md
+      - crates/reify-mcp/src/tools/chunks
+      - crates/reify-lsp/src/completion.rs
+      - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-compiler/src/geometry.rs
+      - crates/reify-eval/src/geometry_ops/
+  - name: chunks-state-behaviour
+    binding: 'behavioural — types.md / structures.md / enums.md state the new behaviour and harness_doc_chunks is green.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'prose content; the doc-chunk harness and the smoke .ri per documented signature are the cover.'
+- label: ω
+  task_id: 9366
+  title: 'PRD close: SHIPPED header, landed ids, AS-AUTHORED freeze'
+  capabilities:
+  - name: terminal-header
+    binding: 'producer-self — the committed header.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'docs-only close leaf; PPRDSTATUS is the detector.'

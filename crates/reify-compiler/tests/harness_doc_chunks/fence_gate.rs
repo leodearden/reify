@@ -93,10 +93,11 @@
 //! What closed it instead was renaming the example to `align`, a name no
 //! builtin arity-gates, so copying the CALL form alone now fails as an
 //! undefined function rather than as a misleading arity error on a real
-//! builtin. The arity of every signature the chunk declares is now pinned
-//! directly by `functions_chunk_overloading_smoke.rs` — a scan over chunk
-//! text, not a fence gate, which is why that guard lives beside this one
-//! rather than inside it.
+//! builtin. The arity of every call form the chunk writes is now pinned by
+//! `call_arity_gate.rs`, which checks every call form in every chunk's prose
+//! and copyable fences — ```` ```reify-schematic ```` listings included — a
+//! scan over chunk text, not a fence gate, which is why that guard lives
+//! beside this one rather than inside it.
 //!
 //! The third gap is `reify-fragment`, and it is WIDER than the tag's wording
 //! admits. "Member-level or otherwise context-dependent" asserts that SOME
@@ -1247,7 +1248,7 @@ fn corpus() -> Vec<ChunkDoc> {
 /// the aggregate check unable to mask a loss.
 const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("enums", 2),
-    ("geometry", 5),
+    ("geometry", 6),
     ("measurement", 1),
     ("purposes", 1),
     ("traits", 3),
@@ -1268,7 +1269,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// separately-named test, `total_fence_count_is_exact_not_slack`, so a diff that
 /// legitimately adds a fence gets a message telling it to re-measure rather
 /// than a vacuity warning describing a bug that did not happen.
-const TOTAL_FENCE_COUNT: usize = 76;
+const TOTAL_FENCE_COUNT: usize = 77;
 
 /// The corpus-wide floor on ```` ```reify-invalid ```` fences.
 ///

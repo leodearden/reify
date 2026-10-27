@@ -40,20 +40,20 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
-/// expressions and constraints without real geometry.
+/// expressions and constraints without real geometry. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine() -> reify_eval::Engine {
     let checker = MockConstraintChecker::new();
-    reify_eval::Engine::new(Box::new(checker), None)
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None)
 }
 
 /// Create a new `Engine` backed by the real `SimpleConstraintChecker` and no
 /// geometry kernel. Suitable for integration tests that need the real
 /// constraint semantics (Satisfied/Violated/Indeterminate) rather than the
-/// mock's tracking-only stub.
+/// mock's tracking-only stub. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_simple_engine() -> reify_eval::Engine {
-    reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and a fresh
@@ -61,10 +61,11 @@ pub fn make_simple_engine() -> reify_eval::Engine {
 /// structural surfacing tests; the mock's `tessellate` returns a canned mesh,
 /// so it pins surface shape but cannot validate placement. Construct the
 /// engine inline instead when a test needs the kernel's `operations_ref()`,
-/// since this factory moves the kernel into the engine.
+/// since this factory moves the kernel into the engine. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
     )
@@ -621,6 +622,25 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
+/// The phrase a compile-layer LENGTH-slot rejection carries right after the
+/// name of the slot it blames, as in `reify_compiler::builtin_signatures`'
+/// documented template `"box: size_x argument expects Length, got Int; …"`.
+///
+/// The compile layer exports no constant for this phrase (the module that
+/// emits it is private to `reify-compiler`), so this is the one place tests
+/// spell it. A rewording of the diagnostic surfaces as tests that read
+/// LENGTH-slot names suddenly finding none; update this constant, not the
+/// tests that read it.
+pub const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
+
+/// The slot name a LENGTH-slot rejection blames, or `None` if `message` is not
+/// one: the token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`], so
+/// `"box: size_x argument expects Length, got Int"` yields `size_x`.
+pub fn named_length_argument(message: &str) -> Option<&str> {
+    let (before, _) = message.split_once(LENGTH_SLOT_DIAGNOSTIC_MARKER)?;
+    before.split_whitespace().next_back()
+}
+
 /// Assert that some `Severity::Error` diagnostic carries `code`.
 ///
 /// `context` is a short label that appears in the panic message to identify
@@ -728,9 +748,9 @@ pub fn run_modify_pipeline(
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(20.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(20.0)),
+            ("size_x".into(), mm_literal(20.0)),
+            ("size_y".into(), mm_literal(20.0)),
+            ("size_z".into(), mm_literal(20.0)),
         ],
     };
 
@@ -754,7 +774,7 @@ pub fn run_modify_pipeline(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_no_error_diagnostics(&result.diagnostics, "run_modify_pipeline");
@@ -841,6 +861,7 @@ pub fn build_against_mock_kernel(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -3331,5 +3352,39 @@ mod tests {
             "expected empty result for OptionNone; got {:?}",
             result_none
         );
+    }
+
+    /// Pinned on SYNTHETIC messages in the documented template, independently
+    /// of what the compiler emits today: if the live diagnostic diverges, the
+    /// consumers that read real messages go red while these stay green, which
+    /// says the wording moved rather than the gate breaking.
+    #[test]
+    fn named_length_argument_reads_the_argument_out_of_a_message() {
+        assert_eq!(
+            super::named_length_argument(
+                "box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"
+            ),
+            Some("size_x")
+        );
+        // A multi-word prefix must still yield the LAST token, not the first.
+        assert_eq!(
+            super::named_length_argument(
+                "linear_pattern: spacing argument expects Length, got Int"
+            ),
+            Some("spacing")
+        );
+    }
+
+    /// A message that is not a LENGTH-slot rejection yields `None` rather than
+    /// a bogus name, so a consumer never "recovers" a slot from a message it
+    /// did not actually parse — e.g. the eval layer's differently-worded
+    /// `missing or non-Length argument '<arg>' for <op>`.
+    #[test]
+    fn named_length_argument_rejects_a_message_without_the_marker() {
+        assert_eq!(
+            super::named_length_argument("missing or non-Length argument 'ox' for mirror"),
+            None
+        );
+        assert_eq!(super::named_length_argument(""), None);
     }
 }

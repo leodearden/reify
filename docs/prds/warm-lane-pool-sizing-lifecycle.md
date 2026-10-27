@@ -16,7 +16,7 @@ The XFS-reflink warm-lane pool (`/dev/loop29`, 6.0 TB, mounted `/home/leo/src/wa
 | Axis | Today | With this PRD |
 |---|---|---|
 | Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target — unless a live process reference refuses the release-thin (exit 75, since #5823), in which case that lane's `target/` is PRESERVED until the next release-thin, gc pass, **or acquire-time reseed** reclaims it (acquire always re-seeds from base — cow-seeding D10/§9.5 — so re-acquisition is in practice the most common of the three) |
-| Accretion visibility | none until the disk-guard trips at the 50 GiB cliff (which *is* the wedge) | `warm-lane-audit.sh` reports resident/free/reclaimable/leaked/stale + projected headroom on demand and on a timer |
+| Accretion visibility | none until the disk-guard trips at the 50 GiB cliff (which *is* the wedge) | `warm-lane-audit.sh` reports resident/free/reclaimable/leaked/stale + projected headroom on demand (periodic collection: §13 Q3) |
 | Dispatch under disk pressure | allocates new divergent lanes straight into the hard floor → ENOSPC | throttles new-lane allocation at a **soft floor** (prefers reclaim/reuse) before the hard floor is reached |
 | Pool capacity | fixed 6.0 TB image, hand-grown in incidents | budget-derived sizing + a supported online-grow operation (insurance, not the primary lever) |
 
@@ -45,7 +45,7 @@ Three preserve failure modes, and where each is (or is not) already handled:
 
 ```
   A. AUDIT/OBSERVABILITY   warm-lane-audit.sh  ── assigned/free · terminal-status · recoverable · footprint · staleness · headroom
-        (reify α)                │  feeds ▼                         ▲ consumed by operator + health timer
+        (reify α)                │  feeds ▼                         ▲ consumed by operator
   B. SIZING                disk-budget formula + online-grow  ──────┤  (resident-divergent budget vs effective N)
         (reify β)                │                                  │
   C. LIFECYCLE      γ untrack write_queue.db (fast-fix, filed)   δ thin-warm-lane.sh (free-first)  ─┐

@@ -26,6 +26,7 @@ use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
+use crate::kernel_owner::{export_kernel_for_owners, resolve_owning_kernel_name};
 use crate::primitive_attribute_seed::{
     is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
     seed_primitive_attributes_for_handle,
@@ -39,6 +40,7 @@ use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
+use crate::volume_mesh_sources::{MeshedVolume, VolumeMeshSources};
 use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
 
 /// The four build/tessellate entry-point "surfaces" whose per-build engine
@@ -102,6 +104,24 @@ pub(crate) enum BuildSurface {
 /// reify-ir / reify-config `KernelId` consolidation.
 fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
+}
+
+/// The kernel-map key serving a conversion stage sourced on `source`, or
+/// `None` when no entry serves it.
+///
+/// Narrower than [`resolve_owning_kernel_name`]: its default-kernel fallback
+/// is taken only for the default kernel's own identity, so a stage sourced on
+/// any other kernel missing from the map fails rather than running on an
+/// unrelated kernel's handle-id space.
+fn conversion_source_key<'a, V>(
+    kernels: &BTreeMap<String, V>,
+    source: KernelId,
+    default_kernel_name: &'a str,
+) -> Option<&'a str> {
+    let key = resolve_owning_kernel_name(kernels, source, default_kernel_name);
+    let serves_source = key == source.as_registry_name()
+        || source == kernel_id_for_registry_name(default_kernel_name);
+    serves_source.then_some(key)
 }
 
 /// Forward a solid-level `TopologyAttribute` entry across the OCCT->Manifold
@@ -264,6 +284,22 @@ impl<'a> RealizationOutputs<'a> {
             produced_repr_out,
         }
     }
+}
+
+/// What [`Engine::execute_realization_ops`] hands back for its caller to apply
+/// after the call — writes that need state the executor cannot borrow.
+#[derive(Default)]
+struct ExecutedRealization {
+    /// Task 4744 β step-20: the source bundle the NEXT tick's morph needs, for
+    /// the caller to store in `Engine::morph_source`. `Some` only when a morph
+    /// producer is active AND this realization produced a VolumeMesh.
+    morph_source: Option<crate::morph_producer::MorphSource>,
+    /// The gmsh VolumeMesh the VolumeMesh edge appended as this realization's
+    /// terminal, paired with the handle it meshed from; `Some` exactly when that
+    /// edge ran. The VolumeMesh is an extra representation for an FEA consumer;
+    /// the body's geometry is still the meshed-from handle, so Phase-B egress
+    /// reads it ([`VolumeMeshSources::record_and_resolve_terminal`]).
+    volume_mesh: Option<MeshedVolume>,
 }
 
 /// Bundle of the positional inputs `Engine::execute_realization_ops` reads
@@ -663,7 +699,10 @@ fn seed_cross_sub_named_steps(
             // ── no-args path (existing behaviour) ───────────────────────────
             if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(&sub.name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -798,7 +837,10 @@ fn realize_overridden_instance_into(
             realization_name.to_string(),
         );
         if let Some(&cached) = per_call_dedup.get(&dedup_key) {
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), cached);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                cached,
+            );
             continue;
         }
 
@@ -856,7 +898,10 @@ fn realize_overridden_instance_into(
                 kernel: kernel_id_for_registry_name(default_kernel_name),
                 id: final_handle_id,
             };
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                final_handle,
+            );
             per_call_dedup.insert(dedup_key, final_handle);
         }
     }
@@ -950,7 +995,10 @@ fn seed_cross_let_named_steps(
             // ── no-args path: copy the def's shared snapshot ────────────────
             if let Some(child_snapshot) = module_named_steps.get(def_name.as_str()) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", binding_name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(binding_name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -2175,12 +2223,8 @@ fn conversion_slot(
 /// **No `Convert` arm.** `Operation::Convert { from }` is the only
 /// `Operation` shape that does not correspond to a `GeometryOp` variant:
 /// representation conversion (BRep→Mesh tessellation, Mesh→Sdf rasterisation,
-/// …) is *not* an op the compiler emits today. Conversion-stage execution is
-/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
-/// mesh-ingest trait surface. ε surfaces non-empty dispatch plans as a
-/// diagnostic rather than executing them (see PRD §8 design decision).
-// Wired into `execute_realization_ops` in step-8 (#3436).
-#[allow(dead_code)]
+/// …) is *not* an op the compiler emits today. Conversion stages run inside
+/// the dispatch plan, in `execute_realization_ops`'s conversion executor.
 fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // Classification is pure data: look up the L1 descriptor table and read
     // `operation`. Split's row has `operation: None`, which reproduces the
@@ -2995,6 +3039,81 @@ fn plan_output_repr(
         .map(|(_, r)| *r)
 }
 
+/// Phase-B product export shared by [`Engine::build_snapshot`] and
+/// `build_with_geometry_output`: serialize the (non-empty) `product_bodies`
+/// through the kernel that OWNS them — one body directly, several as a
+/// compound assembled on that kernel. Bodies owned by different kernels cannot
+/// form one compound (a compound takes ids in a single kernel's id space), so
+/// that case is an Error diagnostic and no geometry, in every format. Mesh
+/// formats could instead tessellate each body on its owner and merge the
+/// meshes; that is task #8916.
+fn export_product_bodies(
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    product_bodies: &[crate::geometry_ops::ExportBody],
+    values: &ValueMap,
+    format: ExportFormat,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<u8>> {
+    debug_assert!(
+        !product_bodies.is_empty(),
+        "callers handle the no-product-body case themselves"
+    );
+    let owner = match export_kernel_for_owners(
+        geometry_kernels,
+        product_bodies.iter().map(|body| body.kernel),
+        default_kernel_name,
+    ) {
+        Ok(owner) => owner,
+        Err(mixed) => {
+            diagnostics.push(Diagnostic::error(mixed.to_string()));
+            return None;
+        }
+    };
+    let kernel = geometry_kernels
+        .get_mut(owner)
+        .expect("the resolved owner is a key of the kernel map");
+    let (handle, color) = match product_bodies {
+        [body] => {
+            // δ (task #4763): thread the body's material color via
+            // export_with_options so the 3MF arm writes <basematerials>.
+            let color =
+                resolve_export_body_color(values, &body.entity_path, body.handle_id, diagnostics);
+            (body.handle_id, color)
+        }
+        bodies => {
+            // v1 LIMITATION: a compound has no single per-body color.
+            let ids: Vec<GeometryHandleId> = bodies.iter().map(|body| body.handle_id).collect();
+            match kernel.make_compound(&ids) {
+                Ok(compound) => (compound.id, None),
+                Err(e) => {
+                    diagnostics.push(Diagnostic::error(format!("compound assembly error: {}", e)));
+                    return None;
+                }
+            }
+        }
+    };
+    let mut output = Vec::new();
+    match kernel.export_with_options(
+        handle,
+        format,
+        &reify_ir::ExportOptions {
+            step_schema: reify_ir::StepSchema::default(),
+            color,
+            include_materials: false,
+            include_colors: false,
+        },
+        &mut output,
+    ) {
+        // include_* false → W_3MF_NO_MATERIALS never fires, so warnings are empty.
+        Ok(_warnings) => Some(output),
+        Err(e) => {
+            diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+            None
+        }
+    }
+}
+
 /// Scan `values` for a [`reify_ir::Value::StructureInstance`] whose `geometry`
 /// field is a [`reify_ir::Value::GeometryHandle`] with `kernel_handle == handle`
 /// AND which carries a `material` field (i.e. it is a Physical body with a
@@ -3284,7 +3403,7 @@ impl Engine {
             geometry_kernels: _,   // registered kernels
             default_kernel_name: _, // default-kernel selection
             repr_capable_kernel: _, // construction-recorded kernel capability (task 6169)
-            solver: _,             // fallback constraint solver
+            solve_stage: _,        // constructor-named solve profile + fallback solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
             prelude_functions: _,  // pre-flattened prelude fns
@@ -3326,6 +3445,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
+            volume_mesh_sources: _, // VolumeMesh meshed-from records (span builds; full cache flush only)
             cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
@@ -3659,7 +3779,7 @@ impl Engine {
                         source: self.morph_source.get(&realization.id),
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
-                    let morph_source_out = Engine::execute_realization_ops(
+                    let executed = Engine::execute_realization_ops(
                         RealizationOpsInput::new(
                             &mut self.geometry_kernels,
                             &registry_borrowed,
@@ -3724,10 +3844,12 @@ impl Engine {
                         ),
                     );
                     // θ (task 4361): record this realization's terminal handle
-                    // by (t_idx, r_idx) for the Phase-B export walk, mirroring
-                    // build()'s terminal_handles bookkeeping (:2803).
-                    if step_handles.len() > handle_start_snap {
-                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    // by (t_idx, r_idx) for the Phase-B export walk.
+                    if let Some(terminal) = self.volume_mesh_sources.record_and_resolve_terminal(
+                        &step_handles[handle_start_snap..],
+                        executed.volume_mesh,
+                    ) {
+                        terminal_handles[t_idx][r_idx] = Some(terminal);
                     }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -3789,7 +3911,7 @@ impl Engine {
                     // bundle (returned by the executor) for the NEXT tick's
                     // morph. `store_morph_source` needs `&mut self`; safe here —
                     // the executor's disjoint field borrows have all released.
-                    if let Some(src) = morph_source_out {
+                    if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
                 }
@@ -3913,8 +4035,9 @@ impl Engine {
                 None
             } else {
                 // θ (task 4361): mirror build()'s Phase-B export walk — collect
-                // placed-product BRep handles via collect_export_bodies_walk, then
-                // export only the product (default_visible) bodies.  This replaces
+                // placed product bodies, each tagged with its owning kernel, via
+                // collect_export_bodies_walk, then export only the product
+                // (default_visible) bodies through export_product_bodies.  This replaces
                 // the old `*step_handles.last()` single-handle export that did not
                 // assemble a compound for multi-entity modules (the §6 export bug).
                 let export_bodies = Self::collect_export_bodies_walk(
@@ -3943,81 +4066,14 @@ impl Engine {
                         }
                         None
                     }
-                    1 => {
-                        // δ (task #4763): thread body color via export_with_options.
-                        let mut output = Vec::new();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get(name)
-                            .expect("default kernel must remain in the map for export");
-                        let body_color = resolve_export_body_color(
-                            &values,
-                            &product_bodies[0].entity_path,
-                            product_bodies[0].handle_id,
-                            &mut diagnostics,
-                        );
-                        match default_kernel.export_with_options(
-                            product_bodies[0].handle_id,
-                            format,
-                            &reify_ir::ExportOptions {
-                                step_schema: reify_ir::StepSchema::default(),
-                                color: body_color,
-                                include_materials: false,
-                                include_colors: false,
-                            },
-                            &mut output,
-                        ) {
-                            Ok(_warnings) => Some(output),
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
-                                None
-                            }
-                        }
-                    }
-                    _ => {
-                        let ids: Vec<GeometryHandleId> =
-                            product_bodies.iter().map(|b| b.handle_id).collect();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get_mut(name)
-                            .expect("default kernel must remain in the map for compound export");
-                        match default_kernel.make_compound(&ids) {
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "compound assembly error: {}",
-                                    e
-                                )));
-                                None
-                            }
-                            Ok(compound) => {
-                                let mut output = Vec::new();
-                                let default_kernel = self
-                                    .geometry_kernels
-                                    .get(name)
-                                    .expect("default kernel must remain in the map for export");
-                                match default_kernel.export_with_options(
-                                    compound.id,
-                                    format,
-                                    &reify_ir::ExportOptions {
-                                        step_schema: reify_ir::StepSchema::default(),
-                                        color: None,
-                                        include_materials: false,
-                                        include_colors: false,
-                                    },
-                                    &mut output,
-                                ) {
-                                    Ok(_warnings) => Some(output),
-                                    Err(e) => {
-                                        diagnostics.push(Diagnostic::error(format!(
-                                            "export error: {}",
-                                            e
-                                        )));
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    _ => export_product_bodies(
+                        &mut self.geometry_kernels,
+                        name,
+                        &product_bodies,
+                        &values,
+                        format,
+                        &mut diagnostics,
+                    ),
                 }
             }
         } else {
@@ -4644,7 +4700,7 @@ impl Engine {
                         source: self.morph_source.get(&realization.id),
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
-                    let morph_source_out = Engine::execute_realization_ops(
+                    let executed = Engine::execute_realization_ops(
                         RealizationOpsInput::new(
                             &mut self.geometry_kernels,
                             &registry_borrowed,
@@ -4714,10 +4770,12 @@ impl Engine {
                         ),
                     );
                     // T7 (task 3905): record this realization's terminal handle
-                    // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
-                    // the tessellate_from_values Phase-A bookkeeping.
-                    if step_handles.len() > handle_start {
-                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    // by (t_idx, r_idx) for the Phase-B export walk.
+                    if let Some(terminal) = self.volume_mesh_sources.record_and_resolve_terminal(
+                        &step_handles[handle_start..],
+                        executed.volume_mesh,
+                    ) {
+                        terminal_handles[t_idx][r_idx] = Some(terminal);
                     }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. See the
@@ -4773,7 +4831,7 @@ impl Engine {
                     // (returned by the executor) for the NEXT tick's morph.
                     // `store_morph_source` needs `&mut self`; safe here — the
                     // executor's disjoint field borrows have all released.
-                    if let Some(src) = morph_source_out {
+                    if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
                     // Task 4358 ε: per-realization geometry-handle hydration slice
@@ -4955,9 +5013,10 @@ impl Engine {
                 // calls `build_outputs` issues itself.
                 None
             } else {
-                // T7 (task 3905) Phase-B export walk: collect placed-product
-                // BRep handles via the containment-tree surfacing walk, then
-                // export only the product (default_visible == true) bodies.
+                // T7 (task 3905) Phase-B export walk: collect placed product
+                // bodies, each tagged with its owning kernel, via the
+                // containment-tree surfacing walk, then export only the product
+                // (default_visible == true) bodies through export_product_bodies.
                 // This replaces the old *step_handles.last() single-handle
                 // export that did not honor surfacing, composed transforms, or
                 // aux exclusion.
@@ -4989,94 +5048,14 @@ impl Engine {
                         }
                         None
                     }
-                    1 => {
-                        // Single product body — export directly (preserves
-                        // single-solid STEP byte-compatibility for bracket.ri etc.).
-                        // δ (task #4763): resolve the body's material color and thread
-                        // it via export_with_options so the 3MF arm writes <basematerials>.
-                        // include_* false → W_3MF_NO_MATERIALS never fires on this path
-                        // (back-compat; DSL flags only apply on the declarative path).
-                        let mut output = Vec::new();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get(name)
-                            .expect("default kernel must remain in the map for export");
-                        let body_color = resolve_export_body_color(
-                            &values,
-                            &product_bodies[0].entity_path,
-                            product_bodies[0].handle_id,
-                            &mut diagnostics,
-                        );
-                        match default_kernel.export_with_options(
-                            product_bodies[0].handle_id,
-                            format,
-                            &reify_ir::ExportOptions {
-                                step_schema: reify_ir::StepSchema::default(),
-                                color: body_color,
-                                include_materials: false,
-                                include_colors: false,
-                            },
-                            &mut output,
-                        ) {
-                            Ok(_warnings) => Some(output), // include_* false → warnings always empty
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
-                                None
-                            }
-                        }
-                    }
-                    _ => {
-                        // Multiple product bodies — assemble a compound then export.
-                        // v1 LIMITATION: a compound has no single per-body color; color:None.
-                        let ids: Vec<GeometryHandleId> =
-                            product_bodies.iter().map(|b| b.handle_id).collect();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get_mut(name)
-                            .expect("default kernel must remain in the map for compound export");
-                        // On compound-assembly error, push the diagnostic and
-                        // fall through with no geometry output.  The canonical
-                        // BuildResult construction at the end of build() handles
-                        // all remaining fields — avoids a duplicate struct literal
-                        // that would silently drift on future field additions
-                        // (reviewer_comprehensive / robustness suggestion).
-                        match default_kernel.make_compound(&ids) {
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "compound assembly error: {}",
-                                    e
-                                )));
-                                None
-                            }
-                            Ok(compound) => {
-                                let mut output = Vec::new();
-                                let default_kernel = self
-                                    .geometry_kernels
-                                    .get(name)
-                                    .expect("default kernel must remain in the map for export");
-                                match default_kernel.export_with_options(
-                                    compound.id,
-                                    format,
-                                    &reify_ir::ExportOptions {
-                                        step_schema: reify_ir::StepSchema::default(),
-                                        color: None, // compound: no single per-body color
-                                        include_materials: false,
-                                        include_colors: false,
-                                    },
-                                    &mut output,
-                                ) {
-                                    Ok(_warnings) => Some(output),
-                                    Err(e) => {
-                                        diagnostics.push(Diagnostic::error(format!(
-                                            "export error: {}",
-                                            e
-                                        )));
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    _ => export_product_bodies(
+                        &mut self.geometry_kernels,
+                        name,
+                        &product_bodies,
+                        &values,
+                        format,
+                        &mut diagnostics,
+                    ),
                 }
             }
         } else {
@@ -5595,6 +5574,14 @@ impl Engine {
                 // (6) Emit one file via the default kernel's export_with_options(); isolate
                 //     a kernel failure as an error diagnostic + continue.
                 //
+                //     Unlike the Phase-B product export (`export_product_bodies`),
+                //     which serializes each body through the kernel that owns it,
+                //     this path cannot route by owner: the subject's
+                //     `Value::GeometryHandle` carries a kernel-local id and no owning
+                //     kernel, so a subject realized on a non-default kernel exports
+                //     whatever shape that id names on the default kernel. Carrying
+                //     the owner on the subject is task #6366.
+                //
                 // (6a) Resolve per-body color (δ, task #4763 B7/B8): scan values for a
                 //      Physical body whose geometry handle matches `handle_id` and has a
                 //      material; resolve its appearance color. None for geometry with no
@@ -5717,13 +5704,16 @@ impl Engine {
     ///
     /// Runs the same Phase-A realization execution and Phase-B
     /// `surface_export_bodies` walk as [`Self::build`], resolves the two placed
-    /// handles by `entity_path` (product bodies only: `default_visible == true`),
-    /// and issues `GeometryQuery::Distance{from, to}` via the default kernel.
+    /// bodies by `entity_path` (product bodies only: `default_visible == true`),
+    /// and issues `GeometryQuery::Distance{from, to}` via the kernel that owns
+    /// both of them.
     ///
     /// Returns `Some(d)` where `d` is the BRepExtrema minimum distance in metres,
     /// or `None` if either path is unresolvable, no geometry kernel is configured,
-    /// or the distance query fails (with a warning diagnostic). Consistent with the
-    /// `kernel_distance` error-handling convention.
+    /// the two bodies live on different kernels (a query cannot span two
+    /// kernel-local id spaces), or the distance query fails (with a warning
+    /// diagnostic). Consistent with the `kernel_distance` error-handling
+    /// convention.
     ///
     /// Uses the engine's `RealizationCache` — if `build()` was called first on the
     /// same module the Phase-A kernel ops are served from cache and this method
@@ -5818,7 +5808,7 @@ impl Engine {
                 let mut kernel_error: Option<ErrorRef> = None;
                 let mut produced_repr_out: Option<ReprKind> = None;
                 let handle_start = step_handles.len();
-                Engine::execute_realization_ops(
+                let executed = Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -5872,8 +5862,11 @@ impl Engine {
                         &mut produced_repr_out,
                     ),
                 );
-                if step_handles.len() > handle_start {
-                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                if let Some(terminal) = self.volume_mesh_sources.record_and_resolve_terminal(
+                    &step_handles[handle_start..],
+                    executed.volume_mesh,
+                ) {
+                    terminal_handles[t_idx][r_idx] = Some(terminal);
                 }
                 // Kernel errors are recorded in diagnostics by execute_realization_ops;
                 // the distance query will simply find no handle for failed realizations.
@@ -5902,16 +5895,16 @@ impl Engine {
             Some((path_a, path_b)),
         );
 
-        // Resolve the two product (default_visible == true) handles by entity_path.
-        let find_handle = |path: &str| -> Option<GeometryHandleId> {
+        // Resolve the two product (default_visible == true) bodies by entity_path.
+        let find_body = |path: &str| {
             export_bodies
                 .iter()
                 .find(|b| b.default_visible && b.entity_path == path)
-                .map(|b| b.handle_id)
         };
-        let handle_a = find_handle(path_a);
-        let handle_b = find_handle(path_b);
-        let (Some(from), Some(to)) = (handle_a, handle_b) else {
+        let (found_a, found_b) = (find_body(path_a), find_body(path_b));
+        let (Some(body_a), Some(body_b)) = (found_a, found_b) else {
+            let handle_a = found_a.map(|b| b.handle_id);
+            let handle_b = found_b.map(|b| b.handle_id);
             diagnostics.push(Diagnostic::warning(format!(
                 "distance_between_placed: could not resolve product handle(s) \
                  (path_a={path_a:?} → {handle_a:?}, path_b={path_b:?} → {handle_b:?})"
@@ -5919,15 +5912,25 @@ impl Engine {
             return None;
         };
 
-        // Issue GeometryQuery::Distance on the placed handles.
+        // Handle ids are kernel-local, so the query runs on the kernel that
+        // owns both bodies.
+        let owner_a = resolve_owning_kernel_name(&self.geometry_kernels, body_a.kernel, &name);
+        let owner_b = resolve_owning_kernel_name(&self.geometry_kernels, body_b.kernel, &name);
+        if owner_a != owner_b {
+            diagnostics.push(Diagnostic::warning(format!(
+                "distance_between_placed: {path_a:?} is owned by kernel {owner_a:?} and \
+                 {path_b:?} by kernel {owner_b:?}; a distance query cannot span two kernels"
+            )));
+            return None;
+        }
         let kernel = self
             .geometry_kernels
-            .get(name.as_str())
-            .expect("default kernel must remain in the map");
+            .get(owner_a)
+            .expect("an owning kernel name resolves to a key of the kernel map");
         crate::geometry_ops::kernel_distance(
             kernel.as_ref(),
-            from,
-            to,
+            body_a.handle_id,
+            body_b.handle_id,
             &mut diagnostics,
             "distance_between_placed",
         )
@@ -6285,6 +6288,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
+            &mut self.volume_mesh_sources,
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
@@ -6626,6 +6630,7 @@ impl Engine {
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
         realization_cache: &mut RealizationCache<KernelHandle>,
+        volume_mesh_sources: &mut VolumeMeshSources,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
         // Task ε (3436) step-12: per-build dispatch-count instrumentation
@@ -6918,7 +6923,7 @@ impl Engine {
                     .get(&r_idx)
                     .copied()
                     .unwrap_or(ReprKind::BRep);
-                Engine::execute_realization_ops(
+                let executed = Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         geometry_kernels,
                         registry,
@@ -6980,8 +6985,11 @@ impl Engine {
                 // is `Copy`; `step_handles` outlives this iteration so the
                 // handle stays valid for Phase B (the kernel sessions in
                 // `geometry_kernels` live for the whole call).
-                if step_handles.len() > handle_start {
-                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                if let Some(terminal) = volume_mesh_sources.record_and_resolve_terminal(
+                    &step_handles[handle_start..],
+                    executed.volume_mesh,
+                ) {
+                    terminal_handles[t_idx][r_idx] = Some(terminal);
                 }
             }
             // Step-8 (task ε / 3436): re-borrow the default kernel from the
@@ -7463,12 +7471,7 @@ impl Engine {
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
         mut outputs: RealizationOutputs<'_>,
-        // Task 4744 β step-20: returns the source-bundle stash for this
-        // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
-        // it was meshed from) when a morph producer is active, so the caller can
-        // store it for the NEXT tick's morph. `None` whenever no producer is
-        // registered or no VolumeMesh was produced (every off-build call site).
-    ) -> Option<crate::morph_producer::MorphSource> {
+    ) -> ExecutedRealization {
         let RealizationOpsInput {
             kernels,
             registry,
@@ -7505,7 +7508,7 @@ impl Engine {
             is_terminal_realization,
             &mut outputs,
         ) {
-            return None;
+            return ExecutedRealization::default();
         }
         let RealizationOutputs {
             step_handles,
@@ -7524,6 +7527,10 @@ impl Engine {
         // so every `disabled()` call site (no producer) returns `None` and is
         // byte-identical. Populated in the success branch's VolumeMesh dispatch.
         let mut morph_source_stash: Option<crate::morph_producer::MorphSource> = None;
+        // Set by the VolumeMesh edge, at the moment it appends a gmsh VolumeMesh,
+        // to that VolumeMesh paired with the handle it meshed from (see
+        // `ExecutedRealization`).
+        let mut volume_mesh: Option<MeshedVolume> = None;
         // Task 4050 step-8: the per-op `available` set is no longer a hoisted
         // loop-invariant `{BRep}` constant — it is derived per op from the
         // reprs of that op's resolved input handles (`realization_step_reprs`,
@@ -8024,7 +8031,7 @@ impl Engine {
                                 // ── Phase 1: validate stages + find source ────────
                                 // Walk the chain as a VALIDATION gate. Each stage
                                 // must classify as a known ConversionProjection:
-                                // - Tessellate: records the source kernel name (the
+                                // - Tessellate: records the source kernel (the
                                 //   kernel that tessellates BRep → Mesh).
                                 // - Voxelize: realised by ingest_mesh on plan.kernel
                                 //   below; no separate action needed here.
@@ -8034,13 +8041,13 @@ impl Engine {
                                 // chains (e.g. Mesh→Voxel before BRep→Mesh) would
                                 // silently mis-key the intermediate cache under the
                                 // single-recipe executor.
-                                let mut tessellate_source: Option<&'static str> = None;
+                                let mut tessellate_source: Option<KernelId> = None;
                                 // Task γ (5001): the MarchingCubes counterpart of
                                 // `tessellate_source` above — records the source
                                 // kernel of an at-most-one Voxel→Mesh stage. Phase 2
                                 // below picks whichever of the two is `Some` (the
                                 // gate after this loop guarantees exactly one is).
-                                let mut marching_cubes_source: Option<&'static str> = None;
+                                let mut marching_cubes_source: Option<KernelId> = None;
                                 // prev_to tracks the prior stage's output repr for
                                 // the contiguity check below.
                                 let mut prev_to: Option<ReprKind> = None;
@@ -8099,8 +8106,7 @@ impl Engine {
                                                      in v0.3-β",
                                                 ));
                                             } else {
-                                                tessellate_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                tessellate_source = Some(*stage_kernel);
                                             }
                                         }
                                         Some(ConversionProjection::Voxelize) => {
@@ -8138,8 +8144,7 @@ impl Engine {
                                                      in v0.3-γ",
                                                 ));
                                             } else {
-                                                marching_cubes_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                marching_cubes_source = Some(*stage_kernel);
                                             }
                                         }
                                     }
@@ -8191,16 +8196,22 @@ impl Engine {
                                 if conversion_error.is_none() {
                                     // Phase 1's gate above guarantees exactly one of
                                     // these is `Some`.
-                                    let (source_name, from_marching_cubes) =
+                                    let (source_kernel, from_marching_cubes) =
                                         match (tessellate_source, marching_cubes_source) {
-                                            (Some(name), None) => (name, false),
-                                            (None, Some(name)) => (name, true),
+                                            (Some(kernel), None) => (kernel, false),
+                                            (None, Some(kernel)) => (kernel, true),
                                             _ => unreachable!(
                                                 "checked above: exactly one of \
                                                  tessellate_source/marching_cubes_source \
                                                  is Some"
                                             ),
                                         };
+                                    let source_name = source_kernel.as_registry_name();
+                                    let source_key = conversion_source_key(
+                                        kernels,
+                                        source_kernel,
+                                        default_kernel_name,
+                                    );
                                     // Task γ (5001): extract the marching-cubes
                                     // options from `geom_op` when it is the
                                     // options-carrying `GeometryOp::Surface` (task
@@ -8227,12 +8238,15 @@ impl Engine {
                                     // per-parent loop since it does not depend on
                                     // `pid`.
                                     let options_hash = if from_marching_cubes {
-                                        kernels.get(source_name).map_or(NO_OPTIONS, |src| {
-                                            src.surface_options_content_hash(
-                                                surface_iso_level,
-                                                surface_adaptive,
-                                            )
-                                        })
+                                        source_key.and_then(|key| kernels.get(key)).map_or(
+                                            NO_OPTIONS,
+                                            |src| {
+                                                src.surface_options_content_hash(
+                                                    surface_iso_level,
+                                                    surface_adaptive,
+                                                )
+                                            },
+                                        )
                                     } else {
                                         NO_OPTIONS
                                     };
@@ -8271,59 +8285,17 @@ impl Engine {
                                         // non-primitive parent), degrading
                                         // gracefully to the existing Discarded path.
                                         //
-                                        // Robustness note (reviewer amendment,
-                                        // task #4636): the source `KernelHandle`
-                                        // built below assumes
-                                        // `kernel_id_for_registry_name(source_name)`
-                                        // equals the `op_kernel` the seed site
-                                        // (above, `record_solid_attribute`)
-                                        // recorded `pid`'s entry under — if
-                                        // those ever disagree for the same
-                                        // `pid`, `forward_solid_attribute_on_ingest`'s
-                                        // `table.lookup` silently misses,
-                                        // indistinguishable from a legitimately
-                                        // non-seeded parent (zero signal either
-                                        // way). `source_name` is always
-                                        // `stage_kernel.as_registry_name()` for
-                                        // a real `KernelId` drawn from
-                                        // `plan.conversions` above (never an
-                                        // arbitrary/unregistered string), and
-                                        // `KernelId::as_registry_name` /
-                                        // `from_registry_name` are documented
-                                        // exact inverses (reify-core
-                                        // `kernel.rs`) — so the debug_assert
-                                        // below pins that
-                                        // `kernel_id_for_registry_name`'s
-                                        // `unwrap_or(KernelId::Occt)` fallback
-                                        // never actually fires here. What it
-                                        // canNOT verify locally is the deeper
-                                        // half of the invariant: that the
-                                        // dispatcher's chosen `stage_kernel`
-                                        // for converting `pid` is the SAME
-                                        // kernel that originally produced/
-                                        // seeded `pid`. That correspondence is
-                                        // a property of the dispatcher's
-                                        // planning logic (`src/dispatcher.rs`),
-                                        // out of this loop's scope to assert —
-                                        // a future dispatcher change that
-                                        // planned a conversion stage against a
-                                        // different source kernel than the one
-                                        // that produced a given parent would
-                                        // still silently degrade this forward.
-                                        debug_assert!(
-                                            KernelId::from_registry_name(source_name).is_some(),
-                                            "conversion source kernel name {source_name:?} is not \
-                                             a registered KernelId — kernel_id_for_registry_name \
-                                             would silently fall back to KernelId::Occt here, \
-                                             degrading attribute forwarding below with zero signal",
-                                        );
+                                        // The forward assumes `pid` was seeded
+                                        // under `source_kernel`, the dispatcher's
+                                        // stage kernel. That correspondence is the
+                                        // dispatcher's to keep and is not checked
+                                        // here; a mismatch degrades to a silent
+                                        // lookup miss.
                                         let mut forward_and_track =
                                             |target: KernelHandle,
                                              diagnostics: &mut Vec<Diagnostic>| {
                                                 let source = KernelHandle {
-                                                    kernel: kernel_id_for_registry_name(
-                                                        source_name,
-                                                    ),
+                                                    kernel: source_kernel,
                                                     id: pid,
                                                 };
                                                 // Release-mode-visible companion to
@@ -8396,7 +8368,9 @@ impl Engine {
                                         // different error types (`TessError` /
                                         // `GeometryError`), so each arm maps its error
                                         // to `String` before the two branches unify.
-                                        let mesh = match kernels.get(source_name) {
+                                        let mesh_source =
+                                            source_key.and_then(|key| kernels.get(key));
+                                        let mesh = match mesh_source {
                                             Some(src) => {
                                                 let produced = if from_marching_cubes {
                                                     src.realize_mesh_from_voxel(
@@ -9201,6 +9175,9 @@ impl Engine {
             // (`build` / `build_snapshot`) then sets `produced_kernel` from
             // `step_handles.last().kernel` and `realization_handles[node]` from
             // the same handle, so the read side (`volume_mesh()`) is unchanged.
+            // Phase-B egress instead reads the handle the edge meshed from,
+            // which each push records, paired with the VolumeMesh, in
+            // `volume_mesh`.
             //
             // Element order is fixed to P1 for α (design_decision 6);
             // consumer-driven order is the FEA/morph arm's concern. The
@@ -9240,9 +9217,10 @@ impl Engine {
             // (byte-identical to pre-step-20). Honest-degrade to `None` on any
             // extraction failure.
             //
-            // (kernel registry name, face handles, edge handles, vertex handles);
-            // aliased to tame clippy::type_complexity.
+            // (terminal handle, kernel registry name, face handles, edge handles,
+            // vertex handles); aliased to tame clippy::type_complexity.
             type BRepTerminalSlices = (
+                KernelHandle,
                 String,
                 Vec<GeometryHandleId>,
                 Vec<GeometryHandleId>,
@@ -9254,17 +9232,15 @@ impl Engine {
                     && is_terminal_realization
                     && let Some(&terminal) = step_handles[handle_start..].last()
                 {
-                    let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                        terminal.kernel.as_registry_name().to_string()
-                    } else {
-                        default_kernel_name.to_string()
-                    };
+                    let terminal_name =
+                        resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name)
+                            .to_string();
                     match kernels.get_mut(&terminal_name) {
                         Some(src) => {
                             let faces = src.extract_faces(terminal.id).unwrap_or_default();
                             let edges = src.extract_edges(terminal.id).unwrap_or_default();
                             let vertices = src.extract_vertices(terminal.id).unwrap_or_default();
-                            Some((terminal_name, faces, edges, vertices))
+                            Some((terminal, terminal_name, faces, edges, vertices))
                         }
                         None => None,
                     }
@@ -9272,7 +9248,7 @@ impl Engine {
                     None
                 };
             // ── Morph arm: fires only on the warm path (a prior source exists) ─
-            if let Some((terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
+            if let Some((terminal, terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
                 && let (Some(producer), Some(source), Some(new_graph)) =
                     (morph_io.producer, morph_io.source, morph_io.new_graph)
                 && let Some(kernel) = kernels.get(terminal_name.as_str())
@@ -9303,10 +9279,11 @@ impl Engine {
                             let stash_vm = mesh.clone();
                             match gmsh.store_volume_mesh(mesh) {
                                 Ok(id) => {
-                                    step_handles.push(KernelHandle {
-                                        kernel: KernelId::Gmsh,
+                                    volume_mesh = Some(MeshedVolume::push_gmsh_terminal(
+                                        step_handles,
                                         id,
-                                    });
+                                        *terminal,
+                                    ));
                                     last_produced_repr = Some(ReprKind::VolumeMesh);
                                     morph_stored = true;
                                     produced_vm = Some(stash_vm);
@@ -9335,19 +9312,8 @@ impl Engine {
                 // on its source kernel (`&self`; the owned result releases the
                 // borrow before the gmsh borrow below — non-conflicting
                 // sequential `kernels.get()` immutable borrows).
-                // The terminal handle is keyed in `kernels` by the name the
-                // per-op loop produced it under — that is `default_kernel_name`
-                // for a primitive box realization (the same key the centroid
-                // block above resolves via `kernels.get_mut(default_kernel_name)`).
-                // The `KernelHandle::kernel` registry name can differ from that
-                // map key (e.g. a synthetic default-kernel holder), so prefer the
-                // terminal's own registry name only when it is actually a key,
-                // else fall back to `default_kernel_name`.
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name()
-                } else {
-                    default_kernel_name
-                };
+                let terminal_name =
+                    resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name);
                 let surface = match kernels.get(terminal_name) {
                     Some(src) => match src.tessellate(terminal.id, tol) {
                         Ok(mesh) => Some(mesh),
@@ -9470,10 +9436,11 @@ impl Engine {
                                         let stash_vm = vm.clone();
                                         match gmsh.store_volume_mesh(vm) {
                                         Ok(id) => {
-                                            step_handles.push(KernelHandle {
-                                                kernel: KernelId::Gmsh,
+                                            volume_mesh = Some(MeshedVolume::push_gmsh_terminal(
+                                                step_handles,
                                                 id,
-                                            });
+                                                terminal,
+                                            ));
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             stored = true;
                                             produced_vm = Some(stash_vm);
@@ -9530,10 +9497,11 @@ impl Engine {
                                     let stash_vm = vm.clone();
                                     match gmsh.store_volume_mesh(vm) {
                                         Ok(id) => {
-                                            step_handles.push(KernelHandle {
-                                                kernel: KernelId::Gmsh,
+                                            volume_mesh = Some(MeshedVolume::push_gmsh_terminal(
+                                                step_handles,
                                                 id,
-                                            });
+                                                terminal,
+                                            ));
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             produced_vm = Some(stash_vm);
                                         }
@@ -9602,14 +9570,8 @@ impl Engine {
                 && let Some(&terminal) = step_handles[handle_start..].last()
             {
                 let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
-                // Same registry-name-vs-map-key dance as the VolumeMesh edge
-                // above (backward-compat sentinel mode keys OCCT's handle under
-                // `default_kernel_name`, not `"occt"`).
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name()
-                } else {
-                    default_kernel_name
-                };
+                let terminal_name =
+                    resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name);
                 let surface = match kernels.get(terminal_name) {
                     Some(src) => match src.tessellate(terminal.id, tol) {
                         Ok(mesh) => Some(mesh),
@@ -9666,7 +9628,7 @@ impl Engine {
             // clone cheaply (persistent maps / small records). Returned to the
             // caller, which writes it into `Engine::morph_source` (needs
             // `&mut self`, unavailable here).
-            if let (Some((_, faces, edges, vertices)), Some(vm), Some(new_graph)) =
+            if let (Some((_, _, faces, edges, vertices)), Some(vm), Some(new_graph)) =
                 (brep_terminal, produced_vm, morph_io.new_graph)
             {
                 morph_source_stash = Some(crate::morph_producer::MorphSource {
@@ -9772,10 +9734,10 @@ impl Engine {
                 }
             }
         }
-        // Task 4744 β step-20: hand the caller the source-bundle stash (Some only
-        // when a morph producer is active AND this realization produced a
-        // VolumeMesh; None on every off-build/no-producer call site).
-        morph_source_stash
+        ExecutedRealization {
+            morph_source: morph_source_stash,
+            volume_mesh,
+        }
     }
 
     /// Returns the `VersionId` of the current eval round — the id stamped into
@@ -11430,6 +11392,17 @@ impl Engine {
             diagnostics,
             templates,
         );
+        // Sub-instance copies of kinematic-query cells. Must run BEFORE
+        // `post_process_derived_lets` so a parent let over
+        // `self.<sub>.<kinematic-cell>` folds in the same fixpoint.
+        Engine::post_process_cross_sub_kinematic_queries(
+            template,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            templates,
+        );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
         // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
@@ -11654,13 +11627,12 @@ impl Engine {
     /// material.density`) — but a geometry-query leaf can't resolve without a
     /// kernel there, so the cell folds to `Value::Undef`.
     ///
-    /// This pass re-attempts that fold with kernel access. For each
-    /// non-collection sub-component, for each of the child template's OWN
-    /// value cells that is still `Undef` at its scoped id, this takes the
-    /// child cell's `default_expr` and rescopes every `ValueRef` (via
-    /// [`reify_ir::CompiledExpr::map_value_refs`]) whose entity is the child
-    /// template's own name to the sub-instance's scoped entity, then
-    /// dispatches the rescoped expression exactly like the per-DEF fold
+    /// This pass re-attempts that fold with kernel access. For each direct
+    /// sub instance ([`crate::sub_instance_scope`] owns the enumeration and
+    /// the rescoping rule), for each of the child template's OWN value cells
+    /// that is still `Undef` at its scoped id, this rescopes the child cell's
+    /// `default_expr` onto the instance, then dispatches the rescoped
+    /// expression exactly like the per-DEF fold
     /// ([`crate::geometry_ops::try_eval_geometry_query`]):
     ///
     ///   - A rescoped geometry-query leaf's arg (e.g.
@@ -11698,42 +11670,18 @@ impl Engine {
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for sub in &template.sub_components {
-            // Collection subs have no single scoped entity to fold into (each
-            // element would need its own indexed scope); out of scope here,
-            // mirroring `seed_cross_sub_named_steps`'s no-collection-subs
-            // contract.
-            if sub.is_collection {
-                continue;
-            }
-            let Some(child_template) =
-                reify_compiler::find_template(templates, &sub.structure_name)
-            else {
-                continue;
-            };
-            let scoped_entity = format!("{}.{}", template.name, sub.name);
-            let child_entity = child_template.name.as_str();
-
-            for child_cell in &child_template.value_cells {
+        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+            for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
                 };
-                let scoped_id = reify_core::ValueCellId::new(
-                    scoped_entity.clone(),
-                    child_cell.id.member.as_str(),
-                );
+                let scoped_id = instance.scoped_id(&child_cell.id.member);
                 if values.get(&scoped_id).is_some_and(|v| !v.is_undef()) {
                     // Already folded (e.g. a Param cell populated by
                     // `elaborate_child_params_only`) — nothing to do.
                     continue;
                 }
-                let rescoped = default_expr.clone().map_value_refs(&mut |id| {
-                    if id.entity == child_entity {
-                        reify_core::ValueCellId::new(scoped_entity.clone(), id.member)
-                    } else {
-                        id
-                    }
-                });
+                let rescoped = instance.rescope(default_expr);
                 // Skip CrossSubGeometryRef expressions — same guard as
                 // `post_process_derived_lets`; that variant `unreachable!()`s in
                 // `reify_expr::eval_expr` outside a bare-let top level.
@@ -11756,6 +11704,59 @@ impl Engine {
             ) {
                 values.insert(scoped_id, value);
             }
+        }
+    }
+
+    /// Dispatch the kinematic-query helpers for each direct sub instance's
+    /// copies of its child template's cells, writing at the instance-scoped id
+    /// `ValueCellId("<parent>.<sub>", member)`. The pure eval pass leaves those
+    /// copies `Undef` because kernel values only exist in the build phase. Each
+    /// instance resolves against its own handles, so a param override is
+    /// honoured. One level deep, collection subs excluded; the rescoping rule
+    /// lives in [`crate::sub_instance_scope`].
+    ///
+    /// Each instance re-runs expressions the child template's own
+    /// [`Engine::post_process_kinematic_queries`] already ran, so its
+    /// diagnostics go through [`merge_sub_instance_diagnostics`].
+    fn post_process_cross_sub_kinematic_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+        templates: &[reify_compiler::TopologyTemplate],
+    ) {
+        let mut pose_cache: HashMap<
+            (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
+            reify_ir::GeometryHandleId,
+        > = HashMap::new();
+        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+            let steps = instance.named_steps_view(named_steps);
+            let mut instance_diagnostics = Vec::new();
+            for cell in &instance.child_template().value_cells {
+                let Some(default_expr) = cell
+                    .default_expr
+                    .as_ref()
+                    .filter(|e| calls_kinematic_query(e))
+                else {
+                    continue;
+                };
+                if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
+                    &instance.rescope(default_expr),
+                    &steps,
+                    values,
+                    kernel,
+                    &mut instance_diagnostics,
+                    &mut pose_cache,
+                ) {
+                    values.insert(instance.scoped_id(&cell.id.member), value);
+                }
+            }
+            merge_sub_instance_diagnostics(
+                diagnostics,
+                instance_diagnostics,
+                instance.scoped_entity(),
+            );
         }
     }
 
@@ -12431,8 +12432,15 @@ impl Engine {
         );
 
         // Check constraints (guard-aware)
-        let (constraint_results, mut diagnostics) =
+        let (mut constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
+        // The measurements this surface never takes (engine_viewport_attribution.rs).
+        self.attribute_viewport_unmeasured(
+            module,
+            &values,
+            &mut constraint_results,
+            &mut diagnostics,
+        );
 
         // Task 2874 (amendment): emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
@@ -12476,6 +12484,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
+            &mut self.volume_mesh_sources,
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
@@ -13843,6 +13852,46 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
     found
 }
 
+/// Returns `true` if `expr` calls a kinematic-query helper
+/// ([`reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES`]) at any depth. That
+/// covers every shape [`crate::geometry_ops::try_eval_kinematic_query`]
+/// dispatches, a direct helper call or a `flat_map` whose lambda wraps one,
+/// so a cell that fails this test is not worth rescoping for it.
+fn calls_kinematic_query(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if let reify_ir::CompiledExprKind::FunctionCall { function, .. } = &e.kind
+            && reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&function.name.as_str())
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Folds one sub instance's diagnostics into `diagnostics`. A diagnostic that
+/// is already there (same severity and message, usually from the child
+/// template's own pass over the same expression) is dropped. Any other is
+/// kept, with `scoped_entity` added to its message so the reader knows which
+/// instance raised it.
+fn merge_sub_instance_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    instance_diagnostics: Vec<Diagnostic>,
+    scoped_entity: &str,
+) {
+    for mut diagnostic in instance_diagnostics {
+        let tagged = format!("{} (sub-instance `{scoped_entity}`)", diagnostic.message);
+        let already_reported = diagnostics.iter().any(|d| {
+            d.severity == diagnostic.severity
+                && (d.message == diagnostic.message || d.message == tagged)
+        });
+        if !already_reported {
+            diagnostic.message = tagged;
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
 /// Returns `true` if `expr` is a top-level `FunctionCall` to `fits_build_volume`.
 ///
 /// Used by [`Engine::harvest_dfm_let_diagnostics`] to identify DFMSeverityBridge
@@ -14002,6 +14051,9 @@ mod populate_local_feature_tests;
 #[cfg(test)]
 mod dispatch_volume_mesh_tests;
 
+#[cfg(test)]
+mod conversion_source_key_tests;
+
 /// Produce an info-level diagnostic when a swept body is meshed with P1
 /// hex/wedge despite the user requesting `element_order = P2`.
 ///
@@ -14142,7 +14194,7 @@ mod reset_per_build_state_tests {
     /// A fresh kernel-less `Engine` with one seeded entry in every per-build
     /// reset class plus representative must-survive fields.
     fn seeded_engine() -> Engine {
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let rid = RealizationNodeId::new("Seed", 0);
 
         // ── reset-EVERY-surface ───────────────────────────────────────────

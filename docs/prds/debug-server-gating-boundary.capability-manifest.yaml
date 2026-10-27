@@ -104,6 +104,7 @@ tasks:
       pattern: debug_server / event_bus modules
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: absent
   - name: gui-pass-carries-no-filterset
     binding: rejection-mechanism (anti-drift) — (b8) in tests/infra/test_compute_trampoline_registration_wired.sh:1417-1418

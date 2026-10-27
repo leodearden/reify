@@ -110,9 +110,9 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
     // Build box(10mm × 10mm × 10mm) centred at origin.
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("box(10mm, 10mm, 10mm) should build successfully");
 

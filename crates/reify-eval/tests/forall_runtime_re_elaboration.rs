@@ -38,7 +38,7 @@ fn compile_source(source: &str) -> CompiledModule {
 
 /// Build an Engine with an empty prelude for self-contained forall-runtime tests.
 fn fresh_engine() -> Engine {
-    Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[])
+    Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None, &[])
 }
 
 /// Canonical fixture source for the runtime re-elaboration tests.
@@ -720,12 +720,13 @@ fn edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constr
 // Sibling coverage to the Constraint-arm tests above. When the count cell of
 // a deferred-count collection sub becomes known via `edit_param`, the engine
 // must re-emit per-element forall *connections* (in addition to the
-// per-element forall *constraints* already covered by 2629). The runtime
-// emission rewrites `<sub>[0]` → `<sub>[i]` substring tokens in the captured
-// `left_port_template`/`right_port_template`, allocates a synthetic
-// `ConstraintNodeId` per element, and pushes a `CompiledConnection` into
-// `graph.connections` paired with a `Bool::True`-bodied compatibility
-// constraint into `graph.constraints` (label `forall_connect@<var>[<i>]`).
+// per-element forall *constraints* already covered by 2629). Each captured
+// endpoint is a typed `PortPath`, materialised per element by
+// `PortPath::at_element`; the runtime allocates a synthetic
+// `ConstraintNodeId` per element and pushes a `CompiledConnection` into
+// `graph.connections` paired with a compatibility constraint into
+// `graph.constraints` (label `forall_connect@<var>[<i>]`) whose literal body is
+// the capture-time direction verdict.
 
 /// Canonical fixture for the forall-Connect runtime tests. Mirrors
 /// `FORALL_FIXTURE_SRC` (n is undef, count cell synthesised from
@@ -901,8 +902,80 @@ fn edit_param_count_undef_to_known_emits_per_element_forall_connections() {
             CompiledExprKind::Literal(Value::Bool(true)) => {}
             other => panic!(
                 "forall-Connect[{}] compatibility-constraint expr must be a Bool::True \
-                 literal (mirrors the placeholder direction-check policy in the task plan), \
-                 got {:?}",
+                 literal (the fixture's Out -> In directions are compatible), got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
+/// `FORALL_CONNECT_FIXTURE_SRC` with `Vent.inlet` flipped to `in`, so the
+/// deferred `forall v in vents: connect v.inlet -> air_channel` is In -> In.
+const FORALL_CONNECT_INCOMPATIBLE_FIXTURE_SRC: &str = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+
+/// The capture-time direction verdict reaches every re-emitted element: an
+/// incompatible deferred forall connect re-emits `Bool(false)` compatibility
+/// constraints once the count becomes known, as `compile_connection` bakes on
+/// the resolved path.
+#[test]
+fn edit_param_count_known_emits_false_compat_constraints_for_incompatible_deferred_forall_connect()
+{
+    // Fully qualified: this module carries a compile error, which the local
+    // `compile_source` (wrapping the panicking `parse_and_compile`) refuses.
+    let module = reify_test_support::compile_source(FORALL_CONNECT_INCOMPATIBLE_FIXTURE_SRC);
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error
+                && d.message
+                    .contains("incompatible port directions for connect: In -> In")),
+        "expected the capture-time direction error, got {:?}",
+        module.diagnostics
+    );
+
+    let mut engine = fresh_engine();
+    let _initial = engine.eval(&module);
+    let _ = engine
+        .edit_param(ValueCellId::new("S", "n"), Value::Int(2))
+        .expect("edit_param should succeed");
+
+    let snap = engine.snapshot().expect("snapshot after edit_param");
+    let connections = collect_forall_connect_connections(snap);
+    assert_eq!(
+        connections.len(),
+        2,
+        "expected exactly 2 forall-emitted connections after edit_param to Int(2), got {}",
+        connections.len()
+    );
+    for (i, c) in connections.iter().enumerate() {
+        let constraint = snap
+            .graph
+            .constraints
+            .get(&c.compatibility_constraint)
+            .unwrap_or_else(|| {
+                panic!(
+                    "forall-Connect[{}] missing compatibility constraint {} in graph.constraints",
+                    i, c.compatibility_constraint
+                )
+            });
+        match &constraint.expr.kind {
+            CompiledExprKind::Literal(Value::Bool(false)) => {}
+            other => panic!(
+                "forall-Connect[{}] compatibility-constraint expr must be a Bool::False \
+                 literal (the fixture's In -> In directions are incompatible), got {:?}",
                 i, other
             ),
         }
@@ -1298,5 +1371,144 @@ fn edit_param_constraint_arm_unchanged_after_connect_arm_landed() {
         snap_2.forall_emitted[0].len(),
         2,
         "Constraint-arm regression: forall_emitted[0] should hold 2 ids at n=2"
+    );
+}
+
+// ─── deferred / resolved forall-Connect endpoint parity ──────────────────────
+//
+// A deferred-count forall-Connect must materialise exactly the connections the
+// resolved path (count known at compile time) produces for the same source. In
+// particular a source-written literal index such as `vents[0]` is part of the
+// endpoint, not the element placeholder, so it must survive runtime
+// re-elaboration unchanged for every element `i`.
+
+/// Build the parity fixture: `S` iterates `vents` with `body`, and carries
+/// `extra_members` verbatim. `n_decl` selects the deferred (`param n : Int`)
+/// or resolved (`param n : Int = 3`) shape of the count.
+fn endpoint_parity_fixture(n_decl: &str, body: &str, extra_members: &str) -> String {
+    format!(
+        r#"
+trait Air {{ param d : Length }}
+structure def Vent {{
+    param area : Length = 1mm
+    port outlet : out Air {{ param d : Length = 5mm }}
+    port inlet : in Air {{ param d : Length = 5mm }}
+}}
+structure def S {{
+    sub vents : List<Vent>
+    {n_decl}
+    constraint vents.count == n
+    {extra_members}
+    forall v in vents: {body}
+}}
+"#
+    )
+}
+
+/// Every connection in the snapshot's graph as `(left_port, operator,
+/// right_port)`, sorted by `(left_port, right_port)`.
+fn connection_triples(snap: &Snapshot) -> Vec<(String, ConnectOp, String)> {
+    let mut triples: Vec<(String, ConnectOp, String)> = snap
+        .graph
+        .connections
+        .iter()
+        .map(|c| (c.left_port.clone(), c.operator, c.right_port.clone()))
+        .collect();
+    triples.sort_by(|a, b| (&a.0, &a.2).cmp(&(&b.0, &b.2)));
+    triples
+}
+
+/// Compile `body` over a deferred count, re-elaborate it at runtime with
+/// `n = 3`, and assert the resulting connections equal both the resolved
+/// path's (count `3` known at compile time) and the explicit `expected`
+/// `(left_port, right_port)` pairs — so the two paths cannot be identically
+/// wrong.
+#[track_caller]
+fn assert_deferred_connect_matches_resolved(
+    body: &str,
+    extra_members: &str,
+    expected: &[(String, String)],
+) {
+    let deferred_src = endpoint_parity_fixture("param n : Int", body, extra_members);
+    let deferred_module = compile_source(&deferred_src);
+    let mut deferred_engine = fresh_engine();
+    let _ = deferred_engine.eval(&deferred_module);
+    let _ = deferred_engine
+        .edit_param(ValueCellId::new("S", "n"), Value::Int(3))
+        .expect("edit_param(n, 3) should succeed on the deferred fixture");
+    let deferred = connection_triples(
+        deferred_engine
+            .snapshot()
+            .expect("snapshot after deferred edit_param"),
+    );
+
+    let resolved_src = endpoint_parity_fixture("param n : Int = 3", body, extra_members);
+    let resolved_module = compile_source(&resolved_src);
+    let resolved_errors: Vec<_> = resolved_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        resolved_errors.is_empty(),
+        "resolved fixture must compile clean, got {resolved_errors:?}"
+    );
+    let mut resolved_engine = fresh_engine();
+    let _ = resolved_engine.eval(&resolved_module);
+    let resolved = connection_triples(
+        resolved_engine
+            .snapshot()
+            .expect("snapshot after resolved eval"),
+    );
+
+    assert_eq!(
+        deferred, resolved,
+        "deferred re-elaboration (after edit_param n = 3) must match the resolved \
+         path (n = 3 at compile time) for body `{body}`"
+    );
+    assert!(
+        deferred.iter().all(|(_, op, _)| *op == ConnectOp::Forward),
+        "every forall-Connect operator must be Forward, got {deferred:?}"
+    );
+    let deferred_pairs: Vec<(String, String)> = deferred
+        .into_iter()
+        .map(|(left, _, right)| (left, right))
+        .collect();
+    assert_eq!(
+        deferred_pairs, expected,
+        "deferred and resolved paths agree but not on the expected endpoints for body `{body}`"
+    );
+}
+
+#[test]
+fn deferred_forall_connect_keeps_literal_left_index_like_resolved_path() {
+    let expected: Vec<(String, String)> = (0..3)
+        .map(|i| ("vents[0].outlet".to_string(), format!("vents[{i}].inlet")))
+        .collect();
+    assert_deferred_connect_matches_resolved("connect vents[0].outlet -> v.inlet", "", &expected);
+}
+
+#[test]
+fn deferred_forall_connect_keeps_literal_right_index_like_resolved_path() {
+    let expected: Vec<(String, String)> = (0..3)
+        .map(|i| (format!("vents[{i}].outlet"), "vents[0].inlet".to_string()))
+        .collect();
+    assert_deferred_connect_matches_resolved("connect v.outlet -> vents[0].inlet", "", &expected);
+}
+
+#[test]
+fn deferred_forall_connect_keeps_keyed_literal_endpoint_like_resolved_path() {
+    let expected: Vec<(String, String)> = (0..3)
+        .map(|i| {
+            (
+                "bays[\"intake\"].outlet".to_string(),
+                format!("vents[{i}].inlet"),
+            )
+        })
+        .collect();
+    assert_deferred_connect_matches_resolved(
+        "connect bays[\"intake\"].outlet -> v.inlet",
+        "sub bays : Keyed<Vent> { \"intake\" => { area = 5mm } }",
+        &expected,
     );
 }

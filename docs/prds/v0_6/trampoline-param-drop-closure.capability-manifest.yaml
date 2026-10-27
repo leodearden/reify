@@ -622,6 +622,7 @@ tasks:
       pattern: PDrop
       paths:
       - crates/reify-audit/src/lib.rs
+      - crates/reify-audit/src/model.rs
       expect: present
   - name: pattern-token-reaches-the-cli
     binding: 'capability->producer (the CLI half of the same registration) - a Pattern variant

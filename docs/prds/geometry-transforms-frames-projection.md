@@ -1,6 +1,6 @@
 # PRD: Geometry transforms, frames & projection — wire the advertised-but-unwired transform surface
 
-**Status:** active — version-agnostic geometry foundation. Authored 2026-06-01.
+**Status: SHIPPED.** All nine decomposition leaves have landed — α #4164, β #4165, γ #4166, δ #4167, ε #4168, ζ #4169, η #4170, θ #4171, ι #4172 — plus the follow-up #4879. Version-agnostic geometry foundation. Authored 2026-06-01; shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its "today" gap descriptions, error messages, measurements and anchors are dated 2026-06-01 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — no production code defers to this document (code comments cite its leaf labels as provenance only); the shipped transform / frame / projection surface is stated by `docs/reify-stdlib-reference.md`, reconciled by ι #4172.
 **Slug:** `geometry-transforms-frames-projection`
 **Approach:** **B** for the independent stdlib-surface slices (each a vertical slice through an
 existing seam); **B+H** for the **value-decode seam** (the shared `Value::Transform` /

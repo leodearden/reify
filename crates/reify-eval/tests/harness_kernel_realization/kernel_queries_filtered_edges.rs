@@ -41,14 +41,13 @@
 //!
 //! Modelled on `kernel_queries_directional_selectors.rs` (task 3618).
 
-use super::fixture_scaffolding::assert_selector_leaf;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
 use reify_ir::ExportFormat;
 use reify_ir::value::LeafQuery;
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_selector_leaf, errors_only, parse_and_compile_with_stdlib};
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -82,7 +81,7 @@ fn filtered_edges_compile_and_return_geometry_handles() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Task 4118 (γ): the 3 filtered selector constructors now build a kernel-FREE

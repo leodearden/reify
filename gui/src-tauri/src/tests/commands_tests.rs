@@ -17,7 +17,7 @@ use crate::engine::EngineSession;
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// [`make_session`] with `source` loaded under the module name `bracket`.
@@ -176,7 +176,7 @@ fn get_source_location_for_width() {
 fn export_writes_file() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -654,7 +654,7 @@ fn get_mechanism_descriptors_impl_round_trips() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
         .expect("load mechanism fixture");
@@ -706,7 +706,7 @@ fn get_mechanism_descriptors_impl_recovers_from_poisoned_mutex() {
     // an empty default.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(MECHANISM_FIXTURE_SOURCE, "kinematic")
         .expect("load mechanism fixture");
@@ -1205,7 +1205,7 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
     let source = include_str!("../../../../examples/fea_shell_flexure.ri");
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(source, "FeaShellFlexure")
         .expect("load_from_source must succeed for fea_shell_flexure.ri");
@@ -1941,7 +1941,7 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_test_support::MockGeometryKernel::new();
-    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = crate::engine::EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let engine = std::sync::Mutex::new(session);
 
     let _guard = cwd_lock().lock().unwrap();
@@ -2161,7 +2161,7 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
 fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
@@ -2182,6 +2182,7 @@ fn make_test_engine_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Arc<Mut
     std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -3955,6 +3956,7 @@ mod queued_requests {
 
     fn fresh_engine() -> Arc<Mutex<EngineSession>> {
         Arc::new(Mutex::new(EngineSession::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         )))

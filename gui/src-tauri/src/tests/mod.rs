@@ -14,6 +14,7 @@ mod engine_state_view_tests;
 mod engine_tests;
 mod eval_queue_tests;
 mod event_bus_tests;
+mod export_format_tests;
 mod gui_state_macro_tests;
 mod gui_state_parity_tests;
 mod kernel_status_tests;
@@ -32,6 +33,7 @@ mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
+mod unmeasured_attribution_tests;
 mod watcher_tests;
 mod write_confinement_tests;
 
@@ -50,7 +52,7 @@ use crate::engine::EngineSession;
 pub(crate) fn make_test_engine() -> Arc<Mutex<EngineSession>> {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");

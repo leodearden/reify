@@ -20,5 +20,5 @@
 //   runners and avoids the OCCT-gating complication.
 structure def TypeHygieneStrict {
     param mass : Mass = auto
-    constraint mass > 0
+    constraint mass > 0 && mass < 100kg
 }

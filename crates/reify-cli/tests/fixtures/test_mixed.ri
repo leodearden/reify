@@ -16,5 +16,5 @@
 
 @test structure TestIndet {
     param z: Length = auto
-    constraint z > 0
+    constraint z > 0 && z < 10mm
 }

@@ -64,7 +64,7 @@ fn engine_swept_kind_table_records_extrude_realization() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -155,7 +155,7 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let table = engine.swept_kind_table();
@@ -241,7 +241,7 @@ fn engine_swept_kind_table_resets_between_builds() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // ── Build #1: classifier records exactly one entry ───────────────────
     let _result_1 = engine.build(&module_1, ExportFormat::Step);
@@ -345,7 +345,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -467,7 +467,7 @@ fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
