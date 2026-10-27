@@ -142,13 +142,9 @@ impl Seeds {
     /// path can never be the thing that swallowed a branch.
     ///
     /// A `true` here keeps the node off the fast path, and every kind the
-    /// traversal DIFFERENTIATES then records its own kinks.  A `true` on a node
-    /// the traversal delegates whole yields one
-    /// [`KinkKind::Unplaced`](crate::KinkKind::Unplaced) entry from
-    /// `refuse_or_constant` instead, so an empty record means no kink
-    /// anywhere.  The price of the conservative answer is paid there: a
-    /// delegated node enclosing a call records that entry whatever the call's
-    /// body holds, so it may stand for no kink at all.
+    /// traversal DIFFERENTIATES then records its own kinks; a node it delegates
+    /// whole records one [`KinkKind::Unplaced`](crate::KinkKind::Unplaced)
+    /// entry instead.
     pub fn subtree_has_kink(&self, expr: &CompiledExpr) -> bool {
         if let Some(hit) = self.kinky.borrow().get(&expr.content_hash) {
             return *hit;
@@ -192,9 +188,7 @@ fn node_is_kink(e: &CompiledExpr) -> bool {
         // subtrees), the shadow-cell probe is one `eval_expr` pays for every
         // arity-1 call anyway, and a traversed call records its branches
         // properly — `eval_dual_fn_body` and `eval_dual_lambda_apply` both do.
-        // A call that is DELEGATED whole, or sits under a node that is (an
-        // intercepted family; an `IndexAccess` over `[sin(c)]`), pays more: one
-        // `Unplaced` entry that may stand for no kink at all.
+        // Under a delegated node it costs a possibly spurious `Unplaced` entry.
         CompiledExprKind::UserFunctionCall { .. } => true,
         CompiledExprKind::FunctionCall { args, .. } if args.len() == 1 => true,
         CompiledExprKind::BinOp { op, .. } => matches!(

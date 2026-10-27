@@ -258,13 +258,8 @@ fn descend(
 /// when it provably cannot.
 ///
 /// The node is handed WHOLE to [`crate::eval_expr`], so no kink beneath it can
-/// be placed: a node [`Seeds::subtree_has_kink`] claims records a single
-/// [`KinkKind::Unplaced`] entry at its own site instead.  A node constant in
-/// every seed records [`BranchChoice::OutcomeHash`], because the residual sees
-/// it only through its value.  A node that moves with the seeds records
-/// [`BranchChoice::Unresolved`], because its value moves continuously with
-/// them, and a row survives its refusal only through a parent that records its
-/// own selection.
+/// be placed: a node [`Seeds::subtree_has_kink`] claims records the one
+/// [`KinkKind::Unplaced`] entry that variant specifies instead.
 fn refuse_or_constant(
     expr: &CompiledExpr,
     ctx: &EvalContext,
