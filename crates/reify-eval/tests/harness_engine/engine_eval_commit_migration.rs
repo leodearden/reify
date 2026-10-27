@@ -502,16 +502,17 @@ fn self_datum_projection_commits_once_in_the_main_pass() {
     );
 
     // (2) `self.xy_plane` is a pure value (task #6100), so the main pass
-    // already evaluates `p` to its Plane: any cache entry holds that Plane.
-    match engine.cache_store().get(&NodeId::Value(p_id.clone())) {
-        None => {}
-        Some(entry) => match &entry.result {
-            CachedResult::Value(val, _) => assert!(
-                matches!(val, Value::Plane { .. }),
-                "the main pass's cache entry for p should hold its Plane, got {val:?}"
-            ),
-            other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
-        },
+    // evaluates `p` to its Plane and caches that Plane.
+    let entry = engine
+        .cache_store()
+        .get(&NodeId::Value(p_id.clone()))
+        .expect("the main pass should write a cache entry for p");
+    match &entry.result {
+        CachedResult::Value(val, _) => assert!(
+            matches!(val, Value::Plane { .. }),
+            "the main pass's cache entry for p should hold its Plane, got {val:?}"
+        ),
+        other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
     }
 
     // (3) p is a concrete Plane.
