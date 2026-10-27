@@ -759,4 +759,55 @@ mod format_undef_cause_tests {
             "rendered string must contain \"contract\", got: {rendered:?}"
         );
     }
+
+    /// Capture `report_achieved_deviations` output as a `String`.
+    fn run_readout(deviations: &[(&str, f64)]) -> String {
+        let mut buf = Vec::new();
+        report_achieved_deviations(deviations.iter().copied(), &mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// The number a readout line carries, parsed back to f64.
+    fn readout_value(line: &str) -> f64 {
+        let number = line
+            .strip_suffix(" m")
+            .and_then(|rest| rest.rsplit_once(": "))
+            .map(|(_, number)| number)
+            .unwrap_or_else(|| panic!("not a readout line: {line:?}"));
+        number.parse().unwrap_or_else(|e| panic!("{number:?}: {e}"))
+    }
+
+    #[test]
+    fn achieved_deviation_readout_renders_one_line_per_occurrence_in_input_order() {
+        let output = run_readout(&[
+            ("Ball#realization[0]", 1.2345678901234e-4),
+            ("Cube#realization[0]", 1e-6),
+        ]);
+        assert_eq!(
+            output,
+            "  Ball#realization[0]: sampled facet deviation: 1.2345678901234e-4 m\n  \
+             Cube#realization[0]: sampled facet deviation: 1e-6 m\n"
+        );
+    }
+
+    #[test]
+    fn achieved_deviation_readout_resolves_values_the_diagnostic_rounds_together() {
+        let a = 1.19541e-4_f64;
+        let b = 1.19549e-4_f64;
+        assert_eq!(format!("{a:.3e}"), "1.195e-4");
+        assert_eq!(format!("{b:.3e}"), "1.195e-4");
+
+        let output = run_readout(&[("A#realization[0]", a), ("B#realization[0]", b)]);
+        let parsed: Vec<f64> = output.lines().map(readout_value).collect();
+
+        assert_eq!(parsed.len(), 2, "one line per input, got: {output:?}");
+        assert_eq!(parsed[0].to_bits(), a.to_bits());
+        assert_eq!(parsed[1].to_bits(), b.to_bits());
+        assert_ne!(parsed[0], parsed[1]);
+    }
+
+    #[test]
+    fn achieved_deviation_readout_is_empty_for_no_measurements() {
+        assert_eq!(run_readout(&[]), "");
+    }
 }
