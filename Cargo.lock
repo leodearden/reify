@@ -4331,6 +4331,7 @@ dependencies = [
  "reify-eval",
  "reify-expr",
  "reify-ir",
+ "reify-mcp",
  "reify-syntax",
  "reify-test-support",
  "stacker",
