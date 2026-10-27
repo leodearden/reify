@@ -31,7 +31,9 @@ use reify_ir::{OpaqueState, Value};
 // definition, in `reify_test_support::tensegrity_fixtures`. The two fixtures
 // below are not the triplex, but they are that same structure shape.
 use reify_test_support::tensegrity_fixtures::tensegrity;
-use reify_test_support::{make_simple_engine, meters, point3, read_real_or_scalar};
+use reify_test_support::{
+    make_simple_engine, meters, point3, read_real_or_scalar, read_real_or_scalar3,
+};
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
 
@@ -95,16 +97,6 @@ fn call_tensegrity_load(value_inputs: &[Value]) -> ComputeOutcome {
     )
 }
 
-/// Crack a 3-component displacement `Value::Vector` into `[f64; 3]`.
-fn vec3(v: &Value) -> [f64; 3] {
-    match v {
-        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            [0, 1, 2].map(|k| read_real_or_scalar(&c[k], &format!("vec3[{k}]")))
-        }
-        other => panic!("expected a 3-component Vector, got {other:?}"),
-    }
-}
-
 // ── step-9: happy path (no-slack transverse load) ────────────────────────────
 
 /// Happy path: the trampoline cracks the Tensegrity / prestress / section /
@@ -161,7 +153,7 @@ fn trampoline_no_slack_transverse_load_solves() {
     assert_eq!(displacements.len(), 3, "expected 3 nodal displacements");
 
     // The user-observable signal: u_y[1] = P_t·L / (2·N0).
-    let u1 = vec3(&displacements[1]);
+    let u1 = read_real_or_scalar3(&displacements[1], "displacements[1]");
     let uy_expected = p_t * l / (2.0 * n0); // 0.01
     assert!(
         (u1[1] - uy_expected).abs() < 1e-9,
@@ -172,7 +164,7 @@ fn trampoline_no_slack_transverse_load_solves() {
     assert!((u1[2]).abs() < 1e-9, "u_z[1] = {} expected 0", u1[2]);
     // Anchored nodes do not move.
     for (i, n) in [0usize, 2].iter().enumerate() {
-        let u = vec3(&displacements[*n]);
+        let u = read_real_or_scalar3(&displacements[*n], &format!("displacements[{n}]"));
         assert!(
             u.iter().all(|c| c.abs() < 1e-9),
             "anchor node {n} (idx {i}) must not move, got {u:?}",
@@ -340,7 +332,7 @@ fn trampoline_slackening_axial_load_flags_slack() {
         Some(Value::List(ds)) => ds,
         other => panic!("displacements must be a List, got {other:?}"),
     };
-    let ux1 = vec3(&displacements[1])[0];
+    let ux1 = read_real_or_scalar3(&displacements[1], "displacements[1]")[0];
     let ux_expected = p * l / (e * a); // 0.0015
     assert!(
         (ux1 - ux_expected).abs() < 1e-9,

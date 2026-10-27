@@ -28,7 +28,9 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::{make_simple_engine, meters, point3, read_real_or_scalar};
+use reify_test_support::{
+    make_simple_engine, meters, point3, read_real_or_scalar, read_real_or_scalar3,
+};
 
 // ---- Value-construction helpers (mirror tensegrity_t3b_load.rs) -------------
 
@@ -59,16 +61,6 @@ fn area(a: f64) -> Value {
 /// A 3-component `Value::Vector` force load (Force scalars).
 fn force_vec(fx: f64, fy: f64, fz: f64) -> Value {
     Value::Vector(vec![force(fx), force(fy), force(fz)])
-}
-
-/// Crack a 3-component displacement `Value::Vector`/`Value::Point` into `[f64; 3]`.
-fn vec3(v: &Value) -> [f64; 3] {
-    match v {
-        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            [0, 1, 2].map(|k| read_real_or_scalar(&c[k], &format!("vec3[{k}]")))
-        }
-        other => panic!("expected a 3-component Vector, got {other:?}"),
-    }
 }
 
 /// A combined pavilion `Tensegrity` value: a flat membrane patch braced by one
@@ -214,16 +206,16 @@ fn trampoline_combined_pavilion_solves() {
     let displacements = list_field(&fields, "displacements");
     assert_eq!(displacements.len(), 5, "one displacement per node");
     for (i, d) in displacements.iter().enumerate() {
-        let u = vec3(d);
+        let u = read_real_or_scalar3(d, &format!("displacements[{i}]"));
         assert!(
             u.iter().all(|c| c.is_finite()),
             "displacement[{i}] must be finite (non-Undef), got {u:?}",
         );
     }
-    let u_center = vec3(&displacements[2]);
+    let u_center = read_real_or_scalar3(&displacements[2], "displacements[2]");
     assert!(u_center[2] < 0.0, "free center moves toward the -z load, got {u_center:?}");
     for &anchor in &[0usize, 1, 3, 4] {
-        let u = vec3(&displacements[anchor]);
+        let u = read_real_or_scalar3(&displacements[anchor], &format!("displacements[{anchor}]"));
         assert!(
             u.iter().all(|c| c.abs() < 1e-9),
             "anchored node {anchor} must not move, got {u:?}",
@@ -390,7 +382,7 @@ fn trampoline_upward_load_slackens_cable() {
     // displacements: the free center now moves UP toward the +z load (the mirror of
     // the downward happy-path case); anchors stay put.
     let displacements = list_field(&fields, "displacements");
-    let u_center = vec3(&displacements[2]);
+    let u_center = read_real_or_scalar3(&displacements[2], "displacements[2]");
     assert!(
         u_center[2] > 0.0,
         "free center moves toward the +z load, got {u_center:?}",

@@ -18,6 +18,7 @@ use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadH
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, point3, read_real_or_scalar,
+    read_real_or_scalar3,
 };
 
 // ── step-7: stdlib declaration type-checks ───────────────────────────────────
@@ -196,12 +197,7 @@ fn trampoline_happy_path_solves_to_anchor_centroid() {
         "expected 5 solved nodes (1 free + 4 anchors)"
     );
 
-    let n0 = match &nodes[0] {
-        Value::Point(c) if c.len() == 3 => {
-            [0, 1, 2].map(|k| read_real_or_scalar(&c[k], &format!("nodes[0][{k}]")))
-        }
-        other => panic!("nodes[0] must be a 3-component Point, got {other:?}"),
-    };
+    let n0 = read_real_or_scalar3(&nodes[0], "nodes[0]");
     let expected = [0.0, 0.0, 0.5];
     for (i, (got, exp)) in n0.iter().zip(expected.iter()).enumerate() {
         assert!(
@@ -728,12 +724,7 @@ fn form_nodes_and_converged(form: &Value) -> (Vec<[f64; 3]>, bool) {
         Some(Value::List(ns)) => ns
             .iter()
             .enumerate()
-            .map(|(j, p)| match p {
-                Value::Point(c) if c.len() == 3 => {
-                    [0, 1, 2].map(|k| read_real_or_scalar(&c[k], &format!("nodes[{j}][{k}]")))
-                }
-                other => panic!("FormFindResult.nodes entry must be a 3-Point, got {other:?}"),
-            })
+            .map(|(j, p)| read_real_or_scalar3(p, &format!("nodes[{j}]")))
             .collect(),
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
@@ -1173,12 +1164,7 @@ fn trampoline_dimensionless_scalar_force_density_still_solves() {
         Some(Value::List(ns)) => ns,
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
-    let n0 = match &nodes[0] {
-        Value::Point(c) if c.len() == 3 => {
-            [0, 1, 2].map(|k| read_real_or_scalar(&c[k], &format!("nodes[0][{k}]")))
-        }
-        other => panic!("nodes[0] must be a 3-component Point, got {other:?}"),
-    };
+    let n0 = read_real_or_scalar3(&nodes[0], "nodes[0]");
     for (i, (got, exp)) in n0.iter().zip([0.0, 0.0, 0.5].iter()).enumerate() {
         assert!(
             (got - exp).abs() < 1e-9,
