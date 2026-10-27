@@ -6059,10 +6059,12 @@ impl Engine {
     /// demand-seam is single and future changes touch one place.
     /// Compute the demand-scoped unified pass schedule and seed.
     ///
-    /// `hash_exempt`: realizations whose input-cone hash is unchanged (returned
-    /// by `refresh_and_gate_demanded_realizations`). On the selective path these
-    /// are excluded from the seed so `tessellate_from_values` skips them and
-    /// avoids redundant re-dispatch. Empty on the full-scope / cold path.
+    /// `hash_exempt`: realizations the hash gate's verdict
+    /// (`realization_staleness::hash_gate_verdict`, applied by
+    /// `refresh_and_gate_demanded_realizations`) lets this pass skip. On the
+    /// selective path these are excluded from the seed so
+    /// `tessellate_from_values` skips them and avoids redundant re-dispatch.
+    /// Empty on the full-scope / cold path.
     fn demand_scoped_unified_pass(
         &self,
         hash_exempt: &HashSet<NodeId>,
@@ -6096,7 +6098,7 @@ impl Engine {
             // absent from the seed and excluded from the schedule.
             //
             // δ (task 4740) step-6: also exclude `hash_exempt` realizations —
-            // those whose input-cone hash is unchanged (populated by
+            // those the hash gate's verdict exempts (populated by
             // refresh_and_gate_demanded_realizations). Excluding them means
             // tessellate_from_values skips their kernel ops, achieving "reuse"
             // without requiring a populated realization cache.
@@ -12088,25 +12090,21 @@ impl Engine {
     /// The refreshed values are written back to `snapshot.values` so the copy loop
     /// in `tessellate_snapshot` picks up the CURRENT param-derived scalars.
     ///
-    /// **Part C — hash gate:** for each DEMANDED realization, computes the current
-    /// input-cone hash (`compute_realization_upstream_values_hash`) against the just-
-    /// refreshed snapshot values and compares to the stored
-    /// `RealizationNodeData.input_cone_hash`.  If the hashes DIFFER (inputs changed),
-    /// `realization_cache.evict_family` drops stale geometry (terminal and owned
-    /// conversion intermediates) so
-    /// `tessellate_from_values` is forced to re-execute.  If SAME, the cached
-    /// geometry is still valid and is reused (no re-dispatch → `last_dispatch_count`
-    /// stays 0).  The stored hash is updated to the current value in both cases.
+    /// **Part C — hash gate:** comparing each DEMANDED realization's current
+    /// input-cone hash (`compute_realization_upstream_values_hash`, over the
+    /// just-refreshed snapshot values) with its stored
+    /// `RealizationNodeData.input_cone_hash` yields the `moved` set, and every
+    /// demanded hash is re-stamped. `realization_staleness::hash_gate_verdict`
+    /// closes `moved` over `GeomRef::Sub` consumers, their producers and hidden
+    /// stale realizations; its families are evicted, its hidden stale stamps
+    /// cleared, and its exempt set returned for the
+    /// `demand_scoped_unified_pass` seed filter (the "reuse" branch).
     ///
     /// **NOTE (esc-4740-29, resolved by γ #4730):** edits no longer flush the
     /// whole cache; they evict only the families their own compare found stale
     /// and retain the rest. A mismatch found HERE — for instance on a cell Part B
     /// just refreshed, which the edit-time compare saw as `Pending` — therefore
     /// evicts genuinely retained geometry.
-    /// Returns exempt realizations: those whose input-cone hash is UNCHANGED
-    /// (`stored == Some(current_hash)`). These are excluded from the
-    /// `demand_scoped_unified_pass` seed so they are not re-dispatched when
-    /// inputs haven't changed (the "reuse" branch of the hash gate).
     fn refresh_and_gate_demanded_realizations(
         &mut self,
         module: &CompiledModule,
@@ -12258,24 +12256,11 @@ impl Engine {
         };
 
         // Two-phase: collect decisions, then apply mutations.
-        //
-        // `entities_to_clear` uses a HashSet keyed on `realization_decl.id.entity`
-        // (the actual cache key — see the cross-realization keying invariant at
-        // engine_build.rs:1663) rather than `tmpl.name`.  For simple top-level
-        // templates the two are identical, but for sub/indexed entities they may
-        // diverge, and using the wrong key would silently miss the cache entry the
-        // edit's selective eviction (γ #4730) retained.  The HashSet also
-        // deduplicates: a template with N demanded realizations all having stale
-        // inputs would otherwise produce N identical `evict_family` calls.
-        let mut entities_to_clear: HashSet<String> = HashSet::new();
+        let mut demanded: HashSet<reify_core::RealizationNodeId> = HashSet::new();
+        let mut moved: HashSet<reify_core::RealizationNodeId> = HashSet::new();
         let mut hash_updates: Vec<(reify_core::RealizationNodeId, [u8; 32])> = Vec::new();
-        // Exempt realizations: those whose input-cone hash is UNCHANGED
-        // (stored == Some(current_hash)). Returned to the caller so
-        // demand_scoped_unified_pass can exclude them from the selective seed,
-        // preventing unnecessary re-dispatch when inputs haven't changed.
-        let mut exempt: HashSet<NodeId> = HashSet::new();
 
-        {
+        let verdict = {
             // Immutable borrows: eval_state, demand, functions, meta_map —
             // all disjoint; NLL allows their simultaneous use.
             let state = self.eval_state.as_ref().unwrap();
@@ -12299,26 +12284,25 @@ impl Engine {
                         .get(&realization_decl.id)
                         .and_then(|n| n.input_cone_hash);
                     if stored != Some(current_hash) {
-                        // Inputs changed (or no stored hash yet): invalidate stale
-                        // geometry so tessellate_from_values re-executes. Edits
-                        // retain unaffected families (γ #4730), so this evicts
-                        // real entries (esc-4740-29).
-                        // Key on `realization_decl.id.entity` — the actual cache key
-                        // (invariant at engine_build.rs:1663), NOT `tmpl.name`.
-                        entities_to_clear.insert(realization_decl.id.entity.clone());
-                    } else {
-                        // Inputs unchanged: exempt from re-dispatch this tessellate.
-                        exempt.insert(node);
+                        moved.insert(realization_decl.id.clone());
                     }
+                    demanded.insert(realization_decl.id.clone());
                     // Always record the new hash (even if hash was unchanged, to
                     // ensure the stored hash is set after the first tessellate).
                     hash_updates.push((realization_decl.id.clone(), current_hash));
                 }
             }
-        }
+            crate::realization_staleness::hash_gate_verdict(
+                &demanded,
+                &moved,
+                &state.reverse_index,
+                &state.snapshot.graph,
+            )
+        };
 
-        // Apply: clear stale cache entries + update stored hashes.
-        for entity in &entities_to_clear {
+        // Apply: evict stale families, stamp the demanded realizations, and
+        // clear the stamps of stale realizations this pass will not run.
+        for entity in &verdict.evict_entities {
             self.realization_cache.evict_family(entity);
         }
         if let Some(state) = self.eval_state.as_mut() {
@@ -12327,8 +12311,17 @@ impl Engine {
                     node_data.input_cone_hash = Some(new_hash);
                 }
             }
+            for real_id in &verdict.unstamp {
+                if let Some(node_data) = state.snapshot.graph.realizations.get_mut(real_id) {
+                    node_data.input_cone_hash = None;
+                }
+            }
         }
-        exempt
+        verdict
+            .exempt
+            .into_iter()
+            .map(NodeId::Realization)
+            .collect()
     }
 
     /// Tessellate realizations from the current snapshot values, without
@@ -12375,8 +12368,8 @@ impl Engine {
         // realization recompute on the input-cone hash.  Must run AFTER
         // `mark_demand_pruned_pending` (which identifies Pending cells) and BEFORE
         // the snapshot-values copy below (so the copy picks up fresh scalars).
-        // Returns the exempt set (realizations with unchanged input-cone hash) for
-        // the demand_scoped_unified_pass seed filter below.
+        // Returns the hash gate's exempt set for the demand_scoped_unified_pass
+        // seed filter below.
         let hash_exempt = self.refresh_and_gate_demanded_realizations(module);
         let state = self.eval_state.as_ref()?;
 

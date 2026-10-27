@@ -1,10 +1,10 @@
-//! Which realizations an edit made stale, and which `RealizationCache`
-//! families that obliges the edit to evict (selective-realization-eviction
-//! PRD, `docs/prds/v0_6/selective-realization-eviction.md`).
+//! Which realizations a moved realization makes stale, and what that obliges
+//! the edit seam and the selective-tessellate hash gate to evict, re-run or
+//! un-stamp (selective-realization-eviction PRD,
+//! `docs/prds/v0_6/selective-realization-eviction.md`).
 //!
 //! Pure functions over the evaluation graph: no engine state is read or
-//! written here. `engine_edit` runs them at its two compare sites and applies
-//! the result to the cache.
+//! written here. Callers apply the results to the cache.
 
 use std::collections::{HashMap, HashSet};
 
@@ -139,60 +139,152 @@ pub(crate) fn stale_realization_entities<'a>(
     realization_cone: &HashSet<NodeId>,
 ) -> HashSet<String> {
     let entity = |rid: &RealizationNodeId| rid.entity.clone();
-    let reached = realization_cone.iter().filter_map(|node| match node {
-        NodeId::Realization(rid) => Some(entity(rid)),
-        _ => None,
-    });
-    seeds
-        .iter()
+    realizations_in(seeds, realization_cone)
         .map(entity)
         .chain(removed.into_iter().map(entity))
-        .chain(reached)
         .collect()
 }
 
-/// The realizations owning a `GeomRef::Sub` operand that the reverse
-/// dependency index cannot resolve, and so never links to its producer.
+/// The selective-tessellate hash gate's decision for one pass.
+#[derive(Debug)]
+pub(crate) struct HashGateVerdict {
+    /// Demanded realizations the pass may skip.
+    pub(crate) exempt: HashSet<RealizationNodeId>,
+    /// `RealizationCache` families to evict.
+    pub(crate) evict_entities: HashSet<String>,
+    /// Stale realizations this pass will not run, whose stored
+    /// `input_cone_hash` must be cleared.
+    pub(crate) unstamp: HashSet<RealizationNodeId>,
+}
+
+/// The hash gate's verdict for one selective tessellate, given the demanded
+/// realizations and those whose own input-cone fold `moved`.
 ///
-/// This mirrors the index's resolver (`deps::resolve_geom_sub_edge`), which
-/// resolves an operand by geometry member name alone. A dotted
-/// `"<sub>.<member>"` operand resolves only when exactly one realization of
-/// ANOTHER entity exports `<member>`; a bare sibling operand only when exactly
-/// one realization of the consumer's OWN entity does. Two entities exporting
-/// `body`, or no exporter at all, leave the operand without an edge.
-/// `the_dropped_operand_rule_agrees_with_the_reverse_index` pins this mirror to
-/// the index itself.
-fn sub_consumers_the_reverse_index_drops(graph: &EvaluationGraph) -> HashSet<RealizationNodeId> {
-    let mut exporters: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (rid, node) in graph.realizations.iter() {
-        if let Some(cell) = &node.geometry_cell {
-            exporters
-                .entry(cell.member.as_str())
-                .or_default()
-                .push(rid.entity.as_str());
+/// Staleness is the edit seam's: `moved` seeds the realization dirty cone. A
+/// stale demanded realization must run along with every realization each of
+/// its `GeomRef::Sub` operands may name, transitively, since it can only
+/// resolve an operand from this pass's steps; every other demanded realization
+/// is exempt.
+pub(crate) fn hash_gate_verdict(
+    demanded: &HashSet<RealizationNodeId>,
+    moved: &HashSet<RealizationNodeId>,
+    index: &crate::deps::ReverseDependencyIndex,
+    graph: &EvaluationGraph,
+) -> HashGateVerdict {
+    let seeds = realization_cone_seeds(moved, false, graph);
+    let cone =
+        crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), &seeds, index, graph);
+    let stale: HashSet<RealizationNodeId> = realizations_in(&seeds, &cone).cloned().collect();
+    let reruns: HashSet<RealizationNodeId> = stale.intersection(demanded).cloned().collect();
+    let must_run = with_sub_producers(&reruns, graph);
+    HashGateVerdict {
+        exempt: demanded.difference(&must_run).cloned().collect(),
+        evict_entities: stale_realization_entities(&seeds, [], &cone),
+        unstamp: stale.difference(demanded).cloned().collect(),
+    }
+}
+
+/// `roots` together with every realization each of their `GeomRef::Sub`
+/// operands may name, transitively.
+fn with_sub_producers(
+    roots: &HashSet<RealizationNodeId>,
+    graph: &EvaluationGraph,
+) -> HashSet<RealizationNodeId> {
+    if roots.is_empty() {
+        return HashSet::new();
+    }
+    let candidates = SubOperandCandidates::of(graph);
+    let mut visited = roots.clone();
+    let mut worklist: Vec<RealizationNodeId> = roots.iter().cloned().collect();
+    while let Some(rid) = worklist.pop() {
+        let Some(node) = graph.realizations.get(&rid) else {
+            continue;
+        };
+        for operand in sub_operands(node) {
+            for producer in candidates.named_by(operand, &rid.entity) {
+                if visited.insert(producer.clone()) {
+                    worklist.push(producer.clone());
+                }
+            }
         }
     }
-    let resolves = |operand: &str, consumer: &str| {
-        let (member, own_entity) = match operand.split_once('.') {
-            Some((_, member)) => (member, false),
-            None => (operand, true),
-        };
-        exporters.get(member).is_some_and(|entities| {
-            let candidates = entities.iter().filter(|e| (**e == consumer) == own_entity);
-            candidates.count() == 1
-        })
-    };
+    visited
+}
+
+/// The seeds of a realization dirty cone followed by the cone's own
+/// realization members (the walk never puts its seeds in its result).
+fn realizations_in<'a>(
+    seeds: &'a HashSet<RealizationNodeId>,
+    cone: &'a HashSet<NodeId>,
+) -> impl Iterator<Item = &'a RealizationNodeId> {
+    let reached = cone.iter().filter_map(|node| match node {
+        NodeId::Realization(rid) => Some(rid),
+        _ => None,
+    });
+    seeds.iter().chain(reached)
+}
+
+/// The realizations owning a `GeomRef::Sub` operand that the reverse
+/// dependency index cannot resolve, and so never links to its producer: an
+/// operand that does not have exactly one [candidate](SubOperandCandidates).
+/// `the_dropped_operand_rule_agrees_with_the_reverse_index` pins this to the
+/// index itself.
+fn sub_consumers_the_reverse_index_drops(graph: &EvaluationGraph) -> HashSet<RealizationNodeId> {
+    let candidates = SubOperandCandidates::of(graph);
     graph
         .realizations
         .iter()
         .filter(|(rid, node)| {
-            node.operations
-                .iter()
-                .flat_map(crate::engine_build::sub_refs_in_op)
-                .any(|operand| !resolves(operand, &rid.entity))
+            sub_operands(node).any(|operand| candidates.named_by(operand, &rid.entity).count() != 1)
         })
         .map(|(rid, _)| rid.clone())
         .collect()
+}
+
+fn sub_operands(node: &RealizationNodeData) -> impl Iterator<Item = &str> {
+    node.operations
+        .iter()
+        .flat_map(crate::engine_build::sub_refs_in_op)
+}
+
+/// Every realization a `GeomRef::Sub` operand may name: the reverse index's
+/// resolution rule (`deps::resolve_geom_sub_edge`) without its uniqueness
+/// requirement. Operands resolve by geometry member name alone. A dotted
+/// `"<sub>.<member>"` operand may name any realization of ANOTHER entity
+/// exporting `<member>`; a bare sibling operand, any realization of the
+/// consumer's OWN entity exporting it. The index links an operand exactly when
+/// it has one candidate.
+struct SubOperandCandidates<'g> {
+    exporters: HashMap<&'g str, Vec<&'g RealizationNodeId>>,
+}
+
+impl<'g> SubOperandCandidates<'g> {
+    fn of(graph: &'g EvaluationGraph) -> Self {
+        let mut exporters: HashMap<&str, Vec<&RealizationNodeId>> = HashMap::new();
+        for (rid, node) in graph.realizations.iter() {
+            if let Some(cell) = &node.geometry_cell {
+                exporters.entry(cell.member.as_str()).or_default().push(rid);
+            }
+        }
+        Self { exporters }
+    }
+
+    fn named_by<'a>(
+        &'a self,
+        operand: &'a str,
+        consumer_entity: &'a str,
+    ) -> impl Iterator<Item = &'g RealizationNodeId> + 'a {
+        let (member, own_entity) = match operand.split_once('.') {
+            Some((_, member)) => (member, false),
+            None => (operand, true),
+        };
+        self.exporters
+            .get(member)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |rid| (rid.entity == consumer_entity) == own_entity)
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +493,177 @@ mod tests {
             rids(&[("C", 0), ("F", 0), ("G", 2), ("H", 1)]),
             "ambiguous, missing, ambiguous-sibling and own-entity dotted operands"
         );
+    }
+
+    /// Runs the gate verdict over `graph` with its own reverse index.
+    fn verdict_over(
+        graph: &EvaluationGraph,
+        demanded: &HashSet<RealizationNodeId>,
+        moved: &HashSet<RealizationNodeId>,
+    ) -> super::HashGateVerdict {
+        let index = crate::deps::ReverseDependencyIndex::build_from_graph(graph);
+        super::hash_gate_verdict(demanded, moved, &index, graph)
+    }
+
+    /// A sibling `GeomRef::Sub` consumer's own fold never moves with its producer's.
+    #[test]
+    fn a_sibling_sub_consumer_of_a_moved_producer_is_not_exempt() {
+        let graph = graph_of(&[
+            ("E", 0, "base", a_box()),
+            ("E", 1, "top", translate_of("base")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("X", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 0)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0)]));
+        assert_eq!(verdict.evict_entities, entities(&["E"]));
+        assert!(verdict.unstamp.is_empty(), "{:?}", verdict.unstamp);
+    }
+
+    /// A re-running consumer resolves its `Sub` operand only from this pass's steps.
+    #[test]
+    fn an_unchanged_sub_producer_of_a_moved_consumer_is_not_exempt() {
+        let graph = graph_of(&[
+            ("E", 0, "b", a_box()),
+            ("E", 1, "f", translate_of("b")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("X", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 1)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0)]));
+        assert_eq!(verdict.evict_entities, entities(&["E"]));
+    }
+
+    /// The #6449 shape: `union(a, b)` re-runs through `a` and so needs `b` too.
+    #[test]
+    fn both_producers_of_a_stale_boolean_consumer_run() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "b", a_box()),
+            ("E", 2, "u", union_of("a", "b")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("E", 2)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 0)]));
+
+        assert!(verdict.exempt.is_empty(), "{:?}", verdict.exempt);
+    }
+
+    #[test]
+    fn the_producer_closure_is_transitive() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "m", translate_of("a")),
+            ("E", 2, "t", translate_of("m")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("E", 2), ("X", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 2)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0)]));
+    }
+
+    #[test]
+    fn a_sibling_sub_two_cycle_terminates() {
+        let graph = graph_of(&[
+            ("E", 0, "p", translate_of("q")),
+            ("E", 1, "q", translate_of("p")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 0)]));
+
+        assert!(verdict.exempt.is_empty(), "{:?}", verdict.exempt);
+    }
+
+    /// A hidden stale consumer is not run, so its stamp must not outlive this pass.
+    #[test]
+    fn a_stale_hidden_consumer_is_unstamped_and_forces_no_producer() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "x", a_box()),
+            ("E", 2, "u", union_of("a", "x")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 1)]));
+
+        assert_eq!(verdict.unstamp, rids(&[("E", 2)]));
+        assert_eq!(verdict.exempt, rids(&[("E", 0)]));
+        assert!(verdict.exempt.is_subset(&demanded));
+    }
+
+    #[test]
+    fn a_cross_entity_sub_consumer_names_its_own_family() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("C", 0, "moved", translate_of("a.body")),
+        ]);
+        let demanded = rids(&[("A", 0), ("C", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("A", 0)]));
+
+        assert_eq!(verdict.evict_entities, entities(&["A", "C"]));
+        assert!(verdict.exempt.is_empty(), "{:?}", verdict.exempt);
+    }
+
+    /// The no-edit reuse branch: nothing moved, every demanded body is exempt.
+    #[test]
+    fn nothing_moved_exempts_every_demanded_realization() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "b", a_box()),
+            ("E", 2, "u", union_of("a", "b")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("E", 2)]);
+
+        let verdict = verdict_over(&graph, &demanded, &HashSet::new());
+
+        assert_eq!(verdict.exempt, demanded);
+        assert!(
+            verdict.evict_entities.is_empty(),
+            "{:?}",
+            verdict.evict_entities
+        );
+        assert!(verdict.unstamp.is_empty(), "{:?}", verdict.unstamp);
+    }
+
+    /// `A` and `B` both export `body`, so the index drops `C`'s `a.body` edge.
+    fn a_dropped_operand_consumer_graph() -> EvaluationGraph {
+        graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("B", 0, "body", a_box()),
+            ("C", 0, "moved", translate_of("a.body")),
+            ("X", 0, "shell", a_box()),
+            ("Y", 0, "other", a_box()),
+        ])
+    }
+
+    /// A dropped-operand consumer is seeded stale by any edit, so it re-runs and
+    /// needs every realization its operand may name.
+    #[test]
+    fn an_unrelated_edit_runs_the_possible_producers_of_a_dropped_operand_consumer() {
+        let graph = a_dropped_operand_consumer_graph();
+        let demanded = rids(&[("A", 0), ("B", 0), ("C", 0), ("X", 0), ("Y", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("X", 0)]));
+
+        assert_eq!(verdict.exempt, rids(&[("Y", 0)]));
+    }
+
+    #[test]
+    fn a_dropped_operand_consumer_edit_runs_its_possible_producers() {
+        let graph = a_dropped_operand_consumer_graph();
+        let demanded = rids(&[("A", 0), ("B", 0), ("C", 0), ("X", 0), ("Y", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("C", 0)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0), ("Y", 0)]));
     }
 
     #[test]
