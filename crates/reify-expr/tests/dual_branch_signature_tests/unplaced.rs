@@ -90,7 +90,9 @@ fn a_kink_inside_a_seed_independent_index_access_is_recorded_as_one_unplaced_ent
 
 #[test]
 fn every_delegating_call_site_records_an_unplaced_entry_for_a_kink_it_encloses() {
-    // The catch-all arm is the IndexAccess test above; these are the other two.
+    // The catch-all arm, the IndexAccess, has a test of its own for each case.
+    // These are the other two sites, each run with the delegated node constant
+    // in every seed and then moving with one.
 
     // The `UnOp::Not` arm.
     let negated = not(gt(vref("c"), literal(Value::Real(5.0))));
@@ -105,11 +107,20 @@ fn every_delegating_call_site_records_an_unplaced_entry_for_a_kink_it_encloses()
         BranchChoice::OutcomeHash(Value::Bool(false).content_hash()),
         "`not` over a comparison",
     );
+    let (_, t, rec) = run(&negated, &cells, &["c"]);
+    assert!(t.is_none(), "a seeded `not` refuses a tangent");
+    assert_single_entry(
+        &rec,
+        &[],
+        KinkKind::Unplaced,
+        BranchChoice::Unresolved,
+        "seeded `not` over a comparison",
+    );
 
     // The intercepted-family gate: `unwrap_or` never runs a `.ri` body, so the
     // whole call is delegated before its arguments are descended.
     let some_conditional = CompiledExpr::option_some(
-        conditional_expr(vref("p"), literal(Value::Real(1.0)), literal(Value::Real(2.0))),
+        conditional_expr(vref("p"), vref("c"), literal(Value::Real(2.0))),
         Type::Option(Box::new(dimensionless())),
     );
     let recovered = binop(
@@ -121,7 +132,11 @@ fn every_delegating_call_site_records_an_unplaced_entry_for_a_kink_it_encloses()
             dimensionless(),
         ),
     );
-    let cells = [("x", Value::Real(2.0)), ("p", Value::Bool(true))];
+    let cells = [
+        ("x", Value::Real(2.0)),
+        ("p", Value::Bool(true)),
+        ("c", Value::Real(1.0)),
+    ];
     let (v, t, rec) = run(&recovered, &cells, &["x"]);
     assert_eq!(v, Value::Real(3.0));
     assert_eq!(row(&t, 1, "unwrap_or"), vec![1.0]);
@@ -131,6 +146,15 @@ fn every_delegating_call_site_records_an_unplaced_entry_for_a_kink_it_encloses()
         KinkKind::Unplaced,
         BranchChoice::OutcomeHash(Value::Real(1.0).content_hash()),
         "`unwrap_or` over a Conditional",
+    );
+    let (_, t, rec) = run(&recovered, &cells, &["x", "c"]);
+    assert!(t.is_none(), "a seeded `unwrap_or` refuses a tangent");
+    assert_single_entry(
+        &rec,
+        &[1],
+        KinkKind::Unplaced,
+        BranchChoice::Unresolved,
+        "seeded `unwrap_or` over a Conditional",
     );
 }
 
