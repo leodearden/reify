@@ -4213,6 +4213,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Watcher session target project is /home/leo/src/reify while watcher-rearm.sh lives under /home/leo/src/dark-factory — the cross-project split is what makes DARK_FACTORY_ROOT non-obvious/undiscoverable from the briefing alone.
+  - date: '2026-10-26'
+    project: reify
+    session: b2739877-4a5d-421b-8844-11882b00b5f2
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Command expanded $DARK_FACTORY_ROOT to empty, so python3 tried /orchestrator/src/orchestrator/session_registry.py (Errno 2) in a cross-project watcher session for /home/leo/src/reify. This matches the missing-DARK_FACTORY_ROOT pattern. The origin phase is not evidenced in the digest.
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -11114,6 +11120,12 @@ entries:
     origin_phase: unknown
     manifested_phase: recon
     note: Session cwd is nested under warm-lanes/worktrees/_lane-10, and the agent repeatedly guessed repo-root-relative paths (crates/reify-compiler/src/types.rs, crates/reify-cli/src/lib.rs) that returned no such file (turns 275, 291, 307).
+  - date: '2026-10-26'
+    project: reify
+    session: b2739877-4a5d-421b-8844-11882b00b5f2
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Path guesses under .worktrees/8363 and reify/crates/reify-audit/src returned not-found repeatedly (turns 35, 117, 121), while the real worktrees were at warm-lanes/worktrees/_lane-29 and reify-adhoc/8363. Partial match: the digest shows path guessing against an unexpected worktree layout, not the same nesting. Moderate confidence.'
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -30742,6 +30754,19 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: When it errors, RealJCodemunchOps::find_references (crates/reify-audit/src/jcodemunch_client.rs) logs a stderr breadcrumb and returns Vec::new().
+- id: cand-20261026-1
+  title: Stale code comment asserts a superseded wiring state, misleading agents who plan changes against it
+  cause: 'A doc/inline comment in invariants.rs still states that the face() named-leaf selector is build-only and not eval-wired, after #5120 R2c made it eval-wired. An agent planning a change reads the comment as authoritative and can reason from a false premise about what the code does.'
+  area: comments-documentation
+  first_seen: '2026-10-26'
+  disposition: pending
+  sightings:
+  - date: '2026-10-26'
+    project: reify
+    session: c75b9505-b78d-43b5-8a82-262cf46a6f1a
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Stale clause-8 comment in reify-eval invariants.rs claims face(b,\"tag\") is build-only, but it has been eval-wired since #5120 R2c'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
