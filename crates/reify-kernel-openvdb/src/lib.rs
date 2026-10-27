@@ -1,7 +1,7 @@
 //! `reify-kernel-openvdb` — OpenVDB voxel-Boolean kernel adapter for the
 //! v0.2 multi-kernel system.
 //!
-//! This crate registers a [`KernelRegistration`] via `inventory::submit!`
+//! This crate registers a [`reify_ir::KernelRegistration`] via `inventory::submit!`
 //! declaring OpenVDB's voxel-Boolean capability surface
 //! (`BooleanUnion/Difference/Intersection × Voxel`). The registration is
 //! read at engine startup by `reify_eval::kernel_registry::registry()` and

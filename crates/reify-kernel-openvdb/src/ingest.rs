@@ -2,7 +2,7 @@
 //!
 //! This module exposes the structural ingestion path that takes an
 //! OpenVDB grid (in-memory `OpenVdbGridSource`) and lowers it to the
-//! internal [`reify_types::SampledField`] representation already used by
+//! internal [`reify_ir::SampledField`] representation already used by
 //! `field def F { source = sampled { … } }`. The compiler/eval wiring
 //! (`field def … source = imported { … }`) is wired in task 5.
 //!
@@ -192,7 +192,7 @@ pub enum IngestError {
         /// `spacing[axis]` that produced the collapse.
         spacing: f64,
     },
-    /// An axis interval count exceeds [`reify_types::sampled::LINSPACE_MAX_INTERVALS`].
+    /// An axis interval count exceeds [`reify_ir::sampled::LINSPACE_MAX_INTERVALS`].
     ///
     /// A legitimately-finite but enormous combination such as
     /// `bounds_min=0.0`, `bounds_max=1e308`, `spacing=1.0` would make
@@ -708,7 +708,7 @@ pub fn read_vdb_file(
 ///
 /// # Library initialisation
 ///
-/// Calls [`crate::init::ensure_initialized`] before any FFI access so callers
+/// Calls `crate::init::ensure_initialized` before any FFI access so callers
 /// that invoke `read_vdb_file` directly — without first instantiating an
 /// `OpenVdbKernel` — still register the built-in grid types in OpenVDB's
 /// I/O dispatch table. Without this, `gridPtrCast<FloatGrid>` returns null
