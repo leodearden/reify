@@ -135,9 +135,9 @@ pub async fn lsp_request_on_worker(
 ///
 /// The key is LSP PROTOCOL semantics — does this method mutate server-side
 /// document or session state? — not `reify-lsp`'s choice of which arms carry
-/// blocking work. Those four arms compute on the thread that drives them, so
-/// routing them off the lanes would hand their deep work back to a ~2 MiB
-/// thread; the pool bounds their occupancy instead.
+/// blocking work. Every query arm carries some and computes it on the thread
+/// that drives it, so routing one off the lanes would hand its deep work back
+/// to a ~2 MiB thread; the pool bounds their occupancy instead.
 ///
 /// The arm lists the CONCURRENCY-SAFE set and defaults everything else,
 /// including every unrecognised method, to the ordered lane. The opposite
