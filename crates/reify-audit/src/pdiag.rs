@@ -582,7 +582,7 @@ fn probe_segment(
 
 /// Byte offset of the first statement terminator in `line` at or after `from`,
 /// skipping any `;` that sits inside a string or char literal
-/// ([`comment_lex::char_literal_len`] reads the latter).
+/// ([`comment_lex::literal_len`] measures both).
 ///
 /// Literal awareness is load-bearing rather than fastidious: a `;` inside a
 /// diagnostic MESSAGE arms [`probe_segment`]'s bound one statement early, which
@@ -607,20 +607,15 @@ fn probe_segment(
 /// the literal does.
 fn statement_end(line: &str, from: usize) -> Option<usize> {
     let bytes = line.as_bytes();
-    let mut in_string = false;
     let mut i = from;
     while i < bytes.len() {
-        if !in_string && let Some(len) = comment_lex::char_literal_len(bytes, i) {
+        if let Some(len) = comment_lex::literal_len(bytes, i) {
             i += len;
-            continue;
+        } else if bytes[i] == b';' {
+            return Some(i);
+        } else {
+            i += 1;
         }
-        match bytes[i] {
-            b'\\' if in_string => i += 1,
-            b'"' => in_string = !in_string,
-            b';' if !in_string => return Some(i),
-            _ => {}
-        }
-        i += 1;
     }
     None
 }

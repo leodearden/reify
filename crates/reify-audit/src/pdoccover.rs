@@ -236,7 +236,7 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
-use crate::comment_lex::{BlockDepth, char_literal_len, lex_line};
+use crate::comment_lex::{BlockDepth, lex_line, literal_len};
 use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, parse_baseline};
 use crate::ratchet_ledger::{Ledger, committed_rows};
 use crate::scan_util::{
@@ -359,36 +359,20 @@ fn is_cfg_test_attr(code: &str) -> bool {
 ///
 /// Used ONLY for brace counting: a `{` inside `"unknown unit: {}"` must not
 /// move the module-nesting depth that decides what is inside `#[cfg(test)]`
-/// scope. Char literals are the shapes [`char_literal_len`] recognises, which
-/// keeps a lifetime from swallowing every brace to the end of the line.
+/// scope. The literals are the shapes [`literal_len`] measures, which keeps a
+/// lifetime from swallowing every brace to the end of the line.
 fn blank_literals(code: &str) -> String {
     let bytes = code.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if let Some(len) = char_literal_len(bytes, i) {
-            out.resize(out.len() + len, b' ');
-            i += len;
-            continue;
-        }
-        match bytes[i] {
-            b'"' => {
-                out.push(b' ');
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    out.push(b' ');
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    out.push(b' ');
-                    i += 1;
-                }
+        match literal_len(bytes, i) {
+            Some(len) => {
+                out.resize(out.len() + len, b' ');
+                i += len;
             }
-            b => {
-                out.push(b);
+            None => {
+                out.push(bytes[i]);
                 i += 1;
             }
         }

@@ -1,7 +1,9 @@
 //! Classify a source line's bytes as code or comment, carrying nested
 //! `/* */` depth across lines; Rust and Reify `.ri` share the syntax. PDIAG
 //! consumes only the depth, because its comment mask is line-granular;
-//! PDOCCOVER consumes the code spans, to strip comments out of a line.
+//! PDOCCOVER consumes the code spans, to strip comments out of a line. The
+//! lexer's rule for where a literal ends, `literal_len`, is exported too,
+//! for scanners that skip literals without classifying comments.
 
 use std::ops::Range;
 
@@ -21,15 +23,15 @@ impl BlockDepth {
 /// lexing from `entry`, and return the depth the line exits at.
 ///
 /// Inside a block comment `/*` nests and `*/` closes, and quotes are inert.
-/// Outside one, string and char literals ([`char_literal_len`]) are opaque
-/// code, `//` ends the line's code, and a stray `*/` is code. Every range ends
-/// at an ASCII delimiter or the line end, so it always slices `line` on char
+/// Outside one, string and char literals ([`literal_len`]) are opaque code,
+/// `//` ends the line's code, and a stray `*/` is code. Every range ends at an
+/// ASCII delimiter or the line end, so it always slices `line` on char
 /// boundaries.
 ///
-/// Only depth carries across lines; string state restarts at every line, so a
-/// literal this lexer cannot see whole (one spanning a line break, or a raw
-/// string holding `"`) desyncs the rest of its own line at most. A closed
-/// entry with no `/` in the line is all code, reported without a byte walk.
+/// Only depth carries across lines, so a literal this lexer cannot see whole
+/// (one spanning a line break, or a raw string holding `"`) desyncs the rest
+/// of its own line at most. A closed entry with no `/` in the line is all
+/// code, reported without a byte walk.
 pub(crate) fn lex_line(
     line: &str,
     entry: BlockDepth,
@@ -48,7 +50,6 @@ pub(crate) fn lex_line(
     let mut depth = entry.0;
     // Where the current run of code began; meaningful only while depth is 0.
     let mut code_start = 0;
-    let mut in_str = false;
     let mut i = 0;
     while i < bytes.len() {
         let rest = &bytes[i..];
@@ -63,16 +64,7 @@ pub(crate) fn lex_line(
             } else {
                 1
             }
-        } else if in_str {
-            match rest[0] {
-                b'\\' => 2,
-                b'"' => {
-                    in_str = false;
-                    1
-                }
-                _ => 1,
-            }
-        } else if let Some(len) = char_literal_len(bytes, i) {
+        } else if let Some(len) = literal_len(bytes, i) {
             len
         } else if rest.starts_with(b"//") {
             emit(code_start..i);
@@ -82,9 +74,6 @@ pub(crate) fn lex_line(
             depth = 1;
             2
         } else {
-            if rest[0] == b'"' {
-                in_str = true;
-            }
             1
         };
         i += step;
@@ -95,13 +84,39 @@ pub(crate) fn lex_line(
     BlockDepth(depth)
 }
 
+/// Byte length of the string or char literal starting at `bytes[at]`, or
+/// `None` when no literal starts there. Every scanner that must see past a
+/// literal skips it by this length, so all of them agree on where it ends.
+pub(crate) fn literal_len(bytes: &[u8], at: usize) -> Option<usize> {
+    char_literal_len(bytes, at).or_else(|| string_literal_len(bytes, at))
+}
+
+/// Byte length of the double-quoted string starting at `bytes[at]`, closing
+/// quote included; a backslash escapes the byte after it. A string the line
+/// does not close runs to the line end, so string state never carries across
+/// lines.
+fn string_literal_len(bytes: &[u8], at: usize) -> Option<usize> {
+    if bytes.get(at) != Some(&b'"') {
+        return None;
+    }
+    let mut i = at + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i + 1 - at),
+            _ => i += 1,
+        }
+    }
+    Some(bytes.len() - at)
+}
+
 /// Byte length of the char literal starting at `bytes[at]`: 3 for `'x'`, 4 for
 /// `'\x'`, and `None` for anything else.
 ///
 /// Only those two exact shapes are recognised, so a lifetime (`&'static str`)
 /// is never mistaken for an unterminated literal, which would swallow the
 /// rest of the line.
-pub(crate) fn char_literal_len(bytes: &[u8], at: usize) -> Option<usize> {
+fn char_literal_len(bytes: &[u8], at: usize) -> Option<usize> {
     if bytes.get(at) != Some(&b'\'') {
         return None;
     }
@@ -276,5 +291,34 @@ mod tests {
         assert_eq!(char_literal_len(b"q = 'x';", 4), Some(3));
         assert_eq!(char_literal_len(b"'a str", 0), None, "a lifetime");
         assert_eq!(char_literal_len(b"x'y'", 0), None, "no quote at `at`");
+    }
+
+    #[test]
+    fn literal_len_measures_a_whole_string_or_char_literal() {
+        assert_eq!(literal_len(b"\"ab\" x", 0), Some(4));
+        assert_eq!(literal_len(b"x = \"a;b\";", 4), Some(5));
+        assert_eq!(
+            literal_len(b"\"a\\\"b\" x", 0),
+            Some(6),
+            "an escaped quote stays inside"
+        );
+        assert_eq!(
+            literal_len(b"\"a\\\\\" x", 0),
+            Some(5),
+            "an escaped backslash does not escape the close"
+        );
+        assert_eq!(
+            literal_len(b"\"open", 0),
+            Some(5),
+            "an unclosed string runs to the line end"
+        );
+        assert_eq!(
+            literal_len(b"\"open\\", 0),
+            Some(6),
+            "a trailing backslash cannot overrun the line"
+        );
+        assert_eq!(literal_len(b"'\"'", 0), Some(3), "a char literal");
+        assert_eq!(literal_len(b"'a str", 0), None, "a lifetime");
+        assert_eq!(literal_len(b"x\"y\"", 0), None, "no literal at `at`");
     }
 }
