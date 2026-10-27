@@ -75,8 +75,11 @@
 //! slot wrongly gated with `length_spec()` therefore fires, and so does a new
 //! angle gate no row registers.
 //!
-//! A SECOND universe (PRD 5's `plane_*` / `axis_*` / `point3`, `prb_*`, joints
-//! and solver readers) joins by adding a second `probe_universe`-shaped source.
+//! A SECOND universe joins as a second `probe_universe`-shaped source, DERIVED
+//! from every reify-stdlib `eval_builtin` match arm (PRD 5,
+//! `docs/prds/v0_6/dimension-checked-readers.md` decision 10): `plane_*` /
+//! `axis_*`, the construction-datum constructors and `prb_*` are examples of
+//! its members, not its bound.
 //!
 //! # C7 drift-guard registrations — answered here, not deferred
 //!
@@ -1051,8 +1054,8 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
 
 /// Length-semantic sites OUTSIDE this guard's universe, recorded so a green
 /// sweep is never read as covering them.
-// TODO(#5810): PRD 5's second universe of reify-stdlib `eval_builtin` names.
-// TODO(#7484): the five construction-datum constructors, in neither universe.
+// TODO(#5810): PRD 5's second universe of reify-stdlib `eval_builtin` names,
+// the construction-datum constructors among them.
 // TODO(#8001): the topology selectors' dimensioned arguments, read by the
 // kernel-free selector builder rather than the op compiler.
 const OUT_OF_UNIVERSE: &[(&str, TaskCite, &str)] = &[
@@ -1064,10 +1067,13 @@ const OUT_OF_UNIVERSE: &[(&str, TaskCite, &str)] = &[
          GEOMETRY_FUNCTION_NAMES; PRD 5 adds them as a SECOND universe",
     ),
     (
-        "midplane / axis_through / plane_through / offset(arity 2) / frame_at",
-        TaskCite(7484),
-        "the five construction-datum constructors are in NEITHER this universe \
-         nor C5's named second universe",
+        "the rest of reify_compiler's DATUM_CONSTRUCTOR_NAMES (its plane_*/axis_* \
+         are the row above): midplane / axis_through / plane_through / \
+         offset(arity 2) / frame_at / bbox / bbox_size / bbox_center",
+        TaskCite(5810),
+        "absent from GEOMETRY_FUNCTION_NAMES; why, and how PRD 5's second \
+         universe covers them instead: dimension-checked-readers.md, Leg E's \
+         2026-10-11 amendment and row B11",
     ),
     (
         "the directional topology selectors' ANGLE `tol` (faces_by_normal, \
