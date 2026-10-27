@@ -68,8 +68,8 @@ use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     ForceDensityInputError, ForceDensitySpec, FormDefect, FormFindError, FormFindSolve,
-    FreeFormError, GroupSpecDefect, MemberKind, SpectrumError, form_find_anchored_surfaces,
-    form_find_free, form_find_free_surfaces,
+    FreeFormError, GroupSpecDefect, MemberKind, RealInput, SpectrumError,
+    form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
 };
 use std::borrow::Cow;
 
@@ -328,37 +328,92 @@ fn build_result(solve: &FormFindSolve) -> Value {
 const INDEX_OUT_OF_RANGE: &str = "index out of range — a member endpoint, anchor or \
      surface corner indexes past the node list";
 
+/// The cause shared by [`describe`] and [`describe_free`] for an anisotropic
+/// surface whose warp direction fixes no frame — unreachable on these isotropic
+/// trampolines.
+const DEGENERATE_MATERIAL_FRAME: &str = "degenerate material frame — a surface's warp \
+     direction is zero or non-finite, so it fixes no warp/weft axes";
+
+/// The cause shared by [`describe`] and [`describe_free`] for a NaN or
+/// infinite input value, naming where it was read.
+fn describe_non_finite(what: RealInput, index: usize) -> String {
+    match what {
+        RealInput::NodeCoordinate => format!(
+            "non-finite node coordinate — nodes[{index}] has a NaN or infinite coordinate; \
+             every node needs finite coordinates"
+        ),
+    }
+}
+
+/// The cause shared by [`describe`] and [`describe_free`] for a `GroupRatios`
+/// spec that cannot seed the search — reachable only on the free-standing path.
+fn describe_group_spec(defect: GroupSpecDefect) -> &'static str {
+    match defect {
+        GroupSpecDefect::GroupIdsNotPerMember => {
+            "dimension mismatch — group_ids length does not match the member count \
+             (struts + cables)"
+        }
+        GroupSpecDefect::UnseededGroup { .. } => {
+            "dimension mismatch — a group_ids entry names a group past the end of \
+             seed_ratios; every group id needs a seed ratio"
+        }
+        GroupSpecDefect::UnseededReferenceGroup => {
+            "dimension mismatch — reference_group names a group past the end of seed_ratios"
+        }
+        GroupSpecDefect::ZeroSeed { .. } => {
+            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
+             strut groups < 0), so it cannot be zero"
+        }
+    }
+}
+
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
-fn describe(e: FormFindError) -> &'static str {
+fn describe(e: FormFindError) -> Cow<'static, str> {
     match e {
         FormFindError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — every cable requires q > 0 (tension) and every strut requires q < 0 (compression)"
+                .into()
         }
         FormFindError::SingularReducedStiffness => {
             "singular reduced stiffness — the free-node system is rank-deficient \
              (a free node with no member path to an anchor, or a disconnected component)"
+                .into()
         }
         FormFindError::EmptyFreeSet => {
-            "every node is anchored — there is no free node to solve for"
+            "every node is anchored — there is no free node to solve for".into()
         }
         FormFindError::Input(ForceDensityInputError::DimensionMismatch) => {
-            "force_densities length does not match the member count (struts + cables)"
+            "force_densities length does not match the member count (struts + cables)".into()
         }
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
+        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
+            INDEX_OUT_OF_RANGE.into()
+        }
         FormFindError::DegenerateTriangle
         | FormFindError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
+                .into()
         }
         FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+                .into()
         }
         FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
+                .into()
+        }
+        FormFindError::Input(ForceDensityInputError::NonFinite { what, index }) => {
+            describe_non_finite(what, index).into()
+        }
+        FormFindError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
+            DEGENERATE_MATERIAL_FRAME.into()
+        }
+        FormFindError::Input(ForceDensityInputError::MalformedGroupSpec(defect)) => {
+            describe_group_spec(defect).into()
         }
     }
 }
@@ -543,23 +598,8 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
         FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
             "dimension mismatch — the members and their kinds disagree in length".into()
         }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::GroupIdsNotPerMember) => {
-            "dimension mismatch — group_ids length does not match the member count \
-             (struts + cables)"
-                .into()
-        }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededGroup { .. }) => {
-            "dimension mismatch — a group_ids entry names a group past the end of \
-             seed_ratios; every group id needs a seed ratio"
-                .into()
-        }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup) => {
-            "dimension mismatch — reference_group names a group past the end of seed_ratios".into()
-        }
-        FreeFormError::MalformedGroupSpec(GroupSpecDefect::ZeroSeed { .. }) => {
-            "zero seed ratio — a group's seed ratio fixes its sense (cable groups > 0, \
-             strut groups < 0), so it cannot be zero"
-                .into()
+        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(defect)) => {
+            describe_group_spec(defect).into()
         }
         FreeFormError::SearchDidNotConverge {
             defect: Some(defect),
@@ -612,6 +652,12 @@ fn describe_free(e: FreeFormError) -> Cow<'static, str> {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
                 .into()
+        }
+        FreeFormError::Input(ForceDensityInputError::NonFinite { what, index }) => {
+            describe_non_finite(what, index).into()
+        }
+        FreeFormError::Input(ForceDensityInputError::DegenerateMaterialFrame { .. }) => {
+            DEGENERATE_MATERIAL_FRAME.into()
         }
     }
 }

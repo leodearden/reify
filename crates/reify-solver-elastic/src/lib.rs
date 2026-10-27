@@ -533,6 +533,8 @@ pub mod qoi;
 // Task 9273 (solver-crates-layering φ-ff): the dense force-density matrix and
 // its spectrum, below form_find, form_find_free and prestress_stability.
 pub(crate) mod fd_matrix;
+// Task 9271 (solver-crates-layering η₂): the validated GroupRatios spec, below form_find.
+pub(crate) mod group_spec;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
@@ -841,8 +843,9 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // the one input vocabulary, nested as `Input(..)` in every form-find error enum.
 pub use form_find::{
     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, ForceDensityInputError,
-    FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, form_find_anchored,
-    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
+    FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, RealInput,
+    SurfaceStressDefect, form_find_anchored, form_find_anchored_surfaces,
+    form_find_anchored_surfaces_aniso,
 };
 // Task 9273 (solver-crates-layering φ-ff): why a force-density or Gram matrix has
 // no dense spectrum, nested as `Spectrum(..)` in FreeFormError and StabilityError.
@@ -852,9 +855,12 @@ pub use fd_matrix::SpectrumError;
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
 // wiring in this task, per plan.json design_decisions).
 pub use form_find_free::{
-    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, GroupSpecDefect, form_find_free,
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, form_find_free,
     form_find_free_surfaces,
 };
+// Task 9271 (solver-crates-layering η₂): why a GroupRatios spec cannot seed the
+// search, nested as `Input(MalformedGroupSpec(..))` in FreeFormError.
+pub use group_spec::GroupSpecDefect;
 // Task 3796: Tensegrity T2 — self-stress & prestress-stability analysis kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md §5 / Tier-2 leaf T2. Equilibrium-
 // matrix null-space (self-stress states + internal mechanisms) + force-density
