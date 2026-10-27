@@ -277,13 +277,18 @@ fn a_sub_consumer_hidden_across_a_producer_edit_re_realizes_when_shown() {
         has_mesh(&result, &f),
         "hidden across a producer edit: f must surface a mesh when shown: {shown:?}"
     );
+    assert_eq!(
+        errors(&result),
+        Vec::<String>::new(),
+        "hidden across a producer edit: {shown:?}"
+    );
 }
 
 #[test]
 fn an_unrelated_edit_leaves_an_ambiguous_cross_sub_consumer_resolvable() {
     let compiled = compile_source(AMBIGUOUS_SUB.src);
     let mut engine = warm_engine(&compiled, &AMBIGUOUS_SUB);
-    let c = rid(&compiled, ASSY_C);
+    let (placed, c) = (rid(&compiled, ASSY_PLACED), rid(&compiled, ASSY_C));
 
     edit(&mut engine, "Assy", "k", 10.0);
     let result = tessellate(&mut engine, &compiled);
@@ -292,6 +297,14 @@ fn an_unrelated_edit_leaves_an_ambiguous_cross_sub_consumer_resolvable() {
     assert!(
         tally(&engine, &c) > 0,
         "premise: the edited c re-runs: {seen:?}"
+    );
+    assert!(
+        tally(&engine, &placed) > 0,
+        "unrelated edit: placed, whose operand the reverse index drops, must re-realize: {seen:?}"
+    );
+    assert!(
+        has_mesh(&result, &placed),
+        "unrelated edit: placed must surface a mesh: {seen:?}"
     );
     assert_eq!(
         errors(&result),
