@@ -31,7 +31,7 @@ use reify_ir::{OpaqueState, Value};
 // definition, in `reify_test_support::tensegrity_fixtures`. The two fixtures
 // below are not the triplex, but they are that same structure shape.
 use reify_test_support::tensegrity_fixtures::tensegrity;
-use reify_test_support::{make_simple_engine, meters, point3};
+use reify_test_support::{make_simple_engine, meters, point3, read_real_or_scalar};
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
 
@@ -95,20 +95,11 @@ fn call_tensegrity_load(value_inputs: &[Value]) -> ComputeOutcome {
     )
 }
 
-/// Extract an f64 from a Scalar (any dimension) or a bare Real.
-fn coord(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real component, got {other:?}"),
-    }
-}
-
 /// Crack a 3-component displacement `Value::Vector` into `[f64; 3]`.
 fn vec3(v: &Value) -> [f64; 3] {
     match v {
         Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            [coord(&c[0]), coord(&c[1]), coord(&c[2])]
+            [0, 1, 2].map(|k| read_real_or_scalar(&c[k], &format!("vec3[{k}]")))
         }
         other => panic!("expected a 3-component Vector, got {other:?}"),
     }
@@ -196,10 +187,10 @@ fn trampoline_no_slack_transverse_load_solves() {
     };
     assert_eq!(member_forces.len(), 2, "expected 2 member forces");
     for (i, f) in member_forces.iter().enumerate() {
+        let force = read_real_or_scalar(f, &format!("member_forces[{i}]"));
         assert!(
-            (coord(f) - n0).abs() < 1e-9,
-            "member_forces[{i}] = {} expected ≈ N0 = {n0}",
-            coord(f),
+            (force - n0).abs() < 1e-9,
+            "member_forces[{i}] = {force} expected ≈ N0 = {n0}",
         );
     }
 
@@ -210,10 +201,10 @@ fn trampoline_no_slack_transverse_load_solves() {
     };
     assert_eq!(deltas.len(), 2, "expected 2 member-force deltas");
     for (i, d) in deltas.iter().enumerate() {
+        let delta = read_real_or_scalar(d, &format!("member_force_deltas[{i}]"));
         assert!(
-            coord(d).abs() < 1e-9,
-            "member_force_deltas[{i}] = {} expected ≈ 0",
-            coord(d),
+            delta.abs() < 1e-9,
+            "member_force_deltas[{i}] = {delta} expected ≈ 0",
         );
     }
 
@@ -332,16 +323,16 @@ fn trampoline_slackening_axial_load_flags_slack() {
         Some(Value::List(fs)) => fs,
         other => panic!("member_forces must be a List, got {other:?}"),
     };
+    let slack_force = read_real_or_scalar(&member_forces[1], "member_forces[1]");
     assert!(
-        coord(&member_forces[1]).abs() < 1e-6,
-        "slack cable (1,2) must report zero force, got {}",
-        coord(&member_forces[1]),
+        slack_force.abs() < 1e-6,
+        "slack cable (1,2) must report zero force, got {slack_force}",
     );
+    let taut_force = read_real_or_scalar(&member_forces[0], "member_forces[0]");
     assert!(
-        (coord(&member_forces[0]) - (n0 + p)).abs() < 1e-6,
-        "taut cable (0,1) must carry N0 + P = {}, got {}",
+        (taut_force - (n0 + p)).abs() < 1e-6,
+        "taut cable (0,1) must carry N0 + P = {}, got {taut_force}",
         n0 + p,
-        coord(&member_forces[0]),
     );
 
     // Reduced single-cable deflection u_x[1] = P·L/(E·A), NOT P·L/(2EA).
