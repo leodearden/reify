@@ -15,7 +15,7 @@
 
 use reify_compiler::is_known_builtin;
 
-use crate::chunk_io::chunk_label;
+use crate::chunk_io::{all_chunks, chunk_label, report};
 use crate::module_compile::{ModuleCompile, compile_module};
 use crate::written_calls::{CallSource, WrittenCall, chunk_written_calls};
 
@@ -195,5 +195,43 @@ fn a_user_fn_named_like_a_builtin_replaces_the_builtin_module_wide() {
          compiler stopped letting a user fn replace a builtin, so the gate's premise must be \
          revisited (#8897's W_UserFnShadowsBuiltin warning still chooses the user fn, so the \
          error stands under it)"
+    );
+}
+
+/// The exact number of `fn` declaration heads the live chunks write in
+/// copyable fences — the anti-vacuity floor on the scan. Re-measured by the
+/// protocol stated once beside `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
+const MINIMUM_FENCED_FN_DECLARATIONS: usize = 11;
+
+/// The number of `fn` declaration heads written in copyable fences across the
+/// readable chunks of `chunks` (`(stem, markdown)`).
+fn fenced_declaration_count(chunks: &[(&str, &str)]) -> usize {
+    chunks
+        .iter()
+        .filter_map(|(_, markdown)| chunk_written_calls(markdown).ok())
+        .flatten()
+        .filter(is_fenced_declaration)
+        .count()
+}
+
+/// THE GATE over the live corpus.
+#[test]
+fn no_chunk_fence_declares_a_fn_named_like_a_builtin() {
+    let chunks = all_chunks("the builtin-shadowing gate");
+    let chunks: Vec<(&str, &str)> = chunks
+        .iter()
+        .map(|(stem, markdown)| (stem.as_str(), markdown.as_str()))
+        .collect();
+    let declarations = fenced_declaration_count(&chunks);
+    assert!(
+        declarations >= MINIMUM_FENCED_FN_DECLARATIONS,
+        "the chunk fences declare only {declarations} fn(s), floor \
+         {MINIMUM_FENCED_FN_DECLARATIONS} — the builtin-shadowing gate would be vacuous"
+    );
+
+    report(
+        "chunk fences that declare a `fn` under a builtin's name, which a reader who copies \
+         them silently loses",
+        &builtin_shadowing_violations(&chunks),
     );
 }
