@@ -2754,4 +2754,42 @@ mod tests {
             "descent step must leave geometry unchanged when the objective is already 0.0",
         );
     }
+
+    // ── χ-ff (task 9274): the combined fixed point's units ────────────────────
+
+    #[test]
+    fn combined_iterate_judges_its_own_geometry_as_its_own_residual() {
+        let (members, kinds) = triplex_topology();
+        let nodes = perturbed_prism_guess();
+        let surfaces = prism_surfaces();
+        let sigmas = vec![0.2; 2];
+        let q = closed_form_combined_q(0.2);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = ForceDensityProblem::new(
+            &nodes,
+            &members,
+            &kinds,
+            free_spec(&spec, members.len()).expect("an explicit spec is well-formed"),
+            &[],
+            &surfaces,
+            &sigmas,
+        )
+        .expect("the perturbed prism satisfies the input contract");
+        let surface_mat = assemble_surface_matrix(6, &surfaces, &sigmas, &nodes)
+            .expect("the perturbed prism triangles are non-degenerate");
+
+        let iterate = CombinedIterate::new(&problem, q.clone(), nodes.clone(), surface_mat.clone());
+
+        assert_eq!(
+            iterate.residual_at(&problem, &nodes, &surface_mat),
+            iterate.residual
+        );
+        assert_eq!(
+            iterate.residual,
+            all_node_equilibrium_residual_relative(
+                &combined_force_density_matrix(&members, &q, &surface_mat),
+                &nodes,
+            )
+        );
+    }
 }

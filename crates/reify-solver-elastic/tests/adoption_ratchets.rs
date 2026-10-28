@@ -232,6 +232,22 @@ const RATCHETS: &[Ratchet] = &[
             )
         }),
     },
+    // A textual proxy: it counts by-reference `Mat + &Mat` sums, while the one
+    // line-plus-surface sum, `combined_force_density_matrix`'s, is by value.
+    Ratchet {
+        name: "hand-summed-combined-d",
+        home: "combined_force_density_matrix in form_find_free.rs (solver-crates-layering gap-fill χ-ff)",
+        baseline: 0,
+        measure: Measure::Occurrences(Pattern::production(
+            " + &",
+            &[
+                "src/form_find_free.rs",
+                "src/form_find.rs",
+                "src/prestress_stability.rs",
+            ],
+            "let d = &d_line + &surface_mat;",
+        )),
+    },
 ];
 
 #[test]
