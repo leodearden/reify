@@ -78,7 +78,7 @@ impl Interval {
         if n == 0 {
             return enclosure(1.0, 1.0);
         }
-        if n % 2 == 0 {
+        if n.is_multiple_of(2) {
             let magnitude = self.abs();
             return enclosure(
                 power_dir(magnitude.lo, n, Dir::Down),
@@ -137,7 +137,7 @@ impl Interval {
         if n == 0 {
             return z.contains(1.0).then_some(x);
         }
-        if n % 2 == 0 {
+        if n.is_multiple_of(2) {
             let magnitude = z.intersect(Interval::non_negative())?;
             let roots = enclosure(
                 root_dir(magnitude.lo, n, Dir::Down),

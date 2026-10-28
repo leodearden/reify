@@ -437,7 +437,7 @@ impl<C: OperandClassifier> TreeBuilder<'_, C> {
         let value = self.classifier.evaluate(exponent)?;
         let in_range =
             value.fract() == 0.0 && (0.0..=f64::from(MAX_INTEGER_EXPONENT)).contains(&value);
-        in_range.then(|| value as u32)
+        in_range.then_some(value as u32)
     }
 
     /// The stdlib builtins recognised by `(name, arity)`, the keys reify-expr's
