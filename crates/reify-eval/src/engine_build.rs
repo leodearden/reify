@@ -32,6 +32,7 @@ use crate::primitive_attribute_seed::{
     seed_primitive_attributes_for_handle,
 };
 use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
+use crate::sub_instance_scope::{ScopedArgs, scoped_arg_values};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
 };
@@ -698,8 +699,9 @@ struct CellHydrationInputs<'a> {
 ///   regression test.
 ///
 /// No entries are produced for collection subs (compile-side blocks those),
-/// or for subs whose child template isn't yet in `module_named_steps`
-/// (forward-declared / recursive; fall through to the runtime error path).
+/// for subs whose child template isn't yet in `module_named_steps`
+/// (forward-declared / recursive; fall through to the runtime error path),
+/// or for a guarded sub whose guard eval declined.
 ///
 /// On the override path, kernel errors / compile errors for a realization's
 /// ops append a `Diagnostic::error` to `diagnostics` (mirroring
@@ -782,6 +784,13 @@ fn seed_cross_sub_named_steps(
                 None => continue,
             };
 
+            //    A guard-declined sub has no instance, so nothing to re-realize.
+            let ScopedArgs::Elaborated(scoped_args) =
+                scoped_arg_values(&template.name, sub, values)
+            else {
+                continue;
+            };
+
             // 2. Obtain the default kernel.  The entry-point guards in
             //    `build` / `build_snapshot` / `tessellate_from_values` all
             //    verify `kernels.contains_key(default_kernel_name)` before
@@ -794,41 +803,31 @@ fn seed_cross_sub_named_steps(
 
             // 3. Build per-instance overlay: clone the global `values` map
             //    and overwrite `ValueCellId(child_template.name, param_name)`
-            //    with the scoped override value already computed by
-            //    `unfold.rs::elaborate_child_instance` and stored at
-            //    `ValueCellId("<parent>.<sub_name>", param_name)`.
+            //    with the instance's scoped value, as read by
+            //    `sub_instance_scope::scoped_arg_values`.
             //
-            //    Invariant: for every `(param_name, _)` in `sub.args`, a
-            //    scoped cell `ValueCellId("<parent>.<sub>", param_name)` MUST
-            //    exist in `values` — `elaborate_child_params_only` in
-            //    `crates/reify-eval/src/unfold.rs:292-358` populates it
-            //    unconditionally (override present → override value; absent →
-            //    default value from child template).  A missing key means the
-            //    eval phase failed to populate that cell before `build` was
-            //    called, which would be a bug in the eval pipeline.
+            //    Invariant: an elaborated instance has every arg's scoped
+            //    cell — `unfold.rs::elaborate_child_params_only` commits every
+            //    param (override present → override value; absent → child
+            //    default).  A `None` means the eval phase failed to seed that
+            //    cell before `build`.  The debug_assert catches that in test
+            //    builds; in release the fallback keeps child-template defaults.
             let mut values_override = values.clone();
             let args_fingerprint = format!("{:?}", sub.args);
-            for (param_name, _) in &sub.args {
-                let scoped_key = ValueCellId::new(
-                    format!("{}.{}", template.name, sub.name),
-                    param_name.as_str(),
-                );
-                // `elaborate_child_params_only` guarantees this key exists.
-                // The debug_assert catches regressions in test builds; in
-                // release the silent fallback keeps child-template defaults.
+            for (param_name, scoped_value) in scoped_args {
                 debug_assert!(
-                    values.contains(&scoped_key),
-                    "expected scoped override cell {:?} in values map (populated by \
-                     unfold.rs::elaborate_child_params_only for sub {}.{} param {}); \
-                     missing cell means eval phase failed to seed this param before build",
-                    scoped_key,
+                    scoped_value.is_some(),
+                    "expected scoped override cell {:?} in values map for the elaborated \
+                     instance of sub {}.{} param {} (elaborate_child_params_only commits \
+                     every param); missing cell means eval phase failed to seed this \
+                     param before build",
+                    ValueCellId::new(format!("{}.{}", template.name, sub.name), param_name),
                     template.name,
                     sub.name,
                     param_name,
                 );
-                if let Some(val) = values.get(&scoped_key) {
-                    let child_key =
-                        ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+                if let Some(val) = scoped_value {
+                    let child_key = ValueCellId::new(child_template.name.as_str(), param_name);
                     values_override.insert(child_key, val.clone());
                 }
             }
@@ -1153,7 +1152,8 @@ fn seed_cross_let_named_steps(
 /// is deferred.
 ///
 /// Returns `None` for realizations that fail (compile or kernel error) or
-/// produce no geometry.  On success, the terminal `KernelHandle` is tagged
+/// produce no geometry, and for every realization of a guarded sub whose
+/// guard eval declined.  On success, the terminal `KernelHandle` is tagged
 /// with the default kernel's `KernelId` via `kernel_id_for_registry_name`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn realize_sub_override_handles(
@@ -1179,21 +1179,21 @@ pub(crate) fn realize_sub_override_handles(
 
     let n = child_template.realizations.len();
 
+    let ScopedArgs::Elaborated(scoped_args) = scoped_arg_values(parent_name, sub, values) else {
+        return vec![None; n];
+    };
+
     let kernel = match geometry_kernels.get_mut(default_kernel_name) {
         Some(k) => k.as_mut(),
         None => return vec![None; n],
     };
 
-    // Build per-instance value overlay: clone the global map and overlay
-    // `ValueCellId(parent.sub, param)` → `ValueCellId(child, param)` for
-    // each constructor arg.  `elaborate_child_instance` guarantees the
-    // scoped cells exist; a missing key keeps the child's existing default.
+    // Per-instance value overlay: each arg's scoped value goes onto
+    // `ValueCellId(child, param)`; a missing cell keeps the child's default.
     let mut values_override = values.clone();
-    for (param_name, _) in &sub.args {
-        let scoped_key =
-            ValueCellId::new(format!("{}.{}", parent_name, sub.name), param_name.as_str());
-        if let Some(val) = values.get(&scoped_key) {
-            let child_key = ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+    for (param_name, scoped_value) in scoped_args {
+        if let Some(val) = scoped_value {
+            let child_key = ValueCellId::new(child_template.name.as_str(), param_name);
             values_override.insert(child_key, val.clone());
         }
     }
