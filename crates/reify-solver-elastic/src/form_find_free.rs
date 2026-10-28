@@ -275,8 +275,8 @@ pub fn form_find_free_surfaces(
     spec: &ForceDensitySpec,
 ) -> Result<FreeFormResult, FreeFormError> {
     // The input contract, a degenerate INPUT triangle included, is checked
-    // against the caller's own geometry — before the bootstrap below rewrites
-    // `current` into a (non-degenerate) line-only equilibrium.
+    // against the caller's own geometry — before the combined fixed point's
+    // bootstrap moves it to a (non-degenerate) line-only equilibrium.
     let problem = ForceDensityProblem::new(
         nodes_guess,
         members,
@@ -294,190 +294,99 @@ pub fn form_find_free_surfaces(
         return Ok(result);
     }
 
-    // Non-empty: combined cotangent fixed-point loop.
-    // Mirrors γ's form_find_anchored_surfaces loop shape (PRD §4 D3).
-    let n = nodes_guess.len();
+    certify_combined_stop(&problem, combined_fixed_point(&problem)?)
+}
 
-    // Bootstrap: start the fixed-point loop from the line-only equilibrium rather
-    // than the raw perturbed guess.  Starting from the perturbed guess breaks the
-    // 3-fold symmetry of the cotangent surface matrix, causing the combined D to
-    // have nullity 2 instead of 4 — an unrecoverable state for the outer loop.
-    // The line-only form-find converges to the canonical (symmetric, equilateral)
-    // prism geometry, where the surface matrix has 3-fold symmetry and the combined
-    // D can reach nullity 4.  Falls back to nodes_guess if the line-only solve
-    // fails (e.g. infeasible Explicit q that has no line-only equilibrium).
-    let boot = form_find_line_only(&problem);
-    let mut current = boot
-        .as_ref()
-        .map(|r| r.nodes.clone())
-        .unwrap_or_else(|_| nodes_guess.to_vec());
+/// Where the combined fixed point stopped.
+enum CombinedStop {
+    /// An iterate met the stop test.
+    Equilibrium(CombinedIterate),
+    /// The budget or the stall guard ended the loop: the densities of the
+    /// last iteration whose relax step was kept, with the geometry it moved to.
+    ShortOfEquilibrium { q: Vec<f64>, nodes: Vec<[f64; 3]> },
+}
 
-    let mut q_source = QSource::new(&problem, boot.as_ref().ok());
-
-    let mut converged = false;
-    let mut last_result: Option<FreeFormResult> = None;
-    // Adaptive step size for the geometry-descent relaxation, carried across outer
-    // iterations (grows on accepted steps, shrinks on backtracks).
-    let mut geo_step = 1e-2_f64;
-    // Stall detection: break early when geometry is stuck AND residual is not
-    // improving, rather than spinning the full MAX_FREE_SURFACE_ITERS budget
-    // doing expensive eigendecompositions on an already-stalled search.
+/// The combined cotangent fixed point: at each iterate assemble the surface
+/// term, take the densities there and stop at equilibrium, else relax the
+/// geometry, until the budget or the stall guard ends it.
+///
+/// It starts from the line-only equilibrium rather than the caller's guess: a
+/// perturbed guess breaks the 3-fold symmetry of the surface term, leaving the
+/// combined `D` at nullity 2, while the line-only form is the symmetric prism,
+/// where the combined `D` can reach nullity 4. When the line-only solve fails
+/// (e.g. an Explicit `q` with no line-only equilibrium) it starts from the
+/// guess.
+fn combined_fixed_point(problem: &ForceDensityProblem<'_>) -> Result<CombinedStop, FreeFormError> {
+    const RELAXED_FIRST: &str = "a kept relax step precedes every short exit";
+    let boot = form_find_line_only(problem).ok();
+    let mut q_source = QSource::new(problem, boot.as_ref());
+    let mut current = boot.map_or_else(|| problem.nodes().to_vec(), |boot| boot.nodes);
+    let mut relax = RelaxStep::new();
     let mut stall = StallGuard::new();
+    let mut relaxed_q = None;
 
-    for _iter in 0..MAX_FREE_SURFACE_ITERS {
-        // Assemble Σ_T σ_T·L_T at the current geometry.
-        let surface_mat = assemble_surface_matrix(n, surfaces, surface_stresses, &current)?;
-
-        // (1) Force densities at the current geometry.
-        let q = q_source.densities_at(&problem, &current, &surface_mat)?;
-
-        // (2) Combined equilibrium residual at the current geometry — the
-        // free-standing fixed point's stop test.
-        let iterate = CombinedIterate::new(&problem, q, current.clone(), surface_mat);
-
-        if iterate.is_equilibrium() {
-            converged = true;
-            last_result = Some(combined_result_at(members, &iterate.q, &current));
-            break;
-        }
-
-        // Snapshot the geometry entering this iteration.  Both the (2b) trial-move
-        // guard below and the stall guard at the end of this loop body need the
-        // PRE-(2b) geometry as their baseline — distinct from `current`, which (2b)
-        // may go on to overwrite.
-        let before_relax = current.clone();
-
-        // (2b) Null-space geometry recovery — the Explicit branch's missing half.
-        // `combined_geometry_descent_step` below minimises the eigen-gap objective, which
-        // drives D_combined toward NULLITY 4; it does NOT drive the coordinate vector x INTO
-        // null(D_combined). Those are different conditions, and the residual we test above is
-        // the latter. The GroupRatios branch has a second lever Explicit lacks — it re-searches
-        // q on the combined D at this geometry each iteration; its own projected geometry is
-        // discarded at (1), only the densities are kept. With q FIXED here the only remaining
-        // lever is x, so project it onto the 4 smallest-|λ| eigenvectors of D_combined at the
-        // current geometry — the free-standing analogue of the anchored kernel's per-iteration
-        // `solve_reduced` move.
-        //
-        // Applied as a TRIAL move, not unconditionally: an intermediate projection iterate is
-        // not guaranteed to land on a well-posed geometry (its null-space basis can fail to be
-        // 3-D, or it can push a membrane triangle toward zero area) and is not guaranteed to
-        // improve the residual. Accept the projected geometry only if it (a) recovers
-        // coordinates AND re-assembles a surface matrix at the result without error, and (b)
-        // does not increase the combined equilibrium residual; otherwise keep `before_relax` and
-        // fall through to the descent step in (3).
-        //
-        // (a) is load-bearing by construction: the `if let ... && let ...` chain below means a
-        // `SingularRecovery` / `DegenerateTriangle` raised by this internal relaxation step is
-        // absorbed as a no-op rather than propagated to the caller via `?` — swapping the chain
-        // for `?` would let an intermediate-iterate error surface in place of the contractual
-        // `SearchDidNotConverge`.
-        // (b) (the `trial_resid <= iterate.residual` check just below) is defensive rather than measured
-        // load-bearing on this fixture: forcing it to accept unconditionally (`if true`) and
-        // probing 10 infeasible σ/q/guess combinations plus the full crate suite (759 lib + 5
-        // integration tests) left every result unchanged — every rejected trial in those cases
-        // still resolved to `SearchDidNotConverge` once the rejection was skipped, so no test
-        // today would catch this check being deleted. Kept because accepting a
-        // residual-regressing trial changes the iterate (3)'s descent runs from, which could
-        // destabilise a case not covered by this fixture even though none tried here do.
-        if q_source.admits_projection_trial()
-            && let Ok(trial_nodes) =
-                form_find_explicit_combined_relaxed(&problem, &current, &iterate.surface_mat)
-            && let Ok(trial_surface_mat) =
-                assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
-        {
-            let trial_resid = iterate.residual_at(&problem, &trial_nodes, &trial_surface_mat);
-            if trial_resid <= iterate.residual {
-                current = trial_nodes;
-            }
-        }
-
-        // (3) Relax the geometry one descent step on the eigenvalue-gap objective at
-        // fixed q. When (2b) accepted its trial move above, this is the SECOND half of
-        // a two-part relaxation (project into null₄(D_combined), then one eigen-gap
-        // descent step); when (2b) was rejected or a no-op, this is the only move made
-        // this iteration. Both halves are required and neither suffices alone:
-        // MEASURED on σ=0.05/perturbed×1 that projection alone plateaus at a
-        // non-equilibrium fixed point of the projection map (residual settles at
-        // ~2.66e-5), while descent alone ((2b) absent) never leaves the starting
-        // residual (~2.84) because it drives D toward nullity 4 without ever moving x
-        // into null(D). Projection-then-descent drops the residual 5 orders of
-        // magnitude in one combined iteration and then grinds the rest.  The line-only
-        // D is rank-deficient by 4 for a whole affine family of geometries (the
-        // bootstrap is a slightly-non-symmetric member); only at the symmetric
-        // realisation does the geometry-dependent membrane term let the combined D
-        // reach nullity 4.  The force-density search alone cannot get there (a force
-        // group shares one magnitude across its members, so it cannot cancel the
-        // per-edge cotangent asymmetry) — the geometry must move.  This is the
-        // free-standing analogue of γ's anchored `solve_reduced` relaxation, with the
-        // rigid/scale gauge left free.
-        let (next, next_step) = combined_geometry_descent_step(
-            n,
-            members,
-            &iterate.q,
-            surfaces,
-            surface_stresses,
+    for _ in 0..MAX_FREE_SURFACE_ITERS {
+        let surface_mat = assemble_surface_matrix(
+            current.len(),
+            problem.surfaces(),
+            problem.surface_stresses(),
             &current,
-            geo_step,
-        );
-        geo_step = next_step;
-
-        // Stall guard: if NEITHER half of this iteration's relaxation moved the
-        // geometry — the (2b) trial move was rejected or a no-op, AND the (3) descent
-        // step found no downhill move within its backtracking budget, so `next` equals
-        // the geometry this iteration STARTED with (`before_relax`) — AND the residual
-        // is not shrinking appreciably, increment a stuck counter and break early to
-        // avoid spending O(MAX_ITERS · n · EVD(n)) doing expensive but fruitless work.
-        // Comparing against `before_relax` rather than the post-(2b) `current` matters
-        // logically: an ACCEPTED (2b) move followed by a stalled (3) must NOT count as
-        // stuck (the geometry did move this iteration, via (2b)) — only a rejected/no-op
-        // (2b) followed by a stalled (3) may. This is defensive rather than
-        // measured-load-bearing on this fixture: reverting this comparison to the
-        // pre-amendment `next == current` and re-running the full crate suite (759 lib +
-        // 5 integration tests) left every result unchanged, so no test here currently
-        // depends on the distinction. Kept because an under-counted stall guard would risk
-        // exiting a genuinely-progressing search early on some case not covered by this
-        // fixture, trading a real (if untested) correctness risk for one line of clarity.
-        if stall.stalled_after(&before_relax, &next, iterate.residual) {
-            break;
+        )?;
+        let q = q_source.densities_at(problem, &current, &surface_mat)?;
+        let iterate = CombinedIterate::new(problem, q, current, surface_mat);
+        if iterate.is_equilibrium() {
+            return Ok(CombinedStop::Equilibrium(iterate));
         }
-
+        let next = relax.relax(problem, &iterate, q_source.admits_projection_trial());
+        if stall.stalled_after(&iterate.nodes, &next, iterate.residual) {
+            return Ok(CombinedStop::ShortOfEquilibrium {
+                q: relaxed_q.expect(RELAXED_FIRST),
+                nodes: iterate.nodes,
+            });
+        }
+        relaxed_q = Some(iterate.q);
         current = next;
-        last_result = Some(combined_result_at(members, &iterate.q, &current));
     }
+    Ok(CombinedStop::ShortOfEquilibrium {
+        q: relaxed_q.expect(RELAXED_FIRST),
+        nodes: current,
+    })
+}
 
-    // Certify the final iterate whether or not the loop converged, so a model
-    // that is not one connected nullity-4 form names its defect even when its
-    // residual never settled (an isolated node's zero row keeps it unsettled).
-    let mut result = last_result.expect("every loop exit follows a stored iterate");
-    let surface_mat_final = assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
-    let certified = FreeStandingForm::certify(&combined_force_density_matrix(
-        members,
-        &result.force_densities,
-        &surface_mat_final,
-    ));
-
-    // Non-convergence: match the line-only `form_find_free` contract — return
-    // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
-    // Returning `Ok` with `converged=false` would create an asymmetry where
-    // downstream consumers that only inspect the result value (not `.converged`)
-    // silently treat a failed combined solve as a valid equilibrium.
-    if !converged {
-        return Err(match certified {
-            Ok(_) => FreeFormError::SearchDidNotConverge { defect: None },
-            Err(FreeFormError::NotAForm(defect)) => FreeFormError::SearchDidNotConverge {
-                defect: Some(defect),
-            },
-            Err(other) => other,
-        });
+/// The result `stop` certifies to. At equilibrium the iterate's own `D` must
+/// certify as a form. Short of equilibrium it is always an error, and
+/// [`FreeFormError::SearchDidNotConverge`] names the stopped pair's
+/// [`FormDefect`] when its `D` is not a form, so a model that is not one
+/// connected nullity-4 form names its defect even when its residual never
+/// settled (an isolated node's zero row keeps it unsettled). It is never `Ok`
+/// with `converged = false`, which a consumer reading only the value would
+/// take for an equilibrium.
+fn certify_combined_stop(
+    problem: &ForceDensityProblem<'_>,
+    stop: CombinedStop,
+) -> Result<FreeFormResult, FreeFormError> {
+    match stop {
+        CombinedStop::Equilibrium(iterate) => {
+            let nullity = iterate.certify()?.nullity();
+            Ok(iterate.into_result(problem, nullity))
+        }
+        CombinedStop::ShortOfEquilibrium { q, nodes } => {
+            let surface_mat = assemble_surface_matrix(
+                nodes.len(),
+                problem.surfaces(),
+                problem.surface_stresses(),
+                &nodes,
+            )?;
+            let d = combined_force_density_matrix(problem.members(), &q, &surface_mat);
+            Err(match FreeStandingForm::certify(&d) {
+                Ok(_) => FreeFormError::SearchDidNotConverge { defect: None },
+                Err(FreeFormError::NotAForm(defect)) => FreeFormError::SearchDidNotConverge {
+                    defect: Some(defect),
+                },
+                Err(other) => other,
+            })
+        }
     }
-    // Converged: the equilibrium was reached, so a `D` that fails certification
-    // is not a form, whatever spec produced it.
-    let form = certified?;
-
-    result.converged = true;
-    result.nullity = form.nullity();
-    result.surface_stresses = surface_stresses.to_vec();
-    Ok(result)
 }
 
 /// Equilibrium-residual convergence tolerance for the free-standing cotangent
@@ -502,6 +411,9 @@ const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
 /// before the outer fixed-point exits early (avoids burning the full
 /// `MAX_FREE_SURFACE_ITERS` budget on an intractable configuration).
 const GEO_STALL_ITERS: usize = 5;
+
+// Why `combined_fixed_point`'s short exits always follow a kept relax step.
+const _: () = assert!(GEO_STALL_ITERS > 1 && MAX_FREE_SURFACE_ITERS > 0);
 
 /// Trips once [`GEO_STALL_ITERS`] consecutive iterations each left the
 /// geometry where it ENTERED the iteration and shrank the residual by less
@@ -720,6 +632,85 @@ fn refresh_group_magnitudes(group_mag: &mut [f64], groups: &GroupSpec, q: &[f64]
     }
 }
 
+/// The geometry move of one outer iteration at the iterate's fixed `q`: an
+/// optional [`projection_trial`], then one descent step on the eigenvalue-gap
+/// objective from wherever the trial left the geometry. Projection moves `x`
+/// into null₄(D); descent drives `D` toward nullity 4 without moving `x` into
+/// null(D); the fixed point needs `x ∈ null(D(x))`. The densities alone cannot
+/// get there: only the symmetric realisation lets the geometry-dependent
+/// membrane term bring the combined `D` to nullity 4, and a force group shares
+/// one magnitude across its members, so it cannot cancel the per-edge
+/// cotangent asymmetry. The geometry must move.
+struct RelaxStep {
+    descent_step: f64,
+}
+
+impl RelaxStep {
+    const INITIAL_DESCENT_STEP: f64 = 1e-2;
+
+    fn new() -> Self {
+        RelaxStep {
+            descent_step: Self::INITIAL_DESCENT_STEP,
+        }
+    }
+
+    /// The geometry leaving the iteration. The descent step adapts (grows on
+    /// an accepted step, shrinks on backtracks) and carries to the next call.
+    fn relax(
+        &mut self,
+        problem: &ForceDensityProblem<'_>,
+        iterate: &CombinedIterate,
+        try_projection: bool,
+    ) -> Vec<[f64; 3]> {
+        let projected = if try_projection {
+            projection_trial(problem, iterate)
+        } else {
+            None
+        };
+        let start = projected.as_deref().unwrap_or(iterate.nodes.as_slice());
+        let (next, step) = combined_geometry_descent_step(
+            iterate.nodes.len(),
+            problem.members(),
+            &iterate.q,
+            problem.surfaces(),
+            problem.surface_stresses(),
+            start,
+            self.descent_step,
+        );
+        self.descent_step = step;
+        next
+    }
+}
+
+/// The iterate projected onto the [`FREE_FORM_NULLITY`] smallest-|λ|
+/// eigenvectors of its `D`, kept only if it recovers a 3-D geometry whose
+/// surface term assembles and whose residual at the iterate's `q` does not
+/// exceed the iterate's own. A failed trial is `None`, never an error: an
+/// intermediate iterate's [`FreeFormError::SingularRecovery`] or
+/// [`FreeFormError::DegenerateTriangle`] must not replace the contractual
+/// [`FreeFormError::SearchDidNotConverge`]. The residual guard keeps a
+/// regressing trial from becoming the descent's start.
+fn projection_trial(
+    problem: &ForceDensityProblem<'_>,
+    iterate: &CombinedIterate,
+) -> Option<Vec<[f64; 3]>> {
+    let trial = form_find_explicit_combined_relaxed(
+        problem.members(),
+        &iterate.q,
+        &iterate.nodes,
+        &iterate.surface_mat,
+    )
+    .ok()?;
+    let trial_surface_mat = assemble_surface_matrix(
+        trial.len(),
+        problem.surfaces(),
+        problem.surface_stresses(),
+        &trial,
+    )
+    .ok()?;
+    (iterate.residual_at(problem, &trial, &trial_surface_mat) <= iterate.residual).then_some(trial)
+}
+
 /// Combined-D geometry recovery, returning the recovered nodes: it **forces
 /// nullity = 4** — the 4 smallest-|λ| eigenvectors are taken as the approximate
 /// null space regardless of whether their eigenvalues are truly near zero. At
@@ -730,14 +721,15 @@ fn refresh_group_magnitudes(group_mag: &mut [f64], groups: &GroupSpec, q: &[f64]
 /// (`‖D_combined(x)·x‖`) is the stop test, and certifying its final iterate is
 /// the validity gate.
 ///
-/// `nodes_guess` is the current iterate, which gauge-fixes the recovery; the
-/// densities are `problem`'s.
+/// `q` are the iterate's densities and `nodes_guess` its geometry, which
+/// gauge-fixes the recovery.
 fn form_find_explicit_combined_relaxed(
-    problem: &ForceDensityProblem<'_>,
+    members: &[(usize, usize)],
+    q: &[f64],
     nodes_guess: &[[f64; 3]],
     surface_mat: &Mat<f64>,
 ) -> Result<Vec<[f64; 3]>, FreeFormError> {
-    let d = combined_force_density_matrix(problem.members(), problem.q(), surface_mat);
+    let d = combined_force_density_matrix(members, q, surface_mat);
     let spectrum = SymmetricSpectrum::of(&d)?;
     recover_coordinates(
         nodes_guess,
@@ -863,7 +855,8 @@ fn form_find_group_ratios_combined(
     // The outer loop moves the geometry itself, so the recovered nodes are not
     // returned; a found `q` whose forced-nullity recovery cannot span 3-D is
     // still this search's error.
-    form_find_explicit_combined_relaxed(&problem.with_densities(&q)?, nodes_guess, surface_mat)?;
+    let checked = problem.with_densities(&q)?;
+    form_find_explicit_combined_relaxed(checked.members(), checked.q(), nodes_guess, surface_mat)?;
     Ok(q)
 }
 
@@ -985,27 +978,6 @@ fn combined_geometry_descent_step(
         step *= STEP_SHRINK;
     }
     (current.to_vec(), step)
-}
-
-/// Assemble a [`FreeFormResult`] at a fixed geometry + force-density vector:
-/// per-member axial force `Nᵢ = qᵢ·Lᵢ` on `geom`, carrying `q` through as the
-/// reported densities. `nullity` / `converged` / `surface_stresses` are filled by
-/// the caller (the combined outer loop's tail takes the nullity from the final
-/// iterate's certificate and sets the echo on convergence).
-fn combined_result_at(
-    members: &[(usize, usize)],
-    q: &[f64],
-    geom: &[[f64; 3]],
-) -> FreeFormResult {
-    let member_forces = member_axial_forces(members, q, geom);
-    FreeFormResult {
-        nodes: geom.to_vec(),
-        member_forces,
-        force_densities: q.to_vec(),
-        nullity: 0,
-        converged: false,
-        surface_stresses: Vec::new(),
-    }
 }
 
 /// Explicit-mode pipeline: certify the form, recover the gauge-fixed
@@ -2825,7 +2797,7 @@ mod tests {
         let x = canonical_prism();
         let q = closed_form_q();
         const SIGMA: f64 = 0.2;
-        const STEP_IN: f64 = 1e-2; // matches the outer loop's initial geo_step
+        const STEP_IN: f64 = 1e-2; // matches RelaxStep::INITIAL_DESCENT_STEP
 
         let step_at = |lambda: f64| -> (Vec<[f64; 3]>, f64) {
             let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
