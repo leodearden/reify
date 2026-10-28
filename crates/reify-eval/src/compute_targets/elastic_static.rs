@@ -200,7 +200,7 @@ use reify_ir::{
     SampledGridKind, StructureInstanceData, StructureTypeId, Value, VolumeMesh,
 };
 
-use crate::persistent_cache::{AposterioriEstimate, ElasticResult, ShellChannels};
+use reify_compute_contract::{AposterioriEstimate, ElasticResult, ShellChannels};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AnisotropicMaterial, AssemblyElement, BudgetReason,
     CgIterationControl, CgSolverOptions, CgWarmState, ConstantField, ConvergenceStatus,
@@ -2657,7 +2657,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ),
         ("converged".to_string(), Value::Bool(er.converged)),
         ("iterations".to_string(), Value::Int(er.iterations as i64)),
-        // warm_started is NOT stored in persistent_cache::ElasticResult (by design — it is
+        // warm_started is NOT stored in reify_compute_contract::ElasticResult (by design — it is
         // ephemeral metadata about the prior solve's warm-start decision, not part of the
         // result content). When reconstructing from cache, emit Bool(false): the cache
         // consumer has no warm-state to donate, so the distinction is moot. This preserves
@@ -2694,7 +2694,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
 /// an adaptive loop — tet and shell one-shot. Cache reconstruction
 /// (`value_from_elastic_result`) merges this same trivial triple ONLY when
 /// `ElasticResult::aposteriori` is `None`; when adaptive refinement did run,
-/// `persistent_cache::ElasticResult::aposteriori` carries the real
+/// `reify_compute_contract::ElasticResult::aposteriori` carries the real
 /// `AposterioriEstimate` (task #4942) and `value_from_elastic_result`
 /// reconstructs the real triple from it instead. Either way the field set
 /// stays consistent across paths and round-trips hash-identically.
@@ -10542,7 +10542,7 @@ mod tests {
     /// input's until step-4 threads the three fields through both directions.
     #[test]
     fn elastic_result_value_bridge_adaptive_path_round_trips_hash_identically() {
-        use crate::persistent_cache::PersistentlyCacheable;
+        use reify_core::persistent_cache::PersistentlyCacheable;
         use reify_ir::sampled::linspace_inclusive;
 
         // Shared Regular3D grid for every channel: 1 division per axis -> 2

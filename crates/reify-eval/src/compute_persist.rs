@@ -82,7 +82,7 @@ pub(crate) fn persistent_lookup(
     match target {
         "solver::elastic_static" => {
             match crate::persistent_cache::read_entry::<
-                crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
+                crate::persistent_cache::WithDiagnostics<reify_compute_contract::ElasticResult>,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
@@ -217,7 +217,7 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
+                crate::persistent_cache::WithDiagnostics<reify_compute_contract::ElasticResult>,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
@@ -315,8 +315,9 @@ mod tests {
     use crate::engine_compute::{ComputeOutcome, RealizationReadHandle};
     use crate::graph::CancellationHandle;
     use crate::persistent_cache::{
-        ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, entry_bin_path, read_entry,
+        ENGINE_VERSION_HASH, WithDiagnostics, entry_bin_path, read_entry,
     };
+    use reify_compute_contract::ElasticResult;
 
     // ── FEA input helpers (cantilever-style, tet path) ────────────────────────
 
@@ -504,9 +505,9 @@ mod tests {
     /// Layout: 2×2×2 grid (counts=[1,1,1] → 2 nodes per axis → 8 total nodes).
     /// All channel slabs are filled with a distinguishable constant so
     /// serialisation round-trips can be spot-checked if needed.
-    fn minimal_elastic_result(max_vm: f64) -> crate::persistent_cache::ElasticResult {
+    fn minimal_elastic_result(max_vm: f64) -> ElasticResult {
         let total_nodes: usize = 2 * 2 * 2; // (counts[i]+1) per axis product
-        crate::persistent_cache::ElasticResult {
+        ElasticResult {
             displacement: vec![1.0; total_nodes * 3],
             stress: vec![2.0; total_nodes * 9],
             max_von_mises: max_vm,
