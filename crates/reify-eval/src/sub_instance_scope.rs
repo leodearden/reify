@@ -3,7 +3,8 @@
 //! instance entity `"<parent>.<sub>"` that their scoped value cells live
 //! under, and a child template's own `ValueRef`s are rewritten onto it. The
 //! scope is one level deep. Collection subs are excluded because they have
-//! no single scoped entity.
+//! no single scoped entity. A guarded sub has an instance only where eval
+//! admitted it; [`scoped_arg_values`] reads that verdict.
 //!
 //! It also owns the compound key under which a parent's `named_steps` hold
 //! each sub's (or `let`-bound instance's) realization steps: the seeders write
@@ -12,9 +13,9 @@
 
 use std::collections::HashMap;
 
-use reify_compiler::TopologyTemplate;
+use reify_compiler::{SubComponentDecl, TopologyTemplate};
 use reify_core::ValueCellId;
-use reify_ir::{CompiledExpr, KernelHandle};
+use reify_ir::{CompiledExpr, KernelHandle, Value, ValueMap};
 
 /// The parent `named_steps` key for step `member` of the sub (or `let`
 /// binding) `binding`. It matches the name the compiler gives
@@ -25,6 +26,53 @@ pub(crate) fn scoped_step_key(binding: &str, member: &str) -> String {
 
 fn scoped_step_key_prefix(binding: &str) -> String {
     format!("{binding}.")
+}
+
+/// Whether eval elaborated a sub's `"<parent>.<sub>"` instance, and if so
+/// that instance's value for each constructor arg.
+///
+/// Eval elaborates a guarded sub only where it admits it: never on a
+/// non-recursive template (`engine_eval.rs`), and otherwise only when
+/// `unfold::unfold_recursive_sub` finds the guard true.
+#[derive(Debug)]
+pub(crate) enum ScopedArgs<'s, 'v> {
+    /// The sub is guarded and eval declined it, so it has no instance.
+    GuardDeclined,
+    /// Each arg name of the sub, in declaration order, with the instance's
+    /// committed cell for it. A `None` is a cell eval should have committed.
+    Elaborated(Vec<(&'s str, Option<&'v Value>)>),
+}
+
+/// The scoped cell of each of `sub`'s constructor args, as eval committed
+/// them under `"<parent_name>.<sub>"`.
+///
+/// Admitting a guarded sub commits every param cell via
+/// `elaborate_child_params_only`, so "guarded, and none of its arg cells
+/// committed" is the declined record. An unguarded or arg-free sub is always
+/// [`ScopedArgs::Elaborated`].
+pub(crate) fn scoped_arg_values<'s, 'v>(
+    parent_name: &str,
+    sub: &'s SubComponentDecl,
+    values: &'v ValueMap,
+) -> ScopedArgs<'s, 'v> {
+    let scoped_entity = format!("{parent_name}.{}", sub.name);
+    let args: Vec<(&'s str, Option<&'v Value>)> = sub
+        .args
+        .iter()
+        .map(|(arg_name, _)| {
+            let cell = ValueCellId::new(scoped_entity.as_str(), arg_name.as_str());
+            (arg_name.as_str(), values.get(&cell))
+        })
+        .collect();
+
+    let declined = sub.guard_state.is_compiled()
+        && !args.is_empty()
+        && args.iter().all(|(_, value)| value.is_none());
+    if declined {
+        ScopedArgs::GuardDeclined
+    } else {
+        ScopedArgs::Elaborated(args)
+    }
 }
 
 /// One direct, non-collection sub-component of a parent template, paired with
@@ -289,7 +337,9 @@ structure def Tree {
         let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
         let child = tree_sub(&compiled, "child");
 
-        let verdict = scoped_arg_values("Tree", child, &ValueMap::new());
+        let no_cells = ValueMap::new();
+
+        let verdict = scoped_arg_values("Tree", child, &no_cells);
 
         assert!(
             matches!(verdict, ScopedArgs::GuardDeclined),
@@ -316,7 +366,9 @@ structure def Tree {
         let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
         let leaf = tree_sub(&compiled, "leaf");
 
-        let ScopedArgs::Elaborated(args) = scoped_arg_values("Tree", leaf, &ValueMap::new()) else {
+        let no_cells = ValueMap::new();
+
+        let ScopedArgs::Elaborated(args) = scoped_arg_values("Tree", leaf, &no_cells) else {
             panic!("an unguarded sub always has an instance, so its missing cells stay visible");
         };
 
