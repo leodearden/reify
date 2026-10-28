@@ -59,8 +59,8 @@ impl InProcessLsp {
     ///
     /// An embedder that already runs [`InProcessLsp::handle_request`] on a
     /// thread it chose (e.g. a large-stack thread) passes
-    /// [`BlockingWorkPlacement::CallingThread`] so the definition /
-    /// prepareRename / rename / references work runs there too.
+    /// [`BlockingWorkPlacement::CallingThread`] so every query handler's
+    /// work runs there too.
     pub fn with_sink_and_placement(
         sink: Arc<dyn NotificationSink>,
         placement: BlockingWorkPlacement,
@@ -729,10 +729,10 @@ structure Bracket {
 
     // --- task 6195: blocking-work placement ---
     //
-    // definition, prepareRename, rename and references run their parse/compile
-    // work per the server's `BlockingWorkPlacement`. A runtime whose blocking
-    // pool is saturated tells the placements apart from outside the server:
-    // CallingThread answers anyway, BlockingPool queues until the pool frees.
+    // Every query handler runs its parse/compile work per the server's
+    // `BlockingWorkPlacement`. A runtime whose blocking pool is saturated
+    // tells the placements apart from outside the server: CallingThread
+    // answers anyway, BlockingPool queues until the pool frees.
 
     use std::time::Duration;
 

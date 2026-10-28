@@ -53,9 +53,10 @@ pub struct AnalysisContext {
     /// without a second `eval` pass — `check` already ran `eval` and populated the
     /// snapshot + `last_undef_causes` side-map (PRD ζ design decision §3).
     ///
-    /// Send-safe: the server's hover handler creates `ctx` after its last `.await`
-    /// and never holds it across a suspend point (server.rs:268-284); Engine is
-    /// composed of `Send+Sync` parts (ConstraintChecker + kernels).
+    /// Send-safe: `ReifyLanguageServer::hover` and `::completion` build and drop
+    /// the context inside their blocking-work closure, so it never crosses a
+    /// suspend point; Engine is composed of `Send+Sync` parts
+    /// (ConstraintChecker + kernels).
     engine: reify_eval::Engine,
 }
 
