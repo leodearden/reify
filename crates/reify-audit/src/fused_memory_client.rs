@@ -720,6 +720,48 @@ mod tests {
     }
 
     #[test]
+    fn wire_adapter_resolves_prd_from_prd_then_prd_path() {
+        let rows = [
+            (
+                "p1",
+                json!({"prd": "docs/prds/a.md"}),
+                Some("docs/prds/a.md"),
+            ),
+            (
+                "p2",
+                json!({"prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            (
+                "p3",
+                json!({"prd": "docs/prds/a.md", "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/a.md"),
+            ),
+            (
+                "p4",
+                json!({"prd": null, "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            (
+                "p5",
+                json!({"prd": 42, "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            ("p6", json!({"prd_path": ["docs/prds/b.md"]}), None),
+            ("p7", json!({}), None),
+        ];
+        for (label, metadata, expected) in rows {
+            let v = json!({"id": label, "status": "pending", "metadata": metadata});
+            let tm = task_metadata_from_wire(&v).unwrap_or_else(|| panic!("row {label} dropped"));
+            assert_eq!(
+                tm.prd.as_deref(),
+                expected,
+                "row {label}: metadata = {metadata}"
+            );
+        }
+    }
+
+    #[test]
     fn wire_adapter_missing_id_returns_none() {
         let v = json!({"title": "no id", "status": "pending"});
         assert!(task_metadata_from_wire(&v).is_none());
