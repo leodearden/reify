@@ -12,7 +12,7 @@ fn full_pipeline_with_mocks() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.eval(&module);
     assert!(!result.values.is_empty());
 }
@@ -24,7 +24,7 @@ fn build_with_mock_kernel() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, reify_ir::ExportFormat::Step);
     assert!(result.geometry_output.is_some());
 }
@@ -50,7 +50,7 @@ fn eval_auto_param_undef_auto() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // x should be Undef in the values map
@@ -106,7 +106,7 @@ fn eval_cached_auto_param() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // First eval_cached: auto param should be (Undef, Auto)
     let result = engine.eval_cached(&module, VersionId(1));
@@ -151,7 +151,7 @@ fn constraint_on_auto_param_indeterminate() {
         .build();
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&module);
 
     // x should be Undef
@@ -199,7 +199,7 @@ fn e2e_parse_compile_eval_auto_param() {
 
     // Evaluate and check
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     // x should be Undef
@@ -255,7 +255,7 @@ fn engine_reports_violations() {
     let module = bracket_compiled_module();
     let checker =
         MockConstraintChecker::new().with_result(cnid("Bracket", 0), Satisfaction::Violated);
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&module);
 
     let violated: Vec<_> = result
@@ -270,7 +270,7 @@ fn engine_reports_violations() {
 #[test]
 fn engine_is_not_initialized_before_eval() {
     let checker = MockConstraintChecker::new();
-    let engine = reify_eval::Engine::new(Box::new(checker), None);
+    let engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     assert!(!engine.is_initialized());
 }
 
@@ -279,7 +279,7 @@ fn engine_is_not_initialized_before_eval() {
 fn engine_is_initialized_after_eval() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
     assert!(engine.is_initialized());
 }
@@ -290,7 +290,7 @@ fn edit_param_before_eval_returns_error() {
     use reify_core::ValueCellId;
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.edit_param(ValueCellId::new("S", "x"), mm(10.0));
     assert!(result.is_err(), "edit_param before eval should return Err");
     let err = result.unwrap_err();
@@ -328,7 +328,7 @@ fn eval_state_available_atomically_after_eval() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
 
     // eval_state should be available
@@ -409,7 +409,7 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Verify let binding values
@@ -459,7 +459,7 @@ fn sub_component_params_appear_in_eval_result() {
 
     let module = parent_child_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Parent.rib.height should be width * 0.5 = 80mm * 0.5 = 40mm = 0.04 SI
@@ -483,7 +483,7 @@ fn sub_component_child_lets_evaluated() {
 
     let module = parent_child_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Parent.rib.half_h should be height / 2 = 40mm / 2 = 20mm = 0.02 SI
@@ -533,7 +533,7 @@ fn sub_component_default_param_when_no_arg() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Parent.rib.height should use Child's default: 10mm = 0.01 SI
@@ -572,7 +572,7 @@ fn sub_component_missing_structure_skipped_gracefully() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Should not panic; Parent's own param should be evaluated correctly
@@ -652,7 +652,7 @@ fn edit_param_second_wave_no_panic_after_solver_resolution() {
         .template(template)
         .build();
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(solver));
 
     // Cold eval: solver returns x=mm(5.0)=0.005 SI, y = 0.005 * 2 = 0.01
@@ -707,7 +707,7 @@ fn engine_eval_stdlib_function_in_let() {
 
     let compiled = reify_compiler::compile(&parsed);
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // diag = sqrt(0.08^2 + 0.1^2) = sqrt(0.0064 + 0.01) = sqrt(0.0164) ≈ 0.128062
@@ -752,7 +752,7 @@ fn engine_eval_with_import() {
 
     // Evaluate — imports should not affect evaluation
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     let x_id = ValueCellId::new("S", "x");
@@ -799,7 +799,7 @@ structure Parent {
 
     // Evaluate
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // (b) Parent values
@@ -907,7 +907,7 @@ fn root_level_cyclic_let_bindings_emit_diagnostic() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // Cyclic bindings should be absent or Undef (Kahn's algorithm omits them).
@@ -966,7 +966,7 @@ fn root_level_non_cyclic_lets_no_false_positive() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // No error diagnostics about circular dependencies.
@@ -1037,7 +1037,7 @@ fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     // Must not panic.
     let result = engine.eval(&module);
 
@@ -1118,7 +1118,7 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
 
     let cache = engine.cache_store();
@@ -1205,7 +1205,7 @@ fn evaluate_let_bindings_cache_preserves_duplicate_reads_for_same_cell() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&module);
 
     let cache = engine.cache_store();

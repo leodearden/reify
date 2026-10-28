@@ -35,9 +35,9 @@ fn occt_box_attributed_volume_preserves_face_attribution() {
     let mut kernel = OcctKernel::new();
     let solid = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(30.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(20.0e-3),
+            size_z: Value::Real(30.0e-3),
         })
         .expect("box creation should succeed");
     let mesh = kernel

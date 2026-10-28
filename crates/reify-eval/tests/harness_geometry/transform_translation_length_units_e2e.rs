@@ -54,6 +54,7 @@ fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<Geomet
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

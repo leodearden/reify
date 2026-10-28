@@ -42,6 +42,7 @@ pub mod screenshot_save;
 pub mod tcp_port;
 pub mod types;
 pub mod watcher;
+pub mod write_confinement;
 
 #[cfg(test)]
 mod tests;

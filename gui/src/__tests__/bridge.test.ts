@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { RawGuiState, EvaluationStatus, MechanismDescriptor, PublishedState, RawPublishedState } from '../types';
+import type { RawGuiState, RawConstraintData, EvaluationStatus, MechanismDescriptor, PublishedState, RawPublishedState } from '../types';
+import { CONSTRAINT_STATUSES } from '../types';
+import { makeRawConstraint } from './constraintFixtures';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -29,6 +31,7 @@ import {
   openFileEngine,
   getEntityTree,
   onMeshUpdate,
+  onConstraintUpdate,
   onEvaluationStatus,
   onSerializationError,
   onTessellationDiagnostics,
@@ -1027,6 +1030,51 @@ describe('onFileRemoved', () => {
     const result = await onFileRemoved(callback);
 
     expect(result).toBe(unlisten);
+  });
+});
+
+describe('onConstraintUpdate', () => {
+  // The handler is captured from the listen() call and invoked directly, as
+  // Tauri would invoke it later, so a throw surfaces from the handler itself
+  // rather than as a rejected subscription.
+  function registeredHandler(): (event: { payload: RawConstraintData }) => void {
+    return mockListen.mock.calls[0][1] as (event: { payload: RawConstraintData }) => void;
+  }
+
+  it('subscribes to the constraint-update channel and returns its UnlistenFn', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const result = await onConstraintUpdate(vi.fn());
+
+    expect(mockListen).toHaveBeenCalledWith('constraint-update', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it.each(CONSTRAINT_STATUSES)('forwards a constraint carrying %j unchanged', async (token) => {
+    mockListen.mockResolvedValue(vi.fn());
+    const callback = vi.fn();
+    await onConstraintUpdate(callback);
+
+    const raw = makeRawConstraint(token);
+    registeredHandler()({ payload: raw });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][0]).toStrictEqual(raw);
+  });
+
+  it('throws on an out-of-contract token by name and never reaches the callback', async () => {
+    mockListen.mockResolvedValue(vi.fn());
+    const callback = vi.fn();
+    await onConstraintUpdate(callback);
+
+    const raw = makeRawConstraint('Satisfied');
+    const deliver = () => registeredHandler()({ payload: raw });
+
+    expect(deliver).toThrow(Error);
+    expect(deliver).toThrow('"Satisfied"');
+    expect(deliver).toThrow(raw.node_id);
+    expect(callback).not.toHaveBeenCalled();
   });
 });
 

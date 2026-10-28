@@ -33,8 +33,12 @@
 //! `task_id` is left empty (`String::new()`): PLAYER is repo-wide, not
 //! task-scoped. Downstream consumers already tolerate empty task_ids (same
 //! convention as PDEAD/PUNTESTED).
+//!
+//! A FAILED `get_layer_violations` query is not a clean ruleset: it replaces
+//! the run's result with one Low [`Pattern::PLayerViolationUnexamined`]
+//! ([`crate::model::corpus_unexamined`]).
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, pattern_flag};
 
 /// Check for import-layer violations across the reify compilation spine.
 ///
@@ -47,9 +51,20 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 ///
 /// [`LayerViolation`]: crate::LayerViolation
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    let violations = match ctx.jcodemunch.get_layer_violations() {
+        Ok(violations) => violations,
+        Err(failure) => {
+            return vec![crate::model::corpus_unexamined(
+                Pattern::PLayerViolationUnexamined,
+                pattern_flag::PLAYER,
+                "layer-violation",
+                &failure,
+            )];
+        }
+    };
     let mut findings = Vec::new();
 
-    for v in ctx.jcodemunch.get_layer_violations() {
+    for v in violations {
         let summary = format!(
             "{} imports {} in violation of layer rule '{}' \
             (advisory; static import-layer analysis, not runtime)",

@@ -184,13 +184,14 @@ assert_exit() {
 #
 # WHAT IS AND IS NOT PROTECTED. assert_source_closure_copied below is a real
 # shared drift guard, but it only sees libs reached by a double-quoted `source`
-# statement. The four NON-SOURCED data files this fixture must also copy —
+# statement. The five NON-SOURCED files this fixture must also copy —
 # occt-touching-crates.txt, release-sensitive-crates.txt,
-# verify-pipeline-infra-tests.txt and .config/nextest.toml — are exactly the
+# verify-pipeline-infra-tests.txt, .config/nextest.toml and
+# reify_path_attribution.py (which occt-scope-lib.sh runs) — are exactly the
 # ones with no drift protection at all. verify-pipeline-infra-tests.txt is in
 # the list specifically because verify.sh READS it (select_infra_tests) without
 # sourcing it, so the preflight cannot discover it; if a future verify.sh reads
-# a fifth such data file, this list must be updated BY HAND and the failure
+# a sixth such file, this list must be updated BY HAND and the failure
 # will surface as an opaque --print-plan error, not as a named drift.
 #
 # The right fix is to extract the sandbox construction (mkdir + cp list + chmod
@@ -215,12 +216,14 @@ make_runnable_verify_fixture() {
     for _f in \
         verify.sh \
         occt-scope-lib.sh \
+        reify_path_attribution.py \
         occt-touching-crates.txt \
         release-scope-lib.sh \
         release-sensitive-crates.txt \
         affected-crates-lib.sh \
         lib_test_semaphore.sh \
         lib_slot_acquire.sh \
+        lib_event_log.sh \
         lib_clock_stop.sh \
         cpu-admit.sh \
         lib_proc_reaper.sh \
@@ -402,6 +405,28 @@ assert_exit "POSITIVE: scripts/lib_slot_acquire.sh is load-bearing (transitive; 
 
 assert "--list includes scripts/lib_slot_acquire.sh (transitive dep; must be in manifest)" \
     bash -c 'bash "$1" --list | grep -qxF "scripts/lib_slot_acquire.sh"' \
+    _ "$GUARD_SH"
+
+# scripts/lib_event_log.sh (task 8685) is one level deeper still
+# (lib_slot_acquire.sh → lib_event_log.sh), and tests/infra/run_all.sh sources
+# it too — the same non-derivable property, so the same manifest-row pin.
+assert_exit "POSITIVE: scripts/lib_event_log.sh is load-bearing (transitive; exit 0)" 0 \
+    run_guard requires-full-gate scripts/lib_event_log.sh
+
+assert "--list includes scripts/lib_event_log.sh (transitive dep; must be in manifest)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/lib_event_log.sh"' \
+    _ "$GUARD_SH"
+
+# gui/src/__tests__/reifyGrammarCorpus.expected-clean.json is the GUI grammar
+# ledger's pin set (S18 PRD D6), read by the vitest ledger and PG-DRIFT-GUI
+# today and by the S18 planner from β on. It is data, so neither auto-derivation
+# clause can reach it; the row keeps a JSON-only diff off the merge worker's
+# config fast path. The guard checks set membership of the path string only.
+assert_exit "POSITIVE: gui/src/__tests__/reifyGrammarCorpus.expected-clean.json is load-bearing (GUI grammar-pin data; manifest row; exit 0)" 0 \
+    run_guard requires-full-gate gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
+
+assert "--list includes gui/src/__tests__/reifyGrammarCorpus.expected-clean.json (static manifest row)" \
+    bash -c 'bash "$1" --list | grep -qxF "gui/src/__tests__/reifyGrammarCorpus.expected-clean.json"' \
     _ "$GUARD_SH"
 
 # SYNTHETIC self-healing: build a throwaway verify.sh copy with a fake source

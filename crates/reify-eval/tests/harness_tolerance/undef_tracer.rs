@@ -43,7 +43,7 @@ fn undef_trace_module() -> reify_compiler::CompiledModule {
 fn bt2_two_root_propagated() {
     let module = layer1_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -100,7 +100,7 @@ fn bt2_two_root_propagated() {
 fn bt3_chain_collapse() {
     let module = undef_trace_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -130,7 +130,7 @@ fn bt3_chain_collapse() {
 fn b3_multi_root_mixed_causes() {
     let module = undef_trace_module();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -198,7 +198,7 @@ fn capture_off_returns_empty() {
     let module = layer1_module();
 
     // Engine with capture OFF (default).
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.eval(&module);
 
     let c_id = ValueCellId::new("UndefDemo", "c");
@@ -215,7 +215,7 @@ fn capture_off_returns_empty() {
 /// No eval called → no snapshot → trace returns [].
 #[test]
 fn no_snapshot_returns_empty() {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     // eval() never called — no snapshot present.
     let c_id = ValueCellId::new("UndefDemo", "c");

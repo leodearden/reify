@@ -21,8 +21,8 @@
 //!   → ZERO g-allow-orphaned (post-graduation the scan is empty; a residual
 //!   bare terminal cite would resolve as orphaned and fail). Test-has-teeth is
 //!   carried by (1) a structural presence guard over EVERY scanned SOURCE_FILES
-//!   entry — the two still-orphan files at marker-line granularity, the three
-//!   now-wired files at `pub fn` granularity — so a file move/rename/deletion
+//!   entry — the one still-orphan file at marker-line granularity, the four
+//!   marker-free files at `pub fn` granularity — so a file move/rename/deletion
 //!   still fails (anti-vacuous-green) and (2) a synthetic `done`-cite control
 //!   that must yield exactly one g-allow-orphaned.
 //! - **Test B** (live, on-demand `#[ignore]`): open the real
@@ -54,9 +54,9 @@ use std::path::Path;
 // carry a `// G-allow:` cite and drop out of this scan scope. The remaining
 // entries were the #4744 (β) morph-arm producers in reify-mesh-morph; task
 // #5255 graduated #4744 too (all seam owners terminal), deleting the now-wired
-// markers and done-annotating the two still-orphan ones
-// (elasticity_morph_with_cg_opts, eligible), so every cite these files now
-// carry is provenance-exempt and the scan yields no owner.
+// markers; the one still-orphan marker (elasticity_morph_with_cg_opts) is
+// done-annotated, so every cite these files now carry is provenance-exempt and
+// the scan yields no owner.
 // -----------------------------------------------------------------------
 const SOURCE_FILES: &[&str] = &[
     "crates/reify-mesh-morph/src/boundary.rs",
@@ -287,11 +287,11 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
     // physically present in EVERY scanned SOURCE_FILES entry, so a file
     // move/rename/deletion (which would silently empty that file's G-allow scan)
     // fails here — and would also un-pin the orphan-producer audit in
-    // engine_seam_orphans_g_allow.rs. The two still-orphan files are checked at
+    // engine_seam_orphans_g_allow.rs. The one still-orphan file is checked at
     // marker granularity (the `// G-allow:` marker must remain in the fn's
-    // leading block); the three now-wired files (markers deleted when #5255
-    // wired their consumers — quality's cite is provenance-exempt) are checked
-    // at `pub fn` granularity, since they carry no marker to key on.
+    // leading block); the four marker-free files (boundary/laplacian/quality,
+    // whose markers were deleted when #5255 wired their consumers, and lib.rs)
+    // are checked at `pub fn` granularity, since they carry no marker to key on.
     //
     // A live-owner-cite guard (formerly `all_owner_ids.contains(&4744)`) is no
     // longer possible: `extract_g_allow_owner_cites` skips exempt cites, so a
@@ -304,9 +304,8 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
         "crates/reify-mesh-morph/src/elasticity.rs",
         "elasticity_morph_with_cg_opts",
     );
-    assert_g_allow_marker_above_fn(&ws_root, "crates/reify-mesh-morph/src/lib.rs", "eligible");
-    // The remaining SOURCE_FILES no longer carry a marker; pin one `pub fn` each
-    // so a silent move/rename of boundary/laplacian/quality is caught locally.
+    // The remaining SOURCE_FILES carry no marker; pin one `pub fn` each so a
+    // silent move/rename of boundary/laplacian/lib/quality is caught locally.
     assert_pub_fn_present(
         &ws_root,
         "crates/reify-mesh-morph/src/boundary.rs",
@@ -316,6 +315,11 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
         &ws_root,
         "crates/reify-mesh-morph/src/laplacian.rs",
         "laplacian_smooth",
+    );
+    assert_pub_fn_present(
+        &ws_root,
+        "crates/reify-mesh-morph/src/lib.rs",
+        "compose_morph",
     );
     assert_pub_fn_present(
         &ws_root,

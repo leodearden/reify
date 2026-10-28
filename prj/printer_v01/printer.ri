@@ -259,34 +259,42 @@ pub structure IdlerPulley {
 /// surface when this was copied (it works under kernel-backed `reify eval`,
 /// post-#4145, and since 2026-09-03's binary `check` computes it too —
 /// kernel-exact, probe probe_vol_check.ri) and the machining metric belongs
-/// to the sketch). Helically-grooved
+/// to the sketch). dev_capstan.ri is
+/// the ORIGINAL: this copy is held to it member by member by
+/// crates/reify-eval/tests/harness_sweep/capstan_copies_lockstep.rs, so a code
+/// edit to either copy must land in both. Helically-grooved
 /// dual-anchor winch drum, axis = local +Z, centred. Both ends of each belt
 /// loop anchor to it; rotation reels one end in / pays the other out. Carries
 /// BOTH windings of the belt's ±z moment pair (axially adjacent on one drum).
 ///
 /// The rope seat is modelled (#5454): a circular section of radius `groove_r`
-/// swept along `helix(pitch_r, lead, groove_len)` and subtracted from the land
+/// swept along `helix(seat_c, lead, groove_len)` and subtracted from the land
 /// cylinder at `land_r`, between two retaining flanges and over an axial bore.
 ///
-/// The seat is a HALF-ROUND open seat (#5580): `land_r = pitch_r` puts the
-/// swept section's arc centre ON the land surface, so exactly half the section
-/// is cut away and the mouth it opens is the section's full width, 2*groove_r
-/// == rope_dia. The rope is laid in RADIALLY, not wound thread-style — the
-/// departure tangent migrates axially across the band every revolution, so
-/// the rope must leave the seat radially at arbitrary mid-band positions; a
-/// half-round is also the ONLY depth that admits the rope at all (the mouth
-/// chord peaks exactly at land_r == pitch_r). The wrap stays positive and
-/// zero-slip because both rope ends are ANCHORED to the drum.
+/// The seat arc is DIN 15061 OVERSIZE (#5683): `groove_r = 0.53·rope_dia`, not
+/// the `rope_dia/2` slip fit, so the rope has clearance at the mouth and a
+/// load-ovalised braid cannot pinch against the seat walls. The land is pinned
+/// at the arc centre, `land_r = seat_c`: that maximises the mouth at
+/// 2*groove_r == 1.06*rope_dia, so the rope is laid in RADIALLY (the departure
+/// tangent migrates axially across the band every revolution), and it leaves
+/// exactly half the swept section seated. The pin is a design choice, not a
+/// necessity: an oversize arc admits the rope across a range of land radii. The
+/// full argument is in dev_capstan.ri's Capstan doc. The wrap stays positive
+/// and zero-slip because both rope ends are ANCHORED to the drum.
 ///
-/// PITCH-RADIUS CONSEQUENCE for every composing site: the rope CENTRELINE
-/// rides AT pitch_r == drum_d/2 (half-seated in the land), NOT at
-/// drum_r + rope_r as the retired smooth-core model had it — the drive's
-/// tangent planes sit 3mm (rope_dia/2) closer to the drum axis (2026-08-23
-/// re-sync; DriveTendons' hand-kept mirrors updated in step).
+/// PITCH-RADIUS CONSEQUENCE for every composing site: it is the SEATED rope's
+/// centreline that rides AT pitch_r == drum_d/2 — under tension the rope
+/// bottoms out in its seat — NOT at drum_r + rope_r as the retired smooth-core
+/// model had it (the 2026-08-23 re-sync moved the drive's tangent planes 3mm
+/// closer to the drum axis and DriveTendons' hand-kept mirrors with them). The
+/// arc centre and the land sit groove_r - rope_dia/2 (0.18mm at the defaults)
+/// OUTBOARD of that centreline, at seat_c, so the oversize arc leaves the
+/// drive's tangent planes and every hand-kept mirror of pitch_r unchanged.
 ///
 /// Sizing (D/d = 8): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
-/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
-/// groove band = lead·(active + dead turns) ≈ 88mm; helix angle ≈ 2.7°.
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → `active_turns` ≈ 8.62;
+/// helix angle ≈ 2.7°. The two axial figures, `band` and `groove_len`, are
+/// cells, defined at their declarations below.
 pub structure Capstan {
     param rope_dia    : Length = 6mm
     /// D/d ratio
@@ -308,23 +316,39 @@ pub structure Capstan {
     param windings    : Int    = 2
     param bore_dia    : Length = 19mm     // motor shaft
 
+    /// Seat arc radius as a fraction of rope diameter. DIN 15061 rope-drum
+    /// practice is r = 0.53·d: an OVERSIZE seat, so the rope has genuine
+    /// clearance at the mouth and a load-ovalised braid cannot pinch at the
+    /// seat bottom. 0.5 would be a zero-clearance slip fit.
+    param seat_arc_ratio : Real = 0.53
+
     let pitch_r    = drum_d / 2                   // rope centreline (the D/d circle)
-    let groove_r   = rope_dia / 2                 // rope seat = swept-cutter section radius
-    // Outer land/crest cylinder. Cut back to the rope CENTRELINE, so the seat is a
-    // true half-round: its arc centre sits ON the land surface and its mouth is the
-    // seat's full width, 2*groove_r == rope_dia (see doc above).
-    let land_r     = pitch_r
+    let groove_r   = rope_dia * seat_arc_ratio    // rope seat = swept-cutter section radius
+    // Seat arc CENTRE radius: the seated rope bottoms out (groove_r - rope_dia/2)
+    // inboard of it, so putting it that far OUTBOARD of pitch_r lands the seated
+    // rope's centreline exactly on the D/d circle.
+    let seat_c     = pitch_r + groove_r - rope_dia / 2
+    // Outer land/crest cylinder, cut back to the seat's ARC CENTRE: its mouth is
+    // the seat's full width, 2*groove_r == 1.06*rope_dia, and exactly half the
+    // swept section stays seated (see doc above).
+    let land_r     = seat_c
     let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
-    let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    let groove_len : Length = lead * (active_turns + dead_total)   // total grooved extent = band + dead anchor wraps
+    /// Axial migration of the departure tangent over the full `feed`, one `lead`
+    /// per active turn: what the fairlead collar tracks. NOT `groove_len`, which
+    /// is this band PLUS the `dead_total` anchor wraps.
+    let band       : Length = lead * active_turns
     let bore_r     = bore_dia / 2
 
     // The rope channel: a circular section of radius groove_r, posed normal to the
     // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
-    // +Y) and stood off onto the helix start point at +pitch_r, swept along the
-    // helical spine and re-centred on the band.
-    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), pitch_r, 0mm, 0mm)
-    aux let groove_path    = helix(pitch_r, lead, groove_len)
+    // +Y) and stood off onto the helix start point at +seat_c, swept along the
+    // helical spine and re-centred on the drum mid-plane. The spine runs at the
+    // seat's ARC CENTRE — not at pitch_r, which is where the seated rope's
+    // centreline ends up.
+    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
+    aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
 
     // Stock: land + two flanges, bored through — the drum before the groove is cut.
@@ -342,18 +366,24 @@ pub structure Capstan {
     let body = difference(drum_blank, groove_cutter)
 
     constraint flange_r > land_r
-    // The seat must be a TRUE HALF-ROUND — arc centre ON the land surface, i.e.
-    // land_r == pitch_r; the two bounds are the one-sided halves of that equality
-    // (the mouth chord 2*sqrt(groove_r^2 - (land_r - pitch_r)^2) peaks at the
-    // equality, so ANY offset drops it below rope_dia — a high land buries the
-    // seat, a low land closes the mouth over an unseated rope). The ±1e-6 width
-    // is fp slack around a bit-exact assignment, matching the Rust acceptance
-    // gate's window (crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs).
-    constraint land_r < pitch_r + groove_r * 0.000001
-    constraint land_r > pitch_r - groove_r * 0.000001
-    // Wall between the groove BOTTOM (pitch_r - groove_r, the deepest stock the
-    // seat removes) and the shaft bore.
-    constraint pitch_r - groove_r > bore_r
+    // The seat arc must be OVERSIZE, never a slip fit. This one inequality is both
+    // the mouth clearance (2*groove_r > rope_dia) and the anti-pinch margin at the
+    // rope's widest section — derivation in dev_capstan.ri.
+    constraint groove_r > rope_dia / 2
+    // The land sits ON the seat's arc centre, land_r == seat_c; the two bounds are
+    // the one-sided halves of that equality (a high land closes the mouth back
+    // under the rope, a low one drops the seated fraction below half). The
+    // ±1e-6-of-groove_r width is fp slack around a bit-exact assignment — the same
+    // window the Rust acceptance gate
+    // (crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs) uses to guard
+    // its volume premise on dev_capstan.ri's copy, which this copy inherits
+    // through the lockstep gate named in the doc above.
+    constraint land_r < seat_c + groove_r * 0.000001
+    constraint land_r > seat_c - groove_r * 0.000001
+    // Wall between the groove BOTTOM (seat_c - groove_r, the deepest stock the
+    // seat removes — the seated rope's own underside, pitch_r - rope_dia/2) and
+    // the shaft bore.
+    constraint seat_c - groove_r > bore_r
     // Clearance lead: each wrap opens a 2*groove_r wide mouth in the land, so the
     // lead must exceed the mouth width or adjacent seats merge and the land ridge
     // between wraps vanishes (wedging would drift the effective Ø).
@@ -364,10 +394,11 @@ pub structure Capstan {
 /// Fairlead carrier frame — a light rectangular COLLAR around the drum: two
 /// XZ side plates outboard of the pulley planes, joined by two YZ end webs
 /// outboard of the vertical tendon runs; open top/bottom so the drum and all
-/// four verticals pass straight through. The collar translates along Z with
-/// the wrap band (stroke ≈ the Capstan band extent). Pulley axles/bosses
-/// span the plate-to-pulley gap (not modelled — same idealization as the
-/// IdlerPulley axle bolts); the light guide rail that takes the ΔT-scale
+/// four verticals pass straight through. The collar translates along Z over
+/// the Capstan's `band`, not its `groove_len`, relayed by CapstanUnit as
+/// `band_stroke`. Pulley axles/bosses span the plate-to-pulley gap (not
+/// modelled — same idealization as the IdlerPulley axle bolts); the light
+/// guide rail that takes the ΔT-scale
 /// dynamic residuals is not modelled yet.
 pub structure FairleadFrame {
     param half_x  : Length = 84mm   // collar half-width across X (80 → 84 with
@@ -520,14 +551,16 @@ pub structure CapstanUnit {
     /// 2026-08-23 pitch-radius re-sync: at cap_pitch_r 24 the old stand-off
     /// left the pulley rims 0.06mm off the drum flanges (analytic sweep
     /// 2026-08-25); +5mm restores a ~5mm rim-to-rim margin.
-    /// TODO(#6583): replace the L376-style 2D bound with a real posed
-    /// distance() constraint once cross-sub geometry reads carry placement.
+    /// TODO(#5436): replace the analytic 2D flange-crossing bound below
+    /// (`pulley_x - r_pitch > sqrt(...)`) with a real posed distance()
+    /// constraint once member geometry reads compose through the sub's
+    /// placement.
     param pulley_x : Length = 50mm
-    /// #6586 pin: == self.capstan.groove_len (constraints below). The pair
-    /// heights derive from THIS so they can feed FairleadPair constructor
-    /// args — a self.<sub>.<member> read flowing into a constructor arg
-    /// makes the child's geometry silently never realize.
-    param band_len : Length = 88.346249mm
+    /// #6586 pin: == self.capstan.groove_len, not the Capstan's `band`
+    /// (constraints below). The pair heights derive from THIS so they can feed
+    /// FairleadPair constructor args — a self.<sub>.<member> read flowing into
+    /// a constructor arg makes the child's geometry silently never realize.
+    param groove_len_m : Length = 88.346249mm
     // NOTE: this unit is the side +1 (IN pulleys on local −x) balanced
     // arrangement. The mirror twin lives in CapstanUnitMirrored below — a
     // forced DUPLICATE, because a per-instance `side` override would not
@@ -538,21 +571,22 @@ pub structure CapstanUnit {
     // Drum-coupled dimensions DERIVE from the capstan sub's own cells where
     // they feed placements and constraints (parent-reads-child-let, verified
     // 2026-07-23); values feeding CONSTRUCTOR ARGS come from the pinned
-    // band_len / cap_pitch_r_m mirrors instead (#6586, pins below). The rope
-    // centreline rides AT the capstan's pitch_r (half-round seat, 2026-08-23
-    // re-sync).
+    // groove_len_m / cap_pitch_r_m mirrors instead (#6586, pins below). The
+    // SEATED rope's centreline rides AT the capstan's pitch_r under its DIN 15061
+    // seat arc; the arc centre sits outboard at seat_c, which nothing here reads.
     let cap_pitch_r = self.capstan.pitch_r
     let flange_r    = self.capstan.flange_r
     /// #6586 pin: == cap_pitch_r (constraints below); the pairs' tangent_y
     /// constructor arg reads this, never the sub-derived cell.
     let cap_pitch_r_m = 24mm
     let unit_pin_slack = 0.002mm
-    /// Upper/lower winding-band centres: the two windings split the groove
-    /// band in half, so their centres sit at ± a quarter of it.
-    let winding_z   = band_len / 4
-    /// Nominal Z split of a winding's two rope-end exits (an eighth of the
-    /// band = half the winding: mid-migration positions of the two ends).
-    let lead_split  = band_len / 8
+    /// Upper/lower winding centres: the two windings split the Capstan's
+    /// `groove_len` in half, so their centres sit at ± a quarter of it.
+    let winding_z   = groove_len_m / 4
+    /// Nominal Z split of a winding's two rope-end exits: ± an eighth of
+    /// groove_len, so the two exits sit half a winding's axial extent apart
+    /// (the mid-migration positions of the two ends).
+    let lead_split  = groove_len_m / 8
 
     let y_rear    = 0mm - cap_pitch_r_m  // outboard tangent plane (w1's)
 
@@ -604,8 +638,9 @@ pub structure CapstanUnit {
     /// hand-keeping mirrors).
     /// Axial migration of the active wrap point = the stroke this whole unit
     /// (collar + all four fairlead pulleys) translates along Z as the drum
-    /// reels. Every fairlead-vs-fixed clearance must hold across it.
-    let band_stroke    = self.capstan.lead * self.capstan.active_turns
+    /// reels: the Capstan's `band`, not its `groove_len`. Every
+    /// fairlead-vs-fixed clearance must hold across it.
+    let band_stroke    = self.capstan.band
     let frame_web_half = self.frame.web_half_z
     let frame_half_x   = self.frame.half_x
     let frame_half_z   = self.frame.half_z
@@ -626,8 +661,8 @@ pub structure CapstanUnit {
     constraint flange_r > cap_pitch_r
     // #6586 pins: the mirrors this unit derives from equal the capstan's own
     // cells — a Capstan resize fails HERE instead of silently drifting.
-    constraint band_len < self.capstan.groove_len + unit_pin_slack
-    constraint band_len > self.capstan.groove_len - unit_pin_slack
+    constraint groove_len_m < self.capstan.groove_len + unit_pin_slack
+    constraint groove_len_m > self.capstan.groove_len - unit_pin_slack
     constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
     constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
     // #6592 pins: the pair realizes from its own DEFAULTS (ctor args never
@@ -667,7 +702,7 @@ pub structure CapstanUnit {
 pub structure CapstanUnitMirrored {
     param r_pitch  : Length = 18mm
     param pulley_x : Length = 50mm
-    param band_len : Length = 88.346249mm
+    param groove_len_m : Length = 88.346249mm
 
     sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
 
@@ -675,8 +710,8 @@ pub structure CapstanUnitMirrored {
     let flange_r    = self.capstan.flange_r
     let cap_pitch_r_m = 24mm
     let unit_pin_slack = 0.002mm
-    let winding_z   = band_len / 4
-    let lead_split  = band_len / 8
+    let winding_z   = groove_len_m / 4
+    let lead_split  = groove_len_m / 8
     let y_rear    = 0mm - cap_pitch_r_m
 
     let w1_in  = winding_z + lead_split + r_pitch
@@ -691,7 +726,7 @@ pub structure CapstanUnitMirrored {
     sub pair_w2 = FairleadPairMirrored() at transform3(rot_c2, vec3(0mm, 0mm, 0mm))
 
     sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
-    let band_stroke    = self.capstan.lead * self.capstan.active_turns
+    let band_stroke    = self.capstan.band
     let frame_web_half = self.frame.web_half_z
     let frame_half_x   = self.frame.half_x
     let frame_half_z   = self.frame.half_z
@@ -702,8 +737,8 @@ pub structure CapstanUnitMirrored {
     constraint winding_z > lead_split
     constraint cap_pitch_r > 0mm
     constraint flange_r > cap_pitch_r
-    constraint band_len < self.capstan.groove_len + unit_pin_slack
-    constraint band_len > self.capstan.groove_len - unit_pin_slack
+    constraint groove_len_m < self.capstan.groove_len + unit_pin_slack
+    constraint groove_len_m > self.capstan.groove_len - unit_pin_slack
     constraint cap_pitch_r_m < cap_pitch_r + unit_pin_slack
     constraint cap_pitch_r_m > cap_pitch_r - unit_pin_slack
     constraint self.pair_w1.w_in  < w1_in + unit_pin_slack
@@ -1016,8 +1051,9 @@ pub structure DriveTendons {
     // (the capstans close the loops now).
     // DERIVED, not hand-kept (#5360 landed 2026-07-31): RearDrive relays each
     // CapstanUnit cell up one level, so the whole rear web now tracks a Capstan
-    // resize automatically. cap_pitch_r == Capstan pitch_r (24mm) — the
-    // half-round seat carries the rope centreline AT the land.
+    // resize automatically. cap_pitch_r == Capstan pitch_r (24mm) — the DIN 15061
+    // seat keeps the SEATED rope's centreline there, with the land 0.18mm
+    // outboard at seat_c.
     let cap_pitch_r = self.rear_drive.unit_pitch_r
     let fl_pulley_x = self.rear_drive.unit_pulley_x
     let fl_web_half = self.rear_drive.unit_web_half
@@ -1225,7 +1261,7 @@ pub structure DriveTendons {
     /// the w2 rises were 31mm against a 42mm requirement.)
     let rise_min   = r_pitch * 2 + clear_min
     /// HALF the fairlead's axial migration. The whole drive unit translates
-    /// along Z as the drum reels (stroke = the active wrap band, ~60mm), so
+    /// along Z as the drum reels (stroke = the Capstan's `band`), so
     /// every below-entry pulley drops this far toward the fixed up-turn discs
     /// at the bottom of travel. Checking the rise rule only at the NOMINAL
     /// band position is what let unit B's w2_out pulley end up 20.7mm from
@@ -1553,7 +1589,7 @@ pub structure DriveTendons {
     // separation in mm between derived stations, so an edit that re-breaks
     // one fails `reify check` instead of needing another analytic sweep.
     // (Cross-sub geometry queries would be the richer form, but a sub's `at`
-    // placement is silently dropped before the kernel today — #6583 — so
+    // placement is silently dropped before the kernel today — #5436 — so
     // these compare the parent-frame coordinates that place the geometry.)
     //
     // 1. (v3) Every OUT descent hangs outboard of the fairlead hardware in
@@ -2048,11 +2084,11 @@ pub structure GantryFea {
     let pin_b = PinnedSupport(target: "x_max")
     let opts_cant = ModalOptions(
         n_modes: 2, boundary_conditions: [fix_a], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
     let opts_ss = ModalOptions(
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
     let r_modal_cant = modal_analysis(mi.material, span, h_eq, h_eq, opts_cant)
     let r_modal_ss   = modal_analysis(mi.material, span, h_eq, h_eq, opts_ss)
@@ -2429,7 +2465,7 @@ pub structure AFrame {
     let pin_b = PinnedSupport(target: "x_max")
     let opts_field = ModalOptions(
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
     let fld_lz2 = fld_lz * 1.0
     let r_modal_field = modal_analysis(mi.material, fld_lz2, fld_ly, side_t, opts_field)
@@ -2736,7 +2772,7 @@ pub structure DToolhead {
 ///    sampled union is the ceiling.
 ///  Bodies are all TOP-LEVEL lets (#5439: sub bodies never reach snapshots);
 ///  the tool solid is read from a ToolBody sub in its LOCAL frame and
-///  translated here (#6583-safe by construction). Pose lets are `aux`
+///  translated here (#5436-safe by construction). Pose lets are `aux`
 ///  (realised hidden) so the viewport shows the dock, not 20 ghost heads.
 /// REACH (live cells, no constraint — frame-round posture): the dock is at
 /// its FUTURE-correct position and is unreachable TODAY by reach_short_today
@@ -2841,7 +2877,7 @@ pub structure ToolDock {
 
     // ── Geometry (world) ─────────────────────────────────────────────────
     /// Tool prototype: NOT placed — its body is read in the leaf's local
-    /// frame and translated here per station (single source, #6583-safe).
+    /// frame and translated here per station (single source, #5436-safe).
     sub tool_proto = ToolBody(
         width: tool_w, depth: tool_d, height: tool_h, mass: m_tool,
         ball_protrude: ball_protrude, r_maxwell: r_maxwell, cpl_z: cpl_z,

@@ -1323,6 +1323,57 @@ fn build_user_function_call_expr(
     }
 }
 
+/// The type a call to `callee` yields once unification over `arg_types` binds
+/// its type parameters (task 4231 β); a non-generic callee keeps its declared
+/// `return_type` (INV-6/D10). `arg_types` may be a strict prefix of
+/// `callee.params` (a default-padded call): trailing defaulted slots bind
+/// nothing, since a slot carrying a type parameter has no valid default
+/// (`FnParamDefaultTypeMismatch` at the definition). `Err` is the diagnostic
+/// to poison the call with: a double-binding (`E_FALLBACK_TYPE` for the
+/// recovery combinators, contract C-3 in `docs/prds/v0_6/result-and-fallback.md`;
+/// else `E_FN_TYPE_ARG_CONFLICT`) or a BARE unbound type-/dimension-param
+/// result. A NESTED unbound param such as `Field<D, Real>` is tolerated: an
+/// enclosing call pins it (B5).
+fn instantiate_call_return_type(
+    callee: &CompiledFunction,
+    call_name: &str,
+    arg_types: &[Type],
+    call_span: SourceSpan,
+) -> Result<Type, Diagnostic> {
+    if callee.type_params.is_empty() {
+        return Ok(callee.return_type.clone());
+    }
+    let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    for ((_, declared), arg_ty) in callee.params.iter().zip(arg_types.iter()) {
+        if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst) {
+            let (code, prefix) = if is_fallback_combinator(call_name) {
+                (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
+            } else {
+                (DiagnosticCode::FnTypeArgConflict, "")
+            };
+            let message = format!(
+                "{}conflicting type arguments for type parameter \
+                 '{}' in call to '{}': {} vs {}",
+                prefix, conflict.param, call_name, conflict.existing, conflict.incoming
+            );
+            return Err(Diagnostic::error(message)
+                .with_code(code)
+                .with_label(DiagnosticLabel::new(call_span, "conflicting type argument")));
+        }
+    }
+    let substituted = type_resolution::substitute_type_params(&callee.return_type, &subst);
+    if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
+        return Err(Diagnostic::error(format!(
+            "cannot infer type argument(s) for generic call to '{}': \
+             result type is undetermined",
+            call_name
+        ))
+        .with_code(DiagnosticCode::FnTypeArgUnresolved)
+        .with_label(DiagnosticLabel::new(call_span, "unresolved type argument")));
+    }
+    Ok(substituted)
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -3151,85 +3202,12 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    // Generic call (task 4231 β): infer type arguments by unifying
-                    // each declared param type against the concrete arg type, then
-                    // substitute the bound type parameters into the return type.
-                    // Non-generic fns (empty type_params) keep the exact
-                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
-                    let result_type = if matched_fn.type_params.is_empty() {
-                        matched_fn.return_type.clone()
-                    } else {
-                        let mut subst: std::collections::HashMap<String, Type> =
-                            std::collections::HashMap::new();
-                        for ((_, declared), arg_ty) in
-                            matched_fn.params.iter().zip(arg_types.iter())
+                    let result_type =
+                        match instantiate_call_return_type(matched_fn, name, &arg_types, expr.span)
                         {
-                            // A type-param double-binding to two different types is
-                            // a call-site type-argument conflict (PRD D2 / §4.2).
-                            // For recovery combinators (unwrap_or / or_default /
-                            // fallback / get_or — the default-must-match-element
-                            // family), emit E_FALLBACK_TYPE + mnemonic (contract
-                            // C-3, PRD docs/prds/v0_6/result-and-fallback.md).
-                            // For all other generic fns, emit E_FN_TYPE_ARG_CONFLICT
-                            // bit-for-bit unchanged.  Both paths poison the call via
-                            // make_poison_literal (D3: result_type = Type::Error
-                            // inference sentinel, not a payload).
-                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
-                            {
-                                let (code, prefix) = if is_fallback_combinator(name) {
-                                    (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
-                                } else {
-                                    (DiagnosticCode::FnTypeArgConflict, "")
-                                };
-                                let message = format!(
-                                    "{}conflicting type arguments for type parameter \
-                                     '{}' in call to '{}': {} vs {}",
-                                    prefix,
-                                    conflict.param,
-                                    name,
-                                    conflict.existing,
-                                    conflict.incoming
-                                );
-                                return make_poison_literal(
-                                    diagnostics,
-                                    Diagnostic::error(message)
-                                        .with_code(code)
-                                        .with_label(DiagnosticLabel::new(
-                                            expr.span,
-                                            "conflicting type argument",
-                                        )),
-                                );
-                            }
-                        }
-                        let substituted = type_resolution::substitute_type_params(
-                            &matched_fn.return_type,
-                            &subst,
-                        );
-                        // A BARE top-level unbound type-param or dimension-param
-                        // means nothing pinned the result type (e.g. `make<T>() -> T`
-                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
-                        // called as `mk(3.0)` — Q undetermined): the call yields a
-                        // wholly-undetermined type → error + poison (task ζ / D8).
-                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
-                        // is TOLERATED — it is pinned by an enclosing call (B5,
-                        // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "cannot infer type argument(s) for generic call to '{}': \
-                                     result type is undetermined",
-                                    name
-                                ))
-                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unresolved type argument",
-                                )),
-                            );
-                        }
-                        substituted
-                    };
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -3260,7 +3238,6 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some((padded_fn, default_exprs)) =
                         try_default_padding(&named_candidates, &arg_types)
                     {
-                        let result_type = padded_fn.return_type.clone();
                         // Deprecation check: mirror the Resolved arm — warn if the
                         // padded function is @deprecated.
                         if let Some(msg) = deprecation_message(&padded_fn.annotations) {
@@ -3272,6 +3249,12 @@ fn compile_expr_guarded_with_expected_inner(
                                 diagnostics,
                             );
                         }
+                        let result_type = match instantiate_call_return_type(
+                            padded_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
@@ -3290,7 +3273,12 @@ fn compile_expr_guarded_with_expected_inner(
                         if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                             emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                         }
-                        let result_type = matched_fn.return_type.clone();
+                        let result_type = match instantiate_call_return_type(
+                            matched_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let coerced_args: Vec<CompiledExpr> = compiled_args
                             .into_iter()
                             .zip(matched_fn.params.iter())
@@ -3438,13 +3426,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
                     // `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
+                    // `is_orientation_decomposer_fn` (tasks #6082/#6306) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
                     // `is_field_op` family (task 4219), the #4629 W2
                     // `fea_envelope_result_type` family, and the task-#5476
                     // `is_flexure_typed_fn` family are pinned disjoint in
-                    // `units.rs::tests::*_are_disjoint_from_other_families`,
+                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
                     // arg-aware (returns None for CSG non-selector operands) so CSG
@@ -3488,6 +3477,15 @@ fn compile_expr_guarded_with_expected_inner(
                     // and the shared verbs `angle`/`distance` are policed only in
                     // their arity-3 DRIVE form (a no-op for the arity-2 query forms).
                     relation_signatures::check_relation_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
+                    // Task 6249: a third diagnostic-only check, with the same
+                    // contract as the two above.
+                    math_signatures::check_forward_trig_arg_dimensions(
                         name,
                         &compiled_args,
                         expr.span,
@@ -3664,7 +3662,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // at eval time. Uniform `StructureRef("MassProperties")`
                         // result (mirrors the `is_dynamics_query` arm above).
                         // Pinned disjoint from all sibling families by
-                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
+                        // `builtin_name_families_are_pairwise_disjoint`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /
@@ -3741,8 +3739,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // variant with a best-effort `n` when the shape is not
                         // statically determinable. Both slices are pinned disjoint
                         // from the geometry/dynamics families AND from each other
-                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`
-                        // + `math_operation_fn_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         // NOTE: `determinant(AffineMap)` → Real is served by the
                         // earlier `affine_map_algebra_result_type` arm above, so
@@ -3829,7 +3826,7 @@ fn compile_expr_guarded_with_expected_inner(
                         //
                         // Folding parse into the analysis POSITION is
                         // unobservable: `units.rs`'s
-                        // `registry_row_names_are_disjoint_from_legacy_families`
+                        // `builtin_name_families_are_pairwise_disjoint`
                         // pins every row name absent from every legacy sibling
                         // family slice, so at most one arm can ever claim a
                         // given name.
@@ -3875,7 +3872,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // which is the same set `fea_envelope_result_type` matches
                         // on — so the `expect` is infallible here.
                         // The family is pinned disjoint from all sibling families
-                        // by `fea_envelope_names_are_disjoint_from_other_families`
+                        // by `builtin_name_families_are_pairwise_disjoint`
                         // in `units.rs`, so arm position is unobservable.
                         fea_envelope_result_type(name).expect(
                             "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
@@ -3906,7 +3903,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // laplacian lives in `reify-expr`; fn_field/from_samples/
                         // restrict/compose arrive in tasks β/γ/δ.  The FIELD_OP
                         // family is pinned disjoint from all sibling families
-                        // (units.rs `field_op_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         t
                     } else if is_orientation_typed_fn(name) {
@@ -3941,26 +3938,30 @@ fn compile_expr_guarded_with_expected_inner(
                         // units.rs disjointness test, so this arm's position in
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
-                    } else if is_orientation_euler_fn(name) {
-                        // Euler DECOMPOSER (task #6082):
-                        // orient_to_euler(Orientation<3>, EulerConvention)
-                        //   → List<Angle>, the 3-element Value::List of ANGLE
-                        //   scalars eval actually returns. Typing it so is what
-                        //   lets the result flow into a `List<Angle>` parameter.
+                    } else if is_orientation_decomposer_fn(name) {
+                        // Orientation/transform DECOMPOSERS (tasks #6082,
+                        // #6306): orient_log, orient_to_euler,
+                        // orient_to_axis_angle, transform_log. The same two
+                        // eval dispatchers as the producer arm above, but these
+                        // return a rigid motion's COORDINATES (Vector3<Angle>,
+                        // List<Angle>, and two nominal StructureRefs over a
+                        // Value::Map) rather than the motion itself.
                         //
-                        // Its CONSTRUCTOR counterpart orient_euler is NOT in
-                        // this family — it is a fixed-nominal-type producer
-                        // already typed Orientation(3) by the #5344 arm above,
-                        // so that arm wins and this one never sees it. The two
-                        // slices are pinned disjoint in units.rs
-                        // (`orientation_euler_fn_names_are_disjoint_from_other_families`),
-                        // which also makes this arm's ladder position
-                        // unobservable.
+                        // This REPLACES the first-arg fallback below, whose
+                        // mistyping here was SILENT: all four take arguments,
+                        // so the zero-arg warning never fired. Task 5344
+                        // sharpened it, since orient_log(q) then inherited q's
+                        // Orientation(3). The two Map members rely on the joint
+                        // arm's StructureRef cell-typing safety argument
+                        // (esc-3845-91).
                         //
-                        // Rationale for the module split, and why neither name
-                        // may be declared as a bodied `.ri pub fn` instead:
-                        // see orientation_signatures.rs.
-                        orientation_euler_result_type(name)
+                        // Membership and every result-type ruling live ONCE, on
+                        // ORIENTATION_DECOMPOSER_FN_NAMES. The family is pinned
+                        // disjoint from every sibling (constructor family
+                        // included) by
+                        // `unresolved_function.rs::builtin_name_families_are_pairwise_disjoint`,
+                        // so this arm's ladder position is unobservable.
+                        orientation_decomposer_result_type(name)
                     } else {
                         // TERMINAL FIRST-ARG FALLBACK — the open end of the
                         // ladder. Any callee no arm above claimed is typed as
@@ -6672,7 +6673,12 @@ fn compile_expr_guarded_with_expected_inner(
                             diagnostics,
                         );
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    let result_type = match instantiate_call_return_type(
+                        matched_fn, &symbol, &arg_types, expr.span,
+                    ) {
+                        Ok(result_type) => result_type,
+                        Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                    };
                     build_user_function_call_expr(&symbol, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {

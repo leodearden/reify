@@ -38,7 +38,7 @@ else
 fi
 ```
 
-**Pre-flight:** Always resolve `REPO_ROOT` first — every subsequent path (`--tasks-file`, `--runs-db`, `--project-root`) is anchored against it. This makes `/audit` safe to invoke from any subdirectory of the worktree. Before invoking `reify-audit`, materialize a TaskMetadata snapshot from fused-memory (see §2); `--tasks-file` is a required flag with no default.
+**Pre-flight:** Always resolve `REPO_ROOT` first — `--runs-db` and `--project-root` are anchored against it. This makes `/audit` safe to invoke from any subdirectory of the worktree. `reify-audit` loads the task corpus itself, live from fused-memory (`--fused-memory-url`, default `$FUSED_MEMORY_URL` or `http://localhost:8002/mcp`, no trailing slash), so there is nothing to materialize before invoking it.
 
 **Why release?** The binary will be invoked the same way by the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). Using the release binary in the skill keeps the invocation in parity with how D-1 sees it.
 
@@ -48,55 +48,21 @@ fi
 
 ## §2 Bash invocation template
 
-The `reify-audit` binary emits **JSON on stderr** and a human-readable summary on **stdout**. Capture stderr to a tempfile so both streams stay cleanly separated:
-
-**Step 1: Materialize a TaskMetadata JSON snapshot from fused-memory.**
-
-The skill executes as an LLM (this Claude session), not as a pure bash script,
-so this step is split into two stages — an MCP-tool call the LLM makes
-directly, and a bash filter step. Do **not** try to pipe the MCP tool through
-`jq` from a shell: `mcp__fused-memory__get_tasks` is a JSON-RPC tool
-invocation that travels over the MCP transport, not a shell command.
-
-1. Create the tempfiles and EXIT trap (bash):
-
-   ```bash
-   SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
-   RESPONSE=$(mktemp /tmp/reify-audit-response-XXXXXX.json)
-   TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
-   trap 'rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"' EXIT
-   ```
-
-2. From the LLM, call `mcp__fused-memory__get_tasks` with
-   `project_root="$REPO_ROOT"` and write the returned JSON object to
-   `$RESPONSE`. (If a pure-bash equivalent is needed — e.g. from a script
-   outside the LLM — use the curl + JSON-RPC recipe in
-   `scripts/reify-audit-predone-wrapper.sh` against
-   `$FUSED_MEMORY_MCP_URL`. The wrapper is the canonical non-LLM path.)
-
-3. Filter the response through the canonical jq sidecar (bash):
-
-   ```bash
-   jq -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
-      < "$RESPONSE" > "$SNAPSHOT"
-   ```
-
-   The filter (`scripts/reify-audit-snapshot-filter.jq`) is the single point
-   of truth, shared with the systemd pre-done hook wrapper. It derives
-   `done_at` from `updatedAt` for done tasks (required for P1).
-
-**Step 2: Invoke reify-audit with the snapshot as `--tasks-file`** (bash):
+The `reify-audit` binary emits **JSON on stderr** and a human-readable summary on **stdout**. Capture stderr to a tempfile so both streams stay cleanly separated. There is no snapshot step: `reify-audit` loads the task corpus itself from fused-memory (one `get_tasks` on a sweep, one `get_task` on `--pre-done`), through the same adapter the pre-done hook uses.
 
 ```bash
+TMPFILE=$(mktemp /tmp/reify-audit-XXXXXX.json)
+trap 'rm -f "$TMPFILE"' EXIT
+
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS] \
+  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE] \
+  [--fused-memory-url <url>] \  # default: $FUSED_MEMORY_URL or http://localhost:8002/mcp (no trailing slash)
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
   [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index
-  [--no-jcodemunch]          \  # force inert stub (offline/test); P1/P-* yield nothing
-  --tasks-file "$SNAPSHOT" \
+  [--no-jcodemunch]          \  # force inert stub (offline/test); P1, P5's H2 and P-* yield nothing, nothing recorded unexamined
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT" \
   2>"$TMPFILE"
@@ -107,7 +73,7 @@ EXIT_CODE=$?
 FINDINGS=$(cat "$TMPFILE")
 
 # Clean up (EXIT trap above also covers abnormal exits).
-rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"
+rm -f "$TMPFILE"
 ```
 
 **Do not "restore" a `--jcodemunch-repo` default.** There is deliberately none.
@@ -170,13 +136,12 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 
 | Failure | Error message pattern | Recovery hint to user |
 |---------|-----------------------|-----------------------|
-| Missing tasks-file | `error reading tasks-file '/tmp/reify-audit-snapshot-XXXXXX.json': …` | Confirm fused-memory MCP is responsive; the snapshot tempfile should have been written by the snapshot step above. Check `systemctl --user status fused-memory`. |
-| Malformed tasks-file | `error parsing tasks-file '…': …` | Tasks JSON is not a valid array of `TaskMetadata`; check fused-memory sync |
+| fused-memory unreachable or erroring | `error connecting to fused-memory at '<url>': …` or `error loading tasks from fused-memory: …` | Check `systemctl --user status fused-memory`, and that `--fused-memory-url` (or `$FUSED_MEMORY_URL`) names the live endpoint, with no trailing slash |
 | Unreadable runs.db | `error opening runs-db 'data/orchestrator/runs.db': …` | DB may not exist yet; confirm orchestrator has run at least once |
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
 | Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
-| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses on a PPRDSTATUS-only `--pattern` run; a mixed run prints a PPRDSTATUS breadcrumb instead (§4.1). Confirm the snapshot, or fused-memory for this `--project-root`, actually holds tasks |
+| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses on a PPRDSTATUS-only `--pattern` run; a mixed run prints a PPRDSTATUS breadcrumb instead (§4.1). Confirm fused-memory actually holds tasks for this `--project-root` |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
@@ -190,19 +155,21 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
   ```
   (`absent` reads `query failed` when the file exists but cannot be queried.) Zero PDCHECK findings behind that line mean "not checked", not "clean". Run from the main checkout, or point `REIFY_PTODO_TASKS_DB` at the DB.
 
-PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the loaded task corpus (the `--tasks-file` snapshot, or the fused-memory live loader), so an empty corpus is its one degraded state, handled with the same two arms as an unusable index. A PPRDSTATUS-only run refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and PPRDSTATUS prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero PPRDSTATUS findings behind it mean "not checked".
+PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the task corpus the fused-memory live loader returns, so an empty corpus is its one degraded state, handled with the same two arms as an unusable index. A PPRDSTATUS-only run refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and PPRDSTATUS prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero PPRDSTATUS findings behind it mean "not checked".
 
 See `references/modes.md` §4 notes for detail.
 
-When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep, `--pattern P1`, and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. Instead:
+When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), or something answers at the URL but refuses the MCP handshake, the default sweep, `--pattern P1`, `--pattern P5` and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. (`--pattern P5` attempts the handshake because P5's H2 live-path pass queries jcodemunch; its other passes never do.) Instead:
 
-- P1 **and** the advisory P-* patterns (PDEAD, PUNTESTED, PLAYER) degrade to **zero findings** (the inert `NoopJCodemunchOps` stub is used for all of them).
-- Every selected detector that does not query jcodemunch — P2 (consumer-stub), P5 (phantom-done) and the structural lanes above — **still runs** and produces normal findings.
-- A breadcrumb line appears on stderr before the JSON array:
+- Every jcodemunch-backed pass runs on the inert `NoopJCodemunchOps` stub, which answers every query with nothing.
+- P1 and P5's H2 pass each record **one** Low run-level unexamined finding — `P1TaskUnexamined` / `P5LivePathUnexamined` with an empty `task_id` — whose summary carries the reason, so their silence is never read as a clean result. H2's is recorded only when the run sweeps a task H2 would have queried jcodemunch for: a done task whose `metadata.files` span two or more `crates/<name>/` roots and which has a provenance commit (`h2_range` in `p5_phantom_done.rs`). A sweep, or a `--task` spot-check, holding no such task records none, since its zero H2 findings are clean either way. The advisory P-* patterns (PDEAD, PUNTESTED, PLAYER) degrade to **zero findings** with no such record.
+- Every pass that does not query jcodemunch — P2 (consumer-stub), P5's other passes (phantom-done, gitignored metadata, tests-assert-empty) and the structural lanes above — **still runs** and produces normal findings.
+- One breadcrumb line appears on stderr before the JSON array, naming the cause and the selected jcodemunch-backed detectors. Its label says which failure it was — nothing answered, versus an answer that is not a live MCP serve (a 4xx/5xx status, or a body that is not an MCP `InitializeResult`):
   ```
-  reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1 degraded to zero findings; P2/P5 still run (pass --no-jcodemunch to silence)
+  reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1, P5 ran without jcodemunch; every other selected detector still runs (pass --no-jcodemunch to skip them deliberately)
+  reify-audit: jcodemunch handshake refused at 'http://127.0.0.1:8901/mcp': … — P1, P5 ran without jcodemunch; every other selected detector still runs (pass --no-jcodemunch to skip them deliberately)
   ```
-  *(Note: the breadcrumb text names "P1" generically, even when an advisory P-* pattern such as PDEAD, PUNTESTED, or PLAYER is the pattern that degraded — the message text in the binary was written before the P-* patterns existed. All of P1/PDEAD/PUNTESTED/PLAYER degrade identically; the breadcrumb wording is not a reliable indicator of which pattern triggered the degradation.)*
+  The first means start a serve; the second means check what is listening on that port.
 
 **This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally. The freshness gate below does **not** fire on this path: with no serve there is no corpus to be misled by, so there is nothing to refuse.
 
@@ -211,7 +178,7 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
 After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs. The outcome splits on what `--pattern` selected:
 
 - An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr (carrying a marker token in three of the four cases tabulated below). Nothing in the run set could have survived a refusal, so nothing is salvaged.
-- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, every other selected detector still runs, and the findings array is still emitted. The breadcrumb repeats the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
+- A **mixed or pattern-less** run — including any set that selects `P5`, whose other passes never read the index — fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed passes run on the inert stub, P1 and P5's H2 pass each record one run-level unexamined finding, PDEAD/PUNTESTED/PLAYER yield zero findings, every other selected detector still runs, and the findings array is still emitted. The breadcrumb and the unexamined findings' summaries repeat the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
 
 The refusal returns **before any findings array is serialized**, so it emits no parseable JSON. That is precisely what lets the existing §3.1 disambiguator classify it correctly: the tempfile does not parse as a JSON array, so it is routed as an infra error rather than as 125 High findings. §3.1 needs no change for this — do not edit it.
 
@@ -226,9 +193,9 @@ The refusal returns **before any findings array is serialized**, so it emits no 
 
 **The marker token is not exhaustive, and that is deliberate.** The fourth row is token-less by design: `enforce_index_freshness` (`crates/reify-audit/src/bin/reify-audit.rs`) writes that message to be *distinct* from every marker token precisely because neither staleness nor emptiness nor unreadability of the index has been established, and mislabelling it as one of them would send an operator to re-index over what is actually a git fault. So the token, **when present**, is the discriminator — but a 125 whose message names freshness and carries no token is this case, not an undocumented fourth code.
 
-**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 and the advisory P-* patterns are intentionally skipped.
+**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. It is a declared scope reduction (the per-run artifact records the argv), so it records **no** unexamined finding. It is how to run P5 without H2 — `--pattern P5` alone now connects — and how to run P2/P5 sweeps where P1 and the advisory P-* patterns are intentionally skipped. Connecting has a latency cost: a refused connection fails fast, but a port that accepts and never replies costs the client's HTTP timeout (`HTTP_TIMEOUT_SECS` in `jcodemunch_client.rs`, 60 s) before the run falls back. So a `--pattern P5` or `--task <id> --pattern P5` spot-check that must stay quick should pass `--no-jcodemunch`. `--pre-done` never connects.
 
-**Serve prerequisite:** For P1 and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, a serve must be answering at the configured URL for the duration of the run. There is no persistent systemd unit and no `systemctl` query to run — wrap the invocation instead:
+**Serve prerequisite:** For P1, P5's H2 pass and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, a serve must be answering at the configured URL for the duration of the run. There is no persistent systemd unit and no `systemctl` query to run — wrap the invocation instead:
 
 ```bash
 scripts/with-jcodemunch-serve.sh -- $REIFY_AUDIT_BIN --pattern P1 --project-root "$REPO_ROOT" …
@@ -295,8 +262,8 @@ exactly once per task and `check_one` returns `Option<Finding>`, so the
 phantom-done corroboration legs are mutually exclusive — you will never see two
 `P5PhantomDone` rows for the same `task_id` in one run. A task CAN carry a
 `P5PhantomDone` plus one of the independent per-task passes
-(`P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`), which
-is the multi-finding shape above. Two `P5PhantomDone` rows in one run always
+(`P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`,
+`P5LivePathUnexamined`), which is the multi-finding shape above. Two `P5PhantomDone` rows in one run always
 mean two distinct task ids.
 
 ### `--pre-done` landing gate (the D-1 hook path)
@@ -449,7 +416,7 @@ Skill behaviour: `exit_code == 125` triggers the disambiguator (§3.1): skill pa
 
 ```
 $ reify-audit --since 2026-05-02 2>/tmp/out.json; echo "exit=$?"
-reify-audit: error: --tasks-file is required (path to JSON array of TaskMetadata)
+reify-audit: error connecting to fused-memory at 'http://localhost:8002/mcp': MCP HTTP error: POST http://localhost:8002/mcp: … Connection refused (os error 111)
 exit=125
 ```
 

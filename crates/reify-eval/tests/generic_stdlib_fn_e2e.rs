@@ -91,7 +91,7 @@ fn stdlib_generic_fn_evals_end_to_end() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors = collect_errors(&result.diagnostics);

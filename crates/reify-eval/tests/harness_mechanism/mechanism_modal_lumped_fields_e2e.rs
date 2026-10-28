@@ -37,7 +37,7 @@ structure def MechanismLumpedFieldsProbe {
     let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)
     let base = FixedSupport(target: "base")
     let opts = ModalOptions(n_modes: 1, boundary_conditions: [base], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(1.0, 0.0, 0.0), element_order: ElementOrder.P1)
     let z_modal = mechanism_modal_analysis(carriage, opts)
     let z_first_mode_hz = first_frequency(z_modal)

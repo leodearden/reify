@@ -13,6 +13,11 @@
 // in `may_not_import` is CLEAN against the current codebase, so a live
 // `--pattern PLAYER` run returns an empty finding set.
 //
+// Every crate's stratum, and the crate rules PLAYER does not express (kernel,
+// solver, analysis, test-support, tooling, crates unlisted below), live in
+// scripts/crate-strata.json, asserted by scripts/assert-crate-strata.py (PRD
+// docs/prds/v0_6/kernel-interface-typed-seam.md §8 γ); per L10 PLAYER is not extended.
+//
 // IMPORTANT: paths are scoped to crates/<crate>/src/ — NOT to whole crate
 // directories. reify-eval has reify-runtime as a cyclic dev-dep (cargo
 // permits this; see crates/reify-eval/Cargo.toml [dev-dependencies]). Using

@@ -805,5 +805,5 @@ fn fixture_commands_remove_every_repo_redirect_var() {
 /// not vacuous.
 #[test]
 fn hook_env_replay_of_generator_scan_evidence_tests() {
-    common::git_env::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 4);
+    common::replay::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 4);
 }

@@ -11,7 +11,7 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::blocking_work::BlockingWorkPlacement;
 use crate::diagnostics::EvalState;
-use crate::document::DocumentStore;
+use crate::document::{DocumentState, DocumentStore};
 
 /// One server log line, addressed to the client rather than to a stream.
 ///
@@ -168,8 +168,8 @@ pub struct ReifyLanguageServer {
     /// reported once rather than per recovery. Shared across clones, since
     /// the `eval_state` it describes is.
     eval_state_poison_reported: Arc<AtomicBool>,
-    /// Where definition / prepareRename / rename / references run their
-    /// blocking work; see [`crate::blocking_work`].
+    /// Where every query handler runs its blocking work; see
+    /// [`crate::blocking_work`].
     blocking_work: BlockingWorkPlacement,
 }
 
@@ -208,6 +208,25 @@ impl ReifyLanguageServer {
     /// Access server state (for testing and embedding).
     pub fn state(&self) -> &Arc<RwLock<ServerState>> {
         &self.state
+    }
+
+    /// Run `work` on the open document at `uri` per the server's
+    /// [`BlockingWorkPlacement`]. `None` means no such document is open, or
+    /// the work panicked.
+    ///
+    /// The [`ServerState`] read lock is held for the lookup only. `work`
+    /// receives the document itself, so its parse (the per-document cache,
+    /// filled by the first request after an edit; see
+    /// [`DocumentState::parsed_module`]) and everything computed from it run
+    /// inside the placement, never inline on the async executor.
+    async fn on_document<T: Send + 'static>(
+        &self,
+        uri: &Url,
+        label: &'static str,
+        work: impl FnOnce(Arc<DocumentState>) -> T + Send + 'static,
+    ) -> Option<T> {
+        let doc = self.state.read().await.documents.get(uri)?;
+        self.blocking_work.run(label, move || work(doc)).await
     }
 
     /// Lock `eval_state`, recovering from a poisoned mutex and reporting the
@@ -512,10 +531,9 @@ impl LanguageServer for ReifyLanguageServer {
             //
             // ONE DELIBERATE RESIDUAL: diagnostics/eval_guard.rs's
             // `SkippedEval::report_to_log` still writes to stderr. Out of
-            // scope for #6329 because `skip_reason` has three production
-            // entry points and two of them (the stateless
-            // `compute_diagnostics`, and `AnalysisContext::from_parsed`)
-            // have no channel to route to — deciding how a sinkless pure
+            // scope for #6329 because `skip_reason` has two production
+            // entry points and one of them (`AnalysisContext::from_parsed`)
+            // has no channel to route to — deciding how a sinkless pure
             // entry point reports is a separate design question. The hazard
             // class above is already absent there regardless: that site is
             // throttled by `LAST_REPORTED_SKIP` to one line per distinct
@@ -566,19 +584,14 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // Reuse the per-document cached parse (one parse per edit) instead of
-        // re-parsing inside AnalysisContext::new; compile+check stay per-request.
-        // The parse uses the document's own module path (no per-call argument).
-        let text = doc.text.clone();
-        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
-        Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
+        let hover = self
+            .on_document(&uri, "hover", move |doc| {
+                let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
+                crate::hover::compute_hover_in_context(&ctx, &doc.text, position)
+            })
+            .await
+            .flatten();
+        Ok(hover)
     }
 
     async fn goto_definition(
@@ -658,18 +671,13 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
-        let items = crate::completion::compute_completions_in_context(&ctx, &text, position);
-        Ok(Some(CompletionResponse::Array(items)))
+        let items = self
+            .on_document(&uri, "completion", move |doc| {
+                let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
+                crate::completion::compute_completions_in_context(&ctx, &doc.text, position)
+            })
+            .await;
+        Ok(items.map(CompletionResponse::Array))
     }
 
     async fn document_symbol(
@@ -678,20 +686,15 @@ impl LanguageServer for ReifyLanguageServer {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
 
-        // Brief read lock: snapshot the document text, then release before the
-        // (pure, CPU-only) symbol walk — mirrors the hover/completion handlers.
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-        let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
-        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        let symbols = self
+            .on_document(&uri, "document_symbol", move |doc| {
+                crate::symbols::compute_document_symbols_from_parsed(
+                    &doc.parsed_module(),
+                    &doc.text,
+                )
+            })
+            .await;
+        Ok(symbols.map(DocumentSymbolResponse::Nested))
     }
 
     async fn document_highlight(
@@ -701,27 +704,21 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        // Brief read lock: snapshot the document text, then drop it before the
-        // (CPU-only) parse + scope walk — mirrors document_symbol/prepare_rename.
-        let state = self.state.read().await;
-        let doc = match state.documents.get(&uri) {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-        drop(state);
-
-        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
-        // for AST-shape consistency with goto_def/rename.
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-
         // The δ producer returns None for non-resolvable positions (keywords/
         // literals/types/declaration names), which the editor renders as "no
         // occurrences". Its spans are inherently in-document (boundary row 7),
         // so no active-doc filtering is needed.
-        Ok(crate::references::compute_document_highlights(
-            &text, &parsed, position,
-        ))
+        let highlights = self
+            .on_document(&uri, "document_highlight", move |doc| {
+                crate::references::compute_document_highlights(
+                    &doc.text,
+                    &doc.parsed_module(),
+                    position,
+                )
+            })
+            .await
+            .flatten();
+        Ok(highlights)
     }
 
     async fn prepare_rename(
@@ -1209,11 +1206,8 @@ fn version_stamped_workspace_edit(
 mod tests {
     use super::test_support::RecordingSink;
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use tower_lsp::LspService;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Create a test LspService with NoOpSink (reduces boilerplate across tests).
     fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) {
@@ -3312,7 +3306,7 @@ structure Assembly {
             .await
             .unwrap();
 
-        // Should resolve to parts.ri line 0 (from editor content, not disk).
+        // Should resolve to parts.ri line 0 (from editor content, not disk). plinecite:allow — 0-based LSP position asserted below, in this test's in-memory parts.ri; not a code cite
         // Disk version doesn't have Plate, so this proves DocumentStore is used.
         let response = goto_result
             .expect("goto-def should resolve Plate from DocumentStore content, not disk");

@@ -217,8 +217,8 @@ fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
 /// into the OpenVDB kernel. This test makes that positive primitive contract visible from green
 /// CI. The graceful-degradation path for stub builds preserves the prior test's guarantee.
 ///
-/// Renamed from `openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully` (stale pin
-/// asserting trait-execute degradation "until task ε") — replaced with the positive Mesh→Voxel
+/// Renamed from `openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully` (a stale pin
+/// asserting trait-execute degradation) — replaced with the positive Mesh→Voxel
 /// primitive contract landed by task α and exercised by task β's executor wiring.
 #[test]
 fn openvdb_two_stage_chain_voxelize_primitive_executes() {

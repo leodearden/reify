@@ -17,8 +17,8 @@
 //   - `ModalResult`        — solver-output container (part, modes, BCs,
 //                            damping, mass-/stiffness-matrix-norms)
 //   - `ModalOptions`       — solver-input knobs (n_modes, BCs, damping,
-//                            sigma, tol, max_iters, reference_direction,
-//                            element_order)
+//                            shift_frequency, tol, max_iters,
+//                            reference_direction, element_order)
 //
 // Module placement: `std.modal.analysis` is the v0.3 sibling reserved by
 // `std.trajectory`'s header — "registered last … ready for the planned
@@ -446,13 +446,12 @@ structure def ModalResult {
 //                          Required at construction (no default in this wave;
 //                          a trait-typed `= NoDamping()` default is deferred
 //                          per plan design-decision-5).
-//   sigma               — spectral-shift origin (in eigenvalue units;
-//                          dimensionless). Default `0.0` (added later) targets
-//                          the smallest-|λ| cluster (lowest-frequency modes).
-//                          Explicitly NOT constrained: a shift can physically
-//                          be anywhere on the real line (mirrors
-//                          BucklingOptions.sigma).
-//   tol                 — eigensolver convergence tolerance. Default 1e-9
+//   shift_frequency     — the frequency (Hz, not rad/s) the eigensolver
+//                          targets; the solver shifts to λ = (2π·f)² via
+//                          `frequency_hz_to_eigenvalue`. Default `0Hz` = the
+//                          lowest modes. Accepted costs and per-path honor
+//                          status: PRD §4.3.
+//   tol                — eigensolver convergence tolerance. Default 1e-9
 //                          (added later) encoded as the decimal literal
 //                          `0.000000001` — Reify's number grammar has no
 //                          scientific notation (same convention as
@@ -521,7 +520,7 @@ structure def ModalOptions {
     param n_modes : Int = 10
     param boundary_conditions : List<Support>
     param damping : DampingDescriptor
-    param sigma : Real = 0.0
+    param shift_frequency : Frequency = 0Hz
     param tol : Real = 0.000000001            // = 1e-9 (no scientific notation in Reify grammar)
     param max_iters : Int = 200               // PRD §4.3 — NOT 1000 (modal converges faster than buckling)
     param reference_direction : Vector3<Dimensionless>
@@ -552,12 +551,10 @@ structure def ModalOptions {
     // Same task-2544 rationale as above.
     constraint max_iters > 0
     // NOTE — explicitly NOT constrained:
-    //   sigma               : Real                  — spectral-shift origin;
-    //                          any real is physically valid (negative shifts
-    //                          target the negative side of the spectrum).
-    //                          `sigma >= 0` would wrongly forbid that, so the
-    //                          contract stays open (mirrors
-    //                          BucklingOptions.sigma).
+    //   shift_frequency     : Frequency             — the conversion squares
+    //                          it, so f and −f select the same λ; a `>= 0Hz`
+    //                          constraint would add a failure mode with no
+    //                          physical content.
     //   reference_direction : Vector3<Dimensionless> — the `norm() > 0`
     //                          invariant is a method-call on Vector3, NOT a
     //                          scalar predicate, so it is NOT expressible in

@@ -1,6 +1,6 @@
 # Result-field vacuity closure: a declared result field is populated, degraded-with-reason, or owned
 
-**Milestone:** v0_6 · **Status:** active · **Date:** 2026-08-31 · **Approach:** B + H (contract + two-way boundary tests)
+**Milestone:** v0_6 · **Status:** active (gap-fill 2026-10-16: §7 degenerate-builder row; β #7100) · **Date:** 2026-08-31 · **Approach:** B + H (contract + two-way boundary tests)
 
 **Code anchors** verified against main `90e27653bb` (2026-08-31). Main moves fast — cite-by-symbol; re-locate lines at implementation time.
 
@@ -337,7 +337,7 @@ Every measured finding, with its exit. No finding is unassigned (D4).
 | `mechanism_modal` `Mode.shape` / `participation_mass` | **degraded** — honest `Undef`, reason recorded at the producer (§2.3). The entry cites **no** task: #7012, which ruled it, is done, and a degraded entry citing a done task reds C4′(c) *(Amendment 2026-09-23, task #7012: was **allowlist** to #7012 while the values were the C2′ fakes `[]` / `0`)* | declared by β #7100, ruled by #7012 |
 | `mechanism_modal` `ModalResult.boundary_conditions` | **degraded** — honest `Undef`, reason recorded at the producer (§2.3); cites **no** task, for the same C4′(c) reason *(Amendment 2026-09-23, task #7012: was **allowlist** to #7012 while the value was a hard-coded `[]`)* | declared by β #7100, ruled by #7012 |
 | `mechanism_modal` `mass_matrix_norm` / `stiffness_matrix_norm` | **populated** — the Frobenius norms of the physical lumped M / K (§2.3) *(Amendment 2026-09-23, task #7012: was **allowlist** to #7012 while both were a hard-coded `0.0`)* | declared by β #7100, ruled by #7012 |
-| `degenerate_modal_result` / degenerate-builder fields (`modes=[]`, `bcs=[]`, `norms=0.0`) | **degraded** — error-path builder accompanied by its diagnostic; β flips remaining fakes to honest `Undef` **on the degenerate builders only** (error paths, minimal observable change) and records reasons | this PRD, leaf β |
+| `degenerate_modal_result` / degenerate-builder fields (`modes=[]`, `bcs=[]`, `norms=0.0`) | **deleted — error paths return Failed** (amended 2026-10-16, gap-fill K5-1: S15 ζ₀ #9287 deletes `degenerate_modal_result` and `degenerate_displacement_history`; a `Failed` cell carries no value, so β has no degenerate-builder flips) | S15 ζ₀ #9287 |
 | buckling `pre_stress` / degenerate `damping` `Undef` convention | **degraded** — already honest; declarations land in δ | this PRD, leaf δ |
 | `placeholder_part()` plausible-fake form | tolerated under `.part`'s allowlist entry per C1′; the honest-form flip belongs to the owner | `.part`'s owner |
 | stale prose promises (§2.7) | **fix** — rewrite to cite live owners; delete false consumer claims | this PRD, leaf ε |
@@ -419,3 +419,10 @@ umbrella + invariant entries are **not** leaves — they land with this PRD's co
    construction of `.ri`-declared result structures, if any exist). **Suggested resolution:** δ's
    sweep measures; if found, either declare them too or pin the idiom as mandatory for result
    producers. Decide in δ.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from the attended gap-fill sitting, `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16).
+
+- **K5-1** (`§K5-1`): an Error-severity diagnostic implies `ComputeOutcome::Failed`. §7's `degenerate_modal_result` / degenerate-builder row becomes "deleted — error paths return Failed" (amended in place above); its owner is S15 ζ₀ #9287. β #7100's degenerate-builder honest-`Undef` flips leave its scope, and β now depends on S15 ζ #8693 (the single ModalResult/Mode builders its C1′ dispositions attach to). D2 ("loudness from the gate plus honest Undef") is not contradicted: a Failed cell carries no value at all. The row was a 2026-08-31 PRD disposition, not a Leo ruling, and predates S15 C2's single-Failed rule and S16's INV-SF-2 line; no ruling is re-ruled.
+

@@ -3,25 +3,30 @@
  *
  * Exports findUsesCommand — a CodeMirror Command factory that reads the cursor
  * from view.state.selection.main.head, sends a textDocument/references request
- * (declaration ∪ uses, scoped to the open document's enclosing entity body by
- * the α reference-collector), maps the resulting LSP Location[] into
- * ReferenceResult[], and forwards them to a callback so the GUI can populate
- * the Find-uses panel.
+ * (declaration ∪ uses across the workspace, imported files included), maps the
+ * resulting LSP Location[] into ReferenceResult[], and forwards them to a
+ * callback so the GUI can populate the Find-uses panel.
  *
  * Mirrors gotoDefinitionCommand (gotoDefinition.ts): no @codemirror/view or
  * @codemirror/state runtime imports are added here — the keymap.of wrapping
  * lives in Editor.tsx. The LspClient dependency is injected (Pick<…,'references'>)
  * so the command is unit-testable without the Tauri bridge.
+ *
+ * An optional VersionSkewGuard keeps the panel from showing ranges computed
+ * against text the user has since edited (see resolveFreshLocations).
  */
 import type { EditorView } from '@codemirror/view';
+import { askFresh, versionsDisagree, type VersionSkewGuard } from './versionSkew';
 import type { Location, LspClient } from './lspClient';
+import { canonicalizeKey, isSameFile } from '../utils/pathUtils';
+import type { SourceLocation } from '../types';
 
 /**
  * A single reference occurrence, in native LSP (0-based) coordinates.
  *
- * The +1 conversion to the editor's 1-based SourceLocation happens later, at
- * the App click handler that drives setScrollToLocation — not here, so the
- * panel and command stay in LSP-native coordinates end to end.
+ * The panel and command stay in LSP-native coordinates end to end; the
+ * conversion to the editor's 1-based, path-keyed SourceLocation is
+ * {@link referenceSourceLocation}, applied when a row is navigated to.
  */
 export interface ReferenceResult {
   uri: string;
@@ -30,6 +35,17 @@ export interface ReferenceResult {
   endLine: number;
   endCharacter: number;
   preview?: string;
+}
+
+/** The editor location of a reference: 1-based, keyed by the decoded store path rather than the URI. */
+export function referenceSourceLocation(r: ReferenceResult): SourceLocation {
+  return {
+    file_path: canonicalizeKey(r.uri),
+    line: r.line + 1,
+    column: r.character + 1,
+    end_line: r.endLine + 1,
+    end_column: r.endCharacter + 1,
+  };
 }
 
 /**
@@ -49,44 +65,92 @@ function previewForLocation(view: EditorView, location: Location): string | unde
   }
 }
 
+/** One Location as the Find-uses panel shows it, with its best-effort preview. */
+function toReferenceResult(view: EditorView, location: Location): ReferenceResult {
+  return {
+    uri: location.uri,
+    line: location.range.start.line,
+    character: location.range.start.character,
+    endLine: location.range.end.line,
+    endCharacter: location.range.end.character,
+    preview: previewForLocation(view, location),
+  };
+}
+
+/**
+ * The cursor's 0-based LSP position, read afresh for every ask: a re-ask
+ * follows an edit, and CodeMirror maps the cursor, with the symbol under it,
+ * through every edit.
+ */
+function cursorPosition(view: EditorView): { line: number; character: number } {
+  const head = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(head);
+  return { line: line.number - 1, character: head - line.from };
+}
+
+/**
+ * Request references whose ranges still describe the text on screen: stale
+ * when the document's version moved between the ask and the answer, re-asked
+ * per askFresh. With no `guard` the single answer passes straight through.
+ */
+async function resolveFreshLocations(
+  requestReferences: () => Promise<Location[]>,
+  view: EditorView,
+  uri: string,
+  guard?: VersionSkewGuard,
+): Promise<Location[] | null> {
+  if (!guard) return requestReferences();
+  const answer = await askFresh(
+    guard,
+    view,
+    async () => {
+      const askedAt = guard.currentVersion(uri);
+      return { askedAt, locations: await requestReferences() };
+    },
+    ({ askedAt }) => versionsDisagree(askedAt, guard.currentVersion(uri)),
+  );
+  return answer && answer.locations;
+}
+
 /**
  * Create a CodeMirror Command for Shift+F12 "Find uses".
  *
  * Returns a `(view: EditorView) => boolean` suitable for use in keymap.of.
- * Reads the cursor position from view.state.selection.main.head, requests
- * references for it (includeDeclaration=true), maps Location[] → ReferenceResult[],
+ * Reads the cursor position from view.state.selection.main.head at each ask,
+ * requests references for it (includeDeclaration=true), maps Location[] → ReferenceResult[],
  * and calls `onResults`. Errors are swallowed (a warning is logged) so a failed
  * request never bubbles into CodeMirror; the command always returns true to
  * consume the key.
  *
+ * An answer that arrives after a switch to another file is dropped: the editor
+ * reuses one EditorView across files, so previews would be read from, and the
+ * panel opened over, another document.
+ *
  * @param uriGetter  Getter for the current document URI (re-resolved at call time).
  * @param client     LSP client (only its `references` method is used).
  * @param onResults  Receives the mapped ReferenceResult[] (possibly empty).
+ * @param guard      Arms the version-skew guard (see resolveFreshLocations);
+ *                   omitted = one unguarded request.
  */
 export function findUsesCommand(
   uriGetter: () => string,
   client: Pick<LspClient, 'references'>,
   onResults: (results: ReferenceResult[]) => void,
+  guard?: VersionSkewGuard,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
-    const head = view.state.selection.main.head;
-    const line = view.state.doc.lineAt(head);
-    const lspLine = line.number - 1;
-    const lspChar = head - line.from;
-    const currentUri = uriGetter();
+    const uri = uriGetter();
+    const askAtCursor = (): Promise<Location[]> => {
+      const { line, character } = cursorPosition(view);
+      return client.references(uri, line, character, true);
+    };
 
-    client
-      .references(currentUri, lspLine, lspChar, true)
+    resolveFreshLocations(askAtCursor, view, uri, guard)
       .then((locations) => {
-        const results: ReferenceResult[] = locations.map((loc) => ({
-          uri: loc.uri,
-          line: loc.range.start.line,
-          character: loc.range.start.character,
-          endLine: loc.range.end.line,
-          endCharacter: loc.range.end.character,
-          preview: previewForLocation(view, loc),
-        }));
-        onResults(results);
+        // Checked after the LAST await, guard or not: Editor forgets the old
+        // URI's version on a switch, which leaves the version comparison blind.
+        if (!locations || !isSameFile(uriGetter(), uri)) return;
+        onResults(locations.map((location) => toReferenceResult(view, location)));
       })
       .catch((err) => console.warn('findUses: failed to collect references', err));
 

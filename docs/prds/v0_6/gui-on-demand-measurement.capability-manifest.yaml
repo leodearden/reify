@@ -21,7 +21,7 @@ tasks:
       kind: grep
       pattern: let has_geometric_conforms = module_has_geometric_conforms
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: absent
   - name: kind-detectors-are-private-to-the-reify-cli-binary
     binding: 'PASS-WITH-AMENDMENT (A1). FALSIFIES the PRD §4/§8 implication that the
@@ -105,6 +105,7 @@ tasks:
       pattern: 'capture_repr_tol: _'
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/per_build_state.rs
       expect: present
   - name: cmd-check-purpose-branch-bypasses-the-kernel-arm
     binding: 'PASS-WITH-AMENDMENT (A2). UNSTATED IN THE PRD. cmd_check has a second
@@ -115,12 +116,6 @@ tasks:
       either way, but α must state whether the --purpose branch also routes through
       the seam rather than leaving it to an implementer to guess.'
     verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: run_gdt_check_passes
-      paths:
-      - crates/reify-cli/src/main.rs
-      expect: present
   - name: tessellate-snapshot-already-honours-capture
     binding: PASS-WITH-AMENDMENT (A3). UNSTATED IN THE PRD, and it cheapens β materially.
       Engine::tessellate_snapshot — the surface build_gui_state already calls — reads
@@ -188,6 +183,7 @@ tasks:
       pattern: achieved_repr_tol\.clear\(\)
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/per_build_state.rs
       expect: present
   - name: measured-values-have-no-structured-channel
     binding: 'PASS-WITH-AMENDMENT (A5). FALSIFIES C-STATUS''s measured(verdict, values,
@@ -263,9 +259,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn demand_dispatch_on_engine\(
+      pattern: fn demand_dispatch_on_engine\(|fn demand_dispatch_json
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+      - gui/src-tauri/src/commands.rs
       expect: present
   - name: constraint-payload-has-two-construction-paths
     binding: 'PASS-WITH-AMENDMENT (A8). ConstraintData (gui/src-tauri/src/types.rs)
@@ -313,7 +311,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: edit_check\(cell_id, value\)
+      pattern: edit_check\(cell_id, value
       paths:
       - gui/src-tauri/src/engine.rs
       expect: present
@@ -655,6 +653,7 @@ tasks:
       pattern: gui-feature pass carries no
       paths:
       - tests/infra/test_compute_trampoline_registration_wired.sh
+      - tests/infra/test_verify_gui_feature_test_pass.sh
       expect: present
   - name: reify-eval-tests-must-be-harness-submodules
     binding: 'PASS-WITH-AMENDMENT (A13), UNLISTED by the overlay rule. reify-eval
@@ -670,9 +669,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: unregistered-standalone
+      # widened 2026-10-19 by the cargo-native-harness-layout decompose: δ deletes the script; its successor is scripts/harness_layout.py
+      pattern: 'unregistered-standalone|standalone-added'
       paths:
       - scripts/check-harness-baseline-registration.sh
+      - scripts/harness_layout.py
       expect: present
   - name: run-all-classification-covers-only-infra-shell-tests
     binding: PASS-WITH-AMENDMENT (A13). tests/infra/run-all-classification.manifest
@@ -712,9 +713,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: _RUST_COUPLED_RI_FIXTURES
+      pattern: '_RUST_COUPLED_RI_FIXTURES|pg-drift:allow'
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
   - name: bt4-capture-is-observation-only-by-construction
     binding: signal premise — BT-4 is a cheap pin, not a risk. In surface_subtree's
@@ -728,6 +730,7 @@ tasks:
       pattern: achieved_repr_tol\.insert\(
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/placed_walk.rs
       expect: present
   - name: bt3-no-perturbation-has-an-exact-in-tree-template
     binding: 'capability→producer (wired) — EngineSession::build_gui_state_full_scene

@@ -28,7 +28,9 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::{make_simple_engine, meters, point3};
+use reify_test_support::{
+    make_simple_engine, meters, point3, read_real_or_scalar, read_real_or_scalar3,
+};
 
 // ---- Value-construction helpers (mirror tensegrity_t3b_load.rs) -------------
 
@@ -59,25 +61,6 @@ fn area(a: f64) -> Value {
 /// A 3-component `Value::Vector` force load (Force scalars).
 fn force_vec(fx: f64, fy: f64, fz: f64) -> Value {
     Value::Vector(vec![force(fx), force(fy), force(fz)])
-}
-
-/// Extract an f64 from a Scalar (any dimension) or a bare Real.
-fn coord(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real component, got {other:?}"),
-    }
-}
-
-/// Crack a 3-component displacement `Value::Vector`/`Value::Point` into `[f64; 3]`.
-fn vec3(v: &Value) -> [f64; 3] {
-    match v {
-        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-            [coord(&c[0]), coord(&c[1]), coord(&c[2])]
-        }
-        other => panic!("expected a 3-component Vector, got {other:?}"),
-    }
 }
 
 /// A combined pavilion `Tensegrity` value: a flat membrane patch braced by one
@@ -223,16 +206,16 @@ fn trampoline_combined_pavilion_solves() {
     let displacements = list_field(&fields, "displacements");
     assert_eq!(displacements.len(), 5, "one displacement per node");
     for (i, d) in displacements.iter().enumerate() {
-        let u = vec3(d);
+        let u = read_real_or_scalar3(d, &format!("displacements[{i}]"));
         assert!(
             u.iter().all(|c| c.is_finite()),
             "displacement[{i}] must be finite (non-Undef), got {u:?}",
         );
     }
-    let u_center = vec3(&displacements[2]);
+    let u_center = read_real_or_scalar3(&displacements[2], "displacements[2]");
     assert!(u_center[2] < 0.0, "free center moves toward the -z load, got {u_center:?}");
     for &anchor in &[0usize, 1, 3, 4] {
-        let u = vec3(&displacements[anchor]);
+        let u = read_real_or_scalar3(&displacements[anchor], &format!("displacements[{anchor}]"));
         assert!(
             u.iter().all(|c| c.abs() < 1e-9),
             "anchored node {anchor} must not move, got {u:?}",
@@ -244,21 +227,26 @@ fn trampoline_combined_pavilion_solves() {
     let member_forces = list_field(&fields, "member_forces");
     assert_eq!(member_forces.len(), 2, "one member force per line member");
     for (i, f) in member_forces.iter().enumerate() {
-        assert!(coord(f).is_finite(), "member_forces[{i}] must be finite, got {f:?}");
+        let force = read_real_or_scalar(f, &format!("member_forces[{i}]"));
+        assert!(
+            force.is_finite(),
+            "member_forces[{i}] must be finite, got {f:?}"
+        );
     }
     let member_force_deltas = list_field(&fields, "member_force_deltas");
     assert_eq!(member_force_deltas.len(), 2, "one delta per line member");
     for (i, d) in member_force_deltas.iter().enumerate() {
+        let delta = read_real_or_scalar(d, &format!("member_force_deltas[{i}]"));
         assert!(
-            coord(d).is_finite(),
+            delta.is_finite(),
             "member_force_deltas[{i}] must be finite, got {d:?}",
         );
     }
     // The cable (index 1) stays in tension (taut) under the downward pull.
+    let cable_force = read_real_or_scalar(&member_forces[1], "member_forces[1]");
     assert!(
-        coord(&member_forces[1]) > 0.0,
-        "cable (member 1) stays in tension, got {}",
-        coord(&member_forces[1]),
+        cable_force > 0.0,
+        "cable (member 1) stays in tension, got {cable_force}",
     );
 
     // member_slack: per line member, none slack (cable stays taut; struts never
@@ -278,7 +266,12 @@ fn trampoline_combined_pavilion_solves() {
             Value::List(comps) => {
                 assert_eq!(comps.len(), 3, "Δσ[{p}] encodes 3 Voigt components");
                 for (k, c) in comps.iter().enumerate() {
-                    assert!(coord(c).is_finite(), "Δσ[{p}][{k}] must be finite, got {c:?}");
+                    let component =
+                        read_real_or_scalar(c, &format!("surface_stress_deltas[{p}][{k}]"));
+                    assert!(
+                        component.is_finite(),
+                        "Δσ[{p}][{k}] must be finite, got {c:?}"
+                    );
                 }
             }
             other => panic!("surface_stress_deltas[{p}] must be a List, got {other:?}"),
@@ -292,7 +285,10 @@ fn trampoline_combined_pavilion_solves() {
     match &principals[0] {
         Value::List(pair) => {
             assert_eq!(pair.len(), 2, "principal pair is [min, max]");
-            let (min, max) = (coord(&pair[0]), coord(&pair[1]));
+            let (min, max) = (
+                read_real_or_scalar(&pair[0], "surface_principal_stresses[0][0]"),
+                read_real_or_scalar(&pair[1], "surface_principal_stresses[0][1]"),
+            );
             assert!(min.is_finite() && max.is_finite(), "principals must be finite");
             assert!(min <= max, "principal pair must be sorted [min, max], got [{min}, {max}]");
             assert!(min > 0.0, "taut patch keeps a positive minimum principal, got {min}");
@@ -357,13 +353,13 @@ fn trampoline_upward_load_slackens_cable() {
     let member_forces = list_field(&fields, "member_forces");
     assert_eq!(member_forces.len(), 2, "one member force per line member");
     assert_eq!(
-        coord(&member_forces[1]),
+        read_real_or_scalar(&member_forces[1], "member_forces[1]"),
         0.0,
         "a dropped (slack) cable reports zero total force, got {:?}",
         member_forces[1],
     );
     assert!(
-        coord(&member_forces[0]).is_finite(),
+        read_real_or_scalar(&member_forces[0], "member_forces[0]").is_finite(),
         "the active strut reports a finite force, got {:?}",
         member_forces[0],
     );
@@ -372,13 +368,13 @@ fn trampoline_upward_load_slackens_cable() {
     // force fell from the +3000 N prestress to 0); the strut delta stays finite.
     let member_force_deltas = list_field(&fields, "member_force_deltas");
     assert_eq!(member_force_deltas.len(), 2, "one delta per line member");
+    let cable_delta = read_real_or_scalar(&member_force_deltas[1], "member_force_deltas[1]");
     assert!(
-        (coord(&member_force_deltas[1]) - (-3_000.0)).abs() < 1e-6,
-        "a dropped cable's force delta cancels its +3000 N prestress, got {}",
-        coord(&member_force_deltas[1]),
+        (cable_delta - (-3_000.0)).abs() < 1e-6,
+        "a dropped cable's force delta cancels its +3000 N prestress, got {cable_delta}",
     );
     assert!(
-        coord(&member_force_deltas[0]).is_finite(),
+        read_real_or_scalar(&member_force_deltas[0], "member_force_deltas[0]").is_finite(),
         "the active strut reports a finite force delta, got {:?}",
         member_force_deltas[0],
     );
@@ -386,7 +382,7 @@ fn trampoline_upward_load_slackens_cable() {
     // displacements: the free center now moves UP toward the +z load (the mirror of
     // the downward happy-path case); anchors stay put.
     let displacements = list_field(&fields, "displacements");
-    let u_center = vec3(&displacements[2]);
+    let u_center = read_real_or_scalar3(&displacements[2], "displacements[2]");
     assert!(
         u_center[2] > 0.0,
         "free center moves toward the +z load, got {u_center:?}",

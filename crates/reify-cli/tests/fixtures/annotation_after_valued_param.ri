@@ -1,0 +1,5 @@
+structure S {
+    param a : Length = 5mm
+    @solver_hint("discrete_set", standard_bolt_lengths)
+    param b : Length = auto
+}

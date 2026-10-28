@@ -1,6 +1,6 @@
 # Capability manifest — `run-all-pool-contention-tiering-fix`
 
-Mechanizes G3 + G6 per leaf for `docs/prds/run-all-pool-contention-tiering-fix.md`. Each binding ties a leaf's
+**AS-AUTHORED GATE ARTIFACT (2026-07-06) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (L0 #5125, L1 #5129, L2 #5130, L3a #5131) — see the parent PRD's SHIPPED header (`docs/prds/run-all-pool-contention-tiering-fix.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-07-06 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 + G6 per leaf for `docs/prds/run-all-pool-contention-tiering-fix.md`. Each binding ties a leaf's
 asserted capability to **evidence** (grep/command/file:line). Any **FAIL** binding blocks queueing until resolved.
 Verified against main @ HEAD, 2026-07-06.
 

@@ -92,6 +92,9 @@ use reify_solver_elastic::{
     resample_multi_nodal_to_grid, solve_buckling_kernel, solve_buckling_kernel_p2, tet_volume_p1,
 };
 
+use super::fea_inputs::{extract_length_si, extract_material};
+use super::fea_loads::{load_items, point_load_force};
+use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Trampoline for `solver::buckling`.
@@ -103,7 +106,7 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// [1] length    : Length             (Value::Scalar { dimension: LENGTH })
 /// [2] width     : Length             (Value::Scalar { dimension: LENGTH })
 /// [3] height    : Length             (Value::Scalar { dimension: LENGTH })
-/// [4] loads     : List<…>            (Value::List of PointLoad StructureInstances)
+/// [4] loads     : List<…>            (Value::List; PointLoad forces are summed)
 /// [5] supports  : List<…>            (Value::List of FixedSupport StructureInstances)
 /// [6] options   : BucklingOptions    (Value::StructureInstance — solver defaults used)
 /// ```
@@ -125,16 +128,17 @@ pub fn solve_buckling_trampoline(
     _prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    // ── (1) Extract material ──────────────────────────────────────────────────
-    let mat = extract_material(&value_inputs[0]);
-
-    // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = extract_scalar_si(&value_inputs[1]);
-    let width = extract_scalar_si(&value_inputs[2]);
-    let height = extract_scalar_si(&value_inputs[3]);
-
-    // ── (3) Extract total compressive load magnitude from loads list ──────────
-    let total_load = extract_total_load(&value_inputs[4]);
+    // ── (1)-(3) Material, geometry scalars (SI: metres), total PointLoad ─────
+    let BucklingInputs {
+        mat,
+        length,
+        width,
+        height,
+        total_load,
+    } = match read_buckling_inputs(value_inputs) {
+        Ok(inputs) => inputs,
+        Err((arg, err)) => return failed_outcome("solve_buckling_trampoline", arg, &err),
+    };
 
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
     let (n_modes, eigen_tol, eigen_max_iters, element_order) =
@@ -665,71 +669,42 @@ fn buckling_unsupported_option_diagnostics(val: &Value) -> Vec<Diagnostic> {
     diags
 }
 
-/// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
-fn extract_material(val: &Value) -> IsotropicElastic {
-    let data = match val {
-        Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_buckling_trampoline: expected material to be \
-             Value::StructureInstance, got: {:?}",
-            other
-        ),
-    };
-    let youngs_modulus = match data.fields.get("youngs_modulus") {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "solve_buckling_trampoline: expected youngs_modulus to be \
-             Value::Scalar, got: {:?}",
-            other
-        ),
-    };
-    let poisson_ratio = match data.fields.get("poisson_ratio") {
-        Some(Value::Real(r)) => *r,
-        other => panic!(
-            "solve_buckling_trampoline: expected poisson_ratio to be \
-             Value::Real, got: {:?}",
-            other
-        ),
-    };
-    IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
-    }
+/// The validated scalar inputs of [`solve_buckling_trampoline`].
+struct BucklingInputs {
+    mat: IsotropicElastic,
+    length: f64,
+    width: f64,
+    height: f64,
+    total_load: f64,
 }
 
-/// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
-fn extract_scalar_si(val: &Value) -> f64 {
-    match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "solve_buckling_trampoline: expected Value::Scalar, got: {:?}",
-            other
-        ),
-    }
+/// Read material → length → width → height → loads through the same
+/// Result-returning readers as `solve_elastic_static`, returning the first
+/// `Err` with the name of its arg.
+fn read_buckling_inputs(
+    value_inputs: &[Value],
+) -> Result<BucklingInputs, (&'static str, FeaValueShapeError)> {
+    let at = |arg: &'static str| move |err: FeaValueShapeError| (arg, err);
+    Ok(BucklingInputs {
+        mat: extract_material(&value_inputs[0]).map_err(at("material"))?,
+        length: extract_length_si(&value_inputs[1]).map_err(at("length"))?,
+        width: extract_length_si(&value_inputs[2]).map_err(at("width"))?,
+        height: extract_length_si(&value_inputs[3]).map_err(at("height"))?,
+        total_load: total_point_load(&value_inputs[4]).map_err(at("loads"))?,
+    })
 }
 
-/// Sum `force` fields from all `PointLoad` StructureInstances in a `Value::List`.
-/// Falls back to a default load of 1.0 N if no force entries are found.
-fn extract_total_load(val: &Value) -> f64 {
-    let items = match val {
-        Value::List(v) => v,
-        other => panic!(
-            "solve_buckling_trampoline: expected Value::List for loads, got: {:?}",
-            other
-        ),
-    };
+/// Sum the `force` of every `PointLoad` in the `loads` list, read by
+/// `fea_loads`; other load kinds do not contribute. Falls back to 1.0 N when
+/// the total is zero.
+fn total_point_load(val: &Value) -> Result<f64, FeaValueShapeError> {
     let mut total = 0.0f64;
-    for item in items {
-        if let Value::StructureInstance(data) = item {
-            // PointLoad.force : Real (magnitude)
-            if let Some(Value::Real(f)) = data.fields.get("force") {
-                total += f;
-            }
-            // Also handle Scalar forces (in case units are carried through)
-            if let Some(Value::Scalar { si_value, .. }) = data.fields.get("force") {
-                total += si_value;
-            }
+    for item in load_items(val, "solve_buckling_trampoline loads")? {
+        if let Value::StructureInstance(data) = item
+            && data.type_name == "PointLoad"
+            && let Some(force) = point_load_force(data)?
+        {
+            total += force;
         }
     }
     // Guard: fall back to 1.0 N when no load magnitude was extracted.
@@ -746,7 +721,7 @@ fn extract_total_load(val: &Value) -> f64 {
     // not store the applied load in the result — so incorrect load extraction
     // will produce a plausible-but-wrong critical load rather than a crash.
     // Diagnostic emission for this case is deferred to task θ/3457.
-    if total == 0.0 { 1.0 } else { total }
+    Ok(if total == 0.0 { 1.0 } else { total })
 }
 
 // ── Persistent-cache value bridge (task #3459 step-4) ────────────────────────
@@ -1416,5 +1391,150 @@ mod tests {
              a non-trivial grid (spacing=0.5); rebuild_axis may have drifted from \
              the resampler formula"
         );
+    }
+
+    // ── task 6922 γ1: loads read through fea_loads; malformed inputs fail ─────
+
+    use crate::arg_acceptance::FieldRejection;
+    use crate::compute_targets::fea_value_shape::FeaValueShapeError;
+    use crate::compute_targets::{scalar, structure};
+    use crate::{CancellationHandle, ComputeOutcome};
+
+    fn point_load(force: Value) -> Value {
+        structure("PointLoad", vec![("force", force)])
+    }
+
+    #[test]
+    fn total_point_load_sums_bare_and_force_dimensioned_point_loads_only() {
+        let loads = Value::List(vec![
+            point_load(Value::Real(600.0)),
+            point_load(scalar(400.0, DimensionVector::FORCE)),
+            structure(
+                "Gravity",
+                vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
+            ),
+            structure("PressureLoad", vec![("magnitude", Value::Real(5.0e6))]),
+        ]);
+        assert_eq!(
+            super::total_point_load(&loads),
+            Ok(1000.0),
+            "only PointLoad forces sum, in either spelling"
+        );
+    }
+
+    #[test]
+    fn total_point_load_keeps_the_unit_sentinel_for_an_empty_or_zero_total() {
+        assert_eq!(super::total_point_load(&Value::List(vec![])), Ok(1.0));
+        assert_eq!(
+            super::total_point_load(&Value::List(vec![point_load(Value::Real(0.0))])),
+            Ok(1.0)
+        );
+    }
+
+    #[test]
+    fn total_point_load_rejects_a_non_list_and_a_wrong_dimension_force() {
+        let non_list = super::total_point_load(&Value::Real(1.0));
+        assert!(
+            matches!(non_list, Err(FeaValueShapeError::ExpectedList { .. })),
+            "a non-List loads value must be Err(ExpectedList), got {non_list:?}"
+        );
+        let length_force = point_load(scalar(2.0, DimensionVector::LENGTH));
+        let wrong = super::total_point_load(&Value::List(vec![length_force]));
+        assert!(
+            matches!(
+                &wrong,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "PointLoad.force" && rejection.expected == "Force"
+            ),
+            "a LENGTH force must be Err(Rejected) naming PointLoad.force, got {wrong:?}"
+        );
+    }
+
+    fn buckling_inputs() -> Vec<Value> {
+        let len = |m: f64| scalar(m, DimensionVector::LENGTH);
+        vec![
+            structure(
+                "Steel_AISI_1045",
+                vec![
+                    ("youngs_modulus", scalar(205.0e9, DimensionVector::PRESSURE)),
+                    ("poisson_ratio", Value::Real(0.29)),
+                ],
+            ),
+            len(0.8),
+            len(0.02),
+            len(0.02),
+            Value::List(vec![point_load(Value::Real(1000.0))]),
+            Value::List(vec![]),
+            Value::Undef,
+        ]
+    }
+
+    #[test]
+    fn solve_buckling_trampoline_fails_malformed_inputs_instead_of_panicking() {
+        let mut no_poisson = buckling_inputs();
+        no_poisson[0] = structure(
+            "Steel_AISI_1045",
+            vec![("youngs_modulus", scalar(205.0e9, DimensionVector::PRESSURE))],
+        );
+        let mut cases = vec![(no_poisson, "material")];
+        for (index, malformed, arg) in [
+            (4, Value::Real(1.0), "loads"),
+            (0, Value::Real(0.0), "material"),
+            (1, Value::Real(1.0), "length"),
+        ] {
+            let mut inputs = buckling_inputs();
+            inputs[index] = malformed;
+            cases.push((inputs, arg));
+        }
+
+        for (inputs, arg) in cases {
+            let outcome = super::solve_buckling_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+                unreachable!("a malformed {arg} must yield Failed, got {outcome:?}");
+            };
+            let prefix = format!("solve_buckling_trampoline: {arg}:");
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == reify_core::Severity::Error && d.message.starts_with(&prefix)
+                }),
+                "a malformed {arg} must yield an Error starting {prefix:?}, got {diagnostics:?}"
+            );
+        }
+    }
+
+    /// A column size of another dimension is refused, never read as metres.
+    #[test]
+    fn solve_buckling_trampoline_rejects_a_wrong_dimension_column_size() {
+        for (index, arg) in [(1, "length"), (2, "width"), (3, "height")] {
+            let mut inputs = buckling_inputs();
+            inputs[index] = scalar(0.8, DimensionVector::MASS);
+            let outcome = super::solve_buckling_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+                unreachable!("a MASS {arg} must yield Failed, got {outcome:?}");
+            };
+            let prefix = format!("solve_buckling_trampoline: {arg}:");
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == reify_core::Severity::Error
+                        && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+                        && d.message.starts_with(&prefix)
+                        && d.message.contains("Length")
+                }),
+                "a MASS {arg} must yield a DimensionedArgRejected Error starting \
+                 {prefix:?} and expecting a Length, got {diagnostics:?}"
+            );
+        }
     }
 }

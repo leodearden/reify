@@ -1,0 +1,10 @@
+// /prd generic-instantiation-and-call-binding γ₁ control: the free-function
+// spelling of gicb_gamma_trait_method_arg_conformance.ri's mistake is already
+// rejected today ("type 'Foam' does not conform to trait 'Rigid' required by
+// param 'other'"); γ₁ makes the trait instance-method spelling agree.
+module gicb_gamma_free_fn_arg_conformance_control
+
+trait Rigid {}
+fn weigh(other: Rigid) -> Real { 1.0 }
+structure def Foam { param f : Real = 1.0 }
+structure def Top { let bad = weigh(Foam()) }

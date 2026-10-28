@@ -246,7 +246,7 @@ fn run_displacement_at(history: &Value, location: Value, direction: Value) -> Ve
 ///     (in-module in `reify-eval/src/modal_ops.rs`) drives the trampoline and
 ///     asserts every entry is a `Value::Scalar` of `DimensionVector::LENGTH`;
 ///   - DECLARED — `displacement_at_overloads_return_list_of_length`
-///     (`reify-compiler/tests/harness_mechanics/modal_mechanism_compile.rs`)
+///     (`reify-compiler/tests/harness_mechanics/modal_analysis_fns_stdlib_compile.rs`)
 ///     asserts both stdlib overloads declare `-> List<Length>`.
 ///
 /// Those are tests. `displacement_series_outcome` — which wraps the series in
@@ -515,7 +515,7 @@ structure R3bSelectorOverloadProbe {{
         n_modes: 3,
         boundary_conditions: [root],
         damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0003s),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

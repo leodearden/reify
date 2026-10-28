@@ -8,5 +8,9 @@
 pub mod schema;
 pub mod fixtures;
 pub mod git_env;
+pub mod replay;
 pub mod net;
 pub mod index_fixture;
+pub mod mcp_mock;
+pub mod findings;
+pub mod truncated_reply;

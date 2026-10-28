@@ -93,7 +93,8 @@ that way.
 
 | Level | File | What it pins |
 |---|---|---|
-| Compile | `crates/reify-compiler/tests/polymorphic_zero_tests.rs` | operand/operator/dimension/shape breadth, including trait-body-with-conformer and both `IndexAccess` forms — `member_access_lhs_gt_zero_no_error` and `index_access_subscript_gt_zero_no_error` — each with its `*_mismatched_non_zero_still_errors` non-vacuity guard |
+| Compile | `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs` | operand/operator/dimension/shape breadth, including trait-body-with-conformer and both `IndexAccess` forms — `member_access_lhs_gt_zero_no_error` and `index_access_subscript_gt_zero_no_error` — each with its `*_mismatched_non_zero_still_errors` non-vacuity guard |
+| Compile (vacuity carve-out) | `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs` | `trait_body_without_conformer_is_not_dimension_checked` — the conformer-less carve-out pin, paired with its conformed non-vacuity guard and a fires-on-the-defect control |
 | Compile (negatives) | `crates/reify-compiler/tests/comparison_operand_guard_tests.rs` | the guards that make a clean compile meaningful |
 | Eval | `crates/reify-eval/tests/polymorphic_zero_eval.rs` | `Satisfaction::Satisfied` at runtime, incl. compound dimensions |
 | Eval (trait bodies) | `crates/reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs` | the runtime satisfaction signal for the two trait-body stdlib sites — `Satisfied` vs `Violated`, which no compile pin can express |

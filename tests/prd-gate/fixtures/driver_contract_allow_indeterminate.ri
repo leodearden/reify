@@ -14,5 +14,7 @@ module driver_contract_allow_indeterminate
 @allow_indeterminate
 structure TestToleratedIndeterminate {
     param w : Length = auto
-    constraint w > 0mm
+    // The opposing bound keeps `w` a legal strict auto under #6692 while it
+    // stays Indeterminate under the solver-free test runner.
+    constraint w > 0mm && w < 10mm
 }

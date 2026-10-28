@@ -41,9 +41,14 @@ data/queue/*.db*
 data/review-checkpoints/
 data/orchestrator/
 data/audit-runs/
+# verify instrumentation ledger + flaky ledger (machine-written; docs/notes/verify-instrumentation-ledger.md)
+data/verify-logs/
 gui/src-tauri/gen/
 orchestrator.log*
-review/reports/
+# /review's pre-contract report files carry no as_of_sha and are not reports (dark-factory skills/review/SKILL.md §Report home);
+# the contract-shaped review-<run_id>.{json,md} records are tracked.
+review/reports/phase[12]-*.json
+review/reports/summary-*.md
 
 # Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
 tree-sitter-reify/src/parser.c

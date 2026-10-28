@@ -37,6 +37,22 @@ struct ToolDef {
 /// `crate::screenshot_save::take_save_path`.
 const SAVE_PATH_DESCRIPTION: &str = "Optional ABSOLUTE path ending in .png; when given the PNG is written there, overwriting any existing file, and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist.";
 
+/// What `bounds` and `hitTestable` mean, for every tool that reports them
+/// (contract §3 "Clipping and hit-testability"). A macro rather than a const
+/// because `concat!` splices only literals into a `&'static str`.
+macro_rules! placement_note {
+    () => {
+        "bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3)."
+    };
+}
+
+/// The aiming rule for every coordinate-addressed tool (click_at, hover, drag).
+macro_rules! aim_by_hit_testable_note {
+    () => {
+        "To aim at an element, use its bounds centre only when its hitTestable is true: a clipped or occluded element's centre resolves to a different element."
+    };
+}
+
 fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -136,7 +152,11 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "dom_query",
-            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect. Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
+            description: concat!(
+                "Query a DOM element by data-testid. Returns { exists, visible, hitTestable, text, tagName, bounds }. ",
+                placement_note!(),
+                " Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -154,7 +174,10 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_elements",
-            description: "List all DOM elements with data-testid attributes. Returns testId, tagName, visibility, and bounds for each.",
+            description: concat!(
+                "List all DOM elements with data-testid attributes. Returns { elements: [{ testId, tagName, visible, hitTestable, bounds }] }. ",
+                placement_note!()
+            ),
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -388,28 +411,12 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "morph_stats",
-            description: "Mesh-morph runtime stats: morph_count, remesh_count, last_rejection_reason. \
-                          Surfaces reify-mesh-morph::stats::snapshot(). Per GR-016 / \
-                          docs/prds/v0_3/gui-event-channel-inventory.md §2.3.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "body_id": {
-                        "type": "string",
-                        "description": "Optional body identifier (currently ignored; \
-                                        returns global stats — per-body filtering deferred \
-                                        to mesh-morphing PRD #2947+ engine wiring)."
-                    }
-                }
-            }),
-        },
-        ToolDef {
             name: "mesh_morph_stats",
             description: "Session diagnostic counter snapshot from the mesh-morph engine \
                           (morphed, remeshed_quality_hard_fail, remeshed_quality_soft_fail, \
-                          ineligible_structural_change, ineligible_bijection_failure, \
-                          ineligible_naming_error, panicked) plus session_start_unix_ms \
+                          remeshed_solver_error, ineligible_structural_change, \
+                          ineligible_bijection_failure, ineligible_naming_error, panicked) \
+                          plus session_start_unix_ms \
                           (debug-server spawn time, or the last reset time). Pass reset:true \
                           to zero all counters and restart the measurement clock before \
                           returning the post-reset snapshot — useful for benchmark sequences. \
@@ -589,7 +596,10 @@ fn tool_defs() -> Vec<ToolDef> {
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
-            description: "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible } on match, { exists: false } when no element matches, { error } on invalid selector or missing param.",
+            description: concat!(
+                "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible, hitTestable } on match, { exists: false } when no element matches, { error } on invalid selector or missing param. ",
+                placement_note!()
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -603,7 +613,10 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "query_selector_all",
-            description: "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param.",
+            description: concat!(
+                "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results; each element as query_selector describes it, including bounds, visible, hitTestable), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param. ",
+                placement_note!()
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -617,7 +630,10 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_layout_metrics",
-            description: "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text).",
+            description: concat!(
+                "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, visible, hitTestable, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text). ",
+                placement_note!()
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -900,12 +916,15 @@ fn tool_defs() -> Vec<ToolDef> {
         // default arm routes unknown names to debug_bridge.query_frontend (:693-697).
         ToolDef {
             name: "click_at",
-            description: "Simulate a pointer click at CSS-logical-pixel coordinates (x, y) measured from the window origin \
-                          (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
-                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
-                          pointerdown → pointerup → click events with clientX=x, clientY=y. \
-                          Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
-                          (synthetic-event fidelity gap — contract §4).",
+            description: concat!(
+                "Simulate a pointer click at CSS-logical-pixel coordinates (x, y) measured from the window origin \
+                 (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
+                 Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                 pointerdown → pointerup → click events with clientX=x, clientY=y. ",
+                aim_by_hit_testable_note!(),
+                " Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
+                 (synthetic-event fidelity gap — contract §4)."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -923,11 +942,14 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "hover",
-            description: "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
-                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
-                          pointermove + mousemove events with clientX=x, clientY=y. \
-                          Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
-                          (synthetic-event fidelity gap — contract §4).",
+            description: concat!(
+                "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
+                 Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                 pointermove + mousemove events with clientX=x, clientY=y. ",
+                aim_by_hit_testable_note!(),
+                " Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
+                 (synthetic-event fidelity gap — contract §4)."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -945,11 +967,16 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "drag",
-            description: "Simulate a synthetic pointer drag from one coordinate to another. \
-                          Dispatches pointerdown+mousedown at 'from', pointermove at 'to', then \
-                          pointerup+mouseup at 'to'. Fires JS pointer/mouse handlers; \
-                          there is NO native HTML5 drag-and-drop (dragstart/drop are NOT fired) — \
-                          this is a synthetic pointer-move drag (contract §4).",
+            description: concat!(
+                "Simulate a synthetic pointer drag from one coordinate to another. \
+                 Resolves each point's target element via document.elementFromPoint ('to' falls back \
+                 to the 'from' element when no element is there), then dispatches pointerdown+mousedown \
+                 at 'from', pointermove at 'to', then pointerup+mouseup at 'to'. ",
+                aim_by_hit_testable_note!(),
+                " Fires JS pointer/mouse handlers; \
+                 there is NO native HTML5 drag-and-drop (dragstart/drop are NOT fired) — \
+                 this is a synthetic pointer-move drag (contract §4)."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1153,9 +1180,9 @@ fn tool_defs() -> Vec<ToolDef> {
         // (`crates/reify-mcp/src/tools/write.rs`) onto the reify-debug
         // surface the GUI's Claude sidecar actually reaches. Schemas mirror
         // that registry — same property names, same `required` lists — so an
-        // AI client that learned a tool there can call it here unchanged. The
-        // one deliberate divergence is `reify_set_parameter`'s `value`, whose
-        // contract on THIS surface is a unit-bearing literal (§6.1 / §12 Q1).
+        // AI client that learned a tool there can call it here unchanged.
+        // `reify_set_parameter`'s `value` is a unit-bearing literal on both
+        // surfaces (§6.1 / §12 Q1).
         //
         // Each name has a named `dispatch_tool` arm, and every engine
         // mutation routes through `write_on_engine_and_refresh_baseline`.
@@ -1262,7 +1289,9 @@ dimension before choosing a unit."
                 "properties": {
                     "format": {
                         "type": "string",
-                        "description": "Export format: 'step' (or 'stp') or 'stl'."
+                        "enum": crate::commands::EXPORT_FORMAT_SPELLINGS.map(|(spelling, _)| spelling),
+                        "description": "Export format spelling; the geometry kernel refuses a \
+                                        format it cannot write."
                     },
                     "output_path": {
                         "type": "string",
@@ -1429,7 +1458,6 @@ fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
 // Returns Some(result) when the name matches a stateless arm, None otherwise.
 async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Value, String>> {
     match name {
-        "morph_stats" => Some(handle_morph_stats(params.clone()).await),
         "mesh_morph_stats" => Some(handle_mesh_morph_stats(params.clone()).await),
         _ => None,
     }
@@ -1578,20 +1606,6 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
     .await
 }
 
-/// `morph_stats` debug-MCP RPC handler. Surfaces the process-global
-/// `reify_mesh_morph::stats::snapshot()`. State-free: mesh-morph stats are
-/// not engine-bound, so no DebugServerState / engine lock is needed.
-///
-/// `_params` may carry an optional `body_id` (per PRD §2.3 request shape) but
-/// it is intentionally ignored — per-body filtering is deferred to the
-/// mesh-morphing engine wiring (PRD tasks #2947-#2949). Both the `()` and
-/// `{body_id: ...}` request forms return the same global snapshot. See
-/// docs/prds/v0_3/gui-event-channel-inventory.md §2.3.
-async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
-    let stats = reify_mesh_morph::stats::snapshot();
-    serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
-}
-
 // --- Session-start / measurement-window timestamp (process-global) ---
 
 /// Unix-epoch-milliseconds captured at debug-server spawn (see [`spawn_debug_server`]).
@@ -1635,10 +1649,11 @@ fn reset_session_start() {
 
 /// `mesh_morph_stats` debug-MCP RPC handler.
 ///
-/// Returns a flat JSON object containing all seven diagnostic counters from
+/// Returns a flat JSON object containing all eight diagnostic counters from
 /// `reify_mesh_morph::diagnostics::snapshot()` (morphed,
 /// remeshed_quality_hard_fail, remeshed_quality_soft_fail,
-/// ineligible_structural_change, ineligible_bijection_failure,
+/// remeshed_solver_error, ineligible_structural_change,
+/// ineligible_bijection_failure,
 /// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field
 /// (debug-server spawn time, or the last reset time).
 ///
@@ -2146,10 +2161,10 @@ async fn handle_set_fea_case(
 //
 // These carry the reify-mcp tool identities (`crates/reify-mcp/src/tools/
 // write.rs`) onto the reify-debug MCP server, which is the surface the GUI's
-// Claude sidecar actually reaches (`gui/sidecar/src/session.ts`'s
-// `mcp__reify-debug__*` allowlist). The `reify_` prefix is deliberate (§12
-// Q1): it preserves those identities without clashing with the debug-native
-// bare names (`open_file`, `engine_state`, …).
+// Claude sidecar reaches in REIFY_DEBUG=1 launches (`gui/sidecar/src/session.ts`
+// grants `mcp__reify-debug__*` only while this server is live). The `reify_`
+// prefix is deliberate (§12 Q1): it preserves those identities without
+// clashing with the debug-native bare names (`open_file`, `engine_state`, …).
 //
 // FOUR of them route their engine mutation through
 // `write_on_engine_and_refresh_baseline`; the fifth, `reify_open_file`,
@@ -2792,6 +2807,13 @@ async fn handle_reify_update_source(
 /// stray-relative-file bug in its other spelling: it would answer
 /// `success: true` having written somewhere the caller cannot predict.
 ///
+/// **An explicit `file_path` must lie inside the open design's directory**
+/// (docs/debug-mcp-contract.md §"AI write tools"): [`confined_write_target`]
+/// checks it before the seam, with no engine lock held, and the RESOLVED path
+/// is what gets written, provided the seam finds the same design still open. A
+/// `load_from_source` session has no design directory, so it refuses every
+/// explicit target too.
+///
 /// **Pure I/O: this commits no new engine state.** It routes through
 /// [`write_on_engine_and_refresh_baseline`] anyway, so §6.2 invariant (a)
 /// holds for the four seam-routed write tools without a per-tool exception.
@@ -2817,6 +2839,11 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     file_path: Option<String>,
 ) -> Result<crate::types::GuiState, String> {
+    // Only a save-as target is confined: the active file IS the design.
+    let explicit_target = match file_path {
+        Some(requested) => Some(confined_write_target(engine, &requested).await?),
+        None => None,
+    };
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
         // The write-back interlock, FIRST — ahead of `build_gui_state`, so the
         // refusal is atomic: no `save_file_impl`, and the seam short-circuits
@@ -2834,6 +2861,15 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
                     .to_string(),
             );
         }
+        // Likewise ahead of any write: a `reify_open_file` between
+        // `confined_write_target`'s lock and this one moved the root the
+        // target was checked against.
+        let explicit_target = explicit_target
+            .as_ref()
+            .map(|target| target.path_while_open(s.canonical_file_path()))
+            .transpose()
+            .map_err(|refusal| refusal.to_string())?
+            .map(str::to_owned);
         let active = s.canonical_file_path().map(|p| p.to_string_lossy().into_owned());
         let gs = s.build_gui_state()?;
         // Single-file model, exactly as the reify-mcp surface reads it.
@@ -2841,7 +2877,7 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
             .files
             .first()
             .ok_or_else(|| "No source loaded".to_string())?;
-        let target = match (&file_path, &active) {
+        let target = match (&explicit_target, &active) {
             (Some(explicit), _) => explicit.clone(),
             (None, Some(active)) => active.clone(),
             // No explicit target AND no session path — the `load_from_source`
@@ -2850,13 +2886,12 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
             // the stem-only `source_map` key (`"part.ri"`) as a RELATIVE path
             // into whatever CWD the GUI process happens to have: an
             // unpredictable stray file, reported as `success: true`. REFUSE
-            // instead of guessing — the caller can always name a target
-            // explicitly.
+            // instead of guessing.
             (None, None) => {
                 return Err(
-                    "no active file to save; supply file_path (this session was loaded \
-                     from source, not from a file on disk, so there is no canonical \
-                     path to save back to)"
+                    "no active file to save: this session was loaded from source, not \
+                     from a file on disk, so there is no canonical path to save back to \
+                     (and no design directory a file_path could name)"
                         .to_string(),
                 );
             }
@@ -2903,22 +2938,58 @@ async fn handle_reify_save_file(
 /// **Pure I/O: this commits no new engine state** — see
 /// [`reify_save_file_on_engine_and_refresh_baseline`] for why it routes
 /// through the shared seam regardless.
+///
+/// **`output_path` must lie inside the open design's directory**, checked by
+/// [`confined_write_target`] exactly as the save-as arm is; the RESOLVED path
+/// is what the kernel writes, provided the seam finds the same design still
+/// open.
 pub async fn reify_export_on_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     format: &str,
     output_path: &str,
 ) -> Result<crate::types::GuiState, String> {
+    let output_target = confined_write_target(engine, output_path).await?;
     let format = format.to_owned();
-    let output_path = output_path.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        let output_path = output_target
+            .path_while_open(s.canonical_file_path())
+            .map_err(|refusal| refusal.to_string())?;
         // Resolved BEFORE the export so an unknown spelling is refused without
         // the kernel ever being asked to write anything.
         let fmt = crate::commands::parse_export_format(&format)?;
-        s.export(fmt, std::path::Path::new(&output_path))?;
+        s.export(fmt, std::path::Path::new(output_path))?;
         s.build_gui_state()
     })
     .await
+}
+
+/// The target an explicit AI write names, confined to the open design's
+/// directory, or the refusal of a target outside it (docs/debug-mcp-contract.md
+/// §"AI write tools").
+///
+/// Same shape as [`reify_update_source_on_engine_and_refresh_baseline`]'s
+/// active-file guard (#5193): the design file is read under a SHORT lock of its
+/// own and the check runs with no lock held, on a blocking thread because it
+/// resolves paths on the filesystem, so a refusal returns before the seam and
+/// advances neither the engine nor the baseline. The seam reads the path back
+/// through `ConfinedTarget::path_while_open` under its own lock, which refuses
+/// if another design was opened in between.
+async fn confined_write_target(
+    engine: &Arc<Mutex<EngineSession>>,
+    requested: &str,
+) -> Result<crate::write_confinement::ConfinedTarget, String> {
+    let design_file = run_on_engine(engine, |s| {
+        Ok(s.canonical_file_path().map(|p| p.to_path_buf()))
+    })
+    .await?;
+    let requested = requested.to_owned();
+    tokio::task::spawn_blocking(move || {
+        crate::write_confinement::confine_to_design_dir(design_file.as_deref(), &requested)
+    })
+    .await
+    .map_err(|e| format!("the write-target check did not complete: {e}"))?
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// Export the realized geometry and return the reify-mcp result envelope
@@ -3176,9 +3247,59 @@ pub fn debug_endpoint_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
+/// A reify-debug listener this process has bound on `127.0.0.1`; holding one
+/// is what makes the debug server live.
+pub struct BoundDebugListener {
+    listener: std::net::TcpListener,
+    port: u16,
+}
+
+impl BoundDebugListener {
+    /// Bind `127.0.0.1:port` now; `port` 0 binds an ephemeral port, reported by [`Self::port`].
+    pub fn bind(port: u16) -> Result<Self, String> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("failed to bind debug server on 127.0.0.1:{port}: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("failed to make debug listener on :{port} non-blocking: {e}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("failed to read debug listener address for :{port}: {e}"))?
+            .port();
+        Ok(Self { listener, port })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn endpoint_url(&self) -> String {
+        debug_endpoint_url(self.port)
+    }
+}
+
+/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
+/// the debug server is not live in this process.
+pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
+    if !debug_enabled {
+        return None;
+    }
+    match BoundDebugListener::bind(port) {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            eprintln!(
+                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
+                 the in-app assistant will get no reify-debug tools"
+            );
+            None
+        }
+    }
+}
+
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
+    listener: BoundDebugListener,
     engine: Arc<Mutex<EngineSession>>,
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
@@ -3203,12 +3324,11 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let port = resolve_debug_port();
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .map_err(|e| format!("failed to bind debug server on :{port}: {e}"))?;
+    let endpoint = listener.endpoint_url();
+    let listener = tokio::net::TcpListener::from_std(listener.listener)
+        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
 
-    tracing::info!("Debug server listening on {}", debug_endpoint_url(port));
+    tracing::info!("Debug server listening on {endpoint}");
 
     axum::serve(listener, app.into_make_service())
         .await
@@ -3220,9 +3340,8 @@ mod tests {
     use super::*;
 
     // Process-global lock serializing the tests IN THIS MODULE against each
-    // other when they touch process-global mesh-morph counters —
-    // reify_mesh_morph::diagnostics (seven AtomicU64) and
-    // reify_mesh_morph::stats (Mutex<StatsState>). Acquire this before
+    // other when they touch the process-global mesh-morph counters in
+    // reify_mesh_morph::diagnostics (eight AtomicU64). Acquire this before
     // reset_for_test() + handler call. Scope: private to `debug_server::tests`.
     // Any test elsewhere in this binary that evaluates a morphing design
     // would reach `reify_mesh_morph::compose_morph` via the producer
@@ -3379,31 +3498,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_defs_registers_morph_stats() {
-        let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "morph_stats")
-            .expect("morph_stats must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["type"].as_str(),
-            Some("object"),
-            "input_schema.type must be 'object'"
-        );
-        assert!(!entry.description.is_empty(), "morph_stats must have a non-empty description");
-        // `body_id` is optional — the no-args `()` form must be valid per PRD §2.3.
-        // `required` may be absent entirely; if present it must not list body_id.
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("body_id")),
-                "'body_id' must NOT be listed in required (it is optional)"
-            );
-        }
-    }
-
-    #[test]
     fn tool_defs_includes_wait_for_idle() {
         let defs = tool_defs();
         let entry = defs
@@ -3439,72 +3533,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_morph_stats_returns_morph_stats_shape() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Precondition: pristine stats. reset_for_test() is exposed via the
-        // `testing` feature on reify-mesh-morph (activated by [dev-dependencies]
-        // features = ["testing"] in Cargo.toml). This keeps the test correct even
-        // after engine wiring (PRD #2947-#2949) lands and production code paths
-        // start recording morph activity — without this reset, parallel tests or
-        // leaked state from other test runs could produce non-zero counts.
-        reify_mesh_morph::stats::reset_for_test();
-
-        // State-free handler — call directly (not through dispatch). Zero snapshot expected after reset.
-        let result = super::handle_morph_stats(serde_json::json!({}))
-            .await
-            .expect("morph_stats handler must succeed");
-
-        assert!(result.is_object(), "response must be a JSON object");
-        assert_eq!(result["morph_count"].as_u64(), Some(0), "morph_count key present, default 0");
-        assert_eq!(result["remesh_count"].as_u64(), Some(0), "remesh_count key present, default 0");
-        // last_rejection_reason: skip_serializing_if Option::is_none on Rust ⇒
-        // key absent (Value::Null on index) when no rejection recorded.
-        assert!(
-            result.get("last_rejection_reason").is_none()
-                || result["last_rejection_reason"].is_null(),
-            "last_rejection_reason absent/null by default; got: {:?}",
-            result.get("last_rejection_reason")
-        );
-
-        // body_id is accepted but ignored — `{body_id}` form returns the
-        // identical response as the `()` form (forward-compat, per design).
-        let with_body = super::handle_morph_stats(serde_json::json!({"body_id": "Bracket.body"}))
-            .await
-            .expect("morph_stats with body_id must succeed");
-        assert_eq!(with_body, result, "body_id must be ignored — identical response");
-    }
-
-    #[tokio::test]
-    async fn dispatch_stateless_tool_handles_morph_stats_arm() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Unique coverage: the exact "morph_stats" match-arm string in
-        // dispatch_stateless_tool. A typo or deletion returns None, caught
-        // by the unwrap. Shape assertions live in
-        // handle_morph_stats_returns_morph_stats_shape; here we only verify
-        // delegation fidelity.
-        reify_mesh_morph::stats::reset_for_test();
-
-        let direct = super::handle_morph_stats(serde_json::json!({}))
-            .await
-            .expect("handle_morph_stats must succeed");
-
-        let via_dispatch = super::dispatch_stateless_tool("morph_stats", &serde_json::json!({}))
-            .await
-            .expect("dispatch_stateless_tool must return Some for 'morph_stats'")
-            .expect("morph_stats handler must succeed");
-
-        assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
-    }
-
-    #[tokio::test]
     async fn handle_mesh_morph_stats_reset_true_zeros_counters() {
+        use reify_mesh_morph::diagnostics::{MorphOutcome, seed_for_test};
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        // --- (a) reset:true path: counter recorded, then handler zeros it ---
+        // --- (a) reset:true path: counter seeded, then handler zeros it ---
         reify_mesh_morph::diagnostics::reset_for_test();
-        reify_mesh_morph::diagnostics::record_morphed();
+        seed_for_test(MorphOutcome::Morphed);
         // Pre-condition: morphed == 1 before the call.
         assert_eq!(reify_mesh_morph::diagnostics::snapshot().morphed, 1);
 
@@ -3544,7 +3579,7 @@ mod tests {
 
         // --- (b) control: no reset flag — counter must survive ---
         reify_mesh_morph::diagnostics::reset_for_test();
-        reify_mesh_morph::diagnostics::record_morphed();
+        seed_for_test(MorphOutcome::Morphed);
 
         let result_no_reset = super::handle_mesh_morph_stats(serde_json::json!({}))
             .await
@@ -3594,7 +3629,7 @@ mod tests {
     async fn handle_mesh_morph_stats_returns_counters_and_session_start() {
         // Acquire process-global lock so no concurrent test races on counters.
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Reset all 7 diagnostic counters to zero for a clean baseline.
+        // Reset all 8 diagnostic counters to zero for a clean baseline.
         reify_mesh_morph::diagnostics::reset_for_test();
 
         let result = super::handle_mesh_morph_stats(serde_json::json!({}))
@@ -3603,11 +3638,12 @@ mod tests {
 
         assert!(result.is_object(), "response must be a JSON object");
 
-        // All seven named buckets must be present and zero after reset.
+        // All eight named buckets must be present and zero after reset.
         let buckets = [
             "morphed",
             "remeshed_quality_hard_fail",
             "remeshed_quality_soft_fail",
+            "remeshed_solver_error",
             "ineligible_structural_change",
             "ineligible_bijection_failure",
             "ineligible_naming_error",
@@ -3629,6 +3665,29 @@ mod tests {
         assert!(
             session_start > 0,
             "session_start_unix_ms must be > 0; got {session_start}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_mesh_morph_stats_reports_seeded_remeshed_solver_error() {
+        use reify_mesh_morph::diagnostics::{MorphOutcome, seed_for_test};
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reify_mesh_morph::diagnostics::reset_for_test();
+        seed_for_test(MorphOutcome::RemeshedSolverError);
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        assert_eq!(
+            result["remeshed_solver_error"].as_u64(),
+            Some(1),
+            "an injected solver failure must surface as remeshed_solver_error"
+        );
+        assert_eq!(
+            result["morphed"].as_u64(),
+            Some(0),
+            "seeding the solver-error bucket must not touch morphed"
         );
     }
 

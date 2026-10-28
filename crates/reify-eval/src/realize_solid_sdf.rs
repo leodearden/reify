@@ -220,7 +220,7 @@ mod tests {
     use crate::Engine;
 
     fn make_engine() -> Engine {
-        Engine::new(Box::new(MockConstraintChecker::new()), None)
+        Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
     }
 
     // ── step-1 RED: degradation contract, cfg-independent + stub ─────────────
@@ -530,7 +530,7 @@ mod tests {
     #[cfg(not(has_openvdb))]
     #[test]
     fn realize_solid_sdf_stub_build_returns_none_no_fabricated_field() {
-        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+        let mut engine = Engine::with_registered_kernels(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()));
 
         // Seed a resolvable subject so the only reason for None is missing openvdb.
         // We also need a source kernel; in stub builds with_registered_kernels may

@@ -83,7 +83,7 @@ fn three_cell_module() -> reify_compiler::CompiledModule {
 fn engine_propagate_freshness_only_drives_pending_to_final_downstream_without_re_evaluation() {
     let module = three_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval: populates cache and eval_state (with reverse_index).
     // After eval, a, b, and c are all Final with concrete Value::Real payloads.
@@ -253,7 +253,7 @@ fn engine_propagate_freshness_only_drives_pending_to_final_downstream_without_re
 fn engine_propagate_freshness_only_accepts_borrowed_iterator() {
     let module = three_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     engine.eval(&module);
 

@@ -9,10 +9,12 @@
 | Section | Guarding test |
 |---------|--------------|
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
+| §0 AI write tools: the sidecar reaches reify-debug only when it is live | `gui/src/__tests__/sidecarReifyDebugGating.test.ts` — MCP entry, tool grant and prompt section; host side: `debug_listener_tests.rs` (liveness is a bound listener), `sidecar_env_tests.rs` (`REIFY_DEBUG_MCP_URL` only when live) |
+| §0 AI write tools: write targets confined to the design's directory | `write_confinement_tests.rs` — the rule; `debug_write_confinement_tests.rs` — both write seams enforce it, atomically |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
 | §2d Image + trailing-text envelope | EMISSION: `debug_server.rs` `mcp_content_blocks_*` tests. DECODE: `rpc.test.ts` case 4b + `rpcEnvelope.test.ts`'s branch-3 fall-through case — the same success envelope through both JS decoders |
-| §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
+| §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention; `debugElementPlacement.test.ts` — the placement trio on every bounds-reporting tool |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
 | §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
@@ -28,7 +30,7 @@ separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
 ### Source of truth
 
 **`tool_defs()` in `gui/src-tauri/src/debug_server.rs`** is the canonical,
-authoritative list of advertised MCP tools (currently **69**).  Every `ToolDef`
+authoritative list of advertised MCP tools (currently **68**).  Every `ToolDef`
 entry there becomes visible to MCP clients via `tools/list`.
 
 Do **not** maintain a separate exhaustive list here — that list would itself be
@@ -38,7 +40,7 @@ a drift surface.  The invariant is enforced at test time (see below).
 
 | Group | Tools |
 |-------|-------|
-| Liveness / engine | `health`, `engine_status`, `engine_state`, `mesh_stats`, `morph_stats`, `mesh_morph_stats`, `load_fixture` |
+| Liveness / engine | `health`, `engine_status`, `engine_state`, `mesh_stats`, `mesh_morph_stats`, `load_fixture` |
 | Screenshots | `screenshot`, `screenshot_window`, `element_screenshot` |
 | DOM / style / layout / window | `dom_query`, `query_selector`, `query_selector_all`, `get_computed_style`, `get_layout_metrics`, `active_element`, `list_elements`, `get_window_state`, `ui_outline` |
 | Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `scrub_range_input`, `edit_text_input`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
@@ -50,33 +52,44 @@ a drift surface.  The invariant is enforced at test time (see below).
 | AI write tools (task 5097) | `reify_set_parameter`, `reify_update_source`, `reify_open_file`, `reify_save_file`, `reify_export` |
 
 > **Full realized scene (task 5348):** `engine_state` and `mesh_stats` report the
-> FULL realized scene — one mesh entry per rendered body, a full-scope snapshot via
-> `EngineSession::build_gui_state_full_scene` — so their mesh list stays consistent
-> with `viewport_state.meshCount` even while the frontend's delta path runs
+> FULL realized scene — one mesh entry per realized body, a full-scope snapshot via
+> `EngineSession::build_gui_state_full_scene` — so their rendered entries (below)
+> stay consistent with `viewport_state.meshCount` even while the frontend's delta path runs
 > selective demand (where the plain `build_gui_state` returns only the incremental
 > delta subset, per the engine_build.rs DELTA CONTRACT).
-> That consistency is ENFORCED end-to-end (task 5367) by
-> `gui/test/visual/smoke_mesh_count_parity_e2e.mjs` — live-only,
-> `npm --prefix gui run test:smoke:mesh-count-parity` — which asserts
-> `viewport_state.meshCount === mesh_stats.meshes.length === engine_state.meshes.length`;
-> its decision logic is CI-covered by `gui/test/visual/meshCountParity.test.ts`.
-> The smoke first requires `demand_dispatch.full_scope === false`, because under
-> full scope `build_gui_state` and `build_gui_state_full_scene` agree by
-> construction, so the parity would be trivially true and prove nothing.
-> The equality is CONDITIONAL on every realized body being in `show` visibility
-> state: `viewport_state.meshCount` counts `meshManager.getSceneMeshes()`, which
-> excludes ghosted and hidden meshes — and aux realizations (`default_visible:
-> false`) are default-hidden — whereas the two debug reads always report the full
-> realized scene. Hiding a body, or a fixture carrying an aux component, breaks
-> the equality legitimately.
->
 > Each mesh entry of both reads carries `default_visible` (task 6752): the
 > ENGINE's hidden-by-default verdict, `false` for aux and consumed-intermediate
 > realizations (#5195), joined from the entity tree's realization nodes. The
 > rendered set can therefore be reconstructed as the `default_visible == true`
 > entries, modulo user eye toggles, the selected view and DisplayOutput routing,
 > which are frontend state; `viewport_state` stays the authority for what is
-> drawn. The parity smoke above is unchanged (#6498 part b).
+> drawn.
+>
+> That consistency is ENFORCED end-to-end (tasks 5367, 6498) by
+> `gui/test/visual/smoke_mesh_count_parity_e2e.mjs` — live-only,
+> `npm --prefix gui run test:smoke:mesh-count-parity` — which asserts, under
+> selective demand,
+> `viewport_state.meshCount === count(mesh_stats.meshes, default_visible == true)
+> === count(engine_state.meshes, default_visible == true)`;
+> its decision logic is CI-covered by `gui/test/visual/meshCountParity.test.ts`.
+> The smoke first requires `demand_dispatch.full_scope === false`, because under
+> full scope `build_gui_state` and `build_gui_state_full_scene` agree by
+> construction, so the parity would be trivially true and prove nothing.
+> It runs every fixture listed in `gui/test/visual/meshCountParityFixtures.json`,
+> an aux-free one (`large_assembly.ri`) and an aux-bearing one (`aux_assembly.ri`),
+> each with floors on its rendered and hidden counts. The
+> `default_visible == false` counts are floor-gated per fixture, never compared,
+> because `viewport_state.meshCount` counts only `show`-state meshes
+> (`meshManager.getSceneMeshes()`) and so cannot see hidden bodies; the hidden
+> floor keeps the aux fixture non-vacuous (aux bodies vanishing from the reads
+> fails) and pins the 6752 flag end to end. Each fixture's exact composition (which
+> binding of which entity renders) and its floors' agreement with it are
+> CI-pinned by `gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs`.
+> The remaining legitimate breakers of the equality are frontend state: user eye
+> toggles (ghost/hide), the selected view, and DisplayOutput routing that shows a
+> hidden-by-default subject (autoViewGenerator rule -1), which is why the
+> fixtures carry no DisplayOutput.
+>
 > A `mesh_stats` entry is `{entity_path, vertex_count, face_count, bounding_box:
 > {min, max} | null, element_kind_count, default_visible}`; `element_kind_count`
 > is the per-face element-kind histogram (`{}` for a mesh with no shell
@@ -160,9 +173,21 @@ starvation.
 
 Five tools carry the **reify-mcp tool identities**
 (`crates/reify-mcp/src/tools/write.rs`) onto this surface, because the GUI's
-Claude sidecar reaches the reify-debug HTTP MCP server — not the reify-mcp
-registry — via the `mcp__reify-debug__*` allowlist in
-`gui/sidecar/src/session.ts`.
+Claude sidecar reaches the reify-debug HTTP MCP server, not the reify-mcp
+registry.
+
+**The sidecar reaches this surface only in `REIFY_DEBUG=1` launches** (ruling
+esc-7049-7). `gui/src-tauri/src/main.rs` binds the reify-debug listener only
+under `REIFY_DEBUG=1` (`debug_server::bind_debug_listener`), and the host sets
+`REIFY_DEBUG_MCP_URL` for the sidecar only when that bind succeeded, removing
+any inherited value otherwise (`claude_bridge::compute_sidecar_env`). Only
+then does the sidecar register the `reify-debug` MCP entry, grant
+`mcp__reify-debug__*` and render the system prompt's reify-debug tool section
+(`gui/sidecar/src/tool-surface.ts`, `buildSystemPrompt`). It always passes `--strict-mcp-config`, so neither
+`~/.claude.json` nor a project `.mcp.json` can supply a reify-debug server of
+its own. A release launch (`scripts/run-gui.sh`, `reify gui`) neither
+advertises nor registers the surface, and neither does a `REIFY_DEBUG=1` launch
+whose bind failed, for instance because another GUI holds the port.
 
 | Tool | Writes disk? | Routes to |
 |------|--------------|-----------|
@@ -475,10 +500,37 @@ refused rather than guessed:
   arms end in the same refusal.)
 - **Neither** an explicit target nor a session path — a `load_from_source`
   session, which has a buffer but no canonical path — is refused with
-  `"no active file to save; supply file_path …"`. Falling back to
-  `GuiState.files[0].path` there would write the stem-only `source_map` key
-  (`"part.ri"`) as a RELATIVE path into whatever CWD the GUI process happens
-  to have, and report `success: true`.
+  `"no active file to save: …"`. Falling back to `GuiState.files[0].path`
+  there would write the stem-only `source_map` key (`"part.ri"`) as a RELATIVE
+  path into whatever CWD the GUI process happens to have, and report
+  `success: true`. Naming a `file_path` does not rescue such a session: it has
+  no design directory, so the confinement rule below refuses every explicit
+  target too.
+
+**`reify_save_file` and `reify_export` write only inside the open design's
+directory.** The root is the canonical parent directory of the session's active
+file. Every `reify_export` `output_path`, and every explicit `reify_save_file`
+`file_path`, must be absolute and must resolve inside that root; a save with no
+`file_path` writes the active file itself, which is the design. Symlinks and
+`..` are resolved before the check: an existing target through its symlinks, a
+new file through its existing parent directory. A dangling symlink is refused,
+and a session with no design file refuses every explicit target. The check
+reads the active file under a short engine lock of its own and runs with no
+lock held (#5193), on a blocking thread, ahead of the write seam, so a refusal
+writes nothing and advances neither the engine nor the delta baseline. The
+write then goes to the RESOLVED path, not the caller's spelling. The rule binds
+every client of this unauthenticated localhost server, not only the sidecar,
+and `reify_open_file` moves the root with the active design. A
+`reify_open_file` landing between the check's lock and the seam's is refused,
+not raced: the seam reads the resolved path back through
+`ConfinedTarget::path_while_open` under its own lock, which refuses unless the
+design file the target was checked against is still the open one. The check
+and the write are still separate filesystem operations, though, so a directory
+swapped for a symlink between them can redirect the write. Rule:
+`gui/src-tauri/src/write_confinement.rs` (`confine_to_design_dir` returning a
+`ConfinedTarget`, refusals typed as `WriteTargetRefusal`); seam call:
+`confined_write_target` in `debug_server.rs`. `handle_reify_export`'s envelope
+still echoes the caller's `output_path`.
 
 **`reify_save_file` refuses a buffer the engine rejected.** It persists the
 SESSION's buffer, not a caller-supplied one — and `GuiState.files[0].content`
@@ -516,8 +568,9 @@ entry and therefore do **not** appear in `tools/list`.
   silently mask real drift.
 
 `gui/src/__tests__/sidecarPromptParity.test.ts` (task 7049) guards the in-app
-assistant's `SYSTEM_PROMPT` (`gui/sidecar/src/system-prompt.ts`) against the
-same registry:
+assistant's system prompt as rendered for a live server,
+`buildSystemPrompt({ reifyDebugLive: true })` (`gui/sidecar/src/system-prompt.ts`),
+against the same registry:
 - Every `mcp__reify-debug__<name>` the prompt names is served by `tool_defs()`.
 - Every `tool_defs()` tool is either advertised in the prompt's tool table
   (`ADVERTISED_DEBUG_TOOL_NAMES`) or listed in `NOT_ADVERTISED_TO_SIDECAR`.
@@ -856,7 +909,9 @@ This is the same frame as `Element.getBoundingClientRect()` and `MouseEvent.clie
 ### Canonical round-trip
 
 ```
-bounds = get_layout_metrics(selector).bounds
+metrics = get_layout_metrics(selector)
+require metrics.hitTestable === true
+bounds = metrics.bounds
 center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
 click_at(center)      # dispatches synthetic PointerEvent at clientX/clientY
   → element's JS click handler fires with event.clientX === center.x
@@ -866,14 +921,57 @@ click_at(center)      # dispatches synthetic PointerEvent at clientX/clientY
 which stubs `getBoundingClientRect` to `{x:100, y:50, width:80, height:40}`,
 verifies `get_layout_metrics.bounds === {x:100, y:50, width:80, height:40}`,
 then proves the derived center `(140, 70)` fires the element's click handler.
+Its case (d) covers the precondition: a clipped or occluded element reports
+`hitTestable: false` and `click_at` at its centre lands on another element, and
+`hitTestable` agrees with whether `click_at` at the centre fires the handler.
+
+### Clipping and hit-testability
+
+- `bounds` is the element's **unclipped** layout rect (`getBoundingClientRect`).
+  It is not intersected with an ancestor's overflow clip or scrollport, nor with
+  the window.
+- `visible` keeps its R1 meaning: the element's own computed `display` /
+  `visibility` plus `width > 0`. A clipped or occluded element therefore still
+  reports `visible: true`.
+- Every tool that reports `bounds` — `dom_query`, `query_selector`,
+  `query_selector_all`, `list_elements`, `get_layout_metrics` — also reports
+  `visible` and `hitTestable`.
+- `hitTestable` is true iff `visible` and `document.elementFromPoint` at the
+  bounds centre returns the element or a descendant. That is the same
+  resolution `click_at`, `hover` and `drag` perform, so it predicts whether the
+  canonical round-trip reaches the element.
+- Precisely, `hitTestable: true` means the synthetic event is dispatched within
+  the element's subtree. A descendant hit reaches the element's own handler by
+  bubbling, so that handler still does not run if the hit descendant (say, an
+  inner button in a row) stops propagation.
+- It is false when the element is clipped by an overflow ancestor (including a
+  zero-height scrollport, the measured PropertyEditor case), occluded by an
+  unrelated painted element, outside the window, or has `pointer-events: none`.
+- It answers for the **centre** only: a partly clipped element whose centre is
+  clipped reports `false`.
+- It is unrelated to `get_layout_metrics`' `overflow.*`, which says whether the
+  element clips its **own** content.
+- The canonical round-trip holds only when `hitTestable` is true. When it is
+  false, address the element with a testId/selector tool (`click_element`,
+  `focus_element`, `scroll`, `edit_text_input`, `scrub_range_input`), or bring
+  it into view first. Never feed its bounds to a coordinate tool.
+- `element_screenshot` crops the same unclipped rect, so a clipped element's
+  crop shows whatever is painted there.
+
+**Guarded by:** `debugContract.test.ts` §coordinate-convention (step-5) case
+(d), and `debugElementPlacement.test.ts`.
 
 ### Notes
 
-- This convention is validated **arithmetically** in the unit tests.  The live
-  `document.elementFromPoint(centerX, centerY)` hit-test (OS layout + compositing)
-  is a synthetic-event fidelity gap: `click_at` dispatches a `PointerEvent` via
-  `dispatchEvent`, which fires JS handlers but does not involve OS hit-testing
-  (see §4).  Real-GUI e2e tests verify full OS compositing end-to-end.
+- `click_at`, `hover` and `drag` resolve their target with the webview's own
+  `document.elementFromPoint`, then `dispatchEvent` a synthetic event on it;
+  what they skip is native OS input delivery (see §4).  jsdom has no layout, so
+  the unit tests model that hit test with a fake compositor. Both branches of
+  the live WebKit hit test have e2e scenarios (`npm run test:e2e`, not
+  verify-gated): `get_layout_metrics_hit_testable_app_layout` (true) and
+  `get_layout_metrics_hit_testable_clipped_cm_content` (false: the `overflow`
+  fixture's no-wrap line puts `.cm-content`'s centre outside `.cm-scroller`'s
+  clip).
 - The canvas (viewport) coordinate frame is the same CSS-pixel frame: the NDC
   conversion in `createSelection` uses `rect = canvas.getBoundingClientRect()` as
   its origin (see §5).
@@ -894,7 +992,7 @@ input:
 | CSS `:hover` pseudo-class | ✗ NOT applied | ✓ applied |
 | CSS `:active` pseudo-class | ✗ NOT applied | ✓ applied |
 | Native drag-and-drop (`dragstart`, `drop`) | ✗ not triggered | ✓ triggered |
-| OS / compositor hit-testing (`elementFromPoint`) | ✗ not involved | ✓ involved |
+| Native OS input delivery (target resolved by the webview's `elementFromPoint` either way) | ✗ not involved | ✓ involved |
 | `focus` / `blur` side-effects (click on input) | partial — only if `focus()` called explicitly | ✓ automatic |
 | Native form-control value (`<input type=range\|text>`) | ✗ not reachable — an untrusted event runs no default action, and `drag` / `keyboard` never assign `.value` | ✓ the browser's default action moves it |
 
@@ -903,11 +1001,8 @@ A native form control's value is reached programmatically, by `scrub_range_input
 events the control's own handlers bind, so they assert application logic, not the
 browser's thumb or caret behaviour.
 
-Coordinate-addressed tools (`click_at`, `hover`, `drag`) cannot be reliably aimed
-at a control clipped by an `overflow:hidden` ancestor: `query_selector` /
-`get_layout_metrics` bounds are the unclipped `getBoundingClientRect`, and
-`visible` ignores clipping (#7770).  Address such a control by CSS selector
-instead.
+Before aiming a coordinate-addressed tool (`click_at`, `hover`, `drag`) at an
+element's bounds, check its `hitTestable` — see §3 "Clipping and hit-testability".
 
 **Practical implication:** tools that dispatch synthetic events can assert that
 JS-registered handlers fire (click handlers, React `onClick`, Three.js pointer

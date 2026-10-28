@@ -89,6 +89,17 @@ tasks:
       paths:
       - crates/reify-eval/src/unfold.rs
       expect: present
+  - name: typed-geometry-alias-kind
+    binding: 'producer-self (added 2026-10-20, retro-critic sitting follow-up; R4 B3) — the geometry-typed-alias
+      rule is implemented as S9 β #8731''s named post-pass-2 refinement writing a MemberKinds variant TypedGeometryAlias;
+      red at main. elaboration-producer-wired above is a substrate check (green by design) and was the only check.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TypedGeometryAlias
+      paths:
+      - crates/reify-compiler/src
+      expect: present
   - name: volume-bound-achievable
     binding: numeric floor — 1% bound vs OCCT boolean volume accuracy on prism∖cylinder
       (task-325 closed-form precedent); bound ≫ floor

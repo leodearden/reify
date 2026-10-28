@@ -211,11 +211,7 @@ fn drain_bounded(reader: PipeReader, label: &'static str, budget: Duration) -> S
 /// least make that hang reachable by two named tests (see their doc
 /// comments), rather than proof against it.
 ///
-/// The sibling `mcp_integration` module in this harness is in the same
-/// exposure class; see #5389. (Deliberately a bare pointer: describing that
-/// file's current internals here would go stale the moment #5389 lands, and
-/// nothing gates it.) This file reimplements the pattern locally rather than
-/// sharing a helper.
+/// This file reimplements the pattern locally rather than sharing a helper.
 fn spawn_pipe_reader(mut pipe: impl io::Read + Send + 'static) -> PipeReader {
     thread::spawn(move || {
         let mut buf = Vec::new();

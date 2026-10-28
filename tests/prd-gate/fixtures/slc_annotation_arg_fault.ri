@@ -1,0 +1,2 @@
+@foo(1 +)
+structure S { param a : Real = 1 }

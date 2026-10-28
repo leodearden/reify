@@ -5,8 +5,8 @@ structure Bracket {
     param clearance: Length = auto
     param tolerance: Length = auto
 
-    constraint clearance > 1mm
-    constraint tolerance > 0.1mm
+    constraint clearance > 1mm && clearance < 10mm
+    constraint tolerance > 0.1mm && tolerance < 1mm
 
     let body = box(width, height, thickness)
 }

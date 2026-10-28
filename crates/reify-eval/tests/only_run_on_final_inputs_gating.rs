@@ -97,7 +97,7 @@ fn three_cell_module() -> reify_compiler::CompiledModule {
 fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     let module = three_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // ── 1. Cold-start eval: all cells become Final ─────────────────────────
     engine.eval(&module);

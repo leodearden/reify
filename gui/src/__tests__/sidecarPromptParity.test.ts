@@ -1,6 +1,7 @@
 /**
- * Parity guard (task 7049): the in-app assistant's SYSTEM_PROMPT
- * (gui/sidecar/src/system-prompt.ts) ↔ tool_defs() in debug_server.rs, the
+ * Parity guard (task 7049): the in-app assistant's system prompt as rendered
+ * when the host's reify-debug server is live — `buildSystemPrompt({ reifyDebugLive: true })`
+ * in gui/sidecar/src/system-prompt.ts — ↔ tool_defs() in debug_server.rs, the
  * registry the sidecar's reify-debug MCP connection is served from.
  *
  * It lives in the gui suite, not beside the prompt, because the merge gate runs
@@ -13,10 +14,13 @@
  * ./debugParity.test.ts case (b), and deliberately not repeated here.
  */
 import { describe, it, expect } from 'vitest';
-import { ADVERTISED_DEBUG_TOOL_NAMES, SYSTEM_PROMPT } from '../../sidecar/src/system-prompt';
+import { ADVERTISED_DEBUG_TOOL_NAMES, buildSystemPrompt } from '../../sidecar/src/system-prompt';
 import { extractToolDefNames, readDebugServerSource } from './toolDefNames';
 
 const toolDefNames = extractToolDefNames(readDebugServerSource());
+
+/** The variant that advertises reify-debug tools. */
+const SYSTEM_PROMPT = buildSystemPrompt({ reifyDebugLive: true });
 
 /** The prompt's tool table: the tools the assistant is given a description of. */
 const advertised = new Set(ADVERTISED_DEBUG_TOOL_NAMES);
@@ -27,9 +31,9 @@ const promptMentioned = new Set(
 );
 
 /**
- * Callable (ALLOWED_TOOLS grants mcp__reify-debug__*) but withheld from the
- * prompt: they drive or probe the GUI rather than serve design work, or alias an
- * advertised tool.
+ * Callable when the host's debug server is live (the grant is then
+ * mcp__reify-debug__*) but withheld from the prompt: they drive or probe the GUI
+ * rather than serve design work, or alias an advertised tool.
  */
 const NOT_ADVERTISED_TO_SIDECAR = {
   alias: ['open_file'],
@@ -78,7 +82,6 @@ const NOT_ADVERTISED_TO_SIDECAR = {
     'screenshot_window',
     'element_screenshot',
     'demand_dispatch',
-    'morph_stats',
     'mesh_morph_stats',
   ],
   editorProbes: ['hover_at', 'completion_at', 'definition_at'],

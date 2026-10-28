@@ -1,0 +1,548 @@
+# Machine-readable twin of trampoline-decode-and-result-build.capability-manifest.md
+# Every grep delivered_check below was confirmed RED at main 8e6ffcac9d (2026-10-12).
+# Retro-critic sitting 2026-10-20 (R5): α's buckling-panicking-material-reader-gone and modal-read-scalar-si-gone and γ's support-unknown-variant-no-fallback dropped; β eigen-knob-fallbacks-gone and ν validation-variants-moved re-anchored; κ T11 binding respelled.
+prd: docs/prds/v0_6/trampoline-decode-and-result-build.md
+schema_version: 1
+tasks:
+  - label: "α"
+    task_id: 8674
+    title: "stdlib_inputs foundation (InputDecodeError, into_failed, ComputeInputMalformed); ElasticMaterial decoder in four trampolines; modal read_scalar_si and input-position silent zeros deleted; C6 ratchet member"
+    capabilities:
+      - name: "stdlib-inputs-module-declared"
+        binding: "producer:α — new compute_targets::stdlib_inputs module; absent at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod stdlib_inputs"
+          paths: ["crates/reify-eval/src/compute_targets/mod.rs"]
+          expect: "present"
+      - name: "compute-input-malformed-code"
+        binding: "producer:α — one new DiagnosticCode for non-dimension decode failures; DiagnosticCode is #[non_exhaustive] (additive)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "ComputeInputMalformed"
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: "present"
+      - name: "modal-material-reader-gone"
+        binding: "grep: fn extract_isotropic_material in modal_ops.rs at main (missing field -> 0.0)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn extract_isotropic_material"
+          paths: ["crates/reify-eval/src/modal_ops.rs"]
+          expect: "absent"
+      - name: "ratchet-member-registered"
+        binding: "producer:μ #8711 (rows member on #8730's rust_construct_ratchet engine, R5 M2; no bespoke engine) — tests/infra/test_trampoline_decode_ratchet.{py,sh}; manifest row lands in the creating diff (esc-4914-162); α adds its rows"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "test_trampoline_decode_ratchet"
+          paths: ["tests/infra/run-all-classification.manifest"]
+          expect: "present"
+      - name: "upstream-6922-shape"
+        binding: "producer:#6922 upstream (pending, under review on task/6922) — fea_inputs.rs / fea_value_shape.rs / FieldRejection / failed_outcome that α generalizes (R5 M3); re-measure after it lands. R5 polarity: modal-read-scalar-si-gone and buckling-panicking-material-reader-gone dropped (greened by #6941/#6922 before α)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "upstream task shape; the dependency edge is the enforcement"
+      - name: "one-policy-T1-T2"
+        binding: "behavioural: T1/T2 — hand-built malformed / wrong-dimension ElasticMaterial gives the same coded Failed from all four trampolines (Rust test below the compiler, esc-7372-3 shape)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural boundary test; no grep can assert one failure policy"
+  - label: "β"
+    task_id: 8679
+    title: "Options decoders (ElasticOptions, ModalOptions, BucklingOptions); no Rust default literal; decoded read set unchanged; #7079 attaches its declaration afterwards"
+    capabilities:
+      - name: "eigen-knob-fallbacks-gone"
+        binding: "grep: extract_eigen_knobs restates ModalOptions defaults (10, 1e-9, 200) at main (R5 polarity: anchored on `fn extract_eigen_knobs\\(` so the two #[cfg(test)] extract_eigen_knobs_* fns do not match)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn extract_eigen_knobs\\("
+          paths: ["crates/reify-eval/src/modal_ops.rs"]
+          expect: "absent"
+      - name: "buckling-option-fallbacks-gone"
+        binding: "grep: extract_buckling_options restates BucklingOptions defaults at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn extract_buckling_options"
+          paths: ["crates/reify-eval/src/compute_targets/buckling.rs"]
+          expect: "absent"
+      - name: "shell-threshold-local-gone"
+        binding: "grep: shell_threshold = 0.2 restated as a Rust local in elastic_static at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "let mut shell_threshold = 0\\.2"
+          paths: ["crates/reify-eval/src/compute_targets/elastic_static.rs"]
+          expect: "absent"
+      - name: "ctor-fills-defaults"
+        binding: "substrate: CompiledExprKind::StructureInstanceCtor.defaults fills every non-supplied param (reify_ir::expr); no production code hand-builds an options instance (all type_name: \"ElasticOptions\" constructions are #[cfg(test)]). R5 B1: absent is hand-built-only; Undef is ctor-reachable (eval_structure_instance_ctor keeps an Undef slot), so Undef takes the per-position policy"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "substrate fact true at main; D1's premise"
+      - name: "pdrop-builds-on-beta"
+        binding: "consumer:#7079/#7080/#7084 downstream (lead ruling OQ2 (b), D2) — they depend on β; β honors nothing new and decodes today's read set"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "downstream dependency edges are the enforcement"
+  - label: "γ"
+    task_id: 8683
+    title: "Loads + supports decoders: LoadSpec, PressureDirection, SupportSpec; coded unresolvable-face and shell-route support-drop diagnostics"
+    capabilities:
+      - name: "modal-string-support-decode-gone"
+        binding: "grep: enum DeclaredSupport (type_name string decode) in modal_ops.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "enum DeclaredSupport"
+          paths: ["crates/reify-eval/src/modal_ops.rs"]
+          expect: "absent"
+      - name: "pressure-direction-typed"
+        binding: "producer:γ — PressureSpec.direction: String parsed and never read at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "enum PressureDirection"
+          paths: ["crates/reify-eval/src"]
+          expect: "present"
+      - name: "pressure-direction-string-field-gone"
+        binding: "grep: pub(crate) direction: String on PressureSpec at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub\\(crate\\) direction: String"
+          paths: ["crates/reify-eval/src/compute_targets/elastic_static.rs"]
+          expect: "absent"
+      - name: "T6-unknown-direction-rejected"
+        binding: "behavioural: PressureLoad(direction: \"tangential\") -> reify eval exit 1 with a coded Error (negative-assertion: probe at decompose that it exits 0 today)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "rejection must be observed firing by the D3 workflow, not grepped"
+  - label: "δ"
+    task_id: 8686
+    title: "StructureInstanceData::registry_free + REGISTRY_FREE; consts and Rust StructureTypeId(0) producers migrated; registry reads re-stamp by name"
+    capabilities:
+      - name: "registry-free-constructor"
+        binding: "producer:δ — absent at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn registry_free"
+          paths: ["crates/reify-ir/src"]
+          expect: "present"
+      - name: "private-consts-gone"
+        binding: "grep: 5 production const REGISTRY_FREE_TYPE_ID copies at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "const REGISTRY_FREE_TYPE_ID"
+          paths: ["crates/reify-eval/src/appearance.rs", "crates/reify-eval/src/compute_targets/as_printed_material.rs", "crates/reify-eval/src/dynamics_ops.rs", "crates/reify-stdlib/src/analysis.rs", "crates/reify-stdlib/src/dynamics/eval.rs"]
+          expect: "absent"
+      - name: "trait-object-arm-by-name"
+        binding: "grep: value_type_kind_matches TraitObject arm reads r.meta(data.type_id) at main (ctor instances carry the StructureTypeId(0) placeholder)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "r\\.meta\\(data\\.type_id\\)"
+          paths: ["crates/reify-eval/src/lib.rs"]
+          expect: "absent"
+  - label: "ε"
+    task_id: 8690
+    title: "ElasticResult builder pair used by both arms and the cache bridge; warm_started declared; C4 parity test"
+    capabilities:
+      - name: "warm-started-declared"
+        binding: "grep: structure def ElasticResult declares 15 params and no warm_started at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "param warm_started : Bool"
+          paths: ["crates/reify-compiler/stdlib/solver_elastic.ri"]
+          expect: "present"
+      - name: "elastic-result-builder"
+        binding: "producer:ε"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn build_elastic_result\\("
+          paths: ["crates/reify-eval/src"]
+          expect: "present"
+      - name: "field-layout-substrate"
+        binding: "substrate: StructureMeta.field_layout populated by populate_structure_registry at Engine::new (engine_new_populates_structure_registry_from_prelude)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "substrate fact true at main"
+  - label: "ζ"
+    task_id: 8693
+    title: "ModalResult / Mode builders + typed decode; topology on the undeclared-write list (#7097); stale docstrings; parity tests"
+    capabilities:
+      - name: "modal-result-builder"
+        binding: "producer:ζ"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn build_modal_result\\("
+          paths: ["crates/reify-eval/src"]
+          expect: "present"
+      - name: "mechanism-builder-collapsed"
+        binding: "grep: mechanism_modal_result_value is a third hand-spelled ModalResult builder at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn mechanism_modal_result_value"
+          paths: ["crates/reify-eval/src/modal_ops.rs"]
+          expect: "absent"
+      - name: "stale-6-fields-docstrings"
+        binding: "grep: two production docstrings claim '(6 fields' at main (scoped to the parenthesised production form; the test-module prose 'only had 6 fields' is not matched — rule 4)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "\\(6 fields"
+          paths: ["crates/reify-eval/src/modal_ops.rs"]
+          expect: "absent"
+      - name: "topology-owner-live"
+        binding: "owner:#7097 (pending) — the undeclared-write list entry's owner"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "liveness is checked by the C4 test's owner list, and by PVAC once #7102 lands"
+  - label: "η"
+    task_id: 8697
+    title: "MassProperties single owner in reify-stdlib dynamics::mass_props; reify-eval minters and parser deleted"
+    capabilities:
+      - name: "eval-minter-gone"
+        binding: "grep: dynamics_ops::assemble_mass_properties is a second MassProperties minter at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn assemble_mass_properties"
+          paths: ["crates/reify-eval/src/dynamics_ops.rs"]
+          expect: "absent"
+      - name: "eval-inertia-parser-gone"
+        binding: "grep: dynamics_psd::inertia_3x3_from_value is a second inertia parser at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn inertia_3x3_from_value"
+          paths: ["crates/reify-eval/src/dynamics_psd.rs"]
+          expect: "absent"
+  - label: "θ"
+    task_id: 8698
+    title: "Residual Value::as_f64 copies deleted; drifted tensegrity_crack::scalar_f64 given an explicit policy (subsumes #8559)"
+    capabilities:
+      - name: "appearance-copy-gone"
+        binding: "grep: color_cell_f64 at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn color_cell_f64"
+          paths: ["crates/reify-eval/src/appearance.rs"]
+          expect: "absent"
+      - name: "bom-copy-gone"
+        binding: "grep: bom_report::value_as_f64 at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn value_as_f64"
+          paths: ["crates/reify-eval/src/bom_report.rs"]
+          expect: "absent"
+      - name: "gui-copy-gone"
+        binding: "grep: gui engine.rs scalar_to_f64 at main (path widened to gui/src-tauri/src 2026-10-14: S25 δ #8940 moves the copy into engine/mechanism.rs and engine/tensegrity.rs)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn scalar_to_f64"
+          paths: ["gui/src-tauri/src"]
+          expect: "absent"
+  - label: "ι"
+    task_id: 8702
+    title: "Modal DiagnosticCode per mnemonic; Info severity fix; substring assertions migrated"
+    capabilities:
+      - name: "truncation-note-coded"
+        binding: "producer:ι — 24 prefixes, 3 coded at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "MechanismModalNModesTruncated"
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: "present"
+      - name: "T14-code-identity"
+        binding: "behavioural: every modal diagnostic test asserts DiagnosticCode identity; I_ note at Severity::Info"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "multi-line emission site; behavioural tests are the enforcement"
+  - label: "κ"
+    task_id: 8705
+    title: "Stress tensor symmetry checked once at the Value boundary; coded Error; shared is_symmetric_3x3"
+    capabilities:
+      - name: "shared-symmetry-predicate"
+        binding: "producer:κ — the tolerance closure is copied 3x in analysis.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn is_symmetric_3x3"
+          paths: ["crates/reify-stdlib/src/analysis.rs"]
+          expect: "present"
+      - name: "asymmetry-code"
+        binding: "producer:κ"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "StressTensorAsymmetric"
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: "present"
+      - name: "T11-reachable-from-ri"
+        binding: "grammar/semantic (R5 M6 respelled): von_mises(matrix([[1.0Pa, 2.0Pa, 0Pa], [0Pa, 0Pa, 0Pa], [0Pa, 0Pa, 0Pa]])) panics in debug and returns the upper-triangle answer in release today; control matrix([[100.0Pa, 0Pa, 0Pa], ...]) -> 100 Pa. The bare nested list is not a Matrix argument (Undef via OpContractViolation, exit 0) and gets a coded diagnostic from κ's classifier"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "rejection must be observed firing by the D3 workflow"
+  - label: "λ"
+    task_id: 8706
+    title: "shell_extract_compute_fn per-phase error mapping; one Failed point"
+    capabilities:
+      - name: "one-failed-point"
+        binding: "behavioural: inline ComputeOutcome::Failed constructions in shell_extract_compute_fn fall from 13 to 1 (C6 inline-failed row)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "count assertion lives in the C6 ratchet row, not a grep descriptor"
+  - label: "μ"
+    task_id: 8711
+    title: "SampledField 3D accessors; build_slab_sdf fixed; shell-extract grid module; reify-expr index helpers routed"
+    capabilities:
+      - name: "flat-index-accessor"
+        binding: "producer:μ — reify-ir states only 'Flat row-major data' at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn flat_index_3d"
+          paths: ["crates/reify-ir/src"]
+          expect: "present"
+      - name: "medial-walk-cycle-broken"
+        binding: "grep: walk_direction imports medial::{normalize3, sample_at_index} while medial imports walk_direction at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "use crate::medial::\\{normalize3, sample_at_index\\}"
+          paths: ["crates/reify-shell-extract/src/walk_direction.rs"]
+          expect: "absent"
+      - name: "T12-slab-in-plane"
+        binding: "behavioural: mid-surface of build_slab_sdf(H) lies in z=0 within one voxel spacing; before-image measured in the RED test"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "relational numeric bound (G6): one voxel spacing is the grid's own resolution"
+  - label: "ν"
+    task_id: 8714
+    title: "validate_regular3d covers data length and axis geometry for every shell-extract entry point"
+    capabilities:
+      - name: "validation-variants-moved"
+        binding: "grep: DataLengthMismatch exists only in medial.rs (MedialError) at main (R5 polarity: anchored on the variant declaration so a doc mention does not satisfy it)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "^\\s*DataLengthMismatch\\b"
+          paths: ["crates/reify-shell-extract/src/grid_validation.rs"]
+          expect: "present"
+      - name: "T13-no-panic"
+        binding: "behavioural: short data buffer / NaN spacing into extract_mid_surface returns a typed error instead of an index-out-of-bounds panic"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural boundary test"
+  - label: "ξ"
+    task_id: 8717
+    title: "SampledField::same_grid / with_data; fea grids_equal and metadata-copy literals routed; fea.rs partitioned"
+    capabilities:
+      - name: "same-grid-predicate"
+        binding: "producer:ξ"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn same_grid"
+          paths: ["crates/reify-ir/src"]
+          expect: "present"
+      - name: "grids-equal-gone"
+        binding: "grep: fea::grids_equal duplicates grid_metadata_eq at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn grids_equal"
+          paths: ["crates/reify-stdlib/src"]
+          expect: "absent"
+      - name: "fea-partitioned"
+        binding: "producer:ξ — fea.rs is one 6,617-line file at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod envelope"
+          paths: ["crates/reify-stdlib/src"]
+          expect: "present"
+  - label: "ο"
+    task_id: 8718
+    title: "dynamics/eval.rs partitioned along its measured groups"
+    capabilities:
+      - name: "partition-shape"
+        binding: "h14: seven measured groups; preconditions wired by the S6 session 2026-10-13: S6 ρ #8845 (MechanismTree, fk-38811e6f7300), σ #8847 (dynamics on Joint), λ #8839 (bindings move); released by S6, no longer held"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "structural; the seat's partition table and the no-new-pub(super) rule are reviewed, not grepped"
+  - label: "π"
+    task_id: 8720
+    title: "INV candidate 4 (S15 half): INV-PD-2 names the C4 builder parity tests; census row"
+    capabilities:
+      - name: "inv-pd-2-row"
+        binding: "docs: design-invariants.md INV-PD-2 enforcement names only reify-audit --pattern PVAC at main"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "prose row; asserting wording is forbidden (assert behaviour, not prose)"
+  - label: "ρ"
+    task_id: 8722
+    title: "Docs-truth: von_mises-family symmetric precondition; ElasticResult.warm_started; discoverability"
+    capabilities:
+      - name: "chunk-signatures-compile"
+        binding: "docs-truth: every documented signature compiles in a smoke .ri (overlay docs-truth gate item 1)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "docs-truth acceptance is a smoke compile plus findability review"
+  - label: "σ"
+    task_id: 8724
+    title: "PRD-close: terminal stamp"
+    capabilities:
+      - name: "terminal-stamp"
+        binding: "PRD-close: SHIPPED header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "committed header is the signal"
+  - label: "ζ₀"
+    task_id: 9287
+    title: "Modal error paths return ComputeOutcome::Failed; degenerate_modal_result / degenerate_displacement_history deleted; ComputeOutcome::completed debug-asserts no Error (gap-fill 2026-10-16 K5-1)"
+    capabilities:
+      - name: "degenerate-modal-builder-gone"
+        binding: "grep: fn degenerate_modal_result in modal_ops.rs at main (fabricated norms 0.0, boundary_conditions [], modes [] on the 9 E_ error paths, returned as Completed)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn degenerate_modal_result"
+          paths: ["crates"]
+          expect: "absent"
+      - name: "degenerate-history-builder-gone"
+        binding: "grep: fn degenerate_displacement_history in modal_ops.rs at main (transient error paths returned as Completed)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn degenerate_displacement_history"
+          paths: ["crates"]
+          expect: "absent"
+      - name: "completed-constructor"
+        binding: "producer:ζ₀ — reify-compute-contract has no ComputeOutcome constructor at main (S5 owns the crate per G4: cross-reference)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn completed\\("
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "modal-error-paths-failed"
+        binding: "behavioural: each of the nine modal E_ mnemonics' scenarios yields ComputeOutcome::Failed (cell Undef via mark_failed), never Completed beside a value"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural tests in the existing modal binaries are the enforcement"
+  - label: "τ"
+    task_id: 9291
+    title: "MultiCaseResult / MultiCaseBucklingResult builders with C4 parity; MultiCaseKind replaces the detect_multi_case_result key-sniff (gap-fill 2026-10-16 K5-5)"
+    capabilities:
+      - name: "multi-case-builder"
+        binding: "producer:τ — solve_multi_case_trampoline returns Value::Map{cases} at main; no builder for the declared MultiCaseResult"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn build_multi_case_result\\("
+          paths: ["crates"]
+          expect: "present"
+      - name: "multi-case-buckling-builder"
+        binding: "producer:τ — solve_buckling_multi_case_trampoline returns Value::Map{cases} at main; no builder for the declared MultiCaseBucklingResult"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn build_multi_case_buckling_result\\("
+          paths: ["crates"]
+          expect: "present"
+      - name: "multi-case-kind"
+        binding: "producer:τ — detect_multi_case_result matches any Map whose cases value is a non-empty Map at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "enum MultiCaseKind"
+          paths: ["crates"]
+          expect: "present"
+      - name: "upstream-multi-case"
+        binding: "producer:#8999 #8686 #8690 #9219 #8943 upstream (G1 follow-on after S5 κ₁)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+  - label: "υ"
+    task_id: 9293
+    title: "FDM input decoders (FDMProcess, AsPrintedOptions, FDMCouponOverride); missing field into_failed; read_slice_settings decodes once with no default literals; degenerate build_direction a coded Error (gap-fill 2026-10-16 K5-6)"
+    capabilities:
+      - name: "slice-settings-default-literals-gone"
+        binding: "grep: fdm_slice::read_slice_settings restates FDMProcess .ri defaults with unwrap_or literals at main (layer height 0.2 mm and others). R5 polarity: also matches a comment (fdm_slice.rs:343) and, after #6922, infill_density.unwrap_or(0.2); υ re-anchors this check on the slice-settings fields it removes before landing (three writes)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "unwrap_or\\(0\\.2\\)"
+          paths: ["crates/reify-eval/src/compute_targets/fdm_slice.rs"]
+          expect: "absent"
+      - name: "decoded-param-read-fdm"
+        binding: "behavioural: C6 decoded-param-read rows for FDMProcess, AsPrintedOptions and FDMCouponOverride at 0; both rungs Failed with a coded diagnostic on a missing declared field"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the C6 ratchet rows and behavioural tests are the enforcement"
+      - name: "upstream-6922"
+        binding: "producer:#6922 #8674 upstream (#6922 in progress on task/6922 rewrites the three FDM files; re-measure after it lands)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+  - label: "φ"
+    task_id: 9295
+    title: "Tensegrity input decoder TensegrityTopology::from_value, one parse with failure policy per consumer (gap-fill 2026-10-16 K6-D4)"
+    capabilities:
+      - name: "stdlib-tuple-decoder-gone"
+        binding: "grep: reify-stdlib tensegrity.rs extract_index_tuples is a second Tensegrity decoder (Option, silent Undef) at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn extract_index_tuples"
+          paths: ["crates/reify-stdlib/src/tensegrity.rs"]
+          expect: "absent"
+      - name: "tensegrity-topology-decoder"
+        binding: "producer:φ — no shared Tensegrity topology decoder at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "struct TensegrityTopology"
+          paths: ["crates"]
+          expect: "present"
+      - name: "one-parse-two-policies"
+        binding: "behavioural: a malformed member index gives the located E_FormFindInfeasible on solve and Undef in the viewport, from the same decoder; tensegrity golden and viewport e2e unchanged"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural tests are the enforcement"

@@ -9,7 +9,7 @@
 //!   - centroid z ≈ 0 and BoundingBox z ∈ [-10mm, +10mm] = [-0.01, +0.01] SI metres
 //!
 //! - `box_centered(40mm, 20mm, 30mm)`:
-//!   - lowers to the IDENTICAL `Primitive(Box){w:40mm,h:20mm,d:30mm}` as `box`
+//!   - lowers to the IDENTICAL `Primitive(Box){size_x:40mm,size_y:20mm,size_z:30mm}` as `box`
 //!   - centroid at origin; BoundingBox symmetric about z = 0
 //!
 //! All tests are guarded by `reify_kernel_occt::OCCT_AVAILABLE` and silently skip
@@ -132,12 +132,12 @@ fn cylinder_centered_centroid_at_z_zero() {
 /// the emitted `CompiledGeometryOp` is identical to `box`'s). This test
 /// establishes the kernel-level **pre-condition** that makes the alias safe:
 /// OCCT's `make_box` already centres the solid at the geometric origin
-/// (`gp_Pnt corner(-w/2, -h/2, -d/2)` in `occt_wrapper.cpp:303`), so
+/// (`gp_Pnt corner(-size_x / 2.0, -size_y / 2.0, -size_z / 2.0)` in `occt_wrapper.cpp` `make_box`), so
 /// `box_centered` requires no translation sub-op.
 ///
 /// Asserts:
 ///   - centroid z ≈ 0  (box is centred in the z-direction)
-///   - bbox z ∈ [-15mm, +15mm]  (= depth/2 = 0.015 m, symmetric about origin)
+///   - bbox z ∈ [-15mm, +15mm]  (= size_z/2 = 0.015 m, symmetric about origin)
 #[test]
 fn box_kernel_op_centred_at_origin() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -147,12 +147,12 @@ fn box_kernel_op_centred_at_origin() {
 
     let mut kernel = OcctKernel::new();
 
-    // Execute Box(40mm × 20mm × 30mm) — depth=30mm gives z ∈ [-15mm, +15mm].
+    // Execute Box(40mm × 20mm × 30mm) — size_z=30mm gives z ∈ [-15mm, +15mm].
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(40.0),
-            height: mm(20.0),
-            depth: mm(30.0),
+            size_x: mm(40.0),
+            size_y: mm(20.0),
+            size_z: mm(30.0),
         })
         .expect("Box op should succeed");
 
@@ -163,7 +163,7 @@ fn box_kernel_op_centred_at_origin() {
     match &bbox_val {
         Value::String(s) => {
             let (zmin, zmax) = parse_bbox_z(s);
-            let expected_half_z = 0.015_f64; // depth/2 = 15mm in SI metres
+            let expected_half_z = 0.015_f64; // size_z/2 = 15mm in SI metres
             let bbox_tol = 1e-6_f64; // OCCT BRepBndLib padding tolerance
             assert!(
                 (zmin - (-expected_half_z)).abs() < bbox_tol,

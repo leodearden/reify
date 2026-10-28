@@ -1,5 +1,8 @@
 use std::fmt;
 
+mod unbounded_auto;
+pub use unbounded_auto::{BoundSide, UnboundedSide, unbounded_auto_clause};
+
 /// A byte-offset span in source code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SourceSpan {
@@ -55,8 +58,9 @@ impl SourceSpan {
     /// - Both `reify_types::byte_offset_to_line_col` and the GUI/LSP fast path
     ///   (`gui::engine::offset_to_line_col_fast`) short-circuit the prelude
     ///   sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) to `(1, 1)` — the
-    ///   same "no user-file location" fallback used by `mcp_context::get_diagnostics`
-    ///   when no labels are present.  This prevents a `debug_assert` panic
+    ///   same "no user-file location" fallback the GUI's `diagnostics_to_info`
+    ///   (`gui/src-tauri/src/engine.rs`) uses when no labels are present.  This
+    ///   prevents a `debug_assert` panic
     ///   (debug builds) and a silent past-last-line mis-report (release builds).
     /// - Ad-hoc offset converters that do **not** route through one of those
     ///   helpers (e.g. `reify_lsp::convert::offset_to_position`) apply
@@ -116,8 +120,9 @@ impl Severity {
     /// (`#[cfg(feature = "serde")]`) is pinned by a unit test.
     ///
     /// Note: `Display` intentionally keeps lowercase (`"error"`, `"warning"`,
-    /// `"info"`) for CLI/human-readable output. Do not change `Display` to
-    /// PascalCase — that would silently alter the MCP CLI wire format.
+    /// `"info"`) for CLI/human-readable output (`reify check`/`build` print
+    /// `{severity}: {message}`); the MCP wire uses `as_wire_str` alone. The CLI
+    /// MCP transport that once put `Display` on the wire (#2638) was deleted by #6665.
     #[inline]
     pub fn as_wire_str(self) -> &'static str {
         match self {
@@ -283,15 +288,25 @@ pub enum DiagnosticCode {
     /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
     /// - `"CpSatSolver: no satisfying assignment found for … auto params with … constraints"` (cpsat.rs, Severity::Error)
     ConstraintUnsatisfiable,
-    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`
-    ///          (strict-auto uniqueness verification path, `verify_uniqueness`).
-    /// Replaces canonical message:
-    /// `"strict auto parameter resolution is not uniquely determined — consider using auto(free) for exploration"`.
+    /// Origin: three producers, all carrying the shared "not uniquely determined" phrase:
+    /// - `crates/reify-constraints/src/solver.rs::verify_uniqueness`, perturbation re-solve
+    ///   (`Determinedness::NotDetermined`). Canonical message:
+    ///   `"strict auto parameter resolution is not uniquely determined — consider using auto(free) for exploration"`.
+    /// - the same file's per-param default-bound evidence path
+    ///   (`Determinedness::DefaultBoundsDetermined`, rendered by `finalise_uniqueness`), reached
+    ///   from both the γ `cost_robustness_tradeoff` bracketing branch and the
+    ///   `centrality_corner_picks` screen. Its message adds one clause per param, rendered by
+    ///   [`unbounded_auto_clause`].
+    /// - the compile-time static arm,
+    ///   `crates/reify-compiler/src/compile_builder/post_passes/one_sided_auto.rs::phase_one_sided_auto_check`
+    ///   (Severity::Error), with the same per-param clause.
     ///
-    /// Semantically distinct from [`ConstraintUnsatisfiable`]: non-uniqueness means *multiple*
-    /// valid solutions exist (the system is underdetermined), not zero. A strictly-auto
-    /// parameter requires a unique solution; this code is emitted when perturbation-based
-    /// uniqueness checking finds a second distinct solution.
+    /// Why a one-sided strict auto reuses this code rather than a new one:
+    /// `docs/prds/v0_6/solver-driver-parity.md` §4.6 case 2 and §13 item 4.
+    ///
+    /// Semantically distinct from [`Self::ConstraintUnsatisfiable`]: non-uniqueness means
+    /// *multiple* valid solutions exist (the system is underdetermined), not zero. A
+    /// strictly-auto parameter requires a unique solution.
     ConstraintNonUnique,
     /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
     ///          (param-level argument type check, task 4546).
@@ -558,6 +573,22 @@ pub enum DiagnosticCode {
     /// (`"originally declared here"`). The PRD-prose mnemonic for this code is
     /// `W_SHADOW`. See `docs/prds/shadowing-warning.md` and spec §8.5.
     Shadowing,
+    /// Origin: `crates/reify-compiler/src/compile_builder/stdlib_shadow_lint.rs`.
+    /// Emitted once per `(kind, name)` when a module's own definition wins a
+    /// name that a std module also defines in the same kind (enum, structure or
+    /// occurrence, trait, function signature, type alias, constraint def,
+    /// purpose). The local definition binds; this reports the shadowing.
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' in module '<local module>' shadows '<name>' from std module '<std module>'; the local definition wins"`.
+    ///
+    /// Two labels: the local declaration (primary) and the prelude sentinel
+    /// span (`"defined in std module '<std module>'"`).
+    ///
+    /// Severity is `Warning` in the N0 interim; stdlib-namespace κ #5503
+    /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
+    /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
+    StdlibNameShadowed,
     /// Origin: `crates/reify-compiler/src/entity.rs` (trait_bound iteration).
     /// Canonical message form:
     /// `"geometry trait '<TraitName>' on '<EntityName>' is treated as a user assertion; runtime conformance check is suppressed"`.
@@ -2944,6 +2975,20 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/modal_ops.rs` (`run_mechanism_modal`, the
+    /// lumped `mechanism_modal_analysis` trampoline —
+    /// `mechanism_shift_unsupported_diagnostic`).
+    ///
+    /// Canonical message form:
+    /// `"W_ModalOptionUnsupported: ModalOptions.<param> = <value> is declared but not yet honored by the mechanism_modal_analysis (lumped) trampoline (<note>; #7263); solve falls back to the default <default>"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic
+    /// `W_ModalOptionUnsupported`) when `shift_frequency` is present and
+    /// non-zero. The FEA `modal_analysis` path honors the shift and never emits
+    /// it. Owner #7263 (shift-invert leaf ζ,
+    /// `docs/prds/v0_6/shift-invert-eigensolve.md`) retires it by honoring the
+    /// shift on the lumped path. Advisory: the solve continues at the default.
+    ModalOptionUnsupported,
     /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
     /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
     /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
@@ -5005,7 +5050,7 @@ pub struct DiagnosticRef {
 ///
 /// This enum and [`hex_wedge_mesh_diagnostic`] are tested but not yet wired
 /// into the dispatcher (`dispatch_volume_mesh` in `reify-eval/src/engine_build.rs`)
-/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+/// — that wiring is owned by #4746 (hex/wedge Phase A activation), mirroring
 /// the accepted `#[allow(dead_code)]` status of `p2_substitution_diagnostic`
 /// (task #2991).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5060,7 +5105,7 @@ pub enum HexWedgeMeshOutcome {
 /// # Wiring note
 ///
 /// This function is `#[allow(dead_code)]` pending the live wiring of
-/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
+/// `dispatch_volume_mesh`'s hex/wedge arm (#4746).  That arm will
 /// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
 /// to obtain the diagnostic to push into `BuildResult.diagnostics`.
 ///
@@ -5070,7 +5115,7 @@ pub enum HexWedgeMeshOutcome {
 /// `reify-eval/src/engine_build.rs` next to its dispatcher), this function and
 /// `HexWedgeMeshOutcome` live here in `reify-core` because their inputs are
 /// pure primitives (`usize`, `bool`, `&str`) with no `reify-eval`/`reify-solver`
-/// dependency.  The future task #2947 call site in `dispatch_volume_mesh`
+/// dependency.  The future #4746 call site in `dispatch_volume_mesh`
 /// should reach into `reify_core::diagnostics::{HexWedgeMeshOutcome,
 /// hex_wedge_mesh_diagnostic}` rather than duplicating the mapping there.
 #[allow(dead_code)]
@@ -5083,7 +5128,7 @@ pub fn hex_wedge_mesh_diagnostic(
     // exclusive by stdlib constraint.  A ForceTet outcome therefore must never
     // arrive with require_hex_wedge=true.  The guard fires only in debug builds,
     // so the production code path remains unchanged; it surfaces the violation
-    // at the call site (task #2947) rather than relying solely on the upstream
+    // at the call site (#4746) rather than relying solely on the upstream
     // stdlib enforcement that is not yet wired.
     debug_assert!(
         !(require_hex_wedge && matches!(outcome, HexWedgeMeshOutcome::ForceTet)),
@@ -6908,6 +6953,20 @@ mod tests {
     fn diagnostic_code_buckling_option_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::BucklingOptionUnsupported).unwrap();
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
+    }
+
+    // --- ModalOptionUnsupported (task 6097 — W_ModalOptionUnsupported) ---
+    // Pairs with `mechanism_shift_unsupported_diagnostic` in
+    // `crates/reify-eval/src/modal_ops.rs`. Only the wire identifier is pinned,
+    // for the reasons the BucklingOptionUnsupported block above records.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ModalOptionUnsupported`
+    /// serializes as `"ModalOptionUnsupported"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_modal_option_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ModalOptionUnsupported).unwrap();
+        assert_eq!(s, "\"ModalOptionUnsupported\"");
     }
 
     // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---

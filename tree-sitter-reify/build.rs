@@ -1,75 +1,9 @@
-// The staleness primitives shared with `tests/build_logic_tests.rs`.
+// The build-script logic shared with `tests/build_logic_tests.rs`.
 //
 // A build script cannot be `use`d by a test target, and the old workaround —
 // hand-copying this logic into the test file — is how `#6992` shipped: the
 // replica was green while this file was wrong. One source, two include sites.
 include!("build_support.rs");
-
-use std::hash::{Hash, Hasher};
-
-/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
-/// Used for staleness detection — not for security.
-fn content_hash(path: &std::path::Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
-///
-/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
-///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
-///      If the child emits anything to stdout, Cargo would misinterpret it.
-///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
-///      the pipe after try_wait() returns Some(status), but if the child writes
-///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
-///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
-///
-/// tree-sitter generate writes its useful diagnostics to stderr, which is
-/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait(); // Reap the process.
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
-    }
-}
 
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
@@ -200,24 +134,6 @@ fn write_inputs_stamp(out_dir: &str) {
     }
 }
 
-/// Verify that all expected output files exist after generation.
-/// Panics with a clear message naming whichever file is missing.
-fn verify_outputs(src_dir: &std::path::Path) {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
-        }
-    }
-    if !missing.is_empty() {
-        panic!(
-            "tree-sitter generate succeeded but these output files are missing: {}. \
-             Check tree-sitter CLI version.",
-            missing.join(", ")
-        );
-    }
-}
-
 fn main() {
     let src_dir = std::path::Path::new("src");
     let parser_path = src_dir.join("parser.c");
@@ -301,7 +217,7 @@ fn main() {
             let grammar_sha_before = sha256_of_path(grammar_path);
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
-            verify_outputs(src_dir);
+            verify_outputs(src_dir).unwrap_or_else(|msg| panic!("{msg}"));
             // Re-attest what was just generated (`#6992`, Hole B). Before this,
             // build.rs could regenerate parser.c and leave
             // `src/.grammar_hash.stamp` describing the PREVIOUS grammar — so a
@@ -346,9 +262,7 @@ fn main() {
         // Write the OUT_DIR stamp whether we regenerated or bypassed —
         // subsequent build-script invocations will hit the fast path in
         // `needs_generate` and skip everything.
-        std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
-            eprintln!("warning: failed to write stamp file: {}", e);
-        });
+        write_out_dir_grammar_stamp(&stamp_path, &grammar_hash);
     }
 
     let mut c_config = cc::Build::new();

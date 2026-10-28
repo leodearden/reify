@@ -60,7 +60,7 @@ fn compile_no_errors(source: &str, path_name: &str) -> reify_compiler::CompiledM
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 // ── B2 end-to-end: sphere coarse > fine ─────────────────────────────────────
@@ -217,5 +217,57 @@ structure S {
     assert!(
         engine.achieved_repr_tol("S#realization[999]").is_none(),
         "B3: out-of-range realization index must return None"
+    );
+}
+
+// ── enumeration: every recorded deviation, key order, bit-exact ─────────────
+
+/// `achieved_repr_tol_by_occurrence` is the enumerating view of the same map
+/// the point lookup reads — what `reify check --verbose` prints. It walks
+/// occurrences in ascending key order, hands back each value bit-identical to
+/// what was recorded, and yields nothing when nothing was measured (B3 honest
+/// absence). OCCT-independent: the map is injected through the
+/// test-instrumentation seam.
+#[test]
+fn by_occurrence_enumerates_every_recorded_deviation_in_key_order_bit_exact() {
+    let make_engine = || {
+        reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            None,
+        )
+    };
+    let injected = std::collections::BTreeMap::from([
+        ("Zeta#realization[0]".to_string(), 1.19549876543e-4_f64),
+        ("Alpha#realization[1]".to_string(), 6.2e-4_f64),
+    ]);
+
+    let mut engine = make_engine();
+    engine.set_achieved_repr_tol_for_test(injected.clone());
+    let enumerated: Vec<(String, f64)> = engine
+        .achieved_repr_tol_by_occurrence()
+        .map(|(occurrence, deviation)| (occurrence.to_string(), deviation))
+        .collect();
+
+    let keys: Vec<&str> = enumerated.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["Alpha#realization[1]", "Zeta#realization[0]"]);
+    for (occurrence, deviation) in &enumerated {
+        assert_eq!(
+            deviation.to_bits(),
+            injected[occurrence].to_bits(),
+            "{occurrence}: enumerated value must be bit-identical to the recorded one"
+        );
+        assert_eq!(
+            engine.achieved_repr_tol(occurrence).map(f64::to_bits),
+            Some(deviation.to_bits()),
+            "{occurrence}: enumeration must agree with the point lookup"
+        );
+    }
+
+    let unmeasured = make_engine();
+    assert_eq!(
+        unmeasured.achieved_repr_tol_by_occurrence().count(),
+        0,
+        "B3: an engine that measured nothing must enumerate nothing"
     );
 }

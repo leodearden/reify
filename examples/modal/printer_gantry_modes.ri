@@ -58,11 +58,11 @@
 //   ModalOptions ctor args bind BY NAME. Since task-4522 the compiler's
 //   structure-ctor lowering resolves each `name:` label against the template's
 //   declared params and only fills the UNLABELLED slots positionally, in
-//   declaration order (n_modes, boundary_conditions, damping, sigma, tol,
-//   max_iters, reference_direction, element_order). So labels are load-bearing,
-//   not cosmetic, and a reordered or partial keyword call binds correctly —
-//   `element_order: ElementOrder.P2` lands in `element_order` wherever it is
-//   written.
+//   declaration order (n_modes, boundary_conditions, damping, shift_frequency,
+//   tol, max_iters, reference_direction, element_order). So labels are
+//   load-bearing, not cosmetic, and a reordered or partial keyword call binds
+//   correctly — `element_order: ElementOrder.P2` lands in `element_order`
+//   wherever it is written.
 //   The real trap is a MISSPELLED label: an unknown name emits
 //   `E_CTOR_UNKNOWN_FIELD` — a Warning today, an Error at δ — and is STILL
 //   appended lenient as `__arg{i}`, so the intended param falls back to its
@@ -142,7 +142,7 @@ structure PrinterGantryModes {
         n_modes: 7,
         boundary_conditions: [mount_left, mount_right],
         damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

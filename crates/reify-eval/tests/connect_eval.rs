@@ -44,7 +44,7 @@ structure def S {
 
     // Check: eval + constraint checking
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     // The compatibility constraint should appear in results as Satisfied
@@ -105,7 +105,7 @@ structure def S {
 
     // Check
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     // Both compatibility constraints should be Satisfied
@@ -158,7 +158,7 @@ structure def S {
 
     // Use real constraint checker so literal Bool(false) evaluates to Violated
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     let compat_entry = result
@@ -228,7 +228,7 @@ structure def S {
     );
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     let compat_id = &template.connections[0].compatibility_constraint;
@@ -285,7 +285,7 @@ structure def S {
     );
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     let compat_id = &template.connections[0].compatibility_constraint;
@@ -363,7 +363,7 @@ structure def S {
     );
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     let entry = result
@@ -442,7 +442,7 @@ fn m10_connect_advanced_ri_all_constraints_satisfied() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let check_result = engine.check(&compiled);
 
     assert!(
@@ -505,7 +505,7 @@ structure S {
 
     // @point does not need a geometry kernel — use None
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let eval_result = engine.eval(&compiled);
 
     let resolved_val = eval_result
@@ -561,7 +561,7 @@ structure S {
         .expect("expected 'resolved' value cell");
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let eval_result = engine.eval(&compiled);
 
     let resolved_val = eval_result
@@ -627,7 +627,7 @@ structure S {
         .expect("expected 'e' value cell");
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let eval_result = engine.eval(&compiled);
 
     let e_val = eval_result
@@ -697,7 +697,7 @@ structure S {
 
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let eval_result = engine.eval(&compiled);
 
     let r_val = eval_result
@@ -777,7 +777,7 @@ structure S {
             .expect("expected 'r' value cell");
 
         let checker = MockConstraintChecker::new();
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let eval_result = engine.eval(&compiled);
 
         let r_val = eval_result
@@ -850,7 +850,7 @@ structure def S {
         .expect("expected frame_constraint to be Some");
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     // The frame constraint should appear in the results
@@ -916,7 +916,7 @@ structure def S {
 
     // @point bypasses the kernel — use None
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
 
     // All constraint results should be Satisfied (MockConstraintChecker guarantees this
@@ -997,7 +997,7 @@ structure def S {
 
         // Use SimpleConstraintChecker so Undef-based expressions evaluate to non-Satisfied
         let checker = reify_constraints::SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         let result = engine.check(&compiled);
 
         let frame_entry = result.constraint_results.iter().find(|e| e.id == *frame_id);

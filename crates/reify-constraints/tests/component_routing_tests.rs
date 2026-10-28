@@ -28,6 +28,11 @@ fn ids<const N: usize>(members: [&str; N]) -> HashSet<ValueCellId> {
     members.into_iter().map(id).collect()
 }
 
+/// A component's autos, in declaration order.
+fn ordered<const N: usize>(members: [&str; N]) -> Vec<ValueCellId> {
+    members.into_iter().map(id).collect()
+}
+
 /// A length-typed `ValueRef`.
 fn len_ref(member: &str) -> CompiledExpr {
     value_ref(E, member)
@@ -91,7 +96,7 @@ fn a_constraint_reading_only_a_cyclic_cell_still_forms_a_component() {
     let c = &components[0];
     assert_eq!(
         c.auto_params,
-        ids(["a", "b"]),
+        ordered(["a", "b"]),
         "the component must hold every auto the cyclic cell reaches",
     );
     assert_eq!(
@@ -130,7 +135,7 @@ fn a_constraint_reading_a_cell_downstream_of_a_cycle_still_forms_a_component() {
     let c = &components[0];
     assert_eq!(
         c.auto_params,
-        ids(["a", "b"]),
+        ordered(["a", "b"]),
         "the component must hold every auto reached through `z` and the cycle",
     );
     assert_eq!(
@@ -167,7 +172,7 @@ fn a_constraint_reading_a_cyclic_cell_and_a_direct_auto_couples_all_three_autos(
     let c = &components[0];
     assert_eq!(
         c.auto_params,
-        ids(["a", "b", "c"]),
+        ordered(["a", "b", "c"]),
         "`x + c >= 1mm` reads `c` directly and `a`, `b` through the cyclic \
          cell. `{{c}}` alone means the cycle's reach was ignored whenever the \
          constraint had some other auto to hold on to",
@@ -319,7 +324,7 @@ fn a_bool_auto_reached_only_through_the_objective_does_not_stay_dimensional() {
     );
     assert_eq!(
         components[0].auto_params,
-        ids(["a", "flag"]),
+        ordered(["a", "flag"]),
         "fixture integrity: the component must hold the Bool auto under test",
     );
     assert_eq!(
@@ -350,7 +355,7 @@ fn a_string_auto_the_objective_names_directly_does_not_stay_dimensional() {
     );
     assert_eq!(
         components[0].auto_params,
-        ids(["a", "name"]),
+        ordered(["a", "name"]),
         "fixture integrity: the component must hold the String auto under test",
     );
     assert_eq!(

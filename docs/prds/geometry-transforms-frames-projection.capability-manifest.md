@@ -1,6 +1,6 @@
 # Capability manifest — geometry-transforms-frames-projection
 
-Mechanizes G3 + G6 per leaf for `docs/prds/geometry-transforms-frames-projection.md`. Built at
+**AS-AUTHORED GATE ARTIFACT (2026-06-01) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (α #4164 … ι #4172, plus #4879) — see the parent PRD's SHIPPED header (`docs/prds/geometry-transforms-frames-projection.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-06-01 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 + G6 per leaf for `docs/prds/geometry-transforms-frames-projection.md`. Built at
 decompose time (2026-06-01); every binding below resolved **PASS** — no FAIL
 (`declared-only`/`test-only`/`producer-downstream`/`producer-absent`/`fixture-ERROR`/`bound≤floor`).
 Empty-value sentinel: `Value::Undef`. Substrate verified empirically against `target/debug/reify`

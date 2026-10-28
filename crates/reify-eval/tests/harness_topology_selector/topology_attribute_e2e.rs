@@ -59,9 +59,9 @@ fn fuse_feature_id() -> FeatureId {
 
 fn ten_mm_box_op() -> GeometryOp {
     GeometryOp::Box {
-        width: Value::Real(BOX_SIDE_M),
-        height: Value::Real(BOX_SIDE_M),
-        depth: Value::Real(BOX_SIDE_M),
+        size_x: Value::Real(BOX_SIDE_M),
+        size_y: Value::Real(BOX_SIDE_M),
+        size_z: Value::Real(BOX_SIDE_M),
     }
 }
 
@@ -631,9 +631,9 @@ fn mod_history_threading_with_orthogonal_slabs() {
     // positioned relative to these measured extents.
     let slab_x_anchored = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(3.0 * BOX_SIDE_M),
-            height: Value::Real(BOX_SIDE_M),
-            depth: Value::Real(BOX_SIDE_M),
+            size_x: Value::Real(3.0 * BOX_SIDE_M),
+            size_y: Value::Real(BOX_SIDE_M),
+            size_z: Value::Real(BOX_SIDE_M),
         })
         .expect("X-slab box should build")
         .id;
@@ -654,9 +654,9 @@ fn mod_history_threading_with_orthogonal_slabs() {
     // See the fn doc for why a flush cross no longer splits anything.
     let slab_y_anchored = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_SIDE_M),
-            height: Value::Real(3.0 * BOX_SIDE_M),
-            depth: Value::Real(3.0 * BOX_SIDE_M),
+            size_x: Value::Real(BOX_SIDE_M),
+            size_y: Value::Real(3.0 * BOX_SIDE_M),
+            size_z: Value::Real(3.0 * BOX_SIDE_M),
         })
         .expect("Y-slab box should build")
         .id;
@@ -1115,7 +1115,7 @@ fn compile_no_errors_for_engine(source: &str) -> reify_compiler::CompiledModule 
 
 fn engine_with_occt_handle() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
 // ─── engine-driven tests (task #3629) ────────────────────────────────────────
