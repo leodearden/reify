@@ -716,7 +716,11 @@ pub fn compile_with_prelude_context_checked_with_config(
         &decl_refs.trait_refs,
     );
 
-    compile_builder::fields_phase::phase_fields(&mut compile_ctx, &decl_refs.field_refs);
+    compile_builder::fields_phase::phase_fields(
+        &mut compile_ctx,
+        &trait_names,
+        &decl_refs.field_refs,
+    );
 
     compile_builder::defs_phase::phase_constraint_defs(
         &mut compile_ctx,

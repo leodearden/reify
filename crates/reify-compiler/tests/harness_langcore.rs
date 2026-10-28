@@ -19,6 +19,8 @@ mod common;
 
 #[path = "harness_langcore/enum_ctor_param_binding_tests.rs"]
 mod enum_ctor_param_binding_tests;
+#[path = "harness_langcore/field_type_name_set_resolution_tests.rs"]
+mod field_type_name_set_resolution_tests;
 #[path = "harness_langcore/let_annotation_type_mismatch_tests.rs"]
 mod let_annotation_type_mismatch_tests;
 #[path = "harness_langcore/let_scope_tests.rs"]
