@@ -6,20 +6,13 @@ bash call that keeps git's stderr returns those lines among its warnings; one
 mirroring a `2>/dev/null` call drops them.
 """
 
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
-from reify_verify.bashcall import CallResult
+from reify_verify import childproc
+from reify_verify.childproc import CallResult
 
 
 def run(repo_root: Path, env: Mapping[str, str], *args: str) -> CallResult:
-    """`git -C repo_root args`; a non-zero exit is returned, never raised."""
-    return CallResult.of(
-        subprocess.run(
-            ["git", "-C", str(repo_root), *args],
-            env=dict(env),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-        )
-    )
+    """`git -C repo_root args`. A non-zero exit, or git failing to start, is returned, never raised."""
+    return childproc.run(["git", "-C", str(repo_root), *args], None, env)

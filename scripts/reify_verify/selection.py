@@ -27,7 +27,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 from reify_verify import bashcall, gitcall
-from reify_verify.bashcall import BashCall, DataFile
+from reify_verify.bashcall import BashCall, DataFile, DataFileUnreadable
 from reify_verify.invocation import Scope
 from reify_verify.scope import ScopeDecision
 
@@ -80,8 +80,8 @@ class Selection:
 def select_infra(
     decision: ScopeDecision, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[Selection, tuple[str, ...]]:
-    globs = list(_mapped_globs(decision.changed_paths, repo_root))
-    kloc, warnings = _harness_kloc(decision, repo_root, env)
+    globs, map_warnings = _mapped_globs(decision.changed_paths, repo_root)
+    kloc, kloc_warnings = _harness_kloc(decision, repo_root, env)
     candidates = (
         *kloc,
         *_ptodo(decision),
@@ -93,7 +93,7 @@ def select_infra(
         if glob not in globs:
             globs.append(glob)
     leaves = tuple(SelectedLeaf(glob, _leaf_env(glob, decision.mode)) for glob in globs)
-    return Selection(leaves), warnings
+    return Selection(leaves), (*map_warnings, *kloc_warnings)
 
 
 def _leaf_env(glob: str, mode: Scope) -> tuple[tuple[str, str], ...]:
@@ -103,20 +103,25 @@ def _leaf_env(glob: str, mode: Scope) -> tuple[tuple[str, str], ...]:
     return ()
 
 
-def _mapped_globs(changed_paths: tuple[str, ...], repo_root: Path) -> list[str]:
-    """select_infra_tests: each map row, in file order, whose artifact is a changed path."""
-    if not changed_paths:
-        return []
+def _mapped_globs(changed_paths: tuple[str, ...], repo_root: Path) -> tuple[list[str], tuple[str, ...]]:
+    """select_infra_tests: each map row, in file order, whose artifact is a changed path.
+
+    A map that is not a regular file selects nothing, as bash's `[ -f ] ||
+    return 0`. One that cannot be read also selects nothing, with a warning
+    where bash leaves grep's error.
+    """
+    if not changed_paths or not INFRA_MAP.is_file(repo_root):
+        return [], ()
     try:
         text = INFRA_MAP.read_text(repo_root)
-    except FileNotFoundError:
-        return []
+    except DataFileUnreadable as err:
+        return [], (f"verify.sh: WARNING — {err} — no infra test is selected from its rows",)
     changed = set(changed_paths)
     globs: list[str] = []
     for artifact, glob in _map_rows(text):
         if artifact in changed and glob not in globs:
             globs.append(glob)
-    return globs
+    return globs, ()
 
 
 def _map_rows(text: str) -> list[tuple[str, str]]:

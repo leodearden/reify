@@ -1,15 +1,22 @@
-"""bashcall — a bash library function or data file verify reads, as a typed record (PRD D15).
+"""bashcall — the gate's seams: the bash library functions and data files verify reads (PRD D1, D15).
 
-Each module declares the BashCall and DataFile constants it uses, so a later
---print-gates (PRD D15) can collect them from the modules. run forks ONE
-`bash -c` per call. The function name and its arguments travel as
-argv and are never interpolated into the script text.
+Each seam is a typed record: a BashCall for a library function, a DataFile
+for a data file. Each module declares the BashCall and DataFile constants it
+uses, so a later --print-gates (PRD D15) can collect them from the modules.
+run forks ONE `bash -c` per call. The function name and its arguments travel
+as argv and are never interpolated into the script text.
+
+A data file that cannot be read raises DataFileUnreadable whatever the cause.
+Each reader turns that into its own conservative value and a stderr warning.
 """
 
-import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from os.path import isfile
 from pathlib import Path
+
+from reify_verify import childproc
+from reify_verify.childproc import CallResult
 
 _SOURCE_AND_CALL = 'source "$1" || exit; shift; "$@"'
 _DROPPED_ENV = ("BASH_ENV", "ENV")
@@ -32,35 +39,22 @@ class DataFile:
 
     path: str
 
+    def is_file(self, repo_root: Path) -> bool:
+        """bash's `[ -f ]`: a regular file, after symlinks; False whenever that cannot be told."""
+        return isfile(repo_root / self.path)
+
     def read_text(self, repo_root: Path) -> str:
-        return (repo_root / self.path).read_text(encoding="utf-8")
+        """The file as UTF-8 text; any failure to read it raises DataFileUnreadable."""
+        try:
+            return (repo_root / self.path).read_text(encoding="utf-8")
+        except (OSError, ValueError) as err:
+            raise DataFileUnreadable(self, str(err)) from err
 
 
-@dataclass(frozen=True)
-class CallResult:
-    """A finished child process: its exit status, its stdout, and its stderr as lines."""
-
-    returncode: int
-    stdout: str
-    stderr_lines: tuple[str, ...]
-
-    @classmethod
-    def of(cls, proc: subprocess.CompletedProcess) -> "CallResult":
-        return cls(
-            proc.returncode,
-            proc.stdout.decode("utf-8", "surrogateescape"),
-            tuple(proc.stderr.decode("utf-8", "surrogateescape").splitlines()),
-        )
-
-    @property
-    def lines(self) -> tuple[str, ...]:
-        """stdout's non-empty lines, verbatim."""
-        return tuple(line for line in self.stdout.split("\n") if line)
-
-    def exit_summary(self, command: str) -> str:
-        """`command exited N (stderr lines)`: why a failed call failed, on one line."""
-        stderr = "; ".join(self.stderr_lines) or "no stderr"
-        return f"{command} exited {self.returncode} ({stderr})"
+class DataFileUnreadable(Exception):
+    def __init__(self, file: DataFile, reason: str):
+        super().__init__(f"{file.path} is unreadable ({reason})")
+        self.file = file
 
 
 class BashCallError(Exception):
@@ -71,19 +65,16 @@ class BashCallError(Exception):
 
 
 def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
-    """The call's stdout and stderr lines; a non-zero exit raises BashCallError.
+    """The call's stdout and stderr lines; a non-zero exit raises BashCallError, as does bash
+    itself failing to start.
 
     cwd is repo_root, as under verify.sh's `cd "$REPO_ROOT"`, and stderr is
     captured so the caller returns it in bash's stderr order.
     """
-    result = CallResult.of(
-        subprocess.run(
-            ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
-            cwd=repo_root,
-            env={name: value for name, value in env.items() if name not in _DROPPED_ENV},
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-        )
+    result = childproc.run(
+        ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
+        repo_root,
+        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
     )
     if result.returncode != 0:
         raise BashCallError(call, result)

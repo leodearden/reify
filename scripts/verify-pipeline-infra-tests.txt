@@ -863,6 +863,8 @@ scripts/reify_verify/bashcall.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/bashcall.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/gitcall.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/gitcall.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/childproc.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/childproc.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/scope.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/narrowing.py    tests/infra/test_verify_*.sh

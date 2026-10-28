@@ -23,7 +23,8 @@ from pathlib import Path
 
 from reify_path_attribution import PathFacts, Tree, attribute
 from reify_verify import bashcall, gitcall
-from reify_verify.bashcall import BashCall, CallResult, DataFile
+from reify_verify.bashcall import BashCall, DataFile, DataFileUnreadable
+from reify_verify.childproc import CallResult
 from reify_verify.invocation import Invocation, Scope
 from reify_verify.policy import ROLE_TABLE
 
@@ -284,18 +285,26 @@ def _rust_coupled(
 def _gui_pinned(
     mode: Scope, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[CoupledSet, tuple[str, ...]]:
-    """The pins file's tests/prd-gate/fixtures/ entries; it must be a JSON list of paths."""
+    """The pins file's tests/prd-gate/fixtures/ entries."""
     try:
-        pins = json.loads(_pins_text(mode, repo_root, env))
-        problem = None if _is_path_list(pins) else "not a JSON list of strings"
-    except (OSError, ValueError) as err:
-        problem = str(err)
-    if problem is not None:
+        pins = _pins(mode, repo_root, env)
+    except DataFileUnreadable as err:
         return CoupledSet(frozenset(), everything=True), (
-            f"verify.sh: WARNING — {GUI_PINS.path} is unreadable ({problem}) — every prd-gate "
-            "fixture counts as GUI-pinned (fail wide, contract C5)",
+            f"verify.sh: WARNING — {err} — every prd-gate fixture counts as GUI-pinned "
+            "(fail wide, contract C5)",
         )
     return CoupledSet(frozenset(_basename(pin) for pin in pins if pin.startswith(FIXTURES_DIR))), ()
+
+
+def _pins(mode: Scope, repo_root: Path, env: Mapping[str, str]) -> list[str]:
+    """The pins file as a JSON list of paths; anything else raises DataFileUnreadable."""
+    try:
+        pins = json.loads(_pins_text(mode, repo_root, env))
+    except ValueError as err:
+        raise DataFileUnreadable(GUI_PINS, str(err)) from err
+    if not _is_path_list(pins):
+        raise DataFileUnreadable(GUI_PINS, "not a JSON list of strings")
+    return pins
 
 
 def _pins_text(mode: Scope, repo_root: Path, env: Mapping[str, str]) -> str:
@@ -303,7 +312,7 @@ def _pins_text(mode: Scope, repo_root: Path, env: Mapping[str, str]) -> str:
         return GUI_PINS.read_text(repo_root)
     found = gitcall.run(repo_root, env, "cat-file", "blob", f":{GUI_PINS.path}")
     if found.returncode != 0:
-        raise OSError(found.exit_summary(f"git cat-file blob :{GUI_PINS.path}"))
+        raise DataFileUnreadable(GUI_PINS, found.exit_summary(f"git cat-file blob :{GUI_PINS.path}"))
     return found.stdout
 
 
