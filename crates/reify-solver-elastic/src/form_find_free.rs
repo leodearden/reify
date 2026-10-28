@@ -2970,7 +2970,9 @@ mod tests {
         let searched = triplex_group_ratios();
 
         assert!(QSource::new(&membrane.problem(&guess, &fixed), None).admits_projection_trial());
-        assert!(!QSource::new(&membrane.problem(&guess, &searched), None).admits_projection_trial());
+        assert!(
+            !QSource::new(&membrane.problem(&guess, &searched), None).admits_projection_trial()
+        );
     }
 
     #[test]
@@ -3016,12 +3018,22 @@ mod tests {
         };
         let mut relax = RelaxStep::new();
 
-        let first = CombinedIterate::new(&problem, q.clone(), guess.clone(), membrane.surface_matrix(&guess));
+        let first = CombinedIterate::new(
+            &problem,
+            q.clone(),
+            guess.clone(),
+            membrane.surface_matrix(&guess),
+        );
         let next = relax.relax(&problem, &first, false);
         let (expected, carried_step) = descend(&guess, 1e-2);
         assert_eq!(next, expected);
 
-        let second = CombinedIterate::new(&problem, q.clone(), next.clone(), membrane.surface_matrix(&next));
+        let second = CombinedIterate::new(
+            &problem,
+            q.clone(),
+            next.clone(),
+            membrane.surface_matrix(&next),
+        );
         assert_eq!(
             relax.relax(&problem, &second, false),
             descend(&next, carried_step).0
@@ -3038,7 +3050,12 @@ mod tests {
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let spec = ForceDensitySpec::Explicit(q.clone());
         let problem = membrane.problem(&planar, &spec);
-        let iterate = CombinedIterate::new(&problem, q.clone(), planar.clone(), membrane.surface_matrix(&planar));
+        let iterate = CombinedIterate::new(
+            &problem,
+            q.clone(),
+            planar.clone(),
+            membrane.surface_matrix(&planar),
+        );
 
         let next = RelaxStep::new().relax(&problem, &iterate, true);
 
