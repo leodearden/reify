@@ -141,16 +141,10 @@ impl Seeds {
     /// arity-1 call a `__field__` cell may shadow with a lambda), so the fast
     /// path can never be the thing that swallowed a branch.
     ///
-    /// # The one remaining gap
-    ///
     /// A `true` here keeps the node off the fast path, and every kind the
-    /// traversal DIFFERENTIATES then records its own kinks.  The kinds it does
-    /// not — `IndexAccess`, `ListLiteral`, the rest of
-    /// `refuse_or_constant`'s clients — hand the whole node to
-    /// [`crate::eval_expr`], so a kink nested inside one of those is evaluated
-    /// without being recorded even though this predicate saw it.  That is the
-    /// ONLY shape for which an empty record still under-reports, and
-    /// `refuse_or_constant` states it at the point it happens.
+    /// traversal DIFFERENTIATES then records its own kinks; a node it delegates
+    /// whole records one [`KinkKind::Unplaced`](crate::KinkKind::Unplaced)
+    /// entry instead.
     pub fn subtree_has_kink(&self, expr: &CompiledExpr) -> bool {
         if let Some(hit) = self.kinky.borrow().get(&expr.content_hash) {
             return *hit;
@@ -194,6 +188,7 @@ fn node_is_kink(e: &CompiledExpr) -> bool {
         // subtrees), the shadow-cell probe is one `eval_expr` pays for every
         // arity-1 call anyway, and a traversed call records its branches
         // properly — `eval_dual_fn_body` and `eval_dual_lambda_apply` both do.
+        // Under a delegated node it costs a possibly spurious `Unplaced` entry.
         CompiledExprKind::UserFunctionCall { .. } => true,
         CompiledExprKind::FunctionCall { args, .. } if args.len() == 1 => true,
         CompiledExprKind::BinOp { op, .. } => matches!(
