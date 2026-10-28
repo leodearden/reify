@@ -3216,9 +3216,6 @@ structure def S {
 /// reported ONCE per declaration, not once per collection element (task 7520,
 /// the constraint arm of task 7195).
 ///
-/// MEASURED before the fix: 3 byte-identical `"unresolved name: undefined_thing"`
-/// errors, one per element, all labelled at the same span. AFTER: exactly 1.
-///
 /// The per-element constraints are asserted UNCHANGED on purpose, so a "stop at
 /// the first error" fix fails this half.
 #[test]
@@ -3241,8 +3238,7 @@ structure S {
     assert_eq!(
         unresolved.len(),
         1,
-        "expected the body's unresolved-name error exactly once per declaration \
-         (3 byte-identical copies before the fix, one per collection element), \
+        "expected the body's unresolved-name error exactly once per declaration, \
          got {}: {:?}",
         unresolved.len(),
         module
@@ -3300,11 +3296,8 @@ structure S {
 
 /// An error in the `where` clause of a `forall` constraint body is reported ONCE
 /// per declaration, not once per collection element (task 7520, the constraint
-/// arm of task 7195).
-///
-/// MEASURED before the fix: 3 byte-identical `"unresolved name: undefined_flag"`
-/// errors — the condition never mentions `v`, so each element's guard compiles to
-/// the same diagnostic. AFTER: exactly 1.
+/// arm of task 7195). The condition never mentions the bound variable, so every
+/// element's guard compiles to the same diagnostic.
 ///
 /// One single-constraint guarded group per element is asserted UNCHANGED.
 #[test]
@@ -3328,8 +3321,7 @@ structure S {
         unresolved.len(),
         1,
         "expected the where clause's unresolved-name error exactly once per \
-         declaration (3 byte-identical copies before the fix, one per collection \
-         element), got {}: {:?}",
+         declaration, got {}: {:?}",
         unresolved.len(),
         module
             .diagnostics
@@ -3370,14 +3362,14 @@ structure S {
 /// ONCE per declaration, not once per collection element (task 7520, the
 /// constraint arm of task 7195).
 ///
-/// `expand_constraint_inst` labels its unknown-definition and unknown-argument
-/// errors at `ci.span`, which substitution leaves unchanged, so every element
-/// rendered the same diagnostic. MEASURED before the fix: 3 byte-identical copies
-/// of each. AFTER: exactly 1 each.
+/// `expand_constraint_inst` labels its unknown-definition, unknown-argument and
+/// missing-argument errors at `ci.span`, which substitution leaves unchanged, so
+/// every element renders the same diagnostic.
 ///
 /// Per-element artifacts are asserted UNCHANGED: `U` (an unknown argument does
 /// not stop emission) still emits one `MinThreshold#*:forall@w[i]` constraint per
-/// element, and `S` (no such definition) still emits none.
+/// element, while `S` (no such definition) and `V` (a missing argument ends the
+/// expansion) emit none.
 #[test]
 fn forall_constraint_inst_body_validation_errors_reported_once_per_declaration() {
     let source = r#"
@@ -3385,11 +3377,19 @@ constraint def MinThreshold {
     param value : Length
     value > 0
 }
+constraint def Bounded {
+    param lo : Length
+    param hi : Length
+    lo < hi
+}
 structure S {
     forall v in [1, 2, 3]: constraint NoSuchDef(value: v)
 }
 structure U {
     forall w in [1, 2, 3]: constraint MinThreshold(value: w, bogus: w)
+}
+structure V {
+    forall x in [1, 2, 3]: constraint Bounded(lo: x)
 }
 "#;
     let module = compile_source(source);
@@ -3402,8 +3402,7 @@ structure U {
     assert_eq!(
         unknown_def.len(),
         1,
-        "expected the unknown-definition error exactly once per declaration \
-         (3 byte-identical copies before the fix, one per collection element), \
+        "expected the unknown-definition error exactly once per declaration, \
          got {}: {:?}",
         unknown_def.len(),
         module
@@ -3432,8 +3431,7 @@ structure U {
     assert_eq!(
         unknown_arg.len(),
         1,
-        "expected the unknown-argument error exactly once per declaration \
-         (3 byte-identical copies before the fix, one per collection element), \
+        "expected the unknown-argument error exactly once per declaration, \
          got {}: {:?}",
         unknown_arg.len(),
         module
@@ -3441,6 +3439,33 @@ structure U {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+
+    let missing_arg: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message == "missing argument 'hi' in constraint instantiation of 'Bounded'")
+        .collect();
+    assert_eq!(
+        missing_arg.len(),
+        1,
+        "expected the missing-argument error exactly once per declaration, \
+         got {}: {:?}",
+        missing_arg.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        missing_arg[0]
+            .labels
+            .iter()
+            .map(|l| l.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["argument 'hi' is required"],
+        "expected the surviving missing-argument error to keep its single label"
     );
 
     let template_u = module
@@ -3467,34 +3492,34 @@ structure U {
         );
     }
 
-    let template_s = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("template S not found");
-    assert!(
-        !template_s
-            .constraints
+    for failing_structure in ["S", "V"] {
+        let template = module
+            .templates
             .iter()
-            .any(|c| c.label.as_deref().is_some_and(|l| l.contains(":forall@"))),
-        "expected no forall-emitted constraint for the undefined definition, \
-         got labels {:?}",
-        template_s
-            .constraints
-            .iter()
-            .filter_map(|c| c.label.as_deref())
-            .collect::<Vec<_>>()
-    );
+            .find(|t| t.name == failing_structure)
+            .unwrap_or_else(|| panic!("template {failing_structure} not found"));
+        assert!(
+            !template
+                .constraints
+                .iter()
+                .any(|c| c.label.as_deref().is_some_and(|l| l.contains(":forall@"))),
+            "expected no forall-emitted constraint in {failing_structure}, whose \
+             instantiation fails validation. Labels present: {:?}",
+            template
+                .constraints
+                .iter()
+                .filter_map(|c| c.label.as_deref())
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// Anti-over-suppression half of the task-7520 contract: per-element body
 /// diagnostics that DIFFER are all reported.
 ///
-/// MEASURED (before and after the fix): exactly 2 `UnresolvedName` errors,
-/// `"unresolved name: a"` and `"unresolved name: b"`. Substitution puts each list
-/// item's name into the body, so the two messages differ even though both come
-/// from the one `forall` declaration — the suppression key is the full rendered
-/// diagnostic, never the declaration alone.
+/// Substitution puts each list item's name into the body, so the two messages
+/// differ even though both come from the one `forall` declaration — the
+/// suppression key is the full rendered diagnostic, never the declaration alone.
 #[test]
 fn forall_constraint_distinct_per_element_diagnostics_are_all_reported() {
     let source = r#"
