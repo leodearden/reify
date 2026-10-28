@@ -805,8 +805,23 @@ mod hc4_over_compiled_exprs {
         assert_eq!(accepted, Contraction::Consistent);
         assert_contains_point(&bx, &[pin]);
 
-        let far = pin + 2.0 * LENGTH_FLOOR_M;
-        assert!(!scalars_equal(pin, far, DimensionVector::LENGTH));
+        // Pins the policy calls unequal are still no contradiction while some
+        // point is accepted against both: 1.5 floors apart, the midpoint is.
+        let apart = pin + 1.5 * LENGTH_FLOOR_M;
+        let midpoint = pin + 0.75 * LENGTH_FLOOR_M;
+        assert!(!scalars_equal(pin, apart, DimensionVector::LENGTH));
+        assert!(scalars_equal(midpoint, pin, DimensionVector::LENGTH));
+        assert!(scalars_equal(midpoint, apart, DimensionVector::LENGTH));
+        let apart_pair = [
+            eq(length_ref("x"), metres(pin)),
+            eq(length_ref("x"), metres(apart)),
+        ];
+        let (jointly_accepted, bx) =
+            contract_from(&apart_pair, &classes, vec![Interval::ENTIRE], ACCEPTANCE);
+        assert_eq!(jointly_accepted, Contraction::Consistent);
+        assert_contains_point(&bx, &[midpoint]);
+
+        let far = pin + 3.0 * LENGTH_FLOOR_M;
         let far_pair = [
             eq(length_ref("x"), metres(pin)),
             eq(length_ref("x"), metres(far)),

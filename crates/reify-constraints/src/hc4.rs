@@ -59,6 +59,71 @@ pub enum Revision {
     Empty,
 }
 
+/// The outcome of [`contract`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Contraction {
+    /// The box is narrowed as far as the sweep budget allowed. This is NOT
+    /// evidence that any point of it satisfies the relations.
+    Consistent,
+    /// No point of the input box satisfies every relation. `relation` indexes
+    /// the input slice: the first relation, in input order, whose revise
+    /// emptied the box.
+    Empty { relation: usize },
+}
+
+/// A sweep that moves no endpoint by more than this fraction of its
+/// interval's previous width (of its magnitude, for a half-unbounded
+/// interval) ends the fixpoint. An infinite endpoint becoming finite always
+/// counts.
+const HC4_MIN_RELATIVE_SHRINK: f64 = 1e-4;
+
+/// The sweep budget. A count, never a clock (solution-set-completeness C7);
+/// exhausting it returns the still-sound box as [`Contraction::Consistent`].
+const HC4_MAX_SWEEPS: usize = 64;
+
+/// Contract `bx` against every relation to an approximate HC4 fixpoint:
+/// AC3-style sweeps over `relations` in input order until a sweep stops
+/// shrinking the box or the budget runs out. Pure and deterministic.
+///
+/// It only ever narrows the box it is given, so it runs unchanged on any
+/// caller-supplied sub-box.
+pub fn contract(relations: &[Relation], bx: &mut [Interval], slack: Slack) -> Contraction {
+    for _ in 0..HC4_MAX_SWEEPS {
+        let before = bx.to_vec();
+        for (index, relation) in relations.iter().enumerate() {
+            if relation.revise(bx, slack) == Revision::Empty {
+                return Contraction::Empty { relation: index };
+            }
+        }
+        if !shrank_materially(&before, bx) {
+            break;
+        }
+    }
+    Contraction::Consistent
+}
+
+fn shrank_materially(before: &[Interval], after: &[Interval]) -> bool {
+    before.iter().zip(after).any(|(old, new)| {
+        let width = old.hi() - old.lo();
+        let scale = |endpoint: f64| {
+            if width.is_finite() {
+                width
+            } else {
+                endpoint.abs()
+            }
+        };
+        endpoint_moved(old.lo(), new.lo(), scale(old.lo()))
+            || endpoint_moved(old.hi(), new.hi(), scale(old.hi()))
+    })
+}
+
+fn endpoint_moved(old: f64, new: f64, scale: f64) -> bool {
+    if old.is_infinite() {
+        return new.is_finite();
+    }
+    (new - old).abs() > HC4_MIN_RELATIVE_SHRINK * scale
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Comparison {
     AtLeast,
