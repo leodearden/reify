@@ -2851,4 +2851,64 @@ mod tests {
             )
         );
     }
+
+    /// Drives `guard` through `GEO_STALL_ITERS - 1` iterations that each leave
+    /// the geometry at `at` with `residual`, none of which may trip it.
+    fn approach_stall(guard: &mut StallGuard, at: &[[f64; 3]], residual: f64) {
+        for call in 1..GEO_STALL_ITERS {
+            assert!(
+                !guard.stalled_after(at, at, residual),
+                "unmoved call {call} of {} tripped the guard early",
+                GEO_STALL_ITERS - 1,
+            );
+        }
+    }
+
+    #[test]
+    fn stall_guard_trips_on_the_geo_stall_iters_th_unmoved_flat_iteration() {
+        let x = canonical_prism();
+        let mut guard = StallGuard::new();
+        assert!(!guard.stalled_after(&x, &x, 1.0));
+
+        approach_stall(&mut guard, &x, 1.0);
+
+        assert!(guard.stalled_after(&x, &x, 1.0));
+    }
+
+    #[test]
+    fn stall_guard_resets_when_the_geometry_leaves_where_it_entered() {
+        let (x, y) = (canonical_prism(), perturbed_prism_guess());
+        let mut guard = StallGuard::new();
+        assert!(!guard.stalled_after(&x, &x, 1.0));
+        approach_stall(&mut guard, &x, 1.0);
+
+        assert!(!guard.stalled_after(&x, &y, 1.0));
+
+        approach_stall(&mut guard, &x, 1.0);
+        assert!(guard.stalled_after(&x, &x, 1.0));
+    }
+
+    #[test]
+    fn stall_guard_resets_when_the_residual_shrinks_past_the_threshold() {
+        let x = canonical_prism();
+        let shrunk = 1.0 * (1.0 - 2.0 * GEO_STALL_RESID_THRESHOLD);
+        let mut guard = StallGuard::new();
+        assert!(!guard.stalled_after(&x, &x, 1.0));
+        approach_stall(&mut guard, &x, 1.0);
+
+        assert!(!guard.stalled_after(&x, &x, shrunk));
+
+        approach_stall(&mut guard, &x, shrunk);
+        assert!(guard.stalled_after(&x, &x, shrunk));
+    }
+
+    #[test]
+    fn stall_guard_reads_an_infinite_residual_as_flat_from_the_first_iteration() {
+        let x = canonical_prism();
+        let mut guard = StallGuard::new();
+
+        approach_stall(&mut guard, &x, f64::INFINITY);
+
+        assert!(guard.stalled_after(&x, &x, f64::INFINITY));
+    }
 }
