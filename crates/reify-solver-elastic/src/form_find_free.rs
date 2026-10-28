@@ -2846,26 +2846,73 @@ mod tests {
 
     // ── χ-ff (task 9274): the combined fixed point's units ────────────────────
 
+    /// The triplex with its two prism membrane triangles at σ = 0.2, held so a
+    /// test can borrow the validated problem `form_find_free_surfaces` builds.
+    struct PrismMembrane {
+        members: Vec<(usize, usize)>,
+        kinds: Vec<MemberKind>,
+        surfaces: Vec<(usize, usize, usize)>,
+        sigmas: Vec<f64>,
+    }
+
+    impl PrismMembrane {
+        const SIGMA: f64 = 0.2;
+
+        fn new() -> Self {
+            let (members, kinds) = triplex_topology();
+            let surfaces = prism_surfaces();
+            let sigmas = vec![Self::SIGMA; surfaces.len()];
+            PrismMembrane {
+                members,
+                kinds,
+                surfaces,
+                sigmas,
+            }
+        }
+
+        fn problem<'a>(
+            &'a self,
+            nodes: &'a [[f64; 3]],
+            spec: &'a ForceDensitySpec,
+        ) -> ForceDensityProblem<'a> {
+            ForceDensityProblem::new(
+                nodes,
+                &self.members,
+                &self.kinds,
+                free_spec(spec, self.members.len()).expect("the spec is well-formed"),
+                &[],
+                &self.surfaces,
+                &self.sigmas,
+            )
+            .expect("the prism membrane satisfies the input contract")
+        }
+
+        fn surface_matrix(&self, nodes: &[[f64; 3]]) -> Mat<f64> {
+            assemble_surface_matrix(nodes.len(), &self.surfaces, &self.sigmas, nodes)
+                .expect("the prism triangles are non-degenerate at these nodes")
+        }
+    }
+
+    /// Signed seed ratio per triplex group: struts compressive, horizontals
+    /// (the reference) and verticals tensile.
+    const TRIPLEX_SEED_RATIOS: [f64; 3] = [-1.0, 1.0, 1.0];
+
+    fn triplex_group_ratios() -> ForceDensitySpec {
+        ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: TRIPLEX_SEED_RATIOS.to_vec(),
+            reference_group: 1,
+        }
+    }
+
     #[test]
     fn combined_iterate_judges_its_own_geometry_as_its_own_residual() {
-        let (members, kinds) = triplex_topology();
+        let membrane = PrismMembrane::new();
         let nodes = perturbed_prism_guess();
-        let surfaces = prism_surfaces();
-        let sigmas = vec![0.2; 2];
-        let q = closed_form_combined_q(0.2);
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let spec = ForceDensitySpec::Explicit(q.clone());
-        let problem = ForceDensityProblem::new(
-            &nodes,
-            &members,
-            &kinds,
-            free_spec(&spec, members.len()).expect("an explicit spec is well-formed"),
-            &[],
-            &surfaces,
-            &sigmas,
-        )
-        .expect("the perturbed prism satisfies the input contract");
-        let surface_mat = assemble_surface_matrix(6, &surfaces, &sigmas, &nodes)
-            .expect("the perturbed prism triangles are non-degenerate");
+        let problem = membrane.problem(&nodes, &spec);
+        let surface_mat = membrane.surface_matrix(&nodes);
 
         let iterate = CombinedIterate::new(&problem, q.clone(), nodes.clone(), surface_mat.clone());
 
@@ -2876,10 +2923,62 @@ mod tests {
         assert_eq!(
             iterate.residual,
             all_node_equilibrium_residual_relative(
-                &combined_force_density_matrix(&members, &q, &surface_mat),
+                &combined_force_density_matrix(&membrane.members, &q, &surface_mat),
                 &nodes,
             )
         );
+    }
+
+    #[test]
+    fn fixed_q_source_yields_the_explicit_densities_at_every_iterate() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&guess, &spec);
+        let mut source = QSource::new(&problem, None);
+
+        for nodes in [perturbed_prism_guess(), canonical_prism()] {
+            let surface_mat = membrane.surface_matrix(&nodes);
+            assert_eq!(
+                source.densities_at(&problem, &nodes, &surface_mat),
+                Ok(q.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_fixed_q_source_admits_the_projection_trial() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let fixed = ForceDensitySpec::Explicit(closed_form_combined_q(PrismMembrane::SIGMA));
+        let searched = triplex_group_ratios();
+
+        assert!(QSource::new(&membrane.problem(&guess, &fixed), None).admits_projection_trial());
+        assert!(!QSource::new(&membrane.problem(&guess, &searched), None).admits_projection_trial());
+    }
+
+    #[test]
+    fn searched_q_source_keeps_each_group_seed_sign() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let spec = triplex_group_ratios();
+        let problem = membrane.problem(&guess, &spec);
+        let boot = form_find_line_only(&problem).expect("the line-only triplex form-finds");
+        let mut source = QSource::new(&problem, Some(&boot));
+
+        let q = source
+            .densities_at(&problem, &boot.nodes, &membrane.surface_matrix(&boot.nodes))
+            .expect("the delta golden's first combined search succeeds");
+
+        assert_eq!(q.len(), membrane.members.len());
+        for (member, (&qi, &group)) in q.iter().zip(triplex_group_ids().iter()).enumerate() {
+            assert_eq!(
+                qi.signum(),
+                TRIPLEX_SEED_RATIOS[group].signum(),
+                "member {member} (group {group}) density {qi} lost its seed sign",
+            );
+        }
     }
 
     /// Drives `guard` through `GEO_STALL_ITERS - 1` iterations that each leave
