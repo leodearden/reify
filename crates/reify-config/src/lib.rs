@@ -63,7 +63,7 @@
 //! graph. Beyond the inert status on [`Manifest`], nothing enforces the
 //! policy either (see `docs/notes/reify-toml-schema.md`). The
 //! three `commitment_policy` values mirror
-//! [`NodeCommitmentOverride`](reify_runtime) verbatim: `commit_if_slow`,
+//! `reify_runtime::NodeCommitmentOverride` verbatim: `commit_if_slow`,
 //! `always_cancel_when_stale`, `only_run_on_final_inputs`. See
 //! `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
 //! precedence chain that places these entries.
@@ -144,7 +144,7 @@ pub const DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE: usize = 100_000;
 
 /// Commitment policy for a per-node override, as declared in `reify.toml`.
 ///
-/// Mirrors the three [`NodeCommitmentOverride`](reify_runtime) variants
+/// Mirrors the three `reify_runtime::NodeCommitmentOverride` variants
 /// verbatim; the consumer (`reify-runtime`) owns the conversion.
 /// TOML values use `snake_case`: `commit_if_slow`, `always_cancel_when_stale`,
 /// `only_run_on_final_inputs`.
@@ -180,7 +180,7 @@ pub struct NodePolicyOverride {
 /// Fields:
 /// - `budget_bytes`: optional cap on the in-process warm-state pool in bytes.
 ///   `None` means "not configured in this manifest" — the engine falls back to
-///   the `REIFY_WARM_STATE_BUDGET_BYTES` env var or [`DEFAULT_BUDGET_BYTES`](reify_eval).
+///   the `REIFY_WARM_STATE_BUDGET_BYTES` env var or `reify_eval::warm_pool::DEFAULT_BUDGET_BYTES`.
 ///   A zero value is rejected at parse time with
 ///   [`ManifestError::InvalidWarmStateBudget`].
 ///
