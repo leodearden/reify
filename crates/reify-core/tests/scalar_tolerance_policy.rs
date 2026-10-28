@@ -5,7 +5,9 @@
 //! compare equal, a 1% design drift must not, and the absolute floor must be
 //! dimension-aware without any dimension dropping below the default floor.
 
-use reify_core::scalar_tolerance::{DEFAULT_ABSOLUTE_FLOOR, scalars_equal};
+use reify_core::scalar_tolerance::{
+    DEFAULT_ABSOLUTE_FLOOR, LENGTH_FLOOR_M, equality_band, scalars_equal,
+};
 use reify_core::{DimensionVector, NAMED_DIMENSIONS};
 
 const LENGTH: DimensionVector = DimensionVector::LENGTH;
@@ -153,4 +155,87 @@ fn non_finite_operands_compare_exactly() {
     assert_not_equal(f64::NEG_INFINITY, f64::INFINITY, LENGTH, "-inf vs inf");
     assert_not_equal(f64::INFINITY, 1e300, DIMENSIONLESS, "inf vs 1e300");
     assert_equal(0.0, -0.0, LENGTH, "0 vs -0");
+}
+
+/// Every `a` the policy accepts against an edge `b` of `[lo, hi]`, probed at
+/// both floors, around the relative arm, and at each probe's float neighbours.
+fn band_probes(edge: f64) -> Vec<f64> {
+    let mut probes = Vec::new();
+    for k in [0.5, 0.99, 1.0, 1.01, 2.0] {
+        for offset in [k * LENGTH_FLOOR_M, k * DEFAULT_ABSOLUTE_FLOOR] {
+            probes.extend([edge + offset, edge - offset]);
+        }
+    }
+    for r in [1e-10, 1e-9, 1.01e-9, 1e-8] {
+        probes.extend([edge * (1.0 + r), edge * (1.0 - r)]);
+    }
+    let neighbours: Vec<f64> = probes
+        .iter()
+        .flat_map(|p| [p.next_up(), p.next_down()])
+        .collect();
+    probes.extend(neighbours);
+    probes
+}
+
+#[test]
+fn equality_band_contains_every_partner_the_policy_accepts() {
+    let ranges = [
+        (0.0, 0.0),
+        (0.01, 0.01),
+        (-3.0, -3.0),
+        (1e6, 1e6),
+        (0.01, 0.02),
+    ];
+    for dimension in [LENGTH, ANGLE, MASS, DIMENSIONLESS] {
+        for (lo, hi) in ranges {
+            let (band_lo, band_hi) = equality_band(lo, hi, dimension);
+            for edge in [lo, hi] {
+                for a in band_probes(edge) {
+                    if scalars_equal(a, edge, dimension) {
+                        assert!(
+                            band_lo <= a && a <= band_hi,
+                            "{a:e} is accepted against {edge:e} under {dimension:?} \
+                             but lies outside the band [{band_lo:e}, {band_hi:e}] of [{lo:e}, {hi:e}]"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn equality_band_stays_tight() {
+    let (lo, hi) = equality_band(0.01, 0.01, LENGTH);
+    for outside in [0.01 - 2.0 * LENGTH_FLOOR_M, 0.01 + 2.0 * LENGTH_FLOOR_M] {
+        assert!(
+            !(lo <= outside && outside <= hi),
+            "10mm ± 2 floors must fall outside [{lo:e}, {hi:e}]"
+        );
+    }
+    let b = 1e6;
+    let (lo, hi) = equality_band(b, b, DIMENSIONLESS);
+    for outside in [b * (1.0 - 1e-6), b * (1.0 + 1e-6)] {
+        assert!(
+            !(lo <= outside && outside <= hi),
+            "1e6·(1 ± 1e-6) must fall outside [{lo:e}, {hi:e}]"
+        );
+    }
+}
+
+#[test]
+fn equality_band_passes_infinite_endpoints_through() {
+    let (lo, hi) = equality_band(0.0, f64::INFINITY, LENGTH);
+    assert_eq!(hi, f64::INFINITY);
+    assert!(
+        lo < 0.0 && lo.is_finite(),
+        "the finite side keeps its band: {lo:e}"
+    );
+
+    let (lo, hi) = equality_band(f64::NEG_INFINITY, 0.0, LENGTH);
+    assert_eq!(lo, f64::NEG_INFINITY);
+    assert!(
+        hi > 0.0 && hi.is_finite(),
+        "the finite side keeps its band: {hi:e}"
+    );
 }
