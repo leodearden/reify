@@ -4,7 +4,8 @@
 //! under, and a child template's own `ValueRef`s are rewritten onto it. The
 //! scope is one level deep. Collection subs are excluded because they have
 //! no single scoped entity. A guarded sub has an instance only where eval
-//! admitted it; [`scoped_arg_values`] reads that verdict.
+//! admitted it; [`scoped_arg_values`] reads that verdict, and both
+//! [`direct_sub_instances`] and [`instance_value_overlay`] honour it.
 //!
 //! It also owns the compound key under which a parent's `named_steps` hold
 //! each sub's (or `let`-bound instance's) realization steps: the seeders write
@@ -35,7 +36,7 @@ fn scoped_step_key_prefix(binding: &str) -> String {
 /// non-recursive template (`engine_eval.rs`), and otherwise only when
 /// `unfold::unfold_recursive_sub` finds the guard true.
 #[derive(Debug)]
-pub(crate) enum ScopedArgs<'s, 'v> {
+enum ScopedArgs<'s, 'v> {
     /// The sub is guarded and eval declined it, so it has no instance.
     GuardDeclined,
     /// Each arg name of the sub, in declaration order, with the instance's
@@ -48,9 +49,11 @@ pub(crate) enum ScopedArgs<'s, 'v> {
 ///
 /// Admitting a guarded sub commits every param cell via
 /// `elaborate_child_params_only`, so "guarded, and none of its arg cells
-/// committed" is the declined record. An unguarded or arg-free sub is always
-/// [`ScopedArgs::Elaborated`].
-pub(crate) fn scoped_arg_values<'s, 'v>(
+/// committed" is the declined record. An unguarded sub is always
+/// [`ScopedArgs::Elaborated`]. So is an arg-free guarded sub, because no cell
+/// tells its admission apart from its decline; eval recording admission
+/// itself is owned by #9538.
+fn scoped_arg_values<'s, 'v>(
     parent_name: &str,
     sub: &'s SubComponentDecl,
     values: &'v ValueMap,
@@ -75,6 +78,44 @@ pub(crate) fn scoped_arg_values<'s, 'v>(
     }
 }
 
+/// `values` as the `"<parent_name>.<sub>"` instance sees them: each
+/// constructor arg's scoped cell overlaid onto `child_template`'s own param
+/// cell. `None` when eval declined the sub's guard, since then there is no
+/// instance.
+///
+/// An elaborated instance has every arg's scoped cell; a missing one is an
+/// eval bug, asserted in debug builds and left at the child default in
+/// release.
+pub(crate) fn instance_value_overlay(
+    parent_name: &str,
+    sub: &SubComponentDecl,
+    child_template: &TopologyTemplate,
+    values: &ValueMap,
+) -> Option<ValueMap> {
+    let ScopedArgs::Elaborated(scoped_args) = scoped_arg_values(parent_name, sub, values) else {
+        return None;
+    };
+    let mut overlay = values.clone();
+    for (param_name, scoped_value) in scoped_args {
+        debug_assert!(
+            scoped_value.is_some(),
+            "expected scoped override cell {:?} in values map for the elaborated instance \
+             of sub {parent_name}.{} param {param_name} (elaborate_child_params_only commits \
+             every param); missing cell means eval phase failed to seed this param before \
+             build",
+            ValueCellId::new(format!("{parent_name}.{}", sub.name), param_name),
+            sub.name,
+        );
+        if let Some(value) = scoped_value {
+            overlay.insert(
+                ValueCellId::new(child_template.name.as_str(), param_name),
+                value.clone(),
+            );
+        }
+    }
+    Some(overlay)
+}
+
 /// One direct, non-collection sub-component of a parent template, paired with
 /// the child template it instantiates.
 pub(crate) struct SubInstance<'t> {
@@ -83,17 +124,25 @@ pub(crate) struct SubInstance<'t> {
     child_template: &'t TopologyTemplate,
 }
 
-/// The direct non-collection subs of `template` whose child template is in
-/// `templates`, in declaration order.
+/// The direct non-collection subs of `template` that have an instance in
+/// `values` (every sub but a guard-declined one) and whose child template is
+/// in `templates`, in declaration order.
 pub(crate) fn direct_sub_instances<'t>(
     template: &'t TopologyTemplate,
     templates: &'t [TopologyTemplate],
-) -> impl Iterator<Item = SubInstance<'t>> {
+    values: &ValueMap,
+) -> Vec<SubInstance<'t>> {
     template
         .sub_components
         .iter()
         .filter(|sub| !sub.is_collection)
-        .filter_map(move |sub| {
+        .filter(|sub| {
+            !matches!(
+                scoped_arg_values(&template.name, sub, values),
+                ScopedArgs::GuardDeclined
+            )
+        })
+        .filter_map(|sub| {
             let child_template = reify_compiler::find_template(templates, &sub.structure_name)?;
             Some(SubInstance {
                 scoped_entity: format!("{}.{}", template.name, sub.name),
@@ -101,6 +150,7 @@ pub(crate) fn direct_sub_instances<'t>(
                 child_template,
             })
         })
+        .collect()
 }
 
 impl<'t> SubInstance<'t> {
@@ -159,7 +209,10 @@ mod tests {
     };
     use reify_test_support::parse_and_compile_with_stdlib;
 
-    use super::{ScopedArgs, direct_sub_instances, scoped_arg_values, scoped_step_key};
+    use super::{
+        ScopedArgs, direct_sub_instances, instance_value_overlay, scoped_arg_values,
+        scoped_step_key,
+    };
 
     const MINI_SOURCE: &str = r#"
 structure def Inner {
@@ -203,7 +256,7 @@ structure def MiniParent {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
 
-        let instances: Vec<_> = direct_sub_instances(parent, &compiled.templates).collect();
+        let instances = direct_sub_instances(parent, &compiled.templates, &ValueMap::new());
 
         assert_eq!(
             instances.len(),
@@ -224,14 +277,15 @@ structure def MiniParent {
         let parent = mini_parent(&compiled);
         let only_parent = vec![parent.clone()];
 
-        assert_eq!(direct_sub_instances(parent, &only_parent).count(), 0);
+        assert!(direct_sub_instances(parent, &only_parent, &ValueMap::new()).is_empty());
     }
 
     #[test]
     fn rescope_maps_only_the_child_templates_own_refs() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let instance = direct_sub_instances(parent, &compiled.templates)
+        let instance = direct_sub_instances(parent, &compiled.templates, &ValueMap::new())
+            .into_iter()
             .next()
             .expect("MiniParent has one direct instance");
 
@@ -264,7 +318,8 @@ structure def MiniParent {
     fn named_steps_view_strips_only_this_subs_prefix() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let instance = direct_sub_instances(parent, &compiled.templates)
+        let instance = direct_sub_instances(parent, &compiled.templates, &ValueMap::new())
+            .into_iter()
             .next()
             .expect("MiniParent has one direct instance");
 
@@ -290,7 +345,8 @@ structure def MiniParent {
     fn named_steps_view_reads_back_what_scoped_step_key_writes() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let instance = direct_sub_instances(parent, &compiled.templates)
+        let instance = direct_sub_instances(parent, &compiled.templates, &ValueMap::new())
+            .into_iter()
             .next()
             .expect("MiniParent has one direct instance");
 
@@ -320,12 +376,18 @@ structure def Tree {
 }
 "#;
 
+    fn tree_template(
+        compiled: &reify_compiler::CompiledModule,
+    ) -> &reify_compiler::TopologyTemplate {
+        reify_compiler::find_template(&compiled.templates, "Tree")
+            .expect("Tree template must compile")
+    }
+
     fn tree_sub<'c>(
         compiled: &'c reify_compiler::CompiledModule,
         sub_name: &str,
     ) -> &'c reify_compiler::SubComponentDecl {
-        reify_compiler::find_template(&compiled.templates, "Tree")
-            .expect("Tree template must compile")
+        tree_template(compiled)
             .sub_components
             .iter()
             .find(|sub| sub.name == sub_name)
@@ -373,5 +435,62 @@ structure def Tree {
         };
 
         assert_eq!(args, vec![("w", None)]);
+    }
+
+    fn instance_entities(values: &ValueMap) -> Vec<String> {
+        let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
+        direct_sub_instances(tree_template(&compiled), &compiled.templates, values)
+            .iter()
+            .map(|instance| instance.scoped_entity().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn direct_sub_instances_skips_a_guard_declined_sub() {
+        assert_eq!(instance_entities(&ValueMap::new()), vec!["Tree.leaf"]);
+    }
+
+    #[test]
+    fn direct_sub_instances_keeps_an_admitted_guarded_sub() {
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Tree.child", "depth"), Value::Int(-1));
+
+        assert_eq!(instance_entities(&values), vec!["Tree.child", "Tree.leaf"]);
+    }
+
+    #[test]
+    fn instance_value_overlay_moves_each_scoped_arg_onto_the_child_param() {
+        let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
+        let tree = tree_template(&compiled);
+        let child = tree_sub(&compiled, "child");
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Tree", "depth"), Value::Int(0));
+        values.insert(ValueCellId::new("Tree.child", "depth"), Value::Int(-1));
+
+        let overlay = instance_value_overlay("Tree", child, tree, &values)
+            .expect("an admitted guarded sub has an instance");
+
+        assert_eq!(
+            overlay.get(&ValueCellId::new("Tree", "depth")),
+            Some(&Value::Int(-1))
+        );
+        assert_eq!(
+            overlay.get(&ValueCellId::new("Tree.child", "depth")),
+            Some(&Value::Int(-1))
+        );
+    }
+
+    #[test]
+    fn instance_value_overlay_is_none_for_a_guard_declined_sub() {
+        let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
+        let child = tree_sub(&compiled, "child");
+
+        let overlay =
+            instance_value_overlay("Tree", child, tree_template(&compiled), &ValueMap::new());
+
+        assert!(
+            overlay.is_none(),
+            "a declined guarded sub has no instance values"
+        );
     }
 }

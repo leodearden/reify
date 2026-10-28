@@ -414,11 +414,16 @@ fn corner_rec_tree_build_skips_guard_declined_child() {
     );
     let result = engine.build(&compiled, ExportFormat::Step);
 
+    let child_cells: Vec<&ValueCellId> = result
+        .values
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| id.entity == "RecTree.child" || id.entity.starts_with("RecTree.child."))
+        .collect();
     assert!(
-        !result
-            .values
-            .contains(&ValueCellId::new("RecTree.child", "depth")),
-        "RecTree.child.depth should not exist after build when depth=0 (guard declined the child)"
+        child_cells.is_empty(),
+        "no RecTree.child.* cell may exist after build when depth=0 (guard declined the \
+         child); got {child_cells:?}"
     );
     assert_no_errors(&result.diagnostics, "integration_corner_cases.ri build");
 }
