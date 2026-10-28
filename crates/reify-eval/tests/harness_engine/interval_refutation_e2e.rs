@@ -9,7 +9,7 @@
 
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{MockConstraintChecker, cnid, collect_errors, compile_source_with_stdlib};
 
 use super::underdetermined_support::workspace_root;
 
@@ -39,8 +39,15 @@ fn ssc_refuted_pair_is_refuted_naming_the_second_constraint() {
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::ConstraintRefuted))
         .collect();
-    eprintln!("MEASURE refuted={refuted:#?} errors={errors:#?}");
     assert_eq!(refuted.len(), 1, "exactly one refutation; got {errors:#?}");
+    assert_eq!(
+        refuted[0].message,
+        reify_ir::Completeness::Refuted {
+            narrowing: cnid("SscRefutedPair", 1),
+        }
+        .describe(),
+        "the proof names the second equality, whose narrowing empties the box"
+    );
     assert!(
         !errors
             .iter()

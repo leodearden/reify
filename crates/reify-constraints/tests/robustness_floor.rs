@@ -10,7 +10,7 @@
 //!
 //! Step-3 tests (RED until step-4 impl lands):
 //!   - `floor_infeasible_emits_distinct_diagnostic`
-//!   - `non_money_infeasible_keeps_constraint_unsatisfiable`
+//!   - `non_money_infeasible_is_refuted_not_floor_infeasible`
 //!
 //! Task #5618 section (constraint-derived bounds) at the bottom of the file:
 //! a Money-objective auto bracketed away from 0 must not report a false
@@ -26,7 +26,7 @@
 //! Task #5618 step-9 sub-section (RED until step-10 impl lands) pins DIAGNOSTIC
 //! HONESTY for the shapes steps 2-8 cannot rescue:
 //!   - `margin_only_infeasibility_names_the_margin_not_an_empty_region`
-//!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording`
+//!   - `genuinely_unsatisfiable_constraints_are_refuted_not_blamed_on_the_margin`
 //!
 //! Task #5714 section (WITNESS SEARCH) at the bottom of the file extends that
 //! honesty to shapes whose floored converged point lands OUTSIDE the user's box,
@@ -39,8 +39,8 @@
 //!     (rung 2 where the bound derivation abstains entirely)
 //!   - `underivable_empty_box_keeps_the_region_empty_wording` (anti-shortcut
 //!     control: genuinely empty, yet its DERIVED box is non-degenerate)
-//!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording` above
-//!     serves as the second pair's empty half.
+//!   - `genuinely_unsatisfiable_constraints_are_refuted_not_blamed_on_the_margin`
+//!     above serves as the second pair's empty half.
 //!
 //! Task #5714 review rounds — a witness verified against one constraint set says
 //! NOTHING about another, so the emit site runs a SEPARATE search per claim and
@@ -1064,15 +1064,17 @@ fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
     );
 }
 
-/// CONTROL: constraints that are themselves unsatisfiable keep the region-empty
-/// wording, so the two situations stay distinguishable.
+/// CONTROL: constraints that are themselves unsatisfiable are never blamed on
+/// the margin, so the two situations stay distinguishable.
 ///
 /// `x >= 50mm ∧ x <= 10mm` admits no point at all, with or without the margin.
-/// A Money objective still activates the floor (so this lands in the same
-/// `floor_applied` arm as the test above), but here "the region is empty" is the
-/// literal truth and must survive.
+/// Since task #6655 it never reaches the `floor_applied` arm: it is refuted
+/// before any solve, so its failure is the `ConstraintRefuted` proof rather than
+/// a `RobustnessFloorInfeasible` report. The floor arm's region-empty wording is
+/// pinned on a shape the propagator cannot read, by
+/// `underivable_empty_box_keeps_the_region_empty_wording`.
 #[test]
-fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
+fn genuinely_unsatisfiable_constraints_are_refuted_not_blamed_on_the_margin() {
     let x_id = ValueCellId::new("ReallyEmpty", "x");
 
     let problem = ResolutionProblem {
@@ -1096,18 +1098,23 @@ fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
         functions: vec![].into(),
     };
 
-    let message = floor_infeasible_message(&problem);
-
+    let SolveResult::Infeasible { diagnostics } = DimensionalSolver.solve(&problem) else {
+        panic!("x >= 50mm ∧ x <= 10mm admits no point, so the solve must be Infeasible");
+    };
     assert!(
-        message.contains("the floored feasible region is empty"),
-        "x >= 50mm ∧ x <= 10mm is unsatisfiable on its own terms — the region-empty \
-         wording must survive so it stays distinguishable from a margin-only failure; \
-         got: {message}"
+        diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::ConstraintRefuted)),
+        "x >= 50mm ∧ x <= 10mm is unsatisfiable on its own terms, so it must be \
+         reported as a proof; got: {diagnostics:?}"
     );
     assert!(
-        !message.contains("original constraints ARE"),
-        "must not claim the original constraints are satisfied when they are not; \
-         got: {message}"
+        !diagnostics.iter().any(|d| {
+            d.code == Some(DiagnosticCode::RobustnessFloorInfeasible)
+                || d.message.contains("original constraints ARE")
+        }),
+        "must not blame the margin or claim the original constraints are satisfied \
+         when they are not; got: {diagnostics:?}"
     );
 }
 

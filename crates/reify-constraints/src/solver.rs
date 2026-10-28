@@ -1904,6 +1904,54 @@ fn derive_from_leaf(leaf: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [Der
     }
 }
 
+/// The pre-solve interval refutation (task #6655): contract EVERY original
+/// leaf conjunct, auto-free ones included, from the whole real line, relaxed by
+/// the solver's own acceptance (`FEASIBILITY_THRESHOLD` for order rows, the
+/// #6653 policy for `==`). An empty box is a PROOF that no point is accepted,
+/// reported as [`DiagnosticCode::ConstraintRefuted`] naming the constraint whose
+/// narrowing emptied it — before any solver evaluation.
+///
+/// Explicit `AutoParam.bounds` and [`default_bounds_for`] are not part of the
+/// proof: a box they empty has no constraint to name. The constraints are the
+/// ORIGINAL ones: the robustness floor does not exist yet, so a floor-infeasible
+/// but feasible model keeps its `RobustnessFloorInfeasible` diagnosis.
+fn refuted_before_solve(
+    problem: &ResolutionProblem,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Option<SolveResult> {
+    let operands = DerivationCtx::new(
+        &problem.auto_params,
+        &problem.dependent_cells,
+        &problem.current_values,
+        &problem.functions,
+        dispatch,
+    );
+    let mut sources = Vec::new();
+    let mut relations = Vec::new();
+    for (id, expr) in &problem.constraints {
+        for_each_leaf_conjunct(expr, &mut |leaf| {
+            if let Some(relation) = hc4::Relation::compile(leaf, &operands) {
+                relations.push(relation);
+                sources.push(id);
+            }
+        });
+    }
+    let mut bx = vec![Interval::ENTIRE; problem.auto_params.len()];
+    let slack = hc4::Slack::Acceptance {
+        inequality: FEASIBILITY_THRESHOLD,
+    };
+    let hc4::Contraction::Empty { relation } = hc4::contract(&relations, &mut bx, slack) else {
+        return None;
+    };
+    let narrowing = sources[relation].clone();
+    Some(SolveResult::Infeasible {
+        diagnostics: vec![
+            reify_core::Diagnostic::error(reify_ir::Completeness::Refuted { narrowing }.describe())
+                .with_code(DiagnosticCode::ConstraintRefuted),
+        ],
+    })
+}
+
 /// How many ulps [`DerivationCtx::settle_onto_leaf`] may move a derived side.
 const SETTLE_MAX_STEPS: usize = 4;
 
@@ -4708,6 +4756,10 @@ impl DimensionalSolver {
             );
         }
 
+        if let Some(refuted) = refuted_before_solve(problem, dispatch) {
+            return (refuted, SolveMeta::default());
+        }
+
         let initial = extract_initial_point(problem, dispatch);
 
         // γ cost_robustness_tradeoff dispatch (task #4791, PRD §2.4/§8.1): a
@@ -4803,6 +4855,12 @@ impl DimensionalSolver {
         if !multistart_eligible {
             let (result, meta) = self.solve_with_meta(problem, dispatch);
             return rank_single(problem, result, meta, dispatch);
+        }
+
+        if let Some(refuted) =
+            refuted_before_solve(problem, dispatch).and_then(SolveResult::into_ranked_pass_through)
+        {
+            return refuted;
         }
 
         // ---- best-of-K multistart (dim>=2 + objective, §5.3/§11 Q4) ----
