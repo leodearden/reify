@@ -408,3 +408,303 @@ fn min_and_max_preimages() {
         |p| Some(p.max(4.0)),
     );
 }
+
+// ── Single-relation HC4 over CompiledExpr ───────────────────────────────────
+//
+// Each case compiles ONE leaf and revises it alone from an all-ENTIRE box.
+
+mod single_relation {
+    use super::{Interval, iv};
+    use reify_constraints::hc4::{OperandClassifier, RefClass, Relation, Revision, Slack};
+    use reify_core::scalar_tolerance::{LENGTH_FLOOR_M, scalars_equal};
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, CompiledFunction, ValueMap};
+    use reify_test_support::builders::{
+        binop, conditional_expr, eq, ge, gt, le, literal, lt, ne, neg, or, std_call,
+        value_ref_typed,
+    };
+    use reify_test_support::values::{int_val, meters, real_val, vcid};
+
+    const ACCEPTANCE: Slack = Slack::Acceptance { inequality: 1e-12 };
+
+    fn real() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+
+    fn length() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    fn real_ref(name: &str) -> CompiledExpr {
+        value_ref_typed("m", name, real())
+    }
+
+    fn length_ref(name: &str) -> CompiledExpr {
+        value_ref_typed("m", name, length())
+    }
+
+    fn num(v: f64) -> CompiledExpr {
+        literal(real_val(v))
+    }
+
+    fn metres(v: f64) -> CompiledExpr {
+        literal(meters(v))
+    }
+
+    /// Test classifier: named Variables by position, named Varying refs, and
+    /// everything else Fixed, evaluated against an empty value map.
+    struct Classes {
+        variables: Vec<ValueCellId>,
+        varying: Vec<ValueCellId>,
+        values: ValueMap,
+    }
+
+    impl Classes {
+        fn of(variables: &[&str]) -> Self {
+            Self {
+                variables: variables.iter().map(|n| vcid("m", n)).collect(),
+                varying: Vec::new(),
+                values: ValueMap::new(),
+            }
+        }
+
+        fn varying(mut self, name: &str) -> Self {
+            self.varying.push(vcid("m", name));
+            self
+        }
+    }
+
+    impl OperandClassifier for Classes {
+        fn classify(&self, id: &ValueCellId) -> RefClass {
+            if let Some(i) = self.variables.iter().position(|v| v == id) {
+                RefClass::Variable(i)
+            } else if self.varying.contains(id) {
+                RefClass::Varying
+            } else {
+                RefClass::Fixed
+            }
+        }
+
+        fn evaluate(&self, expr: &CompiledExpr) -> Option<f64> {
+            let functions: [CompiledFunction; 0] = [];
+            let ctx = reify_expr::EvalContext::new(&self.values, &functions);
+            reify_expr::eval_expr(expr, &ctx)
+                .as_f64()
+                .filter(|v| v.is_finite())
+        }
+    }
+
+    struct Revised {
+        relation: Relation,
+        revision: Revision,
+        bx: Vec<Interval>,
+    }
+
+    fn revise_alone(leaf: &CompiledExpr, classes: &Classes, slack: Slack) -> Revised {
+        let relation = Relation::compile(leaf, classes).expect("leaf compiles to a relation");
+        let mut bx = vec![Interval::ENTIRE; classes.variables.len()];
+        let revision = relation.revise(&mut bx, slack);
+        Revised {
+            relation,
+            revision,
+            bx,
+        }
+    }
+
+    fn revise_x(leaf: &CompiledExpr) -> Interval {
+        let revised = revise_alone(leaf, &Classes::of(&["x"]), Slack::Exact);
+        assert_eq!(revised.revision, Revision::Consistent, "{leaf:?}");
+        revised.bx[0]
+    }
+
+    #[test]
+    fn scaled_mul_bounds_in_both_operand_orders() {
+        let t = || length_ref("t");
+        for leaf in [
+            lt(binop(BinOp::Mul, num(2.0), t()), metres(0.03)),
+            lt(binop(BinOp::Mul, t(), num(2.0)), metres(0.03)),
+        ] {
+            let revised = revise_alone(&leaf, &Classes::of(&["t"]), Slack::Exact);
+            assert_eq!(revised.bx[0].hi(), 0.015, "exact rearrangement stays exact");
+            assert_eq!(revised.bx[0].lo(), f64::NEG_INFINITY);
+            assert!(revised.relation.is_strict());
+        }
+        let leaf = ge(binop(BinOp::Mul, t(), num(2.0)), metres(0.004));
+        let revised = revise_alone(&leaf, &Classes::of(&["t"]), Slack::Exact);
+        assert_eq!(revised.bx[0].lo(), 0.002);
+        assert_eq!(revised.bx[0].hi(), f64::INFINITY);
+        assert!(!revised.relation.is_strict());
+    }
+
+    #[test]
+    fn quotient_bound() {
+        let x = revise_x(&le(binop(BinOp::Div, real_ref("x"), num(2.0)), num(1.0)));
+        assert_eq!(x.hi(), 2.0);
+    }
+
+    #[test]
+    fn sqrt_clearance_algebra() {
+        let x = || real_ref("x");
+        let leaf = le(
+            std_call(
+                "sqrt",
+                vec![binop(BinOp::Add, binop(BinOp::Mul, x(), x()), num(9.0))],
+                real(),
+            ),
+            num(5.0),
+        );
+        let x = revise_x(&leaf);
+        assert!((x.lo() + 4.0).abs() <= 1e-12 && x.lo() <= -4.0, "{x:?}");
+        assert!((x.hi() - 4.0).abs() <= 1e-12 && x.hi() >= 4.0, "{x:?}");
+        assert!(x.contains(3.999) && x.contains(-3.999), "{x:?}");
+    }
+
+    #[test]
+    fn power_abs_min_max_clamp_and_negation() {
+        let x = || real_ref("x");
+        let pow = revise_x(&le(binop(BinOp::Pow, x(), literal(int_val(2))), num(4.0)));
+        assert_eq!(pow, iv(-2.0, 2.0));
+
+        let abs = revise_x(&le(
+            std_call("abs", vec![binop(BinOp::Sub, x(), num(1.0))], real()),
+            num(2.0),
+        ));
+        assert_eq!(abs, iv(-1.0, 3.0));
+
+        let min = revise_x(&ge(std_call("min", vec![x(), num(10.0)], real()), num(3.0)));
+        assert_eq!(min.lo(), 3.0);
+        let max = revise_x(&le(std_call("max", vec![x(), num(1.0)], real()), num(4.0)));
+        assert_eq!(max.hi(), 4.0);
+        let clamp = revise_x(&ge(
+            std_call("clamp", vec![x(), num(0.0), num(10.0)], real()),
+            num(2.0),
+        ));
+        assert_eq!(clamp.lo(), 2.0);
+
+        let negated = revise_x(&ge(neg(x()), num(-5.0)));
+        assert_eq!(negated.hi(), 5.0);
+    }
+
+    #[test]
+    fn equality_contracts_to_a_point_and_is_not_an_order_relation() {
+        let revised = revise_alone(
+            &eq(real_ref("x"), num(3.0)),
+            &Classes::of(&["x"]),
+            Slack::Exact,
+        );
+        assert_eq!(revised.bx[0], iv(3.0, 3.0));
+        assert!(!revised.relation.is_strict());
+        assert!(!revised.relation.is_order());
+
+        let classes = Classes::of(&["x"]);
+        for (leaf, strict) in [
+            (ge(real_ref("x"), num(1.0)), false),
+            (gt(real_ref("x"), num(1.0)), true),
+            (le(real_ref("x"), num(1.0)), false),
+            (lt(real_ref("x"), num(1.0)), true),
+        ] {
+            let relation = Relation::compile(&leaf, &classes).expect("order relation");
+            assert!(relation.is_order(), "{leaf:?}");
+            assert_eq!(relation.is_strict(), strict, "{leaf:?}");
+        }
+    }
+
+    #[test]
+    fn conditional_far_side_is_the_hull_of_its_branches() {
+        let condition = value_ref_typed("m", "c", Type::Bool);
+        let leaf = ge(
+            real_ref("t"),
+            conditional_expr(condition, num(5.0), num(3.0)),
+        );
+        let revised = revise_alone(&leaf, &Classes::of(&["t", "c"]), Slack::Exact);
+        assert_eq!(
+            revised.bx[0].lo(),
+            3.0,
+            "the hull's low end, not a branch snapshot"
+        );
+        assert!(
+            revised.bx[1].is_entire(),
+            "the condition is never contracted"
+        );
+    }
+
+    #[test]
+    fn opaque_operands_contract_nothing() {
+        let classes = Classes::of(&["x"]).varying("v");
+        let field = value_ref_typed("m", "samples", Type::List(Box::new(real())));
+        for leaf in [
+            le(std_call("foo", vec![real_ref("x")], real()), num(1.0)),
+            le(real_ref("x"), real_ref("v")),
+            le(
+                std_call("min", vec![field, real_ref("x")], real()),
+                num(1.0),
+            ),
+        ] {
+            let revised = revise_alone(&leaf, &classes, Slack::Exact);
+            assert_eq!(revised.revision, Revision::Consistent, "{leaf:?}");
+            assert!(
+                revised.bx[0].is_entire(),
+                "{leaf:?} contracted {:?}",
+                revised.bx[0]
+            );
+            assert!(!revised.relation.is_fully_representable(), "{leaf:?}");
+        }
+        let supported =
+            Relation::compile(&le(real_ref("x"), num(1.0)), &classes).expect("compiles");
+        assert!(supported.is_fully_representable());
+    }
+
+    #[test]
+    fn non_relations_do_not_compile() {
+        let classes = Classes::of(&["x"]);
+        let x = || real_ref("x");
+        for leaf in [
+            ne(x(), num(5.0)),
+            or(ge(x(), num(1.0)), le(x(), num(0.0))),
+            binop(BinOp::Implies, ge(x(), num(1.0)), le(x(), num(0.0))),
+            value_ref_typed("m", "flag", Type::Bool),
+            eq(length_ref("x"), num(3.0)),
+        ] {
+            assert!(Relation::compile(&leaf, &classes).is_none(), "{leaf:?}");
+        }
+    }
+
+    #[test]
+    fn acceptance_slack_relaxes_an_order_relation_by_the_threshold() {
+        let revised = revise_alone(
+            &ge(real_ref("x"), num(1.0)),
+            &Classes::of(&["x"]),
+            ACCEPTANCE,
+        );
+        let lo = revised.bx[0].lo();
+        assert!(lo <= 1.0 - 1e-12 && lo > 1.0 - 2e-12, "{lo:e}");
+    }
+
+    #[test]
+    fn acceptance_slack_relaxes_an_equality_by_the_tolerance_policy() {
+        let pin = 0.01;
+        let leaf = eq(length_ref("x"), metres(pin));
+        let accepted = revise_alone(&leaf, &Classes::of(&["x"]), ACCEPTANCE).bx[0];
+        for inside in [pin - 0.99 * LENGTH_FLOOR_M, pin + 0.99 * LENGTH_FLOOR_M] {
+            assert!(scalars_equal(inside, pin, DimensionVector::LENGTH));
+            assert!(accepted.contains(inside), "{inside:e} ∉ {accepted:?}");
+        }
+        for outside in [pin - 2.0 * LENGTH_FLOOR_M, pin + 2.0 * LENGTH_FLOOR_M] {
+            assert!(!accepted.contains(outside), "{outside:e} ∈ {accepted:?}");
+        }
+        let exact = revise_alone(&leaf, &Classes::of(&["x"]), Slack::Exact).bx[0];
+        assert_eq!(exact, iv(pin, pin));
+    }
+
+    #[test]
+    fn a_self_contradictory_leaf_revises_to_empty() {
+        let x = || real_ref("x");
+        let leaf = le(binop(BinOp::Mul, x(), x()), num(-1.0));
+        let revised = revise_alone(&leaf, &Classes::of(&["x"]), Slack::Exact);
+        assert_eq!(revised.revision, Revision::Empty);
+    }
+}
