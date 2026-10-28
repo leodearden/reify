@@ -20,7 +20,8 @@ use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, ValueCellId};
-use reify_ir::{Satisfaction, Value};
+use reify_ir::{ExportFormat, Satisfaction, Value};
+use reify_test_support::MockGeometryKernel;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -399,6 +400,27 @@ fn recursive_depth_zero_no_child() {
         !result.values.contains(&child_depth_id),
         "RecTree.child.depth should not exist when depth=0 (guard prevented unfolding), but was found"
     );
+}
+
+/// `Engine::build` agrees with eval: the guard-declined `RecTree.child` has no
+/// instance, so the build neither materialises its cells nor trips on their absence.
+#[test]
+fn corner_rec_tree_build_skips_guard_declined_child() {
+    let compiled = compiled();
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("RecTree.child", "depth")),
+        "RecTree.child.depth should not exist after build when depth=0 (guard declined the child)"
+    );
+    assert_no_errors(&result.diagnostics, "integration_corner_cases.ri build");
 }
 
 // ── step-13: chained 4-element comparison ────────────────────────────────────
