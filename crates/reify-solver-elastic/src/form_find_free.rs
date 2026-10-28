@@ -3024,6 +3024,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn relax_step_without_a_projection_trial_is_one_descent_step_carrying_its_step_size() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&guess, &spec);
+        let descend = |from: &[[f64; 3]], step: f64| {
+            combined_geometry_descent_step(
+                6,
+                &membrane.members,
+                &q,
+                &membrane.surfaces,
+                &membrane.sigmas,
+                from,
+                step,
+            )
+        };
+        let mut relax = RelaxStep::new();
+
+        let first = CombinedIterate::new(&problem, q.clone(), guess.clone(), membrane.surface_matrix(&guess));
+        let next = relax.relax(&problem, &first, false);
+        let (expected, carried_step) = descend(&guess, 1e-2);
+        assert_eq!(next, expected);
+
+        let second = CombinedIterate::new(&problem, q.clone(), next.clone(), membrane.surface_matrix(&next));
+        assert_eq!(
+            relax.relax(&problem, &second, false),
+            descend(&next, carried_step).0
+        );
+    }
+
+    #[test]
+    fn relax_step_absorbs_a_projection_trial_that_cannot_span_3d() {
+        let membrane = PrismMembrane::new();
+        let planar: Vec<[f64; 3]> = canonical_prism()
+            .into_iter()
+            .map(|[x, y, _]| [x, y, 0.0])
+            .collect();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&planar, &spec);
+        let iterate = CombinedIterate::new(&problem, q.clone(), planar.clone(), membrane.surface_matrix(&planar));
+
+        let next = RelaxStep::new().relax(&problem, &iterate, true);
+
+        let (descended, _) = combined_geometry_descent_step(
+            6,
+            &membrane.members,
+            &q,
+            &membrane.surfaces,
+            &membrane.sigmas,
+            &planar,
+            1e-2,
+        );
+        assert_eq!(next, descended);
+    }
+
     /// Drives `guard` through `GEO_STALL_ITERS - 1` iterations that each leave
     /// the geometry at `at` with `residual`, none of which may trip it.
     fn approach_stall(guard: &mut StallGuard, at: &[[f64; 3]], residual: f64) {
