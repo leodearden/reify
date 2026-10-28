@@ -1205,22 +1205,15 @@ fn accept_variadic_length_args(
 /// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
 /// wordings are lifted VERBATIM from [`required_length_arg`].
 ///
-/// SCOPE OF "byte-identical", stated precisely because the phrase recurs
-/// throughout this module: it is a claim about the pushed `Diagnostic` and about
-/// the `Err` STRING THIS FUNCTION RETURNS, not about whatever a caller then
-/// wraps that string in. The value-form pattern callers keep their PRE-δ
-/// per-builtin prefix — [`pattern_mirror`] wraps the decoder result in
-/// `format!("mirror: {}", e)` and [`pattern_circular`] in
-/// `format!("circular_pattern: {}", e)` — so the op-compile `Err` reaching
-/// `engine_build`'s "failed to compile geometry operation" wrapper reads
-/// `mirror: missing or non-Length argument 'ox' for mirror`, where the SCALAR
-/// branch's un-wrapped [`required_length_origin3`] reads
-/// `missing or non-Length argument 'ox' for mirror`. That stutter is cosmetic
-/// and PRE-EXISTS δ (it is on the merge-base at both sites), and the string is
-/// not the user-facing contract — the `Diagnostic` is, and that one IS identical
-/// across both forms. δ deliberately does not drop the prefix: doing so would
-/// change a pre-δ caller-facing message, which is precisely what the rest of
-/// this leaf's discipline forbids.
+/// SCOPE OF "byte-identical": it is a claim about the pushed `Diagnostic` and
+/// about the `Err` string the units gate returns. The value-form callers
+/// ([`pattern_mirror`], [`pattern_circular`]) pass the decoder `Err` through
+/// unwrapped, so the op-compile `Err` reads
+/// `missing or non-Length argument 'ox' for mirror`, exactly as the SCALAR
+/// branch's [`required_length_origin3`] does. The decoders' own non-units
+/// failures (wrong variant, wrong shape, degenerate normal/direction) name the
+/// builtin themselves with the same threaded `kind_label` (`mirror: expected a
+/// Plane value, got ...`), so the label is consistent across every message.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -2093,7 +2086,7 @@ pub(crate) fn decode_plane(
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
-            return Err(format!("expected a Plane value, got {}", other));
+            return Err(format!("{kind_label}: expected a Plane value, got {other}"));
         }
     };
     // The plane ORIGIN is a point in space — LENGTH-gated. The shape message is
@@ -2103,17 +2096,17 @@ pub(crate) fn decode_plane(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| format!("{kind_label}: Plane origin is not a valid 3-component numeric Point/Vector"),
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
     // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
-        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+        format!("{kind_label}: Plane normal is not a valid 3-component numeric Point/Vector")
     })?;
     let unit_normal =
-        unit_vector3(normal_raw).map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+        unit_vector3(normal_raw).map_err(|e| format!("{kind_label}: Plane has a degenerate normal: {e}"))?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -2173,7 +2166,7 @@ pub(crate) fn decode_axis(
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
-            return Err(format!("expected an Axis value, got {}", other));
+            return Err(format!("{kind_label}: expected an Axis value, got {other}"));
         }
     };
     // The axis ORIGIN is a point in space — LENGTH-gated, with the pre-δ shape
@@ -2182,17 +2175,17 @@ pub(crate) fn decode_axis(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| format!("{kind_label}: Axis origin is not a valid 3-component numeric Point/Vector"),
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
     // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
-        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+        format!("{kind_label}: Axis direction is not a valid 3-component numeric Point/Vector")
     })?;
     let unit_dir =
-        unit_vector3(dir_raw).map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+        unit_vector3(dir_raw).map_err(|e| format!("{kind_label}: Axis has a degenerate direction: {e}"))?;
     Ok((origin_arr, unit_dir))
 }
 
@@ -4145,8 +4138,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
-            .map_err(|e| format!("{}: {}", surface_name, e))?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -4253,8 +4245,7 @@ fn pattern_mirror(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
-        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)
-            .map_err(|e| format!("mirror: {}", e))?;
+        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)?;
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
             plane_origin,

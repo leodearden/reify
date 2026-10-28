@@ -25638,17 +25638,16 @@
 
     // ── δ: `decode_plane` gates its ORIGIN, not its NORMAL (task 5745) ────────
 
-    /// The pre-δ wrong-SHAPE message for a plane ORIGIN, which δ must keep
-    /// byte-identical: `accept_length_point3` receives it as `shape_err` and
+    /// The wrong-SHAPE message for a plane ORIGIN (pre-δ wording plus the
+    /// builtin label): `accept_length_point3` receives it as `shape_err` and
     /// returns it verbatim, because a wrong shape is not a units rejection.
     const PLANE_ORIGIN_SHAPE_ERR: &str =
-        "Plane origin is not a valid 3-component numeric Point/Vector";
+        "mirror: Plane origin is not a valid 3-component numeric Point/Vector";
 
-    /// The pre-δ wrong-SHAPE message for a plane NORMAL. Unchanged for a
-    /// different reason: the normal is not gated at all, so it still reads
-    /// through bare `point3_components`.
+    /// The wrong-SHAPE message for a plane NORMAL. The normal is not gated, so
+    /// it still reads through bare `point3_components`.
     const PLANE_NORMAL_SHAPE_ERR: &str =
-        "Plane normal is not a valid 3-component numeric Point/Vector";
+        "mirror: Plane normal is not a valid 3-component numeric Point/Vector";
 
     /// Build a `Value::Plane` from an origin and a normal `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY normal shape — which
@@ -25766,11 +25765,11 @@
             // Wrong VARIANT — the message embeds the value's own `Display`.
             (
                 axis.clone(),
-                format!("expected a Plane value, got {}", axis),
+                format!("mirror: expected a Plane value, got {}", axis),
             ),
             (
                 reify_ir::Value::Undef,
-                format!("expected a Plane value, got {}", reify_ir::Value::Undef),
+                format!("mirror: expected a Plane value, got {}", reify_ir::Value::Undef),
             ),
             // Wrong SHAPE, origin side: a 2-component origin is not a units
             // failure, so it keeps the caller's pre-δ message and emits nothing.
@@ -25803,7 +25802,7 @@
                     length_point3(0.0, 0.0, 0.0),
                     bare_real_vector3(0.0, 0.0, 0.0),
                 ),
-                "Plane has a degenerate normal: zero-magnitude vector \
+                "mirror: Plane has a degenerate normal: zero-magnitude vector \
                  [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
                  unit direction"
                     .to_string(),
@@ -25894,16 +25893,15 @@
 
     // ── δ: `decode_axis` gates its ORIGIN, not its DIRECTION (task 5745) ──────
 
-    /// The pre-δ wrong-SHAPE message for an axis ORIGIN, kept byte-identical by
-    /// being handed to `accept_length_point3` as `shape_err`.
+    /// The wrong-SHAPE message for an axis ORIGIN (pre-δ wording plus the
+    /// builtin label), supplied to `accept_length_point3` as `shape_err`.
     const AXIS_ORIGIN_SHAPE_ERR: &str =
-        "Axis origin is not a valid 3-component numeric Point/Vector";
+        "circular: Axis origin is not a valid 3-component numeric Point/Vector";
 
-    /// The pre-δ wrong-SHAPE message for an axis DIRECTION — unchanged because
-    /// the direction is not gated at all and still reads through bare
-    /// `point3_components`.
+    /// The wrong-SHAPE message for an axis DIRECTION. The direction is not
+    /// gated, so it still reads through bare `point3_components`.
     const AXIS_DIRECTION_SHAPE_ERR: &str =
-        "Axis direction is not a valid 3-component numeric Point/Vector";
+        "circular: Axis direction is not a valid 3-component numeric Point/Vector";
 
     /// Build a `Value::Axis` from an origin and a direction `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY direction shape.
@@ -26040,11 +26038,11 @@
         let cases: Vec<(reify_ir::Value, String)> = vec![
             (
                 plane.clone(),
-                format!("expected an Axis value, got {}", plane),
+                format!("circular: expected an Axis value, got {}", plane),
             ),
             (
                 reify_ir::Value::Undef,
-                format!("expected an Axis value, got {}", reify_ir::Value::Undef),
+                format!("circular: expected an Axis value, got {}", reify_ir::Value::Undef),
             ),
             (
                 axis_of(
@@ -26061,7 +26059,7 @@
                     length_point3(0.0, 0.0, 0.0),
                     bare_real_vector3(0.0, 0.0, 0.0),
                 ),
-                "Axis has a degenerate direction: zero-magnitude vector \
+                "circular: Axis has a degenerate direction: zero-magnitude vector \
                  [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
                  unit direction"
                     .to_string(),
