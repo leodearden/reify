@@ -355,10 +355,7 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         .filter(|v| !v.is_null())
         .and_then(|v| serde_json::from_value::<DoneProvenance>(v.clone()).ok());
 
-    let prd = metadata
-        .get("prd")
-        .and_then(|p| p.as_str())
-        .map(String::from);
+    let prd = source_prd(&metadata);
     let consumer_ref = metadata
         .get("consumer_ref")
         .and_then(|p| p.as_str())
@@ -395,6 +392,16 @@ fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
             .and_then(Value::as_str)
             .and_then(parse_iso8601_to_epoch)
     })
+}
+
+/// The PRD a task was decomposed from: `metadata.prd` (the legacy key), else
+/// `metadata.prd_path` (the key the current `/prd` decompose writes). The
+/// first STRING value wins; a non-string value is skipped, never fatal.
+fn source_prd(metadata: &Value) -> Option<String> {
+    ["prd", "prd_path"]
+        .into_iter()
+        .find_map(|key| metadata.get(key).and_then(Value::as_str))
+        .map(String::from)
 }
 
 // -----------------------------------------------------------------------
