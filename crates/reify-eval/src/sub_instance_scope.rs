@@ -106,11 +106,12 @@ mod tests {
 
     use reify_core::{Type, ValueCellId};
     use reify_ir::{
-        BinOp, CompiledExpr, CompiledExprKind, GeometryHandleId, KernelHandle, KernelId,
+        BinOp, CompiledExpr, CompiledExprKind, GeometryHandleId, KernelHandle, KernelId, Value,
+        ValueMap,
     };
     use reify_test_support::parse_and_compile_with_stdlib;
 
-    use super::{direct_sub_instances, scoped_step_key};
+    use super::{ScopedArgs, direct_sub_instances, scoped_arg_values, scoped_step_key};
 
     const MINI_SOURCE: &str = r#"
 structure def Inner {
@@ -257,5 +258,68 @@ structure def MiniParent {
         let expected: HashMap<String, KernelHandle> =
             [("body".to_string(), occt_handle(7))].into_iter().collect();
         assert_eq!(instance.named_steps_view(&parent_steps), expected);
+    }
+
+    const GUARDED_SOURCE: &str = r#"
+structure def Leaf {
+    param w : Length = 1mm
+}
+
+structure def Tree {
+    param depth : Int = 0
+    sub child = Tree(depth: depth - 1) where depth > 0
+    sub leaf = Leaf(w: 2mm)
+}
+"#;
+
+    fn tree_sub<'c>(
+        compiled: &'c reify_compiler::CompiledModule,
+        sub_name: &str,
+    ) -> &'c reify_compiler::SubComponentDecl {
+        reify_compiler::find_template(&compiled.templates, "Tree")
+            .expect("Tree template must compile")
+            .sub_components
+            .iter()
+            .find(|sub| sub.name == sub_name)
+            .unwrap_or_else(|| panic!("Tree must declare sub `{sub_name}`"))
+    }
+
+    #[test]
+    fn guarded_sub_with_no_committed_arg_cell_is_guard_declined() {
+        let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
+        let child = tree_sub(&compiled, "child");
+
+        let verdict = scoped_arg_values("Tree", child, &ValueMap::new());
+
+        assert!(
+            matches!(verdict, ScopedArgs::GuardDeclined),
+            "a guarded sub with none of its arg cells committed was declined by eval, got {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn guarded_sub_with_committed_arg_cells_is_elaborated() {
+        let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
+        let child = tree_sub(&compiled, "child");
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Tree.child", "depth"), Value::Int(-1));
+
+        let ScopedArgs::Elaborated(args) = scoped_arg_values("Tree", child, &values) else {
+            panic!("a guarded sub whose arg cells eval committed is an elaborated instance");
+        };
+
+        assert_eq!(args, vec![("depth", Some(&Value::Int(-1)))]);
+    }
+
+    #[test]
+    fn unguarded_sub_is_never_guard_declined() {
+        let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
+        let leaf = tree_sub(&compiled, "leaf");
+
+        let ScopedArgs::Elaborated(args) = scoped_arg_values("Tree", leaf, &ValueMap::new()) else {
+            panic!("an unguarded sub always has an instance, so its missing cells stay visible");
+        };
+
+        assert_eq!(args, vec![("w", None)]);
     }
 }
