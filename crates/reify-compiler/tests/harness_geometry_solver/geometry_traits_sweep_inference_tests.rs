@@ -3,12 +3,16 @@
 //! op-array `infer_traits_for_op` that resolves let-bound geometry).
 
 use reify_compiler::geometry_traits_inference::{
-    GeomDim, InferredTraits, combine_sweep, infer_traits_for_op, try_infer_traits_for_function_call,
+    GeomDim, InferredTraits, SubRefEnv, combine_sweep, infer_traits_for_op,
+    infer_traits_for_op_in_env, try_infer_traits_for_function_call,
 };
-use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, ProfileKind, SweepKind};
+use reify_compiler::{
+    CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ProfileKind, RealizationDecl,
+    SweepKind, TopologyTemplate,
+};
 use reify_core::{ContentHash, DiagnosticCode, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction};
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 const ALL_SWEEP_KINDS: [SweepKind; 9] = [
     SweepKind::Loft,
@@ -107,6 +111,36 @@ fn trait_slot_source(slot_trait: &str, top_lets: &str, g_arg: &str) -> String {
 }
 
 const EXTRUDE_INFINITE_OF_CIRCLE: &str = r#"extrude_infinite(circle(5mm), 0, 0, 1, "positive")"#;
+
+fn template<'a>(compiled: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
+    compiled
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("{name} template"))
+}
+
+fn find_realization<'a>(template: &'a TopologyTemplate, name: &str) -> Option<&'a RealizationDecl> {
+    template
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some(name))
+}
+
+fn realization<'a>(template: &'a TopologyTemplate, name: &str) -> &'a RealizationDecl {
+    find_realization(template, name)
+        .unwrap_or_else(|| panic!("{}.{name} realization", template.name))
+}
+
+/// Resolves a `GeomRef::Sub(name)` to the op-array traits of the same-template
+/// realization named `name`, and declines every other name.
+struct SiblingRealizations<'a>(&'a TopologyTemplate);
+
+impl SubRefEnv for SiblingRealizations<'_> {
+    fn lookup_sub(&self, name: &str) -> Option<InferredTraits> {
+        find_realization(self.0, name).map(|r| infer_traits_for_op(&r.operations))
+    }
+}
 
 // ─── combine_sweep — Bounded+Connected from profile, Convex always dropped ──
 
@@ -318,17 +352,65 @@ fn let_bound_sweep_of_a_curve_profile_realization_infers_surface() {
         .count();
     assert_eq!(profile_required, 1, "the inline curve profile is refused");
 
-    let top = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "Top")
-        .expect("Top template");
-    let b = top
-        .realizations
-        .iter()
-        .find(|r| r.name.as_deref() == Some("b"))
-        .expect("Top.b realization");
+    let b = realization(template(&compiled, "Top"), "b");
     let swept = infer_traits_for_op(&b.operations);
     assert_eq!(swept.dimension, GeomDim::Surface, "{:?}", b.operations);
     assert!(!swept.closed, "{swept:?}");
+}
+
+// ─── let-bound profiles — resolved through the sibling chase ────────────────
+
+/// `p` lowers to the sibling-let `GeomRef::Sub("p")`, which the profile
+/// precondition skips, so only the in-env walker sees that `b` sweeps a curve:
+/// the un-capped shell OCCT builds.
+#[test]
+fn let_bound_curve_profile_sweep_infers_surface_through_the_sibling_chase() {
+    let compiled = compile_source_with_stdlib(
+        "structure def Top {\n\
+         let p = line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm)\n\
+         let b = sweep(p, line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 200mm))\n\
+         }",
+    );
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let top = template(&compiled, "Top");
+    let b = realization(top, "b");
+    assert!(
+        matches!(
+            b.operations.last(),
+            Some(CompiledGeometryOp::Sweep { profiles, .. })
+                if profiles.first() == Some(&GeomRef::Sub("p".to_string()))
+        ),
+        "{:?}",
+        b.operations
+    );
+
+    let swept = infer_traits_for_op_in_env(&b.operations, &SiblingRealizations(top));
+    assert_eq!(swept.dimension, GeomDim::Surface, "{swept:?}");
+    assert!(swept.bounded && swept.connected, "{swept:?}");
+    assert!(!swept.closed && !swept.planar && !swept.convex, "{swept:?}");
+}
+
+/// The sibling chase resolves `c` to a bounded face; `extrude_infinite` must
+/// not inherit that.
+#[test]
+fn let_bound_profile_of_extrude_infinite_at_bounded_param_is_still_unbounded() {
+    let let_bound_profile = trait_slot_source(
+        "Bounded",
+        "let c = circle(5mm)\nlet e = extrude_infinite(c, 0, 0, 1, \"positive\")",
+        "e",
+    );
+    assert_eq!(
+        diagnostic_count(&let_bound_profile, DiagnosticCode::GeometryUnbounded),
+        1
+    );
+
+    let finite_control = compile_source_with_stdlib(&trait_slot_source(
+        "Bounded",
+        "let c = circle(5mm)\nlet e = extrude(c, 10mm)",
+        "e",
+    ));
+    let errors = errors_only(&finite_control);
+    assert!(errors.is_empty(), "{errors:?}");
 }
