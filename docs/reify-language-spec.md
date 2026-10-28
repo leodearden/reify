@@ -659,7 +659,7 @@ End-to-end runnable examples:
 - `examples/generics/unbound_param.ri` -- `constant_field(42.5)`: `C`=Real, `D` nested-unbound (tolerated, no `E_FN_TYPE_ARG_UNRESOLVED`)
 - `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
 
-See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
+See also the `fn gap<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
 
 #### 3.9.2 Generic enums
 
@@ -888,8 +888,8 @@ trait Cylindrical {
 
 ```
 // Valid: same name, different parameter types
-fn area(surface: Surface) -> Scalar<Area> { ... }
-fn area(solid: Solid) -> Scalar<Area> { ... }
+fn footprint(surface: Surface) -> Scalar<Area> { ... }
+fn footprint(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
 fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
