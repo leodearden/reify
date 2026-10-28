@@ -68,7 +68,7 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{
-    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveSense,
     ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap,
 };
 
@@ -1128,13 +1128,33 @@ fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
 // measurement that makes a box-emptiness shortcut unsound.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── helper: `coeff * x OP bound_si_m` (Length) ──
+// ── helpers: `coeff * x OP bound_si_m` (Length) ──
 //
-// Sibling of `length_cmp` for the COEFFICIENT form.  `derive_param_intervals`
-// abstains on it entirely (measured: `DerivedInterval { lo: None, hi: None }`),
-// which is precisely what the #5714 tests need — a bracket the bound derivation
-// cannot read, so neither the seed nor any box check can stand in for a witness.
+// `coefficient_length_cmp` is the plain COEFFICIENT form, which the HC4 bound
+// derivation reads since task #6655.  `scaled_length_cmp` keeps what the #5714
+// tests need — a bracket the bound derivation cannot read, so neither the seed
+// nor any box check can stand in for a witness — by routing the same
+// `coeff * x` through a constant-condition conditional.  The solver evaluates
+// it bit-identically, but HC4 encloses a conditional forward only (its untaken
+// branch is never constrained), so nothing is derived through it and the seed
+// stays the fixed 0.01 these fixtures' measured margins were taken at.
 fn scaled_length_cmp(coeff: f64, op: BinOp, x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
+    let CompiledExprKind::BinOp { left, right, .. } =
+        coefficient_length_cmp(coeff, op, x_id, bound_si_m).kind
+    else {
+        unreachable!("coefficient_length_cmp builds a comparison");
+    };
+    let always = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let opaque_scaled = reify_test_support::conditional_expr(always, (*left).clone(), *left);
+    CompiledExpr::binop(op, opaque_scaled, *right, Type::Bool)
+}
+
+fn coefficient_length_cmp(
+    coeff: f64,
+    op: BinOp,
+    x_id: &ValueCellId,
+    bound_si_m: f64,
+) -> CompiledExpr {
     let length_dim = DimensionVector::LENGTH;
     let dimensionless = DimensionVector::DIMENSIONLESS;
     let scaled = CompiledExpr::binop(
@@ -1373,6 +1393,42 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
         "the margin must still be identified even though it is not the culprit; \
          got: {message}"
     );
+}
+
+/// The SAME wide bracket written as a plain coefficient form now SOLVES.
+///
+/// `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` keeps the
+/// bracket opaque to the bound derivation, so its floored solve starts from
+/// the fixed 0.01 and does not converge. Read directly, `2·x > 60mm ∧
+/// 2·x < 100mm` is the box (30mm, 50mm) to HC4 (task #6655), so the seed sits
+/// inside the user's bracket and the floored solve reaches the floor.
+#[test]
+fn readable_coefficient_bracket_solves_inside_its_floored_window() {
+    let x_id = ValueCellId::new("ReadableWide", "x");
+    let problem = bracketed_money_problem(
+        vec![length_auto_param(x_id.clone())],
+        vec![
+            coefficient_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            coefficient_length_cmp(2.0, BinOp::Lt, &x_id, 0.100),
+        ],
+        money_expr_x_per_mm(&x_id),
+    );
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let x = values
+                .get(&x_id)
+                .and_then(Value::as_f64)
+                .expect("numeric x");
+            assert!(
+                (x - 0.0306).abs() < 1e-12,
+                "cost pulls x onto the floored lower edge, 2·x = 60mm + 2% (measured: \
+                 30.6mm); got {x:e} m"
+            );
+        }
+        other => {
+            panic!("a readable bracket with a non-empty floored window must solve; got {other:?}")
+        }
+    }
 }
 
 /// The class-2/class-3 boundary, probed INSIDE the band the wide/tight pair

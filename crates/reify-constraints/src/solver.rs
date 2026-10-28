@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::dependent_reads::{CellReads, DependentCellReads};
+use crate::hc4;
+use crate::interval::Interval;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::diagnostics::{BoundSide, UnboundedSide, unbounded_auto_clause};
@@ -933,14 +935,14 @@ fn compute_total_violation(
 /// the decomposition rules here, apply the same change to `has_inequality_slack` and
 /// vice versa (both functions carry the cross-reference comment).
 ///
-/// **Op-rule pact (three members, in-crate)**: `collect_floor_terms` and
-/// `derive_from_expr` (task #5618) reuse this exact Ge/Gt/Le/Lt/And decomposition.
-/// Any op-rule change here must be reflected in BOTH of them; all three carry the
-/// cross-reference comment.  `derive_from_expr` holds only the OP half: its `And`
-/// split was factored out to `for_each_leaf_conjunct`, which its two callers
-/// (`derive_param_intervals`, `params_in_underivable_constraints`) drive.  A
-/// change to the `And` rule itself therefore lands in three places, not four —
-/// here, in `collect_floor_terms`, and in `for_each_leaf_conjunct`.
+/// **Op-rule pact (two members, in-crate)**: `collect_floor_terms` reuses this
+/// exact Ge/Gt/Le/Lt/And decomposition; any op-rule change here must be reflected
+/// there, and both carry the cross-reference comment.  The bound derivation is no
+/// longer a member that mirrors the rules: `derive_from_leaf` must read a
+/// SUPERSET of them (every `l − r >= m` slack form is an HC4 order relation for
+/// any compilable `l` and `r`), and its `And` split is `for_each_leaf_conjunct`.
+/// A change to the `And` rule therefore lands here, in `collect_floor_terms`, and
+/// in `for_each_leaf_conjunct`.
 fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -1047,11 +1049,9 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// - All other ops: skip
 ///
 /// **Parallel to `collect_slack_terms`**: any op-rule change there must also be
-/// reflected here — and, since task #5618, in `derive_from_expr` as well. The
-/// cross-reference comment in `collect_slack_terms` records the three-member pact;
-/// keep all three in sync. `derive_from_expr`'s `And` half lives in
-/// `for_each_leaf_conjunct`, so an `And`-rule change lands there rather than in
-/// `derive_from_expr` itself.
+/// reflected here; the cross-reference comment in `collect_slack_terms` records
+/// the pact, and the superset contract the bound derivation (`derive_from_leaf`)
+/// owes the slack form this emits.
 fn collect_floor_terms(expr: &CompiledExpr, out: &mut Vec<(CompiledExpr, CompiledExpr, Type)>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -1517,7 +1517,8 @@ fn floor_infeasible_diagnostic(
 // seeded at the fixed `0.01`, outside the synthesised robustness floor's window,
 // and reported a false `RobustnessFloorInfeasible`.
 //
-// These helpers recover a usable box from the inequality constraints themselves.
+// These helpers recover a usable box from the order constraints themselves, each
+// leaf read by HC4-revise (`crate::hc4`) on its own.
 // Three consumers, with different obligations — one [`StrictBound`] variant each:
 //
 //   - the SEED box, derived from `problem.constraints` under [`StrictBound::Kept`]
@@ -1604,12 +1605,11 @@ enum StrictBound {
     /// direct `p OP c` / `c OP p` comparison holds, since the checker compares
     /// exactly.
     ///
-    /// That guarantee is exact for the DIRECT shape only. For the shifted shapes
-    /// `p − k OP c` / `k − p OP c` the derived bound is itself an f64
-    /// rearrangement (`c + k`, `k − c`), rounded once already, so the edge is not
-    /// guaranteed to satisfy the model's own leaf. The same holds for a
-    /// non-strict side there: it is a pre-existing property of the derivation,
-    /// not of this policy (task #7959).
+    /// That guarantee is exact for the DIRECT shape only. A rearranged shape
+    /// (`p − k OP c`, `2·p OP c`, …) is directed-rounded by HC4, so an exact
+    /// rearrangement stays exact; an inexact one is settled onto the leaf's own
+    /// non-strict verdict ([`DerivationCtx::settle_onto_leaf`]), but one step
+    /// inside it is not guaranteed to satisfy the STRICT leaf (task #7959).
     SteppedInside,
 }
 
@@ -1629,18 +1629,12 @@ impl StrictBound {
 
 /// Everything the bound-derivation family reads and nothing it mutates:
 /// [`derive_param_intervals`], [`params_in_underivable_constraints`] and the
-/// per-leaf workers they drive ([`derive_from_expr`], [`derive_from_side`],
-/// [`collect_underivable_in_leaf`], [`constant_operand_value`]).
+/// per-leaf worker they share ([`derive_from_leaf`]), to which it is also the
+/// [`hc4::OperandClassifier`]. A lookup the whole family needs is a new MEMBER
+/// here rather than a parameter on every signature.
 ///
-/// One context rather than a positional quartet repeated at every hop: the
-/// family is six functions deep and each signature used to re-list
-/// `(auto_index, values, functions, dispatch)` verbatim, which is what pushed
-/// [`derive_from_side`] past clippy's argument-count threshold. A lookup the
-/// whole family needs is then a new MEMBER here, not a seventh parameter on six
-/// signatures.
-///
-/// Built once per derivation walk by the two entry points, which are the only
-/// members holding `auto_params`; every inner member takes `&DerivationCtx`.
+/// Built once per derivation walk by the two entry points; every inner member
+/// takes `&DerivationCtx`.
 ///
 /// COST: `auto_reads` is a pure function of `(dependent_cells, auto_params)`,
 /// neither of which changes across a resolution — yet it is rebuilt at every
@@ -1654,9 +1648,11 @@ impl StrictBound {
 /// which is task #7728 rather than part of the fix this context exists to
 /// carry.
 struct DerivationCtx<'a> {
-    /// Position of each auto param within `auto_params` — the index every
-    /// `DerivedInterval` buffer in the family is addressed by, and the family's
-    /// test for "is this ref an auto?".
+    /// The auto params, in the order every `DerivedInterval` buffer is
+    /// addressed by.
+    autos: &'a [AutoParam],
+    /// Position of each auto param within `autos` — the family's test for "is
+    /// this ref an auto?".
     auto_index: HashMap<ValueCellId, usize>,
     /// Per dependent cell, the autos it reads TRANSITIVELY and whether a fold
     /// derives it — [`crate::dependent_reads::dependent_cell_auto_reads`]
@@ -1671,13 +1667,14 @@ struct DerivationCtx<'a> {
 
 impl<'a> DerivationCtx<'a> {
     fn new(
-        auto_params: &[AutoParam],
+        auto_params: &'a [AutoParam],
         dependent_cells: &[(ValueCellId, CompiledExpr)],
         values: &'a ValueMap,
         functions: &'a [CompiledFunction],
         dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
     ) -> Self {
         Self {
+            autos: auto_params,
             auto_index: auto_params
                 .iter()
                 .enumerate()
@@ -1820,8 +1817,9 @@ fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Optio
 ///
 /// Deliberately NOT part of the `collect_slack_terms` op-rule pact: the pact
 /// governs the per-leaf OP RULES (`Ge`/`Gt` vs `Le`/`Lt` vs skip), which
-/// [`collect_slack_terms`], [`collect_floor_terms`] and [`derive_from_expr`]
-/// each still own. This owns only the structural walk down to the leaves.
+/// [`collect_slack_terms`] and [`collect_floor_terms`] own and
+/// [`derive_from_leaf`] reads a superset of. This owns only the structural walk
+/// down to the leaves.
 fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)) {
     if let CompiledExprKind::BinOp {
         op: BinOp::And,
@@ -1855,112 +1853,150 @@ fn derive_param_intervals(
     let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            derive_from_expr(leaf, &ctx, &mut out);
+            derive_from_leaf(leaf, &ctx, &mut out);
         });
     }
     out
 }
 
-/// Per-leaf op-rule worker for [`derive_param_intervals`].
+/// Per-leaf worker for [`derive_param_intervals`] and
+/// [`collect_underivable_in_leaf`]: HC4-revise ONE leaf conjunct alone, every
+/// auto starting at the whole real line, and record each finite side it
+/// narrows with the leaf's own strictness.
 ///
-/// **Third member of the `collect_slack_terms` op-rule pact**: same
-/// `Ge`/`Gt` → left-bounded-below, `Le`/`Lt` → left-bounded-above, everything
-/// else (including `Eq`, `Ne`, `Or`) → skip.  Any op-rule change in
-/// `collect_slack_terms` or `collect_floor_terms` must be reflected here.
+/// Reads ORDER relations only (`Ge`/`Gt`/`Le`/`Lt`). An `Eq` pin contracts to
+/// a point, and a point box makes [`compose_interval`] discard the sibling
+/// inequality bounds wholesale, so `==` is read by the refutation pre-check
+/// alone. A leaf that is empty on its own records nothing; the refutation
+/// reports it.
 ///
-/// Takes ONE leaf conjunct and does not recurse: the pact's `And` → recurse
-/// half lives in [`for_each_leaf_conjunct`], which every caller drives (review
-/// suggestion 3 — [`collect_underivable_in_leaf`] used to carry a second copy
-/// of that recursion). Calling this directly on an `A AND B` node therefore
-/// derives NOTHING, by design; go through [`for_each_leaf_conjunct`].
-fn derive_from_expr(expr: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
-    let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
+/// Per leaf, not to a cross-constraint fixpoint, so a side's `strict` flag is
+/// exactly its source leaf's comparison — the property [`StrictBound`]'s clamp
+/// policies rely on.
+///
+/// Must read a SUPERSET of the `collect_slack_terms` / `collect_floor_terms`
+/// op rules: every `l − r >= m` slack form `synthesise_floor_constraints`
+/// emits is a compilable order relation for any compilable `l` and `r`.
+///
+/// Takes ONE leaf and does not recurse: an `A AND B` node is not a relation
+/// and derives NOTHING; go through [`for_each_leaf_conjunct`].
+fn derive_from_leaf(leaf: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
+    let Some(relation) = hc4::Relation::compile(leaf, ctx).filter(hc4::Relation::is_order) else {
         return;
     };
-    match op {
-        BinOp::Ge | BinOp::Gt => {
-            // left ≥ right → `left` bounded BELOW by right, `right` bounded ABOVE by left.
-            let strict = matches!(op, BinOp::Gt);
-            derive_from_side(left, right, true, strict, ctx, out);
-            derive_from_side(right, left, false, strict, ctx, out);
+    let mut bx = vec![Interval::ENTIRE; out.len()];
+    if relation.revise(&mut bx, hc4::Slack::Exact) == hc4::Revision::Empty {
+        return;
+    }
+    let strict = relation.is_strict();
+    let settles = ctx.single_auto_leaf(leaf, &relation);
+    for (auto, (side, derived)) in bx.iter().zip(out.iter_mut()).enumerate() {
+        let settle = |value: f64, inward: fn(f64) -> f64| match settles {
+            Some(only) if only == auto => ctx.settle_onto_leaf(leaf, auto, value, inward),
+            _ => value,
+        };
+        if side.lo().is_finite() {
+            derived.push_lo(settle(side.lo(), f64::next_up), strict);
         }
-        BinOp::Le | BinOp::Lt => {
-            // left ≤ right → `left` bounded ABOVE by right, `right` bounded BELOW by left.
-            let strict = matches!(op, BinOp::Lt);
-            derive_from_side(left, right, false, strict, ctx, out);
-            derive_from_side(right, left, true, strict, ctx, out);
+        if side.hi().is_finite() {
+            derived.push_hi(settle(side.hi(), f64::next_down), strict);
         }
-        // And (split upstream by `for_each_leaf_conjunct`, so it cannot appear
-        // here on the intended call path), Eq, Ne, Or and every arithmetic op:
-        // no one-sided bound on a single auto.
-        _ => {}
     }
 }
 
-/// Match `near` against the linear-in-one-auto shapes and, when `far` is constant,
-/// record the implied bound.
-///
-/// `lower == true` means the inequality bounds `near` from BELOW (`near ≥ far`).
-/// Four shapes are recognised — the last two are REQUIRED, because
-/// `synthesise_floor_constraints` emits exactly that slack form:
-///
-/// - `p OP far`                → bound = `far`,        direction unchanged
-/// - `p − k OP far`            → bound = `far + k`,    direction unchanged
-/// - `k − p OP far`            → bound = `k − far`,    direction FLIPPED
-///
-/// (the "`far OP p`" shape is covered by the caller invoking this function once per
-/// operand side).  Anything else is skipped.
-fn derive_from_side(
-    near: &CompiledExpr,
-    far: &CompiledExpr,
-    lower: bool,
-    strict: bool,
-    ctx: &DerivationCtx<'_>,
-    out: &mut [DerivedInterval],
-) {
-    let Some(far_value) = constant_operand_value(far, ctx) else {
-        return;
-    };
-    match &near.kind {
-        CompiledExprKind::ValueRef(id) => {
-            if let Some(&i) = ctx.auto_index.get(id) {
-                record_bound(&mut out[i], far_value, lower, strict);
+/// How many ulps [`DerivationCtx::settle_onto_leaf`] may move a derived side.
+const SETTLE_MAX_STEPS: usize = 4;
+
+impl DerivationCtx<'_> {
+    /// The one auto a fully compiled `leaf` mentions, when it mentions exactly
+    /// one and no moving quantity — the leaves whose derived side can be
+    /// checked against the model's own evaluator.
+    fn single_auto_leaf(&self, leaf: &CompiledExpr, relation: &hc4::Relation) -> Option<usize> {
+        if !relation.is_fully_representable() {
+            return None;
+        }
+        let mut only = None;
+        for id in leaf.collect_value_refs() {
+            match hc4::OperandClassifier::classify(self, &id) {
+                hc4::RefClass::Fixed => {}
+                hc4::RefClass::Varying => return None,
+                hc4::RefClass::Variable(i) if only.is_none_or(|o| o == i) => only = Some(i),
+                hc4::RefClass::Variable(_) => return None,
             }
         }
-        CompiledExprKind::BinOp {
-            op: BinOp::Sub,
-            left,
-            right,
-        } => {
-            // `p − k OP far` → `p OP far + k`
-            if let CompiledExprKind::ValueRef(id) = &left.kind
-                && let Some(&i) = ctx.auto_index.get(id)
-                && let Some(k) = constant_operand_value(right, ctx)
-            {
-                record_bound(&mut out[i], far_value + k, lower, strict);
-                return;
+        only
+    }
+
+    /// Settle an HC4-derived side of `auto` onto the leaf's own f64 verdict.
+    ///
+    /// HC4 rounds outward, so an inexact rearrangement (`p − k >= m` ⇒
+    /// `p >= m + k`) can sit one ulp outside the bound the model's evaluator
+    /// accepts — a real-number bound, but a clamp target the floor's own
+    /// comparison rejects. Step `inward` one ulp at a time, at most
+    /// [`SETTLE_MAX_STEPS`], until the leaf's NON-STRICT closure holds there;
+    /// a side that never settles is returned unchanged. Strictness itself
+    /// stays [`StrictBound`]'s concern.
+    fn settle_onto_leaf(
+        &self,
+        leaf: &CompiledExpr,
+        auto: usize,
+        derived: f64,
+        inward: fn(f64) -> f64,
+    ) -> f64 {
+        let mut candidate = derived;
+        for _ in 0..=SETTLE_MAX_STEPS {
+            if self.closure_holds_at(leaf, auto, candidate) {
+                return candidate;
             }
-            // `k − p OP far` → `p OP′ k − far`  (multiplying by −1 flips the direction)
-            if let CompiledExprKind::ValueRef(id) = &right.kind
-                && let Some(&i) = ctx.auto_index.get(id)
-                && let Some(k) = constant_operand_value(left, ctx)
-            {
-                record_bound(&mut out[i], k - far_value, !lower, strict);
-            }
+            candidate = inward(candidate);
         }
-        _ => {}
+        derived
+    }
+
+    /// Whether `leaf`'s non-strict closure holds, in the model's evaluator,
+    /// with `auto` set to `value`. `false` for anything that does not evaluate.
+    fn closure_holds_at(&self, leaf: &CompiledExpr, auto: usize, value: f64) -> bool {
+        let CompiledExprKind::BinOp { op, left, right } = &leaf.kind else {
+            return false;
+        };
+        let Some(Type::Scalar { dimension }) = self.autos.get(auto).map(|p| &p.param_type) else {
+            return false;
+        };
+        let mut values = self.values.clone();
+        values.insert(
+            self.autos[auto].id.clone(),
+            Value::Scalar {
+                si_value: value,
+                dimension: *dimension,
+            },
+        );
+        let ctx = ctx_with(&values, self.functions, self.dispatch);
+        let side = |e: &CompiledExpr| reify_expr::eval_expr(e, &ctx).as_f64();
+        match (side(left), side(right), op) {
+            (Some(l), Some(r), BinOp::Ge | BinOp::Gt) => l >= r,
+            (Some(l), Some(r), BinOp::Le | BinOp::Lt) => l <= r,
+            _ => false,
+        }
     }
 }
 
-/// Route one derived bound to the correct side of `iv`, dropping non-finite values.
-fn record_bound(iv: &mut DerivedInterval, value: f64, lower: bool, strict: bool) {
-    if !value.is_finite() {
-        return;
+/// The derivation family's operand knowledge, as HC4 consumes it: an auto is a
+/// box variable, a ref that [`DerivationCtx::varies_with_solve`] is a moving
+/// quantity that bounds nothing, and anything else is evaluated through
+/// [`constant_operand_value`], the family's single evaluation path.
+impl hc4::OperandClassifier for DerivationCtx<'_> {
+    fn classify(&self, id: &ValueCellId) -> hc4::RefClass {
+        if let Some(&i) = self.auto_index.get(id) {
+            hc4::RefClass::Variable(i)
+        } else if self.varies_with_solve(id) {
+            hc4::RefClass::Varying
+        } else {
+            hc4::RefClass::Fixed
+        }
     }
-    if lower {
-        iv.push_lo(value, strict);
-    } else {
-        iv.push_hi(value, strict);
+
+    fn evaluate(&self, expr: &CompiledExpr) -> Option<f64> {
+        constant_operand_value(expr, self)
     }
 }
 
@@ -2077,25 +2113,22 @@ fn seed_box_from_intervals(
 /// whenever some leaf conjunct MENTIONS it (via
 /// `CompiledExpr::collect_value_refs`, which walks every expression kind) while
 /// yielding NO bound at all for it. That is deliberately not a list of
-/// enumerated shapes: [`derive_from_expr`]/[`derive_from_side`] recognise only
-/// `p OP c`, `p − k OP c` and `k − p OP c` on `Ge`/`Gt`/`Le`/`Lt` with a
-/// CONSTANT, auto-free far operand, so *everything else* a user can legitimately
-/// write derives to `None` and abstains. Examples, NOT an exhaustive taxonomy:
+/// enumerated shapes: [`derive_from_leaf`] reads any ORDER relation HC4 can
+/// compile, one leaf at a time from the whole real line, so what it cannot read
+/// derives to `None` and abstains. Examples, NOT an exhaustive taxonomy:
 ///
-/// - `Eq` is skipped outright by the op rule, yet `constraint x == 10mm` is the
+/// - `Eq` is not a derivation input, yet `constraint x == 10mm` is the
 ///   canonical DSL way to determine a strict auto
 ///   (`examples/auto_binding_sites.ri`);
-/// - coefficient/nonlinear forms (`2*t > 3mm`, `t*t > 4`) match no shape;
-/// - a COUPLED bound (`y < 5mm - x`) has a far operand naming another auto, so
-///   [`constant_operand_value`] rejects it for BOTH params;
-/// - `Or` is skipped by the same op rule as `Eq` (it is not split like `And`),
-///   so a disjunctive conjunct abstains for every param it mentions;
-/// - a SUM constraint (`x + y > 1mm`) puts the param inside an unrecognised
-///   near-side expression;
-/// - a DISPATCH-BACKED predicate (`stress(t) < LIMIT`, the FEA shape this
-///   crate's own `fea_binding_problem` fixture uses) is unreadable on BOTH
-///   sides: `derive_from_side` cannot see a `Call` on the near side, and
-///   [`constant_operand_value`] rejects a far side naming the auto.
+/// - a COUPLED or SUM bound (`y < 5mm - x`, `x + y > 1mm`) bounds neither param
+///   on its own, since every other auto starts unbounded;
+/// - `Or`, `Ne` and `Implies` compile to no relation (`Or` is not split like
+///   `And`), so such a conjunct abstains for every param it mentions;
+/// - an OPAQUE call — an unrecognised builtin, or a DISPATCH-BACKED predicate
+///   (`stress(t) < LIMIT`, the FEA shape this crate's own `fea_binding_problem`
+///   fixture uses) — encloses to the whole real line with nothing to invert;
+/// - a ref that moves with the solve without being an auto
+///   ([`DerivationCtx::varies_with_solve`]) bounds nothing.
 ///
 /// Those `None`s are derivation BLIND SPOTS, not evidence that the user left a
 /// side unbounded — the distinction [`default_bounded_strict_autos`] needs in
@@ -2108,17 +2141,17 @@ fn seed_box_from_intervals(
 /// error: it can only turn a `ConstraintNonUnique` error into a `Solved`
 /// verdict, never the reverse, and the alternative (reading a blind spot as
 /// evidence) was MEASURED to reject valid, bounded models. Narrowing it means
-/// teaching [`derive_from_expr`] the missing shapes, not tightening the test
-/// here.
+/// teaching the derivation the missing shapes, not tightening the test here.
 ///
-/// That consequence is PINNED, not merely narrated (review suggestion 2):
-/// `gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved`
-/// (`tests/cost_robustness_tradeoff_blend.rs`) builds exactly the losing
-/// shape — a genuinely unbounded upper side plus ONE redundant, unreadable
-/// conjunct mentioning the same param — and measures both arms: without the
-/// conjunct every λ errors `ConstraintNonUnique`; with it every λ reports
+/// That consequence is PINNED, not merely narrated, in
+/// `tests/cost_robustness_tradeoff_blend.rs`:
+/// `gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved` builds the
+/// losing shape — a genuinely unbounded upper side plus ONE redundant `Or`
+/// conjunct mentioning the same param — where every λ reports
 /// `Solved { unique: true }`, λ=0 landing on [`default_bounds_for`]'s 10 m
-/// `Length` ceiling. Re-deciding the rule means re-deciding that test.
+/// `Length` ceiling; `gamma_one_sided_plus_coefficient_conjunct_stays_non_unique`
+/// is its control, a readable conjunct that leaves the error standing.
+/// Re-deciding the rule means re-deciding those tests.
 ///
 /// Conjuncts are split on `And` before the test, by the SAME
 /// [`for_each_leaf_conjunct`] walk [`derive_param_intervals`] drives — one
@@ -2178,7 +2211,7 @@ fn params_in_underivable_constraints(
 }
 
 /// Per-leaf worker for [`params_in_underivable_constraints`]: scores ONE leaf
-/// conjunct by re-running [`derive_from_expr`] on it into a scratch buffer and
+/// conjunct by re-running [`derive_from_leaf`] on it into a scratch buffer and
 /// comparing what it bounded against what it mentions.
 ///
 /// Does not recurse — the caller drives [`for_each_leaf_conjunct`], the single
@@ -2187,7 +2220,7 @@ fn params_in_underivable_constraints(
 /// leaf and lose the per-conjunct granularity this function exists to provide.
 ///
 /// `scratch` is caller-owned and RESET (not reallocated) at each leaf; it must be
-/// `auto_params.len()` long, since `derive_from_expr` indexes it by auto index.
+/// `auto_params.len()` long, since `derive_from_leaf` indexes it by auto index.
 /// Its contents carry no meaning across leaves — the per-conjunct granularity
 /// documented on [`params_in_underivable_constraints`] depends on the reset.
 fn collect_underivable_in_leaf(
@@ -2197,7 +2230,7 @@ fn collect_underivable_in_leaf(
     out: &mut HashSet<usize>,
 ) {
     scratch.fill(DerivedInterval::default());
-    derive_from_expr(leaf, ctx, scratch);
+    derive_from_leaf(leaf, ctx, scratch);
     for id in leaf.collect_value_refs() {
         if let Some(&i) = ctx.auto_index.get(&id)
             && scratch
@@ -2345,11 +2378,11 @@ enum Determinedness {
 ///   measured cause.
 /// - A side missing but the param present in `underivable` ⇒ ABSTAIN, omitting
 ///   the param (esc-5711-3). The `None` there is a derivation BLIND SPOT, not
-///   evidence about the user's model. Everything outside [`derive_from_side`]'s
-///   three recognised shapes is invisible to [`derive_param_intervals`] — `Eq`,
-///   coefficient, nonlinear, coupled, `Or`, sum and dispatch-backed predicates
-///   among them, as EXAMPLES rather than a taxonomy (see
-///   [`params_in_underivable_constraints`] for the general rule). Letting one
+///   evidence about the user's model. Whatever a leaf's per-leaf HC4 revise
+///   cannot read is invisible to [`derive_param_intervals`] — `Eq`, coupled,
+///   sum, `Or` and dispatch-backed predicates among them, as EXAMPLES rather
+///   than a taxonomy (see [`params_in_underivable_constraints`] for the general
+///   rule). Letting one
 ///   masquerade as "the user did not bound this side" converts a valid, bounded
 ///   γ model into a user-facing `error: strict auto parameter resolution is not
 ///   uniquely determined`. MEASURED before the fix, on this branch: γ +
@@ -2472,7 +2505,7 @@ fn default_bounded_strict_autos(
 /// with the esc-5711-3 abstention ([`params_in_underivable_constraints`])
 /// applied LAZILY.
 ///
-/// The abstention set re-runs `derive_from_expr`, and through it `eval_expr`,
+/// The abstention set re-runs `derive_from_leaf`, and through it `eval_expr`,
 /// once per leaf conjunct, so it is built only when the raw derivation already
 /// reports something. That skip is sound because the detector is MONOTONE in
 /// the abstention set and `keep` judges each entry alone: the second answer can
@@ -6544,9 +6577,9 @@ mod tests {
 
     // ---- abstention on an UNREADABLE constraint (esc-5711-3) ----
     //
-    // `derive_param_intervals` recognises only three syntactic shapes with a
-    // constant far operand, so `Eq`, coefficient/nonlinear and coupled bounds
-    // all derive to `None`. Those `None`s are derivation BLIND SPOTS, and
+    // `derive_param_intervals` reads order relations one leaf at a time, so
+    // `Eq`, coupled and opaque bounds all derive to `None`. Those `None`s are
+    // derivation BLIND SPOTS, and
     // reading one as "the user did not bound this side" turns a valid, bounded
     // γ model into `error: strict auto parameter resolution is not uniquely
     // determined`. `params_in_underivable_constraints` is the evidence source
@@ -6554,8 +6587,8 @@ mod tests {
     // confirmed unbounded; the integration-level counterparts live in
     // `tests/cost_robustness_tradeoff_blend.rs`.
 
-    /// A readable one-sided bound flags NOTHING: `q >= 1.0` is exactly the
-    /// shape `derive_from_side` handles, so the missing upper side really is
+    /// A readable one-sided bound flags NOTHING: `q >= 1.0` is the direct
+    /// shape the derivation reads, so the missing upper side really is
     /// `default_bounds_for`'s and must keep reporting non-determinedness.
     #[test]
     fn params_in_underivable_constraints_readable_bound_flags_nothing() {
@@ -6579,7 +6612,7 @@ mod tests {
         );
     }
 
-    /// `constraint q == 5.0` — skipped outright by `derive_from_expr`'s op rule,
+    /// `constraint q == 5.0` — not a derivation input (order relations only),
     /// yet the canonical DSL way to determine a strict auto
     /// (`examples/auto_binding_sites.ri`). Must be flagged.
     #[test]
@@ -6722,7 +6755,7 @@ mod tests {
             ops,
             vec![BinOp::Ge, BinOp::Le, BinOp::Eq],
             "nested `And`s must flatten left-to-right, and no `And` node may reach the \
-             leaf callback — `derive_from_expr` no longer recurses, so an `And` that \
+             leaf callback — `derive_from_leaf` does not recurse, so an `And` that \
              leaked through would derive nothing at all"
         );
     }
@@ -6777,11 +6810,10 @@ mod tests {
         );
     }
 
-    /// A NON-ENUMERATED shape: `Or`. The doc's four named shapes (Eq /
-    /// coefficient / nonlinear / coupled) are EXAMPLES, not a taxonomy — the
-    /// rule is "any conjunct that mentions the param and yields no bound". `Or`
-    /// falls into `derive_from_expr`'s same `_ => {}` arm as `Eq` and is NOT
-    /// split like `And`, so `q >= 1 OR q <= 4` bounds nothing while mentioning
+    /// A NON-ENUMERATED shape: `Or`. The doc's named shapes are EXAMPLES, not a
+    /// taxonomy — the rule is "any conjunct that mentions the param and yields
+    /// no bound". `Or` compiles to no relation and is NOT split like `And`, so
+    /// `q >= 1 OR q <= 4` bounds nothing while mentioning
     /// `q`. Pins the true reach of the abstention rather than leaving it
     /// inferred from the enumeration (review, robustness).
     #[test]
@@ -6815,9 +6847,9 @@ mod tests {
 
     /// A NON-ENUMERATED shape that is also the realistic one: a DISPATCH-BACKED
     /// predicate, `stress(t) < LIMIT` (this file's own `fea_binding_problem`,
-    /// the FEA fixture from #4880). Unreadable on BOTH sides — `derive_from_side`
-    /// cannot see a `Call` on the near side, and `constant_operand_value` rejects
-    /// a far side naming the auto — so `t` is flagged even though the constraint
+    /// the FEA fixture from #4880). The user-function call is OPAQUE to HC4 —
+    /// it encloses to the whole real line with nothing to invert — so `t` is
+    /// flagged even though the constraint
     /// is the model's whole point. Asserted WITH a live dispatch attached, since
     /// the derivation threads one through and a reader could otherwise assume the
     /// hook rescues the shape.
