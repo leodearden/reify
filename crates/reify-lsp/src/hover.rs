@@ -402,7 +402,7 @@ fn keyword_description(word: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::test_fixtures::occurrences;
+    use crate::decl_oracle::test_fixtures::occurrences;
     use crate::convert::offset_to_position;
     use tower_lsp::lsp_types::Url;
 
