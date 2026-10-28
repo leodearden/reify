@@ -10,7 +10,7 @@ use crate::check_verdict::{
     check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
 };
-use crate::constraint_report::{finish_check, report_eval_output};
+use crate::constraint_report::{finish_check, report_achieved_deviations, report_eval_output};
 use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,
@@ -18,6 +18,11 @@ use crate::module_capabilities::{
 use crate::parse_and_compile_with_cfg;
 
 /// `reify check <file>` — lightweight static constraint checker.
+///
+/// `--verbose` adds a full-precision achieved-deviation readout to stdout
+/// ([`report_achieved_deviations`]) and changes nothing else. It is refused
+/// with `--purpose`: that path never measures a deviation, so it would print
+/// nothing.
 ///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
@@ -67,6 +72,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
     let mut purpose_values: Vec<String> = Vec::new();
     let mut cfg_values: Vec<String> = Vec::new();
     let mut strict = false;
+    let mut verbose = false;
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -74,6 +80,10 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         match a {
             "--strict" => {
                 strict = true;
+                i += 1;
+            }
+            "--verbose" => {
+                verbose = true;
                 i += 1;
             }
             "--purpose" => {
@@ -106,6 +116,14 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
                 i += 1;
             }
         }
+    }
+
+    if verbose && !purpose_values.is_empty() {
+        eprintln!(
+            "Error: --verbose cannot be combined with --purpose (the --purpose path measures no achieved deviation)"
+        );
+        eprintln!("{}", CHECK_USAGE);
+        return ExitCode::FAILURE;
     }
 
     let file = match file {
@@ -215,7 +233,16 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // `tessellate_realizations` side effect). Consumed by
         // `merge_post_build_verdicts` after the authoritative `check()`.
         let mut build_result: Option<reify_eval::BuildResult> = None;
-        let result = if has_geometric_conforms
+        // Copied out so the engine — and any live B-rep state — drops with its arm.
+        let take_deviation_readout = |engine: &reify_eval::Engine| -> Option<Vec<(String, f64)>> {
+            verbose.then(|| {
+                engine
+                    .achieved_repr_tol_by_occurrence()
+                    .map(|(occurrence, deviation)| (occurrence.to_owned(), deviation))
+                    .collect()
+            })
+        };
+        let (result, deviation_readout) = if has_geometric_conforms
             || has_representation_within
             || has_dfm_rule
             || has_geometry
@@ -306,11 +333,13 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
             // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
             // reads the map its side effect populated.
-            engine.check(&compiled)
+            let result = engine.check(&compiled);
+            (result, take_deviation_readout(&engine))
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
             let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
-            engine.check(&compiled)
+            let result = engine.check(&compiled);
+            (result, take_deviation_readout(&engine))
         };
 
         let mut result = result;
@@ -348,6 +377,9 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stdout(),
             &mut std::io::stderr(),
         );
+        if let Some(readout) = deviation_readout {
+            report_achieved_deviations(readout, &mut std::io::stdout());
+        }
 
         let exit = finish_check(
             &outcome,

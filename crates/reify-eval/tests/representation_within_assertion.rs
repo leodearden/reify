@@ -1759,7 +1759,9 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
          the 8e-4 m ceiling measured for #precision(0.3mm) on a 1 m sphere (measured \
          6.202e-4 m — 1.61x inside the 1e-3 m assertion bound). Exceeding it means \
          this OCCT build meshes coarser than when the value was tuned and the margin \
-         is eroding toward a Violated verdict. Re-measure before widening: hold \
+         is eroding toward a Violated verdict. Re-measure before widening: run \
+         `reify check --verbose` on OCCT_SOURCE_FINE (saved as a .ri file) and read \
+         the full-precision `sampled facet deviation:` readout line. Fallback: hold \
          #precision, tighten the assertion bound to 0.01mm to force a violation, then \
          read the achieved value off the `sampled facet deviation <X> m exceeds bound` \
          message. Never widen this ceiling to or past 1e-3 — it must stay strictly \

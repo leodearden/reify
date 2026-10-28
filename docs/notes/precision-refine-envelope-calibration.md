@@ -810,6 +810,9 @@ discriminator is the message, not the format spec. And `reify check`'s usage lin
 <name>=<binding>]... [--cfg <key=value|flag>]... <file>`.) Four significant figures is
 therefore the whole apparatus, and it is a hard floor, not a convention this task could
 dial up.
+*Since #7462 (2026-10-27)* `reify check --verbose` prints each measured occurrence's
+deviation at shortest-round-trip f64 precision, so this wall bounds the rows measured
+before it, not the apparatus; the text above describes the tree as it stood then.
 
 *Derived.* A reported `a` of `X.XXXe-4` bounds the true value to ± 0.5e-7 m, so a ratio
 carries ± 0.5e-7/`d` — about ± 4.2e-4 at `d` = 0.12 mm, ± 2.8e-4 at 0.18 mm. **Every ratio
@@ -1618,6 +1621,13 @@ A single probe:
 timeout 90 ./target/release/reify check tests/prd-gate/fixtures/pnrg_envelope_sphere.ri
 # valid ⟺ output contains: sampled facet deviation <X> m exceeds bound 1.000e-6 m
 ```
+
+For the full-precision `a` (#7462), add `--verbose`: stdout gains one line per measured
+occurrence, `  <occurrence>: sampled facet deviation: <X> m`, with `<X>` the shortest
+round-trip f64. The validity line above still gates the probe — the readout does not
+replace it as the guard against §0 Caveat 2's `OK` trap — and the colon after `deviation`
+keeps the readout out of the ladder loop's `deviation [0-9.e+-]+ m` grep. `check`
+refuses `--verbose` together with `--purpose`: that path measures no deviation.
 
 **A `d` ladder** (the `module` declaration must match the file's basename, so rewrite in
 place under a same-named temp file — a bare `sed > /tmp/x.ri` fails with
