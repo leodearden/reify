@@ -762,7 +762,7 @@ mod cli {
     ///
     /// This must be a subprocess test, not a library one: `std::env::set_var`
     /// is process-global and would race sibling tests under `cargo test`'s
-    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// thread-per-test model (the same hazard `tests/common/replay.rs`
     /// documents at length for `GIT_DIR`).
     #[test]
     fn pre_done_warn_only_env_downgrades_refusal_to_low() {
@@ -2559,7 +2559,7 @@ mod cli {
     /// Adding a `ptodo_*` test raises the selection freely; losing one fails.
     #[test]
     fn hook_env_replay_of_ptodo_git_fixture_tests() {
-        common::git_env::replay_self_under_hook_git_env(&["cli::ptodo_"], 5);
+        common::replay::replay_self_under_hook_git_env(&["cli::ptodo_"], 5);
     }
 
     /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a

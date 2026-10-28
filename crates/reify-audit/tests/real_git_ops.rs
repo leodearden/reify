@@ -45,7 +45,7 @@ mod common;
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 13);
+    common::replay::replay_self_under_hook_git_env(&[""], 13);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
