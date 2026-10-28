@@ -94,7 +94,7 @@ impl Interval {
     /// `√x` over the part of `x` inside the domain `[0, +inf]`; `None` when
     /// `x` lies wholly below zero.
     pub fn sqrt(self) -> Option<Interval> {
-        let domain = self.intersect(enclosure(0.0, f64::INFINITY))?;
+        let domain = self.intersect(Interval::non_negative())?;
         Some(enclosure(
             sqrt_dir(domain.lo, Dir::Down),
             sqrt_dir(domain.hi, Dir::Up),
@@ -121,6 +121,93 @@ impl Interval {
 
     fn contains_zero(self) -> bool {
         self.contains(0.0)
+    }
+
+    fn non_negative() -> Interval {
+        enclosure(0.0, f64::INFINITY)
+    }
+}
+
+/// Relational inverses, the backward half of HC4. Each narrows the CURRENT
+/// domain of one operand given that the operation's result lies in `z`;
+/// `None` means no point of that domain can produce a result in `z`.
+impl Interval {
+    /// The `x` with `x^n ∈ z`.
+    pub fn powi_preimage(z: Interval, x: Interval, n: u32) -> Option<Interval> {
+        if n == 0 {
+            return z.contains(1.0).then_some(x);
+        }
+        if n % 2 == 0 {
+            let magnitude = z.intersect(Interval::non_negative())?;
+            let roots = enclosure(
+                root_dir(magnitude.lo, n, Dir::Down),
+                root_dir(magnitude.hi, n, Dir::Up),
+            );
+            return symmetric_preimage(roots, x);
+        }
+        x.intersect(enclosure(
+            signed_root_dir(z.lo, n, Dir::Down),
+            signed_root_dir(z.hi, n, Dir::Up),
+        ))
+    }
+
+    /// The `x` with `√x ∈ z`.
+    pub fn sqrt_preimage(z: Interval, x: Interval) -> Option<Interval> {
+        let roots = z.intersect(Interval::non_negative())?;
+        x.intersect(roots.powi(2))
+    }
+
+    /// The `x` with `|x| ∈ z`.
+    pub fn abs_preimage(z: Interval, x: Interval) -> Option<Interval> {
+        symmetric_preimage(z.intersect(Interval::non_negative())?, x)
+    }
+
+    /// The `x` with `x · y ∈ z`. A factor `y` containing 0 leaves `x`
+    /// unchanged, since [`Div`] then gives [`Interval::ENTIRE`].
+    pub fn mul_preimage(z: Interval, x: Interval, y: Interval) -> Option<Interval> {
+        x.intersect(z / y)
+    }
+
+    /// The numerator `x` with `x / y ∈ z`.
+    pub fn div_numerator_preimage(z: Interval, x: Interval, y: Interval) -> Option<Interval> {
+        x.intersect(z * y)
+    }
+
+    /// The denominator `y` with `x / y ∈ z`. A range `z` containing 0 leaves
+    /// `y` unchanged.
+    pub fn div_denominator_preimage(z: Interval, y: Interval, x: Interval) -> Option<Interval> {
+        y.intersect(x / z)
+    }
+
+    /// The `x` with `min(x, y) ∈ z`: `x` is at least `z.lo`, and lies in `z`
+    /// outright when `y` is too large to be the minimum.
+    pub fn min_preimage(z: Interval, x: Interval, y: Interval) -> Option<Interval> {
+        let floored = x.intersect(enclosure(z.lo, f64::INFINITY))?;
+        if y.lo > z.hi {
+            floored.intersect(z)
+        } else {
+            Some(floored)
+        }
+    }
+
+    /// The `x` with `max(x, y) ∈ z`; the mirror of [`Interval::min_preimage`].
+    pub fn max_preimage(z: Interval, x: Interval, y: Interval) -> Option<Interval> {
+        let capped = x.intersect(enclosure(f64::NEG_INFINITY, z.hi))?;
+        if y.hi < z.lo {
+            capped.intersect(z)
+        } else {
+            Some(capped)
+        }
+    }
+}
+
+/// The `x` whose magnitude lies in `magnitude` (non-negative): the hull of the
+/// positive and negative branches that survive in `x`. Shared by the
+/// even-power and `abs` inverses.
+fn symmetric_preimage(magnitude: Interval, x: Interval) -> Option<Interval> {
+    match (x.intersect(magnitude), x.intersect(-magnitude)) {
+        (Some(positive), Some(negative)) => Some(positive.hull(negative)),
+        (positive, negative) => positive.or(negative),
     }
 }
 
@@ -314,4 +401,72 @@ fn power_dir(x: f64, n: u32, dir: Dir) -> f64 {
 
 fn magnitude_power_dir(m: f64, n: u32, dir: Dir) -> f64 {
     (1..n).fold(m, |acc, _| mul_dir(acc, m, dir))
+}
+
+/// Bound on the outward and inward ulp steps [`root_dir`] takes from its guess.
+const ROOT_REFINE_STEPS: usize = 8;
+
+/// `m^(1/n)` for `m >= 0` and `n >= 1`.
+///
+/// Above `n = 2` there is no correctly rounded root to correct, so a guess is
+/// VERIFIED against [`magnitude_power_dir`] instead, which keeps this on the
+/// one rounding mechanism: a lower bound is a candidate whose power rounded up
+/// is still `<= m`, an upper bound one whose power rounded down is `>= m`. The
+/// guess steps outward until it verifies, then inward while its neighbour
+/// still does. A guess that never verifies falls back to the trivial sound
+/// bound (`0` below, `+inf` above).
+fn root_dir(m: f64, n: u32, dir: Dir) -> f64 {
+    if n == 1 || m == 0.0 || m.is_infinite() {
+        return m;
+    }
+    if n == 2 {
+        return sqrt_dir(m, dir);
+    }
+    let bounds_root = |r: f64| match dir {
+        Dir::Down => r >= 0.0 && magnitude_power_dir(r, n, Dir::Up) <= m,
+        Dir::Up => magnitude_power_dir(r, n, Dir::Down) >= m,
+    };
+    let mut root = newton_root_guess(m, n);
+    for _ in 0..ROOT_REFINE_STEPS {
+        if bounds_root(root) {
+            break;
+        }
+        root = widen(root, dir);
+    }
+    if !bounds_root(root) {
+        return match dir {
+            Dir::Down => 0.0,
+            Dir::Up => f64::INFINITY,
+        };
+    }
+    for _ in 0..ROOT_REFINE_STEPS {
+        let inner = widen(root, dir.flipped());
+        if !bounds_root(inner) {
+            break;
+        }
+        root = inner;
+    }
+    root
+}
+
+/// A round-to-nearest estimate of `m^(1/n)`: `powf`, then one Newton step,
+/// since `powf(m, 1/n)` inherits the rounding of `1/n` amplified by `ln m`.
+fn newton_root_guess(m: f64, n: u32) -> f64 {
+    let guess = m.powf(1.0 / f64::from(n));
+    let exponent = i32::try_from(n).unwrap_or(i32::MAX);
+    let refined = guess - (guess.powi(exponent) - m) / (f64::from(n) * guess.powi(exponent - 1));
+    if refined.is_finite() && refined > 0.0 {
+        refined
+    } else {
+        guess
+    }
+}
+
+/// The real `n`-th root of a signed `v`, for odd `n`.
+fn signed_root_dir(v: f64, n: u32, dir: Dir) -> f64 {
+    if v < 0.0 {
+        -root_dir(-v, n, dir.flipped())
+    } else {
+        root_dir(v, n, dir)
+    }
 }
