@@ -591,9 +591,10 @@ fn floor_infeasible_emits_distinct_diagnostic() {
 }
 
 /// Control: a genuinely infeasible non-Money problem (x > 5mm AND x < 1mm)
-/// must still emit `ConstraintUnsatisfiable`, NOT `RobustnessFloorInfeasible`.
+/// must NOT emit `RobustnessFloorInfeasible`. Since task #6655 it is refuted
+/// before any solve, so its failure is the `ConstraintRefuted` proof.
 #[test]
-fn non_money_infeasible_keeps_constraint_unsatisfiable() {
+fn non_money_infeasible_is_refuted_not_floor_infeasible() {
     let x_id = ValueCellId::new("NonMoneyInfeasible", "x");
 
     // x > 5mm AND x < 1mm (inherently infeasible, no floor)
@@ -616,12 +617,12 @@ fn non_money_infeasible_keeps_constraint_unsatisfiable() {
     let result = DimensionalSolver.solve(&problem);
     match result {
         SolveResult::Infeasible { diagnostics } => {
-            let has_unsatisfiable = diagnostics.iter().any(|d| {
-                d.code == Some(DiagnosticCode::ConstraintUnsatisfiable)
-            });
+            let refuted = diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ConstraintRefuted));
             assert!(
-                has_unsatisfiable,
-                "expected ConstraintUnsatisfiable for non-money infeasible, got: {:?}",
+                refuted,
+                "expected ConstraintRefuted for non-money infeasible, got: {:?}",
                 diagnostics
             );
             let has_floor_code = diagnostics.iter().any(|d| {

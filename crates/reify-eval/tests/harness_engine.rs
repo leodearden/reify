@@ -99,6 +99,9 @@ mod let_tracing_transitive_e2e;
 // same anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
 mod instance_path_underdetermined_e2e;
+// Task #6655's BT5 end to end: an interval-refutable model reports the proof.
+#[path = "harness_engine/interval_refutation_e2e.rs"]
+mod interval_refutation_e2e;
 // Task #5240's `eval_cached` guarded-groups fall-through tests land here for the
 // same anti-re-accretion reason as #5196's and #5360's above. They are
 // also a topical fit: they drive `Engine::eval_cached`, the engine-level

@@ -1818,6 +1818,11 @@ fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
 /// residual-only path (no bounds-cap; contradictory equalities). Both currently pass through
 /// the shared `Infeasible` return after the residual check in `solve_core` with `code: Some(ConstraintUnsatisfiable)`.
 ///
+/// The contradiction is `x == 1mm` against `x == 2mm OR x == 3mm`: an `Or` compiles to no
+/// interval relation, so the pre-solve refutation (task #6655) cannot read it and the solve
+/// still reaches the residual path. A plain `x == 1mm ∧ x == 2mm` pair is now refuted before
+/// any solve (`interval_refutation_reports_eq_pair_before_any_solve`).
+///
 /// Specific refactor this guards: if `solver.rs` is split so that the early-exit bounds-cap
 /// branch and the residual-gradient branch each construct their own `Infeasible` emission,
 /// the residual branch could omit `.code` (reverting to `None`) without breaking the existing
@@ -1830,11 +1835,14 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
     let x_ref = value_ref("Part", "x");
     let x_ref2 = value_ref("Part", "x");
 
-    // No bounds-cap: x == 1mm AND x == 2mm — contradictory equalities, residual-only Infeasible.
-    // bounds: None falls back to default_bounds_for(Type::length()), which is wide enough that
-    // the bounds-cap path is not exercised here.
+    // No bounds-cap: x == 1mm AND (x == 2mm OR x == 3mm) — contradictory, residual-only
+    // Infeasible. bounds: None falls back to default_bounds_for(Type::length()), which is wide
+    // enough that the bounds-cap path is not exercised here.
     let c1 = eq(x_ref, literal(mm(1.0)));
-    let c2 = eq(x_ref2, literal(mm(2.0)));
+    let c2 = or(
+        eq(x_ref2, literal(mm(2.0))),
+        eq(value_ref("Part", "x"), literal(mm(3.0))),
+    );
 
     let problem = ResolutionProblem {
         dependent_cells: Vec::new(),
@@ -1876,6 +1884,272 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
             other
         ),
     }
+}
+
+// ── interval refutation before any solve (task #6655) ─────────────────────────
+//
+// An HC4 contraction of every original constraint from the whole real line,
+// relaxed by the solver's own acceptance, that empties the box is a PROOF of
+// infeasibility. It is reported as `ConstraintRefuted` naming the narrowing
+// constraint, before Nelder-Mead evaluates anything.
+
+fn strict_length_auto(entity: &str, member: &str) -> AutoParam {
+    AutoParam {
+        id: vcid(entity, member),
+        param_type: Type::length(),
+        bounds: None,
+        free: false,
+    }
+}
+
+fn refutation_problem(
+    entity: &str,
+    auto_params: Vec<AutoParam>,
+    constraints: Vec<CompiledExpr>,
+) -> ResolutionProblem {
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params,
+        constraints: constraints
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (cnid(entity, i as u32), e))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    }
+}
+
+/// The diagnostics of an `Infeasible` that carries exactly one
+/// `ConstraintRefuted` error naming `narrowing`, and no residual report.
+fn assert_refuted(diagnostics: &[reify_core::Diagnostic], narrowing: reify_core::ConstraintNodeId) {
+    let refuted: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintRefuted))
+        .collect();
+    assert_eq!(
+        refuted.len(),
+        1,
+        "one ConstraintRefuted diagnostic; got {diagnostics:?}"
+    );
+    assert_eq!(refuted[0].severity, Severity::Error);
+    assert_eq!(
+        refuted[0].message,
+        reify_ir::Completeness::Refuted { narrowing }.describe(),
+        "the proof renders as Completeness::Refuted"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.message.contains("max absolute residual")),
+        "a proof is not a search failure: no residual report; got {diagnostics:?}"
+    );
+}
+
+fn assert_not_refuted(result: &SolveResult, what: &str) {
+    if let SolveResult::Infeasible { diagnostics } = result {
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ConstraintRefuted)),
+            "{what}: must not be refuted; got {diagnostics:?}"
+        );
+    }
+}
+
+/// Counts `test::stress` dispatches: any count above zero means the solver
+/// evaluated the constraint set.
+struct CountingDispatch {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingDispatch {
+    fn new() -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl reify_ir::ComputeDispatch for CountingDispatch {
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+        if target != "test::stress" {
+            return None;
+        }
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let t = args.first()?.as_f64()?;
+        Some(Value::Scalar {
+            si_value: 1.0 / t,
+            dimension: DimensionVector::DIMENSIONLESS,
+        })
+    }
+}
+
+/// `@optimized("test::stress") fn stress(t: Length) -> Real`, dispatch-backed.
+fn stress_function() -> CompiledFunction {
+    let params = vec![("t".to_string(), Type::length())];
+    CompiledFunction {
+        name: "stress".to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::dimensionless_scalar(),
+        body: reify_ir::CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
+        },
+        content_hash: reify_core::ContentHash::of(b"task6655_refutation_stress_stub"),
+        annotations: vec![],
+        optimized_target: Some("test::stress".to_string()),
+        type_params: vec![],
+    }
+}
+
+/// `stress(<entity>.<member>) < 4`, opaque to the interval propagator.
+fn stress_below_limit(entity: &str, member: &str) -> CompiledExpr {
+    let call = CompiledExpr::user_function_call(
+        "stress".to_string(),
+        vec![value_ref(entity, member)],
+        Type::dimensionless_scalar(),
+    );
+    lt(call, literal(real_val(4.0)))
+}
+
+#[test]
+fn interval_refutation_reports_eq_pair_before_any_solve() {
+    let problem = refutation_problem(
+        "Rod",
+        vec![strict_length_auto("Rod", "length")],
+        vec![
+            eq(value_ref("Rod", "length"), literal(mm(10.0))),
+            eq(value_ref("Rod", "length"), literal(mm(20.0))),
+        ],
+    );
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Infeasible { diagnostics } => assert_refuted(&diagnostics, cnid("Rod", 1)),
+        other => panic!("`L == 10mm ∧ L == 20mm` is refutable; got {other:?}"),
+    }
+}
+
+/// "Before any solve", behaviourally: Nelder-Mead would evaluate the
+/// dispatch-backed constraint at every iteration, so a refutation that ran
+/// first leaves the dispatch count at exactly zero.
+#[test]
+fn interval_refutation_runs_before_any_solver_evaluation() {
+    let mut problem = refutation_problem(
+        "Rod",
+        vec![strict_length_auto("Rod", "length")],
+        vec![
+            stress_below_limit("Rod", "length"),
+            eq(value_ref("Rod", "length"), literal(mm(10.0))),
+            eq(value_ref("Rod", "length"), literal(mm(20.0))),
+        ],
+    );
+    problem.functions = vec![stress_function()].into();
+    let dispatch = CountingDispatch::new();
+    match DimensionalSolver.solve_with_dispatch(&problem, Some(&dispatch)) {
+        SolveResult::Infeasible { diagnostics } => assert_refuted(&diagnostics, cnid("Rod", 2)),
+        other => panic!("the contradictory pair is refutable; got {other:?}"),
+    }
+    assert_eq!(
+        dispatch.calls(),
+        0,
+        "refuted before the solver evaluated anything"
+    );
+}
+
+/// The ranked multistart path (two autos under an objective) refutes first
+/// too, passing the proof through as its `Infeasible` arm.
+#[test]
+fn interval_refutation_covers_the_ranked_multistart_path() {
+    let mut problem = refutation_problem(
+        "Frame",
+        vec![
+            strict_length_auto("Frame", "a"),
+            strict_length_auto("Frame", "b"),
+        ],
+        vec![
+            stress_below_limit("Frame", "a"),
+            ge(value_ref("Frame", "a"), literal(mm(1.0))),
+            eq(value_ref("Frame", "b"), literal(mm(10.0))),
+            eq(value_ref("Frame", "b"), literal(mm(20.0))),
+        ],
+    );
+    problem.functions = vec![stress_function()].into();
+    problem.objective = Some(ObjectiveSet::single(
+        ObjectiveSense::Minimize,
+        binop(BinOp::Add, value_ref("Frame", "a"), value_ref("Frame", "b")),
+    ));
+    let dispatch = CountingDispatch::new();
+    match DimensionalSolver.solve_ranked_with_dispatch(&problem, Some(&dispatch)) {
+        reify_ir::RankedSolveResult::Infeasible { diagnostics } => {
+            assert_refuted(&diagnostics, cnid("Frame", 3))
+        }
+        other => panic!("the contradictory pair on `b` is refutable; got {other:?}"),
+    }
+    assert_eq!(dispatch.calls(), 0, "refuted before any multistart solve");
+}
+
+#[test]
+fn feasible_and_within_acceptance_models_are_not_refuted() {
+    let feasible = refutation_problem(
+        "Plate",
+        vec![strict_length_auto("Plate", "w")],
+        vec![
+            ge(value_ref("Plate", "w"), literal(mm(8.0))),
+            eq(value_ref("Plate", "w"), literal(mm(10.0))),
+        ],
+    );
+    assert_not_refuted(
+        &DimensionalSolver.solve(&feasible),
+        "`w >= 8mm ∧ w == 10mm`",
+    );
+
+    let within_threshold = refutation_problem(
+        "Plate",
+        vec![strict_length_auto("Plate", "x")],
+        vec![
+            ge(value_ref("Plate", "x"), literal(mm(1.0))),
+            le(value_ref("Plate", "x"), literal(meters(1e-3 - 1e-13))),
+        ],
+    );
+    assert_not_refuted(
+        &DimensionalSolver.solve(&within_threshold),
+        "a contradiction within FEASIBILITY_THRESHOLD",
+    );
+}
+
+/// #6653's toleranced equality reaches the proof: fixed cells `p == q` half a
+/// length floor apart are an ACCEPTED row, so the model solves.
+#[test]
+fn an_accepted_equality_near_miss_is_not_refuted() {
+    use reify_core::scalar_tolerance::LENGTH_FLOOR_M;
+    let mut problem = refutation_problem(
+        "Gauge",
+        vec![strict_length_auto("Gauge", "w")],
+        vec![
+            eq(value_ref("Gauge", "p"), value_ref("Gauge", "q")),
+            eq(value_ref("Gauge", "w"), literal(mm(10.0))),
+        ],
+    );
+    problem
+        .current_values
+        .insert(vcid("Gauge", "p"), meters(0.005));
+    problem
+        .current_values
+        .insert(vcid("Gauge", "q"), meters(0.005 + 0.5 * LENGTH_FLOOR_M));
+    let result = DimensionalSolver.solve(&problem);
+    assert_not_refuted(&result, "an accepted `p == q` near miss");
+    assert!(
+        matches!(result, SolveResult::Solved { .. }),
+        "the near miss is accepted, so the model solves; got {result:?}"
+    );
 }
 
 // ── auto type-param backtracking integration (task 2664) ──────────────────────
