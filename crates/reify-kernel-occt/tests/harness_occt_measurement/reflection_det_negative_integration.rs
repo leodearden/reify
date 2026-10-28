@@ -596,8 +596,8 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
 /// AP242-conformant by construction"). The FreeCAD mirrored-bodies-vanish
 /// defect is the cautionary tale this test rules out.
 ///
-/// `src/lib.rs`'s existing `new_ops_export_step` unit test already exports a
-/// mirrored box, but asserts only that the file contains `ISO-10303-21` —
+/// `harness_occt_kernel/queries_export.rs`'s existing `new_ops_export_step` test already
+/// exports a mirrored box, but asserts only that the file contains `ISO-10303-21` —
 /// cited here as the shallow precedent this module deepens, not duplicated.
 ///
 /// The workspace has NO STEP reader anywhere (no `STEPControl_Reader` /

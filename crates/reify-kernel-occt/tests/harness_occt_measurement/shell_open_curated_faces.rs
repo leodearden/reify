@@ -157,7 +157,7 @@ fn shell_solid_faces_top_face_volume_pins_face_identity() {
 /// (b) EMPTY — `shell_solid_faces` with an empty face slice must return
 /// `Err(OperationFailed)`.  The curated path must never accept an empty
 /// selection.
-/// Mirrors `draft_faces_empty_selection_returns_error` (lib.rs:6710).
+/// Mirrors `draft_faces_empty_selection_returns_error` (`harness_occt_kernel/modify_ops.rs`).
 #[test]
 fn shell_solid_faces_empty_selection_returns_error() {
     if !OCCT_AVAILABLE {

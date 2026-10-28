@@ -486,8 +486,8 @@ fn with_registered_kernels_end_to_end_two_boxes_plus_union() {
     // NOT because STL is unsupported: `OcctKernelHandle::export` HAS since been
     // wired for `ExportFormat::Stl` (see the comment on
     // `export_unsupported_format_returns_error` in
-    // `crates/reify-kernel-occt/src/handle.rs`, which now uses `Obj` to pin the
-    // unsupported-format contract), and reify-eval's
+    // `crates/reify-kernel-occt/tests/harness_occt_kernel/handle.rs`, which now uses
+    // `Obj` to pin the unsupported-format contract), and reify-eval's
     // `harness_engine::export_unit_regime_e2e` drives STL through this same
     // handle end to end.
     let result = engine.build(&compiled, ExportFormat::Step);

@@ -578,10 +578,7 @@ crates/reify-kernel-manifold/src/queries.rs :: kernel.rs:135
 crates/reify-kernel-manifold/src/queries.rs :: kernel.rs:478
 crates/reify-kernel-manifold/src/queries.rs :: kernel.rs:507
 crates/reify-kernel-manifold/src/register.rs :: crates/reify-kernel-occt/src/register.rs:27
-crates/reify-kernel-occt/src/lib.rs :: crates/reify-ir/src/kernel_validation.rs:163
 crates/reify-kernel-occt/src/lib.rs :: lib.rs:2742
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:957
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:968
 crates/reify-kernel-occt/src/op_args.rs :: crates/reify-eval/src/geometry_ops.rs:482
 crates/reify-kernel-occt/src/register.rs :: gui/src-tauri/src/kernel_status.rs:48
 crates/reify-kernel-occt/src/tessellate_options.rs :: crates/reify-eval/src/realization_cache.rs:85

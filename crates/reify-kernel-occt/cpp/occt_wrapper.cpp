@@ -7430,7 +7430,8 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
 /// Lists EVERY unit, not just the angular subset: when a context reaches no
 /// angular unit the diagnostic question is "then what DID it reach?", and a
 /// pre-filtered list answers that with an empty string. Same reasoning as
-/// `resolved_units_summary` on the #6184 text-level walk in src/handle.rs.
+/// `resolved_units_summary` on the #6184 text-level walk in
+/// tests/harness_occt_kernel/handle_step_export.rs.
 std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model,
                                    const Handle(StepBasic_HArray1OfNamedUnit)& units) {
     std::ostringstream oss;
@@ -8635,7 +8636,8 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     //
     // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
     // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
-    // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+    // TRIMMED_CURVE), both in
+    // crates/reify-kernel-occt/tests/harness_occt_kernel/handle_step_export.rs. They
     // quantify over EVERY unit context — a compound emits one per
     // representation_context, three for a two-cone union — rather than
     // grepping for one ".RADIAN." token, so a partial flip fails.
