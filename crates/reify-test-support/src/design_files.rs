@@ -5,6 +5,31 @@
 //! Dependency-free (`std` only): `crates/reify-audit` carries this crate as a
 //! NORMAL dependency (see this crate's `Cargo.toml`).
 
+/// The printer assembly.
+pub const PRINTER_RI: &str = "prj/printer_v01/printer.ri";
+
+/// The standalone capstan development design.
+pub const DEV_CAPSTAN: &str = "prj/printer_v01/dev_capstan.ri";
+
+/// The source of the design file at `repo_relative`, read from the running
+/// tree's [`crate::workspace_root::workspace_root`].
+///
+/// # Panics
+///
+/// If the file cannot be read, naming the absolute path tried, `repo_relative`
+/// and the io error. It fails loudly rather than returning an empty source, so
+/// a gate compiling a moved design file cannot pass vacuously.
+pub fn read_design_file(repo_relative: &str) -> String {
+    let path = crate::workspace_root::workspace_root().join(repo_relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read design file {} (repo-relative {repo_relative}): {e}\n\
+             If the design file moved, update its const in reify_test_support::design_files.",
+            path.display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
