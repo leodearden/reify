@@ -388,7 +388,7 @@ where
 ///
 /// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
 /// the resolution floor used for the `BelowResolution` branch.  The eval
-/// binding (`Engine::measure_min_wall`, task δ) derives `h` from the realized
+/// binding (`Engine::measure_thickness_pair`) derives `h` from the realized
 /// grid's own spacing, decoupling this function from any external voxelisation
 /// default.
 ///
@@ -510,7 +510,7 @@ pub enum MinFeatureSize {
 ///
 /// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
 /// the resolution floor used for the `BelowResolution` branch.  The eval
-/// binding (`Engine::measure_min_feature`, task ε) derives `h` from the
+/// binding (`Engine::measure_thickness_pair`) derives `h` from the
 /// realized grid's own spacing.
 ///
 /// # Returns

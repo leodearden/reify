@@ -40,8 +40,6 @@ mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
-pub(crate) mod measure_min_feature;
-pub(crate) mod measure_min_wall;
 // task #3428 step-5/6: persistent-cache write/lookup hooks at dispatch boundary.
 mod compute_persist;
 pub(crate) mod realization_content;
