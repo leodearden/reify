@@ -16,8 +16,9 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::ValueCellId;
 use reify_eval::Engine;
-use reify_ir::Value;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, collect_errors, compile_source_with_stdlib, scalar_si,
+};
 
 /// Combined source: CentredBar (no objective → centrality fires) +
 /// ExplicitMinimize (explicit `maximize` → centrality does NOT fire).
@@ -96,10 +97,13 @@ fn centrality_resolves_to_midpoint_and_records_scope() {
     );
 
     // [B6] x must be ≈ 5mm (Chebyshev centre of [2mm, 8mm]), within 1e-4 m.
-    let x_si = match result.values.get(&x_id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!("expected Scalar for CentredBar.x, got {:?}", other),
-    };
+    let x_si = scalar_si(
+        result
+            .values
+            .get(&x_id)
+            .expect("CentredBar.x missing from result.values"),
+        "CentredBar.x",
+    );
     assert!(
         (x_si - 0.005).abs() < 1e-4,
         "centrality should place x ≈ 5mm (0.005 m); got {:.6} m (delta {:.2e} m)",

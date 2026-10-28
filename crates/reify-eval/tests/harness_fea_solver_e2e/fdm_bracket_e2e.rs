@@ -22,6 +22,7 @@ use reify_ir::{
 };
 use reify_eval::compute_targets::register_compute_fns;
 use reify_expr::{EvalContext, eval_expr};
+use reify_test_support::scalar_si;
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -76,10 +77,11 @@ fn law_constant(aniso: &Value, key: &str) -> f64 {
     let Value::StructureInstance(law) = law else {
         panic!("expected law StructureInstance, got {law:?}");
     };
-    match law.fields.get(key) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!("expected law.{key} to be a Scalar, got {other:?}"),
-    }
+    let value = law
+        .fields
+        .get(key)
+        .unwrap_or_else(|| panic!("AnisotropicMaterial.law has no `{key}` field"));
+    scalar_si(value, &format!("law.{key}"))
 }
 
 /// Extract stride-3 displacement data from a `Value::Field { source: Sampled }`.
@@ -283,22 +285,18 @@ fn ri_scalar_deflection_values_and_constraint() {
     // updates BuildResult.values, not the engine's internal snapshot.
     let get_length_scalar = |cell_name: &str| -> f64 {
         let cell = ValueCellId::new("FdmBracket", cell_name);
-        match build_result.values.get(&cell) {
-            Some(Value::Scalar { si_value, .. }) => {
-                assert!(
-                    si_value.is_finite() && *si_value > 0.0,
-                    "FdmBracket.{cell_name} must be finite and > 0, got {si_value}"
-                );
-                *si_value
-            }
-            Some(other) => panic!(
-                "FdmBracket.{cell_name} must be a Scalar, got {other:?}"
-            ),
-            None => panic!(
+        let value = build_result.values.get(&cell).unwrap_or_else(|| {
+            panic!(
                 "FdmBracket.{cell_name} not found — \
                 add `let {cell_name} = max(r_*.displacement)` to fdm_bracket.ri"
-            ),
-        }
+            )
+        });
+        let si = scalar_si(value, &format!("FdmBracket.{cell_name}"));
+        assert!(
+            si.is_finite() && si > 0.0,
+            "FdmBracket.{cell_name} must be finite and > 0, got {si}"
+        );
+        si
     };
 
     let defl_print = get_length_scalar("defl_print");
@@ -396,11 +394,11 @@ fn fdm_bracket_golden() {
     // populated by post_process_derived_lets (BuildResult only, not snapshot).
     let get_deflection_scalar = |cell_name: &str| -> f64 {
         let cell = ValueCellId::new("FdmBracket", cell_name);
-        match build_result.values.get(&cell) {
-            Some(Value::Scalar { si_value, .. }) => *si_value,
-            Some(other) => panic!("FdmBracket.{cell_name}: expected Scalar, got {other:?}"),
-            None => panic!("FdmBracket.{cell_name} not found in build_result.values"),
-        }
+        let value = build_result
+            .values
+            .get(&cell)
+            .unwrap_or_else(|| panic!("FdmBracket.{cell_name} not found in build_result.values"));
+        scalar_si(value, &format!("FdmBracket.{cell_name}"))
     };
     let defl_print = get_deflection_scalar("defl_print");
     let defl_solid = get_deflection_scalar("defl_solid");

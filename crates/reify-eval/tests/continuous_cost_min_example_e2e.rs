@@ -31,8 +31,9 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::Value;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, collect_errors, compile_source_with_stdlib, scalar_si,
+};
 
 /// Path to the shipped example, resolved relative to this crate's manifest directory.
 const EXAMPLE_PATH: &str =
@@ -78,13 +79,13 @@ fn continuous_cost_min_example_resolves_off_boundary_and_emits_info() {
 
     // ── OFF-BOUNDARY (structural, NOT precise-convergence) ─────────────────────
     let thickness_id = ValueCellId::new("CostMinBracket", "thickness");
-    let thickness_si = match result.values.get(&thickness_id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected Scalar for CostMinBracket.thickness, got {:?}",
-            other
-        ),
-    };
+    let thickness_si = scalar_si(
+        result
+            .values
+            .get(&thickness_id)
+            .expect("CostMinBracket.thickness missing from result.values"),
+        "CostMinBracket.thickness",
+    );
     // Sanity guard: the resolved value must be strictly above the 2mm boundary (0.002 m).
     // NOTE: this assertion does NOT prove the floor moved the value — the seed fallback
     // (~10mm) already satisfies `> 0.002` regardless of the floor. The real floor signal

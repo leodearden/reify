@@ -40,8 +40,9 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::Value;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, collect_errors, compile_source_with_stdlib, scalar_si,
+};
 
 /// Path to the shipped example, resolved relative to this crate's manifest directory
 /// (mirrors `continuous_cost_min_example_e2e.rs::EXAMPLE_PATH`).
@@ -123,14 +124,17 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
     // would make the diagnostic assertions below vacuous.
     for (entity, cell) in [("TradeoffScope", "t"), ("PlainMoneyScope", "t")] {
         let id = ValueCellId::new(entity, cell);
-        match result.values.get(&id) {
-            Some(Value::Scalar { si_value, .. }) => assert!(
-                *si_value > 0.001,
-                "{entity}.{cell} should resolve strictly above the 1mm boundary; got {:.6} m",
-                si_value
-            ),
-            other => panic!("expected Scalar for {entity}.{cell}, got {:?}", other),
-        }
+        let t = scalar_si(
+            result
+                .values
+                .get(&id)
+                .unwrap_or_else(|| panic!("{entity}.{cell} missing from result.values")),
+            &format!("{entity}.{cell}"),
+        );
+        assert!(
+            t > 0.001,
+            "{entity}.{cell} should resolve strictly above the 1mm boundary; got {t:.6} m"
+        );
     }
 
     // PRIMARY assertion: exactly one RobustnessFloorApplied (Info), and it names
@@ -223,10 +227,11 @@ fn example_lambda_sweep_cost_optimum_blend_centre() {
 
     let thickness_si = |entity: &str| -> f64 {
         let id = ValueCellId::new(entity, "thickness");
-        match result.values.get(&id) {
-            Some(Value::Scalar { si_value, .. }) => *si_value,
-            other => panic!("expected Scalar for {entity}.thickness, got {:?}", other),
-        }
+        let value = result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("{entity}.thickness missing from result.values"));
+        scalar_si(value, &format!("{entity}.thickness"))
     };
 
     let t_pure_cost = thickness_si("TradeoffPureCost"); // λ=1.0
