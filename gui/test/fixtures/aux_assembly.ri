@@ -1,0 +1,44 @@
+module aux_assembly
+
+// aux_assembly.ri — aux-bearing multi-sub assembly fixture
+//
+// The aux-bearing half of the mesh-count parity smoke
+// (gui/test/visual/smoke_mesh_count_parity_e2e.mjs). Mirrors the printer
+// Capstan: aux construction geometry composed twice via subs.
+//
+// Structure types (each : Physical):
+//   Capstan — steel,    difference(aux drum_blank, aux groove_cutter)
+//   Spacer  — aluminum, box(40mm, 40mm, 5mm)
+//
+// Assembly: 2 Capstans + 1 Spacer.
+// Realizes 7 meshes = 3 rendered (default_visible true: both capstan
+// geometries and the spacer) + 4 hidden (default_visible false: the 2 aux
+// lets of each capstan).
+//
+// MUST carry NO DisplayOutput (docs/debug-mcp-contract.md, "Full realized scene").
+
+structure def Capstan : Physical {
+    aux let drum_blank = cylinder(10mm, 30mm)
+    aux let groove_cutter = translate(cylinder(2mm, 30mm), 10mm, 0mm, 0mm)
+    param geometry : Solid = difference(drum_blank, groove_cutter)
+    param material : Material = Material(
+        name: "Steel Capstan",
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa
+    )
+}
+
+structure def Spacer : Physical {
+    param geometry : Solid = box(40mm, 40mm, 5mm)
+    param material : Material = Material(
+        name: "Aluminum Spacer 6061",
+        density: 2700kg/m^3,
+        youngs_modulus: 69GPa
+    )
+}
+
+structure def AuxAssembly {
+    sub drive_a = Capstan()
+    sub drive_b = Capstan()
+    sub spacer = Spacer()
+}
