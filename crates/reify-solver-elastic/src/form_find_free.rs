@@ -312,27 +312,7 @@ pub fn form_find_free_surfaces(
         .map(|r| r.nodes.clone())
         .unwrap_or_else(|_| nodes_guess.to_vec());
 
-    // Warm-start group magnitudes for the combined inner search.  Starting the
-    // coordinate-descent from the original spec seeds can stall: at seeds
-    // (-1, 1, 1) the Z-equilibrium constraint (q_strut + q_vert = 0) makes the
-    // 1-D minimum over each free group land back at the seed, so zero improvement
-    // is made and the stall guard fires before the combined objective ever drives
-    // the nullity to 4.  Using the line-only bootstrap q* ≈ (-√3, 1, +√3) as the
-    // starting magnitudes puts the search within the convergence basin of the
-    // correct combined target (-√3·(1+w), 1, +√3·(1+w)), where coordinate
-    // descent finds it in O(1) rounds.
-    let mut warm_group_mag: Vec<f64> = match problem.spec() {
-        FreeSpec::GroupRatios(groups) => {
-            let mut mag = groups.seed_magnitudes().to_vec();
-            if let Ok(ref b) = boot {
-                for (i, &g) in groups.group_ids().iter().enumerate() {
-                    mag[g] = b.force_densities[i].abs().max(1e-10);
-                }
-            }
-            mag
-        }
-        FreeSpec::Explicit(_) => vec![],
-    };
+    let mut q_source = QSource::new(&problem, boot.as_ref().ok());
 
     let mut converged = false;
     let mut last_result: Option<FreeFormResult> = None;
@@ -348,26 +328,8 @@ pub fn form_find_free_surfaces(
         // Assemble Σ_T σ_T·L_T at the current geometry.
         let surface_mat = assemble_surface_matrix(n, surfaces, surface_stresses, &current)?;
 
-        // (1) Force densities at the current geometry.  For Explicit, q is fixed
-        // (validated up front).  For GroupRatios, re-search q on the combined D at
-        // this iteration's cotangent weights so the densities co-adapt with the
-        // geometry; warm-start the next search from the magnitudes just found.
-        let q: Vec<f64> = match problem.spec() {
-            FreeSpec::Explicit(q) => q.to_vec(),
-            FreeSpec::GroupRatios(groups) => {
-                let searched_q = form_find_group_ratios_combined(
-                    &problem,
-                    groups,
-                    &current,
-                    &warm_group_mag,
-                    &surface_mat,
-                )?;
-                for (i, &g) in groups.group_ids().iter().enumerate() {
-                    warm_group_mag[g] = searched_q[i].abs().max(1e-10);
-                }
-                searched_q
-            }
-        };
+        // (1) Force densities at the current geometry.
+        let q = q_source.densities_at(&problem, &current, &surface_mat)?;
 
         // (2) Combined equilibrium residual at the current geometry — the
         // free-standing fixed point's stop test.
@@ -417,7 +379,7 @@ pub fn form_find_free_surfaces(
         // today would catch this check being deleted. Kept because accepting a
         // residual-regressing trial changes the iterate (3)'s descent runs from, which could
         // destabilise a case not covered by this fixture even though none tried here do.
-        if matches!(problem.spec(), FreeSpec::Explicit(_))
+        if q_source.admits_projection_trial()
             && let Ok(trial_nodes) =
                 form_find_explicit_combined_relaxed(&problem, &current, &iterate.surface_mat)
             && let Ok(trial_surface_mat) =
@@ -674,6 +636,87 @@ impl CombinedIterate {
             converged: true,
             surface_stresses: problem.surface_stresses().to_vec(),
         }
+    }
+}
+
+/// Where each outer iteration's densities come from: the one place the
+/// combined fixed point branches on the force-density spec.
+enum QSource<'p> {
+    /// The explicit `q`, the same at every iterate.
+    FixedQ(&'p [f64]),
+    /// A group search on the combined `D` at each iterate, warm-started from
+    /// the magnitudes the previous search found.
+    SearchedQ {
+        groups: &'p GroupSpec,
+        warm_group_mag: Vec<f64>,
+    },
+}
+
+impl<'p> QSource<'p> {
+    /// The source `problem`'s spec names. A searched source starts from the
+    /// line-only bootstrap's magnitudes when `boot` solved, not from the seeds:
+    /// at seeds (-1, 1, 1) the Z-equilibrium constraint (q_strut + q_vert = 0)
+    /// lands each free group's 1-D minimum back at its seed, so coordinate
+    /// descent stalls before the combined objective drives the nullity to 4,
+    /// while the bootstrap's q* ≈ (-√3, 1, +√3) lies in the basin of the
+    /// combined target (-√3·(1+w), 1, +√3·(1+w)).
+    fn new(problem: &'p ForceDensityProblem<'_>, boot: Option<&FreeFormResult>) -> Self {
+        match problem.spec() {
+            FreeSpec::Explicit(q) => QSource::FixedQ(q),
+            FreeSpec::GroupRatios(groups) => {
+                let mut warm_group_mag = groups.seed_magnitudes().to_vec();
+                if let Some(boot) = boot {
+                    refresh_group_magnitudes(&mut warm_group_mag, groups, &boot.force_densities);
+                }
+                QSource::SearchedQ {
+                    groups,
+                    warm_group_mag,
+                }
+            }
+        }
+    }
+
+    /// The densities at the iterate `nodes`, whose surface term is
+    /// `surface_mat`.
+    fn densities_at(
+        &mut self,
+        problem: &ForceDensityProblem<'_>,
+        nodes: &[[f64; 3]],
+        surface_mat: &Mat<f64>,
+    ) -> Result<Vec<f64>, FreeFormError> {
+        match self {
+            QSource::FixedQ(q) => Ok(q.to_vec()),
+            QSource::SearchedQ {
+                groups,
+                warm_group_mag,
+            } => {
+                let q = form_find_group_ratios_combined(
+                    problem,
+                    groups,
+                    nodes,
+                    warm_group_mag,
+                    surface_mat,
+                )?;
+                refresh_group_magnitudes(warm_group_mag, groups, &q);
+                Ok(q)
+            }
+        }
+    }
+
+    /// Whether the relax step may first try projecting the iterate into the
+    /// null space of its `D`. Only a fixed `q` admits it: a searched source
+    /// keeps only the densities its search found and discards the geometry
+    /// that search projected.
+    fn admits_projection_trial(&self) -> bool {
+        matches!(self, QSource::FixedQ(_))
+    }
+}
+
+/// Sets each group's magnitude in `group_mag` to `|qᵢ|` (floored at `1e-10`)
+/// of its members `i`, in member order.
+fn refresh_group_magnitudes(group_mag: &mut [f64], groups: &GroupSpec, q: &[f64]) {
+    for (&group, qi) in groups.group_ids().iter().zip(q) {
+        group_mag[group] = qi.abs().max(1e-10);
     }
 }
 
