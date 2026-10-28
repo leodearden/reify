@@ -342,8 +342,7 @@ pub fn form_find_free_surfaces(
     // Stall detection: break early when geometry is stuck AND residual is not
     // improving, rather than spinning the full MAX_FREE_SURFACE_ITERS budget
     // doing expensive eigendecompositions on an already-stalled search.
-    let mut prev_resid = f64::INFINITY;
-    let mut stuck_iters = 0_usize;
+    let mut stall = StallGuard::new();
 
     for _iter in 0..MAX_FREE_SURFACE_ITERS {
         // Assemble Σ_T σ_T·L_T at the current geometry.
@@ -476,17 +475,9 @@ pub fn form_find_free_surfaces(
         // depends on the distinction. Kept because an under-counted stall guard would risk
         // exiting a genuinely-progressing search early on some case not covered by this
         // fixture, trading a real (if untested) correctness risk for one line of clarity.
-        if next == before_relax
-            && iterate.residual >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD)
-        {
-            stuck_iters += 1;
-            if stuck_iters >= GEO_STALL_ITERS {
-                break;
-            }
-        } else {
-            stuck_iters = 0;
+        if stall.stalled_after(&before_relax, &next, iterate.residual) {
+            break;
         }
-        prev_resid = iterate.residual;
 
         current = next;
         last_result = Some(combined_result_at(members, &iterate.q, &current));
@@ -549,6 +540,45 @@ const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
 /// before the outer fixed-point exits early (avoids burning the full
 /// `MAX_FREE_SURFACE_ITERS` budget on an intractable configuration).
 const GEO_STALL_ITERS: usize = 5;
+
+/// Trips once [`GEO_STALL_ITERS`] consecutive iterations each left the
+/// geometry where it ENTERED the iteration and shrank the residual by less
+/// than [`GEO_STALL_RESID_THRESHOLD`]. `entering` is the geometry before the
+/// relax step, so a projection trial the relax step accepted counts as
+/// movement even when the descent half then stalled.
+struct StallGuard {
+    previous_residual: f64,
+    stuck_iterations: usize,
+}
+
+impl StallGuard {
+    /// A guard with no history. Its `+∞` previous residual makes any finite
+    /// first residual an improvement and an infinite one flat.
+    fn new() -> Self {
+        StallGuard {
+            previous_residual: f64::INFINITY,
+            stuck_iterations: 0,
+        }
+    }
+
+    /// Records one iteration; true once the guard has tripped.
+    fn stalled_after(
+        &mut self,
+        entering: &[[f64; 3]],
+        leaving: &[[f64; 3]],
+        residual: f64,
+    ) -> bool {
+        let unmoved = leaving == entering;
+        let flat = residual >= self.previous_residual * (1.0 - GEO_STALL_RESID_THRESHOLD);
+        self.stuck_iterations = if unmoved && flat {
+            self.stuck_iterations + 1
+        } else {
+            0
+        };
+        self.previous_residual = residual;
+        self.stuck_iterations >= GEO_STALL_ITERS
+    }
+}
 
 /// Assemble the surface cotangent-Laplacian contribution `Σ_T σ_T·L_T` at the
 /// given node geometry, producing an `n×n` additive matrix via the anchored
