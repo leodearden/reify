@@ -31,9 +31,8 @@
 //!
 //! A BUILD PANIC IS THE SECOND SKIP CAUSE: a panicking `Engine::build` is caught and
 //! reported as [`SkipCause::BuildPanic`], so one engine defect cannot block a units gate
-//! that has nothing to do with it. No member is pinned for it today; one that appears is
-//! REPORTED, and must be pinned by name and cause in [`KNOWN_SKIPS`], so it can never
-//! grow into a silent hole.
+//! that has nothing to do with it. Such a skip is REPORTED, and must be pinned by name
+//! and cause in [`KNOWN_SKIPS`], so it can never grow into a silent hole.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::Engine;
