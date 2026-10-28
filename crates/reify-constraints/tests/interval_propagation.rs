@@ -194,3 +194,217 @@ fn abs_min_max() {
     assert_endpoints(iv(1.0, 5.0).min(iv(2.0, 3.0)), 1.0, 3.0);
     assert_endpoints(iv(1.0, 5.0).max(iv(2.0, 3.0)), 2.0, 5.0);
 }
+
+// ── Relational inverses: the backward half of HC4 ───────────────────────────
+//
+// Each inverse narrows ONE operand's current domain given that the operation's
+// result lies in `z`, and returns `None` when nothing in that domain can.
+
+fn non_negative() -> Interval {
+    iv(0.0, f64::INFINITY)
+}
+
+fn non_positive() -> Interval {
+    iv(f64::NEG_INFINITY, 0.0)
+}
+
+/// Sample points whose images under every operation below are exact in f64.
+const SAMPLES: [f64; 15] = [
+    -4.0, -3.0, -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0,
+];
+
+/// Soundness: every sample in the current domain whose image lies in `z`
+/// survives the narrowing.
+fn assert_keeps_preimage(
+    narrowed: Option<Interval>,
+    domain: Interval,
+    z: Interval,
+    image: impl Fn(f64) -> Option<f64>,
+) {
+    for p in SAMPLES {
+        let Some(v) = image(p) else { continue };
+        if domain.contains(p) && z.contains(v) {
+            let kept = narrowed.is_some_and(|n| n.contains(p));
+            assert!(
+                kept,
+                "preimage point {p} (image {v} ∈ {z:?}) lost: {narrowed:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn even_power_preimage_respects_the_domain_sign() {
+    let z = iv(1.0, 4.0);
+    let square = |p: f64| Some(p * p);
+    for (domain, expected) in [
+        (Interval::ENTIRE, iv(-2.0, 2.0)),
+        (non_negative(), iv(1.0, 2.0)),
+        (non_positive(), iv(-2.0, -1.0)),
+    ] {
+        let narrowed = Interval::powi_preimage(z, domain, 2);
+        assert_eq!(narrowed, Some(expected), "domain {domain:?}");
+        assert_keeps_preimage(narrowed, domain, z, square);
+    }
+    assert_eq!(
+        Interval::powi_preimage(iv(-5.0, -1.0), Interval::ENTIRE, 2),
+        None
+    );
+    assert_eq!(
+        Interval::powi_preimage(iv(16.0, 16.0), Interval::ENTIRE, 4),
+        Some(iv(-2.0, 2.0))
+    );
+}
+
+#[test]
+fn odd_power_preimage_is_monotone() {
+    let z = iv(-8.0, 27.0);
+    let narrowed = Interval::powi_preimage(z, Interval::ENTIRE, 3);
+    assert_eq!(narrowed, Some(iv(-2.0, 3.0)));
+    assert_keeps_preimage(narrowed, Interval::ENTIRE, z, |p| Some(p * p * p));
+    assert_eq!(Interval::powi_preimage(z, iv(5.0, 6.0), 3), None);
+}
+
+#[test]
+fn inexact_root_preimage_brackets_the_true_root() {
+    let narrowed = Interval::powi_preimage(iv(2.0, 2.0), non_negative(), 2).expect("non-empty");
+    assert!(
+        narrowed.lo().mul_add(narrowed.lo(), -2.0) <= 0.0,
+        "{narrowed:?}"
+    );
+    assert!(
+        narrowed.hi().mul_add(narrowed.hi(), -2.0) >= 0.0,
+        "{narrowed:?}"
+    );
+    assert_eq!(narrowed.hi(), narrowed.lo().next_up(), "{narrowed:?}");
+
+    let cube = Interval::powi_preimage(iv(2.0, 2.0), Interval::ENTIRE, 3).expect("non-empty");
+    let cubed = |v: f64| v * v * v;
+    assert!(cube.lo() < cube.hi(), "{cube:?}");
+    assert!(
+        cubed(cube.lo()) <= 2.0 && cubed(cube.hi()) >= 2.0,
+        "{cube:?}"
+    );
+}
+
+#[test]
+fn zeroth_power_preimage_is_all_or_nothing() {
+    let domain = iv(-3.0, 3.0);
+    assert_eq!(
+        Interval::powi_preimage(iv(0.0, 2.0), domain, 0),
+        Some(domain)
+    );
+    assert_eq!(Interval::powi_preimage(iv(2.0, 3.0), domain, 0), None);
+}
+
+#[test]
+fn sqrt_preimage_squares_the_non_negative_part() {
+    let root = |p: f64| (p >= 0.0).then(|| p.sqrt());
+    for (z, expected) in [(iv(1.0, 2.0), iv(1.0, 4.0)), (iv(-1.0, 2.0), iv(0.0, 4.0))] {
+        let narrowed = Interval::sqrt_preimage(z, Interval::ENTIRE);
+        assert_eq!(narrowed, Some(expected), "z {z:?}");
+        assert_keeps_preimage(narrowed, Interval::ENTIRE, z, root);
+    }
+    assert_eq!(
+        Interval::sqrt_preimage(iv(-3.0, -1.0), Interval::ENTIRE),
+        None
+    );
+}
+
+#[test]
+fn abs_preimage_is_the_hull_of_both_branches() {
+    let z = iv(1.0, 2.0);
+    for (domain, expected) in [
+        (Interval::ENTIRE, iv(-2.0, 2.0)),
+        (non_negative(), iv(1.0, 2.0)),
+    ] {
+        let narrowed = Interval::abs_preimage(z, domain);
+        assert_eq!(narrowed, Some(expected), "domain {domain:?}");
+        assert_keeps_preimage(narrowed, domain, z, |p| Some(p.abs()));
+    }
+    assert_eq!(
+        Interval::abs_preimage(iv(-2.0, -1.0), Interval::ENTIRE),
+        None
+    );
+}
+
+#[test]
+fn product_preimage_divides_only_by_a_zero_free_factor() {
+    let z = iv(2.0, 6.0);
+    let narrowed = Interval::mul_preimage(z, Interval::ENTIRE, pt(2.0));
+    assert_eq!(narrowed, Some(iv(1.0, 3.0)));
+    assert_keeps_preimage(narrowed, Interval::ENTIRE, z, |p| Some(p * 2.0));
+
+    let domain = iv(-10.0, 10.0);
+    assert_eq!(
+        Interval::mul_preimage(z, domain, iv(-1.0, 1.0)),
+        Some(domain),
+        "a factor containing 0 leaves the operand unchanged"
+    );
+    assert_eq!(Interval::mul_preimage(z, iv(10.0, 20.0), pt(2.0)), None);
+}
+
+#[test]
+fn quotient_preimages_for_numerator_and_denominator() {
+    let z = iv(1.0, 2.0);
+    let numerator = Interval::div_numerator_preimage(z, Interval::ENTIRE, iv(2.0, 3.0));
+    assert_eq!(numerator, Some(iv(2.0, 6.0)));
+    assert_keeps_preimage(numerator, Interval::ENTIRE, z, |p| Some(p / 2.0));
+
+    let denominator = Interval::div_denominator_preimage(iv(2.0, 3.0), Interval::ENTIRE, pt(6.0));
+    assert_eq!(denominator, Some(iv(2.0, 3.0)));
+    assert_keeps_preimage(denominator, Interval::ENTIRE, iv(2.0, 3.0), |p| {
+        (p != 0.0).then(|| 6.0 / p)
+    });
+
+    let domain = iv(-5.0, 5.0);
+    assert_eq!(
+        Interval::div_denominator_preimage(iv(-1.0, 1.0), domain, pt(6.0)),
+        Some(domain),
+        "a quotient range containing 0 leaves the denominator unchanged"
+    );
+}
+
+#[test]
+fn min_and_max_preimages() {
+    let z = iv(3.0, 5.0);
+    assert_eq!(
+        Interval::min_preimage(z, Interval::ENTIRE, Interval::ENTIRE),
+        Some(iv(3.0, f64::INFINITY))
+    );
+    assert_eq!(
+        Interval::min_preimage(z, Interval::ENTIRE, iv(6.0, 9.0)),
+        Some(z),
+        "the other operand cannot be the minimum, so this one is"
+    );
+    assert_eq!(
+        Interval::min_preimage(z, iv(0.0, 2.0), Interval::ENTIRE),
+        None
+    );
+    assert_keeps_preimage(
+        Interval::min_preimage(z, Interval::ENTIRE, pt(4.0)),
+        Interval::ENTIRE,
+        z,
+        |p| Some(p.min(4.0)),
+    );
+
+    assert_eq!(
+        Interval::max_preimage(z, Interval::ENTIRE, Interval::ENTIRE),
+        Some(iv(f64::NEG_INFINITY, 5.0))
+    );
+    assert_eq!(
+        Interval::max_preimage(z, Interval::ENTIRE, iv(0.0, 2.0)),
+        Some(z),
+        "the other operand cannot be the maximum, so this one is"
+    );
+    assert_eq!(
+        Interval::max_preimage(z, iv(6.0, 9.0), Interval::ENTIRE),
+        None
+    );
+    assert_keeps_preimage(
+        Interval::max_preimage(z, Interval::ENTIRE, pt(4.0)),
+        Interval::ENTIRE,
+        z,
+        |p| Some(p.max(4.0)),
+    );
+}
