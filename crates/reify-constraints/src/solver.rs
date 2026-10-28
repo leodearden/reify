@@ -6640,9 +6640,10 @@ mod tests {
         );
     }
 
-    /// A COEFFICIENT bound (`2*q > 3`) matches none of the three shapes.
+    /// A COEFFICIENT bound (`2*q > 3`) is read by HC4 (task #6655) as
+    /// `q > 1.5`, so it is evidence, not a blind spot.
     #[test]
-    fn params_in_underivable_constraints_flags_coefficient_form() {
+    fn params_in_underivable_constraints_reads_coefficient_form() {
         use reify_core::Type;
         use reify_ir::{BinOp, CompiledExpr};
 
@@ -6670,8 +6671,8 @@ mod tests {
                 &[],
                 None,
             ),
-            std::collections::HashSet::from([0]),
-            "`2*q > 3` bounds q at 1.5 — the derivation just cannot read it"
+            std::collections::HashSet::new(),
+            "`2*q > 3` bounds q below at 1.5, which HC4 reads"
         );
     }
 
@@ -10377,20 +10378,23 @@ mod tests {
         );
     }
 
-    /// CONTROL — green today and must STAY green. An INLINE far operand naming
-    /// an auto (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
-    /// `constraint t >= (if up then 3.0 else 5.0)`) is already rejected,
-    /// because `collect_value_refs` recurses into `Conditional`. The hole is
-    /// the dependent-cell INDIRECTION specifically, not inline expressions.
+    /// An INLINE far operand naming an auto
+    /// (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
+    /// `constraint t >= (if up then 3.0 else 5.0)`) is read by HC4 as the HULL
+    /// of its branches: the sound low end, whichever branch this trial takes.
+    /// #6146's concern was mining the TRIAL SNAPSHOT of a moving quantity, so
+    /// the branch order here discriminates: the taken branch (`up = 1.0`, the
+    /// `then` branch) is 5.0 and the hull's low end 3.0. The dependent-cell
+    /// indirection tests above still derive nothing.
     #[test]
-    fn derive_intervals_still_rejects_an_inline_far_operand_naming_an_auto() {
+    fn derive_intervals_reads_an_inline_conditional_far_operand_as_its_branch_hull() {
         use reify_core::{Type, ValueCellId, hash::ContentHash};
         use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
         let a = ValueCellId::new("Derive", "a");
         let up = ValueCellId::new("Derive", "up");
         let condition = real_ref(&up);
-        let then_branch = real_lit(3.0);
-        let else_branch = real_lit(5.0);
+        let then_branch = real_lit(5.0);
+        let else_branch = real_lit(3.0);
         let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
             .combine(condition.content_hash)
             .combine(then_branch.content_hash)
@@ -10411,11 +10415,11 @@ mod tests {
             vec![CompiledExpr::binop(BinOp::Ge, real_ref(&a), far, Type::Bool)],
         );
         assert_eq!(
-            ivs[0].lo, None,
-            "`a >= (if up then 3.0 else 5.0)` must derive NO lower bound: the \
-             branch taken varies with auto `up`, and `collect_value_refs` \
-             already sees `up` through the `Conditional`. A fix for the \
-             dependent-cell hole must not regress this syntactic arm"
+            ivs[0].lo,
+            Some((3.0, false)),
+            "`a >= (if up then 5.0 else 3.0)` must derive the branch hull's low end \
+             3.0, never this trial's taken-branch snapshot 5.0: the branch taken \
+             varies with auto `up`"
         );
     }
 
@@ -10730,6 +10734,63 @@ mod tests {
             super::DerivedInterval::default(),
             "none of the skipped shapes may contribute a bound for p"
         );
+    }
+
+    /// (e′) Coefficient and nonlinear ORDER shapes, read by HC4 (task #6655):
+    /// each derives the bound its rearrangement implies, with the leaf's own
+    /// strictness.
+    #[test]
+    fn derive_intervals_reads_nonlinear_order_shapes() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let real = Type::dimensionless_scalar;
+        let cmp =
+            |op, near: CompiledExpr, v| CompiledExpr::binop(op, near, real_lit(v), Type::Bool);
+        let arith = |op, l, r| CompiledExpr::binop(op, l, r, real());
+
+        let scaled = derive_one(
+            &q,
+            vec![cmp(
+                BinOp::Gt,
+                arith(BinOp::Mul, real_lit(2.0), real_ref(&q)),
+                3.0,
+            )],
+        );
+        assert_eq!(scaled.lo, Some((1.5, true)), "`2*q > 3` ⇒ q > 1.5");
+        assert_eq!(scaled.hi, None);
+
+        let squared = derive_one(
+            &q,
+            vec![cmp(
+                BinOp::Le,
+                arith(BinOp::Mul, real_ref(&q), real_ref(&q)),
+                4.0,
+            )],
+        );
+        assert_eq!(
+            (squared.lo, squared.hi),
+            (Some((-2.0, false)), Some((2.0, false))),
+            "`q*q <= 4` ⇒ -2 <= q <= 2"
+        );
+
+        let root = reify_test_support::std_call("sqrt", vec![real_ref(&q)], real());
+        let rooted = derive_one(&q, vec![cmp(BinOp::Le, root, 3.0)]);
+        assert_eq!(
+            (rooted.lo, rooted.hi),
+            (Some((0.0, false)), Some((9.0, false))),
+            "`sqrt(q) <= 3` ⇒ 0 <= q <= 9 (the low side is sqrt's domain)"
+        );
+
+        let halved = derive_one(
+            &q,
+            vec![cmp(
+                BinOp::Ge,
+                arith(BinOp::Div, real_ref(&q), real_lit(2.0)),
+                1.0,
+            )],
+        );
+        assert_eq!(halved.lo, Some((2.0, false)), "`q / 2 >= 1` ⇒ q >= 2");
     }
 
     /// (f) `And` recursion collects from both branches, exactly like
@@ -11126,6 +11187,90 @@ mod tests {
             seed,
             vec![0.01, 0.01],
             "a multi-auto shape must contribute no bound; both autos seed at 0.01"
+        );
+    }
+
+    /// `t * 2 < 30mm` with `t` a Length auto, the Mul literal on the RIGHT as
+    /// the `.ri` compiles it.
+    fn length_times_two_lt(t: &reify_core::ValueCellId, si_metres: f64) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let doubled = CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(t.clone(), Type::length()),
+            real_lit(2.0),
+            Type::length(),
+        );
+        let limit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
+                si_value: si_metres,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        CompiledExpr::binop(BinOp::Lt, doubled, limit, Type::Bool)
+    }
+
+    /// The #5715 seed, executable (`examples/cost_robustness_tradeoff.ri`).
+    /// HC4 reads `t * 2 < 30mm` as `t < 15mm`, so the derived box is
+    /// [1mm, 15mm] and the seed its midpoint, 8mm — with or without the
+    /// example's redundant `t < 25mm`, which is therefore no longer
+    /// load-bearing for the seed.
+    #[test]
+    fn extract_initial_point_seeds_scaled_mul_bound_for_5715_shape() {
+        use reify_ir::BinOp;
+        let t = reify_core::ValueCellId::new("Seed", "thickness");
+        let strict_t = reify_ir::AutoParam {
+            free: false,
+            ..length_auto(t.clone())
+        };
+        let with_crutch = vec![
+            length_cmp(BinOp::Gt, &t, 0.001),
+            length_cmp(BinOp::Lt, &t, 0.025),
+            length_times_two_lt(&t, 0.030),
+        ];
+        let without_crutch = vec![
+            length_cmp(BinOp::Gt, &t, 0.001),
+            length_times_two_lt(&t, 0.030),
+        ];
+        for (label, exprs) in [
+            ("with `t < 25mm`", with_crutch),
+            ("without it", without_crutch),
+        ] {
+            let problem = seed_problem(vec![strict_t.clone()], exprs, ValueMap::new());
+            let seed = super::extract_initial_point(&problem, None)[0];
+            assert!(
+                (seed - 0.008).abs() < 1e-15,
+                "{label}: expected the midpoint of the derived [1mm, 15mm] box, 0.008 m, \
+                 got {seed} m. 0.013 would be the pre-#6655 [1mm, 25mm] midpoint (the \
+                 coefficient row unread), 0.01 the fixed fallback, 0.0011 the one-sided \
+                 nudge from 1mm"
+            );
+        }
+    }
+
+    /// The derivation reads ORDER relations only. An `==` pin contracts to a
+    /// point, and a point box would make `compose_interval` discard the
+    /// sibling inequality bound wholesale; so `w >= 8mm ∧ w == 25mm` keeps the
+    /// one-sided seed nudged in from 8mm.
+    #[test]
+    fn extract_initial_point_eq_pin_does_not_discard_the_inequality_box() {
+        use reify_ir::BinOp;
+        let w = reify_core::ValueCellId::new("Seed", "w");
+        let problem = seed_problem(
+            vec![length_auto(w.clone())],
+            vec![
+                length_cmp(BinOp::Ge, &w, 0.008),
+                length_cmp(BinOp::Eq, &w, 0.025),
+            ],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&problem, None)[0];
+        let expected = 0.008 + (super::SEED_NUDGE_REL * 0.008).max(super::SEED_NUDGE_ABS);
+        assert!(
+            (seed - expected).abs() < 1e-15,
+            "expected the one-sided seed nudged in from 8mm ({expected} m), got {seed} m; \
+             0.01 means the Eq pin's point box discarded the inequality bound"
         );
     }
 
