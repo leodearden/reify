@@ -1,6 +1,7 @@
 //! Sweep-family trait inference: `combine_sweep` × `SweepKind`, through both
-//! inference walkers (by-name `try_infer_traits_for_function_call` and the
-//! op-array `infer_traits_for_op` that resolves let-bound geometry).
+//! inference walkers: by-name `try_infer_traits_for_function_call`, and the
+//! op-array walk over a let-bound realization, whose `infer_traits_for_op_in_env`
+//! entry resolves sibling-let (`GeomRef::Sub`) operands through a `SubRefEnv`.
 
 use reify_compiler::geometry_traits_inference::{
     GeomDim, InferredTraits, SubRefEnv, combine_sweep, infer_traits_for_op,
@@ -335,8 +336,10 @@ fn by_name_and_op_array_sweep_inference_agree_per_kind() {
 }
 
 /// The let-bound sweep's realization, which conformance infers for `b`, is the
-/// un-capped shell OCCT builds. The curve profile is inline because a let-bound
-/// one reaches the walker as an unchased `GeomRef::Sub` (task #7060).
+/// un-capped shell OCCT builds. The curve profile is inline here, so the profile
+/// precondition sees and refuses it; the let-bound-profile counterpart, resolved
+/// through `GeomRef::Sub`, is
+/// `let_bound_curve_profile_sweep_infers_surface_through_the_sibling_chase`.
 #[test]
 fn let_bound_sweep_of_a_curve_profile_realization_infers_surface() {
     let compiled = compile_source_with_stdlib(
