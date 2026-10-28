@@ -6,7 +6,7 @@
 //! `docs/prds/v0_6/tensegrity-membrane.md` §5 + D2, task ζ.
 //!
 //! The elastic stiffness `K_e` reuses the shell's patch-test-validated CST
-//! membrane block (`shell_assembly::membrane_node_pair_block`), so the membrane
+//! membrane block (`shell_frame::membrane_node_pair_block`), so the membrane
 //! `K_e` is the *same* validated `Bₘᵀ(t·D_pl)Bₘ` triple-product as the MITC3
 //! shell — a structural guarantee, not two copies kept in lockstep. The element
 //! is assembled in the local mid-surface frame (`build_shell_frame` +
@@ -19,8 +19,9 @@
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{
-    build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag, ShellFrame,
+use crate::elements::shell_frame::{
+    ShellFrame, build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
+    scaled,
 };
 use crate::shell_kinematics::shell_kinematics;
 
@@ -72,12 +73,7 @@ pub(crate) fn element_stiffness_membrane_cst_with_frame(
 
     // Pre-scale the plane-stress constitutive matrix by thickness: t · D_pl.
     let d_pl = plane_stress_d(material);
-    let mut t_dpl = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            t_dpl[i][j] = thickness * d_pl[i][j];
-        }
-    }
+    let t_dpl = scaled(&d_pl, thickness);
 
     // Assemble the local 9×9 in-plane membrane block at local DOFs 3i + {0, 1}
     // using the shell's patch-test-validated CST strain-displacement core.
@@ -120,7 +116,7 @@ pub(crate) fn element_stiffness_membrane_cst_with_frame(
 /// maps as `K_glob = Tᵀ K_loc T` with `T = blockdiag(R)`, so `u_globᵀ K_glob u_glob
 /// = u_locᵀ K_loc u_loc` — the strain-energy invariance the objectivity test pins.
 ///
-/// Thin wrapper over [`crate::shell_assembly::rotate_blockdiag`] at `N = 9`; the
+/// Thin wrapper over [`rotate_blockdiag`] at `N = 9`; the
 /// block-rotation arithmetic is shared with the MITC3 shell path. Kept
 /// `pub(crate)` so the membrane K_g kernel
 /// ([`crate::geometric_stiffness::membrane`]) reuses the identical rotation.
@@ -300,7 +296,7 @@ mod tests {
         assert!(e_flat > 1e-12, "reference strain energy must be nonzero, got {e_flat}");
 
         // Tilted: Q·geometry, Q·displacement.
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
         let tilted = tilted_unit_tri(&q);
         let k_tilted = element_stiffness_membrane_cst(&tilted, t, &mat);
         let mut u_tilted = [0.0_f64; 9];
@@ -328,7 +324,7 @@ mod tests {
     fn ke_translation_in_null_space() {
         let t = 0.1_f64;
         let mat = nu_zero_material(2.0);
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
         let tilted = tilted_unit_tri(&q);
 
         for nodes in [&UNIT_TRI, &tilted] {

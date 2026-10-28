@@ -102,6 +102,7 @@ tasks:
       pattern: fn try_eval_kinematic_query
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: walk-upstream
     binding: capability→producer — α hard prereq; γ consumes realized_bodies, never

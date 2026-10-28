@@ -253,7 +253,7 @@ fn run_tests_with_constraint_def_reference_violated_returns_fail() {
 #[test]
 fn run_tests_with_auto_param_returns_indeterminate() {
     let compiled = parse_and_compile(
-        "@test structure TestAuto { param x : Length = auto\n constraint x > 0 }",
+        "@test structure TestAuto { param x : Length = auto\n constraint x > 0 && x < 1m }",
     );
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);

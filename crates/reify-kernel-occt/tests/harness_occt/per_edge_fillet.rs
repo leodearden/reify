@@ -2,8 +2,8 @@
 //! `OcctKernelHandle::fillet_edges_with_history` (task 3205, step-11/step-12).
 //!
 //! Pins the curated edge-SELECTION fillet: `BRepFilletAPI_MakeFillet::Add(r, edge)`
-//! applied to a CURATED SUBSET of a solid's edges (vs `fillet_all_edges`, which
-//! fillets all 12). The persistent-naming seam (face Modified/Generated history)
+//! applied to a CURATED SUBSET of a solid's edges (vs `fillet_with_history`,
+//! which fillets all 12). The persistent-naming seam (face Modified/Generated history)
 //! must survive the per-edge path identically to the all-edges path.
 //!
 //! Gated on `OCCT_AVAILABLE` and `#![cfg(has_occt)]` so non-OCCT builds skip
@@ -35,9 +35,9 @@ const BOX_D_M: f64 = 15.0e-3;
 fn build_box(kernel: &OcctKernelHandle) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_W_M),
-            height: Value::Real(BOX_H_M),
-            depth: Value::Real(BOX_D_M),
+            size_x: Value::Real(BOX_W_M),
+            size_y: Value::Real(BOX_H_M),
+            size_z: Value::Real(BOX_D_M),
         })
         .expect("box should build")
         .id
@@ -91,7 +91,7 @@ fn fillet_edges_with_history_curated_subset_volume_ordering_and_seam() {
     );
 
     // All-edges reference via the back-compat empty-edges dispatch
-    // (`GeometryOp::Fillet{edges: vec![], ..}` → `fillet_all_edges`).
+    // (`GeometryOp::Fillet{edges: vec![], ..}` → `fillet_with_history`).
     let all_edges_id = kernel
         .execute(&GeometryOp::Fillet {
             target: box_id,

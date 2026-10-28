@@ -53,7 +53,7 @@ fn scale_non_uniform_occt_acceptance() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let build_errors: Vec<_> = result
@@ -76,9 +76,9 @@ fn scale_non_uniform_occt_acceptance() {
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("Box execute must succeed");
     let scaled = kernel
@@ -112,9 +112,9 @@ fn scale_non_uniform_occt_acceptance() {
 
     let vol_box = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box execute must succeed");
     let vol_scaled = kernel
@@ -168,7 +168,7 @@ fn scale_non_uniform_zero_component_drops_gracefully() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();

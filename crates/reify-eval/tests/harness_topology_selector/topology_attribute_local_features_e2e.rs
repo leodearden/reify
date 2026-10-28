@@ -79,6 +79,7 @@ fn build_local_features_source(source: &str) -> Option<reify_eval::Engine> {
     // Build with real OCCT kernel passed directly.
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     );

@@ -46,7 +46,7 @@ fn body_mass_props_without_material_density_errors_with_no_density() {
     // enough.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
@@ -143,7 +143,7 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // The compilation and dispatch must produce no error-severity diagnostics.

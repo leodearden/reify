@@ -30,7 +30,7 @@ use reify_test_support::parse_and_compile_with_stdlib;
 fn eval(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile_with_stdlib(source);
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&compiled)
 }
 

@@ -55,7 +55,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 
 fn engine_with_occt() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
 fn assert_no_geometry_errors(build_result: &reify_eval::BuildResult) {

@@ -11,7 +11,8 @@
 //!
 //! Volume and face-count assertions at the OCCT kernel level are covered by
 //! `kernel_wedge_volume_and_face_count_match_expected` in
-//! `crates/reify-kernel-occt/src/lib.rs`. The tests here exercise paths the
+//! `crates/reify-kernel-occt/tests/harness_occt_kernel/primitives_profiles.rs`. The tests
+//! here exercise paths the
 //! unit tests cannot: the compiler→eval→engine pipeline (mock and real kernels).
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
@@ -52,7 +53,7 @@ fn wedge_through_mock_kernel_emits_geometry_op_wedge() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -155,7 +156,7 @@ fn wedge_through_full_pipeline_produces_geometry() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let tess_result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = tess_result

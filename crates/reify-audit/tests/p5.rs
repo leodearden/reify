@@ -114,8 +114,11 @@ mod tests {
             Pattern::P1TaskUnexamined,
             Pattern::P5MetadataFilesGitignored,
             Pattern::PDeadCode,
+            Pattern::PDeadCodeUnexamined,
             Pattern::PUntested,
+            Pattern::PUntestedUnexamined,
             Pattern::PLayerViolation,
+            Pattern::PLayerViolationUnexamined,
             Pattern::P5TestsAssertEmpty,
             Pattern::P5LivePathStranded,
             Pattern::P5LivePathUnexamined,
@@ -126,6 +129,7 @@ mod tests {
             Pattern::PDeliveredCheckPath,
             Pattern::PManifestCite,
             Pattern::PPrdStatus,
+            Pattern::PLineCite,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -134,8 +138,11 @@ mod tests {
                 Pattern::P1TaskUnexamined => {}
                 Pattern::P5MetadataFilesGitignored => {}
                 Pattern::PDeadCode => {}
+                Pattern::PDeadCodeUnexamined => {}
                 Pattern::PUntested => {}
+                Pattern::PUntestedUnexamined => {}
                 Pattern::PLayerViolation => {}
+                Pattern::PLayerViolationUnexamined => {}
                 Pattern::P5TestsAssertEmpty => {}
                 Pattern::P5LivePathStranded => {}
                 Pattern::P5LivePathUnexamined => {}
@@ -146,6 +153,7 @@ mod tests {
                 Pattern::PDeliveredCheckPath => {}
                 Pattern::PManifestCite => {}
                 Pattern::PPrdStatus => {}
+                Pattern::PLineCite => {}
             }
         }
 
@@ -3668,6 +3676,143 @@ mod tests {
             f.summary.contains("timed out reading response"),
             "the summary must carry the failure detail; got {:?}",
             f.summary
+        );
+    }
+
+    /// H2's failed lookup: a `find_references` call that FAILS is not an
+    /// answer of "no caller", so the symbol is SKIPPED rather than stranded.
+    /// The task's other symbol is still examined (`beta` is stranded), and the
+    /// skip surfaces as the task's one Low `P5LivePathUnexamined`, naming the
+    /// skipped symbol and citing its declaration — P1's contract for the same
+    /// failure.
+    #[test]
+    fn h2_failed_find_references_skips_the_symbol_and_reports_the_task_unexamined() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP6");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp6_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP6", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP6".to_string(),
+            TaskMetadata {
+                task_id: "H2FP6".to_string(),
+                status: "done".to_string(),
+                // Two distinct crates/<name>/ roots satisfy the cross-crate gate.
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp6_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate whose first reference lookup fails".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "h2fp6_commit^1",
+            "h2fp6_commit",
+            vec![
+                ChangedSymbol {
+                    name: "alpha".to_string(),
+                    file: "crates/reify-eval/src/lib.rs".to_string(),
+                    line: 100,
+                    suppression: Some(DeclSuppression::default()),
+                },
+                ChangedSymbol {
+                    name: "beta".to_string(),
+                    file: "crates/reify-compiler/src/compile.rs".to_string(),
+                    line: 20,
+                    suppression: Some(DeclSuppression::default()),
+                },
+            ],
+        );
+        jc.fail_find_references(
+            "crates/reify-eval/src/lib.rs",
+            "alpha",
+            "read body: timed out reading response",
+        );
+        jc.set_find_references("crates/reify-compiler/src/compile.rs", "beta", vec![]);
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let stranded: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert_eq!(
+            stranded.len(),
+            1,
+            "only the symbol whose lookup ANSWERED can be stranded; \
+             got {findings:?}",
+        );
+        assert!(
+            stranded[0].summary.contains("`beta`") && !stranded[0].summary.contains("`alpha`"),
+            "the stranded finding must be `beta`'s alone; got {:?}",
+            stranded[0].summary
+        );
+
+        let unexamined: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "the skipped symbol must surface as exactly one \
+             P5LivePathUnexamined; got {findings:?}",
+        );
+        let f = unexamined[0];
+        assert_eq!(f.severity, Severity::Low, "Low keeps the exit code neutral");
+        assert_eq!(f.task_id, "H2FP6");
+        for needle in [
+            "`alpha`",
+            "h2fp6_commit^1..h2fp6_commit",
+            "timed out reading response",
+        ] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the skipped symbol, the \
+                 range and the failure); got {:?}",
+                f.summary
+            );
+        }
+        assert_eq!(
+            f.evidence,
+            vec![EvidenceRef::FileLine {
+                path: "crates/reify-eval/src/lib.rs".to_string(),
+                line: 100,
+                symbol: Some("alpha".to_string()),
+            }],
+            "the evidence must cite the skipped symbol's declaration"
         );
     }
 

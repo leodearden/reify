@@ -1,0 +1,278 @@
+prd: docs/prds/v0_6/prd-probe-gate-typed-outcomes.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8633
+  title: 'S22 α: partition scripts/test_prd_capability_check.py along its measured 6-way partition'
+  note: h14 measurement (no finding key); record h14_measurements row for the path.
+  capabilities:
+  - name: partition-support-module-exists
+    binding: partition target — the downward support module the measurement names
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'def _load_pcc|spec_from_file_location\("prd_capability_check"'
+      paths:
+      - scripts/_pcc_test_support.py
+      expect: present
+- label: β
+  task_id: 8639
+  title: 'S22 β: partition scripts/test_prd_decompose_verify.py 4-way; .mjs tests to their own file'
+  note: h14 measurement (no finding key); record h14_measurements row for the path.
+  capabilities:
+  - name: mjs-tests-in-own-file
+    binding: partition target — the node-driven classes leave the Python-harness test file
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: class TestMjsSyntaxValidity
+      paths:
+      - scripts/test_prd_decompose_verify_mjs.py
+      expect: present
+- label: γ
+  task_id: 8642
+  title: 'S22 γ: typed probe outcome — harness_failure and fixture_present on ProbeRun; pdv classifies from fields'
+  note: closes fk-d75787147427; subsumes #8122.
+  capabilities:
+  - name: record-carries-fixture-present
+    binding: grep on main today shows no such field; γ adds it to _json_record (PRD §5.1)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"fixture_present"'
+      paths:
+      - scripts/prd-capability-check.py
+      expect: present
+  - name: no-sentinel-definitions
+    binding: the two sentinel constants are deleted (PRD D1); scoped to the definition construct, not the bare token
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^_(BINARY_NOT_FOUND|PROBE_TIMEOUT)_SENTINEL\s*='
+      paths:
+      - scripts/prd-capability-check.py
+      expect: absent
+  - name: pdv-no-errno-regex
+    binding: pdv's ENOENT signature regex is deleted (PRD D2)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^_FIXTURE_ABSENT_ERRNO_RE\s*='
+      paths:
+      - scripts/prd-decompose-verify.py
+      expect: absent
+  - name: absent-fixture-is-fixture-absent-for-every-kind
+    binding: run:M1 reproduction (rejection premise on a missing fixture PASSes today); γ's B1/B2 tests assert FIXTURE_ABSENT
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behaviour proven by γ's CLI tests against the real reify binary and the grammar substrate; not greppable
+- label: δ
+  task_id: 8644
+  title: 'S22 δ: each binding row carries its required match; α refuses a vacuous check probe'
+  note: closes fk-1922380bc3aa.
+  capabilities:
+  - name: binding-row-type
+    binding: _ASSERTION_KIND_MAP values become AssertionBinding with required_match (PRD D4)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: class AssertionBinding
+      paths:
+      - scripts/prd-decompose-verify.py
+      expect: present
+  - name: rejection-only-guard-deleted
+    binding: the ad-hoc rejection-only empty-match if is replaced by the uniform rule; the empty-fixture guard is generalised into α load_probe_set for every kind, not deleted (retro-critic R14 M1)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'assertion_kind == "rejection" and not premise\.match'
+      paths:
+      - scripts/prd-decompose-verify.py
+      expect: absent
+  - name: vacuous-check-refused-at-load
+    binding: rejection-check — the refusal does not exist today (bind rc 0 observed, PRD §3 M2); δ's B6-B8 observe it fire; no committed probe set is refused (M3). Retro-critic R14 M1/M2/M8 — B8 adds an empty-fixture case (any kind) and one case per empty-string signature; a constraining key is an integer exit_code or a non-empty string signature; δ owns the unknown-key refusal, #9376 the type rules
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a rejection mechanism is judged by its own fixtures (B6-B8), not by a grep
+- label: ε
+  task_id: 8649
+  title: 'S22 ε: ProbeContext and a runner seam — one repo root, one argv, tests on public seams'
+  note: closes fk-f34f07d2dde4. Retro-critic R14 (2026-10-20) — waits on ζ #8651 (M5); public seams named in PRD §5.5; binary trust by SHA identity, the 2026-10-18 mtime widening superseded (M6); multi-line patch.object twin added (polarity).
+  capabilities:
+  - name: probe-context-exists
+    binding: PRD D9 / §5.5
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: class ProbeContext
+      paths:
+      - scripts/prd-capability-check.py
+      expect: present
+  - name: main-accepts-runner
+    binding: main(argv, runner=run_probe, ctx=None) (PRD §5.5, retro-critic R14 M5)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'def main\(argv[^)]*runner'
+      paths:
+      - scripts/prd-capability-check.py
+      expect: present
+  - name: tests-reach-no-alpha-privates
+    binding: INV-5 ratchet member; baseline 70 pcc._ reads, 7 single-line patch.object(pcc, ...) sites at 8e6ffcac9d
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'patch\.object\(\s*pcc\s*,'
+      paths:
+      - scripts/
+      expect: absent
+  - name: tests-reach-no-alpha-privates-multiline
+    binding: retro-critic R14 polarity — the line-bound check above cannot see the 3 multi-line `patch.object(\n    pcc, …)` sites (test_pcc_grammar_substrate.py); red today (3 hits), green once ε rewrites them
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'patch\.object\($'
+      paths:
+      - scripts/
+      expect: absent
+- label: ζ
+  task_id: 8651
+  title: 'S22 ζ: one published vocabulary — α enums + --print-schema, pdv enums + print-schema, .mjs checked against them'
+  note: closes fk-bf4e8bbb7dda; PRD §11 R3 rules where pdv's vocabularies are published. Retro-critic R14 (2026-10-20) — lands the M3 fold (null fixture_present only with HARNESS_ERROR; non-bool → MALFORMED; B5′) and M4 (pdv owns the relay members results/verdict; R3's verbatim clause superseded).
+  capabilities:
+  - name: alpha-print-schema
+    binding: PRD D5
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"--print-schema"'
+      paths:
+      - scripts/prd-capability-check.py
+      expect: present
+  - name: pdv-blocking-verdicts-not-literal
+    binding: the literal frozenset is replaced by a derivation from α's Verdict enum; retro-critic R14 polarity — anchored on the name, since the old literal pattern was evaded by any reordering or line-wrap (3 hits today)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '_BLOCKING_VERDICTS\b'
+      paths:
+      - scripts/prd-decompose-verify.py
+      expect: absent
+  - name: mjs-schema-parity
+    binding: B9 via the scenario harness (PRD §3 M5); the .mjs relay schemas compare against pdv's relay members (retro-critic R14 M4)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: parity is a behavioural test over captured agent() opts, not a grep
+- label: η
+  task_id: 8655
+  title: 'S22 η: pdv aggregate — the .mjs relays dispositions computed in Python; no test slices .mjs source'
+  note: closes fk-6a006c36a78d. Retro-critic R14 (2026-10-20) — absorbs #7569 (cancelled, x_subsumed_by 8655); §5.4 states the leaf_verdicts element shape and B10 is scoped to it (M7).
+  capabilities:
+  - name: aggregate-subcommand
+    binding: PRD D6 / §5.4
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'add_parser\(\s*"aggregate"'
+      paths:
+      - scripts/prd-decompose-verify.py
+      expect: present
+  - name: js-disposition-arithmetic-deleted
+    binding: the JS aggregation tail is deleted (PRD D6)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'function droppedLeafLabels|const disposition = anyBlocks'
+      paths:
+      - scripts/prd-decompose-verify.mjs
+      expect: absent
+  - name: no-source-slicing
+    binding: INV-5 ratchet member — the IIFE anchor never appears in a test
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const _wfResult = await
+      paths:
+      - scripts/test_prd_decompose_verify.py
+      - scripts/test_prd_decompose_verify_mjs.py
+      expect: absent
+- label: θ
+  task_id: 8662
+  title: 'S22 θ: one path classifier and one compile closure — affected-crates-lib.sh and occt-scope-lib.sh read reify_path_attribution.py'
+  note: closes fk-21c29ddc104d minus the verify.sh home (S18, ruling R2); depended on #7491, which is done, and θ itself is done (drift noted 2026-10-20, retro-critic R14). Amended 2026-10-13 (R1 reversed by Leo 2026-10-12) — the detector is retired by #8886, so its capability is removed here, from the .md twin and from #8662's metadata.
+  capabilities:
+  - name: closure-lifted-into-module
+    binding: producer:task-7491 supplies the module; θ adds compile_closure (PRD D10)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: def compile_closure
+      paths:
+      - scripts/reify_path_attribution.py
+      expect: present
+  - name: heredoc-closure-deleted
+    binding: the embedded closure program is gone
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: _REIFY_COMPILE_CLOSURE_PY=
+      paths:
+      - scripts/occt-scope-lib.sh
+      expect: absent
+  - name: bash-file-to-crate-deleted
+    binding: the bash per-path ladder is gone
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^_file_to_crate\(\)'
+      paths:
+      - scripts/affected-crates-lib.sh
+      expect: absent
+- label: κ
+  task_id: 8664
+  title: 'S22 κ: escalation_mcp.py is the one MCP client; await-merge-landing uses it'
+  note: closes fk-0497ab17e729; subsumes #8178. Retro-critic R14 (2026-10-20) — #8780 waits on κ and uses McpSession (M9); a `# guards:` header replaces the infra-tests row if S18 τ #9312 lands first (m2).
+  capabilities:
+  - name: await-client-deleted
+    binding: PRD D11
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: class MergeStatusClient
+      paths:
+      - scripts/await-merge-landing.py
+      expect: absent
+  - name: await-imports-shared-client
+    binding: PRD D11
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'from escalation_mcp import|import escalation_mcp'
+      paths:
+      - scripts/await-merge-landing.py
+      expect: present
+  - name: session-has-call-deadline
+    binding: the whole-exchange bound lifted from await's _within
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: call_timeout_seconds
+      paths:
+      - scripts/escalation_mcp.py
+      expect: present
+- label: λ
+  task_id: 8667
+  title: 'S22 λ: PRD close — id backfill, terminal stamp, AS-AUTHORED freeze'
+  capabilities:
+  - name: terminal-stamp
+    binding: overlay "PRD terminal status" obligations
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\*\*Status:\*\* (\*\*)?(SHIPPED|WITHDRAWN|SUPERSEDED)'
+      paths:
+      - docs/prds/v0_6/prd-probe-gate-typed-outcomes.md
+      expect: present

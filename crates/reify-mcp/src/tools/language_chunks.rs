@@ -1,88 +1,65 @@
 // Language reference chunks — embedded markdown topic files
 
-const SYNTAX: &str = include_str!("chunks/syntax.md");
-const STRUCTURES: &str = include_str!("chunks/structures.md");
-const PARAMETERS: &str = include_str!("chunks/parameters.md");
-const CONSTRAINTS: &str = include_str!("chunks/constraints.md");
-const GEOMETRY: &str = include_str!("chunks/geometry.md");
-const TRAITS: &str = include_str!("chunks/traits.md");
-const COLLECTIONS: &str = include_str!("chunks/collections.md");
-const FIELDS: &str = include_str!("chunks/fields.md");
-const PURPOSES: &str = include_str!("chunks/purposes.md");
-const OCCURRENCES: &str = include_str!("chunks/occurrences.md");
-const CONNECT: &str = include_str!("chunks/connect.md");
-const ENUMS: &str = include_str!("chunks/enums.md");
-const GUARDS: &str = include_str!("chunks/guards.md");
-const FUNCTIONS: &str = include_str!("chunks/functions.md");
-const UNITS: &str = include_str!("chunks/units.md");
-const TYPES: &str = include_str!("chunks/types.md");
-const STDLIB: &str = include_str!("chunks/stdlib.md");
-const MEASUREMENT: &str = include_str!("chunks/measurement.md");
-const TOPOLOGY: &str = include_str!("chunks/topology.md");
-
-/// All available topic names, in alphabetical order.
-pub const TOPICS: &[&str] = &[
-    "collections",
-    "connect",
-    "constraints",
-    "enums",
-    "fields",
-    "functions",
-    "geometry",
-    "guards",
-    "measurement",
-    "occurrences",
-    "parameters",
-    "purposes",
-    "stdlib",
-    "structures",
-    "syntax",
-    "topology",
-    "traits",
-    "types",
-    "units",
+/// The one table of the language reference: each topic paired with the chunk
+/// file named after it, topics strictly ascending. `available_topics()` and
+/// `get_chunk` both derive from it.
+pub const CHUNKS: &[(&str, &str)] = &[
+    ("collections", include_str!("chunks/collections.md")),
+    ("connect", include_str!("chunks/connect.md")),
+    ("constraints", include_str!("chunks/constraints.md")),
+    ("enums", include_str!("chunks/enums.md")),
+    ("fields", include_str!("chunks/fields.md")),
+    ("functions", include_str!("chunks/functions.md")),
+    ("geometry", include_str!("chunks/geometry.md")),
+    ("guards", include_str!("chunks/guards.md")),
+    ("measurement", include_str!("chunks/measurement.md")),
+    ("occurrences", include_str!("chunks/occurrences.md")),
+    ("parameters", include_str!("chunks/parameters.md")),
+    ("purposes", include_str!("chunks/purposes.md")),
+    ("stdlib", include_str!("chunks/stdlib.md")),
+    ("structures", include_str!("chunks/structures.md")),
+    ("syntax", include_str!("chunks/syntax.md")),
+    ("topology", include_str!("chunks/topology.md")),
+    ("traits", include_str!("chunks/traits.md")),
+    ("types", include_str!("chunks/types.md")),
+    ("units", include_str!("chunks/units.md")),
 ];
+
+static TOPICS: [&str; CHUNKS.len()] = topic_names();
+
+const fn topic_names() -> [&'static str; CHUNKS.len()] {
+    let mut names = [""; CHUNKS.len()];
+    let mut i = 0;
+    while i < CHUNKS.len() {
+        names[i] = CHUNKS[i].0;
+        i += 1;
+    }
+    names
+}
 
 /// Look up a language reference chunk by topic name.
 ///
 /// Returns `None` if the topic is not recognized.
 pub fn get_chunk(topic: &str) -> Option<&'static str> {
-    match topic {
-        "syntax" => Some(SYNTAX),
-        "structures" => Some(STRUCTURES),
-        "parameters" => Some(PARAMETERS),
-        "constraints" => Some(CONSTRAINTS),
-        "geometry" => Some(GEOMETRY),
-        "traits" => Some(TRAITS),
-        "collections" => Some(COLLECTIONS),
-        "fields" => Some(FIELDS),
-        "purposes" => Some(PURPOSES),
-        "occurrences" => Some(OCCURRENCES),
-        "connect" => Some(CONNECT),
-        "enums" => Some(ENUMS),
-        "guards" => Some(GUARDS),
-        "functions" => Some(FUNCTIONS),
-        "units" => Some(UNITS),
-        "types" => Some(TYPES),
-        "stdlib" => Some(STDLIB),
-        "measurement" => Some(MEASUREMENT),
-        "topology" => Some(TOPOLOGY),
-        _ => None,
-    }
+    CHUNKS
+        .iter()
+        .find(|(name, _)| *name == topic)
+        .map(|(_, chunk)| *chunk)
 }
 
-/// Return the list of all available topic names.
+/// Return the list of all available topic names, in alphabetical order.
 pub fn available_topics() -> &'static [&'static str] {
-    TOPICS
+    &TOPICS
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn all_topics_return_non_empty_content() {
-        for topic in TOPICS {
+        for topic in available_topics() {
             let content = get_chunk(topic);
             assert!(content.is_some(), "Topic '{topic}' returned None");
             assert!(
@@ -98,8 +75,39 @@ mod tests {
     }
 
     #[test]
-    fn available_topics_returns_19_entries() {
-        assert_eq!(available_topics().len(), 19);
+    fn chunk_topics_are_strictly_ascending() {
+        let out_of_order: Vec<(&str, &str)> = CHUNKS
+            .windows(2)
+            .filter(|w| w[0].0 >= w[1].0)
+            .map(|w| (w[0].0, w[1].0))
+            .collect();
+        assert!(
+            out_of_order.is_empty(),
+            "CHUNKS topics must be strictly ascending; offending adjacent (left, right) pairs: \
+             {out_of_order:?}. Sorted keeps the `reify_language_reference` help listing (which \
+             joins `available_topics()` in order) byte-identical; strict rules out a duplicate \
+             topic whose second row `get_chunk` would never serve."
+        );
+    }
+
+    #[test]
+    fn every_topic_serves_the_chunk_file_named_after_it() {
+        let chunks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools/chunks");
+        let mismatched: Vec<&str> = CHUNKS
+            .iter()
+            .filter(|(topic, chunk)| {
+                let path = chunks_dir.join(format!("{topic}.md"));
+                let on_disk = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+                on_disk != *chunk || get_chunk(topic) != Some(on_disk.as_str())
+            })
+            .map(|(topic, _)| *topic)
+            .collect();
+        assert!(
+            mismatched.is_empty(),
+            "topic(s) whose served chunk is not byte-identical to src/tools/chunks/<topic>.md: \
+             {mismatched:?}. Each CHUNKS row must pair a topic with the file named after it."
+        );
     }
 
     const MAX_CHUNK_BYTES: usize = 36 * 1024;
@@ -111,14 +119,9 @@ mod tests {
     /// raised. Raising it is a deliberate, diff-visible edit.
     #[test]
     fn every_topic_fits_one_retrieval_budget() {
-        let oversized: Vec<(&str, usize)> = TOPICS
+        let oversized: Vec<(&str, usize)> = CHUNKS
             .iter()
-            .map(|topic| {
-                let chunk = get_chunk(topic).unwrap_or_else(|| {
-                    panic!("topic `{topic}` is in TOPICS but has no get_chunk arm")
-                });
-                (*topic, chunk.len())
-            })
+            .map(|(topic, chunk)| (*topic, chunk.len()))
             .filter(|(_, len)| *len > MAX_CHUNK_BYTES)
             .collect();
         assert!(

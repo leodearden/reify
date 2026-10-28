@@ -136,13 +136,8 @@ structure def LibAppearance {
 
     // Helper: extract an f64 from Real / Scalar / Int; panics on mismatch.
     let extract_real = |val: Option<Value>, field: &str| -> f64 {
-        match val {
-            Some(Value::Real(x)) => x,
-            Some(Value::Scalar { si_value, .. }) => si_value,
-            Some(Value::Int(n)) => n as f64,
-            None => panic!("field `{field}` not found"),
-            Some(other) => panic!("expected numeric for `{field}`, got {other:?}"),
-        }
+        let val = val.unwrap_or_else(|| panic!("field `{field}` not found"));
+        reify_test_support::read_f64(&val, field)
     };
 
     // All four materials are fields of the same top-level structure.
@@ -379,13 +374,8 @@ structure def PlainBody {
 
     // Helper: extract an f64 from Real / Scalar / Int; panics on mismatch.
     let extract_real = |val: Option<Value>, field: &str| -> f64 {
-        match val {
-            Some(Value::Real(x)) => x,
-            Some(Value::Scalar { si_value, .. }) => si_value,
-            Some(Value::Int(n)) => n as f64,
-            None => panic!("field `{field}` not found in Appearance"),
-            Some(other) => panic!("expected numeric for `{field}`, got {other:?}"),
-        }
+        let val = val.unwrap_or_else(|| panic!("field `{field}` not found in Appearance"));
+        reify_test_support::read_f64(&val, field)
     };
 
     // metalness — dimensionless Real; must agree to machine precision.

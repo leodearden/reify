@@ -34,12 +34,12 @@ use reify_lsp::server::{NoOpSink, NotificationSink};
 /// Every `lsp_request` is dispatched on a large-stack lane
 /// ([`lsp_request_on_worker`]), so the thread polling `handle_request` IS the
 /// stack the parser and compiler need. The bridge therefore builds its server
-/// with [`BlockingWorkPlacement::CallingThread`], giving `definition`,
-/// `prepareRename`, `rename` and `references` the lane's stack too, instead of
-/// a ~2 MiB blocking-pool thread. The one cost: in the degraded no-lane arm
-/// (`dispatch_async(None, ..)` awaits in place), those four now run inline on a
-/// Tauri tokio worker and occupy it for the request — as `didOpen` /
-/// `didChange`'s compile always has there.
+/// with [`BlockingWorkPlacement::CallingThread`], giving every query's
+/// parse/compile work the lane's stack too, instead of a ~2 MiB blocking-pool
+/// thread. The one cost: in the degraded no-lane arm
+/// (`dispatch_async(None, ..)` awaits in place), every query's parse/compile
+/// work runs inline on a Tauri tokio worker and occupies it for the request —
+/// as `didOpen` / `didChange`'s compile always has there.
 pub struct LspBridge {
     lsp: InProcessLsp,
 }
@@ -135,9 +135,9 @@ pub async fn lsp_request_on_worker(
 ///
 /// The key is LSP PROTOCOL semantics — does this method mutate server-side
 /// document or session state? — not `reify-lsp`'s choice of which arms carry
-/// blocking work. Those four arms compute on the thread that drives them, so
-/// routing them off the lanes would hand their deep work back to a ~2 MiB
-/// thread; the pool bounds their occupancy instead.
+/// blocking work. Every query arm carries some and computes it on the thread
+/// that drives it, so routing one off the lanes would hand its deep work back
+/// to a ~2 MiB thread; the pool bounds their occupancy instead.
 ///
 /// The arm lists the CONCURRENCY-SAFE set and defaults everything else,
 /// including every unrecognised method, to the ordered lane. The opposite

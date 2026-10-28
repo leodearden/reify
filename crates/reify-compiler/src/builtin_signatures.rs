@@ -803,12 +803,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   are the inert `c0`…`cN` that `geometry.rs` synthesises. There is no
         //   index-keyed `CheckableArg` to write.
         //
-        // box(width, height, depth) / box_centered(width, height, depth)
-        //   NOTE index 1 is `height` — the Y extent — NOT `depth`.
+        // box(width, depth, height) / box_centered(…) — X/Y/Z extents, slot
+        //   names size_x/size_y/size_z
         "box" | "box_centered" => const { &[
-            length_arg(0, "width"),
-            length_arg(1, "height"),
-            length_arg(2, "depth"),
+            length_arg(0, "size_x"),
+            length_arg(1, "size_y"),
+            length_arg(2, "size_z"),
         ] },
 
         // cylinder(radius, height) / cylinder_centered(radius, height)
@@ -843,9 +843,6 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         ] },
 
         // wedge(width, depth, height, top_width)
-        //   NOTE this orders its triple width/DEPTH/height — the opposite of
-        //   `box`'s width/height/depth. Both orders are copied from their own
-        //   lowering site rather than shared, which is why they can differ.
         "wedge" => const { &[
             length_arg(0, "width"),
             length_arg(1, "depth"),
@@ -1194,7 +1191,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}; {hint}"`
 ///
 /// Concretely, for a LENGTH slot:
-/// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
+/// `"box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
 /// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
 /// because the field is non-optional. Only [`ExpectedArg::Int`] and
@@ -1866,21 +1863,21 @@ mod tests {
         }
     }
 
-    /// box / box_centered → [width@0, height@1, depth@2].
+    /// box / box_centered → [size_x@0, size_y@1, size_z@2].
     ///
-    /// NOTE index 1 is `height`, NOT `depth`: `geometry.rs`'s shared Box arm
-    /// orders the triple width/height/depth, so `height` is the Y extent. A
-    /// transposed pair here would still type-check but would misname the
-    /// offending argument in every diagnostic the slot emits.
+    /// The positional `box(width, depth, height)` binds to the X/Y/Z extents,
+    /// so the slots are named for their axis. A transposed pair here would
+    /// still type-check but would misname the offending argument in every
+    /// diagnostic the slot emits.
     #[test]
     fn box_primitives_have_three_length_slots() {
         for name in ["box", "box_centered"] {
             assert_slots_at_every_arity(
                 name,
                 &[
-                    length_slot(0, "width"),
-                    length_slot(1, "height"),
-                    length_slot(2, "depth"),
+                    length_slot(0, "size_x"),
+                    length_slot(1, "size_y"),
+                    length_slot(2, "size_z"),
                 ],
             );
         }
@@ -1933,10 +1930,6 @@ mod tests {
     }
 
     /// wedge → [width@0, depth@1, height@2, top_width@3].
-    ///
-    /// NOTE the wedge orders its triple width/DEPTH/height — the opposite of
-    /// `box`'s width/height/depth. Both orders are copied from their own
-    /// lowering site rather than shared, which is why they can differ.
     #[test]
     fn wedge_has_four_length_slots() {
         assert_slots_at_every_arity(
@@ -2500,7 +2493,7 @@ mod tests {
             "solid_body",
             "volume",
             // `"box"` used to sit here. Task 5750 (units-length η) gave it
-            // width/height/depth LENGTH slots, so it is no longer an unchecked
+            // three LENGTH slots, so it is no longer an unchecked
             // name; `box_primitives_have_three_length_slots` is now its pin.
             // `union` replaces it as a still-unslotted CSG producer so this
             // list keeps covering that shape.

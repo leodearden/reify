@@ -404,7 +404,7 @@ pub mod ffi {
         fn precision_confusion() -> f64;
 
         // --- Primitive construction ---
-        fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_box(size_x: f64, size_y: f64, size_z: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
@@ -428,7 +428,7 @@ pub mod ffi {
         /// (task 7054).
         ///
         /// Consequence for the Rust side: stamp the stored `BRepKind` via
-        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// `brep_kind_of_shape` (which reads `body_type_name`), never a
         /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
         /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -658,7 +658,7 @@ pub mod ffi {
         /// to the matching index. Eagerly captures the per-parent face/edge
         /// Modified/Generated/Deleted records (the curated path preserves the
         /// persistent-naming seam). Requires a non-empty `edge_indices`; the
-        /// all-edges / empty-selection path keeps using `fillet_all_edges`.
+        /// all-edges / empty-selection path is `make_fillet_with_history`.
         fn make_fillet_edges_with_history(
             shape: &OcctShape,
             radius: f64,
@@ -681,7 +681,7 @@ pub mod ffi {
         /// to the matching index. Eagerly captures the per-parent face/edge
         /// Modified/Generated/Deleted records (the curated path preserves the
         /// persistent-naming seam). Requires a non-empty `edge_indices`; the
-        /// all-edges / empty-selection path keeps using `chamfer_all_edges`.
+        /// all-edges / empty-selection path is `make_chamfer_with_history`.
         fn make_chamfer_edges_with_history(
             shape: &OcctShape,
             distance: f64,
@@ -730,10 +730,6 @@ pub mod ffi {
         /// Count of Modified/Generated children silently dropped because they could
         /// not be found in the result map. Zero for a well-formed fillet/chamfer.
         fn local_feature_op_history_silent_drop_count(history: &LocalFeatureOpHistory) -> u32;
-
-        // --- Modifications ---
-        fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
-        fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Transforms ---
         fn translate_shape(
@@ -1437,19 +1433,10 @@ pub mod ffi {
         /// `Build()`).
         fn parallel_bop_build_count() -> u64;
 
-        /// Return the canonical name of `shape`'s top-level TopAbs shape type
-        /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
-        /// every boolean path uses to stamp the right `BRepKind` instead of
-        /// assuming Solid:
-        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
-        ///     (disjoint), or the sole input's kind (identity), task 5213;
-        ///   - all six binary boolean arms — the three plain
-        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
-        ///     three `boolean_*_with_history` variants, task 7054. Since every
-        ///     boolean result is normalized, a disjoint fuse really is a
-        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
-        fn shape_type_name(shape: &OcctShape) -> Result<String>;
+        /// The TopAbs name of `shape`'s body type after the single-body unwrap,
+        /// so OCCT's 1-solid COMPOUND wrappers from fillet, chamfer, draft and
+        /// thicken name "Solid". Backs `brep_kind_of_shape`; errs on a null shape.
+        fn body_type_name(shape: &OcctShape) -> Result<String>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 

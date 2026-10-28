@@ -17,7 +17,7 @@
 //! (the `is_math_typed_fn` arm) in step-14. The family is pinned disjoint from
 //! the geometry / dynamics families by the `units.rs` disjointness tests.
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
 /// The complete set of math-linalg **construction** builtin names recognised
@@ -133,6 +133,89 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
     MATH_CONSTRUCTION_NAMES.contains(&name)
         || MATH_OPERATION_NAMES.contains(&name)
         || MATH_TRANSCENDENTAL_NAMES.contains(&name)
+}
+
+/// The forward-trig names whose argument dimension
+/// [`check_forward_trig_arg_dimensions`] polices.
+const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
+
+/// Rejects a `sin`/`cos`/`tan` argument typed as a dimensioned `Scalar` other
+/// than `Angle`, pushing one `ArgTypeMismatch` Error at the call span.
+///
+/// `Angle`, dimensionless and `Int` arguments pass, mirroring the `Some` arms
+/// of `reify_stdlib::helpers::trig_input`; eval turns every other scalar
+/// dimension into `Value::Undef`, so this rejects statically only what already
+/// fails at runtime. Unresolved arguments (`Error`, `TypeParam`, `ScalarParam`)
+/// pass, and so does every non-`Scalar` type: this checks dimension, not kind.
+///
+/// Like `check_builtin_arg_types` and `check_relation_arg_types`, it only
+/// pushes diagnostics and never changes the call's result type.
+///
+/// The other transcendental names are deliberately unchecked here. Their owners
+/// are recorded in `docs/legibility/design-invariants.md` (D7), and the
+/// scope-fence tests in
+/// `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
+/// pin them.
+pub(crate) fn check_forward_trig_arg_dimensions(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !FORWARD_TRIG_NAMES.contains(&name) {
+        return;
+    }
+    let Some(arg) = compiled_args.first() else {
+        // Call is short — arity errors are handled elsewhere; a missing arg is
+        // not a dimension mismatch.
+        return;
+    };
+
+    match &arg.result_type {
+        // Gradualism: poison and unresolved types pass silently, as in
+        // `check_builtin_arg_types` and `check_relation_arg_types`.
+        Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
+
+        // Mirrors `trig_input`'s `Value::Int` arm.
+        Type::Int => {}
+
+        // Bare radians (dimensionless) or a true `Angle` — both accepted.
+        Type::Scalar { dimension }
+            if dimension.is_dimensionless() || *dimension == DimensionVector::ANGLE => {}
+
+        // Any OTHER dimensioned scalar: a definite static mismatch — eval
+        // would Undef here.
+        other @ Type::Scalar { .. } => {
+            emit_trig_dimension_mismatch(name, other, call_span, diagnostics);
+        }
+
+        // Every other `Type` variant (Bool, Geometry, Vector, List, …) passes
+        // silently: this checks dimension, not kind.
+        _ => {}
+    }
+}
+
+/// Emit the single `ArgTypeMismatch` error for a forward-trig argument whose
+/// dimension is neither `Angle` nor dimensionless.
+///
+/// Reuses the EXISTING [`DiagnosticCode::ArgTypeMismatch`] rather than minting a
+/// new code: the `E_ArgDimension` taxonomy is #6943's chartered ruling
+/// (builtin-signature-registry INV-SF-6) and inventing it here would pre-empt it.
+/// Construction and wording mirror `relation_signatures::emit_unit_mismatch`, so
+/// this family's diagnostics read identically to the geometric-relation family's.
+fn emit_trig_dimension_mismatch(
+    name: &str,
+    actual: &Type,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = format!("{name}: argument expects Angle or dimensionless, got {actual}");
+    let label = format!("expected Angle or dimensionless, got {actual}");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
@@ -2383,5 +2466,120 @@ mod tests {
             Type::dimensionless_scalar(),
             "max(Real, Real) must stay Real (kind-preserving identity)"
         );
+    }
+
+    // ── Forward-trig argument-dimension check ────────────────────────────────
+
+    fn trig_call_span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 10)
+    }
+
+    /// Assert `name(arg)` pushes exactly one `ArgTypeMismatch` Error whose
+    /// message names the builtin and the word `Angle`, labelled at the call span.
+    fn assert_single_trig_rejection(name: &str, arg: CompiledExpr) {
+        let span = trig_call_span();
+        let mut diagnostics = Vec::new();
+        check_forward_trig_arg_dimensions(name, &[arg], span, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "{name}(<dimensioned>) must push exactly ONE diagnostic, got {diagnostics:?}"
+        );
+        let d = &diagnostics[0];
+        assert_eq!(
+            d.code,
+            Some(reify_core::DiagnosticCode::ArgTypeMismatch),
+            "{name}: diagnostic must reuse DiagnosticCode::ArgTypeMismatch"
+        );
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "{name}: diagnostic must be Error severity"
+        );
+        assert!(
+            d.message.contains(name),
+            "{name}: message must name the builtin, got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Angle"),
+            "{name}: message must mention `Angle`, got {:?}",
+            d.message
+        );
+        let label = d
+            .labels
+            .first()
+            .unwrap_or_else(|| panic!("{name}: diagnostic must carry a label"));
+        assert_eq!(
+            label.span, span,
+            "{name}: label must be anchored at the passed call span"
+        );
+    }
+
+    /// `sin(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn sin_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("sin", length_elem(0.005));
+    }
+
+    /// `cos(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn cos_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("cos", length_elem(0.005));
+    }
+
+    /// `tan(5.0mm)` — LENGTH argument is rejected.
+    #[test]
+    fn tan_rejects_length_dimensioned_argument() {
+        assert_single_trig_rejection("tan", length_elem(0.005));
+    }
+
+    /// `sin(2.0kg)` — MASS argument is rejected too. Pins that the rule is
+    /// "any dimensioned non-ANGLE scalar", not a LENGTH special case.
+    #[test]
+    fn sin_rejects_mass_dimensioned_argument_not_just_length() {
+        assert_single_trig_rejection("sin", mass_elem(2.0));
+    }
+
+    fn assert_no_trig_diagnostic(name: &str, args: &[CompiledExpr], why: &str) {
+        let mut diagnostics = Vec::new();
+        check_forward_trig_arg_dimensions(name, args, trig_call_span(), &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "{name}: {why} must push nothing, got {diagnostics:?}"
+        );
+    }
+
+    /// A zero-arg call is an arity problem, not a dimension mismatch.
+    #[test]
+    fn forward_trig_with_no_args_pushes_nothing() {
+        assert_no_trig_diagnostic("sin", &[], "an empty arg list");
+    }
+
+    /// Gradualism: poison and unresolved args pass silently, including a
+    /// `Scalar<Q>` whose dimension is unresolved inside a generic fn body.
+    #[test]
+    fn forward_trig_skips_unresolved_args() {
+        let typed = |ty: Type| CompiledExpr::literal(Value::Undef, ty);
+        assert_no_trig_diagnostic("cos", &[typed(Type::Error)], "a Type::Error arg");
+        assert_no_trig_diagnostic(
+            "tan",
+            &[typed(Type::TypeParam("T".to_string()))],
+            "a Type::TypeParam arg",
+        );
+        assert_no_trig_diagnostic(
+            "sin",
+            &[typed(Type::ScalarParam("Q".to_string()))],
+            "a Type::ScalarParam arg",
+        );
+    }
+
+    /// Only `FORWARD_TRIG_NAMES` are gated: a dimensioned arg to `exp` or
+    /// `atan` passes here.
+    #[test]
+    fn non_forward_trig_names_are_not_checked() {
+        assert_no_trig_diagnostic("exp", &[length_elem(0.005)], "exp(Length)");
+        assert_no_trig_diagnostic("atan", &[length_elem(0.005)], "atan(Length)");
     }
 }

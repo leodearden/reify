@@ -25,7 +25,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib, scalar_si};
 
 /// The committed terminal-observable fixture (pre-1): `Bracket : Physical` with
 /// `param geometry = box(10mm, 20mm, 30mm)` and `param material =
@@ -90,10 +90,12 @@ fn render_cell(result: &reify_eval::BuildResult, member: &str) -> String {
 /// a hardcoded literal (per the plan's "derive from runtime density" rule).
 fn material_density_si(result: &reify_eval::BuildResult) -> f64 {
     match result.values.get(&ValueCellId::new("Bracket", "material")) {
-        Some(Value::StructureInstance(data)) => match data.fields.get("density") {
-            Some(Value::Scalar { si_value, .. }) => *si_value,
-            other => panic!("Bracket.material.density should be Scalar, got {other:?}"),
-        },
+        Some(Value::StructureInstance(data)) => scalar_si(
+            data.fields
+                .get("density")
+                .expect("Bracket.material has no `density` field"),
+            "Bracket.material.density",
+        ),
         other => panic!("Bracket.material should be StructureInstance, got {other:?}"),
     }
 }
@@ -123,7 +125,7 @@ fn spec_shape_physical_build_golden() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let rendered = format!(

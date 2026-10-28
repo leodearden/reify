@@ -53,8 +53,8 @@ fn eval_orient_exp_of_orient_log_round_trips() {
 
 /// The probe fixture stays `reify check`-clean, before AND after #6080.
 ///
-/// This task rules on the EVAL-time dimension only; the static signature of
-/// `orient_log` is the unchanged arg0-clone fallback, so no check-time
+/// #6080 rules on the EVAL-time dimension. `orient_log` is statically typed
+/// `Vector3<Angle>` (#6306), in agreement with that ruling, so no check-time
 /// diagnostic may appear.
 #[test]
 fn check_orient_log_angle_probe_stays_clean() {

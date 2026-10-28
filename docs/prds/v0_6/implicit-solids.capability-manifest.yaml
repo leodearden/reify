@@ -814,6 +814,7 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/geometry_op_lowering.rs
   - name: voxel-source-dispatch-tier
     binding: producer-self (R4, D-6) — a tier in Engine::execute_realization_ops keyed
       on a separate OUTPUT-side predicate (a voxel-source predicate or a descriptor
@@ -1107,7 +1108,7 @@ tasks:
       pattern: fn module_requires_openvdb\(
       expect: present
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
   - name: detector-wired-before-realization
     binding: producer-self (R4) — Engine::ensure_openvdb_kernel() is called BEFORE
       realize_for_check in cmd_check and cmd_eval, and before `match output_path`
@@ -1333,6 +1334,7 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/realization_executor
   - name: b20-both-paths
     binding: producer-self (R8) — the inline (intra) and named (cross) parents are
       each tested, never an OCCT handle (Engine::realization_kernel_provenance has
@@ -1558,6 +1560,7 @@ tasks:
       expect: absent
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/geometry_post_process.rs
   - name: post-process-derived-case
     binding: producer-self (R18) — θ's signal gains a case whose measurement argument
       is post-process-derived (e.g. a feature computed from volume(box(..)) that trips
@@ -1678,6 +1681,8 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
+      - crates/reify-eval/src/expr_classify.rs
   - name: frame-semantics
     binding: producer-self (critic M9, §7.7) — a FromSolid field is in the subject
       realization's authored (unplaced) frame; posing is the author's sdf_transform,

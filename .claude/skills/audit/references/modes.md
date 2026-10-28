@@ -4,11 +4,10 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 
 > All argv paths use `$REPO_ROOT/` — see `references/cli-invocation.md` §1 for the pre-flight that resolves it.
 >
-> Every invocation below assumes `$SNAPSHOT` has already been materialized
-> per `references/cli-invocation.md` §2 (an MCP-tool call from the LLM
-> followed by a `jq` filter step — **not** a single shell pipeline). The
-> per-mode `reify-audit` argvs below are the bash-side invocation only; do
-> not re-inline the snapshot setup here. Single point of truth: §2.
+> `reify-audit` loads the task corpus itself, live from fused-memory, so
+> there is no setup step before these argvs. The stderr capture, cleanup and
+> optional `--fused-memory-url` live in `references/cli-invocation.md` §2;
+> the per-mode argvs below show only what differs between modes.
 
 ---
 
@@ -16,12 +15,11 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 
 **When to use:** Routine periodic sweep — no specific task or date in mind.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -42,12 +40,11 @@ reify-audit \
 
 **When to use:** User says `/audit --task 3242` or wants to audit a specific task.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --task <id> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -70,12 +67,11 @@ reify-audit \
 
 **When to use:** User wants to sweep a custom date range, e.g. `/audit --since 2026-04-01`.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <iso-date> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -92,17 +88,16 @@ reify-audit \
 
 ---
 
-## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS`)
+## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE`)
 
 **When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, `/audit --pattern PDEAD`, or `/audit --pattern PDOCCOVER`.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS> \
-  --tasks-file "$SNAPSHOT" \
+  --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE> \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -123,6 +118,7 @@ reify-audit \
 { "patterns": ["PDCHECK"] }   // structural opt-in: dead delivered_checks paths (needs tasks.db)
 { "patterns": ["PCITE"] }     // structural opt-in: phantom capability-manifest cites (Medium only)
 { "patterns": ["PPRDSTATUS"] } // opt-in: PRD status-prose drift (reads the loaded task corpus)
+{ "patterns": ["PLINECITE"] } // structural opt-in: hard line cites in source comments (Medium only)
 ```
 
 **Detectors run:** The named detector only.
@@ -153,15 +149,16 @@ These three patterns are **opt-in only** — they are NOT part of the default al
 - **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require a serve for the duration of the run. When no serve answers, they degrade to **zero findings** (the fail-soft path P1 takes — NOT exit 125). P2 and PTODO are unaffected; P1 and P5's H2 live-path pass each record themselves unexamined with one run-level Low finding, and P5's other passes still run. One asymmetry to know: because all three are jcodemunch-backed, invoking them alone (`--pattern PDEAD`, `--pattern PDEAD,PUNTESTED`, …) is an all-jcodemunch run set, so a serve that IS reachable but whose index is stale/empty/unreadable hard-exits 125 instead of fail-softing. See `references/cli-invocation.md` §4.1 for both arms, the refusal codes and their remedies.
 - **Activation:** Bring a serve up by wrapping the invocation in `scripts/with-jcodemunch-serve.sh`; there is no persistent unit to start. `docs/architecture-audit/jcodemunch-serve-activation.md` remains the identifier and runbook record.
 
-### Structural opt-in patterns (PDIAG / PDOCCOVER / PDCHECK / PCITE) — notes
+### Structural opt-in patterns (PDIAG / PDOCCOVER / PDCHECK / PCITE / PLINECITE) — notes
 
-These four are **opt-in only**. The first three can emit High findings and the exit code is the High count, so a default-sweep member among them would turn every bare `/audit` run non-zero; PCITE is Medium-only but reads every tracked non-prose file and has a standing residual. Each fires only when named via `--pattern`. As with PTODO, a finding's kind is its summary prefix (`pdiag-ratchet: …`, `undocumented-name: …`, `delivered-check-unsatisfiable-path: …`).
+These five are **opt-in only**. The first three can emit High findings and the exit code is the High count, so a default-sweep member among them would turn every bare `/audit` run non-zero; PCITE is Medium-only but reads every tracked non-prose file and has a standing residual; PLINECITE is Medium-only but new line cites accrue weekly, so a default-sweep slot would turn every bare run into follow-up traffic. Each fires only when named via `--pattern`. As with PTODO, a finding's kind is its summary prefix (`pdiag-ratchet: …`, `undocumented-name: …`, `delivered-check-unsatisfiable-path: …`).
 
-- **No jcodemunch:** none of the four is jcodemunch-backed, so adding one to a jcodemunch-backed pattern set makes it *mixed*, and a jcodemunch-side problem then fail-softs instead of exiting 125 (`references/cli-invocation.md` §4.1).
+- **No jcodemunch:** none of the five is jcodemunch-backed, so adding one to a jcodemunch-backed pattern set makes it *mixed*, and a jcodemunch-side problem then fail-softs instead of exiting 125 (`references/cli-invocation.md` §4.1).
 - **PDIAG** — the INV-SF-6 codes-mandatory ratchet over code-less `Diagnostic::error`/`Diagnostic::warning` sites, counted per file against `crates/reify-audit/pdiag-baseline.txt`. The High kinds are `pdiag-ratchet` (a file above its baseline count, or new to the baseline), `pdiag-baseline-unreadable` and `pdiag-census-empty`. `pdiag-baseline-stale` is Medium: a count fell below its row, or a row outlived its file's last site. Regenerate with `cargo run -p reify-audit --bin pdiag-baseline-gen`; site remedies are in `docs/notes/diagnostic-severity-policy.md`. The merge gate `tests/infra/test_reify_audit_pdiag.sh` enforces the ratchet independently of this skill. Measured on main `0bbb9075d3`, 2026-09-23: 2 findings, both Medium `pdiag-baseline-stale`, exit 0.
-- **PDOCCOVER** — name drift between the builtin `*_NAMES` registries in `crates/reify-compiler/src/units.rs` and the MCP language chunks `crates/reify-mcp/src/tools/chunks/*.md`. Its categories are `undocumented-name`, `fabricated-name`, `stale-baseline-entry`, `stale-allow-entry` and `allow-missing-reason`, all High. A tree it cannot read — no registry census, no readable chunk, or a failed `git ls-files`, which empties both — is reported as a single High `census-empty` or `no-chunks` finding instead, never as a clean result. The accepted backlog is ledgered in `crates/reify-audit/pdoccover-baseline.txt` — a bare `<name>` row per undocumented name, a `<chunk path>:<name>` row per fabricated name — so a clean tree reports nothing; a ledger row that settles no live debt is a `stale-baseline-entry`. Regenerate with `cargo run -p reify-audit --bin pdoccover-baseline-gen` (shrink-only; `--admit-new` grows it). The merge gate `tests/infra/test_reify_audit_pdoccover.sh` enforces the ratchet independently of this skill.
+- **PDOCCOVER** — name drift between the builtin `*_NAMES` registries in `crates/reify-compiler/src/units.rs` and the MCP language chunks `crates/reify-mcp/src/tools/chunks/*.md`. Its categories are `undocumented-name`, `fabricated-name`, `stale-baseline-entry`, `stale-allow-entry` and `allow-missing-reason`, all High. A tree it cannot read — no registry census, no readable chunk, or a failed `git ls-files`, which empties both — is reported as a single High `census-empty` or `no-chunks` finding instead, never as a clean result. The accepted backlog is ledgered in `crates/reify-audit/pdoccover-baseline.txt` — a bare `<name>` row per undocumented name, a `<chunk path>:<name>` row per fabricated name — so a clean tree reports nothing; a ledger row that settles no live debt is a `stale-baseline-entry`. Regenerate with `cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . --write` (shrink-only; `--admit-new` grows it). The merge gate `tests/infra/test_reify_audit_pdoccover.sh` enforces the ratchet independently of this skill.
 - **PDCHECK** — `metadata.delivered_checks` grep rows on non-terminal tasks whose pathspec names no tracked path. `delivered-check-unsatisfiable-path` (`expect: present`) is High, because every dependent blocks at `DEP_CAPABILITY_NOT_DELIVERED`. `delivered-check-vacuous-absent-path` (`expect: absent`) is Medium: the check passes while asserting nothing. It reads `<project-root>/.taskmaster/tasks/tasks.db`, or `REIFY_PTODO_TASKS_DB` when set. Without that DB the lane is skipped, so an empty result then means "not checked" (breadcrumb: `references/cli-invocation.md` §4.1). Last full sweep: 0 findings over 755 rows, 2026-09-19 (#7697). #7712 is weighing a standing gate.
 - **PCITE** — the corpus is every tracked `docs/prds/**/*.capability-manifest.md`; a cite is a backticked identifier (or `A::B` path, each segment checked) after a line's first free-standing `grep:` (not the tail of `ripgrep:` or `id-grep:`). The oracle is every word of every tracked file outside `docs/` that is not markdown, so prose never vouches for a cite. Kinds: `fabricated-cite` (one per manifest and name, at its first line) and `allow-missing-reason` (a `pcite:allow` marker with no reason; it exempts nothing). Both are **Medium**, so the lane is report-only and exit-neutral. A legitimately external cite (a dark-factory or OCCT symbol) is settled with `<!-- pcite:allow — <reason> -->` on its line. No baseline. Un-backticked prose cites are outside the grammar. Measured on this branch, 2026-09-29: 9 `fabricated-cite`, exit 0.
+- **PLINECITE** — hard line cites (`foo.rs:12` and the other lead-ins of PRD §4) in comment-leading lines of the tracked files `plinecite::in_scope` admits: `crates/reify-compiler/stdlib/**.ri` and `crates/<crate>/src/**.rs`, minus `crates/reify-audit/`. Pre-existing cites are ledgered as `<path> :: <cite>` rows in `crates/reify-audit/plinecite-baseline.txt`; regenerate with `cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . --write` (shrink-only; `--admit-new` grows it). Kinds: `line-cite` (a cite the ledger lacks, one per file and cite, at its first line), `stale-baseline-entry` (a ledger row no live cite matches), `allow-missing-reason` (a `plinecite:allow` marker with no reason; it exempts nothing) and `scope-empty` (no tracked file in scope: the run's only finding, never a clean result). All **Medium**: report-only and exit-neutral. A deliberate dated cite is settled with `plinecite:allow — <reason>` on its line. Prefix prose (`line N of foo.rs`), line-wrapped and string-literal cites are out of grammar, so a clean run certifies nothing. Rationale, grammar, scope and the dated landing measurement (§5): `docs/prds/reify-audit-stale-line-cite-detector.md`.
 
 ### PPRDSTATUS — notes
 
@@ -171,7 +168,7 @@ PPRDSTATUS (`--pattern PPRDSTATUS`) detects PRD status-prose drift: a PRD's own 
 - `cite-status-contradiction:` — in a PRD whose header is not terminal, a canonical `#NNNN` cite is immediately followed by a status parenthetical (`` #4876 (`deferred`, high) ``) whose class (live, done or cancelled) contradicts the cited task. Dated parentheticals (an ISO date, `as of`, `at freeze`), unknown ids and live-vs-live differences are silent.
 
 - **Scope:** tracked `docs/prds/**.md`, minus `*.capability-manifest.md`. `task_id` is the PRD's repo path, so the lane ignores `--task` and `--since`.
-- **Task source:** the loaded task corpus (`--tasks-file` snapshot, or the fused-memory live loader), never `tasks.db`. An unreachable fused-memory therefore exits 125 like every sweep. An empty corpus leaves nothing to check: `--pattern PPRDSTATUS` alone refuses it with exit 125 and no JSON array, while a mixed run prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health`, and its zero PPRDSTATUS findings mean "not checked" (`references/cli-invocation.md` §4.1).
+- **Task source:** the task corpus the fused-memory live loader returns, never `tasks.db`. An unreachable fused-memory therefore exits 125 like every sweep. An empty corpus leaves nothing to check: `--pattern PPRDSTATUS` alone refuses it with exit 125 and no JSON array, while a mixed run prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health`, and its zero PPRDSTATUS findings mean "not checked" (`references/cli-invocation.md` §4.1).
 - **Vocabulary authority:** `.claude/skills/prd/project.md` → "PRD terminal status — closed vocabulary + decompose-close stamp". The detector consumes that list and does not define it. Under its case-insensitive first-token rule, six PRDs were already terminal when the detector landed (2026-09-30), and it is silent on all of them: `v0_6/data-carrying-enums.md`, `v0_6/generic-data-carrying-enums.md`, `v0_6/result-and-fallback.md`, `kernel-seam-contracts.md`, `v0_6/process-dfm-geometry-metrology.md`, and the Title-Case `auto-type-param-resolution.md`.
 - **Routing:** one batched escalation per run through `scripts/pprdstatus-escalate.py`, never per finding and never follow-up tasks (`references/severity-routing.md` §2).
 - **No jcodemunch:** like the structural lanes above, adding it to a jcodemunch-backed pattern set makes that set *mixed*.

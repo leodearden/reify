@@ -1,0 +1,36 @@
+// First-class frame datums (task #6100): a frame projects its origin, basis
+// axes and three principal planes on every receiver path, whether the frame is
+// let-bound, built from let-bound `self` directions, or `self.frame` itself.
+
+module first_class_frame_datums
+
+structure def FirstClassFrameDatums {
+    // A frame built from the structure's own axes, then projected.
+    let f = frame_at(point3(4mm, 5mm, 6mm), self.x, self.z)
+    let f_o = f.origin
+    let f_x = f.x
+    let f_z = f.z
+    let f_xy = f.xy_plane
+    let f_yz = f.yz_plane
+    let f_zx = f.zx_plane
+
+    // A rotated frame (x = world y, z = world x) built from let-bound
+    // self directions, so its three plane normals are pairwise distinct.
+    let ry = self.y
+    let rx = self.x
+    let r = frame_at(point3(1mm, 2mm, 3mm), ry, rx)
+    let r_x = r.x
+    let r_y = r.y
+    let r_z = r.z
+    let r_xy = r.xy_plane
+    let r_yz = r.yz_plane
+    let r_zx = r.zx_plane
+
+    // The structure's own frame, let-bound and inline.
+    let s = self.frame
+    let s_o = s.origin
+    let s_yz = s.yz_plane
+    let s_zx = s.zx_plane
+    let sf_yz = self.frame.yz_plane
+    let sf_zx = self.frame.zx_plane
+}

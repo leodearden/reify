@@ -35,7 +35,7 @@ const OVER_CAP_DIM: usize = 2 * OVER_CAP_AUTOS;
 
 /// Build a no-solver engine — the literal `reify check` entry point.
 fn no_solver_engine() -> Engine {
-    Engine::new(Box::new(MockConstraintChecker::new()), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
 }
 
 /// Add `n` auto cells (`<entity>.a0..a{n-1}`) to a template builder.

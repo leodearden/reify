@@ -18,31 +18,33 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Absolute path to the workspace `examples/` directory.
 ///
-/// Resolved at compile time from `CARGO_MANIFEST_DIR` evaluated inside **this**
-/// crate, which sits at `<repo>/crates/reify-test-support/` whichever crate
-/// calls it — the resolution precedent [`crate::orphan_audit`]'s
-/// `resolve_script_and_root` documents.
+/// Resolved at run time by [`crate::workspace_root::workspace_root`], whichever
+/// crate calls it.
 ///
 /// # The one definition of the lexical prefix
 ///
 /// [`relative_to_examples_dir`] strips this path as a **lexical** prefix, so the
 /// walk root and the strip prefix must both come from this one definition. A
-/// caller re-spelling the `concat!` in its own crate gets a different byte
+/// caller re-spelling the path in its own crate can get a different byte
 /// string for the same directory (`…/crates/reify-compiler/../../examples`), and
 /// every `strip_prefix` against it panics. That is why this returns a `Path`
 /// rather than exposing a `pub const &str` to copy.
 ///
 /// # Deliberately not canonicalized
 ///
-/// The returned path keeps its `..` components, so it lexically prefixes every
-/// path [`discover_ri_files`] builds from it. Canonicalizing one side alone
-/// breaks that pairing; a test comparing this against a differently spelled
-/// path to the same directory must canonicalize both sides.
+/// The returned path keeps the runtime root's spelling, so it lexically
+/// prefixes every path [`discover_ri_files`] builds from it. Canonicalizing one
+/// side alone breaks that pairing; a test comparing this against a differently
+/// spelled path to the same directory must canonicalize both sides.
 pub fn examples_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"))
+    static EXAMPLES_DIR: OnceLock<PathBuf> = OnceLock::new();
+    EXAMPLES_DIR
+        .get_or_init(|| crate::workspace_root::workspace_root().join("examples"))
+        .as_path()
 }
 
 /// Strip the `root` prefix from `path` and return a portable,
@@ -228,8 +230,8 @@ pub fn filter_skipped<'p, 'k>(
 mod tests {
     /// `examples_dir` names the real workspace `examples/` directory.
     ///
-    /// Pins the load-bearing premise that this crate's `CARGO_MANIFEST_DIR`
-    /// walk lands on the repo root: the final component is `examples`, it is a
+    /// Pins the load-bearing premise that [`crate::workspace_root`] lands on
+    /// the repo root: the final component is `examples`, it is a
     /// directory that actually exists on disk, and its parent is a repo root
     /// (it contains `crates/`). A crate relocation or workspace re-layout that
     /// silently changed this crate's depth would fail here.
@@ -248,8 +250,8 @@ mod tests {
         );
         assert!(
             dir.is_dir(),
-            "expected {} to be an existing directory — if this crate moved, the \
-             CARGO_MANIFEST_DIR walk in examples_dir() needs updating, not this test",
+            "expected {} to be an existing directory — if this crate moved, \
+             crate::workspace_root's ROOT_MARKER needs updating, not this test",
             dir.display()
         );
 
@@ -261,6 +263,29 @@ mod tests {
             "expected examples_dir()'s parent ({}) to be the repo root, i.e. to contain a \
              'crates' directory",
             repo_root.display()
+        );
+    }
+
+    #[test]
+    fn examples_dir_follows_the_runtime_workspace_root_child() {
+        crate::workspace_root::reexec::in_child(|root| {
+            assert_eq!(super::examples_dir(), root.join("examples"));
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart. `examples_dir` is a pure
+    /// path join, so the fixture needs no `examples/` directory.
+    #[test]
+    fn examples_dir_follows_the_runtime_workspace_root() {
+        use crate::workspace_root::reexec::{Launch, fixture_workspace, run_child};
+
+        let fixture = fixture_workspace("examples-corpus-runtime-root-");
+        run_child(
+            "examples_corpus::tests::examples_dir_follows_the_runtime_workspace_root_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
         );
     }
 

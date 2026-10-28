@@ -5,7 +5,17 @@ Shell meta-tests for reify's infrastructure scripts (`scripts/lib_portable.sh`,
 
 ## Auto-discovery
 
-`run_all.sh` discovers and runs every file matching `test_*.sh` in this directory.
+`run_all.sh` discovers through ONE predicate, `classification_discovered_set` in
+[`run-all-classification-lib.sh`](run-all-classification-lib.sh): regular files
+(symlinks followed) matching `test_*.sh` in this directory, minus
+`test_helpers.sh`, sorted with `LC_ALL=C`. Every branch consumes it — the pool,
+legacy `REIFY_RUN_ALL_POOL_DISABLE=1`, `REIFY_RUN_ALL_MEMBER_SUBSET` and
+`--scope host-infra` — and so does the `REIFY_RUN_ALL_SUBSET_COUNT_ONLY` probe.
+The member subset, the H3 exclusion and the host-exclusive bucket are filters
+over its output, so native `test_*.py` discovery (#7445) is a change to that
+one function. The adoption-ratchet row `inline-discovery-loop` holds
+`run_all.sh` at zero code lines spelling a `test_*` glob (see "Adoption
+ratchet" below).
 To add a new meta-test, create `test_<name>.sh` — it will be picked up automatically
 on the next `run_all.sh` invocation and in CI.
 
@@ -59,6 +69,13 @@ task #7445. The deadline-capable-suite derivation
 two together, so a ported member keeps its roster place and its
 non-vacuity check. Making `test_*.py` discovery native — which would retire
 this wrapper idiom — is task #7445.
+
+**Moves are not authorship (D7).** New *assertions* are Python (stdlib
+`unittest` + `.sh` wrapper + manifest row). A satellite that *receives*
+existing bash blocks from an h14 partition stays bash: that is a
+behaviour-preserving move, not new authorship, consistent with the policy's
+"no scheduled mass migration". See PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` §3 D7 and the migration policy.
 
 ## Shared test helpers
 
@@ -242,8 +259,8 @@ the `LANE-LOCK RELEASE CONTRACT` block at the flock acquire in
 and a copy in this file would be one more site to update in lockstep.
 
 The permanent regression guards are hermetic and live in
-`test_seed_warm_lane.sh` — `H4b`/`H4e` (structural release marker) and `H7b`
-(an inherited FD 9 is never unlocked), plus **`H4c`**, which forks a live
+`test_seed_warm_lane.sh` — `Q4b`/`Q4e` (structural release marker) and `Q7b`
+(an inherited FD 9 is never unlocked), plus **`Q4c`**, which forks a live
 holder of a dup of seed's lane-lock FD and asserts the lock reads back free
 anyway; that last one is the only guard that fails if the release runs but has
 no effect.  This soak is the instrument for re-measuring the rate if the
@@ -280,7 +297,7 @@ allow-listed**, because flagging either would be actively harmful:
   requires a *local* open, so a file that merely inherits the descriptor is
   never considered and the guard is incapable of advising a release it has no
   right to advise.  (Whence `scripts/seed-warm-lane.sh` installs its release
-  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `H7b`
+  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `Q7b`
   pins that.)
 
 The all-clear is only worth as much as the instrument, so three liveness
@@ -452,6 +469,131 @@ the findings and never the baseline, and fails if the scan collapses toward
 zero.  Its bounds are conservative lower bounds on *the instrument working*,
 not targets for the tree.
 
+## Adoption ratchet (`adoption-ratchet.manifest`)
+
+`test_infra_adoption_ratchet.sh` counts the code lines matching each row's ERE
+in [`adoption-ratchet.manifest`](adoption-ratchet.manifest) and reds only when
+a count EXCEEDS its ceiling — one-directional, like the cited-test-path
+ratchet. The row grammar lives in the manifest header. Measure with
+`python3 tests/infra/adoption_ratchet.py`. Each extraction leaf of PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` adds its row at its
+post-extraction count.
+
+## Verify event channel
+
+`REIFY_VERIFY_EVENT_LOG` names a JSON-lines file: the verify tree's structured
+event channel (task 8685). Dark-factory allocates the path and exports it per
+verify invocation (PRD D5). `scripts/verify.sh` is not edited; the variable
+passes through its environment to `run_all.sh` and to every `slot_acquire`
+caller. The contract and its consumer rules are PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` §4 (C1–C4). This section is
+reify's working reference for it.
+
+**Inert when unset**: no file is created, and the text output is
+byte-identical with and without the channel.
+
+### Writers
+
+`scripts/lib_event_log.sh` is the one encoder (sourced-only). Its header is
+the single home of the emitters' positional signatures and of the writer
+contract: inert when unset, one line per record within `EVENT_LOG_LINE_MAX`
+bytes, list fields fitted to that cap, never fatal.
+
+- `run_all.sh` writes `run_start`, `member_start`, `member_finish`,
+  `phase_finish` and `run_finish`, on every branch (pool, serial, member
+  subset, `--scope host-infra`).
+- `scripts/lib_slot_acquire.sh::slot_emit_timeout` writes `slot_timeout` for
+  every finite-WAIT deadline in the verify tree, after its unchanged
+  `@@REIFY_SLOT_TIMEOUT@@` text line. `emitter` is `slot_acquire`'s optional
+  7th argument. It defaults to the basename of the file that called
+  `slot_acquire` (`lib_test_semaphore.sh`, `cargo-test-occt-gated.sh`,
+  `lib_lane_x_flock.sh`), and to `unknown` when there is no caller file (a
+  `bash -c` body). `run_all.sh`'s pool worker passes `run_all_pool`.
+
+The lib has a second sink, `EVENT_LOG_COPY_TO`: a path every record is also
+appended to, held in a shell variable its caller never exports, so only that
+shell and its subshells write it. `run_all.sh` moves
+`REIFY_RUN_ALL_TIMING_OUT` (the per-step file `scripts/verify.sh` allocates for
+the verify ledger) into it at startup and unsets the input. The step file
+therefore holds the same records as the channel, the pool workers' soft
+`slot_timeout` records included, whether or not the channel is set, and no
+member inherits either path.
+
+### Schema (v1)
+
+Every record carries `"v":1`, `"ts_ns"`, `"pid"` and `"event"`. Any integer
+or boolean field may be `null`; the lib header says when.
+
+| `event` | Fields | Written by |
+|---|---|---|
+| `run_start` | `run_id`, `scope` (`all`/`host-infra`), `branch` (`pool`/`serial`/`subset`/`host-infra`), `discovered` | `run_all.sh`, once discovery is known |
+| `member_start` | `member` (basename), `attempt` (1/2), `mode` (`capture`/`stream`) | `_ra_run_member` |
+| `member_finish` | `member`, `attempt`, `rc`, `verdict` (`PASS`/`FAIL`/`FLAKY_PASS`/`SKIP`), `duration_ms`, `queued_ns`, `started_ns`, `ended_ns`, `fail_detail` (list), `fail_detail_omitted` | `_ra_record_result`, once per member; `_ra_record_subset_skip` for `SKIP` |
+| `phase_finish` | `phase` (`pool`/`serial`/`retry` on the pool branch, `serial` on every serial branch), `started_ns`, `ended_ns` | `_ra_phase_finish`, once per phase, at its end |
+| `slot_timeout` | `reason`, `slots`, `waited`, `disposition` (`fatal`/`soft`), `lock`, `emitter` | `slot_emit_timeout` |
+| `run_finish` | `discovered`, `failures`, `failed`, `flaky`, `skipped` (lists), `interrupted`, `names_omitted` | `run_all.sh`, once per run: whichever of the normal path, `_ra_on_term` and the worktree-gone exit 99 comes first |
+
+The `*_ns` fields are epoch nanoseconds on the `ts_ns` clock
+(`event_log_clock_ns`). A `member_finish` times the attempt it reports, so a
+retried member's record times its retry. `queued_ns` is set only for a pool
+member's attempt 1: the moment its worker began waiting for a slot.
+`duration_ms` is `(ended_ns - started_ns)` in whole milliseconds.
+
+This leaf refines C2 in three places, and the refinements are contract:
+
+- A `SKIP` record carries `attempt` 0, and `rc`, `duration_ms`, `queued_ns`,
+  `started_ns` and `ended_ns` all null.
+- `fail_detail` keeps the newest `_RA_FAIL_DETAIL_MAX` sanitized FAIL lines,
+  each cut to the lib's `EVENT_LOG_DETAIL_ENTRY_MAX` and always valid UTF-8,
+  and newer entries win when the line cap bites.
+  `fail_detail_omitted` counts every line left out. The text FAILED-DETAIL
+  block comes from the same bound, so no reader parses its omitted-count
+  indicator line.
+- `run_finish.failures` is always exact. `failed`, then `flaky`, then
+  `skipped` are filled from one byte budget, so the kept names are a prefix of
+  their concatenation. `names_omitted` counts the names left out, which means
+  `failed` can be truncated to fit the cap while `failures` is not.
+
+### Reader
+
+The parser lives in `scripts/verify_events_lib.py` (stdlib only, safe under
+`python3 -I`), which `scripts/verify-ledger.py` shares to fold a step file into
+its record. `tests/infra/verify_events.py` is the CLI and query module over
+it. Readers never parse JSON in bash.
+
+```
+python3 -I tests/infra/verify_events.py summary PATH
+python3 -I tests/infra/verify_events.py query PATH [--event E] [--where K=V ...] [--count]
+python3 -I tests/infra/verify_events.py wait PATH [--event E] [--where K=V ...] [--count N] --timeout S
+```
+
+`summary` prints `key=value` scalars, `query` prints matching records as JSON
+lines, and `wait` exits 0 once enough records match or 1 when the timeout
+passes. Imported, `verify_events_lib` offers `read_events(path)` (a frozen
+`Events` with `records`, `skipped_lines` and `channel_present`), and
+`verify_events` offers `select`, `summarize` and `wait_for` over it. The
+parser applies C3 rule 1: a line that is not a v1 JSON object (it fails
+`json.loads`, or its `v` is not the integer 1) is skipped and counted, and a
+file with no `run_start` is "channel absent".
+
+### Isolation (C4)
+
+Members never see the variable: `_ra_spawn_member` runs every member under
+`env -u REIFY_VERIFY_EVENT_LOG`. A deadline a member hits writes no record to
+the parent channel, so every `slot_timeout` there comes from a process that is
+not a member. A member that runs a nested `run_all.sh` and needs a channel
+sets its own.
+
+### Copy-list consequence
+
+`scripts/lib_slot_acquire.sh` sources `lib_event_log.sh` by a double-quoted
+literal path, so the encoder is in `scripts/verify.sh`'s transitive source
+closure (`verify.sh` → `lib_test_semaphore.sh` → `lib_slot_acquire.sh` →
+`lib_event_log.sh`). Every hand-maintained `--print-plan` fixture copy list
+must include it. When one does not,
+`copy_list_preflight_lib.sh::assert_source_closure_copied` names it with a
+`copy-list drift: missing lib_event_log.sh` line.
+
 ## Assert behaviour, not source prose
 
 An infra assertion's subject is something the code **does**: an exit code,
@@ -531,7 +673,13 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 
 | File | Purpose |
 |------|---------|
-| `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
+| `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
+| `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
+| `run-all-member-budget-lib.sh` | Shared library: runs one member under its wall-clock budget in a process group of its own (`member_budget_run`) and attributes a timeout (`member_budget_exceeded`) |
+| `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
+| `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
+| `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
+| `test_infra_adoption_ratchet.py` | Its stdlib-unittest body, driving `adoption_ratchet.py` |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
@@ -549,3 +697,6 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 | `test_sync_comments_grep.sh` | Tests sync_comments grep pattern correctness |
 | `test_test_helpers.sh` | Tests the `test_helpers.sh` shared library |
 | `test_tree_sitter_pipeline.sh` | Integration tests for `scripts/tree-sitter-generate.sh` |
+| `verify_events.py` | Stdlib reader and CLI for the `REIFY_VERIFY_EVENT_LOG` verify event channel |
+| `test_verify_events.sh` | Tests the verify event channel: its writers, member isolation and `verify_events.py` |
+| `test_verify_events.py` | Its stdlib-unittest body |

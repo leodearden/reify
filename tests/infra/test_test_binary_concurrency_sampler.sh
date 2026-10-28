@@ -178,7 +178,7 @@ assert "A3: target/release/deps/ counts too (both cargo profiles run under verif
 # ---------------------------------------------------------------------------
 # A4 (HOST-WIDE, not lane-scoped).  The task description asks for "the host-wide
 # aggregate": test-threads bounds ONE nextest run, and with the semaphore at 1
-# plus the merge role's bypass (scripts/lib_test_semaphore.sh:91) two runs from
+# plus the merge role's bypass (test_semaphore_acquire in scripts/lib_test_semaphore.sh) two runs from
 # DIFFERENT lanes are reachable at once.  A lane-scoped counter cannot see that
 # and would under-report the host by construction.
 # ---------------------------------------------------------------------------

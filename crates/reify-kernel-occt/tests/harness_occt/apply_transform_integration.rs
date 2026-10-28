@@ -102,9 +102,9 @@ fn apply_transform_to_handle_identity_returns_box_with_same_aabb() {
 
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(20.0),
-            depth: Value::Real(30.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
         })
         .expect("box creation should succeed");
 
@@ -154,9 +154,9 @@ fn apply_transform_to_handle_pure_translation_shifts_aabb() {
 
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box creation should succeed");
 
@@ -210,9 +210,9 @@ fn apply_transform_to_handle_rotation_only_swaps_brick_extents() {
 
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(12.0),
-            height: Value::Real(8.0),
-            depth: Value::Real(6.0),
+            size_x: Value::Real(12.0),
+            size_y: Value::Real(8.0),
+            size_z: Value::Real(6.0),
         })
         .expect("12×8×6 brick creation should succeed");
 
@@ -267,9 +267,9 @@ fn apply_transform_to_handle_t_inverse_round_trip_matches_source_aabb() {
 
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(12.0),
-            height: Value::Real(8.0),
-            depth: Value::Real(6.0),
+            size_x: Value::Real(12.0),
+            size_y: Value::Real(8.0),
+            size_z: Value::Real(6.0),
         })
         .expect("brick creation should succeed");
 
@@ -376,9 +376,9 @@ fn apply_transform_to_handle_preserves_source_handle() {
 
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box creation should succeed");
 
@@ -438,9 +438,9 @@ fn apply_transform_to_handle_non_unit_quaternion_returns_err() {
 
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box creation should succeed");
 
@@ -509,9 +509,9 @@ fn apply_transform_to_handle_location_only_shares_tshape() {
     // Build the source box.
     let source = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.02),
-            height: Value::Real(0.02),
-            depth: Value::Real(0.02),
+            size_x: Value::Real(0.02),
+            size_y: Value::Real(0.02),
+            size_z: Value::Real(0.02),
         })
         .expect("source box must succeed");
 
@@ -544,9 +544,9 @@ fn apply_transform_to_handle_location_only_shares_tshape() {
     // Negative control: an independently-built box shares no TShape with source.
     let other = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.02),
-            height: Value::Real(0.02),
-            depth: Value::Real(0.02),
+            size_x: Value::Real(0.02),
+            size_y: Value::Real(0.02),
+            size_z: Value::Real(0.02),
         })
         .expect("other box must succeed");
     assert!(

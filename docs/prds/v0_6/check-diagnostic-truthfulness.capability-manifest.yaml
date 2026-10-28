@@ -52,7 +52,7 @@ tasks:
       kind: grep
       pattern: fn module_has_geometry
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: build-internally-calls-check-substrate
     binding: capability→producer (substrate) — build_with_geometry_output calls self.check(module)

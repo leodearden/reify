@@ -46,3 +46,5 @@ mod auto_type_param_unevaluated_constraint_tests;
 mod auto_type_params_max_depth_config;
 #[path = "harness_auto_binding/guarded_auto_let_tests.rs"]
 mod guarded_auto_let_tests;
+#[path = "harness_auto_binding/one_sided_auto_tests.rs"]
+mod one_sided_auto_tests;

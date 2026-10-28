@@ -260,6 +260,7 @@ const DIVERGENT_SHAPE_P2_SRC: &str = r#"structure DriverOrder {
 /// not at risk.
 fn fresh_engine(scheduler: BuildScheduler) -> Engine {
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
     );

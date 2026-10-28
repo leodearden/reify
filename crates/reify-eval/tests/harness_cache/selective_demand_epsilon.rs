@@ -72,6 +72,7 @@ fn cold_tessellate_per_realization_tally_matches_aggregate() {
     let body_b = NodeId::Realization(body_b_rid.clone());
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -162,6 +163,7 @@ fn per_tick_reset_hidden_body_stays_zero_ops() {
     let w = ValueCellId::new(e, "w");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -286,6 +288,7 @@ fn row1_all_visible_selective_matches_full_scope_both_schedulers() {
     let body_b_rid = RealizationNodeId::new(e, 1);
     let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -344,6 +347,7 @@ fn row5_collection_grow_prunes_hidden_realizes_visible() {
     let w = ValueCellId::new(e, "w");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -420,6 +424,7 @@ fn row6_cold_full_scope_reincludes_warm_pruned_hidden_body() {
     let w = ValueCellId::new(e, "w");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

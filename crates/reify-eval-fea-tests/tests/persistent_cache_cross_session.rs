@@ -81,7 +81,8 @@
 //!
 //! `reify-eval-fea-tests` has no harness: it is 30 standalone `tests/*.rs`
 //! binaries whose helpers are duplicated per file deliberately. The helpers
-//! below follow that convention and are not an oversight.
+//! below follow that convention and are not an oversight. The one exception is
+//! `backdate_mtime`, imported from `reify_eval::persistent_cache`.
 //!
 //! ## Cost
 //!
@@ -92,7 +93,7 @@
 
 use reify_core::Severity;
 use reify_eval::persistent_cache::{
-    ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, read_entry,
+    ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, backdate_mtime, read_entry,
 };
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -240,47 +241,6 @@ fn bin_input_hash(bin: &std::path::Path) -> String {
         .to_str()
         .expect("cache filenames are ASCII hex")
         .to_string()
-}
-
-/// Backdate the mtime of `path` to `age_secs` seconds in the past.
-///
-/// A file-local clone of `reify_eval::persistent_cache::backdate_mtime`
-/// (persistent_cache.rs:1737), which is `#[cfg(test)] pub(crate)` and so is
-/// invisible from an integration test in another crate — `cfg(test)` applies
-/// only when reify-eval is itself the crate under test, not when it is a
-/// dev-dependency. This is a deliberate mirror of that helper, not an
-/// accidental duplicate.
-///
-/// "Keep the two bodies in step" is an unenforced obligation and will rot. The
-/// DURABLE fix is to widen the upstream gate from `#[cfg(test)]` to
-/// `#[cfg(any(test, feature = "test-instrumentation"))]` and delete this copy
-/// in favour of an import — exactly the pattern this crate's own `Cargo.toml`
-/// already documents for `cache_store()`, and whose `test-instrumentation`
-/// feature this crate already enables. That edit lands in
-/// `crates/reify-eval/src/persistent_cache.rs`, which is production source and
-/// outside task #2980's test-only scope, so it is deliberately NOT made here.
-/// A future author touching either body should do that instead of re-syncing.
-///
-/// Directories are opened read-only and regular files write-only: on Linux
-/// `futimens` requires only ownership of the inode, not write access on the
-/// file descriptor, which is what makes the directory case work at all (a
-/// directory cannot be opened `O_WRONLY`).
-fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
-    use std::fs::FileTimes;
-    use std::time::{Duration, SystemTime};
-    let t = SystemTime::now()
-        .checked_sub(Duration::from_secs(age_secs))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    let times = FileTimes::new().set_modified(t);
-    let f = if path.is_dir() {
-        std::fs::File::open(path).expect("opening a directory read-only must succeed")
-    } else {
-        std::fs::File::options()
-            .write(true)
-            .open(path)
-            .expect("opening a file write-only must succeed")
-    };
-    f.set_times(times).expect("set_times must succeed");
 }
 
 /// Extract `max_von_mises` as a raw bit pattern.

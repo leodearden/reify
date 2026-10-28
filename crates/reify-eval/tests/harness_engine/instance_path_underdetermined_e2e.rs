@@ -285,7 +285,7 @@ fn eval_through_reify_check(src: &str, what: &str) -> EvalResult {
          being counted; got {errors:#?}",
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.eval(&compiled)
 }
 

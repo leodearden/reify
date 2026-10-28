@@ -15,8 +15,15 @@
  *    or opens the inline field via injected UI callbacks.
  */
 import type { EditorView } from '@codemirror/view';
+import {
+  askFresh,
+  versionsDisagree,
+  type DocumentVersionReader,
+  type VersionSkewGuard,
+} from './versionSkew';
 import type { PrepareRenameResult, Range, TextEdit, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
+import { isSameFile } from '../utils/pathUtils';
 
 /**
  * Apply an array of LSP TextEdits to a plain string, returning the result.
@@ -128,34 +135,11 @@ function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[] {
 }
 
 /**
- * Reads the version the client last SENT to the server for `uri`.
- *
- * `undefined` means the client never tracked that URI — not that it is at
- * version zero.
- */
-export type DocumentVersionReader = (uri: string) => number | undefined;
-
-/**
- * What renameCommand needs to tell an edit computed against the text on screen
- * from one computed against text the client has since moved past.
- */
-export interface RenameSkewGuard {
-  currentVersion: DocumentVersionReader;
-  /**
-   * Hand the server any local edit it has not received yet, or return null
-   * when it already has the text on screen. Awaited before EVERY rename
-   * request, the re-issue included, because the version comparison can only
-   * see edits that were sent.
-   */
-  syncServer(view: EditorView): Promise<void> | null;
-}
-
-/**
  * URIs whose edits were computed against a document version the client no
  * longer holds.
  *
- * A URI is stale only on DEMONSTRATED disagreement — both versions known and
- * different. Every other combination is not-stale by construction:
+ * Staleness is versionsDisagree's rule (demonstrated disagreement only). The
+ * two absent sides it treats as unknowable mean, for a rename:
  *
  *  - `version === null` — the server stated no version, either explicitly or by
  *    omitting the key (both normalise to `null` in workspaceEditTargets). It
@@ -169,20 +153,15 @@ export interface RenameSkewGuard {
  *
  * This detects exactly the race it is named for: the server computed these
  * edits against version N, and the client has since sent M. It cannot see
- * local edits not yet sent, which is why every request is preceded by the
- * guard's `syncServer`; `lspRangeToCmRange`'s null-skip remains a last-resort
- * backstop.
+ * local edits not yet sent, which is why askFresh syncs the server around every
+ * request; `lspRangeToCmRange`'s null-skip remains a last-resort backstop.
  */
 function staleEditTargets(
   edit: WorkspaceEdit,
   currentVersion: DocumentVersionReader,
 ): string[] {
   return workspaceEditTargets(edit)
-    .filter(({ uri, version }) => {
-      if (version === null) return false;
-      const held = currentVersion(uri);
-      return held !== undefined && held !== version;
-    })
+    .filter(({ uri, version }) => versionsDisagree(version, currentVersion(uri)))
     .map(({ uri }) => uri);
 }
 
@@ -208,9 +187,9 @@ export interface WorkspaceEditDeps {
  * Route a WorkspaceEdit's per-URI edits to the appropriate sink.
  *
  * Routing logic per URI:
- *  - uri === activeUri         → deps.applyActive (uses the live CM view)
- *  - deps.isOpen(uri) === true → deps.applyOpenInactive (buffer update + persist)
- *  - else                      → deps.applyClosed (direct disk write)
+ *  - same document as activeUri (isSameFile) → deps.applyActive (uses the live CM view)
+ *  - deps.isOpen(uri) === true                → deps.applyOpenInactive (buffer update + persist)
+ *  - else                                     → deps.applyClosed (direct disk write)
  *
  * URIs with an absent or empty edit list are silently skipped.
  * Pure routing — no I/O of its own.
@@ -223,7 +202,7 @@ export function applyWorkspaceEditAcrossFiles(
   for (const { uri, edits } of workspaceEditTargets(edit)) {
     if (!edits || edits.length === 0) continue;
 
-    if (uri === activeUri) {
+    if (isSameFile(uri, activeUri)) {
       deps.applyActive(uri, edits);
     } else if (deps.isOpen(uri)) {
       deps.applyOpenInactive(uri, edits);
@@ -251,7 +230,7 @@ export function applyWorkspaceEdit(
   edit: WorkspaceEdit,
   uri: string,
 ): boolean {
-  const edits = workspaceEditTargets(edit).find((t) => t.uri === uri)?.edits;
+  const edits = workspaceEditTargets(edit).find((t) => isSameFile(t.uri, uri))?.edits;
   if (!edits || edits.length === 0) return false;
 
   const doc = view.state.doc;
@@ -330,40 +309,22 @@ export interface RenameUi {
 export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: string) => void;
 
 /**
- * Request a rename edit that is safe to apply, re-issuing ONCE on version skew.
- *
- * An edit whose stamped versions disagree with the client's describes a document
- * the client no longer holds, so its ranges no longer point at the text they
- * were computed from. Asking again is the only recovery available from here: the
- * second request is answered against the version the client has since sent.
- *
- * The re-issue is bounded at one. A user typing through the debounced didChange
- * can invalidate every answer in turn, and an unbounded loop would spin against
- * them instead of reporting that the rename did not apply.
- *
- * Returns null when the server refused the name outright, or when the re-issued
- * edit was stale too — both mean "apply nothing, tell the user".
- *
- * With no `guard` nothing is ever judged stale, so the single request and its
- * answer pass straight through.
+ * Request a rename edit whose stamped versions agree with the client's, or
+ * null when the server refused the name or every answer it gave was stale
+ * (see askFresh). With no `guard` the single answer passes straight through.
  */
 async function resolveApplicableEdit(
   requestRename: () => Promise<WorkspaceEdit | null>,
   view: EditorView,
-  guard?: RenameSkewGuard,
+  guard?: VersionSkewGuard,
 ): Promise<WorkspaceEdit | null> {
-  const request = async (): Promise<WorkspaceEdit | null> => {
-    await guard?.syncServer(view);
-    return requestRename();
-  };
-  const applicable = (edit: WorkspaceEdit | null): boolean =>
-    !!edit && (!guard || staleEditTargets(edit, guard.currentVersion).length === 0);
-
-  const first = await request();
-  if (!first || applicable(first)) return first ?? null;
-
-  const reissued = await request();
-  return applicable(reissued) ? reissued : null;
+  if (!guard) return requestRename();
+  return askFresh(
+    guard,
+    view,
+    requestRename,
+    (edit) => !!edit && staleEditTargets(edit, guard.currentVersion).length > 0,
+  );
 }
 
 /**
@@ -395,7 +356,7 @@ export function renameCommand(
   client: RenameClient,
   ui: RenameUi,
   applyEdit?: ApplyEditFn,
-  guard?: RenameSkewGuard,
+  guard?: VersionSkewGuard,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
     const head = view.state.selection.main.head;
@@ -410,7 +371,7 @@ export function renameCommand(
         // A file switch can swap the buffer while prepareRename is in flight (the
         // editor reuses one EditorView across files). Abandon a stale request
         // rather than prompting/refusing on the now-different document.
-        if (uriGetter() !== uri) return;
+        if (!isSameFile(uriGetter(), uri)) return;
         if (!target) {
           // Invariant-4 refusal: show the message, edit nothing.
           ui.showCannotRename(view);
@@ -432,7 +393,7 @@ export function renameCommand(
                 // now-different view; a stale apply would corrupt the new file.
                 // Checked HERE, after the LAST await, so a re-issued request's
                 // second await window is covered by the same guard.
-                if (!view.dom.isConnected || uriGetter() !== uri) return;
+                if (!view.dom.isConnected || !isSameFile(uriGetter(), uri)) return;
                 if (!edit) {
                   // Server rejected the accepted name (invalid identifier /
                   // no-op), or every answer it gave was stale: the field already

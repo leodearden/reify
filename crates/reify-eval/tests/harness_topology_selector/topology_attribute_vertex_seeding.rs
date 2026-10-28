@@ -50,7 +50,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 
 fn engine_with_occt() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
 fn assert_no_geometry_errors(build_result: &reify_eval::BuildResult) {
@@ -92,9 +92,9 @@ fn extract_vertices_and_attribute_seeding_box() {
     let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box should build")
         .id;

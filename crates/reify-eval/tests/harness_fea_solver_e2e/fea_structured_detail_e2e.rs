@@ -144,3 +144,71 @@ fn fea_unconstrained_structured_detail_survives_a_warm_persistent_serve() {
         "the warm serve must replay exactly the cold solve's structured detail"
     );
 }
+
+/// Two `solve_load_cases` cases, one with `supports: []`.
+const MULTI_CASE_ONE_UNSUPPORTED_SOURCE: &str = r#"
+structure def MultiCaseUnsupportedFixture {
+    let lc_free   = LoadCase(
+        name:     "free",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [],
+    )
+    let lc_fixed  = LoadCase(
+        name:     "fixed",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_free, lc_fixed], ElasticOptions())
+}
+"#;
+
+/// The unsupported case's Unconstrained payload must survive the
+/// `solver::multi_case` trampoline to `eval_result.structured_detail`.
+#[test]
+fn fea_multi_case_unsupported_case_structured_detail_survives_to_eval_result() {
+    let compiled = parse_and_compile_with_stdlib(MULTI_CASE_ONE_UNSUPPORTED_SOURCE);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:?}"
+    );
+
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    assert!(
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .any(|(_, data)| data.target == "solver::multi_case"),
+        "non-vacuity: the payload must come through a solver::multi_case ComputeNode; \
+         found targets: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| d.target.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        eval_result.structured_detail,
+        vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            }
+        )],
+    );
+}

@@ -201,11 +201,11 @@ assert "verify.sh -h stdout documents the --test-threads flag" \
 # pool.
 #
 # THE HAZARD, concretely.  verify.sh forwards TEST_THREADS into the emitted
-# nextest line at two sites — emit_nextest_pass (~2278) and the gui-feature
-# pass (~2750).  nextest's CLI --test-threads OUTRANKS --config-file, so a
+# nextest line at two sites — emit_nextest_pass() and the gui-feature
+# pass inside add_test_passes().  nextest's CLI --test-threads OUTRANKS --config-file, so a
 # forwarded value silently REPLACES the [profile.default] test-threads pool that
 # scripts/gen-nextest-config.sh derived.  The env route is already closed
-# (verify.sh unconditionally clears TEST_THREADS at ~600), so the CLI flag is the
+# (verify.sh unconditionally initialises TEST_THREADS="" in its argument-parsing block), so the CLI flag is the
 # only way a value reaches the pool — and the EXCEEDS case is unreachable by any
 # caller today (dark-factory's offline lane passes 1 or 2).  This is therefore
 # inert-by-default hardening: it enforces the invariant rather than merely

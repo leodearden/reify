@@ -57,8 +57,6 @@ use reify_core::{DiagnosticCode, ModulePath};
 /// caller-side defence-in-depth, scoped to `reify-lsp`'s three production
 /// entry points only — [`crate::diagnostics::eval_guard::compiled_graph_has_unrepresentable_cell`]
 /// skips the eval/check pass when the graph would carry such a cell.
-/// `crates/reify-cli/src/mcp_context.rs`'s three ungated `engine.eval` sites
-/// remain #6851's to fix.
 ///
 /// **It IS test-pinned here** — the guard is exactly what makes a test that
 /// reaches the hazard possible without itself panicking. See
@@ -146,9 +144,9 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
 /// member is not merely a different spelling: `crates/reify-compiler/src/`
 /// collects it into `CompiledGuardedGroup::members`, a Vec that never appears
 /// in `TopologyTemplate::value_cells`. `EvaluationGraph::from_templates`
-/// nevertheless inserts it into `graph.value_cells` (the
-/// `guarded_groups[*].members` / `[*].else_members` arms of
-/// `crates/reify-eval/src/graph.rs`), cloning its `cell_type` verbatim. A
+/// nevertheless inserts it into `graph.value_cells` (a guarded-member
+/// contribution of `reify_eval::graph::cell_contributions::contributed_cells`,
+/// the enumeration `from_templates` folds), cloning its `cell_type` verbatim. A
 /// scan of `value_cells` alone therefore proves ABSENCE over a strict subset
 /// of what reaches the graph, and answers "safe" on a graph that is not —
 /// measured on this fixture: stage 1 all-representable → `None`, while the

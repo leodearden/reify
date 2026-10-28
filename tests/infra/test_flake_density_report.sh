@@ -2,10 +2,10 @@
 # Infrastructure test for task 7430 (flaky-ledger density report).
 #
 # This wrapper is the member run_all.sh actually discovers: it globs
-# `test_*.sh` only (header :22-24, repeated at :1347/:1456/:2013), mirrored by
-# classification_discovered_set at run-all-classification-lib.sh:174-183. The
-# real assertions live in the sibling .py; without this file they would be
-# silently never run, reading as coverage while asserting nothing.
+# `test_*.sh` only; discovery is classification_discovered_set in
+# run-all-classification-lib.sh. The real assertions live in the sibling
+# .py; without this file they would be silently never run, reading as
+# coverage while asserting nothing.
 #
 # Verifies that:
 #   1. python3 is on PATH

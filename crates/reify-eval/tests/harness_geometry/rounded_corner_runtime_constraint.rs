@@ -293,7 +293,7 @@ fn auto_corner_r_hands_the_synthesized_constraint_to_the_solver() {
     let captured = solver.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None).with_solver(Box::new(solver));
     let _ = engine.eval(&compiled);
 
     let problem = captured
@@ -333,7 +333,7 @@ fn auto_corner_r_hands_the_synthesized_constraint_to_the_solver() {
 #[test]
 fn auto_corner_r_solves_into_the_feasible_region() {
     let compiled = parse_and_compile(AUTO_CORNER_R_SOURCE);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
         .with_solver(Box::new(DimensionalSolver));
     let _ = engine.eval(&compiled);
 

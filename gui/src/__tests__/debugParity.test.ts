@@ -83,7 +83,7 @@ const dispatchArmNames = extractDispatchArmNames(debugServerSource);
 /**
  * Tools with a named dispatch_tool arm resolved entirely in Rust.
  * None sends its OWN command to query_frontend, so no TS handler is needed:
- *   - health / engine_state / demand_dispatch / mesh_stats / morph_stats /
+ *   - health / engine_state / demand_dispatch / mesh_stats /
  *       mesh_morph_stats: fully resolved in the Rust dispatch_tool match arm.
  *   - load_fixture: handle_load_fixture resolves a fixture path then reuses
  *       the existing "open_file" frontend command — there is no "load_fixture"
@@ -104,7 +104,6 @@ const PURE_ENGINE_SIDE = [
   // query_frontend, so no TS handler is needed (mirrors engine_state).
   'demand_dispatch',
   'mesh_stats',
-  'morph_stats',
   'mesh_morph_stats',
   'load_fixture',
   // set_fea_case has a named dispatch_tool arm in Rust (handle_set_fea_case)

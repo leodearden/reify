@@ -63,7 +63,7 @@ fn feature_angle_is_strictly_below_a_right_dihedral() {
     // strictly stronger here — a regression fails the build rather than waiting
     // for this test to be RUN on a `has_gmsh` host. The message loses the
     // interpolated angle (a const panic takes a literal only); the offending
-    // value is `kernel_real.rs`'s `CLASSIFY_FEATURE_ANGLE`.
+    // value is `meshable_region.rs`'s `CLASSIFY_FEATURE_ANGLE`.
     const {
         assert!(
             CLASSIFY_FEATURE_ANGLE < std::f64::consts::FRAC_PI_2,

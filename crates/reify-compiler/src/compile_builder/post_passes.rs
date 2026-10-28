@@ -24,8 +24,15 @@ use crate::types::{CompiledField, CompiledFieldSource, CompiledPurpose, Topology
 /// suite to match, and it shares nothing with the passes above; re-exported
 /// here so every phase `lib.rs` calls is spelled the same way.
 mod inert_objective;
+/// The one-sided strict-auto refusal, static arm (task #6692), re-exported
+/// beside `phase_inert_objective_check` for the same reason.
+mod one_sided_auto;
+/// Sub-component graph queries shared by the two passes above, so neither
+/// depends on the other.
+mod template_graph;
 
 pub(crate) use inert_objective::phase_inert_objective_check;
+pub(crate) use one_sided_auto::phase_one_sided_auto_check;
 
 /// Phase-12 post-compilation: detect recursive sub-component cycles via
 /// DFS on the template reference graph, verify recursive structures have

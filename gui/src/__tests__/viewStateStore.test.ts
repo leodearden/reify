@@ -1,7 +1,7 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createRoot, createComputed } from 'solid-js';
+import { createRoot, createComputed, createMemo } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { ViewStateStore } from '../stores';
@@ -1175,6 +1175,126 @@ describe('regenerateAutoViews — atomicity (single reactive notification)', () 
       //                   second setState updates views + replaces explicit (notify 2).
       // After  fix: 1  — single batched setState.
       expect(updateCount).toBe(1);
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// treeVersion — the queries track tree changes (PRD gui-frontend-wire-bindings-
+// bridge-port §4.5, B8/B8′). Every observer below is created on an EMPTY store,
+// so its first evaluation hits the no-tree short-circuit.
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — treeVersion: queries track tree changes (PRD §4.5 B8/B8′)', () => {
+  function rootWithChild(child: string) {
+    return [makeNode({ entity_path: 'Root', children: [makeNode({ entity_path: child })] })];
+  }
+
+  it('(a) getEffectiveVisibility read before the tree loads re-evaluates on setTree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const aux = createMemo(() => store.getEffectiveVisibility('Root.aux'));
+      expect(aux()).toBe('show');
+
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          children: [
+            makeNode({ entity_path: 'Root.aux', kind: 'realization', has_mesh: true, default_visible: false }),
+          ],
+        }),
+      ]);
+
+      expect(aux()).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(b) getAllEffective read before the tree loads re-evaluates on setTree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const all = createMemo(() => store.getAllEffective());
+      expect(all()).toEqual({});
+
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          children: [
+            makeNode({ entity_path: 'Root.aux', kind: 'realization', has_mesh: true, default_visible: false }),
+          ],
+        }),
+      ]);
+
+      expect(all()).toEqual({ Root: 'show', 'Root.aux': 'hidden' });
+      dispose();
+    });
+  });
+
+  it('(c) getStalePaths read before the tree loads re-evaluates on setTree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.applyPersistedState({
+        version: '2',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: { 'Gone.path': 'hidden' },
+      });
+      const stale = createMemo(() => store.getStalePaths());
+      expect(stale()).toEqual([]);
+
+      store.setTree([makeNode({ entity_path: 'Root.A' })]);
+
+      expect(stale()).toEqual(['Gone.path']);
+      dispose();
+    });
+  });
+
+  it('(d) hasOverride read before the tree loads re-evaluates on setTree', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.applyPersistedState({
+        version: '2',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: { Root: 'hidden', 'Root.A': 'hidden' },
+      });
+      const override = createMemo(() => store.hasOverride('Root.A'));
+      expect(override()).toBe(true);
+
+      store.setTree(rootWithChild('Root.A'));
+
+      expect(override()).toBe(false);
+      dispose();
+    });
+  });
+
+  it('(e) each tree change re-runs a getAllEffective observer exactly once', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const treeA = rootWithChild('Root.a');
+      const treeB = rootWithChild('Root.b');
+
+      let runs = -1;
+      let latest: Record<string, string> = {};
+      createComputed(() => {
+        latest = store.getAllEffective();
+        runs++;
+      });
+      expect(runs).toBe(0);
+
+      store.regenerateAutoViews(treeA);
+      expect(runs).toBe(1);
+      expect(Object.keys(latest).sort()).toEqual(['Root', 'Root.a']);
+
+      // auto:default is active, so this regeneration also replaces `explicit`
+      // wholesale: the store write and the version bump must share one batch.
+      store.regenerateAutoViews(treeB);
+      expect(runs).toBe(2);
+      expect(Object.keys(latest).sort()).toEqual(['Root', 'Root.b']);
+
+      store.setTree(treeA);
+      expect(runs).toBe(3);
       dispose();
     });
   });

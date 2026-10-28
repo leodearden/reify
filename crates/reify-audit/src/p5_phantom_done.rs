@@ -9,6 +9,7 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
+use crate::caller_lookup::CallerLookups;
 use crate::{
     AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, JCodemunchCallFailed, Pattern,
     Severity, TaskMetadata,
@@ -1612,8 +1613,10 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///    - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
 ///    - Non-blank `// G-allow:` marker (the last two via
 ///      [`crate::DeclSuppression::opts_out`]).
-/// 5. **No non-test workspace caller**: `find_references` returns only test-path
-///    refs (or none) for the symbol.
+/// 5. **No non-test workspace caller**: `find_references` answers with only
+///    test-path refs (or none) for the symbol ([`crate::caller_lookup::has_non_test_caller`]).
+///    A lookup that FAILS answers nothing: the symbol is skipped, not
+///    stranded.
 ///
 /// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
 /// suppression guards keep H2 and P1 semantically consistent. Task 4140 §H2.
@@ -1633,7 +1636,10 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///
 /// A FAILED `get_changed_symbols` query yields one Low
 /// [`Pattern::P5LivePathUnexamined`] ([`live_path_unexamined`]), as P1 does.
-/// An answered query that left nothing to examine — an empty slice, or every
+/// So does a task with one or more FAILED `find_references` lookups
+/// ([`live_path_symbols_unexamined`]): one finding naming every skipped
+/// symbol, while the task's other symbols are still examined. An answered
+/// query that left nothing to examine — an empty slice, or every
 /// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
 /// via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
@@ -1655,41 +1661,50 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
         eprintln!("{msg}");
     }
-    let mut findings = Vec::new();
-    for symbol in symbols {
+    let examinable = symbols.into_iter().filter(|symbol| {
         // Same three-state reading as p1_producer_orphan: an unlocatable
         // declaration means UNKNOWN, not "no opt-out". Skip rather than strand.
-        if !symbol.decl_located() {
-            continue;
-        }
+        //
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
         // (#[allow(dead_code)], #[cfg(test)]), and non-blank G-allow marker.
-        // Delegated to crate::is_symbol_suppressed so that P1 and P5 H2 share
+        // Delegated to crate::jcodemunch_ops::is_symbol_suppressed so that P1 and P5 H2 share
         // the same opt-out semantics and cannot drift independently.
-        if crate::is_symbol_suppressed(&symbol) {
-            continue;
-        }
-        let has_non_test_caller = ctx
-            .jcodemunch
-            .find_references(&symbol)
-            .iter()
-            .any(|r| !crate::is_test_path(&r.file));
-        if !has_non_test_caller {
-            findings.push(Finding {
-                pattern: Pattern::P5LivePathStranded,
-                severity: Severity::Medium,
-                task_id: meta.task_id.clone(),
-                summary: format!(
-                    "changed symbol `{}` at {}:{} has no non-test workspace caller — \
-                     possible live-path stranding from a cross-crate relocation \
-                     (task 4140 H2)",
-                    symbol.name, symbol.file, symbol.line
-                ),
-                evidence: vec![EvidenceRef::File { path: symbol.file.clone() }],
-            });
-        }
-    }
+        symbol.decl_located() && !crate::jcodemunch_ops::is_symbol_suppressed(symbol)
+    });
+    // A failed lookup is not "no caller": skip and record the symbol,
+    // as p1_producer_orphan does, and examine the rest.
+    let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch, examinable);
+    let mut findings: Vec<Finding> = lookups
+        .unconsumed
+        .iter()
+        .map(|symbol| stranded_finding(&meta.task_id, symbol))
+        .collect();
+    findings.extend(live_path_symbols_unexamined(
+        &meta.task_id,
+        &since_sha,
+        until_sha,
+        &lookups,
+    ));
     findings
+}
+
+/// The Medium `P5LivePathStranded` finding for a changed `symbol` of done
+/// task `task_id` that has no non-test workspace caller.
+fn stranded_finding(task_id: &str, symbol: &ChangedSymbol) -> Finding {
+    Finding {
+        pattern: Pattern::P5LivePathStranded,
+        severity: Severity::Medium,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "changed symbol `{}` at {}:{} has no non-test workspace caller — \
+             possible live-path stranding from a cross-crate relocation \
+             (task 4140 H2)",
+            symbol.name, symbol.file, symbol.line
+        ),
+        evidence: vec![EvidenceRef::File {
+            path: symbol.file.clone(),
+        }],
+    }
 }
 
 /// The `get_changed_symbols` range `(since, until)` H2 queries for `meta`, or
@@ -1729,6 +1744,40 @@ fn live_path_unexamined(
     }
 }
 
+/// The finding for a cross-crate done task some of whose symbols H2 could
+/// not examine because their `find_references` lookups failed, or `None`
+/// when every lookup answered. Low, and worded so that those symbols' lack
+/// of `P5LivePathStranded` findings cannot be read as a clean result; the
+/// task's other symbols were examined, so a stranded finding beside it is
+/// genuine.
+///
+/// One finding per task however many lookups failed: the summary names every
+/// skipped symbol and the first failure, and `evidence` cites each skipped
+/// symbol's declaration ([`crate::caller_lookup::SkippedSymbols`]).
+fn live_path_symbols_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    lookups: &CallerLookups,
+) -> Option<Finding> {
+    let skipped = lookups.skipped()?;
+    Some(Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "live-path-unexamined: H2 could not examine {count} symbol(s) of \
+             done task {task_id} from {since_sha}..{until_sha} ({names}): \
+             {first_failure}; zero live-path-stranded findings for them are \
+             not a clean result — re-run once jcodemunch answers",
+            count = skipped.count,
+            names = skipped.names,
+            first_failure = skipped.first_failure,
+        ),
+        evidence: skipped.evidence,
+    })
+}
+
 /// The finding for a sweep in which H2 had no usable jcodemunch session at
 /// all, so it examined no task: `reason` says why. Low, run-level (empty
 /// `task_id`), and worded so that the run's lack of `P5LivePathStranded`
@@ -1762,7 +1811,7 @@ pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Find
 /// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
 ///   range really does introduce no symbol.
 /// - Symbols arrived but not one declaration was locatable
-///   ([`crate::wholly_unlocatable_count`]), so the guard below skipped every
+///   ([`crate::jcodemunch_ops::wholly_unlocatable_count`]), so the guard below skipped every
 ///   row. This one is the quiet failure: the jcodemunch grammar drift that
 ///   produces it used to announce itself as a false-positive storm.
 ///
@@ -1781,7 +1830,7 @@ fn h2_vacuous_breadcrumb(
              (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
         )
     } else {
-        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        let unlocatable = crate::jcodemunch_ops::wholly_unlocatable_count(symbols)?;
         format!(
             "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
              unlocatable declaration and were skipped unexamined (jcodemunch \
