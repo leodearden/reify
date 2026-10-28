@@ -48,3 +48,5 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 reify-test-support.workspace = true
+# The cache tests name `ElasticResult` from its defining crate.
+reify-compute-contract.workspace = true
