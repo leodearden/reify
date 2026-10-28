@@ -13,9 +13,8 @@
 //! also uses it — see `.task/plan.json` design_decisions for the full
 //! rationale.
 //!
-//! `reify-eval`'s `persistent_cache.rs` re-exports `ElasticResult`,
-//! `ShellChannels`, and `max_deflection_magnitude` at their original
-//! `crate::persistent_cache::` / `reify_eval::persistent_cache::` paths.
+//! Consumers import `ElasticResult`, `ShellChannels`, `AposterioriEstimate`
+//! and `max_deflection_magnitude` from `reify_compute_contract` directly.
 
 use std::io::{self, Read, Write};
 
