@@ -409,13 +409,16 @@ fn min_and_max_preimages() {
     );
 }
 
-// ── Single-relation HC4 over CompiledExpr ───────────────────────────────────
+// ── HC4 over CompiledExpr ───────────────────────────────────────────────────
 //
-// Each case compiles ONE leaf and revises it alone from an all-ENTIRE box.
+// Single-relation cases compile ONE leaf and revise it alone from an
+// all-ENTIRE box; fixpoint cases contract a set of relations together.
 
-mod single_relation {
+mod hc4_over_compiled_exprs {
     use super::{Interval, iv};
-    use reify_constraints::hc4::{OperandClassifier, RefClass, Relation, Revision, Slack};
+    use reify_constraints::hc4::{
+        Contraction, OperandClassifier, RefClass, Relation, Revision, Slack, contract,
+    };
     use reify_core::scalar_tolerance::{LENGTH_FLOOR_M, scalars_equal};
     use reify_core::{DimensionVector, Type, ValueCellId};
     use reify_ir::{BinOp, CompiledExpr, CompiledFunction, ValueMap};
@@ -706,5 +709,147 @@ mod single_relation {
         let leaf = le(binop(BinOp::Mul, x(), x()), num(-1.0));
         let revised = revise_alone(&leaf, &Classes::of(&["x"]), Slack::Exact);
         assert_eq!(revised.revision, Revision::Empty);
+    }
+
+    // ── Multi-relation fixpoint contraction ─────────────────────────────────
+
+    fn compile_all(leaves: &[CompiledExpr], classes: &Classes) -> Vec<Relation> {
+        leaves
+            .iter()
+            .map(|leaf| Relation::compile(leaf, classes).expect("leaf compiles"))
+            .collect()
+    }
+
+    fn contract_from(
+        leaves: &[CompiledExpr],
+        classes: &Classes,
+        start: Vec<Interval>,
+        slack: Slack,
+    ) -> (Contraction, Vec<Interval>) {
+        let relations = compile_all(leaves, classes);
+        let mut bx = start;
+        let outcome = contract(&relations, &mut bx, slack);
+        (outcome, bx)
+    }
+
+    fn assert_contains_point(bx: &[Interval], point: &[f64]) {
+        for (interval, &p) in bx.iter().zip(point) {
+            assert!(interval.contains(p), "feasible {point:?} lost: {bx:?}");
+        }
+    }
+
+    #[test]
+    fn contraction_propagates_across_constraints() {
+        let classes = Classes::of(&["x", "y"]);
+        let (x, y) = (|| real_ref("x"), || real_ref("y"));
+        let leaves = [
+            ge(x(), num(1.0)),
+            le(y(), binop(BinOp::Sub, num(5.0), x())),
+            ge(y(), num(3.0)),
+        ];
+        let (outcome, bx) =
+            contract_from(&leaves, &classes, vec![Interval::ENTIRE; 2], Slack::Exact);
+        assert_eq!(outcome, Contraction::Consistent);
+        assert!(bx[0].lo() >= 1.0 && bx[0].hi() <= 2.0, "x: {:?}", bx[0]);
+        assert!(bx[1].lo() >= 3.0 && bx[1].hi() <= 4.0, "y: {:?}", bx[1]);
+        assert_contains_point(&bx, &[1.5, 3.5]);
+    }
+
+    #[test]
+    fn contradictory_pins_are_attributed_to_the_relation_that_emptied_the_box() {
+        let classes = Classes::of(&["x"]);
+        let ten = eq(length_ref("x"), metres(0.01));
+        let twenty = eq(length_ref("x"), metres(0.02));
+        for leaves in [[ten.clone(), twenty.clone()], [twenty, ten]] {
+            let (outcome, _) = contract_from(&leaves, &classes, vec![Interval::ENTIRE], ACCEPTANCE);
+            assert_eq!(outcome, Contraction::Empty { relation: 1 }, "{leaves:?}");
+        }
+    }
+
+    #[test]
+    fn opposed_strict_bounds_are_empty() {
+        let classes = Classes::of(&["x"]);
+        let leaves = [gt(real_ref("x"), num(5.0)), lt(real_ref("x"), num(1.0))];
+        let (outcome, _) = contract_from(&leaves, &classes, vec![Interval::ENTIRE], Slack::Exact);
+        assert_eq!(outcome, Contraction::Empty { relation: 1 });
+    }
+
+    #[test]
+    fn acceptance_slack_agrees_with_the_solver_on_order_rows() {
+        let classes = Classes::of(&["x"]);
+        let leaves = [
+            ge(real_ref("x"), num(1.0)),
+            le(real_ref("x"), num(1.0 - 1e-13)),
+        ];
+        let (exact, _) = contract_from(&leaves, &classes, vec![Interval::ENTIRE], Slack::Exact);
+        assert_eq!(exact, Contraction::Empty { relation: 1 });
+        let (accepted, bx) = contract_from(&leaves, &classes, vec![Interval::ENTIRE], ACCEPTANCE);
+        assert_eq!(accepted, Contraction::Consistent);
+        assert_contains_point(&bx, &[1.0 - 0.5e-13]);
+    }
+
+    #[test]
+    fn acceptance_slack_agrees_with_the_solver_on_equality_rows() {
+        let classes = Classes::of(&["x"]);
+        let pin = 0.01;
+        let near = pin + 0.5 * LENGTH_FLOOR_M;
+        assert!(scalars_equal(pin, near, DimensionVector::LENGTH));
+        let near_pair = [
+            eq(length_ref("x"), metres(pin)),
+            eq(length_ref("x"), metres(near)),
+        ];
+        let (exact, _) = contract_from(&near_pair, &classes, vec![Interval::ENTIRE], Slack::Exact);
+        assert_eq!(exact, Contraction::Empty { relation: 1 });
+        let (accepted, bx) =
+            contract_from(&near_pair, &classes, vec![Interval::ENTIRE], ACCEPTANCE);
+        assert_eq!(accepted, Contraction::Consistent);
+        assert_contains_point(&bx, &[pin]);
+
+        let far = pin + 2.0 * LENGTH_FLOOR_M;
+        assert!(!scalars_equal(pin, far, DimensionVector::LENGTH));
+        let far_pair = [
+            eq(length_ref("x"), metres(pin)),
+            eq(length_ref("x"), metres(far)),
+        ];
+        let (refuted, _) = contract_from(&far_pair, &classes, vec![Interval::ENTIRE], ACCEPTANCE);
+        assert_eq!(refuted, Contraction::Empty { relation: 1 });
+    }
+
+    #[test]
+    fn contraction_runs_on_a_caller_supplied_sub_box() {
+        let classes = Classes::of(&["x"]);
+        let x = || real_ref("x");
+        let leaves = [ge(binop(BinOp::Mul, x(), x()), num(1.0))];
+        let (outcome, _) = contract_from(&leaves, &classes, vec![iv(0.0, 0.5)], Slack::Exact);
+        assert_eq!(outcome, Contraction::Empty { relation: 0 });
+        let (outcome, bx) = contract_from(&leaves, &classes, vec![iv(0.0, 2.0)], Slack::Exact);
+        assert_eq!(outcome, Contraction::Consistent);
+        assert_eq!(bx[0], iv(1.0, 2.0));
+    }
+
+    #[test]
+    fn slow_convergence_terminates_on_its_budget_deterministically() {
+        let classes = Classes::of(&["x", "y"]);
+        let half_plus_one = |name: &str| {
+            binop(
+                BinOp::Add,
+                binop(BinOp::Div, real_ref(name), num(2.0)),
+                num(1.0),
+            )
+        };
+        let leaves = [
+            eq(real_ref("x"), half_plus_one("y")),
+            eq(real_ref("y"), half_plus_one("x")),
+        ];
+        let start = vec![iv(0.0, 10.0); 2];
+        let (first, first_box) = contract_from(&leaves, &classes, start.clone(), Slack::Exact);
+        let (second, second_box) = contract_from(&leaves, &classes, start, Slack::Exact);
+        assert_eq!(first, Contraction::Consistent);
+        assert_contains_point(&first_box, &[2.0, 2.0]);
+        assert!(
+            first_box[0].hi() - first_box[0].lo() < 10.0,
+            "it contracted: {first_box:?}"
+        );
+        assert_eq!((first, first_box), (second, second_box), "deterministic");
     }
 }
