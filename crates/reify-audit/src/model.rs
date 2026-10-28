@@ -405,8 +405,8 @@ pub struct TaskMetadata {
     /// it; pre-`/prd` legacy tasks have `None`). P1 correlates a producer's
     /// `prd` against other tasks' `consumer_ref` to suppress orphan findings
     /// when a downstream consumer is queued. Per `f-infra-design.md` §5 P1.
-    /// The live loader reads it from `metadata.prd`, else `metadata.prd_path`,
-    /// and PPRDSTATUS groups a PRD's decomposition leaves by it.
+    /// PPRDSTATUS groups a PRD's decomposition leaves by it. The wire keys the
+    /// live loader reads it from: `fused_memory_client::source_prd`.
     pub prd: Option<String>,
     /// The producing PRD this task consumes (set on `/prd`-decomposed
     /// consumer tasks). P1's "downstream consumer task exists" guard matches
