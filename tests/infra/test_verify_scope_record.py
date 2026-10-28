@@ -30,15 +30,20 @@ from pathlib import Path
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 from scope_record_harness import (  # noqa: E402
+    BRANCH_PLAN,
+    BRANCH_SCOPE,
     CLOSURE_WITHOUT_GUI,
     DOCS_PATH,
     ERROR_PREFIX,
     GATHER_FAILURES,
+    STAGED_PLAN,
     STAGED_SCOPE,
     FailingGit,
     InClone,
     base_env,
+    c5_warning,
     discard_clone,
+    env_with_only,
     run_bash,
     run_py,
     scope_record,
@@ -164,8 +169,6 @@ class TestPrintScopeCli(unittest.TestCase):
 class TestEffectiveScope(InClone):
     """MERGE_HEAD, force_scope_all and the merge base settle the scope before any diff."""
 
-    STAGED = ["test", "--scope", "staged", "--print-scope"]
-
     def setUp(self):
         super().setUp()
         self.clone.stage(DOCS_PATH)
@@ -173,11 +176,11 @@ class TestEffectiveScope(InClone):
     def test_merge_head_is_found_from_the_repo_root(self):
         self.clone.merge_head().write_text(self.clone.base + "\n", encoding="utf-8")
         with tempfile.TemporaryDirectory() as foreign:
-            py = self.clone.py(self.STAGED, base_env(), cwd=foreign)
+            py = self.clone.py(STAGED_SCOPE, base_env(), cwd=foreign)
         scope = scope_record(py)["scope"]
         self.assertEqual((scope["mode"], scope["widened"]), ("all", "merge_in_progress"))
         self.assertIn(MERGE_HEAD_NOTICE, py.stderr.splitlines())
-        bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], base_env())
+        bash = self.clone.bash(STAGED_PLAN, base_env())
         self.assertEqual(bash.returncode, 0, bash.stderr)
         self.assertIn(
             MERGE_HEAD_NOTICE,
@@ -189,13 +192,13 @@ class TestEffectiveScope(InClone):
         for role, forced in (("merge", True), ("background", True), ("task", False), ("offline", False)):
             with self.subTest(role=role):
                 env = base_env(DF_VERIFY_ROLE=role)
-                py = self.clone.py(self.STAGED, env)
+                py = self.clone.py(STAGED_SCOPE, env)
                 scope = scope_record(py)["scope"]
                 self.assertEqual(
                     (scope["mode"], scope["widened"]),
                     ("all", "role_forces_all") if forced else ("staged", None),
                 )
-                bash = self.clone.bash(["test", "--scope", "staged", "--print-plan"], env)
+                bash = self.clone.bash(STAGED_PLAN, env)
                 self.assertEqual(bash.returncode, 0, bash.stderr)
                 bash_notices = [l for l in bash.stderr.splitlines() if FORCED_SCOPE_MARK in l]
                 py_notices = [l for l in py.stderr.splitlines() if FORCED_SCOPE_MARK in l]
@@ -204,18 +207,17 @@ class TestEffectiveScope(InClone):
 
     def test_branch_without_main_fails_wide(self):
         self.clone.git("branch", "-D", "main")
-        argv = ["test", "--scope", "branch", "--print-scope"]
-        py = self.clone.py(argv, base_env())
+        py = self.clone.py(BRANCH_SCOPE, base_env())
         scope = scope_record(py)["scope"]
         self.assertEqual((scope["mode"], scope["widened"]), ("all", "no_merge_base"))
         self.assertIn(MERGE_BASE_WARNING, py.stderr.splitlines())
-        bash = self.clone.bash(["test", "--scope", "branch", "--print-plan"], base_env())
+        bash = self.clone.bash(BRANCH_PLAN, base_env())
         self.assertEqual(bash.returncode, 0, bash.stderr)
         self.assertIn(MERGE_BASE_WARNING, bash.stderr.splitlines(), "premise: bash's exact C5 line")
 
     def test_branch_records_the_merge_base(self):
         self.clone.git("branch", "-f", "main", "HEAD")
-        py = self.clone.py(["test", "--scope", "branch", "--print-scope"], base_env())
+        py = self.clone.py(BRANCH_SCOPE, base_env())
         scope = scope_record(py)["scope"]
         self.assertEqual((scope["mode"], scope["widened"]), ("branch", None))
         self.assertEqual(scope["merge_base"], self.clone.git("merge-base", "main", "HEAD"))
@@ -348,6 +350,18 @@ class TestGatherFailsWide(InClone):
                             directly_before(bash.stderr.splitlines(), case.git.reason, case.warning),
                             f"premise: bash keeps git's stderr: {bash.stderr!r}",
                         )
+
+    def test_git_missing_from_path_fails_wide(self):
+        self.clone.stage(DOCS_PATH)
+        with tempfile.TemporaryDirectory() as scratch:
+            py = self.clone.py(STAGED_SCOPE, env_with_only(Path(scratch)))
+        scope = scope_record(py)["scope"]
+        self.assertEqual((scope["mode"], scope["widened"]), ("staged", "changed_paths_unread"))
+        lines = py.stderr.splitlines()
+        self.assertEqual(len(lines), 2, py.stderr)
+        self.assertIn("git", lines[0])
+        self.assertIn("No such file or directory", lines[0])
+        self.assertEqual(lines[1], c5_warning("staged", "git diff"))
 
 
 def derived_rust_set(clone):
@@ -550,6 +564,21 @@ class TestBashCallFailureEndsTheQuery(InClone):
             lines[0],
         )
         self.assertIn("occt-touching-crates.txt not found", lines[0])
+
+    def test_bash_missing_from_path(self):
+        self.clone.stage(CLOSURE_WITHOUT_GUI)
+        with tempfile.TemporaryDirectory() as scratch:
+            py = self.clone.py(STAGED_SCOPE, env_with_only(Path(scratch), "git"))
+        self.assertEqual((py.returncode, py.stdout), (1, ""), py.stderr)
+        lines = py.stderr.splitlines()
+        self.assertEqual(len(lines), 1, py.stderr)
+        self.assertTrue(
+            lines[0].startswith(
+                f"{ERROR_PREFIX}scripts/occt-scope-lib.sh::occt_declared_set exited 127 ("
+            ),
+            lines[0],
+        )
+        self.assertIn("No such file or directory", lines[0])
 
 
 if __name__ == "__main__":

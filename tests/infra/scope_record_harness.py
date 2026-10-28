@@ -37,6 +37,8 @@ SCOPE_HEADER = "# scope decision — "
 BASH_FLAGS = {"run_rust": "RUN_RUST", "run_gui": "RUN_GUI", "run_occt_gate": "RUN_OCCT_GATE"}
 STAGED_SCOPE = ["test", "--scope", "staged", "--print-scope"]
 BRANCH_SCOPE = ["test", "--scope", "branch", "--print-scope"]
+STAGED_PLAN = ["test", "--scope", "staged", "--print-plan"]
+BRANCH_PLAN = ["test", "--scope", "branch", "--print-plan"]
 DOCS_PATH = "docs/getting-started.md"
 CLOSURE_WITHOUT_GUI = "crates/reify-doc/src/lib.rs"
 
@@ -276,6 +278,15 @@ class InClone(unittest.TestCase):
         )
 
 
+def env_with_only(scratch: Path, *tools: str) -> dict:
+    """base_env() whose PATH is one directory under `scratch` linking to `tools` alone."""
+    farm = scratch / "-".join(("only", *tools))
+    farm.mkdir()
+    for tool in tools:
+        (farm / tool).symlink_to(shutil.which(tool, path=base_env()["PATH"]))
+    return base_env(PATH=str(farm))
+
+
 @dataclass(frozen=True)
 class FailingGit:
     """One git argv shape that prints `reason` to stderr and exits 128; every other git call runs the real git."""
@@ -326,25 +337,26 @@ class FailWideCase:
     bash_parity: bool
 
 
-def _c5(scope, what):
+def c5_warning(scope, what):
+    """The C5 line a changed-path git call that fails under `--scope scope` prints."""
     return f"verify.sh: WARNING — --scope {scope} {what} failed — failing WIDE to --scope all (contract C5)"
 
 
 GATHER_FAILURES = (
     FailWideCase(
         FailingGit("staged primary", "diff --cached --name-only"), "staged",
-        _c5("staged", "git diff"), bash_parity=False,
+        c5_warning("staged", "git diff"), bash_parity=False,
     ),
     FailWideCase(
         FailingGit("staged rename source", "diff --cached --name-status"), "staged",
-        _c5("staged", "rename-source diff"), bash_parity=True,
+        c5_warning("staged", "rename-source diff"), bash_parity=True,
     ),
     FailWideCase(
         FailingGit("branch primary", "--name-only --diff-filter=ACMRD", "--cached"), "branch",
-        _c5("branch", "git diff"), bash_parity=True,
+        c5_warning("branch", "git diff"), bash_parity=True,
     ),
     FailWideCase(
         FailingGit("branch rename source", "--name-status --diff-filter=R", "--cached"), "branch",
-        _c5("branch", "rename-source diff"), bash_parity=True,
+        c5_warning("branch", "rename-source diff"), bash_parity=True,
     ),
 )

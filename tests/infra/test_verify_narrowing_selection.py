@@ -10,8 +10,9 @@ scripts/verify.py ... --print-scope` and `bash scripts/verify.sh ...
 --print-plan`. This module never imports reify_verify. Bash is the oracle: the
 closure, the narrowing, the vitest lane and the selective-infra leaves,
 degraded inputs included, are expected to be what bash plans in the same
-tree. The kloc crate set is probed against harness-layout-lib.sh. The
-reify-audit predicate copies are tests/infra/test_verify_selector_copies.py's.
+tree. The kloc crate set is probed through the lib function the planner
+calls, harness_layout_consolidatable_crates. The reify-audit predicate copies
+are tests/infra/test_verify_selector_copies.py's.
 
 The shared clone, the hermetic env and the side-by-side runner live in
 tests/infra/scope_record_harness.py.
@@ -20,6 +21,7 @@ run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_narrowing_selection.sh.
 """
 
+import os
 import re
 import sys
 import tempfile
@@ -281,31 +283,60 @@ class TestInfraSelectionMatchesBash(InClone):
         self.assertEqual(python_leaves(record), bash_leaves(bash.stdout))
         self.assert_stderr_within_bash(py, bash)
 
+    def test_an_infra_map_that_is_no_file_selects_no_mapped_leaf(self):
+        self.clone.stage(MAPPED_ARTIFACT)
+        mapped = set(leaf_globs(scope_record(self.clone.py(STAGED_SCOPE, base_env()))))
+        infra_map = self.clone.root / INFRA_MAP
+        infra_map.unlink()
+        infra_map.mkdir()
+        self.addCleanup(infra_map.rmdir)
+        record, py, bash = self.side_by_side("staged")
+        self.assertLess(set(leaf_globs(record)), mapped, "premise: the map's rows selected a leaf")
+        self.assertEqual(python_leaves(record), bash_leaves(bash.stdout))
+        self.assert_stderr_within_bash(py, bash)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file")
+    def test_an_unreadable_infra_map_selects_no_mapped_leaf_and_says_so(self):
+        self.clone.stage(MAPPED_ARTIFACT)
+        mapped = set(leaf_globs(scope_record(self.clone.py(STAGED_SCOPE, base_env()))))
+        infra_map = self.clone.root / INFRA_MAP
+        infra_map.chmod(0)
+        self.addCleanup(infra_map.chmod, 0o644)
+        py = self.clone.py(STAGED_SCOPE, base_env())
+        self.assertLess(set(leaf_globs(scope_record(py))), mapped, "premise: the map's rows selected a leaf")
+        lines = py.stderr.splitlines()
+        self.assertEqual(len(lines), 1, py.stderr)
+        self.assertTrue(lines[0].startswith(f"verify.sh: WARNING — {INFRA_MAP} is unreadable ("), lines[0])
+
 
 class TestHarnessKlocSetIsTheLibs(InClone):
-    """The kloc guard's crate set has one owner, harness-layout-lib.sh (PRD D6, §2.3)."""
+    """The kloc guard's crate set is what harness_layout_consolidatable_crates prints (PRD D6, §2.3)."""
 
     PROBE = "crates/reify-doc/tests/zz.rs"
+    LIB_NAMING_REIFY_DOC_ALONE = "harness_layout_consolidatable_crates() {\n    printf '%s\\n' reify-doc\n}\n"
 
-    def test_a_crate_added_to_the_lib_is_selected(self):
-        self.assertNotIn(
-            KLOC_LEAF, self.clone.branch_leaves([self.PROBE]), "premise: reify-doc is not consolidatable yet"
+    def test_the_kloc_leaf_follows_the_lib_function(self):
+        self.assertEqual(
+            (
+                KLOC_LEAF in self.clone.branch_leaves([self.PROBE]),
+                KLOC_LEAF in self.clone.branch_leaves([KLOC_ELIGIBLE_TEST]),
+            ),
+            (False, True),
+            "premise: the lib names reify-eval and not reify-doc",
         )
-        self.clone.reset()
-        lib = self.clone.root / KLOC_LIB
-        text = lib.read_text(encoding="utf-8")
-        declared = "declare -ga _HL_CRATES=("
-        self.assertEqual(text.count(declared), 1, "premise: the lib's one _HL_CRATES definition")
-        lib.write_text(text.replace(declared, declared + "reify-doc "), encoding="utf-8")
-        self.clone.git("add", "--", KLOC_LIB)
-        self.clone.commit("scope-record probe: reify-doc is consolidatable")
-        branch_commit(self.PROBE)(self.clone)
-        record = scope_record(self.clone.py(BRANCH_SCOPE, base_env()))
-        self.assertIn(
-            (KLOC_LEAF, {}),
-            python_leaves(record),
-            "python reads the crate set from harness_layout_consolidatable_crates (D6, §2.3)",
-        )
+        for probe, selected in ((self.PROBE, True), (KLOC_ELIGIBLE_TEST, False)):
+            with self.subTest(probe=probe):
+                self.clone.reset()
+                (self.clone.root / KLOC_LIB).write_text(self.LIB_NAMING_REIFY_DOC_ALONE, encoding="utf-8")
+                self.clone.git("add", "--", KLOC_LIB)
+                self.clone.commit("scope-record probe: the lib names reify-doc alone")
+                branch_commit(probe)(self.clone)
+                record = scope_record(self.clone.py(BRANCH_SCOPE, base_env()))
+                self.assertEqual(
+                    KLOC_LEAF in leaf_globs(record),
+                    selected,
+                    "python's kloc crate set is what harness_layout_consolidatable_crates prints (D6, §2.3)",
+                )
 
     def test_a_failing_crate_set_call_ends_the_query(self):
         self.clone.git("rm", "-q", "--", KLOC_LIB)
