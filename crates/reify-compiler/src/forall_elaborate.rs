@@ -551,10 +551,7 @@ pub(crate) fn elaborate_forall_constraint(
         ResolveForallOutcome::Skip => return,
     };
 
-    // Open the per-declaration duplicate-diagnostic window (task 7195). It opens
-    // HERE — after collection resolution and the `Deferred` early return — so the
-    // non-iterable-collection error and the deferred-path info diagnostics, each
-    // already emitted exactly once, stay outside it.
+    // The window opens after collection resolution; see `ForallDiagnosticSink`.
     let mut sink = ForallDiagnosticSink::new(diagnostics);
 
     for (i, element) in elements.iter().enumerate() {
@@ -779,10 +776,7 @@ pub(crate) fn elaborate_forall_connect(
         ResolveForallOutcome::Skip => return,
     };
 
-    // Open the per-declaration duplicate-diagnostic window (task 7195). It opens
-    // HERE — after collection resolution and the `Deferred` early return — so the
-    // non-iterable-collection error and the deferred-path diagnostics, each
-    // already emitted exactly once, stay outside it.
+    // The window opens after collection resolution; see `ForallDiagnosticSink`.
     let mut sink = ForallDiagnosticSink::new(diagnostics);
 
     // PRD criterion 6 — empty-collection path: when `elements` is empty (either
