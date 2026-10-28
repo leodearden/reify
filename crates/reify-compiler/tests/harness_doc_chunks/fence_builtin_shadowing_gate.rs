@@ -174,27 +174,37 @@ fn an_unreadable_chunk_is_reported_never_skipped() {
 /// accepts stops compiling.
 #[test]
 fn a_user_fn_named_like_a_builtin_replaces_the_builtin_module_wide() {
-    let call = "structure def Clamped {\n    let c = clamp(5mm, 0mm, 3mm)\n}\n";
-    let shadowing = format!(
-        "fn clamp(x : Real, lo : Real, hi : Real) -> Real {{\n\
-         \x20   if x < lo then lo else if x > hi then hi else x\n\
-         }}\n\
-         \n\
-         {call}"
-    );
+    let user_clamp = "fn clamp(x : Real, lo : Real, hi : Real) -> Real {\n\
+                      \x20   if x < lo then lo else if x > hi then hi else x\n\
+                      }\n";
+    let calling = |args: &str| format!("structure def Clamped {{\n    let c = clamp({args})\n}}\n");
+    let builtin_only_call = calling("5mm, 0mm, 3mm");
+    let with_user_clamp = |args: &str| format!("{user_clamp}\n{}", calling(args));
 
     assert!(
-        matches!(compile_module(call), ModuleCompile::Clean),
+        matches!(compile_module(&builtin_only_call), ModuleCompile::Clean),
         "control: the bare builtin call `clamp(5mm, 0mm, 3mm)` must compile clean, or the case \
          below proves nothing"
     );
     assert!(
-        matches!(compile_module(&shadowing), ModuleCompile::SemanticErrors(_)),
+        matches!(
+            compile_module(&with_user_clamp("5.0, 0.0, 3.0")),
+            ModuleCompile::Clean
+        ),
+        "control: the user `fn clamp(Real, Real, Real)` must compile clean beside a call it \
+         accepts, or a failure below could be the declaration's own rejection rather than a \
+         replacement"
+    );
+    assert!(
+        matches!(
+            compile_module(&with_user_clamp("5mm, 0mm, 3mm")),
+            ModuleCompile::SemanticErrors(_)
+        ),
         "a user `fn clamp(Real, Real, Real)` must make the builtin call `clamp(5mm, 0mm, 3mm)` \
          fail: that replacement is the hazard this gate exists for. A red here means the \
          compiler stopped letting a user fn replace a builtin, so the gate's premise must be \
-         revisited (#8897's W_UserFnShadowsBuiltin warning still chooses the user fn, so the \
-         error stands under it)"
+         revisited (#8897's planned W_UserFnShadowsBuiltin warning is specified to keep choosing \
+         the user fn, so the error would stand under it)"
     );
 }
 
