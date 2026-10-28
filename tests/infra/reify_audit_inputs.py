@@ -21,7 +21,7 @@ PDIAG_RS = "crates/reify-audit/src/pdiag.rs"
 PDOCCOVER_RS = "crates/reify-audit/src/pdoccover.rs"
 PDOCCOVER_BASELINE_RS = "crates/reify-audit/src/pdoccover_baseline.rs"
 
-_ENDS_WITH_EXTENSION = re.compile(r'ends_with\("\.([a-z]*)"\)')
+_SWEPT_EXTENSION_ROW = re.compile(r'\("\.([a-z]*)",')
 _TEST_FN = re.compile(r"\s*fn [a-z0-9_]+\(\)")
 _ARRAY_START = re.compile(r"for path in \[")
 _ARRAY_END = re.compile(r"\s*\] \{")
@@ -56,9 +56,9 @@ def _const(lines: list[str], name: str) -> str:
 
 
 def ptodo_swept_extensions(root: Path) -> list[str]:
-    """ptodo.rs::is_swept_ext's extensions, without the dot."""
-    body = _block(_lines(root, PTODO_RS), "pub fn is_swept_ext", "}")
-    return sorted({ext for line in body for ext in _ENDS_WITH_EXTENSION.findall(line)})
+    """ptodo.rs::SWEPT_EXTENSIONS, the table is_swept_ext looks paths up in; without the dot."""
+    table = _block(_lines(root, PTODO_RS), "const SWEPT_EXTENSIONS", "];")
+    return sorted({ext for line in table for ext in _SWEPT_EXTENSION_ROW.findall(line)})
 
 
 @dataclass(frozen=True)
