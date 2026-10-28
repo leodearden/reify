@@ -13,7 +13,7 @@
 //! through `eval_method_call`'s collection/tensor arms to the `_ => Undef`
 //! catch-all), and these assertions fail. Step-12 adds the dispatch.
 
-use reify_core::Type;
+use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{CompiledExpr, Value, ValueMap};
 use reify_test_support::{
@@ -44,6 +44,25 @@ fn assert_direction(v: &Value, expected: [f64; 3]) {
         ),
         other => panic!("expected Value::Direction, got {other:?}"),
     }
+}
+
+/// Assert `v` is a plane normal in the shape `decode_plane` requires — a
+/// 3-component `Value::Vector`, NOT a `Value::Direction` — close to `expected`.
+fn assert_vector_normal(v: &Value, expected: [f64; 3]) {
+    let comps = match v {
+        Value::Vector(comps) if comps.len() == 3 => [
+            comps[0].as_f64().expect("normal component 0 is numeric"),
+            comps[1].as_f64().expect("normal component 1 is numeric"),
+            comps[2].as_f64().expect("normal component 2 is numeric"),
+        ],
+        other => panic!("expected a 3-component Value::Vector normal, got {other:?}"),
+    };
+    assert!(
+        (comps[0] - expected[0]).abs() < EPS
+            && (comps[1] - expected[1]).abs() < EPS
+            && (comps[2] - expected[2]).abs() < EPS,
+        "expected normal {expected:?}, got {comps:?}",
+    );
 }
 
 /// Extract the three numeric components of a 3-component `Value::Point`.
@@ -125,6 +144,31 @@ fn frame_xy_plane_projects_to_plane() {
     }
 }
 
+/// A frame's three principal planes, on a frame rotated 120° about (1,1,1)
+/// (frame x/y/z = world y/z/x). Every plane passes through the frame origin and
+/// takes its normal from the frame axis it is named against: xy → z, yz → x,
+/// zx → y. The three expected normals are pairwise distinct, so a transposed
+/// basis-axis index between two planes fails here.
+#[test]
+fn frame_principal_planes_project_on_a_rotated_frame() {
+    let cases = [
+        ("xy_plane", [1.0, 0.0, 0.0]),
+        ("yz_plane", [0.0, 1.0, 0.0]),
+        ("zx_plane", [0.0, 0.0, 1.0]),
+    ];
+    for (member, expected_normal) in cases {
+        let frame = frame_val(point3(4.0, 5.0, 6.0), orientation_val(0.5, 0.5, 0.5, 0.5));
+        let result = project(frame, Type::Frame(3), member, Type::Plane);
+        match &result {
+            Value::Plane { origin, normal } => {
+                assert_point(origin, [4.0, 5.0, 6.0]);
+                assert_vector_normal(normal, expected_normal);
+            }
+            other => panic!("frame.{member}: expected Value::Plane, got {other:?}"),
+        }
+    }
+}
+
 // ─── Direction component projections ─────────────────────────────────────────
 
 #[test]
@@ -142,4 +186,84 @@ fn direction_x_projects_to_real_component() {
         Value::Real(c) => assert!((c - 1.0).abs() < EPS, "expected Real(1.0), got Real({c})"),
         other => panic!("expected Value::Real, got {other:?}"),
     }
+}
+
+// ─── Self-datum projections (task #6100) ─────────────────────────────────────
+
+/// Evaluate `self.<member>` exactly as the compiler lowers it — a `MethodCall`
+/// on the `S.__self` `StructureRef` ref — against an EMPTY value map: no
+/// `__self` cell exists at eval time.
+fn project_self(member: &str, result_ty: Type) -> Value {
+    let object = CompiledExpr::value_ref(
+        ValueCellId::new("S", "__self"),
+        Type::StructureRef("S".into()),
+    );
+    let call = CompiledExpr::method_call(object, member.to_string(), vec![], result_ty);
+    let values = ValueMap::new();
+    eval_expr(&call, &EvalContext::simple(&values))
+}
+
+/// A structure's `self` is its own identity frame, so every intrinsic
+/// `self.<datum>` is that frame's constant: a pure value in any evaluation
+/// context, with no cell behind it.
+#[test]
+fn self_datum_projections_evaluate_to_the_identity_frame_constants() {
+    let origin = project_self("origin", Type::point3(Type::length()));
+    assert_point(&origin, [0.0, 0.0, 0.0]);
+    match &origin {
+        Value::Point(comps) => assert!(
+            comps.iter().all(|c| matches!(
+                c,
+                Value::Scalar { dimension, .. } if *dimension == DimensionVector::LENGTH
+            )),
+            "self.origin's components should be LENGTH scalars, got {comps:?}"
+        ),
+        other => panic!("expected Value::Point, got {other:?}"),
+    }
+
+    match project_self("frame", Type::Frame(3)) {
+        Value::Frame { origin, basis } => {
+            assert_point(&origin, [0.0, 0.0, 0.0]);
+            assert_eq!(
+                *basis,
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                "self.frame's basis should be the identity orientation"
+            );
+        }
+        other => panic!("self.frame: expected Value::Frame, got {other:?}"),
+    }
+
+    assert_direction(&project_self("x", Type::Direction), [1.0, 0.0, 0.0]);
+    assert_direction(&project_self("y", Type::Direction), [0.0, 1.0, 0.0]);
+    assert_direction(&project_self("z", Type::Direction), [0.0, 0.0, 1.0]);
+
+    for (member, expected_normal) in [
+        ("xy_plane", [0.0, 0.0, 1.0]),
+        ("yz_plane", [1.0, 0.0, 0.0]),
+        ("zx_plane", [0.0, 1.0, 0.0]),
+    ] {
+        match project_self(member, Type::Plane) {
+            Value::Plane { origin, normal } => {
+                assert_point(&origin, [0.0, 0.0, 0.0]);
+                assert_vector_normal(&normal, expected_normal);
+            }
+            other => panic!("self.{member}: expected Value::Plane, got {other:?}"),
+        }
+    }
+
+    // A structural-query accessor on the same receiver is not a datum: it is
+    // expanded by reify-eval, so in a pure context it stays Undef.
+    assert_eq!(
+        project_self(
+            "children",
+            Type::List(Box::new(Type::StructureRef("S".into())))
+        ),
+        Value::Undef,
+        "self.children must fall through the self-datum projection"
+    );
 }

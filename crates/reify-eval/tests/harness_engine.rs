@@ -166,3 +166,7 @@ mod solver_posture_construction;
 // reason as #5196's and #5360's above.
 #[path = "harness_engine/viewport_unmeasured_attribution.rs"]
 mod viewport_unmeasured_attribution;
+// Task #6100's first-class frame-datum eval regressions land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/first_class_frame_datum_eval.rs"]
+mod first_class_frame_datum_eval;
