@@ -428,6 +428,14 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         self.members
     }
 
+    pub(crate) fn surfaces(&self) -> &'a [(usize, usize, usize)] {
+        self.surfaces
+    }
+
+    pub(crate) fn surface_stresses(&self) -> &'a [S::Stress] {
+        self.surface_stresses
+    }
+
     /// The per-member densities the contract checked: the given `q`, or a
     /// group spec's seed densities.
     pub(crate) fn q(&self) -> &[f64] {

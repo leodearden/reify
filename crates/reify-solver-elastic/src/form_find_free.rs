@@ -371,17 +371,12 @@ pub fn form_find_free_surfaces(
         };
 
         // (2) Combined equilibrium residual at the current geometry — the
-        // free-standing fixed point's stop test. `q` is fixed for the rest of this
-        // iteration (only the surface term varies with geometry), so the line-only
-        // CᵀQC matrix is hoisted once and each surface term is added to it — the
-        // (2b) trial-residual check further down reuses this same `d_line`.
-        let d_line = assemble_d(n, members, &q);
-        let d_at_current = &d_line + &surface_mat;
-        let resid = all_node_equilibrium_residual_relative(&d_at_current, &current);
+        // free-standing fixed point's stop test.
+        let iterate = CombinedIterate::new(&problem, q, current.clone(), surface_mat);
 
-        if resid <= FREE_SURFACE_EQUILIBRIUM_REL_TOL {
+        if iterate.is_equilibrium() {
             converged = true;
-            last_result = Some(combined_result_at(members, &q, &current));
+            last_result = Some(combined_result_at(members, &iterate.q, &current));
             break;
         }
 
@@ -415,7 +410,7 @@ pub fn form_find_free_surfaces(
         // absorbed as a no-op rather than propagated to the caller via `?` — swapping the chain
         // for `?` would let an intermediate-iterate error surface in place of the contractual
         // `SearchDidNotConverge`.
-        // (b) (the `trial_resid <= resid` check just below) is defensive rather than measured
+        // (b) (the `trial_resid <= iterate.residual` check just below) is defensive rather than measured
         // load-bearing on this fixture: forcing it to accept unconditionally (`if true`) and
         // probing 10 infeasible σ/q/guess combinations plus the full crate suite (759 lib + 5
         // integration tests) left every result unchanged — every rejected trial in those cases
@@ -425,13 +420,12 @@ pub fn form_find_free_surfaces(
         // destabilise a case not covered by this fixture even though none tried here do.
         if matches!(problem.spec(), FreeSpec::Explicit(_))
             && let Ok(trial_nodes) =
-                form_find_explicit_combined_relaxed(&problem, &current, &surface_mat)
+                form_find_explicit_combined_relaxed(&problem, &current, &iterate.surface_mat)
             && let Ok(trial_surface_mat) =
                 assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
         {
-            let d_trial = &d_line + &trial_surface_mat;
-            let trial_resid = all_node_equilibrium_residual_relative(&d_trial, &trial_nodes);
-            if trial_resid <= resid {
+            let trial_resid = iterate.residual_at(&problem, &trial_nodes, &trial_surface_mat);
+            if trial_resid <= iterate.residual {
                 current = trial_nodes;
             }
         }
@@ -458,7 +452,7 @@ pub fn form_find_free_surfaces(
         let (next, next_step) = combined_geometry_descent_step(
             n,
             members,
-            &q,
+            &iterate.q,
             surfaces,
             surface_stresses,
             &current,
@@ -482,7 +476,9 @@ pub fn form_find_free_surfaces(
         // depends on the distinction. Kept because an under-counted stall guard would risk
         // exiting a genuinely-progressing search early on some case not covered by this
         // fixture, trading a real (if untested) correctness risk for one line of clarity.
-        if next == before_relax && resid >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD) {
+        if next == before_relax
+            && iterate.residual >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD)
+        {
             stuck_iters += 1;
             if stuck_iters >= GEO_STALL_ITERS {
                 break;
@@ -490,10 +486,10 @@ pub fn form_find_free_surfaces(
         } else {
             stuck_iters = 0;
         }
-        prev_resid = resid;
+        prev_resid = iterate.residual;
 
         current = next;
-        last_result = Some(combined_result_at(members, &q, &current));
+        last_result = Some(combined_result_at(members, &iterate.q, &current));
     }
 
     // Certify the final iterate whether or not the loop converged, so a model
@@ -586,6 +582,69 @@ fn combined_force_density_matrix(
 fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
     let every_row: Vec<usize> = (0..nodes.len()).collect();
     free_equilibrium_residual_relative(d, nodes, &every_row)
+}
+
+/// One outer iterate of the combined fixed point: densities `q` at geometry
+/// `nodes`, the surface term there, their combined `D` and its all-node
+/// equilibrium residual.
+struct CombinedIterate {
+    q: Vec<f64>,
+    nodes: Vec<[f64; 3]>,
+    surface_mat: Mat<f64>,
+    d: Mat<f64>,
+    residual: f64,
+}
+
+impl CombinedIterate {
+    fn new(
+        problem: &ForceDensityProblem<'_>,
+        q: Vec<f64>,
+        nodes: Vec<[f64; 3]>,
+        surface_mat: Mat<f64>,
+    ) -> Self {
+        let d = combined_force_density_matrix(problem.members(), &q, &surface_mat);
+        let residual = all_node_equilibrium_residual_relative(&d, &nodes);
+        CombinedIterate {
+            q,
+            nodes,
+            surface_mat,
+            d,
+            residual,
+        }
+    }
+
+    /// Whether the residual meets the fixed point's stop test.
+    fn is_equilibrium(&self) -> bool {
+        self.residual <= FREE_SURFACE_EQUILIBRIUM_REL_TOL
+    }
+
+    /// The residual of `trial_nodes` at this iterate's densities, given the
+    /// surface term assembled there.
+    fn residual_at(
+        &self,
+        problem: &ForceDensityProblem<'_>,
+        trial_nodes: &[[f64; 3]],
+        trial_surface_mat: &Mat<f64>,
+    ) -> f64 {
+        let d = combined_force_density_matrix(problem.members(), &self.q, trial_surface_mat);
+        all_node_equilibrium_residual_relative(&d, trial_nodes)
+    }
+
+    fn certify(&self) -> Result<FreeStandingForm, FreeFormError> {
+        FreeStandingForm::certify(&self.d)
+    }
+
+    /// This iterate as a converged result whose certified `D` has `nullity`.
+    fn into_result(self, problem: &ForceDensityProblem<'_>, nullity: usize) -> FreeFormResult {
+        FreeFormResult {
+            member_forces: member_axial_forces(problem.members(), &self.q, &self.nodes),
+            force_densities: self.q,
+            nodes: self.nodes,
+            nullity,
+            converged: true,
+            surface_stresses: problem.surface_stresses().to_vec(),
+        }
+    }
 }
 
 /// Combined-D geometry recovery, returning the recovered nodes: it **forces
