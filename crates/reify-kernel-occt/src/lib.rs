@@ -44,6 +44,8 @@ pub use register::OCCT_KERNEL_VERSION;
 #[cfg(has_occt)]
 #[allow(dead_code)]
 mod ffi;
+#[cfg(all(test, has_occt))]
+mod ffi_contract_tests;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
 
