@@ -12,7 +12,9 @@
 //!
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
-//! crate, so ported rather than called). Enclosing-fn scoping follows
+//! crate, so ported rather than called). A file the crate root declares only
+//! behind a test-gated `mod` line is test code, so its production view is
+//! blank. Enclosing-fn scoping follows
 //! `crates/reify-eval/tests/version_id_discipline_gate.rs`. Folding this lexer
 //! and its siblings onto one shared production view in `reify-test-support`,
 //! leaving only the rows here, is task #8796.
@@ -546,6 +548,128 @@ fn crate_sources() -> Vec<(String, String)> {
         .collect()
 }
 
+// ── module reach ────────────────────────────────────────────────────────────
+
+/// The crate root, always in the production view.
+const CRATE_ROOT: &str = "src/lib.rs";
+
+/// `(name, brace depth)` of every out-of-line `mod <name>;` declaration in a
+/// skeleton text.
+fn out_of_line_mods(text: &str) -> Vec<(String, isize)> {
+    let mut decls = Vec::new();
+    for at in ident_offsets(text, "mod") {
+        let rest = text[at + "mod".len()..].trim_start();
+        let name_len = rest.bytes().take_while(|&b| is_ident_byte(b)).count();
+        if name_len == 0 || !rest[name_len..].trim_start().starts_with(';') {
+            continue;
+        }
+        let depth = text[..at]
+            .bytes()
+            .map(|byte| match byte {
+                b'{' => 1,
+                b'}' => -1,
+                _ => 0,
+            })
+            .sum();
+        decls.push((rest[..name_len].to_owned(), depth));
+    }
+    decls
+}
+
+/// The `<stem>` of a flat `src/<stem>.rs` label. Any other layout panics: the
+/// test-only rule maps a declaration to its file by stem alone.
+fn flat_stem(label: &str) -> &str {
+    let path = Path::new(label);
+    match (path.parent(), path.file_stem().and_then(|s| s.to_str())) {
+        (Some(parent), Some(stem)) if parent == Path::new("src") && stem != "mod" => stem,
+        _ => panic!(
+            "{label}: not a flat src/<stem>.rs file. The test-only-module rule maps a `mod` \
+             declaration to src/<stem>.rs only; extend test_only_files before adding this layout"
+        ),
+    }
+}
+
+/// Labels of the src files only test code compiles: those the crate root
+/// declares with no `mod <stem>;` line that survives the cfg(test) mask. The
+/// rule matches stems against the root's top-level declarations, so it panics
+/// on every layout it cannot follow rather than blank a production file: a
+/// `#[path]` module, a nested or `mod.rs` file, a declaration outside the root
+/// or inside an inline module, a declaration with no file, and a file no
+/// declaration names.
+fn test_only_files(sources: &[(String, String)]) -> Vec<String> {
+    let mut declared: Option<Vec<String>> = None;
+    let mut surviving = Vec::new();
+    for (label, src) in sources {
+        let stem = flat_stem(label);
+        let lexed = lexed_view(src).skeleton_lines().join("\n");
+        assert!(
+            !lexed.contains("#[path"),
+            "{label}: a `#[path]` module maps to a file the test-only-module rule cannot follow"
+        );
+        let decls = out_of_line_mods(&lexed);
+        if label != CRATE_ROOT {
+            assert!(
+                decls.is_empty(),
+                "{label}: declares {decls:?}, whose files live under src/{stem}/, a layout the \
+                 test-only-module rule does not follow"
+            );
+            continue;
+        }
+        if let Some((name, _)) = decls.iter().find(|&&(_, depth)| depth != 0) {
+            panic!(
+                "{label}: `mod {name};` sits inside an inline module, so its file is not \
+                 src/{name}.rs; the test-only-module rule does not follow that layout"
+            );
+        }
+        declared = Some(decls.into_iter().map(|(name, _)| name).collect());
+        surviving = out_of_line_mods(&production_view(src).skeleton_lines().join("\n"))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+    }
+    let declared = declared
+        .unwrap_or_else(|| panic!("{CRATE_ROOT} is missing, so no `mod` declaration is read"));
+    for name in &declared {
+        assert!(
+            sources
+                .iter()
+                .any(|(label, _)| label != CRATE_ROOT && flat_stem(label) == name),
+            "{CRATE_ROOT} declares `mod {name};` but src/{name}.rs is not among the sources"
+        );
+    }
+    let mut test_only = Vec::new();
+    for (label, _) in sources.iter().filter(|(label, _)| label != CRATE_ROOT) {
+        let stem = flat_stem(label);
+        assert!(
+            declared.iter().any(|name| name == stem),
+            "{label}: no `mod {stem};` declaration in {CRATE_ROOT} names it, so the \
+             test-only-module rule cannot tell whether production code compiles it"
+        );
+        if !surviving.iter().any(|name| name == stem) {
+            test_only.push(label.clone());
+        }
+    }
+    test_only
+}
+
+/// `sources` as production code sees them: a file only test code compiles
+/// ([`test_only_files`]) keeps its label but contributes no text, so its
+/// production view is blank.
+fn production_sources(sources: Vec<(String, String)>) -> Vec<(String, String)> {
+    let test_only = test_only_files(&sources);
+    sources
+        .into_iter()
+        .map(|(label, src)| {
+            let src = if test_only.contains(&label) {
+                String::new()
+            } else {
+                src
+            };
+            (label, src)
+        })
+        .collect()
+}
+
 /// The rule every row applies: live never exceeds the committed baseline.
 fn within_baseline(live: usize, baseline: usize) -> bool {
     live <= baseline
@@ -678,7 +802,7 @@ fn row_i_scan(label: &str, src: &str) -> RowI {
 #[test]
 fn row_i_open_coded_finite_positive_checks_within_baseline() {
     let mut row = RowI::default();
-    for (label, src) in crate_sources() {
+    for (label, src) in production_sources(crate_sources()) {
         let file_row = row_i_scan(&label, &src);
         row.live.extend(file_row.live);
         row.exempt.extend(file_row.exempt);
@@ -723,7 +847,8 @@ fn brace_imbalance(view: &ProductionView) -> isize {
 /// The scanner over the real sources, by property rather than by name. A
 /// comment, string or char literal read as code would unbalance the braces
 /// the lexer sees, which moves where a masked item ends; a masked item that
-/// ends early leaks a `#[test]` into the production view.
+/// ends early leaks a `#[test]` into the production view. The lexer is checked
+/// on every file, test-only ones included.
 #[test]
 fn production_views_of_the_crate_sources_are_balanced_and_free_of_unit_tests() {
     let sources = crate_sources();
@@ -742,6 +867,8 @@ fn production_views_of_the_crate_sources_are_balanced_and_free_of_unit_tests() {
             "{label}: the lexer reads unbalanced braces, so it mis-reads a comment, \
              string or char literal"
         );
+    }
+    for (label, src) in &production_sources(sources) {
         let view = production_view(src);
         assert_eq!(
             brace_imbalance(&view),
@@ -785,7 +912,7 @@ fn row_ii_scan(label: &str, src: &str) -> Vec<Finding> {
 
 #[test]
 fn row_ii_handle_as_f64_within_baseline() {
-    let sources = crate_sources();
+    let sources = production_sources(crate_sources());
     assert!(
         sources
             .iter()
@@ -904,7 +1031,7 @@ fn unseen_homes(row: &HomedRow, seen: &[(String, String)]) -> Vec<String> {
 
 fn assert_homed_row(row: &HomedRow) {
     let mut scan = HomedScan::default();
-    for (label, src) in crate_sources() {
+    for (label, src) in production_sources(crate_sources()) {
         let file_scan = homed_scan(row, &label, &src);
         scan.live.extend(file_scan.live);
         scan.homes_seen.extend(file_scan.homes_seen);
@@ -1172,6 +1299,91 @@ fn prod(r: f64) {
         code.contains("fn prod(r: f64) {"),
         "masking `use …;` must stop at its `;`"
     );
+}
+
+fn module_tree(files: &[(&str, &str)]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .map(|&(label, src)| (label.to_owned(), src.to_owned()))
+        .collect()
+}
+
+#[test]
+fn scanner_blanks_a_file_reached_only_through_a_test_gated_mod() {
+    let check = "fn f(r: f64) {\n    if !(r.is_finite() && r > 0.0) {}\n}\n";
+    let root = snippet(
+        r#"
+#[cfg(test)]
+mod x;
+mod y;
+"#,
+    );
+    let sources = module_tree(&[
+        ("src/lib.rs", root),
+        ("src/x.rs", check),
+        ("src/y.rs", check),
+    ]);
+    assert_eq!(test_only_files(&sources), vec!["src/x.rs".to_owned()]);
+    let live: Vec<(String, Vec<usize>)> = production_sources(sources)
+        .iter()
+        .map(|(label, src)| (label.clone(), live_lines(label, src)))
+        .collect();
+    assert_eq!(
+        live,
+        vec![
+            ("src/lib.rs".to_owned(), vec![]),
+            ("src/x.rs".to_owned(), vec![]),
+            ("src/y.rs".to_owned(), vec![2]),
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "src/x.rs is not among the sources")]
+fn scanner_module_reach_panics_on_a_declaration_with_no_file() {
+    test_only_files(&module_tree(&[("src/lib.rs", "mod x;\n")]));
+}
+
+#[test]
+#[should_panic(expected = "no `mod z;` declaration")]
+fn scanner_module_reach_panics_on_a_file_no_declaration_names() {
+    test_only_files(&module_tree(&[("src/lib.rs", ""), ("src/z.rs", "")]));
+}
+
+#[test]
+#[should_panic(expected = "not a flat src/<stem>.rs file")]
+fn scanner_module_reach_panics_on_a_mod_rs_file() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "mod x;\n"),
+        ("src/x/mod.rs", ""),
+    ]));
+}
+
+#[test]
+#[should_panic(expected = "a layout the test-only-module rule does not follow")]
+fn scanner_module_reach_panics_on_a_declaration_outside_the_root() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "mod x;\n"),
+        ("src/x.rs", "mod y;\n"),
+    ]));
+}
+
+#[test]
+#[should_panic(expected = "sits inside an inline module")]
+fn scanner_module_reach_panics_on_a_declaration_inside_an_inline_module() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "mod outer {\n    mod x;\n}\n"),
+        ("src/x.rs", ""),
+    ]));
+}
+
+#[test]
+#[should_panic(expected = "a `#[path]` module")]
+fn scanner_module_reach_panics_on_a_path_attribute() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "#[path = \"x.rs\"]\nmod x;\n"),
+        ("src/x.rs", ""),
+    ]));
 }
 
 #[test]
