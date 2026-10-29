@@ -4,7 +4,10 @@ use crate::git_history::{BranchMessages, FirstParentChanges};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(test, feature = "test-support"))]
@@ -108,6 +111,13 @@ pub trait GitOps {
     /// advisory channel instead, downgrading any surviving refusal to a
     /// non-blocking `Low`.
     fn try_is_gitignored(&self, path: &str) -> Result<bool, String>;
+
+    /// [`GitOps::try_is_gitignored`] for each of `paths`, in order: exactly
+    /// the answer each per-path call would give. For a caller about to ask
+    /// about many paths, which an implementation may answer in one batch.
+    fn try_is_gitignored_each(&self, paths: &[String]) -> Vec<Result<bool, String>> {
+        paths.iter().map(|p| self.try_is_gitignored(p)).collect()
+    }
 
     /// Returns `true` iff `path` resolves on `branch` to a tracked file OR a
     /// directory containing tracked files (git does not track empty dirs),
@@ -626,6 +636,47 @@ impl RealGitOps {
         })
     }
 
+    /// One `git check-ignore --stdin -z` over `paths`, returning its stdout:
+    /// each path git reports ignored, echoed exactly as given, NUL-terminated.
+    /// `Err` unless git ran and exited 0 (some ignored) or 1 (none).
+    ///
+    /// The paths are written from a scoped thread while this one collects
+    /// stdout, so a full stdout pipe cannot deadlock the write.
+    fn check_ignore_batch(&self, paths: &[String]) -> Result<Vec<u8>, String> {
+        let mut child = crate::git_env::command(&self.project_root)
+            .args(["check-ignore", "--stdin", "-z"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("git invocation failed: {e}"))?;
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        let (written, output) = std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                paths.iter().try_for_each(|p| {
+                    stdin
+                        .write_all(p.as_bytes())
+                        .and_then(|()| stdin.write_all(b"\0"))
+                })
+            });
+            let output = child.wait_with_output();
+            (writer.join(), output)
+        });
+        let output = output.map_err(|e| format!("git invocation failed: {e}"))?;
+        if !matches!(output.status.code(), Some(0 | 1)) {
+            return Err(format!(
+                "git exited {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        match written {
+            Ok(Ok(())) => Ok(output.stdout),
+            Ok(Err(e)) => Err(format!("writing paths to git failed: {e}")),
+            Err(_) => Err("the path writer panicked".to_string()),
+        }
+    }
+
     /// [`RealGitOps::run_warned`] with the error discarded, so callers can
     /// `else { return vec![]; }` in one line. The breadcrumb is identical —
     /// only the recoverable error string is dropped.
@@ -789,6 +840,44 @@ impl GitOps for RealGitOps {
                     e
                 );
                 Err(format!("git check-ignore failed: {e}"))
+            }
+        }
+    }
+
+    /// One batched `git check-ignore --stdin -z` instead of one fork per path.
+    ///
+    /// Falls back to one [`try_is_gitignored`](GitOps::try_is_gitignored) per
+    /// path whenever the batch cannot stand in for them exactly: the breadcrumb
+    /// budget is already latched (every per-path answer is then `Err`), a path
+    /// holds a NUL (it could not be one stdin record), or the batch failed — git
+    /// refuses a whole batch for one path it rejects. The batch itself never
+    /// latches `gitignore_unavailable`, so the per-path calls keep today's
+    /// budget and breadcrumb.
+    fn try_is_gitignored_each(&self, paths: &[String]) -> Vec<Result<bool, String>> {
+        let per_path = || paths.iter().map(|p| self.try_is_gitignored(p)).collect();
+        if paths.is_empty() {
+            return vec![];
+        }
+        if self.gitignore_unavailable.load(Ordering::Relaxed)
+            || paths.iter().any(|p| p.contains('\0'))
+        {
+            return per_path();
+        }
+        match self.check_ignore_batch(paths) {
+            Ok(stdout) => {
+                let ignored: HashSet<&[u8]> = stdout.split(|&b| b == 0).collect();
+                paths
+                    .iter()
+                    .map(|p| Ok(ignored.contains(p.as_bytes())))
+                    .collect()
+            }
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: batched git check-ignore --stdin failed in {}: {e}; \
+                     probing one path at a time",
+                    self.project_root.display()
+                );
+                per_path()
             }
         }
     }
