@@ -10731,9 +10731,14 @@ mod tests {
 
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
     ///
-    /// Judgment call (task #7137): a deliberate local copy of the canonical
-    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`, kept in step by
-    /// `crates/reify-ir/tests/cube_fixture_agreement.rs`, which also says why.
+    /// Judgment call (task #7137): this cube cannot delegate to the canonical
+    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`. Its `Mesh` is the
+    /// `--test` build of this crate, a different type from the one
+    /// `reify-test-support` links, and a `reify-test-support` dev-dep would
+    /// invert the layering (it normal-deps `reify-compiler`, which normal-deps
+    /// this crate). So the vertices stay local, and the index block is the
+    /// shared data file `box_triangle_indices.rs` that the canonical builder
+    /// also `include!`s.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3
         #[rustfmt::skip]
@@ -10747,22 +10752,7 @@ mod tests {
             1.0, 1.0, 1.0, // v6
             0.0, 1.0, 1.0, // v7
         ];
-        // 12 triangles (2 per face, 6 faces)
-        #[rustfmt::skip]
-        let indices: Vec<u32> = vec![
-            // -Z face
-            0, 2, 1,  0, 3, 2,
-            // +Z face
-            4, 5, 6,  4, 6, 7,
-            // -Y face
-            0, 1, 5,  0, 5, 4,
-            // +Y face
-            3, 7, 6,  3, 6, 2,
-            // -X face
-            0, 4, 7,  0, 7, 3,
-            // +X face
-            1, 2, 6,  1, 6, 5,
-        ];
+        let indices: Vec<u32> = include!("box_triangle_indices.rs").to_vec();
         Mesh { vertices, indices, normals: None }
     }
 

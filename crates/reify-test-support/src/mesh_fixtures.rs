@@ -14,13 +14,16 @@
 //! survive undetected. Deduplicating the geometry means a correction lands
 //! everywhere at once.
 //!
-//! `reify-kernel-manifold`'s offset-taking `test_fixtures::unit_cube_mesh` is
-//! the one deliberate exception and keeps its own box literal: that module is
-//! reachable from the crate's plain library artifact (the `test-fixtures`
-//! feature path), where `reify-test-support` is not linkable because it is only
-//! a dev-dependency there. `crates/reify-kernel-manifold/tests/
-//! cube_fixture_agreement.rs` is the executable guard that keeps the two
-//! honest.
+//! The box's triangle index block has one definition,
+//! `crates/reify-ir/src/box_triangle_indices.rs`, which [`prismatic_box_mesh`]
+//! `include!`s. A box builder that cannot link this crate includes the same
+//! file rather than copying the block. `reify-kernel-manifold`'s offset-taking
+//! `test_fixtures::unit_cube_mesh` is one: that module is reachable from the
+//! crate's plain library artifact (the `test-fixtures` feature path), where
+//! `reify-test-support` is not linkable because it is only a dev-dependency
+//! there. It shares the index block and keeps only its own offset vertex
+//! literal, which `crates/reify-kernel-manifold/tests/cube_fixture_agreement.rs`
+//! checks against [`prismatic_box_mesh`].
 //!
 //! This module is deliberately NOT glob-exported from `lib.rs` (see the note
 //! there): `assert_rel`, `unit_cube_mesh`, `prismatic_box_mesh`,
@@ -28,7 +31,8 @@
 //! hoisting them into the crate root, which many test files glob-import via
 //! `use reify_test_support::*;`, would risk an E0659 ambiguity against any
 //! future same-named item (compare `assert_rel_close` in reify-stdlib/reify-cli
-//! and the private `unit_cube_mesh` in reify-ir). Spell the module path:
+//! and reify-ir's `#[cfg(test)]` `unit_cube_mesh`, which builds its cube from
+//! the same index block). Spell the module path:
 //! `reify_test_support::mesh_fixtures::…`.
 
 use reify_ir::Mesh;
@@ -88,21 +92,7 @@ pub fn prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
             lx, ly, lz, // 6
             0.0, ly, lz, // 7
         ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
+        indices: include!("../../reify-ir/src/box_triangle_indices.rs").to_vec(),
         normals: None,
     }
 }
