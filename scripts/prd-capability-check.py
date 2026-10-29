@@ -8,13 +8,13 @@ Committed-probe-set format (JSON):
             {
                 "capability": "<human name for the capability being probed>",
                 "probe_kind": "grammar" | "check" | "ir" | "value",
-                "fixture": "<repo-relative path to the .ri fixture file>",  // non-empty
+                "fixture": "<repo-relative path to the .ri fixture file>",
                 "expected": {
                     "observation": "present" | "absent",
-                    "match": {                       // only the keys the kind reads
-                        "exit_code": <int>,          // check only
-                        "stderr_contains": "<str>",  // check, ir
-                        "stdout_contains": "<str>",  // check only
+                    "match": {                       // per kind: _MATCH_KEYS_BY_KIND
+                        "exit_code": <int>,
+                        "stderr_contains": "<str>",
+                        "stdout_contains": "<str>",
                         "stdout_value": {            // value kind ONLY, required there
                             "pattern": "<regex with >=1 capture group>",
                             "group": <int|str>,      // optional, default 1
@@ -29,14 +29,10 @@ Committed-probe-set format (JSON):
         ]
     }
 
-Load-time rules (load_probe_set, the single validation site), each refusing a
-probe that would run yet could prove nothing:
-    every kind — the fixture is a non-empty string
-    every kind — match carries no key the kind never reads (see above): such a
-                 key, misspelt or borrowed, would be silently ignored
-    check      — at least one constraining key: an int exit_code, or a
-                 non-empty stderr_contains / stdout_contains
-    value      — a located, constrained stdout_value (_validate_value_predicate)
+load_probe_set() is the single validation site.  Beyond the shape above it
+refuses any probe that would run yet could prove nothing.  Those rules are
+stated once, in tests/prd-gate/README.md, and each is one validator that
+load_probe_set() calls.
 
 Probe kinds and dispatch:
     grammar  — `tree-sitter parse --quiet <fixture>` (CWD = tree-sitter-reify/)
@@ -137,7 +133,8 @@ _VALUE_CONSTRAINT_KEYS = frozenset({"min", "max", "finite"})
 # ---------------------------------------------------------------------------
 
 _EXIT_CODE_KEY = "exit_code"
-_SIGNATURE_KEYS = frozenset({"stderr_contains", "stdout_contains"})
+_STDERR_SIGNATURE_KEY = "stderr_contains"
+_SIGNATURE_KEYS = frozenset({_STDERR_SIGNATURE_KEY, "stdout_contains"})
 
 # Exactly the match keys each kind's arm of observe_with_evidence() reads.  Any
 # other key would be silently ignored, leaving the probe armed but vacuous, so
@@ -146,7 +143,7 @@ _MATCH_KEYS_BY_KIND: Dict[str, FrozenSet[str]] = {
     "grammar": frozenset(),
     "check": frozenset({_EXIT_CODE_KEY}) | _SIGNATURE_KEYS,
     # ir tests only exit ≠ 0, so an exit_code here would never be compared.
-    "ir": frozenset({"stderr_contains"}),
+    "ir": frozenset({_STDERR_SIGNATURE_KEY}),
     # exit 0 is structural to the kind, so a second spelling of it could
     # contradict the arm that enforces it; stdout and stderr assertions belong
     # in the predicate's `pattern`, which is the half that gets checked.
@@ -499,27 +496,49 @@ def _refuse_unconsulted_match_keys(
         )
 
 
+def _is_signature(value: Any) -> bool:
+    """True for a stderr/stdout signature that can be missing from some output.
+
+    The empty string is in every output, so it constrains nothing.
+    """
+    return isinstance(value, str) and bool(value)
+
+
 def _validate_check_predicate(index: int, match: Dict[str, Any]) -> None:
     """Reject a check probe whose match constrains nothing about the run.
 
     match_predicate() holds for every run when no key constrains it, so such a
     probe observes PRESENT whatever reify does.  A constraining key is an integer
-    exit_code (a bool is not one, though Python calls it an int) or a non-empty
-    stderr_contains / stdout_contains: the empty string is in every output.
-    Only the absence of any constraining key is refused here; a key that sits
-    beside a constraining one is not judged.
+    exit_code (a bool is not one, though Python calls it an int) or a
+    stderr_contains / stdout_contains that _is_signature().  Only the absence of
+    any constraining key is refused here; a key that sits beside a constraining
+    one is not judged.
     """
     exit_code = match.get(_EXIT_CODE_KEY)
     constrains_exit = isinstance(exit_code, int) and not isinstance(exit_code, bool)
-    constrains_output = any(
-        isinstance(match.get(key), str) and match[key] for key in _SIGNATURE_KEYS
-    )
+    constrains_output = any(_is_signature(match.get(key)) for key in _SIGNATURE_KEYS)
     if not (constrains_exit or constrains_output):
         raise ValueError(
             f"probe[{index}] is a check probe whose match {match!r} constrains "
             "nothing, so it observes present whatever reify does; give it an "
             f"integer {_EXIT_CODE_KEY} or a non-empty "
             f"{' / '.join(sorted(_SIGNATURE_KEYS))}"
+        )
+
+
+def _validate_ir_present_signature(index: int, match: Dict[str, Any]) -> None:
+    """Reject an ir probe expecting present that names no signature to look for.
+
+    observe_with_evidence() reads exit 0 as ABSENT and an error whose stderr
+    lacks the signature as INDETERMINATE, so without one such a probe can never
+    pass.  An ir probe expecting absent needs none: a clean exit is its claim.
+    """
+    if not _is_signature(match.get(_STDERR_SIGNATURE_KEY)):
+        raise ValueError(
+            f"probe[{index}] is an ir probe expecting present whose match "
+            f"{match!r} names no error signature, so exit 0 reads absent and "
+            "any error reads indeterminate: it can never pass; give it a "
+            f"non-empty {_STDERR_SIGNATURE_KEY}"
         )
 
 
@@ -638,16 +657,14 @@ def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
 def load_probe_set(text: str) -> List[Probe]:
     """Parse a committed-probe-set JSON string into a list of Probe objects.
 
-    Raises ValueError if the structure is invalid, or if a probe would run yet
-    could prove nothing:
+    Raises ValueError if the structure is invalid:
     - missing top-level 'probes' key
     - missing required fields (capability, probe_kind, fixture, expected)
     - unknown probe_kind (must be grammar|check|ir|value)
-    - a fixture that is not a non-empty string, for every kind
     - unknown observation value (must be present|absent)
-    - a match key the probe's kind never consults (_MATCH_KEYS_BY_KIND)
-    - a check probe with no constraining key (_validate_check_predicate)
-    - a vacuous or malformed value-kind predicate (_validate_value_predicate)
+    or if a probe would run yet could prove nothing, by the rules
+    tests/prd-gate/README.md states; each is one _validate_* / _refuse_* call
+    below.
 
     This is the single validation site: prd-decompose-verify.py's bind_premises
     routes its assembled probe set through here rather than re-checking, so a
@@ -713,6 +730,8 @@ def load_probe_set(text: str) -> List[Probe]:
             _validate_value_predicate(i, match)
         elif probe_kind == "check":
             _validate_check_predicate(i, match)
+        elif probe_kind == "ir" and observation == "present":
+            _validate_ir_present_signature(i, match)
 
         probes.append(Probe(
             capability=raw["capability"],
@@ -1056,7 +1075,7 @@ def observe_with_evidence(
         if run.exit_code == 0:
             return ABSENT, None
         # exit ≠ 0: check for the asserted signature in stderr
-        sig = match.get("stderr_contains")
+        sig = match.get(_STDERR_SIGNATURE_KEY)
         if sig and sig in run.stderr:
             return PRESENT, None
         return INDETERMINATE, None

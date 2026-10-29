@@ -550,6 +550,14 @@ class TestBindingRequiredMatch(unittest.TestCase):
             self.assertIn(needle, message)
         self.assertRegex(message, r"\b1\b")
 
+    def test_refuses_a_produces_premise_with_no_signature(self):
+        """Its ir probe could never pass, so α's single validation site refuses it."""
+        with self.assertRaises(ValueError) as ctx:
+            pdv.bind_premises([self._premise("produces", {})])
+        message = str(ctx.exception)
+        for needle in ("probe[0]", "stderr_contains"):
+            self.assertIn(needle, message)
+
     def test_a_bound_match_is_a_fresh_dict(self):
         """Mutating one emitted probe reaches neither the table nor the premise."""
         premise_match = {}

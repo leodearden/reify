@@ -396,7 +396,8 @@ Instructions:
                   Optional stderr_contains / stdout_contains.
    - "produces":  reify eval exits non-zero with this signature in stderr.
                   match.stderr_contains is the signature, and it is the only
-                  key.
+                  key.  Bind refuses a produces premise without one: it could
+                  never pass.
    - "ir":        reify eval exits 0 (clean, no error) — observation=absent.
                   Optional stderr_contains only.
                   This proves ONLY "eval exits 0, clean".  It CANNOT see what

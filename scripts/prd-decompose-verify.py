@@ -85,8 +85,7 @@ class Premise:
         assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir" | "value"
         fixture         — repo-relative path to the .ri fixture file
         match           — the premise's own match keys for α's probe (stderr_contains, …);
-                          binding adds the keys its assertion kind requires
-                          (AssertionBinding.required_match) and refuses a contradiction
+                          premise_to_probe adds the ones its assertion kind requires
         capability      — optional human name; falls back to text if None
     """
     text: str
@@ -117,8 +116,7 @@ class AssertionBinding:
 _NO_REQUIRED_MATCH: Mapping[str, Any] = MappingProxyType({})
 
 # Deterministic binding table (PRD D1 / D4).  α's load_probe_set holds the rest
-# of each probe's non-vacuity: a non-empty fixture, no key its kind ignores,
-# and a value probe's constrained predicate.
+# of each probe's non-vacuity, by the rules tests/prd-gate/README.md states.
 _ASSERTION_KIND_MAP: Mapping[str, AssertionBinding] = MappingProxyType({
     # The rejection FIRES → exit 1 → match satisfied → PRESENT → PASS; reify
     # accepting silently (exit 0) misses it → ABSENT → expected present → FAIL.
@@ -133,6 +131,7 @@ _ASSERTION_KIND_MAP: Mapping[str, AssertionBinding] = MappingProxyType({
     # tree-sitter exits 0 (no parse errors) → PRESENT → PASS.
     "parses": AssertionBinding("grammar", "present", _NO_REQUIRED_MATCH),
     # reify eval exits ≠ 0 with the premise's stderr signature → PRESENT → PASS.
+    # No fixed key: the signature is the premise's own, and α refuses its lack.
     "produces": AssertionBinding("ir", "present", _NO_REQUIRED_MATCH),
     # reify eval exits 0 (clean) → ABSENT → expected absent → PASS.
     "ir": AssertionBinding("ir", "absent", _NO_REQUIRED_MATCH),
@@ -233,10 +232,8 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
 
     Validation:
         The assembled probe-set goes through pcc.load_probe_set, and that is
-        the only validation: α refuses an empty fixture for every kind, a match
-        key the kind never reads, a check probe with no constraining key and a
-        vacuous value predicate.  Any of these surfaces here rather than at
-        probe-run time.
+        the only validation, so a probe α refuses (tests/prd-gate/README.md
+        states the rules) surfaces here rather than at probe-run time.
 
     Args:
         premises: List of Premise records (may be empty → empty probe-set).
@@ -746,9 +743,8 @@ def _parse_premises_file(path: str) -> List[Premise]:
                 {
                     "text": "...",
                     "assertion_kind": "rejection|parses|resolves|produces|ir|value",
-                    "fixture": "...",          // non-empty (α refuses an empty one)
-                    "match": {...},            // optional; bind adds the keys the
-                                               // kind requires, refuses a contradiction
+                    "fixture": "...",
+                    "match": {...},            // optional; see premise_to_probe
                     "capability": "..."   // optional
                 }
             ]

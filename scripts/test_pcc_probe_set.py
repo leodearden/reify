@@ -615,12 +615,13 @@ class TestProbeSetNonVacuity(unittest.TestCase):
         "value": {"stdout_value": {"pattern": r"X = ([0-9.]+)", "min": 0}},
     }
 
-    def _probe(self, kind, match, fixture="tests/prd-gate/fixtures/arrow_type.ri"):
+    def _probe(self, kind, match, fixture="tests/prd-gate/fixtures/arrow_type.ri",
+               observation="present"):
         return {
             "capability": f"a {kind} probe",
             "probe_kind": kind,
             "fixture": fixture,
-            "expected": {"observation": "present", "match": copy.deepcopy(match)},
+            "expected": {"observation": observation, "match": copy.deepcopy(match)},
         }
 
     def _load(self, *probes):
@@ -667,6 +668,28 @@ class TestProbeSetNonVacuity(unittest.TestCase):
             with self.subTest(match=match):
                 probes = self._load(self._probe("check", match))
                 self.assertEqual(len(probes), 1)
+                self.assertEqual(probes[0].expected["match"], match)
+
+    # ── ir expecting present: a signature for the error to carry ──────────────
+
+    def test_refuses_an_ir_probe_expecting_present_with_no_signature(self):
+        """Exit 0 reads ABSENT and an unsigned error INDETERMINATE: it can never pass."""
+        for match in ({}, {"stderr_contains": ""}):
+            with self.subTest(match=match):
+                self._assert_second_probe_rejected(
+                    self._probe("ir", match), "stderr_contains"
+                )
+
+    def test_accepts_an_ir_probe_that_names_a_signature_or_expects_absent(self):
+        for observation, match in (
+            ("present", {"stderr_contains": "EvalError"}),
+            ("absent", {"stderr_contains": "EvalError"}),
+            ("absent", {}),
+        ):
+            with self.subTest(observation=observation, match=match):
+                probes = self._load(
+                    self._probe("ir", match, observation=observation)
+                )
                 self.assertEqual(probes[0].expected["match"], match)
 
     # ── every kind: no match key its observation ignores ──────────────────────

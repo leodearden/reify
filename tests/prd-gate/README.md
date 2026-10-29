@@ -78,23 +78,29 @@ wholesale.
 ```
 
 `load_probe_set` refuses, as a usage error (exit 64 naming `probe[i]`), any
-probe that would run yet could prove nothing:
+probe that would run yet could prove nothing. This list is the one statement of
+those rules; the code's docstrings point here, and its per-kind key table is
+`_MATCH_KEYS_BY_KIND`.
 
 1. **Every kind needs a non-empty `fixture`.** A probe with no target proves
    nothing.
-2. **Every kind accepts only the `match` keys its observation reads** (the
-   per-key comments above): none for `grammar`; `exit_code`, `stderr_contains`
-   and `stdout_contains` for `check`; `stderr_contains` for `ir`;
-   `stdout_value` for `value`. Any other key, misspelt or borrowed from another
-   kind, would be silently ignored, so it is refused.
+2. **Every kind accepts only the `match` keys its observation reads**, as the
+   per-key comments above list them (none for `grammar`). Any other key,
+   misspelt or borrowed from another kind, would be silently ignored, so it is
+   refused.
 3. **A `check` probe needs a constraining key:** an integer `exit_code`, or a
    non-empty `stderr_contains` / `stdout_contains`. Without one, the predicate
    holds for every run.
+4. **An `ir` probe expecting `present` needs a non-empty `stderr_contains`.**
+   Without a signature, exit 0 reads ABSENT and any error INDETERMINATE, so the
+   probe can never pass. An `ir` probe expecting `absent` needs none: a clean
+   exit is its claim.
 
 A `grammar` probe's `match` is `{}`: its observation is determined by exit code
 alone. A `value` probe has a mandatory predicate — see
-[`match` predicate semantics](#match-predicate-semantics). The rules are PRD
-`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.3.
+[`match` predicate semantics](#match-predicate-semantics). Rules 1–3 are PRD
+`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.3; rule 4 is the `ir`
+counterpart of rule 3.
 
 ## Probe kinds
 
