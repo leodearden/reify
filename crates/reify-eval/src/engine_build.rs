@@ -657,9 +657,14 @@ fn template_build_steps(
     steps
 }
 
-/// The read-only inputs [`Engine::run_hydrate_step`] hands the in-loop
-/// hydration ladder; each build walk fills them from its own sources.
+/// Everything [`Engine::hydrate_value_cell_in_loop`] reads to resolve one value
+/// cell of `template` at its `HydrateCell` step; each build walk fills it from
+/// its own sources.
 struct CellHydrationInputs<'a> {
+    template: &'a reify_compiler::TopologyTemplate,
+    named_steps: &'a HashMap<String, KernelHandle>,
+    /// The kernel the ladder runs on, looked up in the walk's kernel map.
+    kernel_name: &'a str,
     functions: &'a [CompiledFunction],
     meta_map: &'a HashMap<String, HashMap<String, String>>,
     table: &'a TopologyAttributeTable,
@@ -3831,20 +3836,20 @@ impl Engine {
                     let (r_idx, realization) = match build_step {
                         BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
                         BuildStep::HydrateCell(cell_id) => {
-                            Engine::run_hydrate_step(
-                                template,
+                            Engine::hydrate_value_cell_in_loop(
                                 cell_id,
-                                &named_steps,
-                                &mut values,
-                                &mut self.geometry_kernels,
-                                name,
                                 &CellHydrationInputs {
+                                    template,
+                                    named_steps: &named_steps,
+                                    kernel_name: name,
                                     functions: &self.functions,
                                     meta_map: &self.meta_map,
                                     table: &self.topology_attribute_table,
                                     realization_read_cells: &realization_read_cells,
                                     realized_reprs: &realized_reprs_for_hydration,
                                 },
+                                &mut values,
+                                &mut self.geometry_kernels,
                                 &mut diagnostics,
                             );
                             continue;
@@ -4023,20 +4028,8 @@ impl Engine {
                     if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
-                    // UnifiedDag: hydrate the just-realized body into `values` so
-                    // a selector cell scheduled next sees it (build()'s
-                    // per-realization slice; see the rationale and cost note there).
                     if unified_schedule.is_some() {
-                        Engine::post_process_geometry_handle_cells(
-                            template,
-                            &named_steps,
-                            &mut values,
-                            &self.functions,
-                            &self.meta_map,
-                            &mut self.cache,
-                            &mut self.realization_handles,
-                            version_id,
-                        );
+                        self.hydrate_after_realize(template, &named_steps, &mut values, version_id);
                     }
                 }
                 // Step-8 (task ε / 3436): the post-process helpers operate on
@@ -4718,20 +4711,20 @@ impl Engine {
                             // ended); the post-process block below re-runs the same
                             // passes over all cells, so this is an additive early
                             // hydration, not the sole resolution site.
-                            Engine::run_hydrate_step(
-                                template,
+                            Engine::hydrate_value_cell_in_loop(
                                 cell_id,
-                                &named_steps,
-                                &mut values,
-                                &mut self.geometry_kernels,
-                                name,
                                 &CellHydrationInputs {
+                                    template,
+                                    named_steps: &named_steps,
+                                    kernel_name: name,
                                     functions: &self.functions,
                                     meta_map: &self.meta_map,
                                     table: &self.topology_attribute_table,
                                     realization_read_cells: &realization_read_cells,
                                     realized_reprs: &realized_reprs_for_hydration,
                                 },
+                                &mut values,
+                                &mut self.geometry_kernels,
                                 &mut diagnostics,
                             );
                             continue;
@@ -4899,43 +4892,8 @@ impl Engine {
                     if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
-                    // Task 4358 ε: per-realization geometry-handle hydration slice
-                    // (UnifiedDag only). `post_process_geometry_handle_cells` skips
-                    // realizations whose name is not yet in `named_steps`, so calling
-                    // it after EACH realization hydrates only the just-completed
-                    // ones — making a freshly-produced body's `values` cell visible
-                    // to a selector / geometry-query cell scheduled next (the
-                    // HydrateCell step above). It writes no diagnostics and re-inserts
-                    // the same handle, so it is idempotent with the whole-template
-                    // call in the post-process block below. Skipped under
-                    // LegacyMultiPass (`unified_pass` is `None`), so that path keeps
-                    // its single post-loop hydration and stays byte-identical.
-                    //
-                    // COST (reviewer): the helper loops over ALL of the template's
-                    // realizations each call (short-circuiting those not yet in
-                    // `named_steps`), so invoking it after every Realize makes the
-                    // per-realization hydration O(R²)-over-realizations across a
-                    // template with R realizations, vs. Legacy's single O(R) post-loop
-                    // call. The re-work is purely idempotent (re-inserting already
-                    // resolved handles + re-recording the same freshness cache nodes),
-                    // so it is correctness-neutral, and acceptable for the typical
-                    // small-R template. If profiling ever shows it dominating on a
-                    // many-realization, many-handle-cell template, restrict this call
-                    // to the just-completed realization (the helper would need a
-                    // single-realization filter param threaded through its 3 call
-                    // sites — build / build_snapshot / tessellate_from_values) rather
-                    // than rescanning the full realization list each iteration.
                     if unified_pass.is_some() {
-                        Engine::post_process_geometry_handle_cells(
-                            template,
-                            &named_steps,
-                            &mut values,
-                            &self.functions,
-                            &self.meta_map,
-                            &mut self.cache,
-                            &mut self.realization_handles,
-                            version_id,
-                        );
+                        self.hydrate_after_realize(template, &named_steps, &mut values, version_id);
                     }
                 }
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
@@ -6870,20 +6828,20 @@ impl Engine {
                     BuildStep::HydrateCell(cell_id) => {
                         // θ (4361 step-6): early hydration of selector / geometry-query
                         // value cells before consuming realizations (UnifiedDag only).
-                        Engine::run_hydrate_step(
-                            template,
+                        Engine::hydrate_value_cell_in_loop(
                             cell_id,
-                            &named_steps,
-                            values,
-                            geometry_kernels,
-                            default_kernel_name,
                             &CellHydrationInputs {
+                                template,
+                                named_steps: &named_steps,
+                                kernel_name: default_kernel_name,
                                 functions,
                                 meta_map,
                                 table: topology_attribute_table,
                                 realization_read_cells,
                                 realized_reprs: &realized_reprs_tess,
                             },
+                            values,
+                            geometry_kernels,
                             diagnostics,
                         );
                         continue;
@@ -9968,6 +9926,47 @@ impl Engine {
         }
     }
 
+    /// Task 4358 ε: hydrate the bodies realized so far into `values`, right after
+    /// a `Realize` step of a UnifiedDag build walk, so a selector or
+    /// geometry-query cell scheduled next (its `HydrateCell` step) sees the
+    /// freshly produced body.
+    ///
+    /// Callers run it only while walking a UnifiedDag schedule. Under
+    /// LegacyMultiPass the walk keeps its single post-loop
+    /// [`Engine::post_process_geometry_handle_cells`] call and stays
+    /// byte-identical.
+    ///
+    /// `post_process_geometry_handle_cells` skips a realization whose name is not
+    /// yet in `named_steps`, writes no diagnostics and re-inserts the same
+    /// handle, so this slice is idempotent with the whole-template call each walk
+    /// makes after its loop.
+    ///
+    /// COST: every call rescans all of the template's realizations, so a walk
+    /// over R realizations does O(R²) work against Legacy's single O(R) pass.
+    /// The repeated work only re-inserts resolved handles and re-records the
+    /// same freshness cache nodes, so it does not change the result, and R is
+    /// small in practice. If profiling ever shows it dominating, restrict this
+    /// slice to the just-completed realization here rather than rescanning the
+    /// whole list.
+    fn hydrate_after_realize(
+        &mut self,
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        version: VersionId,
+    ) {
+        Engine::post_process_geometry_handle_cells(
+            template,
+            named_steps,
+            values,
+            &self.functions,
+            &self.meta_map,
+            &mut self.cache,
+            &mut self.realization_handles,
+            version,
+        );
+    }
+
     /// Post-hydration re-dispatch pass for `@optimized` ComputeNodes that
     /// consume a Solid body (task #4726 / esc-3787-23 root cause).
     ///
@@ -11055,50 +11054,6 @@ impl Engine {
         }
     }
 
-    /// Run one [`BuildStep::HydrateCell`] of a build walk (build, build_snapshot,
-    /// tessellate): hydrate `cell_id` on the `kernel_name` kernel through
-    /// [`Engine::hydrate_value_cell_in_loop`].
-    ///
-    /// A missing kernel skips the step rather than aborting the walk. The
-    /// invariant holds today (every walk checks `kernel_name` is registered
-    /// before it starts and the executor never removes a kernel), so a miss is a
-    /// refactor bug, `debug_assert!`ed. Skipping is safe because this hydration
-    /// is additive: each walk's whole-template post-process re-runs the same
-    /// ladder over every cell, so only the in-loop timing is lost and a
-    /// downstream curated fillet falls back to its pre-ε all-edges path.
-    #[allow(clippy::too_many_arguments)]
-    fn run_hydrate_step(
-        template: &reify_compiler::TopologyTemplate,
-        cell_id: &reify_core::ValueCellId,
-        named_steps: &HashMap<String, KernelHandle>,
-        values: &mut ValueMap,
-        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
-        kernel_name: &str,
-        inputs: &CellHydrationInputs<'_>,
-        diagnostics: &mut Vec<Diagnostic>,
-    ) {
-        let Some(kernel) = geometry_kernels.get_mut(kernel_name) else {
-            debug_assert!(
-                false,
-                "default kernel must remain in the map across the schedule walk"
-            );
-            return;
-        };
-        Engine::hydrate_value_cell_in_loop(
-            template,
-            cell_id,
-            named_steps,
-            values,
-            inputs.functions,
-            inputs.meta_map,
-            kernel.as_mut(),
-            inputs.table,
-            inputs.realization_read_cells,
-            inputs.realized_reprs,
-            diagnostics,
-        );
-    }
-
     /// Task 4358 ε: hydrate a SINGLE value cell at its scheduled slot under
     /// [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`], mirroring the
     /// per-cell body of `post_process_geometry_queries` +
@@ -11149,20 +11104,42 @@ impl Engine {
     /// in [`Engine::run_post_processes`] MUST change together — see the matching
     /// "SYNC REQUIREMENT" note on that function. A divergence would change which
     /// helper wins for a given cell only under UnifiedDag, only in-loop.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # A missing kernel skips the cell
+    ///
+    /// If `inputs.kernel_name` is not in `geometry_kernels`, the cell is skipped
+    /// rather than the walk aborted. Today that cannot happen (every walk checks
+    /// the kernel is registered before it starts, and the executor never removes
+    /// one), so a miss is a refactor bug and is `debug_assert!`ed. Skipping is
+    /// safe because this hydration is additive: each walk's whole-template
+    /// post-process re-runs the same ladder over every cell, so only the in-loop
+    /// timing is lost and a downstream curated fillet falls back to its pre-ε
+    /// all-edges path.
     fn hydrate_value_cell_in_loop(
-        template: &reify_compiler::TopologyTemplate,
         cell_id: &reify_core::ValueCellId,
-        named_steps: &HashMap<String, KernelHandle>,
+        inputs: &CellHydrationInputs<'_>,
         values: &mut ValueMap,
-        functions: &[CompiledFunction],
-        meta_map: &HashMap<String, HashMap<String, String>>,
-        kernel: &mut dyn GeometryKernel,
-        table: &TopologyAttributeTable,
-        realization_read_cells: &HashSet<reify_core::ValueCellId>,
-        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
+        let CellHydrationInputs {
+            template,
+            named_steps,
+            kernel_name,
+            functions,
+            meta_map,
+            table,
+            realization_read_cells,
+            realized_reprs,
+        } = *inputs;
+        let Some(kernel) = geometry_kernels.get_mut(kernel_name) else {
+            debug_assert!(
+                false,
+                "default kernel must remain in the map across the schedule walk"
+            );
+            return;
+        };
+        let kernel = kernel.as_mut();
         let Some(cell) = template.value_cells.iter().find(|c| &c.id == cell_id) else {
             return;
         };
