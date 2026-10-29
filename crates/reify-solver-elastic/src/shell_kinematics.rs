@@ -129,11 +129,138 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
-    use crate::elements::mitc3_plus::Mitc3Plus;
+    use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
     use crate::elements::shell_frame::build_shell_frame;
 
     const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     const WIDE_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
+
+    // Non-unit-metric xy-plane triangles whose first edge runs along +x, so the
+    // local shell frame coincides with the global frame.
+    const DISTORTED_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.3, 0.0, 0.0], [0.4, 0.9, 0.0]];
+    const WIDE_SHALLOW_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+    const NON_UNIT_TRIS: [[[f64; 3]; 3]; 2] = [DISTORTED_TRI, WIDE_SHALLOW_TRI];
+
+    /// The edge tying points, the interior tying points and one generic point.
+    fn shear_probe_coords() -> Vec<ShellReferenceCoord> {
+        Mitc3Plus
+            .tying_points()
+            .iter()
+            .chain(Mitc3Plus.interior_tying_points())
+            .map(|tp| tp.coord)
+            .chain([ShellReferenceCoord::new(0.2, 0.3)])
+            .collect()
+    }
+
+    fn covariant_shear_of(
+        kin: &ShellKinematics,
+        coord: ShellReferenceCoord,
+        u: &[f64; 18],
+    ) -> [f64; 2] {
+        let b = kin.covariant_shear_b(coord);
+        std::array::from_fn(|row| (0..18).map(|dof| b[row][dof] * u[dof]).sum())
+    }
+
+    fn uniform_rotation_dofs(theta_x: f64, theta_y: f64) -> [f64; 18] {
+        let mut u = [0.0_f64; 18];
+        for node in 0..3 {
+            u[6 * node + 3] = theta_x;
+            u[6 * node + 4] = theta_y;
+        }
+        u
+    }
+
+    #[test]
+    fn covariant_shear_b_annihilates_in_plane_axis_rigid_rotations_on_non_unit_triangles() {
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let cx = (nodes[0][0] + nodes[1][0] + nodes[2][0]) / 3.0;
+            let cy = (nodes[0][1] + nodes[1][1] + nodes[2][1]) / 3.0;
+            let scale = nodes.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+            for (wx, wy) in [(1.0, 0.0), (0.0, 1.0), (0.3, -0.7)] {
+                // u = ω × (x − c), θ = ω, for ω = (wx, wy, 0).
+                let mut u = uniform_rotation_dofs(wx, wy);
+                for (i, p) in nodes.iter().enumerate() {
+                    u[6 * i + 2] = wx * (p[1] - cy) - wy * (p[0] - cx);
+                }
+                let tol = 1e-12 * (f64::hypot(wx, wy) * scale).max(1.0);
+                for coord in shear_probe_coords() {
+                    let gamma = covariant_shear_of(&kin, coord, &u);
+                    assert!(
+                        gamma[0].abs() < tol && gamma[1].abs() < tol,
+                        "rigid rotation ω=({wx},{wy}) on {nodes:?} strains the shear at \
+                         {coord:?}: covariant γ = {gamma:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn covariant_shear_b_maps_uniform_rotation_to_the_constant_physical_shear_on_non_unit_triangles() {
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let m = kin.jac2_inv_t;
+            for (alpha, beta) in [(0.7, 0.0), (0.0, -0.4), (0.7, -0.4)] {
+                let u = uniform_rotation_dofs(beta, alpha);
+                let expected = [alpha, -beta];
+                let tol = 1e-12 * f64::max(alpha.abs(), beta.abs());
+                for coord in shear_probe_coords() {
+                    let cov = covariant_shear_of(&kin, coord, &u);
+                    let phys = [
+                        m[0][0] * cov[0] + m[0][1] * cov[1],
+                        m[1][0] * cov[0] + m[1][1] * cov[1],
+                    ];
+                    assert!(
+                        (phys[0] - expected[0]).abs() < tol && (phys[1] - expected[1]).abs() < tol,
+                        "uniform θ = (θ_x={beta}, θ_y={alpha}) on {nodes:?} at {coord:?}: \
+                         physical shear {phys:?}, expected {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn covariant_shear_b_plus_eq9_reproduces_the_constant_covariant_state_on_non_unit_triangle() {
+        use crate::elements::mitc3_plus::ShearStrain;
+
+        let (alpha, beta) = (0.7_f64, -0.4_f64);
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let j = kin.jac2;
+            // The constant covariant state J2ᵀ·(θ_y, −θ_x).
+            let expected = [
+                j[0][0] * alpha - j[1][0] * beta,
+                j[0][1] * alpha - j[1][1] * beta,
+            ];
+            let u = uniform_rotation_dofs(beta, alpha);
+            let samples: Vec<ShearStrain> = Mitc3Plus
+                .interior_tying_points()
+                .iter()
+                .map(|tp| {
+                    let [gamma_xi_zeta, gamma_eta_zeta] = covariant_shear_of(&kin, tp.coord, &u);
+                    ShearStrain {
+                        gamma_xi_zeta,
+                        gamma_eta_zeta,
+                    }
+                })
+                .collect();
+            let tol = 1e-12 * expected[0].abs().max(expected[1].abs());
+            for p in [
+                ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+                ShellReferenceCoord::new(0.2, 0.3),
+            ] {
+                let out = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, p);
+                assert!(
+                    (out.gamma_xi_zeta - expected[0]).abs() < tol
+                        && (out.gamma_eta_zeta - expected[1]).abs() < tol,
+                    "Eq. 9 on {nodes:?} at {p:?}: {out:?}, expected constant covariant \
+                     {expected:?}"
+                );
+            }
+        }
+    }
 
     /// For UNIT_TRI in the xy-plane, the local frame is the identity rotation,
     /// so local_nodes_2d must equal the xy projections of the physical nodes.
