@@ -275,8 +275,8 @@ pub fn form_find_free_surfaces(
     spec: &ForceDensitySpec,
 ) -> Result<FreeFormResult, FreeFormError> {
     // The input contract, a degenerate INPUT triangle included, is checked
-    // against the caller's own geometry — before the bootstrap below rewrites
-    // `current` into a (non-degenerate) line-only equilibrium.
+    // against the caller's own geometry — before the combined fixed point's
+    // bootstrap moves it to a (non-degenerate) line-only equilibrium.
     let problem = ForceDensityProblem::new(
         nodes_guess,
         members,
@@ -294,241 +294,99 @@ pub fn form_find_free_surfaces(
         return Ok(result);
     }
 
-    // Non-empty: combined cotangent fixed-point loop.
-    // Mirrors γ's form_find_anchored_surfaces loop shape (PRD §4 D3).
-    let n = nodes_guess.len();
+    certify_combined_stop(&problem, combined_fixed_point(&problem)?)
+}
 
-    // Bootstrap: start the fixed-point loop from the line-only equilibrium rather
-    // than the raw perturbed guess.  Starting from the perturbed guess breaks the
-    // 3-fold symmetry of the cotangent surface matrix, causing the combined D to
-    // have nullity 2 instead of 4 — an unrecoverable state for the outer loop.
-    // The line-only form-find converges to the canonical (symmetric, equilateral)
-    // prism geometry, where the surface matrix has 3-fold symmetry and the combined
-    // D can reach nullity 4.  Falls back to nodes_guess if the line-only solve
-    // fails (e.g. infeasible Explicit q that has no line-only equilibrium).
-    let boot = form_find_line_only(&problem);
-    let mut current = boot
-        .as_ref()
-        .map(|r| r.nodes.clone())
-        .unwrap_or_else(|_| nodes_guess.to_vec());
+/// Where the combined fixed point stopped.
+enum CombinedStop {
+    /// An iterate met the stop test.
+    Equilibrium(CombinedIterate),
+    /// The budget or the stall guard ended the loop: the densities of the
+    /// last iteration whose relax step was kept, with the geometry it moved to
+    /// (the problem's own densities at the starting geometry until one is).
+    ShortOfEquilibrium { q: Vec<f64>, nodes: Vec<[f64; 3]> },
+}
 
-    // Warm-start group magnitudes for the combined inner search.  Starting the
-    // coordinate-descent from the original spec seeds can stall: at seeds
-    // (-1, 1, 1) the Z-equilibrium constraint (q_strut + q_vert = 0) makes the
-    // 1-D minimum over each free group land back at the seed, so zero improvement
-    // is made and the stall guard fires before the combined objective ever drives
-    // the nullity to 4.  Using the line-only bootstrap q* ≈ (-√3, 1, +√3) as the
-    // starting magnitudes puts the search within the convergence basin of the
-    // correct combined target (-√3·(1+w), 1, +√3·(1+w)), where coordinate
-    // descent finds it in O(1) rounds.
-    let mut warm_group_mag: Vec<f64> = match problem.spec() {
-        FreeSpec::GroupRatios(groups) => {
-            let mut mag = groups.seed_magnitudes().to_vec();
-            if let Ok(ref b) = boot {
-                for (i, &g) in groups.group_ids().iter().enumerate() {
-                    mag[g] = b.force_densities[i].abs().max(1e-10);
-                }
-            }
-            mag
-        }
-        FreeSpec::Explicit(_) => vec![],
-    };
+/// The combined cotangent fixed point: at each iterate assemble the surface
+/// term, take the densities there and stop at equilibrium, else relax the
+/// geometry, until the budget or the stall guard ends it.
+///
+/// It starts from the line-only equilibrium rather than the caller's guess: a
+/// perturbed guess breaks the 3-fold symmetry of the surface term, leaving the
+/// combined `D` at nullity 2, while the line-only form is the symmetric prism,
+/// where the combined `D` can reach nullity 4. When the line-only solve fails
+/// (e.g. an Explicit `q` with no line-only equilibrium) it starts from the
+/// guess.
+fn combined_fixed_point(problem: &ForceDensityProblem<'_>) -> Result<CombinedStop, FreeFormError> {
+    let boot = form_find_line_only(problem).ok();
+    let mut q_source = QSource::new(problem, boot.as_ref());
+    let mut current = boot.map_or_else(|| problem.nodes().to_vec(), |boot| boot.nodes);
+    let mut relaxed_q = problem.q().to_vec();
+    let mut relax = RelaxStep::new();
+    let mut stall = StallGuard::new();
 
-    let mut converged = false;
-    let mut last_result: Option<FreeFormResult> = None;
-    // Adaptive step size for the geometry-descent relaxation, carried across outer
-    // iterations (grows on accepted steps, shrinks on backtracks).
-    let mut geo_step = 1e-2_f64;
-    // Stall detection: break early when geometry is stuck AND residual is not
-    // improving, rather than spinning the full MAX_FREE_SURFACE_ITERS budget
-    // doing expensive eigendecompositions on an already-stalled search.
-    let mut prev_resid = f64::INFINITY;
-    let mut stuck_iters = 0_usize;
-
-    for _iter in 0..MAX_FREE_SURFACE_ITERS {
-        // Assemble Σ_T σ_T·L_T at the current geometry.
-        let surface_mat = assemble_surface_matrix(n, surfaces, surface_stresses, &current)?;
-
-        // (1) Force densities at the current geometry.  For Explicit, q is fixed
-        // (validated up front).  For GroupRatios, re-search q on the combined D at
-        // this iteration's cotangent weights so the densities co-adapt with the
-        // geometry; warm-start the next search from the magnitudes just found.
-        let q: Vec<f64> = match problem.spec() {
-            FreeSpec::Explicit(q) => q.to_vec(),
-            FreeSpec::GroupRatios(groups) => {
-                let searched_q = form_find_group_ratios_combined(
-                    &problem,
-                    groups,
-                    &current,
-                    &warm_group_mag,
-                    &surface_mat,
-                )?;
-                for (i, &g) in groups.group_ids().iter().enumerate() {
-                    warm_group_mag[g] = searched_q[i].abs().max(1e-10);
-                }
-                searched_q
-            }
-        };
-
-        // (2) Combined equilibrium residual at the current geometry — the
-        // free-standing fixed point's stop test. `q` is fixed for the rest of this
-        // iteration (only the surface term varies with geometry), so the line-only
-        // CᵀQC matrix is hoisted once and each surface term is added to it — the
-        // (2b) trial-residual check further down reuses this same `d_line`.
-        let d_line = assemble_d(n, members, &q);
-        let d_at_current = &d_line + &surface_mat;
-        let resid = all_node_equilibrium_residual_relative(&d_at_current, &current);
-
-        if resid <= FREE_SURFACE_EQUILIBRIUM_REL_TOL {
-            converged = true;
-            last_result = Some(combined_result_at(members, &q, &current));
-            break;
-        }
-
-        // Snapshot the geometry entering this iteration.  Both the (2b) trial-move
-        // guard below and the stall guard at the end of this loop body need the
-        // PRE-(2b) geometry as their baseline — distinct from `current`, which (2b)
-        // may go on to overwrite.
-        let before_relax = current.clone();
-
-        // (2b) Null-space geometry recovery — the Explicit branch's missing half.
-        // `combined_geometry_descent_step` below minimises the eigen-gap objective, which
-        // drives D_combined toward NULLITY 4; it does NOT drive the coordinate vector x INTO
-        // null(D_combined). Those are different conditions, and the residual we test above is
-        // the latter. The GroupRatios branch has a second lever Explicit lacks — it re-searches
-        // q on the combined D at this geometry each iteration; its own projected geometry is
-        // discarded at (1), only the densities are kept. With q FIXED here the only remaining
-        // lever is x, so project it onto the 4 smallest-|λ| eigenvectors of D_combined at the
-        // current geometry — the free-standing analogue of the anchored kernel's per-iteration
-        // `solve_reduced` move.
-        //
-        // Applied as a TRIAL move, not unconditionally: an intermediate projection iterate is
-        // not guaranteed to land on a well-posed geometry (its null-space basis can fail to be
-        // 3-D, or it can push a membrane triangle toward zero area) and is not guaranteed to
-        // improve the residual. Accept the projected geometry only if it (a) recovers
-        // coordinates AND re-assembles a surface matrix at the result without error, and (b)
-        // does not increase the combined equilibrium residual; otherwise keep `before_relax` and
-        // fall through to the descent step in (3).
-        //
-        // (a) is load-bearing by construction: the `if let ... && let ...` chain below means a
-        // `SingularRecovery` / `DegenerateTriangle` raised by this internal relaxation step is
-        // absorbed as a no-op rather than propagated to the caller via `?` — swapping the chain
-        // for `?` would let an intermediate-iterate error surface in place of the contractual
-        // `SearchDidNotConverge`.
-        // (b) (the `trial_resid <= resid` check just below) is defensive rather than measured
-        // load-bearing on this fixture: forcing it to accept unconditionally (`if true`) and
-        // probing 10 infeasible σ/q/guess combinations plus the full crate suite (759 lib + 5
-        // integration tests) left every result unchanged — every rejected trial in those cases
-        // still resolved to `SearchDidNotConverge` once the rejection was skipped, so no test
-        // today would catch this check being deleted. Kept because accepting a
-        // residual-regressing trial changes the iterate (3)'s descent runs from, which could
-        // destabilise a case not covered by this fixture even though none tried here do.
-        if matches!(problem.spec(), FreeSpec::Explicit(_))
-            && let Ok(trial_nodes) =
-                form_find_explicit_combined_relaxed(&problem, &current, &surface_mat)
-            && let Ok(trial_surface_mat) =
-                assemble_surface_matrix(n, surfaces, surface_stresses, &trial_nodes)
-        {
-            let d_trial = &d_line + &trial_surface_mat;
-            let trial_resid = all_node_equilibrium_residual_relative(&d_trial, &trial_nodes);
-            if trial_resid <= resid {
-                current = trial_nodes;
-            }
-        }
-
-        // (3) Relax the geometry one descent step on the eigenvalue-gap objective at
-        // fixed q. When (2b) accepted its trial move above, this is the SECOND half of
-        // a two-part relaxation (project into null₄(D_combined), then one eigen-gap
-        // descent step); when (2b) was rejected or a no-op, this is the only move made
-        // this iteration. Both halves are required and neither suffices alone:
-        // MEASURED on σ=0.05/perturbed×1 that projection alone plateaus at a
-        // non-equilibrium fixed point of the projection map (residual settles at
-        // ~2.66e-5), while descent alone ((2b) absent) never leaves the starting
-        // residual (~2.84) because it drives D toward nullity 4 without ever moving x
-        // into null(D). Projection-then-descent drops the residual 5 orders of
-        // magnitude in one combined iteration and then grinds the rest.  The line-only
-        // D is rank-deficient by 4 for a whole affine family of geometries (the
-        // bootstrap is a slightly-non-symmetric member); only at the symmetric
-        // realisation does the geometry-dependent membrane term let the combined D
-        // reach nullity 4.  The force-density search alone cannot get there (a force
-        // group shares one magnitude across its members, so it cannot cancel the
-        // per-edge cotangent asymmetry) — the geometry must move.  This is the
-        // free-standing analogue of γ's anchored `solve_reduced` relaxation, with the
-        // rigid/scale gauge left free.
-        let (next, next_step) = combined_geometry_descent_step(
-            n,
-            members,
-            &q,
-            surfaces,
-            surface_stresses,
+    for _ in 0..MAX_FREE_SURFACE_ITERS {
+        let surface_mat = assemble_surface_matrix(
+            current.len(),
+            problem.surfaces(),
+            problem.surface_stresses(),
             &current,
-            geo_step,
-        );
-        geo_step = next_step;
-
-        // Stall guard: if NEITHER half of this iteration's relaxation moved the
-        // geometry — the (2b) trial move was rejected or a no-op, AND the (3) descent
-        // step found no downhill move within its backtracking budget, so `next` equals
-        // the geometry this iteration STARTED with (`before_relax`) — AND the residual
-        // is not shrinking appreciably, increment a stuck counter and break early to
-        // avoid spending O(MAX_ITERS · n · EVD(n)) doing expensive but fruitless work.
-        // Comparing against `before_relax` rather than the post-(2b) `current` matters
-        // logically: an ACCEPTED (2b) move followed by a stalled (3) must NOT count as
-        // stuck (the geometry did move this iteration, via (2b)) — only a rejected/no-op
-        // (2b) followed by a stalled (3) may. This is defensive rather than
-        // measured-load-bearing on this fixture: reverting this comparison to the
-        // pre-amendment `next == current` and re-running the full crate suite (759 lib +
-        // 5 integration tests) left every result unchanged, so no test here currently
-        // depends on the distinction. Kept because an under-counted stall guard would risk
-        // exiting a genuinely-progressing search early on some case not covered by this
-        // fixture, trading a real (if untested) correctness risk for one line of clarity.
-        if next == before_relax && resid >= prev_resid * (1.0 - GEO_STALL_RESID_THRESHOLD) {
-            stuck_iters += 1;
-            if stuck_iters >= GEO_STALL_ITERS {
-                break;
-            }
-        } else {
-            stuck_iters = 0;
+        )?;
+        let q = q_source.densities_at(problem, &current, &surface_mat)?;
+        let iterate = CombinedIterate::new(problem, q, current, surface_mat);
+        if iterate.is_equilibrium() {
+            return Ok(CombinedStop::Equilibrium(iterate));
         }
-        prev_resid = resid;
-
+        let next = relax.relax(problem, &iterate, q_source.admits_projection_trial());
+        if stall.stalled_after(&iterate.nodes, &next, iterate.residual) {
+            return Ok(CombinedStop::ShortOfEquilibrium {
+                q: relaxed_q,
+                nodes: iterate.nodes,
+            });
+        }
+        relaxed_q = iterate.q;
         current = next;
-        last_result = Some(combined_result_at(members, &q, &current));
     }
+    Ok(CombinedStop::ShortOfEquilibrium {
+        q: relaxed_q,
+        nodes: current,
+    })
+}
 
-    // Certify the final iterate whether or not the loop converged, so a model
-    // that is not one connected nullity-4 form names its defect even when its
-    // residual never settled (an isolated node's zero row keeps it unsettled).
-    let mut result = last_result.expect("every loop exit follows a stored iterate");
-    let surface_mat_final = assemble_surface_matrix(n, surfaces, surface_stresses, &result.nodes)?;
-    let certified = FreeStandingForm::certify(&combined_force_density_matrix(
-        members,
-        &result.force_densities,
-        &surface_mat_final,
-    ));
-
-    // Non-convergence: match the line-only `form_find_free` contract — return
-    // `Err(SearchDidNotConverge)` so `run_free` emits `E_FormFindInfeasible`.
-    // Returning `Ok` with `converged=false` would create an asymmetry where
-    // downstream consumers that only inspect the result value (not `.converged`)
-    // silently treat a failed combined solve as a valid equilibrium.
-    if !converged {
-        return Err(match certified {
-            Ok(_) => FreeFormError::SearchDidNotConverge { defect: None },
-            Err(FreeFormError::NotAForm(defect)) => FreeFormError::SearchDidNotConverge {
-                defect: Some(defect),
-            },
-            Err(other) => other,
-        });
+/// The result `stop` certifies to. At equilibrium the iterate's own `D` must
+/// certify as a form. Short of equilibrium it is always an error, and
+/// [`FreeFormError::SearchDidNotConverge`] names the stopped pair's
+/// [`FormDefect`] when its `D` is not a form, so a model that is not one
+/// connected nullity-4 form names its defect even when its residual never
+/// settled (an isolated node's zero row keeps it unsettled). It is never `Ok`
+/// with `converged = false`, which a consumer reading only the value would
+/// take for an equilibrium.
+fn certify_combined_stop(
+    problem: &ForceDensityProblem<'_>,
+    stop: CombinedStop,
+) -> Result<FreeFormResult, FreeFormError> {
+    match stop {
+        CombinedStop::Equilibrium(iterate) => {
+            let nullity = iterate.certify()?.nullity();
+            Ok(iterate.into_result(problem, nullity))
+        }
+        CombinedStop::ShortOfEquilibrium { q, nodes } => {
+            let surface_mat = assemble_surface_matrix(
+                nodes.len(),
+                problem.surfaces(),
+                problem.surface_stresses(),
+                &nodes,
+            )?;
+            let d = combined_force_density_matrix(problem.members(), &q, &surface_mat);
+            Err(match FreeStandingForm::certify(&d) {
+                Ok(_) => FreeFormError::SearchDidNotConverge { defect: None },
+                Err(FreeFormError::NotAForm(defect)) => FreeFormError::SearchDidNotConverge {
+                    defect: Some(defect),
+                },
+                Err(other) => other,
+            })
+        }
     }
-    // Converged: the equilibrium was reached, so a `D` that fails certification
-    // is not a form, whatever spec produced it.
-    let form = certified?;
-
-    result.converged = true;
-    result.nullity = form.nullity();
-    result.surface_stresses = surface_stresses.to_vec();
-    Ok(result)
 }
 
 /// Equilibrium-residual convergence tolerance for the free-standing cotangent
@@ -553,6 +411,45 @@ const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
 /// before the outer fixed-point exits early (avoids burning the full
 /// `MAX_FREE_SURFACE_ITERS` budget on an intractable configuration).
 const GEO_STALL_ITERS: usize = 5;
+
+/// Trips once [`GEO_STALL_ITERS`] consecutive iterations each left the
+/// geometry where it ENTERED the iteration and shrank the residual by less
+/// than [`GEO_STALL_RESID_THRESHOLD`]. `entering` is the geometry before the
+/// relax step, so a projection trial the relax step accepted counts as
+/// movement even when the descent half then stalled.
+struct StallGuard {
+    previous_residual: f64,
+    stuck_iterations: usize,
+}
+
+impl StallGuard {
+    /// A guard with no history. Its `+∞` previous residual makes any finite
+    /// first residual an improvement and an infinite one flat.
+    fn new() -> Self {
+        StallGuard {
+            previous_residual: f64::INFINITY,
+            stuck_iterations: 0,
+        }
+    }
+
+    /// Records one iteration; true once the guard has tripped.
+    fn stalled_after(
+        &mut self,
+        entering: &[[f64; 3]],
+        leaving: &[[f64; 3]],
+        residual: f64,
+    ) -> bool {
+        let unmoved = leaving == entering;
+        let flat = residual >= self.previous_residual * (1.0 - GEO_STALL_RESID_THRESHOLD);
+        self.stuck_iterations = if unmoved && flat {
+            self.stuck_iterations + 1
+        } else {
+            0
+        };
+        self.previous_residual = residual;
+        self.stuck_iterations >= GEO_STALL_ITERS
+    }
+}
 
 /// Assemble the surface cotangent-Laplacian contribution `Σ_T σ_T·L_T` at the
 /// given node geometry, producing an `n×n` additive matrix via the anchored
@@ -588,6 +485,229 @@ fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f
     free_equilibrium_residual_relative(d, nodes, &every_row)
 }
 
+/// One outer iterate of the combined fixed point: densities `q` at geometry
+/// `nodes`, the surface term there, their combined `D` and its all-node
+/// equilibrium residual.
+struct CombinedIterate {
+    q: Vec<f64>,
+    nodes: Vec<[f64; 3]>,
+    surface_mat: Mat<f64>,
+    d: Mat<f64>,
+    residual: f64,
+}
+
+impl CombinedIterate {
+    fn new(
+        problem: &ForceDensityProblem<'_>,
+        q: Vec<f64>,
+        nodes: Vec<[f64; 3]>,
+        surface_mat: Mat<f64>,
+    ) -> Self {
+        let d = combined_force_density_matrix(problem.members(), &q, &surface_mat);
+        let residual = all_node_equilibrium_residual_relative(&d, &nodes);
+        CombinedIterate {
+            q,
+            nodes,
+            surface_mat,
+            d,
+            residual,
+        }
+    }
+
+    /// Whether the residual meets the fixed point's stop test.
+    fn is_equilibrium(&self) -> bool {
+        self.residual <= FREE_SURFACE_EQUILIBRIUM_REL_TOL
+    }
+
+    /// The residual of `trial_nodes` at this iterate's densities, given the
+    /// surface term assembled there.
+    fn residual_at(
+        &self,
+        problem: &ForceDensityProblem<'_>,
+        trial_nodes: &[[f64; 3]],
+        trial_surface_mat: &Mat<f64>,
+    ) -> f64 {
+        let d = combined_force_density_matrix(problem.members(), &self.q, trial_surface_mat);
+        all_node_equilibrium_residual_relative(&d, trial_nodes)
+    }
+
+    fn certify(&self) -> Result<FreeStandingForm, FreeFormError> {
+        FreeStandingForm::certify(&self.d)
+    }
+
+    /// This iterate as a converged result whose certified `D` has `nullity`.
+    fn into_result(self, problem: &ForceDensityProblem<'_>, nullity: usize) -> FreeFormResult {
+        FreeFormResult {
+            member_forces: member_axial_forces(problem.members(), &self.q, &self.nodes),
+            force_densities: self.q,
+            nodes: self.nodes,
+            nullity,
+            converged: true,
+            surface_stresses: problem.surface_stresses().to_vec(),
+        }
+    }
+}
+
+/// Where each outer iteration's densities come from: the one place the
+/// combined fixed point branches on the force-density spec.
+enum QSource<'p> {
+    /// The explicit `q`, the same at every iterate.
+    FixedQ(&'p [f64]),
+    /// A group search on the combined `D` at each iterate, warm-started from
+    /// the magnitudes the previous search found.
+    SearchedQ {
+        groups: &'p GroupSpec,
+        warm_group_mag: Vec<f64>,
+    },
+}
+
+impl<'p> QSource<'p> {
+    /// The source `problem`'s spec names. A searched source starts from the
+    /// line-only bootstrap's magnitudes when `boot` solved, not from the seeds:
+    /// at seeds (-1, 1, 1) the Z-equilibrium constraint (q_strut + q_vert = 0)
+    /// lands each free group's 1-D minimum back at its seed, so coordinate
+    /// descent stalls before the combined objective drives the nullity to 4,
+    /// while the bootstrap's q* ≈ (-√3, 1, +√3) lies in the basin of the
+    /// combined target (-√3·(1+w), 1, +√3·(1+w)).
+    fn new(problem: &'p ForceDensityProblem<'_>, boot: Option<&FreeFormResult>) -> Self {
+        match problem.spec() {
+            FreeSpec::Explicit(q) => QSource::FixedQ(q),
+            FreeSpec::GroupRatios(groups) => {
+                let mut warm_group_mag = groups.seed_magnitudes().to_vec();
+                if let Some(boot) = boot {
+                    refresh_group_magnitudes(&mut warm_group_mag, groups, &boot.force_densities);
+                }
+                QSource::SearchedQ {
+                    groups,
+                    warm_group_mag,
+                }
+            }
+        }
+    }
+
+    /// The densities at the iterate `nodes`, whose surface term is
+    /// `surface_mat`.
+    fn densities_at(
+        &mut self,
+        problem: &ForceDensityProblem<'_>,
+        nodes: &[[f64; 3]],
+        surface_mat: &Mat<f64>,
+    ) -> Result<Vec<f64>, FreeFormError> {
+        match self {
+            QSource::FixedQ(q) => Ok(q.to_vec()),
+            QSource::SearchedQ {
+                groups,
+                warm_group_mag,
+            } => {
+                let q = form_find_group_ratios_combined(
+                    problem,
+                    groups,
+                    nodes,
+                    warm_group_mag,
+                    surface_mat,
+                )?;
+                refresh_group_magnitudes(warm_group_mag, groups, &q);
+                Ok(q)
+            }
+        }
+    }
+
+    /// Whether the relax step may first try projecting the iterate into the
+    /// null space of its `D`. Only a fixed `q` admits it: a searched source
+    /// keeps only the densities its search found and discards the geometry
+    /// that search projected.
+    fn admits_projection_trial(&self) -> bool {
+        matches!(self, QSource::FixedQ(_))
+    }
+}
+
+/// Sets each group's magnitude in `group_mag` to `|qᵢ|` (floored at `1e-10`)
+/// of its members `i`, in member order.
+fn refresh_group_magnitudes(group_mag: &mut [f64], groups: &GroupSpec, q: &[f64]) {
+    for (&group, qi) in groups.group_ids().iter().zip(q) {
+        group_mag[group] = qi.abs().max(1e-10);
+    }
+}
+
+/// The geometry move of one outer iteration at the iterate's fixed `q`: an
+/// optional [`projection_trial`], then one descent step on the eigenvalue-gap
+/// objective from wherever the trial left the geometry. Projection moves `x`
+/// into null₄(D); descent drives `D` toward nullity 4 without moving `x` into
+/// null(D); the fixed point needs `x ∈ null(D(x))`. The densities alone cannot
+/// get there: only the symmetric realisation lets the geometry-dependent
+/// membrane term bring the combined `D` to nullity 4, and a force group shares
+/// one magnitude across its members, so it cannot cancel the per-edge
+/// cotangent asymmetry. The geometry must move.
+struct RelaxStep {
+    descent_step: f64,
+}
+
+impl RelaxStep {
+    const INITIAL_DESCENT_STEP: f64 = 1e-2;
+
+    fn new() -> Self {
+        RelaxStep {
+            descent_step: Self::INITIAL_DESCENT_STEP,
+        }
+    }
+
+    /// The geometry leaving the iteration. The descent step adapts (grows on
+    /// an accepted step, shrinks on backtracks) and carries to the next call.
+    fn relax(
+        &mut self,
+        problem: &ForceDensityProblem<'_>,
+        iterate: &CombinedIterate,
+        try_projection: bool,
+    ) -> Vec<[f64; 3]> {
+        let projected = if try_projection {
+            projection_trial(problem, iterate)
+        } else {
+            None
+        };
+        let start = projected.as_deref().unwrap_or(iterate.nodes.as_slice());
+        let (next, step) = combined_geometry_descent_step(
+            iterate.nodes.len(),
+            problem.members(),
+            &iterate.q,
+            problem.surfaces(),
+            problem.surface_stresses(),
+            start,
+            self.descent_step,
+        );
+        self.descent_step = step;
+        next
+    }
+}
+
+/// The iterate projected onto the [`FREE_FORM_NULLITY`] smallest-|λ|
+/// eigenvectors of its `D`, kept only if it recovers a 3-D geometry whose
+/// surface term assembles and whose residual at the iterate's `q` does not
+/// exceed the iterate's own. A failed trial is `None`, never an error: an
+/// intermediate iterate's [`FreeFormError::SingularRecovery`] or
+/// [`FreeFormError::DegenerateTriangle`] must not replace the contractual
+/// [`FreeFormError::SearchDidNotConverge`]. The residual guard keeps a
+/// regressing trial from becoming the descent's start.
+fn projection_trial(
+    problem: &ForceDensityProblem<'_>,
+    iterate: &CombinedIterate,
+) -> Option<Vec<[f64; 3]>> {
+    let trial = form_find_explicit_combined_relaxed(
+        problem.members(),
+        &iterate.q,
+        &iterate.nodes,
+        &iterate.surface_mat,
+    )
+    .ok()?;
+    let trial_surface_mat = assemble_surface_matrix(
+        trial.len(),
+        problem.surfaces(),
+        problem.surface_stresses(),
+        &trial,
+    )
+    .ok()?;
+    (iterate.residual_at(problem, &trial, &trial_surface_mat) <= iterate.residual).then_some(trial)
+}
+
 /// Combined-D geometry recovery, returning the recovered nodes: it **forces
 /// nullity = 4** — the 4 smallest-|λ| eigenvectors are taken as the approximate
 /// null space regardless of whether their eigenvalues are truly near zero. At
@@ -598,14 +718,15 @@ fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f
 /// (`‖D_combined(x)·x‖`) is the stop test, and certifying its final iterate is
 /// the validity gate.
 ///
-/// `nodes_guess` is the current iterate, which gauge-fixes the recovery; the
-/// densities are `problem`'s.
+/// `q` are the iterate's densities and `nodes_guess` its geometry, which
+/// gauge-fixes the recovery.
 fn form_find_explicit_combined_relaxed(
-    problem: &ForceDensityProblem<'_>,
+    members: &[(usize, usize)],
+    q: &[f64],
     nodes_guess: &[[f64; 3]],
     surface_mat: &Mat<f64>,
 ) -> Result<Vec<[f64; 3]>, FreeFormError> {
-    let d = combined_force_density_matrix(problem.members(), problem.q(), surface_mat);
+    let d = combined_force_density_matrix(members, q, surface_mat);
     let spectrum = SymmetricSpectrum::of(&d)?;
     recover_coordinates(
         nodes_guess,
@@ -731,7 +852,8 @@ fn form_find_group_ratios_combined(
     // The outer loop moves the geometry itself, so the recovered nodes are not
     // returned; a found `q` whose forced-nullity recovery cannot span 3-D is
     // still this search's error.
-    form_find_explicit_combined_relaxed(&problem.with_densities(&q)?, nodes_guess, surface_mat)?;
+    let checked = problem.with_densities(&q)?;
+    form_find_explicit_combined_relaxed(checked.members(), checked.q(), nodes_guess, surface_mat)?;
     Ok(q)
 }
 
@@ -853,27 +975,6 @@ fn combined_geometry_descent_step(
         step *= STEP_SHRINK;
     }
     (current.to_vec(), step)
-}
-
-/// Assemble a [`FreeFormResult`] at a fixed geometry + force-density vector:
-/// per-member axial force `Nᵢ = qᵢ·Lᵢ` on `geom`, carrying `q` through as the
-/// reported densities. `nullity` / `converged` / `surface_stresses` are filled by
-/// the caller (the combined outer loop's tail takes the nullity from the final
-/// iterate's certificate and sets the echo on convergence).
-fn combined_result_at(
-    members: &[(usize, usize)],
-    q: &[f64],
-    geom: &[[f64; 3]],
-) -> FreeFormResult {
-    let member_forces = member_axial_forces(members, q, geom);
-    FreeFormResult {
-        nodes: geom.to_vec(),
-        member_forces,
-        force_densities: q.to_vec(),
-        nullity: 0,
-        converged: false,
-        surface_stresses: Vec::new(),
-    }
 }
 
 /// Explicit-mode pipeline: certify the form, recover the gauge-fixed
@@ -2693,7 +2794,7 @@ mod tests {
         let x = canonical_prism();
         let q = closed_form_q();
         const SIGMA: f64 = 0.2;
-        const STEP_IN: f64 = 1e-2; // matches the outer loop's initial geo_step
+        const STEP_IN: f64 = 1e-2; // matches RelaxStep::INITIAL_DESCENT_STEP
 
         let step_at = |lambda: f64| -> (Vec<[f64; 3]>, f64) {
             let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
@@ -2753,5 +2854,275 @@ mod tests {
             next, x,
             "descent step must leave geometry unchanged when the objective is already 0.0",
         );
+    }
+
+    // ── χ-ff (task 9274): the combined fixed point's units ────────────────────
+
+    /// The triplex with its two prism membrane triangles at σ = 0.2, held so a
+    /// test can borrow the validated problem `form_find_free_surfaces` builds.
+    struct PrismMembrane {
+        members: Vec<(usize, usize)>,
+        kinds: Vec<MemberKind>,
+        surfaces: Vec<(usize, usize, usize)>,
+        sigmas: Vec<f64>,
+    }
+
+    impl PrismMembrane {
+        const SIGMA: f64 = 0.2;
+
+        fn new() -> Self {
+            let (members, kinds) = triplex_topology();
+            let surfaces = prism_surfaces();
+            let sigmas = vec![Self::SIGMA; surfaces.len()];
+            PrismMembrane {
+                members,
+                kinds,
+                surfaces,
+                sigmas,
+            }
+        }
+
+        fn problem<'a>(
+            &'a self,
+            nodes: &'a [[f64; 3]],
+            spec: &'a ForceDensitySpec,
+        ) -> ForceDensityProblem<'a> {
+            ForceDensityProblem::new(
+                nodes,
+                &self.members,
+                &self.kinds,
+                free_spec(spec, self.members.len()).expect("the spec is well-formed"),
+                &[],
+                &self.surfaces,
+                &self.sigmas,
+            )
+            .expect("the prism membrane satisfies the input contract")
+        }
+
+        fn surface_matrix(&self, nodes: &[[f64; 3]]) -> Mat<f64> {
+            assemble_surface_matrix(nodes.len(), &self.surfaces, &self.sigmas, nodes)
+                .expect("the prism triangles are non-degenerate at these nodes")
+        }
+    }
+
+    /// Signed seed ratio per triplex group: struts compressive, horizontals
+    /// (the reference) and verticals tensile.
+    const TRIPLEX_SEED_RATIOS: [f64; 3] = [-1.0, 1.0, 1.0];
+
+    fn triplex_group_ratios() -> ForceDensitySpec {
+        ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: TRIPLEX_SEED_RATIOS.to_vec(),
+            reference_group: 1,
+        }
+    }
+
+    #[test]
+    fn combined_iterate_is_an_equilibrium_at_the_closed_form_prism_only() {
+        let membrane = PrismMembrane::new();
+        let (golden, guess) = (canonical_prism(), perturbed_prism_guess());
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&guess, &spec);
+        let iterate_at = |nodes: &[[f64; 3]]| {
+            CombinedIterate::new(
+                &problem,
+                q.clone(),
+                nodes.to_vec(),
+                membrane.surface_matrix(nodes),
+            )
+        };
+
+        let off_golden = iterate_at(&guess);
+
+        assert!(iterate_at(&golden).is_equilibrium());
+        assert!(!off_golden.is_equilibrium());
+        assert!(
+            off_golden.residual_at(&problem, &golden, &membrane.surface_matrix(&golden))
+                <= FREE_SURFACE_EQUILIBRIUM_REL_TOL,
+            "an iterate judges a trial geometry at its own q, with the trial's surface term",
+        );
+    }
+
+    #[test]
+    fn fixed_q_source_yields_the_explicit_densities_at_every_iterate() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&guess, &spec);
+        let mut source = QSource::new(&problem, None);
+
+        for nodes in [perturbed_prism_guess(), canonical_prism()] {
+            let surface_mat = membrane.surface_matrix(&nodes);
+            assert_eq!(
+                source.densities_at(&problem, &nodes, &surface_mat),
+                Ok(q.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_fixed_q_source_admits_the_projection_trial() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let fixed = ForceDensitySpec::Explicit(closed_form_combined_q(PrismMembrane::SIGMA));
+        let searched = triplex_group_ratios();
+
+        assert!(QSource::new(&membrane.problem(&guess, &fixed), None).admits_projection_trial());
+        assert!(
+            !QSource::new(&membrane.problem(&guess, &searched), None).admits_projection_trial()
+        );
+    }
+
+    #[test]
+    fn searched_q_source_keeps_each_group_seed_sign() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let spec = triplex_group_ratios();
+        let problem = membrane.problem(&guess, &spec);
+        let boot = form_find_line_only(&problem).expect("the line-only triplex form-finds");
+        let mut source = QSource::new(&problem, Some(&boot));
+
+        let q = source
+            .densities_at(&problem, &boot.nodes, &membrane.surface_matrix(&boot.nodes))
+            .expect("the delta golden's first combined search succeeds");
+
+        assert_eq!(q.len(), membrane.members.len());
+        for (member, (&qi, &group)) in q.iter().zip(triplex_group_ids().iter()).enumerate() {
+            assert_eq!(
+                qi.signum(),
+                TRIPLEX_SEED_RATIOS[group].signum(),
+                "member {member} (group {group}) density {qi} lost its seed sign",
+            );
+        }
+    }
+
+    #[test]
+    fn relax_step_without_a_projection_trial_only_descends_carrying_its_step_size() {
+        let membrane = PrismMembrane::new();
+        let guess = perturbed_prism_guess();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&guess, &spec);
+        let eig_gap = |nodes: &[[f64; 3]]| {
+            combined_eig_gap_objective(
+                6,
+                &membrane.members,
+                &q,
+                &membrane.surfaces,
+                &membrane.sigmas,
+                nodes,
+            )
+        };
+        let first = CombinedIterate::new(
+            &problem,
+            q.clone(),
+            guess.clone(),
+            membrane.surface_matrix(&guess),
+        );
+        let mut relax = RelaxStep::new();
+
+        let next = relax.relax(&problem, &first, false);
+
+        assert!(
+            eig_gap(&next) < eig_gap(&guess),
+            "the relax step must descend"
+        );
+        assert_ne!(
+            relax.descent_step,
+            RelaxStep::INITIAL_DESCENT_STEP,
+            "the adapted step must carry to the next call",
+        );
+        assert!(
+            projection_trial(&problem, &first).is_some(),
+            "the guess must admit a projection trial for withholding it to show",
+        );
+        assert_ne!(next, RelaxStep::new().relax(&problem, &first, true));
+    }
+
+    #[test]
+    fn relax_step_absorbs_a_projection_trial_that_cannot_span_3d() {
+        let membrane = PrismMembrane::new();
+        let planar: Vec<[f64; 3]> = canonical_prism()
+            .into_iter()
+            .map(|[x, y, _]| [x, y, 0.0])
+            .collect();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let spec = ForceDensitySpec::Explicit(q.clone());
+        let problem = membrane.problem(&planar, &spec);
+        let surface_mat = membrane.surface_matrix(&planar);
+        let iterate =
+            CombinedIterate::new(&problem, q.clone(), planar.clone(), surface_mat.clone());
+        assert_eq!(
+            form_find_explicit_combined_relaxed(&membrane.members, &q, &planar, &surface_mat),
+            Err(FreeFormError::SingularRecovery),
+            "the planar fixture must exercise the trial's error branch",
+        );
+        assert_eq!(projection_trial(&problem, &iterate), None);
+
+        let next = RelaxStep::new().relax(&problem, &iterate, true);
+
+        assert_eq!(next, RelaxStep::new().relax(&problem, &iterate, false));
+    }
+
+    /// Drives `guard` through `GEO_STALL_ITERS - 1` iterations that each leave
+    /// the geometry at `at` with `residual`, none of which may trip it.
+    fn approach_stall(guard: &mut StallGuard, at: &[[f64; 3]], residual: f64) {
+        for call in 1..GEO_STALL_ITERS {
+            assert!(
+                !guard.stalled_after(at, at, residual),
+                "unmoved call {call} of {} tripped the guard early",
+                GEO_STALL_ITERS - 1,
+            );
+        }
+    }
+
+    #[test]
+    fn stall_guard_trips_on_the_geo_stall_iters_th_unmoved_flat_iteration() {
+        let x = canonical_prism();
+        let mut guard = StallGuard::new();
+        assert!(!guard.stalled_after(&x, &x, 1.0));
+
+        approach_stall(&mut guard, &x, 1.0);
+
+        assert!(guard.stalled_after(&x, &x, 1.0));
+    }
+
+    #[test]
+    fn stall_guard_resets_when_the_geometry_leaves_where_it_entered() {
+        let (x, y) = (canonical_prism(), perturbed_prism_guess());
+        let mut guard = StallGuard::new();
+        assert!(!guard.stalled_after(&x, &x, 1.0));
+        approach_stall(&mut guard, &x, 1.0);
+
+        assert!(!guard.stalled_after(&x, &y, 1.0));
+
+        approach_stall(&mut guard, &x, 1.0);
+        assert!(guard.stalled_after(&x, &x, 1.0));
+    }
+
+    #[test]
+    fn stall_guard_resets_when_the_residual_shrinks_past_the_threshold() {
+        let x = canonical_prism();
+        let shrunk = 1.0 * (1.0 - 2.0 * GEO_STALL_RESID_THRESHOLD);
+        let mut guard = StallGuard::new();
+        assert!(!guard.stalled_after(&x, &x, 1.0));
+        approach_stall(&mut guard, &x, 1.0);
+
+        assert!(!guard.stalled_after(&x, &x, shrunk));
+
+        approach_stall(&mut guard, &x, shrunk);
+        assert!(guard.stalled_after(&x, &x, shrunk));
+    }
+
+    #[test]
+    fn stall_guard_reads_an_infinite_residual_as_flat_from_the_first_iteration() {
+        let x = canonical_prism();
+        let mut guard = StallGuard::new();
+
+        approach_stall(&mut guard, &x, f64::INFINITY);
+
+        assert!(guard.stalled_after(&x, &x, f64::INFINITY));
     }
 }
