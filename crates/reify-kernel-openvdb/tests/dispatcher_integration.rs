@@ -31,9 +31,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{DispatchPlan, NO_OPTIONS, dispatcher, kernel_registry};
-use reify_ir::{
-    CapabilityDescriptor, GeometryKernel, KernelId, Mesh, Operation, ReprKind,
-};
+use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelId, Operation, ReprKind};
 #[cfg(not(has_openvdb))]
 use reify_ir::{GeometryError, GeometryHandleId};
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
@@ -231,38 +229,8 @@ fn openvdb_two_stage_chain_voxelize_primitive_executes() {
     // -----------------------------------------------------------------------
     // EXECUTION side — β executor drives ingest_mesh, not trait-execute().
     // -----------------------------------------------------------------------
-    // Build a closed 2.0 mm box mesh centred at the origin (8 corners, 12
-    // outward-wound triangles — the canonical α test fixture, identical to
-    // `box_2mm()` in crates/reify-kernel-openvdb/tests/ingest_mesh_densify_tests.rs).
-    #[allow(clippy::approx_constant)]
-    let cube = Mesh {
-        vertices: vec![
-            -1.0_f32, -1.0, -1.0, // 0
-             1.0,     -1.0, -1.0, // 1
-             1.0,      1.0, -1.0, // 2
-            -1.0,      1.0, -1.0, // 3
-            -1.0,     -1.0,  1.0, // 4
-             1.0,     -1.0,  1.0, // 5
-             1.0,      1.0,  1.0, // 6
-            -1.0,      1.0,  1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // Bottom (-Z)
-            0, 2, 1,  0, 3, 2,
-            // Top (+Z)
-            4, 5, 6,  4, 6, 7,
-            // Front (-Y)
-            0, 1, 5,  0, 5, 4,
-            // Back (+Y)
-            2, 3, 7,  2, 7, 6,
-            // Left (-X)
-            0, 4, 7,  0, 7, 3,
-            // Right (+X)
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    };
+    // Closed 2.0 mm box mesh centred at the origin: the canonical α test fixture.
+    let cube = reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0);
 
     let mut k = OpenVdbKernel::new();
     let r = GeometryKernel::ingest_mesh(&mut k, &cube);
@@ -370,38 +338,8 @@ fn openvdb_dispatches_voxel_to_mesh_conversion_stage() {
 /// exist on `GeometryKernel` yet (compile error).
 #[test]
 fn openvdb_realize_mesh_from_voxel_and_options_hash_thread_correctly() {
-    // Canonical closed 2.0 mm box mesh centred at the origin (8 corners, 12
-    // outward-wound triangles) — identical to the fixture in
-    // `openvdb_two_stage_chain_voxelize_primitive_executes` above.
-    #[allow(clippy::approx_constant)]
-    let cube = Mesh {
-        vertices: vec![
-            -1.0_f32, -1.0, -1.0, // 0
-             1.0,     -1.0, -1.0, // 1
-             1.0,      1.0, -1.0, // 2
-            -1.0,      1.0, -1.0, // 3
-            -1.0,     -1.0,  1.0, // 4
-             1.0,     -1.0,  1.0, // 5
-             1.0,      1.0,  1.0, // 6
-            -1.0,      1.0,  1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // Bottom (-Z)
-            0, 2, 1,  0, 3, 2,
-            // Top (+Z)
-            4, 5, 6,  4, 6, 7,
-            // Front (-Y)
-            0, 1, 5,  0, 5, 4,
-            // Back (+Y)
-            2, 3, 7,  2, 7, 6,
-            // Left (-X)
-            0, 4, 7,  0, 7, 3,
-            // Right (+X)
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    };
+    // Closed 2.0 mm box mesh centred at the origin: the canonical α test fixture.
+    let cube = reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0);
 
     let mut k = OpenVdbKernel::new();
     let ingest = GeometryKernel::ingest_mesh(&mut k, &cube);
