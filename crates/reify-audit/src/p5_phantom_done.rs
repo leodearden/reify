@@ -202,6 +202,15 @@ impl CheckMode {
 pub const PRODUCTION_QUERY: &str =
     "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1";
 
+/// The sweep's one-shot form of [`PRODUCTION_QUERY`]: every task id with a
+/// `task_completed` event, asked once per sweep by [`SweepPrefetch::gather`]
+/// instead of once per merged task. Pinned against the seeded schema by
+/// `p5::tests::runs_db_completed_tasks_query_pin`; public for that test only,
+/// as [`PRODUCTION_QUERY`]'s visibility note explains.
+#[doc(hidden)]
+pub const PRODUCTION_COMPLETED_TASKS_QUERY: &str = "SELECT DISTINCT task_id FROM events \
+     WHERE event_type = 'task_completed' AND task_id IS NOT NULL";
+
 /// Run the P5 detector across every `status="done"` task in
 /// `ctx.task_metadata`. Returns one [`Finding`] per phantom-done task.
 ///
@@ -292,6 +301,11 @@ struct SweepPrefetch {
     /// task. Only answered questions are kept, so an unanswered one is asked
     /// again per call, exactly as a sweep without the prefetch would.
     gitignored: HashMap<String, bool>,
+    /// Every task id runs.db holds a `task_completed` event for, or `None`
+    /// when that was not asked or runs.db could not answer; each merged task
+    /// then runs [`PRODUCTION_QUERY`] itself, so an unreadable runs.db still
+    /// yields its per-task Medium.
+    completed_tasks: Option<HashSet<String>>,
 }
 
 impl SweepPrefetch {
@@ -300,6 +314,7 @@ impl SweepPrefetch {
     fn none() -> Self {
         Self {
             gitignored: HashMap::new(),
+            completed_tasks: None,
         }
     }
 
@@ -319,7 +334,10 @@ impl SweepPrefetch {
             .zip(answers)
             .filter_map(|(path, answer)| answer.ok().map(|ignored| (path, ignored)))
             .collect();
-        Self { gitignored }
+        Self {
+            gitignored,
+            completed_tasks: completed_task_ids(ctx).ok(),
+        }
     }
 
     /// [`crate::GitOps::try_is_gitignored`], answered from the prefetch when
@@ -328,6 +346,15 @@ impl SweepPrefetch {
         match self.gitignored.get(path) {
             Some(&ignored) => Ok(ignored),
             None => ctx.git.try_is_gitignored(path),
+        }
+    }
+
+    /// [`has_task_completed_event`], answered from the prefetch when it holds
+    /// runs.db's completed set.
+    fn task_completed(&self, ctx: &AuditContext, task_id: &str) -> Result<bool, rusqlite::Error> {
+        match &self.completed_tasks {
+            Some(completed) => Ok(completed.contains(task_id)),
+            None => has_task_completed_event(ctx, task_id),
         }
     }
 }
@@ -377,7 +404,7 @@ fn check_task(
     let probe = probe_gitignored(meta, |p| prefetch.is_gitignored(ctx, p));
 
     let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta, mode, &probe) {
+    if let Some(f) = check_one(ctx, meta, mode, &probe, prefetch) {
         findings.push(f);
     }
     if let Some(f) = check_gitignored(meta, &probe.ignored) {
@@ -1189,12 +1216,14 @@ fn pre_done_refusal_severity() -> Severity {
 /// phantom-done, `None` if the provenance corroborates cleanly.
 ///
 /// `probe` is the task's `git check-ignore` pass, run once by [`check_task`];
-/// only the [`CheckMode::PreDone`] arm consumes it.
+/// only the [`CheckMode::PreDone`] arm consumes it. `prefetch` answers the
+/// runs.db leg.
 fn check_one(
     ctx: &AuditContext,
     meta: &TaskMetadata,
     mode: CheckMode,
     probe: &GitignoreProbe,
+    prefetch: &SweepPrefetch,
 ) -> Option<Finding> {
     // One ancestry answer per SHA for the whole invocation: the merged-arm
     // rescue and the primary git-diff leg below both test `prov.commit`.
@@ -1231,7 +1260,7 @@ fn check_one(
     //               citing the unreadable runs.db rather than mass-flagging
     //               every merged task as High.
     if kind == "merged" {
-        match has_task_completed_event(ctx, &meta.task_id) {
+        match prefetch.task_completed(ctx, &meta.task_id) {
             Ok(true) => {}
             Ok(false) => {
                 // Ancestor-corroboration rescue. If the claimed commit is a
@@ -1621,6 +1650,13 @@ fn has_task_completed_event(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
         Err(e) => Err(e),
     }
+}
+
+/// Every task id with a `task_completed` event, by
+/// [`PRODUCTION_COMPLETED_TASKS_QUERY`].
+fn completed_task_ids(ctx: &AuditContext) -> Result<HashSet<String>, rusqlite::Error> {
+    let mut stmt = ctx.conn.prepare(PRODUCTION_COMPLETED_TASKS_QUERY)?;
+    stmt.query_map([], |row| row.get(0))?.collect()
 }
 
 /// Returns the subset of `files` not present in `covered`.
