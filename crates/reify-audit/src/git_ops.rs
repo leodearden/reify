@@ -1,9 +1,11 @@
 //! The git seam: the [`GitOps`] trait every detector reads git through, its production [`RealGitOps`] impl, and the test-support `MockGitOps`.
 
+use crate::git_history::{BranchMessages, FirstParentChanges};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicUsize;
@@ -259,6 +261,28 @@ pub trait GitOps {
 /// `cli::git_check_ignore_breadcrumb_dedups_across_files`
 /// (`tests/cli.rs`) pins the user-visible signal: with N≥2 files in a
 /// non-git directory, exactly one breadcrumb appears in stderr.
+///
+/// # History snapshot (opt-in, for sweeps)
+///
+/// [`RealGitOps::with_history_snapshot`] lets one instance answer three
+/// questions about a branch from memory instead of forking per question:
+/// [`is_ancestor`](GitOps::is_ancestor) and
+/// [`try_log_grep`](GitOps::try_log_grep) against that branch, and
+/// [`changed_paths_in_commit`](GitOps::changed_paths_in_commit) for a commit
+/// reachable from it. A whole-corpus sweep asks them thousands of times, and
+/// each fork walks the branch's history again.
+///
+/// Each answer is exactly what the per-call command would give, and anything
+/// the snapshot cannot answer exactly — an abbreviated SHA, an unreachable
+/// commit, a non-literal pattern, a root commit — still forks. The two dumps
+/// it reads are loaded lazily, each on the first question that needs it, so a
+/// run that never asks pays nothing; a dump that fails to load or parse costs
+/// one breadcrumb and leaves every question forking as before.
+///
+/// The snapshot is point-in-time: the branch is read once, and commits landing
+/// on it later are not seen. That gives a sweep one consistent view of
+/// history. A short single-task run should not opt in, since one dump costs
+/// more than the handful of forks it would replace.
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
@@ -277,6 +301,8 @@ pub struct RealGitOps {
     /// single-instance construction requirement that makes this budget
     /// meaningful in production.
     gitignore_unavailable: AtomicBool,
+    /// The opt-in history snapshot; see the type doc.
+    history: Option<HistorySnapshot>,
     /// Number of `spawn_once` invocations to fail with a synthetic
     /// `Err(WouldBlock)` before delegating to a real `git` subprocess.
     /// Mirrors the `gitignore_unavailable` interior-mutability pattern.
@@ -357,14 +383,90 @@ fn parse_rename_target(stdout: &str, old_path: &str) -> Option<String> {
     })
 }
 
+/// One branch's history, each part loaded on first need. `None` inside a
+/// loaded cell records a load that failed, so it is not retried.
+struct HistorySnapshot {
+    branch: String,
+    messages: OnceLock<Option<BranchMessages>>,
+    changes: OnceLock<Option<FirstParentChanges>>,
+}
+
 impl RealGitOps {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
             gitignore_unavailable: AtomicBool::new(false),
+            history: None,
             #[cfg(any(test, feature = "test-support"))]
             inject_spawn_failures: AtomicUsize::new(0),
         }
+    }
+
+    /// Answer ancestry, message grep and per-commit changed paths for
+    /// `branch` from a point-in-time snapshot of its history. See the type
+    /// doc's "History snapshot" section.
+    pub fn with_history_snapshot(mut self, branch: &str) -> Self {
+        self.history = Some(HistorySnapshot {
+            branch: branch.to_string(),
+            messages: OnceLock::new(),
+            changes: OnceLock::new(),
+        });
+        self
+    }
+
+    /// The snapshot's messages of `branch`, loading them on first need, or
+    /// `None` when there is no snapshot of `branch` or it failed to load.
+    fn snapshot_messages(&self, branch: &str) -> Option<&BranchMessages> {
+        let history = self.history.as_ref().filter(|h| h.branch == branch)?;
+        history
+            .messages
+            .get_or_init(|| {
+                let argv = BranchMessages::argv(&history.branch);
+                self.load_history_part(&history.branch, "messages", &argv, |raw| {
+                    BranchMessages::parse(&raw)
+                })
+            })
+            .as_ref()
+    }
+
+    /// The snapshot's first-parent changed paths, loading them on first need,
+    /// or `None` when there is no snapshot or it failed to load.
+    fn snapshot_changes(&self) -> Option<&FirstParentChanges> {
+        let history = self.history.as_ref()?;
+        history
+            .changes
+            .get_or_init(|| {
+                let argv = FirstParentChanges::argv(&history.branch);
+                self.load_history_part(&history.branch, "changed paths", &argv, |raw| {
+                    let dump = String::from_utf8(raw)
+                        .map_err(|_| "git output not valid UTF-8".to_string())?;
+                    FirstParentChanges::parse(&dump)
+                })
+            })
+            .as_ref()
+    }
+
+    /// Run one history dump and parse it, or emit ONE breadcrumb and return
+    /// `None` so every question it would have answered forks instead.
+    fn load_history_part<T>(
+        &self,
+        branch: &str,
+        part: &str,
+        argv: &[String],
+        parse: impl FnOnce(Vec<u8>) -> Result<T, String>,
+    ) -> Option<T> {
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        self.run_raw(&argv).and_then(parse).map_or_else(
+            |e| {
+                eprintln!(
+                    "reify-audit: git history snapshot of {branch} ({part}) unavailable in {}: \
+                     {e}; falling back to one git call per question",
+                    self.project_root.display()
+                );
+                None
+            },
+            Some,
+        )
     }
 
     /// Inject `n` transient spawn failures into the next `n` `spawn_once`
@@ -457,6 +559,12 @@ impl RealGitOps {
     /// through `run_or_warn` → `None` → callers return `vec![]`, degrading
     /// exactly as before.
     fn run(&self, args: &[&str]) -> Result<String, String> {
+        String::from_utf8(self.run_raw(args)?).map_err(|_| "git output not valid UTF-8".to_string())
+    }
+
+    /// [`RealGitOps::run`] without the UTF-8 decode: failure modes 1 and 2
+    /// only, and stdout as raw bytes.
+    fn run_raw(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let out = self.spawn_with_retry(args)
             .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
@@ -467,7 +575,7 @@ impl RealGitOps {
                 stderr.trim()
             ));
         }
-        String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
+        Ok(out.stdout)
     }
 
     /// `git rev-parse HEAD` — the working tree's current commit sha.
@@ -528,6 +636,18 @@ impl RealGitOps {
 
 impl GitOps for RealGitOps {
     fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String> {
+        if let Some(hits) = self
+            .snapshot_messages(branch)
+            .and_then(|messages| messages.grep_literal(pattern))
+        {
+            return Ok(hits
+                .into_iter()
+                .map(|(sha, subject)| GitCommit {
+                    sha: sha.to_string(),
+                    subject: subject.to_string(),
+                })
+                .collect());
+        }
         let stdout = self.run_warned("log --grep", &[
             "log",
             branch,
@@ -568,6 +688,12 @@ impl GitOps for RealGitOps {
     }
 
     fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        if let Some(paths) = self
+            .snapshot_changes()
+            .and_then(|changes| changes.changed_paths(commit))
+        {
+            return paths.to_vec();
+        }
         // Goes through run_or_warn (not Command::output directly) so the
         // single-RealGitOps-instance breadcrumb dedup stays intact.
         //
@@ -673,6 +799,12 @@ impl GitOps for RealGitOps {
     }
 
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
+        if self
+            .snapshot_messages(branch)
+            .is_some_and(|messages| messages.contains(commit))
+        {
+            return true;
+        }
         // Use .output() (not .status()) so git's stderr ("fatal: not a git
         // repository", "fatal: Not a valid commit name", etc.) is captured and
         // does not leak to our process's stderr / corrupt JSON output.
@@ -1032,7 +1164,15 @@ impl GitOps for MockGitOps {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_rename_target;
+    use super::{RealGitOps, parse_rename_target};
+
+    /// A history snapshot must not cost `RealGitOps` its `Sync`: the CLI's
+    /// one instance is shared by every detector.
+    #[test]
+    fn real_git_ops_with_a_history_snapshot_is_sync() {
+        fn assert_sync<T: Sync>(_: &T) {}
+        assert_sync(&RealGitOps::new("/nonexistent").with_history_snapshot("main"));
+    }
 
     /// The measured single-rename shape: `git show -M --name-status --format=`
     /// prints `R<score>\t<old>\t<new>`.

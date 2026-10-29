@@ -1001,14 +1001,33 @@ fn history_snapshot_answers_like_per_call_git() {
 /// the snapshot answered is invisible to its grep, while ancestry for that
 /// commit still answers truthfully through the per-call fallback. This is the
 /// observable proof that the snapshot, not a fork, answered.
+///
+/// The changed-paths half is proved the same way from the other side: once
+/// that part is loaded, every later fork is made to fail, and the snapshot
+/// still answers.
 #[test]
 fn history_snapshot_is_point_in_time() {
     let dir: TempDir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     history_fixture(root);
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+    let merge_paths = RealGitOps::new(root).changed_paths_in_commit(&merge);
 
     let snap = RealGitOps::new(root).with_history_snapshot("main");
     assert_eq!(snap.try_log_grep("main", "77"), Ok(vec![]));
+    assert_eq!(snap.changed_paths_in_commit(&merge), merge_paths);
+    snap.fail_next_spawns(16);
+    assert_eq!(
+        snap.changed_paths_in_commit(&merge),
+        merge_paths,
+        "a loaded snapshot answers changed paths without forking",
+    );
+    assert_eq!(
+        snap.try_log_grep("main", "45").map(|hits| hits.len()),
+        Ok(2),
+        "a loaded snapshot answers a literal grep without forking",
+    );
+    snap.fail_next_spawns(0);
 
     write_file(root, "late.rs", "fn late() {}\n");
     git_commit(root, "feat(77): landed after the snapshot");
