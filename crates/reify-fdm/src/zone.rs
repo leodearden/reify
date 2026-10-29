@@ -256,6 +256,30 @@ mod tests {
     }
 
     #[test]
+    fn zone_process_params_is_finite_iff_every_float_field_is_finite() {
+        assert!(fdm_default_params().is_finite());
+        let with = |edit: fn(&mut ZoneProcessParams)| {
+            let mut params = fdm_default_params();
+            edit(&mut params);
+            params
+        };
+        for (label, params) in [
+            ("NaN layer_height", with(|p| p.layer_height = f64::NAN)),
+            ("+inf line_width", with(|p| p.line_width = f64::INFINITY)),
+            (
+                "-inf layer_height",
+                with(|p| p.layer_height = f64::NEG_INFINITY),
+            ),
+            (
+                "NaN build_direction[1]",
+                with(|p| p.build_direction = [0.0, f64::NAN, 1.0]),
+            ),
+        ] {
+            assert!(!params.is_finite(), "{label} must not be finite");
+        }
+    }
+
+    #[test]
     fn classify_zone_returns_infill_for_deep_interior_probe() {
         // 5 mm from any side face AND any top/bottom face — deep interior.
         // With FDM defaults (walls=3 × line_width=0.4mm = 1.2mm wall band,
