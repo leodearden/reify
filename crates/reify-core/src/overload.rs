@@ -106,8 +106,8 @@
 //! trait-assoc-fn dispatch (`obj.(Trait::fn)(args)`, the `TraitMethodCall` arm
 //! in `crates/reify-compiler/src/expr.rs`). It applies tier 3 plus an exact
 //! tie-break with no tier 2, so the tier-2 filter contract is trivially
-//! honoured. It passes `is_generic = true` because its candidates' genericity
-//! is not recorded; the rationale lives at that call site.
+//! honoured. It computes each candidate's `is_generic` from the type-param
+//! scope recorded on its dispatch candidate.
 //!
 //! Any new consumer must honour the tier-2-is-a-filter contract above.
 

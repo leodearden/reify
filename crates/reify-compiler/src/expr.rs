@@ -6291,7 +6291,7 @@ fn compile_expr_guarded_with_expected_inner(
         // receiver and requires a structure type `S`; (ii) prepends the compiled
         // object as the bound `self` argument; (iii) validates (trait, method)
         // and types the call from the trait contract threaded into
-        // `scope.trait_assoc_fn_return_types` — the per-conformer CompiledFunction
+        // `scope.trait_assoc_fn_overloads` — the per-conformer CompiledFunction
         // is registered into the module function table only by the post-entity
         // pass, so it is not yet resolvable via overload here. Override-beats-
         // default falls out of the per-conformer symbol routing over δ's table.
@@ -6389,14 +6389,8 @@ fn compile_expr_guarded_with_expected_inner(
             //         (`reify_core::overload::slot_matches_wildcard_tier`) plus the
             //         exact-match tie-break; no head tier, NO Int→Real. (ε #3943)
             //
-            //         `is_generic` is held OPEN (#6505): `CompiledAssocFnSig` records
-            //         no type-param list, and a sig's type-param scope is fn-level ∪
-            //         trait-level (entity.rs's default-fn re-resolution when filling
-            //         `trait_assoc_fn_overloads`), so the free-fn
-            //         `!f.type_params.is_empty()` notion would misclassify a
-            //         trait-generic method as non-generic. Holding it open cannot widen
-            //         a non-generic sig: TypeParam/ScalarParam leaves only resolve from
-            //         a non-empty type-param scope. Pinned by
+            //         `is_generic` is the candidate's own (its fn ∪ trait type-param
+            //         scope, `AssocFnDispatchCandidate`). Pinned by
             //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` and
             //         `dispatch_concrete_param_slot_rejects_mismatched_arg` in
             //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.
@@ -6443,7 +6437,7 @@ fn compile_expr_guarded_with_expected_inner(
                             )),
                     );
                 }
-                Some(sigs) => {
+                Some(candidates) => {
                     // Overload resolution: match compiled arg types against non-self
                     // params. `compiled_args` holds only the non-self args (the self
                     // receiver is compiled separately and prepended in step (6)).
@@ -6457,17 +6451,17 @@ fn compile_expr_guarded_with_expected_inner(
                     if arg_types.contains(&Type::Error) {
                         return propagate_poison();
                     }
-                    let genericity_unrecorded_so_held_open = true;
-                    let matches: Vec<&CompiledAssocFnSig> = sigs
+                    let matches: Vec<&AssocFnDispatchCandidate> = candidates
                         .iter()
-                        .filter(|sig| {
-                            sig.params.len() == arg_types.len()
-                                && sig.params.iter().zip(arg_types.iter()).all(
+                        .filter(|c| {
+                            let params = &c.sig().params;
+                            params.len() == arg_types.len()
+                                && params.iter().zip(arg_types.iter()).all(
                                     |(param_ty, arg_ty)| {
                                         slot_matches_wildcard_tier(
                                             param_ty,
                                             arg_ty,
-                                            genericity_unrecorded_so_held_open,
+                                            c.is_generic(),
                                         )
                                     },
                                 )
@@ -6476,11 +6470,12 @@ fn compile_expr_guarded_with_expected_inner(
                     // Tiebreak: prefer candidates with ALL exact matches (no
                     // wildcard relaxation), mirroring `resolve_function_overload`'s
                     // exact-match tiebreak.
-                    let exact: Vec<&CompiledAssocFnSig> = matches
+                    let exact: Vec<&AssocFnDispatchCandidate> = matches
                         .iter()
                         .copied()
-                        .filter(|sig| {
-                            sig.params
+                        .filter(|c| {
+                            c.sig()
+                                .params
                                 .iter()
                                 .zip(arg_types.iter())
                                 .all(|(param_ty, arg_ty)| param_ty == arg_ty)
@@ -6489,14 +6484,15 @@ fn compile_expr_guarded_with_expected_inner(
                     let resolved = if exact.is_empty() { matches } else { exact };
                     match resolved.len() {
                         // Exactly one match — type from the resolved overload.
-                        1 => resolved[0].return_type.clone(),
+                        1 => resolved[0].sig().return_type.clone(),
                         // Ambiguous: ≥2 overloads match — emit AmbiguousCall + poison
                         // (anti-cascade). Mirrors the free-fn OverloadResolution::Ambiguous
                         // arm at ~expr.rs:2516 in message shape and DiagnosticLabel.
                         _ if resolved.len() > 1 => {
                             let candidate_sigs: Vec<String> = resolved
                                 .iter()
-                                .map(|sig| {
+                                .map(|c| {
+                                    let sig = c.sig();
                                     format!(
                                         "fn {}(self{}) -> {}",
                                         method,

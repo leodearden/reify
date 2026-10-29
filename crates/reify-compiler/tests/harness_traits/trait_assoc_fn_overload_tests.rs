@@ -804,8 +804,8 @@ fn assert_dispatch_resolves_without_site_diagnostic(
 /// A slot typed by a TRAIT-level type param (`trait Boxed<T>`) matches any
 /// argument: the candidate's own fn-level type-param list is empty, so a
 /// free-fn-style `!f.type_params.is_empty()` gate would reject the slot and
-/// cascade a TraitMethodUnknown onto the root cause. Pins the tier-3
-/// `is_generic` gate held open at expr.rs's trait-assoc-fn filter (#6505).
+/// cascade a TraitMethodUnknown onto the root cause. Pins that the candidate's
+/// recorded fn ∪ trait type-param scope makes it generic (#6505).
 #[test]
 fn dispatch_trait_generic_type_param_slot_is_a_wildcard() {
     let source = r#"
@@ -824,7 +824,8 @@ structure def Assembly {
 /// A slot typed by a TRAIT-level dimension param (`trait Gauge<Q: Dimension>`,
 /// `Scalar<Q>`) matches any argument, for the same reason as the type-param
 /// case: the candidate's fn-level type-param list is empty, so gating on it
-/// would reject the slot. Pins the tier-3 `is_generic` gate held open (#6505).
+/// would reject the slot. Pins that the candidate's recorded fn ∪ trait
+/// type-param scope makes it generic (#6505).
 #[test]
 fn dispatch_trait_generic_dim_param_slot_is_a_wildcard() {
     let source = r#"
@@ -840,8 +841,8 @@ structure def Assembly {
     assert_dispatch_resolves_without_site_diagnostic(source, "got", Type::dimensionless_scalar());
 }
 
-/// A CONCRETE slot still rejects a mismatched argument: holding the tier-3
-/// `is_generic` gate open widens only type-param / dim-param slots, so
+/// A CONCRETE slot still rejects a mismatched argument: a candidate's
+/// `is_generic` widens only type-param / dim-param slots, so
 /// `fn f(self, x: Length)` called with an Angle matches no overload. The call
 /// emits exactly one TraitMethodUnknown from the no-match arm and poisons
 /// (#6505).

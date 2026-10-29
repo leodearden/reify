@@ -16,6 +16,42 @@ pub(crate) type ArmMemberMap = (String, BTreeMap<String, Type>);
 /// `<sub>.<cluster>.<inner>` access from outside a sub's structure.
 pub(crate) type SubClusterEntry = (GuardedDeclGroup, Vec<ArmMemberMap>);
 
+/// One `obj.(Trait::fn)(…)` dispatch candidate: a trait instance assoc fn's signature
+/// plus the type-param names its types were resolved against (fn-level ∪ trait-level).
+#[derive(Debug, Clone)]
+pub(crate) struct AssocFnDispatchCandidate {
+    sig: CompiledAssocFnSig,
+    type_params: HashSet<String>,
+}
+
+impl AssocFnDispatchCandidate {
+    pub(crate) fn new(sig: CompiledAssocFnSig, type_params: HashSet<String>) -> Self {
+        let carries_param = |t: &Type| {
+            reify_core::overload::type_carries_type_param(t)
+                || reify_core::overload::type_carries_dim_param(t)
+        };
+        debug_assert!(
+            !type_params.is_empty()
+                || !sig
+                    .params
+                    .iter()
+                    .chain([&sig.return_type])
+                    .any(carries_param),
+            "AssocFnDispatchCandidate invariant: a sig resolved with no type params in scope \
+             carries no type/dim-param leaf; got {sig:?}"
+        );
+        Self { sig, type_params }
+    }
+
+    pub(crate) fn sig(&self) -> &CompiledAssocFnSig {
+        &self.sig
+    }
+
+    pub(crate) fn is_generic(&self) -> bool {
+        !self.type_params.is_empty()
+    }
+}
+
 /// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
 /// within a structure. The guard cell ID tracks which guard (if any) protects this name.
 #[derive(Clone)]
@@ -180,7 +216,8 @@ pub(crate) struct CompilationScope<'u> {
     /// (the only statically-available type source when the receiver is still
     /// an un-resolved TypeParam).
     pub(crate) trait_member_types: HashMap<String, HashMap<String, Type>>,
-    /// Trait → instance-assoc-fn name → declared return type (task 3941 ζ).
+    /// Trait → instance-assoc-fn name → its overloads' dispatch candidates
+    /// (sig + type-param scope).
     ///
     /// Populated in `compile_entity` from the `trait_registry`, alongside
     /// `trait_members`. Carries only **instance** associated functions (those
@@ -190,13 +227,14 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// Used by the `ExprKind::TraitMethodCall` dispatch arm in `expr.rs` to
     /// resolve the correct overload and type the lowered `UserFunctionCall` from
-    /// the RESOLVED overload's return type. The per-conformer `CompiledFunction`
-    /// is not yet in `ctx.functions` at entity-body-compile time (it is injected
-    /// by the post-entity registration pass), so the call site resolves via the
-    /// trait contract threaded here. (Replaced `trait_assoc_fn_return_types:
+    /// the RESOLVED candidate. The per-conformer `CompiledFunction` is not yet in
+    /// `ctx.functions` at entity-body-compile time (it is injected by the
+    /// post-entity registration pass), so the call site resolves via the trait
+    /// contract threaded here. (Replaced `trait_assoc_fn_return_types:
     /// HashMap<String, HashMap<String, Type>>` in task ε #3943 to support
     /// intra-trait overloads and two-trait same-name disambiguation.)
-    pub(crate) trait_assoc_fn_overloads: HashMap<String, HashMap<String, Vec<CompiledAssocFnSig>>>,
+    pub(crate) trait_assoc_fn_overloads:
+        HashMap<String, HashMap<String, Vec<AssocFnDispatchCandidate>>>,
     /// Sub-component type map: sub_name → structure_name.
     /// Used to resolve instance qualified access (sub.(Trait::member)).
     pub(crate) sub_component_types: HashMap<String, String>,

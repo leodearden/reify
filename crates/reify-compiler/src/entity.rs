@@ -1508,24 +1508,25 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
-        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<CompiledAssocFnSig>
+        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<AssocFnDispatchCandidate>
         // so the `obj.(Trait::fn)(…)` dispatch arm (expr.rs, ε #3943) can resolve
         // the correct overload by arg types and type the lowered call from the
-        // RESOLVED sig's return type — registration-order independent (the
+        // RESOLVED candidate — registration-order independent (the
         // per-conformer CompiledFunction is injected into ctx.functions only by
         // the post-entity pass).
         //
         // Required (bodyless) fns carry an already-resolved `CompiledAssocFnSig`
-        // (non-self params + return_type). Default-providing fns carry a raw
-        // `FnDef` whose params and return type are re-resolved here against a
-        // throwaway diagnostics sink (the trait fn was already compiled in
-        // `phase_traits`; re-reporting errors would double-diagnose).
+        // (non-self params + return_type), resolved with no type params in scope.
+        // Default-providing fns carry a raw `FnDef` whose params and return type
+        // are re-resolved here against a throwaway diagnostics sink (the trait fn
+        // was already compiled in `phase_traits`; re-reporting errors would
+        // double-diagnose); their candidate records that resolution's scope.
         //
         // Accumulates ALL overloads into per-method Vecs (replaces the old
         // name-keyed `assoc_fn_returns: HashMap<String, Type>` which was
         // last-write-wins). Required fns and defaults with the same name push
         // independently; the dispatch arm resolves by arity + param types.
-        let mut assoc_fn_overloads: HashMap<String, Vec<CompiledAssocFnSig>> = HashMap::new();
+        let mut assoc_fn_overloads: HashMap<String, Vec<AssocFnDispatchCandidate>> = HashMap::new();
         for req in &compiled_trait.required_members {
             if let RequirementKind::Fn(sig) = &req.kind
                 && sig.has_self
@@ -1533,7 +1534,7 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(sig.name.clone())
                     .or_default()
-                    .push(sig.clone());
+                    .push(AssocFnDispatchCandidate::new(sig.clone(), HashSet::new()));
             }
         }
         for default in &compiled_trait.defaults {
@@ -1605,12 +1606,15 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(fn_def.name.clone())
                     .or_default()
-                    .push(CompiledAssocFnSig {
-                        name: fn_def.name.clone(),
-                        has_self: true,
-                        params,
-                        return_type,
-                    });
+                    .push(AssocFnDispatchCandidate::new(
+                        CompiledAssocFnSig {
+                            name: fn_def.name.clone(),
+                            has_self: true,
+                            params,
+                            return_type,
+                        },
+                        fn_type_params,
+                    ));
             }
         }
         if !assoc_fn_overloads.is_empty() {
