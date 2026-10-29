@@ -62,8 +62,9 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// AsPrintedZones }`. Malformed G-code or a missing / malformed FDMProcess
 /// degrades honestly to a `Value::Undef`-lambda field (every sample returns
 /// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`; a
-/// mistyped `walls`, `top_bottom_layers` or `build_direction` degrades the
-/// same way. A present numeric FDMProcess field the reader refuses — a number
+/// mistyped `walls`, `top_bottom_layers` or `build_direction`, or a
+/// non-finite `layer_height` or bead-derived `line_width`, degrades the same
+/// way. A present numeric FDMProcess field the reader refuses — a number
 /// of the wrong dimension or a value that is not a number at all — is
 /// [`ComputeOutcome::Failed`] with that field's `DimensionedArgRejected` Error,
 /// exactly as on the R-fast rung.
@@ -87,9 +88,9 @@ pub fn as_printed_material_r0_trampoline(
 }
 
 /// Build the R0 `AsPrintedZones` material field: `Ok(None)` if any required
-/// input is missing / malformed (caller degrades to [`degraded_field`]), `Err`
-/// if a present numeric FDMProcess field is refused — a number of the wrong
-/// dimension or a value that is not a number at all.
+/// input is missing / malformed / non-finite (caller degrades to
+/// [`degraded_field`]), `Err` if a present numeric FDMProcess field is refused
+/// — a number of the wrong dimension or a value that is not a number at all.
 fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejection> {
     // value_inputs = [gcode String, FDMProcess, AsPrintedOptions].
     let Some(process) = value_inputs.get(1).and_then(struct_data) else {
@@ -155,13 +156,15 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
     let mat_infill = r0_zone_material(&regions.infill, build_unit);
 
     // ── Pack the AsPrintedZones lambda (same 7-element contract as R-fast) ───────
-    let params_list = zone_params_value(&ZoneProcessParams {
+    let Some(params_list) = zone_params_value(&ZoneProcessParams {
         walls,
         top_bottom_layers,
         layer_height,
         line_width,
         build_direction: build_unit,
-    });
+    }) else {
+        return Ok(None);
+    };
     let lambda = Value::List(vec![
         super::point3_length(aabb_min),
         super::point3_length(aabb_max),

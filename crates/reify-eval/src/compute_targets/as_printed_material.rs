@@ -56,10 +56,11 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// `@optimized("fdm::as_printed_material_r_fast")` ComputeNode trampoline.
 ///
 /// Returns [`ComputeOutcome::Completed`] with a
-/// `Value::Field { source: AsPrintedZones }`. When the inputs are incomplete or
-/// the body realization is unavailable, it degrades honestly to a field whose
-/// lambda is [`Value::Undef`] (every sample returns `Undef`) rather than
-/// panicking — matching the Undef-for-Field convention of the stdlib surface.
+/// `Value::Field { source: AsPrintedZones }`. When the inputs are incomplete,
+/// the body realization is unavailable, or `layer_height` / `line_width` is
+/// non-finite, it degrades honestly to a field whose lambda is
+/// [`Value::Undef`] (every sample returns `Undef`) rather than panicking —
+/// matching the Undef-for-Field convention of the stdlib surface.
 /// A present numeric field the reader refuses — a number of the wrong dimension
 /// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
 /// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule).
@@ -87,8 +88,8 @@ pub fn as_printed_material_r_fast_trampoline(
 pub(crate) const AS_PRINTED_MATERIAL: &str = "as_printed_material";
 
 /// Build the `AsPrintedZones` material field: `Ok(None)` if any required input
-/// is missing or unresolved (caller degrades to [`degraded_field`]), `Err` if a
-/// present numeric field is refused.
+/// is missing, unresolved or non-finite (caller degrades to
+/// [`degraded_field`]), `Err` if a present numeric field is refused.
 fn build_as_printed_field(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
@@ -177,13 +178,15 @@ fn build_as_printed_field(
 
     // ── Pack the AsPrintedZones lambda payload (storage contract on
     //    reify_ir::FieldSourceKind::AsPrintedZones) ──────────────────────────────
-    let params_list = zone_params_value(&ZoneProcessParams {
+    let Some(params_list) = zone_params_value(&ZoneProcessParams {
         walls,
         top_bottom_layers,
         layer_height,
         line_width,
         build_direction: build_unit,
-    });
+    }) else {
+        return Ok(None);
+    };
     let lambda = Value::List(vec![
         super::point3_length(aabb.min),
         super::point3_length(aabb.max),
@@ -199,18 +202,22 @@ fn build_as_printed_field(
 /// The positional `params` slot of the `AsPrintedZones` lambda,
 /// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`: the two
 /// band widths are typed `Length` (SI metres); the counts and the unit build
-/// direction are dimensionless `Value::Real`.
-pub(crate) fn zone_params_value(params: &ZoneProcessParams) -> Value {
+/// direction are dimensionless `Value::Real`. A non-finite length or direction
+/// has no meaningful zone classification, so it yields `None` and the caller
+/// degrades to its Undef-lambda field.
+pub(crate) fn zone_params_value(params: &ZoneProcessParams) -> Option<Value> {
     let [bx, by, bz] = params.build_direction;
-    Value::List(vec![
-        Value::Real(f64::from(params.walls)),
-        Value::Real(f64::from(params.top_bottom_layers)),
-        super::length(params.layer_height),
-        super::length(params.line_width),
-        Value::Real(bx),
-        Value::Real(by),
-        Value::Real(bz),
-    ])
+    params.is_finite().then(|| {
+        Value::List(vec![
+            Value::Real(f64::from(params.walls)),
+            Value::Real(f64::from(params.top_bottom_layers)),
+            super::length(params.layer_height),
+            super::length(params.line_width),
+            Value::Real(bx),
+            Value::Real(by),
+            Value::Real(bz),
+        ])
+    })
 }
 
 /// Wrap a lambda payload as the `Field<Point3<Length>, AnisotropicMaterial>`
