@@ -7,7 +7,8 @@
 //! see whether the `--pattern PPRDSTATUS` token reaches that detector. This
 //! binary runs the real binary against a real git repo and a `--tasks-file`
 //! corpus, and asserts on the exit code (the High-severity count) and the
-//! findings JSON on stderr.
+//! findings JSON on stderr. The `live_loader_*` cases instead serve the corpus
+//! through the live fused-memory loader, from `tests/common/mcp_mock.rs`.
 //!
 //! Fixture provenance: `fixtures/pprdstatus/kernel-seam-contracts.pre-edd9703fae.md`
 //! and `.post-edd9703fae.md` are verbatim excerpts of
@@ -24,8 +25,9 @@ mod common;
 
 use common::fixtures::legacy_meta;
 use reify_audit::TaskMetadata;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 
 const PRE_FIX: &str = include_str!("fixtures/pprdstatus/kernel-seam-contracts.pre-edd9703fae.md");
 const POST_FIX: &str = include_str!("fixtures/pprdstatus/kernel-seam-contracts.post-edd9703fae.md");
@@ -117,6 +119,23 @@ fn run_pprdstatus_over(prd_text: &str, tasks: &[TaskMetadata]) -> Output {
     run_reify_audit("PPRDSTATUS", prd_text, tasks)
 }
 
+/// `reify-audit --pattern <pattern>` with every substrate but the task source
+/// pinned: the repo, no jcodemunch, and the runs.db. The caller appends the
+/// task source.
+fn audit_command(pattern: &str, repo: &Path, runs_db: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reify-audit"));
+    command.args([
+        "--pattern",
+        pattern,
+        "--no-jcodemunch",
+        "--project-root",
+        repo.to_str().expect("utf-8 repo path"),
+        "--runs-db",
+        runs_db.to_str().expect("utf-8 runs.db path"),
+    ]);
+    command
+}
+
 /// Run `reify-audit --pattern <pattern>` over a repo holding `prd_text`,
 /// against the `tasks` corpus, with every substrate pinned at a tempdir.
 fn run_reify_audit(pattern: &str, prd_text: &str, tasks: &[TaskMetadata]) -> Output {
@@ -125,20 +144,40 @@ fn run_reify_audit(pattern: &str, prd_text: &str, tasks: &[TaskMetadata]) -> Out
     repo_with_prd(repo.path(), prd_text);
     let tasks_file = write_tasks_json(aux.path(), tasks);
     let runs_db = write_empty_runs_db(aux.path());
-    std::process::Command::new(env!("CARGO_BIN_EXE_reify-audit"))
+    audit_command(pattern, repo.path(), &runs_db)
         .args([
-            "--pattern",
-            pattern,
-            "--no-jcodemunch",
-            "--project-root",
-            repo.path().to_str().expect("utf-8 repo path"),
             "--tasks-file",
             tasks_file.to_str().expect("utf-8 tasks.json path"),
-            "--runs-db",
-            runs_db.to_str().expect("utf-8 runs.db path"),
         ])
         .output()
         .unwrap_or_else(|e| panic!("invoke reify-audit --pattern {pattern}: {e}"))
+}
+
+/// Run `reify-audit --pattern PPRDSTATUS` over a repo holding `prd_text`,
+/// loading the corpus through the live fused-memory loader: a mock server
+/// answers `get_tasks` with `wire_tasks`.
+fn run_pprdstatus_live(prd_text: &str, wire_tasks: Value) -> Output {
+    let repo = tempfile::tempdir().expect("create repo tempdir");
+    let aux = tempfile::tempdir().expect("create aux tempdir");
+    repo_with_prd(repo.path(), prd_text);
+    let runs_db = write_empty_runs_db(aux.path());
+    let mock = common::mcp_mock::spawn_mock_mcp(move |args| {
+        if args.get("id").is_some() {
+            return Some(Value::Null);
+        }
+        Some(json!({"tasks": wire_tasks}))
+    });
+    let out = audit_command("PPRDSTATUS", repo.path(), &runs_db)
+        .args(["--fused-memory-url", mock.url()])
+        .output()
+        .unwrap_or_else(|e| panic!("invoke reify-audit --pattern PPRDSTATUS (live loader): {e}"));
+    mock.stop();
+    out
+}
+
+/// A `get_tasks` row: decomposition leaf `id`, tagged with the PRD under `key`.
+fn wire_leaf(id: u32, status: &str, key: &str, prd: &str) -> Value {
+    json!({"id": id, "title": "t", "status": status, "metadata": {key: prd}})
 }
 
 /// The pre-fix doc is stale on both lanes: one finding each, both High, so the
@@ -252,4 +291,49 @@ fn mixed_run_over_an_empty_task_corpus_marks_pprdstatus_skipped() {
             .any(|line| line.contains("PPRDSTATUS skipped")),
         "a mixed run must mark PPRDSTATUS unchecked; stderr:\n{stderr}"
     );
+}
+
+/// The current `/prd` decompose tags its leaves `metadata.prd_path`, the
+/// legacy one `metadata.prd`. A live leaf under either key keeps the PRD's
+/// header from reading stale.
+#[test]
+fn live_loader_counts_a_live_prd_path_leaf() {
+    let out = run_pprdstatus_live(
+        PRE_FIX,
+        json!([
+            wire_leaf(5102, "done", "prd", KERNEL_SEAM_CONTRACTS),
+            wire_leaf(5103, "pending", "prd_path", KERNEL_SEAM_CONTRACTS),
+        ]),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+    assert_eq!(findings_from_stderr(&stderr), Vec::<Value>::new());
+}
+
+/// A landed `prd_path`-tagged leaf beside a cancelled `prd`-tagged bookmark
+/// recommends SHIPPED, not WITHDRAWN.
+#[test]
+fn live_loader_stamps_shipped_when_the_landed_leaf_is_prd_path_tagged() {
+    let out = run_pprdstatus_live(
+        PRE_FIX,
+        json!([
+            wire_leaf(5102, "cancelled", "prd", KERNEL_SEAM_CONTRACTS),
+            wire_leaf(5103, "done", "prd_path", KERNEL_SEAM_CONTRACTS),
+        ]),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(1), "stderr:\n{stderr}");
+    let findings = findings_from_stderr(&stderr);
+    assert_eq!(findings.len(), 1, "{:#}", Value::Array(findings.clone()));
+    let summary = findings[0]["summary"]
+        .as_str()
+        .expect("a finding's summary is a string");
+    assert!(summary.starts_with("stale-status-header:"), "{summary}");
+    assert!(
+        summary.contains("(1 done, 1 cancelled: #5102, #5103)"),
+        "{summary}"
+    );
+    assert!(summary.contains("stamp SHIPPED"), "{summary}");
 }

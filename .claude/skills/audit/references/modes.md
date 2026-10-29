@@ -164,7 +164,7 @@ These five are **opt-in only**. The first three can emit High findings and the e
 
 PPRDSTATUS (`--pattern PPRDSTATUS`) detects PRD status-prose drift: a PRD's own prose asserting a status that the task graph has since contradicted. It is **opt-in only**: its High findings track a standing backlog of PRD prose, and the exit code is the High count. As with PTODO, a finding's kind is its summary prefix, and both kinds are High:
 
-- `stale-status-header:` — every decomposition leaf whose `metadata.prd` names the PRD is terminal (`done` / `cancelled`), yet the PRD's Status header is live or absent. The summary names the stamp to apply: SHIPPED, or WITHDRAWN when every leaf was cancelled.
+- `stale-status-header:` — every decomposition leaf whose `metadata.prd`, else `metadata.prd_path` (the key the current `/prd` decompose writes), names the PRD is terminal (`done` / `cancelled`), yet the PRD's Status header is live or absent. A leaf tagged with neither key is invisible to the lane, so its PRD's verdict rests on the tagged leaves only. The summary names the stamp to apply: SHIPPED, or WITHDRAWN when every leaf was cancelled.
 - `cite-status-contradiction:` — in a PRD whose header is not terminal, a canonical `#NNNN` cite is immediately followed by a status parenthetical (`` #4876 (`deferred`, high) ``) whose class (live, done or cancelled) contradicts the cited task. Dated parentheticals (an ISO date, `as of`, `at freeze`), unknown ids and live-vs-live differences are silent.
 
 - **Scope:** tracked `docs/prds/**.md`, minus `*.capability-manifest.md`. `task_id` is the PRD's repo path, so the lane ignores `--task` and `--since`.

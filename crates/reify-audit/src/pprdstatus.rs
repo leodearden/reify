@@ -5,10 +5,12 @@
 //!
 //! # Lanes
 //!
-//! - `stale-status-header:` — every decomposition leaf whose `metadata.prd`
-//!   names the PRD is terminal, yet the PRD's Status header is live or absent.
-//!   The finding names the stamp to apply: SHIPPED when any leaf landed,
-//!   WITHDRAWN when every leaf was cancelled.
+//! - `stale-status-header:` — every decomposition leaf whose
+//!   `TaskMetadata.prd` names the PRD is terminal, yet the PRD's Status header
+//!   is live or absent. A leaf whose `prd` is `None` is invisible to the lane;
+//!   the wire keys that fill it are `fused_memory_client::source_prd`'s. The
+//!   finding names the stamp to apply: SHIPPED when any leaf landed, WITHDRAWN
+//!   when every leaf was cancelled.
 //! - `cite-status-contradiction:` — in a PRD whose header is NOT terminal, a
 //!   canonical `#NNNN` cite (PTODO's grammar, so `task #5` and `invariant #2`
 //!   are not task cites) is immediately followed by a parenthetical whose
