@@ -568,6 +568,32 @@ mod persistent_cache_cli_wiring_tests {
         }
     }
 
+    /// `reify check` and `reify build` solve with a fresh profile, attach no
+    /// persistent cache, and register the compute trampolines.
+    #[test]
+    fn configured_check_build_engine_solves_fresh_with_trampolines_and_no_cache() {
+        let engine = configured_check_build_engine(|posture| {
+            reify_eval::Engine::new(
+                posture,
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            )
+        });
+        assert_eq!(
+            engine.solver_posture(),
+            reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            "check and build must solve, and serve nothing persisted"
+        );
+        assert!(
+            engine.persistent_cache_dir().is_none(),
+            "check and build must not attach the persistent cache"
+        );
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "check and build must register the production compute trampolines"
+        );
+    }
+
     /// The `--cache-dir` flag override (modelled by calling
     /// `engine.set_persistent_cache_dir` after `configured_eval_engine`)
     /// must replace whatever dir was set by the env/default resolver.
