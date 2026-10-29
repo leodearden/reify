@@ -11679,6 +11679,46 @@ mod tests {
         );
     }
 
+    /// task 6940: a NaN band width is a present, correctly typed `Length`
+    /// whose zone bands are meaningless, so the reader refuses it as
+    /// `NonFinite` instead of classifying with arbitrary zones.
+    #[test]
+    fn extract_zone_process_params_rejects_a_non_finite_length() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(f64::NAN, DimensionVector::LENGTH),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::NonFinite { .. })),
+            "expected Err(NonFinite) for a NaN line_width, got: {res:?}"
+        );
+    }
+
+    /// task 6940: likewise for a non-finite build-direction component.
+    #[test]
+    fn extract_zone_process_params_rejects_a_non_finite_build_direction() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(0.5, DimensionVector::LENGTH),
+            Value::Real(0.0),
+            Value::Real(f64::INFINITY),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::NonFinite { .. })),
+            "expected Err(NonFinite) for an infinite build direction, got: {res:?}"
+        );
+    }
+
     /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
     /// return `Ok` with the mapped `ZoneProcessParams` for a well-formed
     /// 7-element `Value::List`, locking the success/field-mapping path
