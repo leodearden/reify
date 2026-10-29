@@ -4692,7 +4692,7 @@ pub enum DiagnosticCode {
     /// multiplicity is a per-callout fact, not re-run noise — and the
     /// coded-vs-uncoded split is pinned by `dedup_collapses_only_uncoded_entries`
     /// and `dedup_exempts_the_coded_missing_trampoline_pair` in
-    /// `crates/reify-cli/src/main.rs`.
+    /// `crates/reify-cli/src/check_verdict/d2_pass_ordering_tests.rs`.
     ///
     /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
     /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in
