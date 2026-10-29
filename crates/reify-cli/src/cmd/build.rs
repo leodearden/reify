@@ -10,7 +10,7 @@ use crate::artifact_triangles::{stl_triangle_count, threemf_triangle_count};
 use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagnostic};
 use crate::constraint_report::report_eval_output;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{parse_and_compile, register_compute_trampolines};
+use crate::{configured_check_build_engine, parse_and_compile};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     // Shared usage text for the empty-args and no-positional-file guards.
@@ -133,11 +133,9 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
     // the solve runs correctly here under `SolverPosture::SolverFree`.  See
     // `build_is_success` for the (c) exit-code gate.
-    let mut engine = reify_eval::Engine::with_registered_kernel(
-        reify_eval::SolverPosture::SolverFree,
-        Box::new(checker),
-    );
-    register_compute_trampolines(&mut engine);
+    let mut engine = configured_check_build_engine(|posture| {
+        reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
+    });
     // Lazily acquire the OpenVDB kernel when the module contains an
     // `isosurface(...)` realization op (task δ/5002). Without OpenVDB
     // registered, the operand's Mesh→Voxel voxelize stage and the terminal

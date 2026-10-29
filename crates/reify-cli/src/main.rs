@@ -331,6 +331,45 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
     ));
 }
 
+/// A production CLI engine: `construct` called with `posture`, then the
+/// compute trampolines registered so `@optimized` targets dispatch.
+/// [`configured_eval_engine`] and [`configured_check_build_engine`] differ only
+/// in the posture they pass and in what they attach afterwards.
+fn production_cli_engine(
+    posture: reify_eval::SolverPosture,
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    let mut engine = construct(posture);
+    register_compute_trampolines(&mut engine);
+    engine
+}
+
+/// `cmd_check`'s and `cmd_build`'s solver posture: the solver's default budget,
+/// and nothing persisted is served, because [`configured_check_build_engine`]
+/// attaches no persistent cache.
+const CHECK_BUILD_POSTURE: reify_eval::SolverPosture =
+    reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH);
+
+/// Construct and configure the [`reify_eval::Engine`] that `cmd_check` and
+/// `cmd_build` run: `construct` is called with [`CHECK_BUILD_POSTURE`], whose
+/// `Solve` posture wires the production [`reify_constraints::SolverRegistry`]
+/// so autos resolve as they do under `reify eval`, and the compute trampolines
+/// are registered.
+///
+/// The registered trampolines also keep the missing-trampoline diagnostic an
+/// Error, which both commands gate on: on an engine whose compute registry is
+/// entirely empty it would be a Warning, leaving FEA-result constraints
+/// Indeterminate without failing the command.
+///
+/// No persistent cache is attached: the posture's `StalenessPolicy::Fresh`
+/// forbids serving an earlier session's results, and
+/// `Engine::set_persistent_cache_dir` refuses a cache on such an engine.
+fn configured_check_build_engine(
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    production_cli_engine(CHECK_BUILD_POSTURE, construct)
+}
+
 /// The eval family's (`cmd_eval`, `cmd_report`, `cmd_explain`) solver posture:
 /// the solver's default budget, and results persisted by an earlier session may
 /// be served, because [`configured_eval_engine`] attaches the persistent cache.
@@ -373,8 +412,7 @@ const EVAL_FAMILY_POSTURE: reify_eval::SolverPosture =
 fn configured_eval_engine(
     construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
 ) -> reify_eval::Engine {
-    let mut engine = construct(EVAL_FAMILY_POSTURE);
-    register_compute_trampolines(&mut engine);
+    let mut engine = production_cli_engine(EVAL_FAMILY_POSTURE, construct);
     // Resolve the persistent FEA cache dir from env/config/defaults and wire it
     // into the engine.  Best-effort: a resolver error (e.g. bad
     // REIFY_CACHE_MAX_BYTES env var) is logged at DEBUG and the engine proceeds

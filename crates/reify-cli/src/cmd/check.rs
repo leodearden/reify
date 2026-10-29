@@ -15,7 +15,7 @@ use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,
 };
-use crate::parse_and_compile_with_cfg;
+use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
 
 /// `reify check <file>` — lightweight static constraint checker.
 ///
@@ -247,7 +247,9 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             || has_dfm_rule
             || has_geometry
         {
-            let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
+            let mut engine = configured_check_build_engine(|posture| {
+                reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
+            });
             if has_representation_within {
                 // Record deviation during tessellation.
                 engine.set_capture_repr_tol(true);
@@ -337,7 +339,9 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             (result, take_deviation_readout(&engine))
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
-            let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
+            let mut engine = configured_check_build_engine(|posture| {
+                reify_eval::Engine::new(posture, Box::new(checker), None)
+            });
             let result = engine.check(&compiled);
             (result, take_deviation_readout(&engine))
         };
@@ -453,14 +457,18 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // called on it below.
         let used_build = module_has_geometry(&compiled);
         let (values, front_end_diagnostics, mut engine) = if used_build {
-            let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
+            let mut engine = configured_check_build_engine(|posture| {
+                reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
+            });
             // `realize_for_check`, not `build()` — same esc-5748-6 reason as
             // sub-path (b) above: `check` writes no artifact, so the Phase-B
             // export walk's diagnostics would be user-visible false errors.
             let r = engine.realize_for_check(&compiled);
             (r.values, r.diagnostics, engine)
         } else {
-            let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
+            let mut engine = configured_check_build_engine(|posture| {
+                reify_eval::Engine::new(posture, Box::new(checker), None)
+            });
             let r = engine.eval(&compiled);
             (r.values, r.diagnostics, engine)
         };
