@@ -1148,3 +1148,75 @@ fn try_is_gitignored_each_of_no_paths_is_empty() {
     gitignore_fixture(root);
     assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&[]), vec![]);
 }
+
+// -----------------------------------------------------------------------
+// The H1 prefilter's union diff is a superset of every per-path diff
+// -----------------------------------------------------------------------
+
+/// Pin the property the H1 prefilter rests on: every `+` line a per-path
+/// `diff_added_lines_in_commit(M, p)` returns is a `+` line of the one
+/// `--no-renames` diff over all declared paths. That includes a rename INSIDE
+/// a declared directory, which the per-path diff pairs and the union renders
+/// as a whole-file add, and a deletion, which adds nothing.
+#[test]
+fn no_renames_union_is_a_superset_of_each_per_path_diff() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let run = |args: &[&str]| git_run(root, args);
+    git_init(root);
+
+    let body: String = (1..=10).map(|i| format!("fn kept_{i}() {{}}\n")).collect();
+    write_file(root, "tests/a.rs", "fn a() {}\n");
+    write_file(root, "tests/dir/old.rs", &body);
+    write_file(root, "tests/gone.rs", "fn gone() {}\n");
+    git_commit(root, "base commit");
+
+    run(&["checkout", "-b", "feature"]);
+    write_file(root, "tests/a.rs", "fn a() {}\nfn a_added() {}\n");
+    write_file(root, "tests/new.rs", "fn brand_new() {}\n");
+    run(&["mv", "tests/dir/old.rs", "tests/dir/moved.rs"]);
+    write_file(root, "tests/dir/moved.rs", &format!("{body}fn moved_extra() {{}}\n"));
+    run(&["rm", "-q", "tests/gone.rs"]);
+    git_commit(root, "feature work");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/feature into main", "feature"]);
+    let merge = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+    let paths: Vec<String> = ["tests/a.rs", "tests/new.rs", "tests/dir", "tests/gone.rs"]
+        .map(str::to_string)
+        .to_vec();
+    let union: Vec<String> = git
+        .try_diff_added_lines_in_commit_no_renames(&merge, &paths)
+        .expect("the union diff runs")
+        .into_iter()
+        .map(|(_, content)| content)
+        .collect();
+
+    let mut per_path_total = 0;
+    for p in &paths {
+        for (_, content) in git.diff_added_lines_in_commit(&merge, p) {
+            per_path_total += 1;
+            assert!(
+                union.contains(&content),
+                "{content:?} from the per-path diff of {p} is missing from the union {union:?}",
+            );
+        }
+    }
+    assert!(
+        git.diff_added_lines_in_commit(&merge, "tests/dir")
+            .iter()
+            .any(|(_, c)| c == "fn moved_extra() {}"),
+        "fixture premise: the per-path diff pairs the rename and adds only its new line",
+    );
+    assert!(per_path_total >= 3, "fixture premise: the per-path diffs add lines");
+
+    assert!(
+        git.try_diff_added_lines_in_commit_no_renames(
+            "0123456789abcdef0123456789abcdef01234567",
+            &paths,
+        )
+        .is_err(),
+        "an unknown commit is an unanswered question, not an empty diff",
+    );
+}

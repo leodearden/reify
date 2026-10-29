@@ -2785,6 +2785,17 @@ mod tests {
         path: &str,
         added_lines: Vec<(usize, String)>,
     ) -> Vec<Finding> {
+        run_h1_single_file_with(task_id, path, added_lines, |_, _| {})
+    }
+
+    /// [`run_h1_single_file`], letting `seed` add answers to the mock; it is
+    /// handed the derived commit sha.
+    fn run_h1_single_file_with(
+        task_id: &str,
+        path: &str,
+        added_lines: Vec<(usize, String)>,
+        seed: impl FnOnce(&mut MockGitOps, &str),
+    ) -> Vec<Finding> {
         let conn = seed_db();
         insert_task_completed_event(&conn, task_id);
 
@@ -2793,6 +2804,7 @@ mod tests {
         git.set_diff_changed_paths("main", &commit, vec![path.to_string()]);
         git.set_log_grep("main", task_id, vec![]);
         git.set_diff_added_lines_in_commit(&commit, path, added_lines);
+        seed(&mut git, &commit);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -2833,6 +2845,57 @@ mod tests {
             .collect()
     }
     // ── end H1 test helper ────────────────────────────────────────────────────
+
+    /// The added lines of a placeholder test that arms all three H1 signals.
+    fn firing_h1_lines() -> Vec<(usize, String)> {
+        vec![
+            (1, "fn placeholder_returns_empty_list() {".to_string()),
+            (2, "    assert!(result.is_empty());".to_string()),
+            (3, "}".to_string()),
+        ]
+    }
+
+    /// The H1 prefilter is authoritative for "no candidate": when the task's
+    /// one `--no-renames` union diff declares no fn that arms H1, the per-path
+    /// walk is skipped. The per-path answer here WOULD fire, so a finding
+    /// proves the walk ran anyway.
+    #[test]
+    fn h1_prefilter_without_an_armed_fn_skips_the_per_path_walk() {
+        let findings = run_h1_single_file_with(
+            "9355",
+            "crates/x/tests/h1.rs",
+            firing_h1_lines(),
+            |git, commit| {
+                git.set_diff_added_lines_in_commit_no_renames(
+                    commit,
+                    Ok(vec![(1, "    let unrelated = 1;".to_string())]),
+                );
+            },
+        );
+        assert!(findings.is_empty(), "the prefilter found no candidate; got {findings:?}");
+    }
+
+    /// A failed union diff answers nothing, so the per-path walk decides.
+    #[test]
+    fn h1_prefilter_failure_falls_back_to_the_per_path_walk() {
+        let findings = run_h1_single_file_with(
+            "9356",
+            "crates/x/tests/h1.rs",
+            firing_h1_lines(),
+            |git, commit| {
+                git.set_diff_added_lines_in_commit_no_renames(commit, Err("boom".to_string()));
+            },
+        );
+        assert_eq!(findings.len(), 1, "the per-path walk must still run; got {findings:?}");
+    }
+
+    /// Unseeded, the mock's union is the concatenation of its per-path
+    /// answers, so a firing fn reaches the walk.
+    #[test]
+    fn h1_prefilter_with_an_armed_fn_runs_the_per_path_walk() {
+        let findings = run_h1_single_file("9357", "crates/x/tests/h1.rs", firing_h1_lines());
+        assert_eq!(findings.len(), 1, "an armed fn must reach the walk; got {findings:?}");
+    }
 
     /// H1 integration test: a done task whose file-level corroboration is clean
     /// (diff covers metadata.files, task_completed event present) but whose added
