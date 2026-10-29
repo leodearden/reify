@@ -2897,6 +2897,113 @@ mod tests {
         assert_eq!(findings.len(), 1, "an armed fn must reach the walk; got {findings:?}");
     }
 
+    /// A seam that declares itself inert and panics on any query, so a test
+    /// using it proves H2 asked nothing.
+    struct InertJc;
+
+    impl reify_audit::JCodemunchOps for InertJc {
+        fn is_inert(&self) -> bool {
+            true
+        }
+        fn get_changed_symbols(
+            &self,
+            _since_sha: &str,
+            _until_sha: &str,
+        ) -> Result<Vec<ChangedSymbol>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_changed_symbols")
+        }
+        fn find_references(
+            &self,
+            _symbol: &ChangedSymbol,
+        ) -> Result<Vec<reify_audit::SymbolReference>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked find_references")
+        }
+        fn get_dead_code(
+            &self,
+            _min_confidence: f64,
+        ) -> Result<Vec<reify_audit::DeadSymbol>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_dead_code")
+        }
+        fn get_untested_symbols(
+            &self,
+            _min_confidence: f64,
+        ) -> Result<Vec<reify_audit::UntestedSymbol>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_untested_symbols")
+        }
+        fn get_layer_violations(
+            &self,
+        ) -> Result<Vec<reify_audit::LayerViolation>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_layer_violations")
+        }
+    }
+
+    /// H2 skips an inert seam outright, in the sweep and at pre-done: a
+    /// cross-crate done task H2 would otherwise query completes with no query
+    /// made and no live-path finding of either kind.
+    #[test]
+    fn h2_never_queries_an_inert_seam() {
+        use reify_audit::JCodemunchOps;
+
+        let files = vec![
+            "crates/reify-eval/src/lib.rs".to_string(),
+            "crates/reify-compiler/src/compile.rs".to_string(),
+        ];
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "9355");
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("c1", "main", true);
+        git.set_changed_paths_in_commit("c1", files.clone());
+        git.set_log_grep("main", "9355", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "9355".to_string(),
+            TaskMetadata {
+                task_id: "9355".to_string(),
+                status: "done".to_string(),
+                files,
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("c1".to_string()),
+                    note: None,
+                }),
+                title: "cross-crate task under an inert seam".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        let jc = InertJc;
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        for (caller, findings) in [
+            ("check", p5_phantom_done::check(&ctx)),
+            ("check_pre_done", p5_phantom_done::check_pre_done(&ctx, "9355")),
+        ] {
+            assert!(
+                !findings.iter().any(|f| matches!(
+                    f.pattern,
+                    Pattern::P5LivePathStranded | Pattern::P5LivePathUnexamined
+                )),
+                "{caller} must emit no live-path finding under an inert seam; got {findings:?}",
+            );
+        }
+
+        assert!(reify_audit::NoopJCodemunchOps.is_inert());
+        assert!(!MockJCodemunchOps::new().is_inert());
+    }
+
     /// H1 integration test: a done task whose file-level corroboration is clean
     /// (diff covers metadata.files, task_completed event present) but whose added
     /// test lines contain a placeholder-named fn with a vacuous empty assertion.
