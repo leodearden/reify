@@ -89,6 +89,10 @@ class CountingRules(ScratchTree):
                          "// use super::*;\n")
         self.assertEqual(self.hits("glob_imports"), [])
 
+    def test_function_local_glob_in_production_code_does_not_count(self):
+        self.src("a.rs", "fn f() {\n    use reify_core::PortDirection::*;\n}\n")
+        self.assertEqual(self.hits("glob_imports"), [])
+
     def test_glob_anywhere_before_the_first_semicolon_counts(self):
         self.src("a.rs", "use super::{*, x};\nuse std::ops::Mul; // a * b\n")
         self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:1"])
@@ -103,6 +107,17 @@ class CountingRules(ScratchTree):
         self.src("a.rs", "use crate::{\n    a, // *not* a glob\n};\n"
                          "use crate::{\n    b, // a ; in a comment\n    c::*,\n};\n")
         self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:4"])
+
+    def test_block_comments_and_raw_strings_are_read_as_code(self):
+        cases = {
+            "block comment inside a use": ("use a::{b /* note */};\n", 1),
+            "column-0 use inside a block comment": ("/*\nuse a::*;\n*/\n", 2),
+            "column-0 use inside a raw string": ('const RI: &str = r"\nuse a::*;\n";\n', 2),
+        }
+        for label, (text, line) in cases.items():
+            with self.subTest(label):
+                self.src("a.rs", text)
+                self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:{line}"])
 
     def test_cfg_test_item_in_a_production_file_counts(self):
         self.src("a.rs", "#[cfg(test)]\nuse super::*;\n")

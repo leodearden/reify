@@ -3,12 +3,15 @@
 
 The engine behind the C7 ratchet members of PRD
 docs/prds/v0_6/compiler-module-namespace.md. Every rule reads code text: a
-file with its `//` comments removed. Production files are every *.rs under a
-source root except the files of a column-0 `mod NAME;` whose attributes include
-`#[cfg(test)]` and no `#[path]`, read from its own line and from the attribute
-and blank lines directly above it; any other declaration shape counts as
-production. Each counter counts the production lines on which a match of its
-pattern starts, and a count above or below its baseline row is a violation.
+file with its `//` comments removed. The removal is lexical, so `/* */` comments
+and string, char and raw-string literals stay in code text and every rule reads
+their contents as code, and a `//` inside a literal removes the rest of its line.
+Production files are every *.rs under a source root except the files of a
+column-0 `mod NAME;` whose attributes include `#[cfg(test)]` and no `#[path]`,
+read from its own line and from the attribute and blank lines directly above
+it; any other declaration shape counts as production. Each counter counts the
+production lines on which a match of its pattern starts, and a count above or
+below its baseline row is a violation.
 """
 
 from __future__ import annotations
