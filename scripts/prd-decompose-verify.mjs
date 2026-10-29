@@ -377,15 +377,28 @@ Instructions:
 1. Read the leaf signal carefully.
 2. For each factual claim or behavioral assertion, create one premise record.
 3. Enforce the NEGATIVE-ASSERTION MANDATE: for any "X is rejected" or "X should
-   fail" assertion, use assertion_kind="rejection" with match.exit_code=1.
+   fail" assertion, use assertion_kind="rejection".  Bind ALWAYS sets
+   match.exit_code=1 for a rejection, whether or not the premise writes it,
+   and refuses a premise that writes any other exit_code.  Add
+   match.stderr_contains naming the diagnostic, to pin WHICH rejection fires.
    DO NOT use observation="absent" for rejection premises — that would silently
    pass the 4575 silent-accept bug.
-4. assertion_kind values:
-   - "rejection": compiler must reject (exit_code:1) — e.g. type mismatches
-   - "parses":    tree-sitter parses the fixture without errors
-   - "resolves":  reify check passes (exit_code:0)
-   - "produces":  reify eval exits non-zero with this signature in stderr
+4. assertion_kind values, and the match keys each accepts.  Bind refuses any
+   match key the kind does not consult: a misspelt key would otherwise be
+   silently ignored, leaving the probe asserting nothing.
+   - "rejection": compiler must reject — e.g. type mismatches.  Bind sets
+                  exit_code 1 (step 3); optional stderr_contains /
+                  stdout_contains.
+   - "parses":    tree-sitter parses the fixture without errors.  match must
+                  be {}.
+   - "resolves":  reify check passes.  Bind sets exit_code 0 whether or not
+                  the premise says so, and refuses any other exit_code.
+                  Optional stderr_contains / stdout_contains.
+   - "produces":  reify eval exits non-zero with this signature in stderr.
+                  match.stderr_contains is the signature, and it is the only
+                  key.
    - "ir":        reify eval exits 0 (clean, no error) — observation=absent.
+                  Optional stderr_contains only.
                   This proves ONLY "eval exits 0, clean".  It CANNOT see what
                   was printed: the ir arm answers on exit 0 without reading the
                   match dict at all.
@@ -405,9 +418,10 @@ Instructions:
                   ("Structure.field = <value> [unit]"): a pattern that locates
                   nothing is UNPROVABLE, not a failure, because a mis-aimed
                   probe is indistinguishable from an absent capability.
-5. Each premise needs a fixture path (repo-relative). If the leaf doesn't
-   specify one, you may need to reference an existing fixture in
-   tests/prd-gate/fixtures/ or note that a new fixture is needed.
+5. Each premise needs a non-empty fixture path (repo-relative); bind refuses
+   an empty one.  If the leaf doesn't specify one, you may need to reference an
+   existing fixture in tests/prd-gate/fixtures/ or note that a new fixture is
+   needed.
 6. Return ONLY premises you are confident about. An empty list is valid.
 
 Return a JSON object {premises: [...]} matching the schema.`,
