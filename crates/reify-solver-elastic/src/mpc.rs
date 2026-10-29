@@ -1,52 +1,37 @@
-//! Multi-point constraint (MPC) types for the structural-analysis solver.
-//!
-//! # PRD reference
-//!
-//! See `docs/prds/v0_4/structural-analysis-shells.md` tasks **T10 / T11**.
-//! Task T11 (this commit) ships the global mixed-element assembler and
-//! the typed `MpcRow` placeholder that T10 will populate.
+//! Multi-point constraints (MPCs) for the structural-analysis solver.
 //!
 //! # Constraint form
 //!
-//! Each `MpcRow` represents a single linear equality constraint
+//! Each [`MpcRow`] is one linear equality constraint
 //!
 //! ```text
 //!     Σᵢ coeffs[i] · u[dofs[i]] = rhs
 //! ```
 //!
-//! over the global displacement vector `u`. A typical MPC connects
-//! `n ≥ 2` DOFs at distinct global indices; e.g. a shell-tet rotation
-//! ↔ tet-displacement-gradient tying constraint at one through-thickness
-//! sampling point produces one `MpcRow` (with the shell rotation DOF
-//! plus the displacement DOFs of the tet nodes spanned by the
-//! through-thickness offset).
+//! over the global displacement vector `u`. `dofs[0]` is the pivot DOF and
+//! `coeffs[0]` is non-zero, so each row solves for its pivot as
+//! `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i] · u[dofs[i]]) / coeffs[0]`.
 //!
-//! # Application strategy
+//! # Surface
 //!
-//! T10 will apply MPCs **post-assembly via row-elimination**, reusing
-//! Task 2917's Dirichlet plumbing in `crate::boundary::dirichlet`.
-//! Concretely: each row of K (and the corresponding entry of f) is
-//! eliminated by substituting `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i] ·
-//! u[dofs[i]]) / coeffs[0]` (or any alternative pivot DOF with non-zero
-//! coefficient), then the substituted equation is plugged back into K's
-//! other rows. The KKT-style penalty / Lagrange-multiplier alternative is
-//! out of scope; row-elimination matches the v0.3 Dirichlet code path
-//! and avoids growing the linear system.
+//! - [`MpcRow`]: one constraint row. [`MpcRow::new`] validates it,
+//!   [`MpcRow::shell_tet_tying`] builds the canonical six shell/tet junction
+//!   rows, and [`MpcRow::dofs`], [`MpcRow::coeffs`] and [`MpcRow::rhs`] read it.
+//! - [`apply_mpc_row_elimination`]: post-assembly row elimination of the rows
+//!   on `K` and `f` in place, in the shape of the Dirichlet row elimination in
+//!   `crate::boundary::dirichlet`. It keeps the system size unchanged, unlike
+//!   a penalty or Lagrange-multiplier formulation.
 //!
-//! # T11 / T10 split
+//! MPCs are applied after assembly; `assemble_global_stiffness` never takes
+//! them as input. The buckling kernel consumes the same rows by master-slave
+//! reduction ([`crate::buckling_kernel`]), and the reify-eval mixed-region
+//! build emits them for each shell/tet interface.
 //!
-//! - **T11 (this commit)** — ship the `MpcRow` placeholder type and the
-//!   `pub mod mpc;` declaration so the file the orchestrator's
-//!   file-list expects exists, the type is callable from downstream
-//!   crates, and the round-trip contract on the public fields is locked.
-//! - **T10 (Task 3020, pending)** — populate construction methods (e.g.
-//!   `MpcRow::shell_tet_tying(shell_node, tet_nodes, offset, ...)`) and
-//!   the row-elimination application function. T10's edits are
-//!   insertion-only on the public surface of this module.
+//! # PRD reference
 //!
-//! `assemble_global_stiffness` does **not** take MPCs as input — MPCs
-//! are applied post-assembly. See the design decision in the task plan
-//! for the rationale.
+//! `docs/prds/v0_4/structural-analysis-shells.md` tasks T10 / T11 for the
+//! formulation; `docs/prds/v0_6/solver-crates-layering.md` D10 / C6 for the
+//! private-field invariant.
 
 use faer::sparse::SparseRowMat;
 
