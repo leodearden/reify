@@ -302,7 +302,8 @@ enum CombinedStop {
     /// An iterate met the stop test.
     Equilibrium(CombinedIterate),
     /// The budget or the stall guard ended the loop: the densities of the
-    /// last iteration whose relax step was kept, with the geometry it moved to.
+    /// last iteration whose relax step was kept, with the geometry it moved to
+    /// (the problem's own densities at the starting geometry until one is).
     ShortOfEquilibrium { q: Vec<f64>, nodes: Vec<[f64; 3]> },
 }
 
@@ -317,13 +318,12 @@ enum CombinedStop {
 /// (e.g. an Explicit `q` with no line-only equilibrium) it starts from the
 /// guess.
 fn combined_fixed_point(problem: &ForceDensityProblem<'_>) -> Result<CombinedStop, FreeFormError> {
-    const RELAXED_FIRST: &str = "a kept relax step precedes every short exit";
     let boot = form_find_line_only(problem).ok();
     let mut q_source = QSource::new(problem, boot.as_ref());
     let mut current = boot.map_or_else(|| problem.nodes().to_vec(), |boot| boot.nodes);
+    let mut relaxed_q = problem.q().to_vec();
     let mut relax = RelaxStep::new();
     let mut stall = StallGuard::new();
-    let mut relaxed_q = None;
 
     for _ in 0..MAX_FREE_SURFACE_ITERS {
         let surface_mat = assemble_surface_matrix(
@@ -340,15 +340,15 @@ fn combined_fixed_point(problem: &ForceDensityProblem<'_>) -> Result<CombinedSto
         let next = relax.relax(problem, &iterate, q_source.admits_projection_trial());
         if stall.stalled_after(&iterate.nodes, &next, iterate.residual) {
             return Ok(CombinedStop::ShortOfEquilibrium {
-                q: relaxed_q.expect(RELAXED_FIRST),
+                q: relaxed_q,
                 nodes: iterate.nodes,
             });
         }
-        relaxed_q = Some(iterate.q);
+        relaxed_q = iterate.q;
         current = next;
     }
     Ok(CombinedStop::ShortOfEquilibrium {
-        q: relaxed_q.expect(RELAXED_FIRST),
+        q: relaxed_q,
         nodes: current,
     })
 }
@@ -411,9 +411,6 @@ const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
 /// before the outer fixed-point exits early (avoids burning the full
 /// `MAX_FREE_SURFACE_ITERS` budget on an intractable configuration).
 const GEO_STALL_ITERS: usize = 5;
-
-// Why `combined_fixed_point`'s short exits always follow a kept relax step.
-const _: () = assert!(GEO_STALL_ITERS > 1 && MAX_FREE_SURFACE_ITERS > 0);
 
 /// Trips once [`GEO_STALL_ITERS`] consecutive iterations each left the
 /// geometry where it ENTERED the iteration and shrank the residual by less
