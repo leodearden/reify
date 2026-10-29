@@ -4596,7 +4596,9 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 ///
 /// `layer_height` and `line_width` (idx 2, 3) are `Scalar<Length>` read through
 /// [`extract_length_si`], the same rule as the `Point3<Length>` AABB corners;
-/// the counts and the build direction are `Value::Real`.
+/// the counts and the build direction are `Value::Real`. A non-finite band
+/// width or direction is refused as `NonFinite`, so `classify_material` fails
+/// loudly instead of solving with arbitrary zones.
 ///
 /// Task D4 (compute-fea-hardening PRD): Result-ified leaf extractor — returns
 /// `Err(FeaValueShapeError)` on a malformed `Value` instead of panicking. Its
@@ -4638,13 +4640,20 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
             got: format!("params[{idx}] = {other:?}"),
         }),
     };
-    Ok(ZoneProcessParams {
+    let params = ZoneProcessParams {
         walls:             real(0)? as u32,
         top_bottom_layers: real(1)? as u32,
         layer_height:      extract_length_si(&list[2])?,
         line_width:        extract_length_si(&list[3])?,
         build_direction:   [real(4)?, real(5)?, real(6)?],
-    })
+    };
+    if !params.is_finite() {
+        return Err(FeaValueShapeError::NonFinite {
+            context: "extract_zone_process_params",
+            got: format!("{params:?}"),
+        });
+    }
+    Ok(params)
 }
 
 /// Convert an `AnisotropicMaterial { law: ConstitutiveLaw, frame: MaterialFrame }`
@@ -4864,7 +4873,8 @@ fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeE
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
-        | FeaValueShapeError::ExpectedList { got, .. } => got,
+        | FeaValueShapeError::ExpectedList { got, .. }
+        | FeaValueShapeError::NonFinite { got, .. } => got,
     };
     FeaValueShapeError::ExpectedScalar {
         context: "law_from_value (isotropic fallback)",

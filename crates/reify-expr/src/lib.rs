@@ -3334,8 +3334,8 @@ pub(crate) fn apply_lambda_with_point_unpacking(
 /// [`reify_fdm::classify_point`], and returns the matching precomputed material
 /// value (`mat_wall` / `mat_skin` / `mat_infill`). Returns [`Value::Undef`] if
 /// any stored datum is malformed (non-Point AABB corners, wrong-arity or
-/// non-numeric `params`, non-numeric threshold) or `at` is not a 3-component
-/// `Point`/`Vector`.
+/// non-numeric `params`, non-numeric threshold, or a non-finite layer_height /
+/// line_width / build direction) or `at` is not a 3-component `Point`/`Vector`.
 fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
     let Value::List(params) = &items[2] else {
         return Value::Undef;
@@ -3365,6 +3365,9 @@ fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
         line_width: p[3],
         build_direction: [p[4], p[5], p[6]],
     };
+    if !zone_params.is_finite() {
+        return Value::Undef;
+    }
     match reify_fdm::classify_point(&aabb, &zone_params, cos_threshold, point) {
         reify_fdm::Zone::Wall => items[4].clone(),
         reify_fdm::Zone::Skin => items[5].clone(),
