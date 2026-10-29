@@ -77,9 +77,8 @@ pub fn assert_rel(actual: f64, expected: f64, rel: f64, what: &str) {
 /// Axis-aligned box spanning `[0,lx] x [0,ly] x [0,lz]`: 8 vertices / 12
 /// outward-wound triangles, enclosed volume exactly `lx * ly * lz`.
 ///
-/// The winding is vetted OUTWARD (unlike `through_thickness_tests.rs`'s
-/// `slab_surface_mesh`), which is a precondition for every signed-volume and
-/// divergence-theorem assertion built on it.
+/// The winding is vetted OUTWARD, which is a precondition for every
+/// signed-volume and divergence-theorem assertion built on it.
 pub fn prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
     Mesh {
         vertices: vec![

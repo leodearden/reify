@@ -254,21 +254,8 @@ fn resolve_mesh_size_propagates_auto_size_error_and_suppresses_debug_event() {
 // ---------------------------------------------------------------------------
 
 /// Surface mesh of an axis-aligned 10×10×0.5 slab.
-/// Inline duplicate of `through_thickness_tests.rs::slab_surface_mesh`.
 fn slab_surface_mesh() -> Mesh {
-    let v = vec![
-        0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.5, 10.0, 0.0,
-        0.5, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
-    ];
-    let i = vec![
-        0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6,
-        3, 0, 4, 3, 4, 7,
-    ];
-    Mesh {
-        vertices: v,
-        indices: i,
-        normals: None,
-    }
+    reify_test_support::mesh_fixtures::prismatic_box_mesh(10.0, 10.0, 0.5)
 }
 
 /// Single-tet volume mesh that spans the slab thickness (mirrors the
