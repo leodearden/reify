@@ -23,7 +23,9 @@
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
-use reify_test_support::{compile_source, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    compile_source, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 /// Shared fixture: a `Cylindrical` trait with a default-providing instance fn
 /// `lateral_area(self) -> Scalar<Area>`, a `Pin` conformer, and an `Assembly`
@@ -471,17 +473,12 @@ structure def Assembly {
     );
 }
 
-/// (reviewer amendment 3 — correctness) A default-providing instance fn whose
-/// declared return type references a TRAIT-level type-parameter must resolve to a
-/// `Type::TypeParam` at the dispatch site, NOT collapse to `Type::Error`.
-///
-/// Before the fix, the dispatch-site return-type population re-resolved the raw
-/// `FnDef.return_type` using only the fn's OWN type-params, so a trait-generic
-/// return type (`-> T` where `T` is declared on the trait) hit
-/// `unwrap_or(Type::Error)` and silently mistyped the call site. Threading the
-/// trait's type-params into the resolution keeps it `Type::TypeParam("T")`.
+/// A default-providing instance fn returning a TRAIT-level type param: `T` is
+/// bound only by the conformer's `: Boxed<Bolt>`, which the call site does not
+/// see until #7866 lands. So the call is poisoned with FnTypeArgUnresolved
+/// instead of leaking `Type::TypeParam` or silently collapsing to `Type::Error`.
 #[test]
-fn instance_dispatch_trait_generic_return_type_is_not_error() {
+fn instance_dispatch_trait_generic_unbound_return_emits_fn_type_arg_unresolved() {
     let source = r#"
 trait Rigid { param mass : Mass }
 
@@ -503,31 +500,221 @@ structure def Assembly {
 "#;
     let module = compile_source(source);
 
-    let assembly = module
+    let unresolved = diagnostics_with_code(&module, DiagnosticCode::FnTypeArgUnresolved);
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "an unbound trait-level `-> T` should emit exactly one FnTypeArgUnresolved; \
+         all diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert_poisoned_without_type_param_leak(&module, "got");
+}
+
+// ── (#7872) Generic instance assoc fns type from the instantiated return type ──
+
+fn assembly_cell<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    member: &str,
+) -> &'m reify_compiler::ValueCellDecl {
+    module
         .templates
         .iter()
         .find(|t| t.name == "Assembly")
-        .expect("compiled module should contain a template for 'Assembly'");
-    let got = assembly
+        .expect("compiled module should contain an Assembly template")
         .value_cells
         .iter()
-        .find(|vc| vc.id.member == "got")
-        .expect("Assembly should have a 'got' value cell");
-    let expr = got
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("Assembly should have a let binding '{member}'"))
+}
+
+fn assembly_member_expr<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    member: &str,
+) -> &'m CompiledExpr {
+    assembly_cell(module, member)
         .default_expr
         .as_ref()
-        .expect("the 'got' let-binding should carry a compiled value expr");
+        .unwrap_or_else(|| panic!("'{member}' should have a compiled default expr"))
+}
 
-    assert_ne!(
-        expr.result_type,
-        Type::Error,
-        "a trait-generic `-> T` default-fn return type must not collapse to Type::Error \
-         at the dispatch site; got result_type {:?}",
-        expr.result_type
+fn diagnostics_with_code(
+    module: &reify_compiler::CompiledModule,
+    code: DiagnosticCode,
+) -> Vec<&reify_core::Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(code))
+        .collect()
+}
+
+fn assert_lowers_to_call_typed(
+    module: &reify_compiler::CompiledModule,
+    member: &str,
+    expected: Type,
+) {
+    let expr = assembly_member_expr(module, member);
+    assert!(
+        matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
+        "'{member}' should lower to UserFunctionCall; got: {:?}",
+        expr.kind
     );
     assert_eq!(
-        expr.result_type,
-        Type::TypeParam("T".to_string()),
-        "the trait type-param return type should resolve to Type::TypeParam(\"T\")"
+        expr.result_type, expected,
+        "'{member}' should be typed from the resolved candidate's instantiated return type"
     );
+}
+
+fn assert_poisoned_without_type_param_leak(module: &reify_compiler::CompiledModule, member: &str) {
+    let expr = assembly_member_expr(module, member);
+    assert!(
+        !matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
+        "'{member}' should be poisoned, not lowered to a call; got: {:?}",
+        expr.kind
+    );
+    assert!(
+        !matches!(expr.result_type, Type::TypeParam(_)),
+        "'{member}' must not leak a TypeParam result type; got: {:?}",
+        expr.result_type
+    );
+}
+
+const IDT_SRC: &str = r#"
+trait Idt {
+    fn pick<T>(self, x: T) -> T { x }
+}
+structure def Impl : Idt {}
+structure def Assembly {
+    sub i : Impl
+    let got = i.(Idt::pick)(5mm)
+}
+"#;
+
+/// A fn-level generic instance assoc fn types its call, and the value cell, from
+/// the return type instantiated against the argument types.
+#[test]
+fn instance_dispatch_fn_generic_call_types_from_instantiated_return() {
+    let module = compile_source(IDT_SRC);
+
+    let site_diagnostics: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code,
+                Some(DiagnosticCode::TraitMethodUnknown)
+                    | Some(DiagnosticCode::AmbiguousCall)
+                    | Some(DiagnosticCode::FnTypeArgUnresolved)
+                    | Some(DiagnosticCode::FnTypeArgConflict)
+            )
+        })
+        .collect();
+    assert!(
+        site_diagnostics.is_empty(),
+        "the dispatch site should emit no resolution/instantiation diagnostic; \
+         all diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert_lowers_to_call_typed(&module, "got", Type::length());
+    assert_eq!(
+        assembly_cell(&module, "got").cell_type,
+        Type::length(),
+        "the value cell should carry the instantiated type"
+    );
+}
+
+/// A fn-level generic instance assoc fn call evaluates to a concrete scalar.
+#[test]
+fn instance_dispatch_fn_generic_call_evaluates_without_panicking() {
+    let compiled = compile_source_with_stdlib(IDT_SRC);
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    match eval_result.values.get(&ValueCellId::new("Assembly", "got")) {
+        Some(Value::Scalar { .. }) => {}
+        other => panic!("Assembly.got should evaluate to a Value::Scalar; got {other:?}"),
+    }
+}
+
+/// With a generic and a concrete overload of one method, each call is typed by
+/// the candidate it resolves to: the concrete one keeps its declared type on an
+/// exact match, and the generic one instantiates otherwise.
+#[test]
+fn instance_dispatch_mixed_generic_and_concrete_overloads_type_per_candidate() {
+    let source = r#"
+trait P {
+    fn f<T>(self, x: T) -> T { x }
+    fn f(self, x: Length) -> Real { 1.0 }
+}
+structure def C : P {}
+structure def Assembly {
+    sub c : C
+    let exact = c.(P::f)(5mm)
+    let gen = c.(P::f)(30deg)
+}
+"#;
+    let module = compile_source(source);
+
+    assert_lowers_to_call_typed(&module, "exact", Type::dimensionless_scalar());
+    assert_lowers_to_call_typed(&module, "gen", Type::angle());
+}
+
+/// Two arguments binding one type param to different types emit a single
+/// FnTypeArgConflict and poison the call.
+#[test]
+fn instance_dispatch_fn_generic_conflicting_args_emit_fn_type_arg_conflict() {
+    let source = r#"
+trait Two {
+    fn both<T>(self, a: T, b: T) -> T { a }
+}
+structure def Impl : Two {}
+structure def Assembly {
+    sub i : Impl
+    let got = i.(Two::both)(5mm, 30deg)
+}
+"#;
+    let module = compile_source(source);
+
+    let conflicts = diagnostics_with_code(&module, DiagnosticCode::FnTypeArgConflict);
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "expected exactly one FnTypeArgConflict; all diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        conflicts[0]
+            .message
+            .contains("conflicting type arguments for type parameter 'T'"),
+        "the conflict should name type parameter 'T'; got: {}",
+        conflicts[0].message
+    );
+    assert_poisoned_without_type_param_leak(&module, "got");
+}
+
+/// A return type param that no argument binds emits a single FnTypeArgUnresolved
+/// and poisons the call.
+#[test]
+fn instance_dispatch_fn_generic_unbound_return_emits_fn_type_arg_unresolved() {
+    let source = r#"
+trait Mk2 {
+    fn mk<T>(self) -> T { 1.0 }
+}
+structure def Impl : Mk2 {}
+structure def Assembly {
+    sub i : Impl
+    let got = i.(Mk2::mk)()
+}
+"#;
+    let module = compile_source(source);
+
+    let unresolved = diagnostics_with_code(&module, DiagnosticCode::FnTypeArgUnresolved);
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "expected exactly one FnTypeArgUnresolved; all diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert_poisoned_without_type_param_leak(&module, "got");
 }
