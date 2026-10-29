@@ -2,8 +2,10 @@
 
 //! Shared FDM as-printed fixture builders for `reify-eval` integration tests.
 
-use reify_core::DimensionVector;
-use reify_ir::{Mesh, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{
+    FieldSourceKind, Mesh, PersistentMap, StructureInstanceData, StructureTypeId, Value,
+};
 
 /// Registry-free placeholder type id for Rust-constructed StructureInstances
 /// (mirrors `reify_eval::dynamics_ops::REGISTRY_FREE_TYPE_ID`).
@@ -51,6 +53,36 @@ pub fn length(m: f64) -> Value {
 /// quantity slot is dimensionless because it denotes a DIRECTION (task 5848).
 pub fn vec3_dimensionless(v: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
+}
+
+/// Assert `result` is a well-typed, honestly-degraded `AsPrintedZones` field:
+/// codomain `AnisotropicMaterial`, source `AsPrintedZones`, and an `Undef`
+/// lambda (so every `sample_field_at` falls through to `Undef`) — never a panic
+/// and never a malformed field.
+pub fn assert_degraded_field(result: &Value) {
+    match result {
+        Value::Field {
+            codomain_type,
+            source,
+            lambda,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::AsPrintedZones),
+                "degraded field is still well-typed AsPrintedZones, got {source:?}"
+            );
+            assert_eq!(
+                *codomain_type,
+                Type::StructureRef("AnisotropicMaterial".to_string()),
+                "degraded field codomain must be AnisotropicMaterial"
+            );
+            assert!(
+                matches!(lambda.as_ref(), Value::Undef),
+                "degrade must yield an Undef lambda, got {lambda:?}"
+            );
+        }
+        other => panic!("expected Value::Field even on degrade, got {other:?}"),
+    }
 }
 
 /// A box surface mesh covering `[BOX_MIN, BOX_MAX]`. Only the vertex extent

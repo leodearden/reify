@@ -19,7 +19,8 @@
 use std::sync::Arc;
 
 use crate::common::as_printed::{
-    BOX_MAX, BOX_MIN, as_printed_options, box_mesh, coupon_default, fdm_process, scalar, with_field,
+    BOX_MAX, BOX_MIN, as_printed_options, assert_degraded_field, box_mesh, coupon_default,
+    fdm_process, length, scalar, with_field,
 };
 use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
@@ -246,6 +247,32 @@ fn as_printed_trampoline_types_the_zone_param_lengths() {
             p[idx]
         );
     }
+}
+
+/// The result of a `Completed` run.
+fn completed_result(outcome: ComputeOutcome) -> Value {
+    match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+    }
+}
+
+/// task 6940: a non-finite `line_width` has no meaningful wall band, so the
+/// field degrades to its Undef lambda rather than carrying it into the params.
+#[test]
+fn as_printed_trampoline_degrades_on_a_non_finite_line_width() {
+    let options = with_field(as_printed_options(), "line_width", length(f64::NAN));
+    assert_degraded_field(&completed_result(run_r_fast(options)));
+}
+
+/// task 6940: likewise for a non-finite `layer_height` (the skin band).
+#[test]
+fn as_printed_trampoline_degrades_on_a_non_finite_layer_height() {
+    let process = with_field(fdm_process(), "layer_height", length(f64::INFINITY));
+    assert_degraded_field(&completed_result(run_r_fast_with(
+        process,
+        as_printed_options(),
+    )));
 }
 
 fn coupon_with_ex(ex: Value) -> Value {
