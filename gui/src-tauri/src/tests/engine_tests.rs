@@ -20435,8 +20435,7 @@ fn resolve_param_default_span_resolves_a_non_first_member() {
 
 #[test]
 fn resolve_param_default_span_returns_none_with_no_module_loaded() {
-    // parsed_cache is None on a fresh session (and on load_from_compiled-injected
-    // sessions). Must degrade to None, never panic.
+    // parsed_cache is None on a fresh session. Must degrade to None, never panic.
     let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
 }
