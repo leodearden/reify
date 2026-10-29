@@ -308,3 +308,18 @@ fn load_from_compiled_resets_like_commit_state() {
         "load_from_compiled and load_from_source must reset the same state"
     );
 }
+
+/// `load_from_compiled` breaks `module_name` before it builds the state it
+/// returns, so that build — like every later one on the session — runs over
+/// the unresolved source: an injected module carrying a diagnostic trips
+/// `get_diagnostics`' unresolved-source assert during the load itself.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "resolve_source returned None with non-empty diagnostics")]
+fn load_from_compiled_builds_its_state_over_the_unresolved_source() {
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(TopologyTemplateBuilder::new("Simple").build())
+        .diagnostic(reify_core::Diagnostic::warning("injected"))
+        .build();
+    let _ = mock_session().load_from_compiled(compiled, "test");
+}

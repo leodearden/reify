@@ -3254,7 +3254,7 @@ impl EngineSession {
     /// A rejected compile is recorded for the diagnostics panel (see
     /// [`Self::record_compile_failure`]) and its message returned as the `Err`;
     /// nothing else is touched — no check, no commit, no telemetry. An accepted
-    /// compile runs [`Self::reload_compiled`].
+    /// compile runs [`Self::reload_compiled`], then builds the new state.
     fn reload(
         &mut self,
         compiled: Result<CompiledSource, CompileRejection>,
@@ -3263,7 +3263,10 @@ impl EngineSession {
         file: FilePathUpdate,
     ) -> Result<GuiState, String> {
         match compiled {
-            Ok(compiled) => self.reload_compiled(compiled, module_name, source, file),
+            Ok(compiled) => {
+                self.reload_compiled(compiled, module_name, source, file);
+                self.build_gui_state()
+            }
             Err(rejection) => {
                 self.record_compile_failure(rejection.diags, source, module_name);
                 Err(rejection.message)
@@ -3271,25 +3274,25 @@ impl EngineSession {
         }
     }
 
-    /// Reload's post-compile half: check, commit, emit, build.
+    /// Reload's post-compile half up to the build: check, commit, emit.
     ///
     /// The one place a reload runs [`Self::check_with_solve_slot`]. Check runs
     /// before any state is written, so a panic in it leaves the session
     /// unchanged. Telemetry fires only after [`Self::commit_state`] has
     /// committed everything — so a panic during the commit cannot leak phantom
     /// events to the GUI, and every emitter reads the freshly committed
-    /// `last_check`.
+    /// `last_check`. The build is left to the caller so `load_from_compiled`
+    /// can break `module_name` before it.
     fn reload_compiled(
         &mut self,
         compiled: CompiledSource,
         module_name: &str,
         source: &str,
         file: FilePathUpdate,
-    ) -> Result<GuiState, String> {
+    ) {
         let check_result = self.check_with_solve_slot(&compiled.compiled);
         self.commit_state(compiled, check_result, module_name, source, file);
         self.post_engine_call_telemetry();
-        self.build_gui_state()
     }
 
     /// Route failure diagnostics into `compile_failure` based on whether a prior successful
@@ -7499,18 +7502,21 @@ impl EngineSession {
     ///
     /// Source-bypassing analog of [`EngineSession::load_from_source`]: runs
     /// reload's post-compile half ([`Self::reload_compiled`] — check, commit,
-    /// telemetry, build, with the one reset list every reload uses) over the
-    /// parse of the empty source it commits. `source_map` gets
+    /// telemetry, with the one reset list every reload uses) over the parse of
+    /// the empty source it commits. `source_map` gets
     /// `module_key(module_name) -> ""`, and the parse caches hold that empty
-    /// parse. Afterwards it clears `module_name` via
-    /// [`CoreState::break_module_name`] so that `resolve_source()` returns `None`.
+    /// parse. It then clears `module_name` via
+    /// [`CoreState::break_module_name`] so that `resolve_source()` returns
+    /// `None`, and only then builds the returned [`GuiState`] — so that state,
+    /// like every later build on the session, is built over the unresolved
+    /// source.
     ///
     /// Distinct from [`EngineSession::inject_compiled_for_test`], which sets
     /// `compiled` ONLY.  Use `load_from_compiled` when tests need `compiled` and
     /// `last_check` both populated (e.g. to drive `get_entity_tree`).
     ///
     /// **Parse-dependent APIs degrade gracefully to `None`/`[]` on an injected
-    /// session.**  Because `break_module_name` runs after the reload,
+    /// session.**  Because `break_module_name` runs after the commit,
     /// `resolve_source()` returns `None`, so [`get_containing_definition`],
     /// [`get_entity_at_source_location`], and [`get_source_location`] all
     /// short-circuit at their `resolve_source()?` guard, and never look up the
@@ -7529,14 +7535,14 @@ impl EngineSession {
         module_name: &str,
     ) -> Result<GuiState, String> {
         let parsed = reify_compiler::parse_with_stdlib("", ModulePath::single(module_name));
-        let state = self.reload_compiled(
+        self.reload_compiled(
             CompiledSource { parsed, compiled },
             module_name,
             "",
             FilePathUpdate::Preserve,
-        )?;
+        );
         self.core.break_module_name();
-        Ok(state)
+        self.build_gui_state()
     }
 
     /// Register a cell to panic during the next eval cycle.
