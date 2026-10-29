@@ -30773,6 +30773,32 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'Stale clause-8 comment in reify-eval invariants.rs claims face(b,\"tag\") is build-only, but it has been eval-wired since #5120 R2c'
+- id: cand-20261027-1
+  title: MCP plan-tool called with guessed argument names absent from its declared schema
+  cause: The agent called mcp__plan-tools__add_plan_step with keyword arguments task_id and type, which the schema does not declare, and omitted the required step_id and step_type. It then called mark_step_committed with commit_sha instead of the declared sha. Each call was rejected at argument validation before running, so the agent had to re-issue it with corrected arguments.
+  area: agent-tooling
+  first_seen: '2026-10-27'
+  disposition: pending
+  sightings:
+  - date: '2026-10-27'
+    project: reify
+    session: 71a6b07a-c885-41d2-b364-3d7eff76b6d9
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'add_plan_step was called without required argument(s): step_id, step_type ... "other_errors": [{"type": "unexpected_keyword_argument", "loc": ["task_id"], "msg": "Unexpected keyword argument"}'
+- id: cand-20261027-2
+  title: connect connector-param parse error names the whole statement with no span on the offending unit literal
+  cause: The connect-specific parser rejects a space between a number and its unit (`1000.0 N/m`) inside a connector-param block, while the same literal is accepted without the space and in ordinary param positions. The resulting 'invalid connect' diagnostic names the entire statement with no span or hint pointing at the offending literal, so a reader must reduce the statement by hand to find the fault.
+  area: parser/diagnostics
+  first_seen: '2026-10-27'
+  disposition: pending
+  sightings:
+  - date: '2026-10-27'
+    project: reify
+    session: ca8e252d-6f43-4396-9429-95bfe9cb4a3c
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: the diagnostic is a bare "invalid connect" naming the whole statement, with no span or hint pointing at the offending literal
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
