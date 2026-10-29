@@ -1065,3 +1065,86 @@ fn history_snapshot_on_unusable_branch_falls_back() {
     let broken = RealGitOps::new(root).with_history_snapshot("no-such-branch");
     assert_history_answers_match(&plain, &broken, &fx);
 }
+
+// -----------------------------------------------------------------------
+// The batched gitignore probe answers exactly like one probe per path
+// -----------------------------------------------------------------------
+
+/// A repo whose committed `.gitignore` ignores `build/*.rs` but re-includes
+/// `build/keep.rs`, with a force-added tracked file under the ignored pattern
+/// (git never reports a tracked file as ignored), an untracked ignored file,
+/// an untracked plain file and a leading-dash file. Returns the paths to ask
+/// about, including two spellings git echoes back verbatim.
+fn gitignore_fixture(root: &std::path::Path) -> Vec<String> {
+    git_init(root);
+    write_file(root, ".gitignore", "build/*.rs\n!build/keep.rs\n");
+    write_file(root, "src/lib.rs", "fn lib() {}\n");
+    write_file(root, "build/tracked.rs", "fn tracked() {}\n");
+    git_run(root, &["add", ".gitignore", "src/lib.rs"]);
+    git_run(root, &["add", "-f", "build/tracked.rs"]);
+    git_run(root, &["commit", "-m", "base commit"]);
+    write_file(root, "build/gen.rs", "fn generated() {}\n");
+    write_file(root, "build/keep.rs", "fn keep() {}\n");
+    write_file(root, "notes.txt", "untracked\n");
+    write_file(root, "-weird", "leading dash\n");
+    [
+        "src/lib.rs",
+        "build/tracked.rs",
+        "build/gen.rs",
+        "build/keep.rs",
+        "notes.txt",
+        "-weird",
+        "./build/gen.rs",
+        "build/gen.rs",
+    ]
+    .map(str::to_string)
+    .to_vec()
+}
+
+/// Pin that one batched probe gives, path by path and in order, the answer a
+/// per-path probe gives.
+#[test]
+fn try_is_gitignored_each_answers_like_per_path_probes() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let paths = gitignore_fixture(root);
+
+    let per_path = RealGitOps::new(root);
+    let expected: Vec<Result<bool, String>> =
+        paths.iter().map(|p| per_path.try_is_gitignored(p)).collect();
+    assert_eq!(
+        expected,
+        [false, false, true, false, false, false, true, true].map(Ok).to_vec(),
+        "fixture premise: the per-path answers",
+    );
+    assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&paths), expected);
+}
+
+/// Pin that a batch git refuses as a whole still answers path by path exactly
+/// as one probe per path does, latched breadcrumb budget included: every
+/// answer before the rejected path, then `Err` from it on.
+#[test]
+fn try_is_gitignored_each_falls_back_when_git_rejects_a_path() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut paths = gitignore_fixture(root);
+    paths.insert(3, "../outside".to_string());
+
+    let per_path = RealGitOps::new(root);
+    let expected: Vec<Result<bool, String>> =
+        paths.iter().map(|p| per_path.try_is_gitignored(p)).collect();
+    assert!(
+        expected[3].is_err() && expected[2] == Ok(true),
+        "fixture premise: git answers before the rejected path and not at it; got {expected:?}",
+    );
+    assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&paths), expected);
+}
+
+/// Pin that no paths ask nothing.
+#[test]
+fn try_is_gitignored_each_of_no_paths_is_empty() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    gitignore_fixture(root);
+    assert_eq!(RealGitOps::new(root).try_is_gitignored_each(&[]), vec![]);
+}
