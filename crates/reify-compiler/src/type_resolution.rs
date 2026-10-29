@@ -1434,23 +1434,26 @@ pub(crate) fn resolve_argless_enum_annotation(
 }
 
 /// Every type parameter's declared default, or `None` when any parameter has
-/// none. Filled left to right, so a default naming an earlier parameter
-/// (`<A = Length, B = A>`) takes that parameter's filled argument.
+/// none. Filled left to right, so an earlier parameter named anywhere in a
+/// default takes that parameter's filled argument (`<A = Length, B = Option<A>>`
+/// fills `B` as `Option<Length>`).
+///
 /// [`convert_type_params`] resolves defaults without the parameter list in
-/// scope, which leaves such a default as `StructureRef("A")` until #5994
-/// lowers it to `TypeParam("A")`.
+/// scope and drops a default's type arguments, so today the only earlier-param
+/// default that arrives is a whole `StructureRef("A")` (`B = Option<A>` arrives
+/// as `StructureRef("Option")`). #5994 lowers the name to `TypeParam("A")` and
+/// keeps the arguments.
 fn fill_type_param_defaults(type_params: &[reify_ir::TypeParam]) -> Option<Vec<Type>> {
-    let mut filled: HashMap<&str, Type> = HashMap::new();
+    let mut filled: HashMap<String, Type> = HashMap::new();
     type_params
         .iter()
         .map(|tp| {
             let default = tp.default.as_ref()?;
-            let earlier_param_arg = match default {
-                Type::StructureRef(name) => filled.get(name.as_str()),
-                _ => None,
+            let arg = match default {
+                Type::StructureRef(name) if filled.contains_key(name) => filled[name].clone(),
+                _ => substitute_type_params(default, &filled),
             };
-            let arg = earlier_param_arg.unwrap_or(default).clone();
-            filled.insert(&tp.name, arg.clone());
+            filled.insert(tp.name.clone(), arg.clone());
             Some(arg)
         })
         .collect()
@@ -6791,6 +6794,45 @@ mod tests {
             result,
             Type::projection(Type::StructureRef("X".to_string()), "M"),
             "Projection with concrete base must be unchanged by substitution"
+        );
+    }
+
+    /// A default that names an earlier type parameter below its top level
+    /// (`<A = Length, B = Option<A>>`, in the `TypeParam` form #5994 lowers the
+    /// name to) takes that parameter's filled argument at depth.
+    #[test]
+    fn argless_enum_annotation_fills_nested_earlier_param_default() {
+        let defaulted = |name: &str, default: Type| reify_ir::TypeParam {
+            name: name.to_string(),
+            bounds: vec![],
+            default: Some(default),
+        };
+        let type_params = [
+            defaulted("A", Type::length()),
+            defaulted(
+                "B",
+                Type::Option(Box::new(Type::TypeParam("A".to_string()))),
+            ),
+        ];
+        let mut diagnostics = Vec::new();
+        let ty = resolve_argless_enum_annotation(
+            "E",
+            &type_params,
+            &mut diagnostics,
+            reify_core::SourceSpan::new(0, 0),
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a fully defaulted enum must not be an arity error; got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ty,
+            Type::applied(
+                "E",
+                vec![Type::length(), Type::Option(Box::new(Type::length()))]
+            ),
+            "`B = Option<A>` must fill as `Option<Length>`"
         );
     }
 
