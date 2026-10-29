@@ -12,10 +12,6 @@ use reify_kernel_occt::OcctKernel;
 /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
 /// a `[[f64;3];3]` array.  Panics with a descriptive message if the structure does not
 /// match the expected nested-list shape.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
 fn extract_3x3_tensor_entries(value: &Value) -> [[f64; 3]; 3] {
     let rows = match value {
         Value::List(rows) => {

@@ -4100,14 +4100,8 @@ impl WarmStartable for OcctKernel {
 
 #[cfg(all(test, has_occt))]
 impl OcctKernel {
-    /// Store a raw OcctShape and return its GeometryHandleId for testing.
-    fn store_raw(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandleId {
-        self.store_with_repr(shape, BRepKind::Solid).id
-    }
-
-    /// Inject a null `UniquePtr<OcctShape>` into the shapes map for testing.
-    /// This simulates a corrupted shape handle (present in map but wrapping a
-    /// null C++ pointer).
+    /// Inject a null `UniquePtr<OcctShape>` at `id` (present in the map, null pointer). Private,
+    /// unlike the `*_for_test` constructors: no insert path can produce a null `UniquePtr`.
     fn insert_null_shape(&mut self, id: u64) {
         self.shapes.insert(id, cxx::UniquePtr::null());
         if id >= self.next_id {
@@ -4116,17 +4110,18 @@ impl OcctKernel {
     }
 }
 
-/// Test fixture helpers for integration tests in `tests/`. Gated behind the
+/// The crate's one test-fixture API, visible to the integration tests in
+/// `tests/` and to this crate's own `cfg(test)` modules alike. Gated behind the
 /// `test-fixtures` cargo feature so that downstream consumers building
 /// `reify-kernel-occt` in normal mode do not see these methods on
 /// `OcctKernel`'s public API surface.
 ///
-/// Cargo automatically enables `test-fixtures` for this crate's own
-/// integration tests via the self-dev-dep `reify-kernel-occt = { path = ".",
-/// features = ["test-fixtures"] }` in `Cargo.toml`. Workspace siblings (e.g.
-/// `reify-eval`) that depend on this crate via `reify-kernel-occt.workspace
-/// = true` do NOT enable the feature, so the helpers remain hidden from
-/// production builds.
+/// Building any test target of this crate activates the self-dev-dep
+/// `reify-kernel-occt = { path = ".", features = ["test-fixtures", ...] }` in
+/// `Cargo.toml`, and cargo unifies `test-fixtures` into the lib-test build too.
+/// Workspace siblings (e.g. `reify-eval`) that depend on this crate via
+/// `reify-kernel-occt.workspace = true` do NOT enable the feature, so the
+/// helpers remain hidden from production builds.
 ///
 /// Naming: the `_for_test` suffix is retained for self-documentation; the
 /// real isolation comes from the cfg gate above.
@@ -4235,6 +4230,39 @@ impl OcctKernel {
         h.id
     }
 
+    /// Create a circle wire of `radius` at height `z` and store it as a `BRepKind::Wire`.
+    pub fn store_circle_wire_for_test(&mut self, radius: f64, z: f64) -> GeometryHandleId {
+        let shape = ffi::ffi::make_circle_wire(radius, z)
+            .expect("make_circle_wire should succeed in test fixture");
+        self.store_with_repr(shape, BRepKind::Wire).id
+    }
+
+    /// Create an open cylindrical lateral face and store it as a `BRepKind::Face`.
+    pub fn store_cylindrical_face_for_test(
+        &mut self,
+        radius: f64,
+        height: f64,
+    ) -> GeometryHandleId {
+        let shape = ffi::ffi::make_cylindrical_face(radius, height)
+            .expect("make_cylindrical_face should succeed in test fixture");
+        self.store_with_repr(shape, BRepKind::Face).id
+    }
+
+    /// Store the EMPTY `TopoDS_Compound` fixture as a `BRepKind::Compound`.
+    pub fn store_empty_compound_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_empty_compound_for_test()
+            .expect("make_empty_compound_for_test should succeed");
+        self.store_with_repr(shape, BRepKind::Compound).id
+    }
+
+    /// Store a non-null `OcctShape` wrapping null topology; `get_shape` refuses it on
+    /// every read, whatever its kind. Stamped `BRepKind::Solid`, the kind its tests
+    /// always stored it as.
+    pub fn store_null_topology_for_test(&mut self) -> GeometryHandleId {
+        let shape = ffi::ffi::make_null_shape_for_test();
+        self.store_with_repr(shape, BRepKind::Solid).id
+    }
+
     /// Create a `width × height` rectangular face centered at the origin in
     /// the XY plane via the OCCT FFI and store it in the kernel, returning
     /// its `GeometryHandleId` (registered with `BRepKind::Face`).
@@ -4258,10 +4286,8 @@ impl OcctKernel {
     /// Variant of `store_rect_face_for_test` purpose-built for the
     /// `revolve_with_history` integration test: the rect is placed in the
     /// XZ plane (a plane containing the Z-axis), so revolving it about Z
-    /// produces a non-degenerate torus-like solid. Implementation mirrors
-    /// `make_rect_torus_profile` (the test-internal helper used by the
-    /// existing revolve volume tests at lines 4800-4817): create rect in
-    /// XY plane at origin → rotate 90° about X → translate to `(cx, cy, cz)`.
+    /// produces a non-degenerate torus-like solid: create rect in XY plane at
+    /// origin → rotate 90° about X → translate to `(cx, cy, cz)`.
     /// `width` becomes the radial dimension (along X), `height` the axial
     /// dimension (along Z).
     pub fn store_rect_face_at_for_test(
@@ -4492,158 +4518,6 @@ impl OcctKernel {
 mod tests {
     use super::*;
     use crate::floor_constants::RUST_GUARD_MARKER;
-
-    /// Create a circle face of given `radius`, rotate it into the XZ plane, translate
-    /// it `offset_r` along X, and store into `kernel`. Returns a GeometryHandleId
-    /// suitable for revolving around the Z axis to produce a torus.
-    fn make_torus_profile(kernel: &mut OcctKernel, radius: f64, offset_r: f64) -> GeometryHandleId {
-        let face =
-            ffi::ffi::make_circle_face(radius, 0.0).expect("make_circle_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, offset_r, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        kernel.store_raw(translated)
-    }
-
-    /// Create a rect face of given `width` × `height`, rotate it into the XZ plane,
-    /// translate it `offset_r` along X, and store into `kernel`. Returns a
-    /// GeometryHandleId suitable for revolving around the Z axis.
-    fn make_rect_torus_profile(
-        kernel: &mut OcctKernel,
-        width: f64,
-        height: f64,
-        offset_r: f64,
-    ) -> GeometryHandleId {
-        let face = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
-            .expect("make_rect_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, offset_r, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        kernel.store_raw(translated)
-    }
-
-    /// Create the canonical 20×10×5 axis-aligned box used by the InertiaTensor
-    /// density/analytic tests and store it in `kernel`. Returns the handle ID.
-    ///
-    /// Twin: `tests/harness_occt_kernel/support.rs` holds a byte-identical
-    /// copy for the moved tests. Edit both until #8659 moves this module's
-    /// remaining users and deletes this one.
-    fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
-        kernel
-            .execute(&GeometryOp::Box {
-                size_x: Value::Real(20.0),
-                size_y: Value::Real(10.0),
-                size_z: Value::Real(5.0),
-            })
-            .expect("Box creation must succeed")
-            .id
-    }
-
-    /// Store the EMPTY `TopoDS_Compound` fixture and return its handle ID.
-    ///
-    /// The simplest member of the face-less-compound class that reaches
-    /// `compute_volume_arm`'s tessellation fallback; the class boundary and the
-    /// measured values live in the canonical note on the fixture's definition
-    /// in occt_wrapper.cpp. Reached through `store_raw` rather than the
-    /// `test-fixtures`-gated `store_*_for_test` helpers, which only
-    /// `tests/harness_occt/*.rs` can see.
-    fn store_empty_compound(kernel: &mut OcctKernel) -> GeometryHandleId {
-        kernel.store_raw(
-            ffi::ffi::make_empty_compound_for_test()
-                .expect("make_empty_compound_for_test should succeed"),
-        )
-    }
-
-    /// Assert that the volume of the shape at `handle_id` is within `tolerance`
-    /// relative error of `expected`. Panics with a descriptive message including `label`.
-    ///
-    /// Twin: `tests/harness_occt_kernel/primitives_profiles.rs` holds a byte-identical
-    /// copy for the moved tests. Edit both until #8659 moves this module's
-    /// remaining users and deletes this one.
-    fn assert_volume_near(
-        kernel: &mut OcctKernel,
-        handle_id: GeometryHandleId,
-        expected: f64,
-        tolerance: f64,
-        label: &str,
-    ) {
-        let vol = kernel
-            .query(&GeometryQuery::Volume(handle_id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
-        let rel_err = (vol - expected).abs() / expected;
-        assert!(
-            rel_err < tolerance,
-            "{label}: expected volume \u{2248} {expected:.2}, got {vol:.2} (rel_err={rel_err:.4})"
-        );
-    }
-
-    /// Parse a `{"x":_,"y":_,"z":_}` JSON string into `(x, y, z)`.
-    /// Used by `CenterOfMass` query tests to decode the `Value::String` encoding returned
-    /// by `query_centroid`.
-    ///
-    /// Twin: `tests/harness_occt_kernel/support.rs` holds a byte-identical
-    /// copy for the moved tests. Edit both until #8659 moves this module's
-    /// remaining users and deletes this one.
-    fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
-        let parse_field = |field: &str| -> f64 {
-            let needle = format!("\"{field}\":");
-            let start = s
-                .find(needle.as_str())
-                .unwrap_or_else(|| panic!("field {field} not found in centroid JSON: {s:?}"))
-                + needle.len();
-            let rest = &s[start..];
-            let end = rest.find([',', '}']).unwrap_or(rest.len());
-            rest[..end]
-                .trim()
-                .parse::<f64>()
-                .unwrap_or_else(|e| panic!("failed to parse {field} in centroid JSON: {s:?}: {e}"))
-        };
-        (parse_field("x"), parse_field("y"), parse_field("z"))
-    }
-
-    /// Decode the 3-row × 3-col `Value::List` returned by an `InertiaTensor` query into
-    /// a `[[f64;3];3]` array.  Panics with a descriptive message if the structure does not
-    /// match the expected nested-list shape.
-    ///
-    /// Twin: `tests/harness_occt_kernel/mass_properties.rs` holds a byte-identical
-    /// copy for the moved tests. Edit both until #8659 moves this module's
-    /// remaining users and deletes this one.
-    fn extract_3x3_tensor_entries(value: &Value) -> [[f64; 3]; 3] {
-        let rows = match value {
-            Value::List(rows) => {
-                assert_eq!(rows.len(), 3, "expected 3 rows, got {}", rows.len());
-                rows
-            }
-            other => panic!("expected Value::List(rows), got {:?}", other),
-        };
-        let mut entries = [[0.0f64; 3]; 3];
-        for (i, row) in rows.iter().enumerate() {
-            let cols = match row {
-                Value::List(cols) => {
-                    assert_eq!(
-                        cols.len(),
-                        3,
-                        "row {} expected 3 cols, got {}",
-                        i,
-                        cols.len()
-                    );
-                    cols
-                }
-                other => panic!("row {} expected Value::List, got {:?}", i, other),
-            };
-            for (j, col) in cols.iter().enumerate() {
-                entries[i][j] = match col {
-                    Value::Real(v) => *v,
-                    other => panic!("entry [{i}][{j}] expected Value::Real, got {:?}", other),
-                };
-            }
-        }
-        entries
-    }
 
     /// Run one warm-start capture/restore/re-extract cycle, shared by
     /// `warm_state_persisted_shape_count_stays_bounded_across_cycles` and
@@ -5435,7 +5309,7 @@ mod tests {
     /// One handle of each corrupted-but-present kind — IsNull topology and a
     /// null `UniquePtr` — paired with the cause `get_shape` reports for it.
     fn corrupted_handles(kernel: &mut OcctKernel) -> Vec<(GeometryHandleId, String)> {
-        let null_topology = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+        let null_topology = kernel.store_null_topology_for_test();
         let null_pointer = GeometryHandleId(4000);
         kernel.insert_null_shape(null_pointer.0);
         [null_topology, null_pointer]
@@ -5451,76 +5325,19 @@ mod tests {
         }
     }
 
-    /// Structural boundary guard: a NON-null `OcctShape` wrapping null (IsNull)
-    /// topology must be rejected at `get_shape`, and every query path that
-    /// flows through `get_shape` must report that rejection's cause as
-    /// `QueryFailed` — never a hardware SIGSEGV, and never `InvalidHandle`,
-    /// which is reserved for an id the kernel does not hold.
-    ///
-    /// The input is `make_null_shape_for_test()` — a default-constructed
-    /// `OcctShape` whose `.shape` is a null `TopoDS_Shape`. It passes
-    /// `get_shape`'s null-`UniquePtr` check (the pointer is non-null) but
-    /// dereferences to null topology, on which `query_volume`'s `ShapeType()`
-    /// fallback would SIGSEGV were `get_shape` not to refuse it.
-    ///
-    /// MUST run under `cargo nextest run` (process-per-test isolation) so any
-    /// crash is contained as a single failing test, not a suite abort.
-    #[test]
-    fn get_shape_rejects_null_topology_and_queries_return_err() {
-        let mut kernel = OcctKernel::new();
-        let h = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
-        let good_box = make_box_20_10_5(&mut kernel);
-
-        // Structural chokepoint: get_shape refuses null/empty topology loudly.
-        let cause = get_shape_cause(&kernel, h);
-        let low = cause.to_lowercase();
-        assert!(
-            low.contains("null") || low.contains("empty"),
-            "error should mention null/empty topology, got: {cause}"
-        );
-
-        // Every query path routes through get_shape, so each reports its
-        // cause (never SIGSEGV). Volume is the guaranteed crash vector.
-        assert_query_cause(kernel.query(&GeometryQuery::Volume(h)), &cause, "Volume");
-        assert_query_cause(kernel.volume_measurement(h), &cause, "volume_measurement");
-        assert_query_cause(
-            kernel.query(&GeometryQuery::Centroid(h)),
-            &cause,
-            "Centroid",
-        );
-        assert_query_cause(
-            kernel.query(&GeometryQuery::BoundingBox(h)),
-            &cause,
-            "BoundingBox",
-        );
-        assert_query_cause(
-            kernel.query(&GeometryQuery::InertiaTensor {
-                handle: h,
-                density: 1000.0,
-            }),
-            &cause,
-            "InertiaTensor",
-        );
-        assert_query_cause(kernel.extract_faces(h), &cause, "extract_faces");
-        assert_query_cause(
-            kernel.shapes_intersect(h, good_box),
-            &cause,
-            "shapes_intersect",
-        );
-
-        // Contrast: an id the kernel does not hold is the invalid-handle case.
-        match kernel.query(&GeometryQuery::Volume(GeometryHandleId(999))) {
-            Err(QueryError::InvalidHandle(id)) => assert_eq!(id, GeometryHandleId(999)),
-            other => panic!("unknown handle: expected InvalidHandle(999), got {other:?}"),
-        }
-    }
-
     /// Both corrupted-handle kinds report `get_shape`'s cause through the
     /// query entry points, not `InvalidHandle`.
     #[test]
     fn queries_on_a_corrupted_handle_report_the_cause() {
         let mut kernel = OcctKernel::new();
-        let good_box = make_box_20_10_5(&mut kernel);
+        let good_box = kernel
+            .execute(&GeometryOp::Box {
+                size_x: Value::Real(20.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(5.0),
+            })
+            .expect("Box creation must succeed")
+            .id;
         for (h, cause) in corrupted_handles(&mut kernel) {
             assert_query_cause(
                 kernel.query(&GeometryQuery::Volume(h)),
@@ -5760,170 +5577,7 @@ mod tests {
         );
     }
 
-    // --- Loft tests ---
-
-    #[test]
-    fn loft_two_circles_creates_solid() {
-        let mut kernel = OcctKernel::new();
-        // Create two circle wire profiles at different heights using the FFI helper.
-        // make_circle_wire creates a TopoDS_Wire circle profile.
-        let wire1 = ffi::ffi::make_circle_wire(10.0, 0.0)
-            .expect("make_circle_wire should work for profile 1");
-        let id1 = kernel.store_raw(wire1);
-
-        let wire2 = ffi::ffi::make_circle_wire(5.0, 30.0)
-            .expect("make_circle_wire should work for profile 2");
-        let id2 = kernel.store_raw(wire2);
-
-        // Loft through both profiles
-        let loft_h = kernel
-            .execute(&GeometryOp::Loft {
-                profiles: vec![id1, id2],
-            })
-            .unwrap();
-
-        // Query volume - should be positive (a cone-like solid)
-        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!(
-                    v > 100.0,
-                    "loft volume should be positive and significant, got {v}"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn loft_one_profile_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
-        let id1 = kernel.store_raw(w1);
-
-        let result = kernel.execute(&GeometryOp::Loft {
-            profiles: vec![id1],
-        });
-        assert!(result.is_err(), "loft with 1 profile should fail");
-        let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(
-            err_msg.contains("at least 2"),
-            "error should mention 'at least 2', got: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn loft_two_different_circles_cone_like() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
-        let id1 = kernel.store_raw(w1);
-        let w2 = ffi::ffi::make_circle_wire(2.0, 20.0).expect("wire2");
-        let id2 = kernel.store_raw(w2);
-
-        let loft_h = kernel
-            .execute(&GeometryOp::Loft {
-                profiles: vec![id1, id2],
-            })
-            .unwrap();
-
-        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
-        match vol {
-            Value::Real(v) => {
-                // Should be between small cylinder (pi*4*20 ~= 251) and
-                // large cylinder (pi*100*20 ~= 6283): a cone-like frustum
-                assert!(
-                    v > 251.0 && v < 6283.0,
-                    "cone-like frustum volume should be between 251 and 6283, got {v}"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn loft_four_circles_creates_solid() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        // Create 4 circle wire profiles at different heights with decreasing radii
-        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
-        let id1 = kernel.store_raw(w1);
-        let w2 = ffi::ffi::make_circle_wire(8.0, 10.0).expect("wire2");
-        let id2 = kernel.store_raw(w2);
-        let w3 = ffi::ffi::make_circle_wire(6.0, 20.0).expect("wire3");
-        let id3 = kernel.store_raw(w3);
-        let w4 = ffi::ffi::make_circle_wire(4.0, 30.0).expect("wire4");
-        let id4 = kernel.store_raw(w4);
-
-        // Loft through all 4 profiles
-        let loft_h = kernel
-            .execute(&GeometryOp::Loft {
-                profiles: vec![id1, id2, id3, id4],
-            })
-            .unwrap();
-
-        // Query volume — should fall between the smallest-enclosing cylinder
-        // (π·r_min²·h_total = π·16·30 ≈ 1508) and the largest-enclosing
-        // cylinder (π·r_max²·h_total = π·100·30 ≈ 9425). Expected OCCT result
-        // for this four-circle frustum stack is ≈ 4900, comfortably inside.
-        // Pattern mirrors loft_two_different_circles_cone_like (task-383 S4c).
-        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!(
-                    v > 1508.0 && v < 9425.0,
-                    "loft frustum volume should be between 1508 (smallest cylinder) \
-                     and 9425 (largest cylinder), got {v}"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
     // --- Thicken / Shell tests ---
-
-    /// RED until step-4 adds make_cylindrical_face FFI and wires curved handling.
-    /// PRD G6 smoke bar: zone_slab on a curved (cylindrical) face must not fail
-    /// and must return a solid with volume > 0.
-    #[test]
-    fn zone_slab_curved_face_smoke() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        // Build an open cylindrical lateral face: radius=0.050 m, height=0.030 m
-        let face_h = ffi::ffi::make_cylindrical_face(0.050, 0.030)
-            .map_err(|e| GeometryError::OperationFailed(e.to_string()))
-            .unwrap();
-        let face_id = kernel.store_with_repr(face_h, crate::BRepKind::Face).id;
-        let w = 0.002_f64; // 2 mm zone width
-        let slab_h = kernel
-            .execute(&GeometryOp::ZoneSlab {
-                target: face_id,
-                width: Value::Real(w),
-            })
-            .expect("zone_slab on curved face must not fail (PRD G6)");
-        let vol = kernel
-            .query(&GeometryQuery::Volume(slab_h.id))
-            .expect("Volume query on slab must succeed");
-        match vol {
-            Value::Real(v) => {
-                assert!(v > 0.0, "zone_slab on curved face must have volume > 0, got {v}");
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
 
     #[test]
     fn offset_solid_shape_ffi_contract() {
@@ -6054,64 +5708,6 @@ mod tests {
         assert!(!on_surface.is_null(), "on-surface offset should be non-null");
     }
 
-    // --- Integration tests ---
-
-    #[test]
-    fn new_ops_tessellate() {
-        let mut kernel = OcctKernel::new();
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                size_x: Value::Real(10.0),
-                size_y: Value::Real(10.0),
-                size_z: Value::Real(10.0),
-            })
-            .unwrap();
-        let translated = kernel
-            .execute(&GeometryOp::Translate {
-                target: box_h.id,
-                dx: 15.0,
-                dy: 0.0,
-                dz: 0.0,
-            })
-            .unwrap();
-        let mirrored = kernel
-            .execute(&GeometryOp::Mirror {
-                target: translated.id,
-                plane_origin: [0.0, 0.0, 0.0],
-                plane_normal: [1.0, 0.0, 0.0],
-            })
-            .unwrap();
-        let mesh = kernel.tessellate(mirrored.id, 0.1).unwrap();
-        assert!(
-            !mesh.vertices.is_empty(),
-            "mirrored tessellation should have vertices"
-        );
-        assert!(
-            mesh.indices.len().is_multiple_of(3),
-            "indices should be divisible by 3"
-        );
-
-        // Loft
-        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).unwrap();
-        let id1 = kernel.store_raw(w1);
-        let w2 = ffi::ffi::make_circle_wire(5.0, 20.0).unwrap();
-        let id2 = kernel.store_raw(w2);
-        let loft = kernel
-            .execute(&GeometryOp::Loft {
-                profiles: vec![id1, id2],
-            })
-            .unwrap();
-        let loft_mesh = kernel.tessellate(loft.id, 0.1).unwrap();
-        assert!(
-            !loft_mesh.vertices.is_empty(),
-            "loft tessellation should have vertices"
-        );
-        assert!(
-            loft_mesh.indices.len().is_multiple_of(3),
-            "loft indices divisible by 3"
-        );
-    }
-
     // --- Mirror tests ---
 
     #[test]
@@ -6172,84 +5768,6 @@ mod tests {
         let prism_neg =
             ffi::ffi::make_prism(&face2, 0.0, 0.0, -10.0).expect("make_prism -Z should succeed");
         let vol_neg = ffi::ffi::query_volume(&prism_neg).expect("query_volume -Z should work");
-
-        let rel_diff = (vol_pos - vol_neg).abs() / vol_pos;
-        assert!(
-            rel_diff < 0.01,
-            "positive and negative extrude should have same volume, got pos={:.2} neg={:.2}",
-            vol_pos,
-            vol_neg
-        );
-    }
-
-    // --- Extrude kernel-path volume tests (task-308 step-14) ---
-    // These exercise the full OcctKernel::execute() + query() path using
-    // store_raw to inject FFI-created circle faces as kernel handles.
-
-    #[test]
-    fn extrude_circle_face_through_kernel() {
-        // Store a circle face (radius=5) via store_raw, then extrude via execute().
-        // Expected volume: π * r² * h = π * 25 * 10 = 785.4
-        let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let face_id = kernel.store_raw(face);
-
-        let result = kernel
-            .execute(&GeometryOp::Extrude {
-                profile: face_id,
-                distance: Value::Real(10.0),
-            })
-            .expect("Extrude through kernel should succeed");
-
-        let vol = kernel
-            .query(&GeometryQuery::Volume(result.id))
-            .expect("Volume query should succeed");
-        let vol_f64 = vol.as_f64().expect("Volume should be numeric");
-        let expected = std::f64::consts::PI * 25.0 * 10.0;
-        let rel_err = (vol_f64 - expected).abs() / expected;
-        assert!(
-            rel_err < 0.01,
-            "expected extrude circle volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
-            expected,
-            vol_f64,
-            rel_err
-        );
-    }
-
-    #[test]
-    fn extrude_negative_distance_through_kernel() {
-        // Negative distance should produce same volume as positive.
-        let mut kernel = OcctKernel::new();
-
-        let face_pos =
-            ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let face_pos_id = kernel.store_raw(face_pos);
-        let result_pos = kernel
-            .execute(&GeometryOp::Extrude {
-                profile: face_pos_id,
-                distance: Value::Real(10.0),
-            })
-            .expect("Extrude +Z through kernel should succeed");
-        let vol_pos = kernel
-            .query(&GeometryQuery::Volume(result_pos.id))
-            .expect("Volume query +Z should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
-
-        let face_neg = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed for negative test");
-        let face_neg_id = kernel.store_raw(face_neg);
-        let result_neg = kernel
-            .execute(&GeometryOp::Extrude {
-                profile: face_neg_id,
-                distance: Value::Real(-10.0),
-            })
-            .expect("Extrude -Z through kernel should succeed");
-        let vol_neg = kernel
-            .query(&GeometryQuery::Volume(result_neg.id))
-            .expect("Volume query -Z should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
 
         let rel_diff = (vol_pos - vol_neg).abs() / vol_pos;
         assert!(
@@ -6325,120 +5843,7 @@ mod tests {
 
     // --- Revolve kernel error tests (task-309 step-5) ---
 
-    // --- Revolve kernel volume tests (task-309 step-7) ---
-
-    #[test]
-    fn revolve_circle_face_full_volume() {
-        // Pappus' theorem: V = 2πR × A where R = centroid-to-axis distance, A = profile area.
-        // Circle face r=5 at offset R=20, revolve around Z axis by 2π → torus volume = 2π²Rr²
-        let mut kernel = OcctKernel::new();
-        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
-
-        let result = kernel
-            .execute(&GeometryOp::Revolve {
-                profile: face_id,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                angle_rad: std::f64::consts::TAU,
-            })
-            .expect("Revolve full should succeed");
-        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
-        assert_volume_near(&mut kernel, result.id, expected, 0.02, "circle torus full");
-    }
-
-    #[test]
-    fn revolve_half_angle_half_volume() {
-        // Same setup as full volume but angle=π → half torus should be ~50% of full.
-        let mut kernel = OcctKernel::new();
-        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
-
-        let full = kernel
-            .execute(&GeometryOp::Revolve {
-                profile: face_id,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                angle_rad: std::f64::consts::TAU,
-            })
-            .expect("Revolve full should succeed");
-        let vol_full = kernel
-            .query(&GeometryQuery::Volume(full.id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
-
-        // Create another face for half revolution
-        let face2_id = make_torus_profile(&mut kernel, 5.0, 20.0);
-
-        let half = kernel
-            .execute(&GeometryOp::Revolve {
-                profile: face2_id,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                angle_rad: std::f64::consts::PI,
-            })
-            .expect("Revolve half should succeed");
-        let vol_half = kernel
-            .query(&GeometryQuery::Volume(half.id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
-
-        let ratio = vol_half / vol_full;
-        assert!(
-            (ratio - 0.5).abs() < 0.02,
-            "half-angle volume should be ~50% of full, got ratio {:.4} (full={:.2}, half={:.2})",
-            ratio,
-            vol_full,
-            vol_half
-        );
-    }
-
     // --- Sweep tests ---
-
-    #[test]
-    fn sweep_solid_path_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        // Create a box solid as (invalid) path
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                size_x: Value::Real(10.0),
-                size_y: Value::Real(10.0),
-                size_z: Value::Real(10.0),
-            })
-            .unwrap();
-        // Create a circle face as profile
-        let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
-        let profile_id = kernel.store_raw(face);
-
-        let result = kernel.execute(&GeometryOp::Sweep {
-            profile: profile_id,
-            path: box_h.id,
-        });
-        assert!(result.is_err(), "sweep with a solid as path should fail");
-    }
-
-    #[test]
-    fn revolve_rect_face_torus_volume() {
-        // Rect face w=4, h=2, centered at (10, 0, 0) in XZ plane.
-        // Pappus: V = 2π × R × A = 2π × 10 × (4×2) = 160π ≈ 502.65
-        let mut kernel = OcctKernel::new();
-        let face_id = make_rect_torus_profile(&mut kernel, 4.0, 2.0, 10.0);
-
-        let result = kernel
-            .execute(&GeometryOp::Revolve {
-                profile: face_id,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                angle_rad: std::f64::consts::TAU,
-            })
-            .expect("Revolve rect should succeed");
-        let expected = 2.0 * std::f64::consts::PI * 10.0 * (4.0 * 2.0); // 2πR×A = 160π
-        assert_volume_near(&mut kernel, result.id, expected, 0.02, "rect torus full");
-    }
 
     #[test]
     fn revolve_result_is_solid_not_shell() {
@@ -6488,94 +5893,6 @@ mod tests {
             vol,
             rel_err
         );
-    }
-
-    // --- Revolve positive boundary tests (task-574) ---
-
-    #[test]
-    fn revolve_just_above_axis_threshold_accepted() {
-        // axis_dir=[0, 0, 1e-3] has mag_sq=1e-6, well above AXIS_MAG_SQ_MIN=1e-12.
-        // Uses Z-direction so the torus profile (offset 20 along X) doesn't
-        // intersect the revolve axis.
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
-
-        let result = kernel.execute(&GeometryOp::Revolve {
-            profile: face_id,
-            axis_origin: [0.0, 0.0, 0.0],
-            axis_dir: [0.0, 0.0, 1e-3],
-            angle_rad: std::f64::consts::TAU,
-        });
-        assert!(
-            result.is_ok(),
-            "axis mag_sq=1e-6 (above AXIS_MAG_SQ_MIN=1e-12) should be accepted, got {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
-    fn revolve_just_above_angle_threshold_accepted() {
-        // angle_rad=1e-6 is far above ANGLE_ABS_MIN=1e-30 and also above
-        // OCCT's internal Precision::Angular()≈1e-12, so both the Rust
-        // validation and the OCCT operation succeed.
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
-
-        let result = kernel.execute(&GeometryOp::Revolve {
-            profile: face_id,
-            axis_origin: [0.0, 0.0, 0.0],
-            axis_dir: [0.0, 0.0, 1.0],
-            angle_rad: 1e-6,
-        });
-        assert!(
-            result.is_ok(),
-            "angle 1e-6 (above ANGLE_ABS_MIN=1e-30) should be accepted, got {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
-    fn sweep_circle_along_line_creates_pipe() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        // Circle face profile: r=2.0 at z=0
-        let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
-        let profile_id = kernel.store_raw(face);
-        // Line wire path: (0,0,0) to (0,0,10)
-        let wire = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 0.0, 0.0, 10.0).expect("line wire");
-        let path_id = kernel.store_raw(wire);
-
-        let pipe_h = kernel
-            .execute(&GeometryOp::Sweep {
-                profile: profile_id,
-                path: path_id,
-            })
-            .unwrap();
-
-        // Volume should be approximately pi*r^2*h = pi*4*10 ≈ 125.66
-        let vol = kernel.query(&GeometryQuery::Volume(pipe_h.id)).unwrap();
-        match vol {
-            Value::Real(v) => {
-                let expected = std::f64::consts::PI * 4.0 * 10.0;
-                let rel_err = (v - expected).abs() / expected;
-                assert!(
-                    rel_err < 0.05,
-                    "pipe volume should be ≈ {expected:.2}, got {v:.2} (rel_err={rel_err:.4})"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
     }
 
     // --- Torus tests (task-4157) ---
@@ -7155,258 +6472,6 @@ mod tests {
         }
     }
 
-    // --- Volume-measurement provenance (task 6568) ---
-
-    /// Real solids report the exact integral, never the tessellation fallback.
-    ///
-    /// `query_volume`'s original in-code comment blamed "parametric surfaces
-    /// (e.g. revolution surfaces)" for integrating to 0 — the fallback's stated
-    /// reason to exist. On OCCT 7.8 that was stale, so this task deleted it and
-    /// this test is what keeps it deleted: the revolve case below is precisely
-    /// that shape class, it is the load-bearing one here, and it must report
-    /// `tessellation_fallback == false`.
-    ///
-    /// TOLERANCE BASES (do not retune): 1e-9 is what the gate-passing
-    /// `torus_execute_volume` uses for an analytic primitive (its comment in
-    /// `crates/reify-kernel-occt/tests/harness_occt_kernel/primitives_profiles.rs`
-    /// records a measured rel_err of ~1.8e-16); the box's 20·10·5
-    /// product is additionally exact in binary f64. 2e-2 is copied verbatim
-    /// from the gate-passing `revolve_circle_face_full_volume`, which builds
-    /// this identical revolved torus.
-    ///
-    /// The `m.volume == query(Volume)` assertion is EXACT f64 equality on
-    /// purpose: both entry points must come from the one arm-selection site,
-    /// and OCCT's integration is deterministic.
-    #[test]
-    fn volume_measurement_reports_exact_for_real_solids() {
-        if !crate::OCCT_AVAILABLE {
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-
-        let box_id = make_box_20_10_5(&mut kernel);
-        let cylinder_id = kernel
-            .execute(&GeometryOp::Cylinder {
-                radius: Value::Real(10.0),
-                height: Value::Real(20.0),
-            })
-            .expect("Cylinder creation must succeed")
-            .id;
-        let profile_id = make_torus_profile(&mut kernel, 5.0, 20.0);
-        let revolved_id = kernel
-            .execute(&GeometryOp::Revolve {
-                profile: profile_id,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                angle_rad: std::f64::consts::TAU,
-            })
-            .expect("Revolve full should succeed")
-            .id;
-
-        for (label, id, expected, tolerance) in [
-            ("box 20×10×5", box_id, 1000.0f64, 1e-9f64),
-            (
-                "cylinder r10 h20",
-                cylinder_id,
-                std::f64::consts::PI * 100.0 * 20.0,
-                1e-9f64,
-            ),
-            (
-                "revolved circle face (revolution surface)",
-                revolved_id,
-                2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0,
-                2e-2f64,
-            ),
-        ] {
-            let m = kernel
-                .volume_measurement(id)
-                .unwrap_or_else(|e| panic!("{label}: volume_measurement must succeed: {e:?}"));
-
-            assert!(
-                !m.tessellation_fallback,
-                "{label}: OCCT's exact volume integral returns non-zero mass here, \
-                 so the tessellation fallback must not fire (got {m:?})"
-            );
-            let rel_err = (m.volume - expected).abs() / expected;
-            assert!(
-                rel_err < tolerance,
-                "{label}: volume expected ≈{expected}, got {} (relative error {rel_err:.3e})",
-                m.volume
-            );
-
-            let via_query = kernel
-                .query(&GeometryQuery::Volume(id))
-                .expect("Volume query must succeed")
-                .as_f64()
-                .expect("Volume must be numeric");
-            assert_eq!(
-                m.volume, via_query,
-                "{label}: volume_measurement().volume must equal GeometryQuery::Volume \
-                 exactly — both must come from the one arm-selection site"
-            );
-        }
-    }
-
-    /// The simplest shape that takes the fallback, and the parity contract for
-    /// the rest of the mass-property family.
-    ///
-    /// It is not the only one: any face-less compound reaches the same arm (see
-    /// the canonical note on `make_empty_compound_for_test` in
-    /// occt_wrapper.cpp). The empty compound is chosen because it is the
-    /// cheapest member to build, and every member answers identically — both
-    /// arms sum zero faces.
-    ///
-    /// CONTRACT: `tessellation_fallback == true` is the caller's signal that
-    /// every other mass-property answer for this shape is a default, not a
-    /// measurement.
-    ///
-    /// `query_centroid`, `query_moment_of_inertia` and `query_inertia_tensor`
-    /// have no fallback arm, so for a zero-mass shape they return the
-    /// degenerate origin / 0 / all-zero tensor rather than failing. This task
-    /// ACCEPTS that asymmetry and makes it discriminable instead of removing
-    /// it, so those degenerate values are pinned here: a future change must not
-    /// silently turn them into errors, nor into plausible-looking non-zero
-    /// noise.
-    ///
-    /// Every bound is exact f64 equality: an empty compound has no faces, so
-    /// the exact integral and `mesh_based_volume` both sum nothing, and OCCT's
-    /// centre-of-mass and inertia matrix for zero mass are exact zeros.
-    #[test]
-    fn volume_measurement_reports_fallback_and_family_degrades_for_empty_compound() {
-        if !crate::OCCT_AVAILABLE {
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        let id = store_empty_compound(&mut kernel);
-
-        let m = kernel
-            .volume_measurement(id)
-            .expect("volume_measurement must succeed for an empty compound");
-        assert!(
-            m.tessellation_fallback,
-            "an empty compound integrates to bitwise 0.0 with ShapeType COMPOUND (0) \
-             <= TopAbs_SOLID (2), so the tessellation fallback must fire (got {m:?})"
-        );
-        assert_eq!(
-            m.volume, 0.0,
-            "an empty compound has no faces, so the tessellation arm sums nothing"
-        );
-
-        let via_query = kernel
-            .query(&GeometryQuery::Volume(id))
-            .expect("Volume query must succeed")
-            .as_f64()
-            .expect("Volume must be numeric");
-        assert_eq!(
-            m.volume, via_query,
-            "volume_measurement().volume must equal GeometryQuery::Volume exactly — \
-             both must come from the one arm-selection site"
-        );
-
-        // The rest of the family still answers, degenerately rather than erroring.
-        for (label, query) in [
-            ("Centroid", GeometryQuery::Centroid(id)),
-            (
-                "CenterOfMass",
-                GeometryQuery::CenterOfMass {
-                    handle: id,
-                    density: 1000.0,
-                },
-            ),
-        ] {
-            let value = kernel
-                .query(&query)
-                .unwrap_or_else(|e| panic!("{label} query must succeed: {e:?}"));
-            let point = match &value {
-                Value::String(s) => parse_centroid_json(s),
-                other => panic!("{label} must return a centroid JSON string, got {other:?}"),
-            };
-            assert_eq!(
-                point,
-                (0.0, 0.0, 0.0),
-                "{label}: zero mass yields the origin default, not a measurement"
-            );
-        }
-
-        let tensor = kernel
-            .query(&GeometryQuery::InertiaTensor {
-                handle: id,
-                density: 1000.0,
-            })
-            .expect("InertiaTensor query must succeed");
-        let entries = extract_3x3_tensor_entries(&tensor);
-        for (i, row) in entries.iter().enumerate() {
-            for (j, entry) in row.iter().enumerate() {
-                assert_eq!(
-                    *entry, 0.0,
-                    "InertiaTensor[{i}][{j}]: zero mass yields the all-zero default, \
-                     not a measurement"
-                );
-            }
-        }
-
-        let moi = kernel
-            .query(&GeometryQuery::MomentOfInertia {
-                handle: id,
-                axis: [0.0, 0.0, 1.0],
-            })
-            .expect("MomentOfInertia query must succeed")
-            .as_f64()
-            .expect("MomentOfInertia must be numeric");
-        assert_eq!(
-            moi, 0.0,
-            "MomentOfInertia: zero mass yields the 0 default, not a measurement"
-        );
-    }
-
-    /// The fallback guard is bitwise `vol == 0.0`, not a near-zero tolerance.
-    ///
-    /// `make_nonmanifold_compound_for_test` is a COMPOUND (ShapeType 0, so it
-    /// passes the `<= TopAbs_SOLID` half of the guard) whose three
-    /// coplanar-with-origin faces integrate to pure FP noise. It is therefore
-    /// exactly the input a tolerance-based guard (`std::abs(vol) < eps`) would
-    /// mis-classify as "no volume" and hand to the tessellation arm, and this
-    /// test is what stops that substitution passing.
-    ///
-    /// BOUND BASIS: b96716462a records this fixture measuring
-    /// -6.6174449004242214e-24, deterministic over three runs — twelve orders
-    /// of magnitude inside the 1e-12 bound asserted here. The magnitude is
-    /// deliberately NOT pinned: only the non-zero-and-tiny window is, so the
-    /// test tracks the guard's precision rather than one OCCT build's FP noise.
-    #[test]
-    fn volume_measurement_fallback_guard_is_bitwise_not_tolerance() {
-        if !crate::OCCT_AVAILABLE {
-            return;
-        }
-        let mut kernel = OcctKernel::new();
-        let id = kernel.store_raw(
-            ffi::ffi::make_nonmanifold_compound_for_test()
-                .expect("make_nonmanifold_compound_for_test should succeed"),
-        );
-
-        let m = kernel
-            .volume_measurement(id)
-            .expect("volume_measurement must succeed for a non-manifold compound");
-        assert!(
-            !m.tessellation_fallback,
-            "the exact integral produced a non-zero number, so the fallback must not \
-             fire — a tolerance-based guard would wrongly fire here (got {m:?})"
-        );
-        assert_ne!(
-            m.volume, 0.0,
-            "this fixture no longer discriminates bitwise-vs-tolerance on this OCCT \
-             build: its origin-coplanar faces summed to exact zero instead of FP \
-             noise, which is a property of OCCT's summation order, not of reify. \
-             REPAIR by finding a shape whose exact integral is tiny-but-nonzero; do \
-             NOT relax or delete this assertion — that silently unpins the guard."
-        );
-        assert!(
-            m.volume.abs() < 1e-12,
-            "that noise must stay negligible; got {}",
-            m.volume
-        );
-    }
-
     /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
     /// `Precision::Confusion()` value at runtime.
     ///
@@ -7896,9 +6961,8 @@ mod tests {
     // through the real OCCT path. The tripwire is a DETECTOR, never a gate.
     //
     // Every kernel here is built with `OcctKernel::new()` on the TEST THREAD
-    // (as `make_box_20_10_5` already does) rather than through
-    // `OcctKernelHandle`, whose worker thread would not see the thread-local
-    // arm.
+    // rather than through `OcctKernelHandle`, whose worker thread would not
+    // see the thread-local arm.
 
     /// The §2/D3 probe case, made attributable.
     ///

@@ -8,10 +8,6 @@ use reify_kernel_occt::OcctKernel;
 
 /// Create the canonical 20×10×5 axis-aligned box used by the InertiaTensor
 /// density/analytic tests and store it in `kernel`. Returns the handle ID.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
 pub(crate) fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
@@ -52,10 +48,6 @@ pub(crate) fn circle_torus_profile(
 
 /// Assert that the volume of the shape at `handle_id` is within `tolerance`
 /// relative error of `expected`. Panics with a descriptive message including `label`.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
 pub(crate) fn assert_volume_near(
     kernel: &mut OcctKernel,
     handle_id: GeometryHandleId,
@@ -100,10 +92,6 @@ pub(crate) fn assert_operation_fails_with(
 /// Parse a `{"x":_,"y":_,"z":_}` JSON string into `(x, y, z)`.
 /// Used by `CenterOfMass` query tests to decode the `Value::String` encoding returned
 /// by `query_centroid`.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
 pub(crate) fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
     let parse_field = |field: &str| -> f64 {
         let needle = format!("\"{field}\":");
