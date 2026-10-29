@@ -1000,9 +1000,6 @@ structure def GcodeWaypoint {
 // Its waypoints are move TARGETS: the start position is the running position
 // carried over from the previous segment and is not re-recorded. Deliberately
 // NOT a `Profile` refinement: it has no time parameterisation.
-// No defaults and no constraint on either type: the marshaller never emits an
-// empty segment, and a ctor constraint would not fire on a registry-free
-// minted value.
 structure def GcodeMotionSegment {
     param waypoints : List<GcodeWaypoint>
 }

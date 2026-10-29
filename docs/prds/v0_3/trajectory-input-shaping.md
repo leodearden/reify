@@ -474,10 +474,11 @@ structure def GcodeMotionSegment {
 fn gcode_import(source: String, dialect: GcodeDialect) -> List<GcodeMotionSegment>
 ```
 
-The output is a `List<MotionProfile>` because a real G-code file is a
+The output is a `List<MotionProfile>` (amended #7327:
+`List<GcodeMotionSegment>`, see below) because a real G-code file is a
 sequence of moves potentially interleaved with non-motion commands
 (temperature, fan, extruder); each contiguous motion segment becomes
-one MotionProfile.
+one MotionProfile (amended #7327: one `GcodeMotionSegment`).
 
 **Amended 2026-10, task #7327.** The implementation had mapped
 `List<MotionProfile>` to `List<Profile>` while returning an untyped
@@ -725,9 +726,8 @@ early-acceptance milestone.
   - Observable signal: compile test; runtime values produced.
   - Prereqs: α.
 
-- **ο — `gcode_import(source, dialect) -> List<MotionProfile>`
-  stdlib fn + eval dispatch.** (Amended #7327: returns
-  `List<GcodeMotionSegment>`, §7.2.)
+- **ο — `gcode_import(source, dialect) -> List<MotionProfile>` (amended
+  #7327: `List<GcodeMotionSegment>`, §7.2) stdlib fn + eval dispatch.**
   - Crates: `reify-stdlib/src/trajectory/gcode_import.rs` (NEW),
     `reify-eval/src/trajectory_ops.rs` (extend); bridge between
     `reify-gcode` AST and `MotionProfile`.
