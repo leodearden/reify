@@ -11777,6 +11777,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: mcp__fused-memory__resolve_ticket timed out twice (turns 1739 and 4189) with different ticket IDs and different project roots, both at timeout_seconds=110. This matches the repeated resolve_ticket timeouts that were retried with new ticket IDs instead of diagnosing a systemic failure.
+  - date: '2026-10-28'
+    project: reify
+    session: 007451cd-2102-47d7-a813-e4fe0d5e935c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Same failure family: fused-memory resolve_ticket times out repeatedly and is retried without diagnosing the failure (turns 90 and 97). It differs from the entry, which describes varying ticket IDs; this digest reuses the same ticket ID and only adds a timeout_seconds parameter. The session has no phase evidence, so phases are unknown.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260906-9
