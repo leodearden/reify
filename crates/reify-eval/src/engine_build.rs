@@ -417,12 +417,11 @@ struct RealizationOpsInput<'a> {
     // `resolve_selector_to_list`. `None` (the default) means "no snapshot" and
     // is fail-OPEN — an absent repr skips the gate and falls through to the
     // generic-error path, exactly as the tessellate-path hydration call site
-    // already does (`tessellate_from_values`' `realized_reprs_tess`). The
-    // `build` surface (`build_with_geometry_output`) overrides it with the same
-    // `realized_reprs_snapshot` it already threads into
+    // already does (`tessellate_from_values`' `realized_reprs_tess`). The two
+    // build surfaces (`build_with_geometry_output`, `build_snapshot`) override
+    // it with the same `realized_reprs_snapshot` they thread into
     // `hydrate_value_cell_in_loop`, so a cell-hydrated selector and an
-    // inline-argument selector are gated identically there. `build_snapshot`
-    // runs no `HydrateCell` walk at all, so it keeps the fail-open default.
+    // inline-argument selector are gated identically there.
     realized_reprs: Option<&'a HashMap<RealizationNodeId, ReprKind>>,
 }
 
@@ -606,6 +605,71 @@ enum BuildStep {
     /// Hydrate the named value cell at its scheduled slot (selector / geometry
     /// query) so a later realization in the schedule sees its resolved value.
     HydrateCell(reify_core::ValueCellId),
+}
+
+/// Order one template's realizations and value cells for the build walk.
+///
+/// With a UnifiedDag `schedule`, the order is `run_unified_pass`'s global Kahn
+/// order filtered to THIS template's nodes, so a curated selector cell is
+/// hydrated before the realization that consumes it. Any realization the
+/// schedule does not cover (residue downstream of a cycle, a node with no trace
+/// entry) is then appended in declaration order, so every realization still runs
+/// exactly once. `demanded_rids` guards that fallback (β, task 4738): on the
+/// selective path a hidden body's realization is deliberately absent from the
+/// schedule, and re-adding it would execute it and defeat the kernel-time
+/// saving; `None` (full scope) appends all.
+///
+/// Without a schedule (LegacyMultiPass) the walk is declaration order with no
+/// `HydrateCell` steps.
+fn template_build_steps(
+    template: &reify_compiler::TopologyTemplate,
+    schedule: Option<&[NodeId]>,
+    demanded_rids: Option<&HashSet<&RealizationNodeId>>,
+) -> Vec<BuildStep> {
+    let Some(schedule) = schedule else {
+        return (0..template.realizations.len())
+            .map(BuildStep::Realize)
+            .collect();
+    };
+    let mut steps: Vec<BuildStep> = Vec::new();
+    let mut realized: HashSet<usize> = HashSet::new();
+    for node in schedule {
+        match node {
+            NodeId::Realization(rid) if rid.entity == template.name => {
+                if let Some(r_idx) = template.realizations.iter().position(|r| r.id == *rid) {
+                    steps.push(BuildStep::Realize(r_idx));
+                    realized.insert(r_idx);
+                }
+            }
+            NodeId::Value(vid) if vid.entity == template.name => {
+                steps.push(BuildStep::HydrateCell(vid.clone()));
+            }
+            _ => {}
+        }
+    }
+    for (r_idx, realization) in template.realizations.iter().enumerate() {
+        if !realized.contains(&r_idx)
+            && demanded_rids.is_none_or(|rids| rids.contains(&realization.id))
+        {
+            steps.push(BuildStep::Realize(r_idx));
+        }
+    }
+    steps
+}
+
+/// Everything [`Engine::hydrate_value_cell_in_loop`] reads to resolve one value
+/// cell of `template` at its `HydrateCell` step; each build walk fills it from
+/// its own sources.
+struct CellHydrationInputs<'a> {
+    template: &'a reify_compiler::TopologyTemplate,
+    named_steps: &'a HashMap<String, KernelHandle>,
+    /// The kernel the ladder runs on, looked up in the walk's kernel map.
+    kernel_name: &'a str,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+    table: &'a TopologyAttributeTable,
+    realization_read_cells: &'a HashSet<reify_core::ValueCellId>,
+    realized_reprs: &'a HashMap<RealizationNodeId, ReprKind>,
 }
 
 /// Task 3441 / 3814: seed compound-key entries `<sub>.<member> → handle` from
@@ -3581,6 +3645,28 @@ impl Engine {
         self.mark_demand_pruned_pending();
         let state = self.eval_state.as_ref()?;
 
+        // Under UnifiedDag, walk the FULL `run_unified_pass` schedule so a
+        // curated selector cell is hydrated before the realization consuming it,
+        // as build() does. Not demand-scoped: build_snapshot realizes every
+        // realization. The pass's E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics
+        // are forwarded below, as build() forwards them: a snapshot need not
+        // follow a build(), and a cycle's residue realizations still run here
+        // in declaration order.
+        let unified_pass = match self.build_scheduler {
+            crate::engine_fixpoint::BuildScheduler::UnifiedDag => Some(
+                crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map),
+            ),
+            crate::engine_fixpoint::BuildScheduler::LegacyMultiPass => None,
+        };
+        let (unified_schedule, unified_pass_diagnostics) = match unified_pass {
+            Some(pass) => (Some(pass.schedule), pass.diagnostics),
+            None => (None, Vec::new()),
+        };
+        let realization_read_cells = match unified_schedule {
+            Some(_) => self.realization_read_cells(),
+            None => HashSet::new(),
+        };
+
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
         for (id, (val, _det)) in state.snapshot.values.iter() {
@@ -3590,6 +3676,7 @@ impl Engine {
         // Check constraints (guard-aware)
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
+        diagnostics.extend(unified_pass_diagnostics);
 
         // Task 2874: emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
@@ -3742,7 +3829,32 @@ impl Engine {
                     &mut diagnostics,
                     &module.templates,
                 );
-                for (r_idx, realization) in template.realizations.iter().enumerate() {
+                let build_steps = template_build_steps(template, unified_schedule.as_deref(), None);
+                let realized_reprs_for_hydration =
+                    Engine::realized_reprs_snapshot(&self.eval_state);
+                for build_step in &build_steps {
+                    let (r_idx, realization) = match build_step {
+                        BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
+                        BuildStep::HydrateCell(cell_id) => {
+                            Engine::hydrate_value_cell_in_loop(
+                                cell_id,
+                                &CellHydrationInputs {
+                                    template,
+                                    named_steps: &named_steps,
+                                    kernel_name: name,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                    table: &self.topology_attribute_table,
+                                    realization_read_cells: &realization_read_cells,
+                                    realized_reprs: &realized_reprs_for_hydration,
+                                },
+                                &mut values,
+                                &mut self.geometry_kernels,
+                                &mut diagnostics,
+                            );
+                            continue;
+                        }
+                    };
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
                     // ReprKind::BRep, demanded_tol)`. Priority chain is
@@ -3833,7 +3945,9 @@ impl Engine {
                         // L2 selector gate, resolved once above the template
                         // loop. Only the build paths opt in; tessellate/query
                         // keep the fail-open `true` default.
-                        .with_module_binds_selector(module_binds_selector_flag),
+                        .with_module_binds_selector(module_binds_selector_flag)
+                        // Same repr snapshot as the HydrateCell arm above, as in build().
+                        .with_realized_reprs(Some(&realized_reprs_for_hydration)),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -3913,6 +4027,9 @@ impl Engine {
                     // the executor's disjoint field borrows have all released.
                     if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
+                    }
+                    if unified_schedule.is_some() {
+                        self.hydrate_after_realize(template, &named_steps, &mut values, version_id);
                     }
                 }
                 // Step-8 (task ε / 3436): the post-process helpers operate on
@@ -4562,56 +4679,14 @@ impl Engine {
                     &module.templates,
                 );
                 // Task 4358 ε: order this template's realizations + selector/query
-                // value-cells for the build walk. Under UnifiedDag the order is
-                // `run_unified_pass`'s global Kahn schedule filtered to THIS
-                // template's nodes (so a curated selector cell is hydrated before
-                // the realization that consumes it); any realization not covered by
-                // the schedule (e.g. residue downstream of a cycle, or a node with
-                // no trace entry) is appended in declaration order so every
-                // realization still runs exactly as legacy would. Under
-                // LegacyMultiPass the order is simply declaration order with NO
-                // interleaved HydrateCell steps — byte-identical to before.
-                let build_steps: Vec<BuildStep> = match unified_pass.as_ref() {
-                    Some(pass) => {
-                        let mut steps: Vec<BuildStep> = Vec::new();
-                        let mut realized: HashSet<usize> = HashSet::new();
-                        for node in &pass.schedule {
-                            match node {
-                                NodeId::Realization(rid) if rid.entity == template.name => {
-                                    if let Some(r_idx) =
-                                        template.realizations.iter().position(|r| r.id == *rid)
-                                    {
-                                        steps.push(BuildStep::Realize(r_idx));
-                                        realized.insert(r_idx);
-                                    }
-                                }
-                                NodeId::Value(vid) if vid.entity == template.name => {
-                                    steps.push(BuildStep::HydrateCell(vid.clone()));
-                                }
-                                _ => {}
-                            }
-                        }
-                        for r_idx in 0..template.realizations.len() {
-                            if !realized.contains(&r_idx) {
-                                // β (task 4738) step-4: demand guard mirrors the one
-                                // in tessellate_from_values. Under build() full_scope
-                                // is always true → demanded_rids_build=None → append
-                                // all (byte-identical, step-3(b) guard). The
-                                // defensive selective branch: skip hidden realizations
-                                // not in the demand cone.  `demanded_rids_build` is
-                                // pre-extracted above so no per-iteration clone.
-                                let rid = &template.realizations[r_idx].id;
-                                if demanded_rids_build.as_ref().is_none_or(|rids| rids.contains(rid)) {
-                                    steps.push(BuildStep::Realize(r_idx));
-                                }
-                            }
-                        }
-                        steps
-                    }
-                    None => (0..template.realizations.len())
-                        .map(BuildStep::Realize)
-                        .collect(),
-                };
+                // value-cells for the build walk (see `template_build_steps`).
+                // Under build() full_scope is always true → demanded_rids_build
+                // is None → every uncovered realization is appended.
+                let build_steps = template_build_steps(
+                    template,
+                    unified_pass.as_ref().map(|p| p.schedule.as_slice()),
+                    demanded_rids_build.as_ref(),
+                );
                 // Fail-closed region gate (task #4812, P0β): build the repr
                 // snapshot once before the step loop. Reprs from bodies in PRIOR
                 // templates are already in eval_state at this point. Reprs
@@ -4636,37 +4711,20 @@ impl Engine {
                             // ended); the post-process block below re-runs the same
                             // passes over all cells, so this is an additive early
                             // hydration, not the sole resolution site.
-                            //
-                            // Robustness (reviewer): degrade to SKIPPING this early
-                            // hydration rather than aborting the whole build if the
-                            // default kernel is somehow absent mid-walk. The invariant
-                            // holds today — `name` was `contains_key`-checked at the top
-                            // of this geometry_output block — so a miss is only reachable
-                            // via a future refactor that removes a kernel mid-walk, not a
-                            // runtime condition; `debug_assert!` surfaces it in dev/test.
-                            // Skipping is safe precisely because the hydration is additive:
-                            // the whole-template post-process below re-runs the same passes
-                            // over every cell, so the cell still resolves before export —
-                            // only the in-loop timing is lost (a downstream curated fillet
-                            // would fall back to its all-edges path, the pre-ε behaviour).
-                            let Some(kernel) = self.geometry_kernels.get_mut(name) else {
-                                debug_assert!(
-                                    false,
-                                    "default kernel must remain in the map across the schedule walk"
-                                );
-                                continue;
-                            };
                             Engine::hydrate_value_cell_in_loop(
-                                template,
                                 cell_id,
-                                &named_steps,
+                                &CellHydrationInputs {
+                                    template,
+                                    named_steps: &named_steps,
+                                    kernel_name: name,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                    table: &self.topology_attribute_table,
+                                    realization_read_cells: &realization_read_cells,
+                                    realized_reprs: &realized_reprs_for_hydration,
+                                },
                                 &mut values,
-                                &self.functions,
-                                &self.meta_map,
-                                kernel.as_mut(),
-                                &self.topology_attribute_table,
-                                &realization_read_cells,
-                                &realized_reprs_for_hydration,
+                                &mut self.geometry_kernels,
                                 &mut diagnostics,
                             );
                             continue;
@@ -4834,43 +4892,8 @@ impl Engine {
                     if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
-                    // Task 4358 ε: per-realization geometry-handle hydration slice
-                    // (UnifiedDag only). `post_process_geometry_handle_cells` skips
-                    // realizations whose name is not yet in `named_steps`, so calling
-                    // it after EACH realization hydrates only the just-completed
-                    // ones — making a freshly-produced body's `values` cell visible
-                    // to a selector / geometry-query cell scheduled next (the
-                    // HydrateCell step above). It writes no diagnostics and re-inserts
-                    // the same handle, so it is idempotent with the whole-template
-                    // call in the post-process block below. Skipped under
-                    // LegacyMultiPass (`unified_pass` is `None`), so that path keeps
-                    // its single post-loop hydration and stays byte-identical.
-                    //
-                    // COST (reviewer): the helper loops over ALL of the template's
-                    // realizations each call (short-circuiting those not yet in
-                    // `named_steps`), so invoking it after every Realize makes the
-                    // per-realization hydration O(R²)-over-realizations across a
-                    // template with R realizations, vs. Legacy's single O(R) post-loop
-                    // call. The re-work is purely idempotent (re-inserting already
-                    // resolved handles + re-recording the same freshness cache nodes),
-                    // so it is correctness-neutral, and acceptable for the typical
-                    // small-R template. If profiling ever shows it dominating on a
-                    // many-realization, many-handle-cell template, restrict this call
-                    // to the just-completed realization (the helper would need a
-                    // single-realization filter param threaded through its 3 call
-                    // sites — build / build_snapshot / tessellate_from_values) rather
-                    // than rescanning the full realization list each iteration.
                     if unified_pass.is_some() {
-                        Engine::post_process_geometry_handle_cells(
-                            template,
-                            &named_steps,
-                            &mut values,
-                            &self.functions,
-                            &self.meta_map,
-                            &mut self.cache,
-                            &mut self.realization_handles,
-                            version_id,
-                        );
+                        self.hydrate_after_realize(template, &named_steps, &mut values, version_id);
                     }
                 }
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
@@ -6057,6 +6080,8 @@ impl Engine {
     /// All three build/tessellate sites call this helper (step-2 wires the two
     /// tessellate sites; step-4 wires `build_with_geometry_output`) so the
     /// demand-seam is single and future changes touch one place.
+    /// `build_snapshot` deliberately bypasses it and walks the full schedule,
+    /// since it realizes every realization regardless of demand.
     /// Compute the demand-scoped unified pass schedule and seed.
     ///
     /// `hash_exempt`: realizations the hash gate's verdict
@@ -6154,8 +6179,8 @@ impl Engine {
     /// available for hydration.
     ///
     /// Returns an empty set when `eval_state` is absent (pre-eval or
-    /// `LegacyMultiPass` with no eval state).  Callers gate on
-    /// `unified_pass.is_some()` before calling to preserve the "empty under
+    /// `LegacyMultiPass` with no eval state).  Callers gate on having a
+    /// UnifiedDag schedule before calling to preserve the "empty under
     /// LegacyMultiPass" invariant while sharing the iteration.
     fn realization_read_cells(&self) -> HashSet<reify_core::ValueCellId> {
         let Some(state) = self.eval_state.as_ref() else {
@@ -6785,91 +6810,38 @@ impl Engine {
                 &module.templates,
             );
             // θ (task 4361) step-6: order this template's realizations + selector/
-            // query value-cells for the tessellate walk.  Under UnifiedDag the order
-            // is `run_unified_pass`'s global Kahn schedule filtered to THIS template's
-            // nodes; any realization not covered by the schedule is appended in
-            // declaration order so every realization still runs exactly once.
-            // Under LegacyMultiPass the order is declaration order with NO interleaved
-            // HydrateCell steps — byte-identical to the pre-θ behaviour.
-            // Mirrors build()'s and build_snapshot()'s `build_steps` pattern.
-            let build_steps: Vec<BuildStep> = match unified_pass {
-                Some(pass) => {
-                    let mut steps: Vec<BuildStep> = Vec::new();
-                    let mut realized: HashSet<usize> = HashSet::new();
-                    for node in &pass.schedule {
-                        match node {
-                            NodeId::Realization(rid) if rid.entity == template.name => {
-                                if let Some(r_idx) =
-                                    template.realizations.iter().position(|r| r.id == *rid)
-                                {
-                                    steps.push(BuildStep::Realize(r_idx));
-                                    realized.insert(r_idx);
-                                }
-                            }
-                            NodeId::Value(vid) if vid.entity == template.name => {
-                                steps.push(BuildStep::HydrateCell(vid.clone()));
-                            }
-                            _ => {}
-                        }
-                    }
-                    for r_idx in 0..template.realizations.len() {
-                        if !realized.contains(&r_idx) {
-                            // β (task 4738) step-2: demand guard on the
-                            // "uncovered realization" fallback. Under
-                            // selective demand a hidden body's realization is
-                            // deliberately excluded from the seed/schedule;
-                            // the unguarded append would re-add and execute
-                            // it, defeating the kernel-time saving. Guard:
-                            // `demanded_rids = None` (full scope / build) →
-                            // append all (byte-identical); `Some(rids)` →
-                            // append only if the realization is in the cone.
-                            // `demanded_rids` is pre-extracted above so this
-                            // lookup requires no per-iteration clone.
-                            let rid = &template.realizations[r_idx].id;
-                            if demanded_rids.as_ref().is_none_or(|rids| rids.contains(rid)) {
-                                steps.push(BuildStep::Realize(r_idx));
-                            }
-                        }
-                    }
-                    steps
-                }
-                None => (0..template.realizations.len())
-                    .map(BuildStep::Realize)
-                    .collect(),
-            };
+            // query value-cells for the tessellate walk — the same
+            // `template_build_steps` build() and build_snapshot() use.
+            let build_steps = template_build_steps(
+                template,
+                unified_pass.map(|p| p.schedule.as_slice()),
+                demanded_rids.as_ref(),
+            );
+            // tessellate_from_values is a static fn without snapshot access, so
+            // the hydration ladder gets an empty repr map (fail-open: the gate is
+            // skipped for an unknown repr, preserving today's tessellation
+            // behaviour).
+            let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
             for build_step in &build_steps {
                 let (r_idx, realization) = match build_step {
                     BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
                     BuildStep::HydrateCell(cell_id) => {
                         // θ (4361 step-6): early hydration of selector / geometry-query
                         // value cells before consuming realizations (UnifiedDag only).
-                        // Mirrors build_snapshot's HydrateCell handling; degrade to
-                        // SKIP rather than abort if the kernel is absent (additive
-                        // hydration — the per-template post-process block below
-                        // re-runs the same passes over every cell).
-                        let Some(kernel) = geometry_kernels.get_mut(default_kernel_name) else {
-                            debug_assert!(
-                                false,
-                                "default kernel must remain in the map across the schedule walk"
-                            );
-                            continue;
-                        };
-                        // tessellate_from_values is a static fn without snapshot
-                        // access; pass an empty map (fail-open: gate skipped for
-                        // unknown repr, preserving today's tessellation behaviour).
-                        let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> =
-                            HashMap::new();
                         Engine::hydrate_value_cell_in_loop(
-                            template,
                             cell_id,
-                            &named_steps,
+                            &CellHydrationInputs {
+                                template,
+                                named_steps: &named_steps,
+                                kernel_name: default_kernel_name,
+                                functions,
+                                meta_map,
+                                table: topology_attribute_table,
+                                realization_read_cells,
+                                realized_reprs: &realized_reprs_tess,
+                            },
                             values,
-                            functions,
-                            meta_map,
-                            kernel.as_mut(),
-                            topology_attribute_table,
-                            realization_read_cells,
-                            &realized_reprs_tess,
+                            geometry_kernels,
                             diagnostics,
                         );
                         continue;
@@ -9954,6 +9926,47 @@ impl Engine {
         }
     }
 
+    /// Task 4358 ε: hydrate the bodies realized so far into `values`, right after
+    /// a `Realize` step of a UnifiedDag build walk, so a selector or
+    /// geometry-query cell scheduled next (its `HydrateCell` step) sees the
+    /// freshly produced body.
+    ///
+    /// Callers run it only while walking a UnifiedDag schedule. Under
+    /// LegacyMultiPass the walk keeps its single post-loop
+    /// [`Engine::post_process_geometry_handle_cells`] call and stays
+    /// byte-identical.
+    ///
+    /// `post_process_geometry_handle_cells` skips a realization whose name is not
+    /// yet in `named_steps`, writes no diagnostics and re-inserts the same
+    /// handle, so this slice is idempotent with the whole-template call each walk
+    /// makes after its loop.
+    ///
+    /// COST: every call rescans all of the template's realizations, so a walk
+    /// over R realizations does O(R²) work against Legacy's single O(R) pass.
+    /// The repeated work only re-inserts resolved handles and re-records the
+    /// same freshness cache nodes, so it does not change the result, and R is
+    /// small in practice. If profiling ever shows it dominating, restrict this
+    /// slice to the just-completed realization here rather than rescanning the
+    /// whole list.
+    fn hydrate_after_realize(
+        &mut self,
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        version: VersionId,
+    ) {
+        Engine::post_process_geometry_handle_cells(
+            template,
+            named_steps,
+            values,
+            &self.functions,
+            &self.meta_map,
+            &mut self.cache,
+            &mut self.realization_handles,
+            version,
+        );
+    }
+
     /// Post-hydration re-dispatch pass for `@optimized` ComputeNodes that
     /// consume a Solid body (task #4726 / esc-3787-23 root cause).
     ///
@@ -11091,20 +11104,42 @@ impl Engine {
     /// in [`Engine::run_post_processes`] MUST change together — see the matching
     /// "SYNC REQUIREMENT" note on that function. A divergence would change which
     /// helper wins for a given cell only under UnifiedDag, only in-loop.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # A missing kernel skips the cell
+    ///
+    /// If `inputs.kernel_name` is not in `geometry_kernels`, the cell is skipped
+    /// rather than the walk aborted. Today that cannot happen (every walk checks
+    /// the kernel is registered before it starts, and the executor never removes
+    /// one), so a miss is a refactor bug and is `debug_assert!`ed. Skipping is
+    /// safe because this hydration is additive: each walk's whole-template
+    /// post-process re-runs the same ladder over every cell, so only the in-loop
+    /// timing is lost and a downstream curated fillet falls back to its pre-ε
+    /// all-edges path.
     fn hydrate_value_cell_in_loop(
-        template: &reify_compiler::TopologyTemplate,
         cell_id: &reify_core::ValueCellId,
-        named_steps: &HashMap<String, KernelHandle>,
+        inputs: &CellHydrationInputs<'_>,
         values: &mut ValueMap,
-        functions: &[CompiledFunction],
-        meta_map: &HashMap<String, HashMap<String, String>>,
-        kernel: &mut dyn GeometryKernel,
-        table: &TopologyAttributeTable,
-        realization_read_cells: &HashSet<reify_core::ValueCellId>,
-        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
+        let CellHydrationInputs {
+            template,
+            named_steps,
+            kernel_name,
+            functions,
+            meta_map,
+            table,
+            realization_read_cells,
+            realized_reprs,
+        } = *inputs;
+        let Some(kernel) = geometry_kernels.get_mut(kernel_name) else {
+            debug_assert!(
+                false,
+                "default kernel must remain in the map across the schedule walk"
+            );
+            return;
+        };
+        let kernel = kernel.as_mut();
         let Some(cell) = template.value_cells.iter().find(|c| &c.id == cell_id) else {
             return;
         };
@@ -11512,13 +11547,17 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
-        // `post_process_kinematic_queries` sibling above). Safe because
-        // topology-selector helpers do not chain through value cells —
-        // each helper's args resolve to either a let-bound `Value::Point`
-        // already populated by `eval_expr` or a `named_steps` handle
-        // populated by `execute_realization_ops`, never to another
-        // topology-selector cell, so an earlier patch in this loop cannot
-        // influence a later dispatch's input.
+        // `post_process_kinematic_queries` sibling above), so a patch made
+        // earlier in this loop IS visible to a later dispatch. That matters
+        // because relational selectors chain through value cells: a face
+        // argument (`adjacent_faces(b, top)`, `shared_edges(top, f)`) and a
+        // `flat_map` list argument read another selector cell's resolved value
+        // from `values`. Here such a read sees the resolved value only when the
+        // producing cell is declared first. Under UnifiedDag the HydrateCell
+        // walk has already resolved every cell in schedule (dependency) order,
+        // so this pass only re-runs it; under LegacyMultiPass this pass is the
+        // sole resolution and a consumer declared before its producer keeps
+        // its pure-eval value.
         for cell in &template.value_cells {
             let default_expr = match &cell.default_expr {
                 Some(e) => e,
@@ -11537,9 +11576,8 @@ impl Engine {
                 // node (and `IndexAccess` over a selector) resolves a typed
                 // `Value::Selector` cell to a `Value::List<Geometry>` HERE. The
                 // inner selector is reconstructed INLINE from its nested
-                // FunctionCall, so the "do not chain through value cells"
-                // invariant above is preserved — no dependency on another
-                // selector cell already being patched in this loop.
+                // FunctionCall, so the coercion itself adds no dependency on
+                // another selector cell already being patched in this loop.
                 //
                 // Task 4536: `table` carries the realized body's recorded
                 // topology attributes so a `mid_surface(body)` (`ByRole`) leaf
