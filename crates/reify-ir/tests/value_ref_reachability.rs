@@ -393,6 +393,16 @@ fn reaches(expr: &CompiledExpr, target: &ValueCellId) -> bool {
     expr.contains_value_ref_matching(|id| id == target)
 }
 
+fn consulted_until_match(expr: &CompiledExpr, target: &str) -> (bool, Vec<ValueCellId>) {
+    let target = cell(target);
+    let mut consulted = Vec::new();
+    let matched = expr.contains_value_ref_matching(|id| {
+        consulted.push(id.clone());
+        id == &target
+    });
+    (matched, consulted)
+}
+
 #[test]
 fn collect_value_refs_reports_each_cases_hand_written_dependency_set() {
     for Case {
@@ -407,35 +417,19 @@ fn collect_value_refs_reports_each_cases_hand_written_dependency_set() {
 }
 
 #[test]
-fn the_predicate_is_consulted_on_exactly_the_refs_collect_value_refs_reports() {
-    for Case { name, expr, .. } in corpus() {
-        let mut consulted = Vec::new();
-        let matched = expr.contains_value_ref_matching(|id| {
-            consulted.push(id.clone());
-            false
-        });
-        assert!(
-            !matched,
-            "{name}: a never-matching predicate must answer false"
-        );
-        assert_eq!(
-            consulted,
-            expr.collect_value_refs(),
-            "{name}: the predicate must see collect_value_refs' sequence, in order, duplicates kept"
-        );
-    }
-}
-
-#[test]
-fn per_cell_membership_agrees_with_collect_value_refs() {
+fn contains_value_ref_matching_answers_each_cases_hand_written_dependency_set() {
     let universe = universe();
-    for Case { name, expr, .. } in corpus() {
-        let collected = expr.collect_value_refs();
+    for Case {
+        name,
+        expr,
+        depends_on,
+    } in corpus()
+    {
         for target in &universe {
             assert_eq!(
                 reaches(&expr, target),
-                collected.contains(target),
-                "{name}: reachability of {target} disagrees with collect_value_refs"
+                depends_on.contains(target),
+                "{name}: reachability of {target}"
             );
         }
     }
@@ -512,30 +506,21 @@ fn a_determinacy_predicate_depends_on_its_cell() {
 }
 
 #[test]
-fn stops_at_the_first_matching_ref() {
-    let target = cell("a");
-    let mut invocations = 0;
-    let matched = list(vec![r("a"), r("b"), r("c")]).contains_value_ref_matching(|id| {
-        invocations += 1;
-        id == &target
-    });
-    assert!(matched);
+fn consults_refs_in_visit_order_and_stops_at_the_first_match() {
     assert_eq!(
-        invocations, 1,
+        consulted_until_match(&list(vec![r("a"), r("b"), r("a")]), "never_used"),
+        (false, cells(&["a", "b", "a"])),
+        "with no match, every ref is consulted in visit order, duplicates kept"
+    );
+    assert_eq!(
+        consulted_until_match(&list(vec![r("a"), r("b"), r("c")]), "a"),
+        (true, cells(&["a"])),
         "nothing after the first match may be consulted"
     );
-
-    let target = cell("f");
-    let mut invocations = 0;
-    let matched =
-        forall("v", r("c"), list(vec![r("f"), r("g")])).contains_value_ref_matching(|id| {
-            invocations += 1;
-            id == &target
-        });
-    assert!(matched);
     assert_eq!(
-        invocations, 2,
-        "a match inside a quantifier predicate must stop the whole traversal (consulted c, f)"
+        consulted_until_match(&forall("v", r("c"), list(vec![r("f"), r("g")])), "f"),
+        (true, cells(&["c", "f"])),
+        "a match inside a quantifier predicate must stop the whole traversal"
     );
 }
 

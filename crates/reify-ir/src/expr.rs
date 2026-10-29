@@ -1042,9 +1042,7 @@ impl CompiledExpr {
     /// - a `StructureInstanceCtor` depends on its `ordered_args` and
     ///   `defaults`, never on its template-local `lets`.
     ///
-    /// `f` is a `dyn` callback because the quantifier arm wraps it in a
-    /// filtering closure and recurses; a generic bound would monomorphize a
-    /// new closure type per nesting level without end.
+    /// `dyn` because the quantifier arm recurses with a wrapping closure.
     fn try_for_each_value_ref(
         &self,
         f: &mut dyn FnMut(&ValueCellId) -> ControlFlow<()>,
