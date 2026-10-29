@@ -862,3 +862,187 @@ fn try_is_gitignored_answers_for_a_leading_dash_path() {
          above is not a constant",
     );
 }
+
+// -----------------------------------------------------------------------
+// The opt-in history snapshot answers exactly like one git call per question
+// -----------------------------------------------------------------------
+
+/// `git <args…>` in `dir`, asserted successful, stdout trimmed.
+fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = common::git_env::git_cmd(dir)
+        .args(args)
+        .output()
+        .expect("git command failed to spawn");
+    assert!(out.status.success(), "git {:?} exited {:?}", args, out.status.code());
+    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+}
+
+/// The commits of the history-snapshot fixture the parity battery asks about.
+struct HistoryFixture {
+    /// Every commit reachable from `main`, root included.
+    main_shas: Vec<String>,
+    /// A commit on a branch that was never merged into `main`.
+    unmerged: String,
+}
+
+/// A `main` whose messages and deltas exercise every shape the snapshot
+/// answers from: digit-collision subjects (`12` inside `123`), a body-only
+/// mention, a `--no-ff` merge touching two files, a rename, and a root commit.
+/// The `feature` branch survives its merge so ancestry against a branch other
+/// than the snapshot's can be asked too.
+fn history_fixture(root: &std::path::Path) -> HistoryFixture {
+    let run = |args: &[&str]| git_run(root, args);
+    git_init(root);
+
+    write_file(root, "a.rs", "fn a() {}\n");
+    git_commit(root, "root commit");
+    write_file(root, "x.rs", "fn x() {}\n");
+    git_commit(root, "feat(12): x");
+    write_file(root, "y.rs", "fn y() {}\n");
+    git_commit(root, "feat(123): y");
+    write_file(root, "z.rs", "fn z() {}\n");
+    run(&["add", "."]);
+    run(&["commit", "-m", "chore: unrelated subject", "-m", "Refs task 45 in the body only."]);
+
+    run(&["checkout", "-b", "feature"]);
+    write_file(root, "f1.rs", "fn f1() {}\n");
+    write_file(root, "f2.rs", "fn f2() {}\n");
+    git_commit(root, "feature work");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/45 into main", "feature"]);
+
+    std::fs::create_dir_all(root.join("sub")).expect("create sub/");
+    run(&["mv", "a.rs", "sub/a.rs"]);
+    git_commit(root, "move a.rs into sub");
+
+    run(&["checkout", "-b", "unmerged"]);
+    write_file(root, "u.rs", "fn u() {}\n");
+    git_commit(root, "feat(12): never merged");
+    let unmerged = rev_parse_head(root);
+    run(&["checkout", "main"]);
+
+    let main_shas = git_stdout(root, &["rev-list", "main"])
+        .lines()
+        .map(str::to_string)
+        .collect();
+    HistoryFixture { main_shas, unmerged }
+}
+
+/// Ask `plain` and `other` every question the snapshot can intercept, and
+/// assert identical answers.
+fn assert_history_answers_match(plain: &RealGitOps, other: &RealGitOps, fx: &HistoryFixture) {
+    let unknown = "0123456789abcdef0123456789abcdef01234567".to_string();
+    let abbreviated = fx.main_shas[0][..7].to_string();
+    let mut candidates = fx.main_shas.clone();
+    candidates.extend([fx.unmerged.clone(), unknown, abbreviated]);
+
+    for x in &candidates {
+        for branch in ["main", "feature"] {
+            assert_eq!(
+                other.is_ancestor(x, branch),
+                plain.is_ancestor(x, branch),
+                "is_ancestor({x}, {branch}) must answer as one merge-base call does",
+            );
+        }
+    }
+    for pattern in ["12", "123", "45", "999", "1.2"] {
+        assert_eq!(
+            other.try_log_grep("main", pattern),
+            plain.try_log_grep("main", pattern),
+            "try_log_grep(main, {pattern}) must list the same commits in the same order",
+        );
+    }
+    let mut commits = fx.main_shas.clone();
+    commits.push(fx.unmerged.clone());
+    for c in &commits {
+        assert_eq!(
+            other.changed_paths_in_commit(c),
+            plain.changed_paths_in_commit(c),
+            "changed_paths_in_commit({c}) must list the same paths in the same order",
+        );
+    }
+}
+
+/// Pin that a history-snapshot instance answers ancestry, message grep and
+/// per-commit changed paths exactly as one git call per question does,
+/// including every question the snapshot must decline: an unmerged or unknown
+/// commit, an abbreviated SHA, a branch other than the snapshot's, a
+/// non-alphanumeric grep pattern, and the root commit (no first parent).
+#[test]
+fn history_snapshot_answers_like_per_call_git() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let fx = history_fixture(root);
+
+    let plain = RealGitOps::new(root);
+    let snap = RealGitOps::new(root).with_history_snapshot("main");
+
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+    let renamed = plain.changed_paths_in_commit(&fx.main_shas[0]);
+    assert!(
+        renamed.contains(&"a.rs".to_string()) && renamed.contains(&"sub/a.rs".to_string()),
+        "fixture premise: the rename commit lists both sides; got {renamed:?}",
+    );
+    assert_eq!(
+        plain.changed_paths_in_commit(&merge),
+        vec!["f1.rs".to_string(), "f2.rs".to_string()],
+        "fixture premise: the merge's first-parent delta is the feature's two files",
+    );
+    assert_eq!(
+        plain.try_log_grep("main", "45").map(|hits| hits.len()),
+        Ok(2),
+        "fixture premise: 45 is named by the merge subject and one body only",
+    );
+
+    assert_history_answers_match(&plain, &snap, &fx);
+}
+
+/// Pin that the snapshot is point-in-time: a commit landing on `main` after
+/// the snapshot answered is invisible to its grep, while ancestry for that
+/// commit still answers truthfully through the per-call fallback. This is the
+/// observable proof that the snapshot, not a fork, answered.
+#[test]
+fn history_snapshot_is_point_in_time() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    history_fixture(root);
+
+    let snap = RealGitOps::new(root).with_history_snapshot("main");
+    assert_eq!(snap.try_log_grep("main", "77"), Ok(vec![]));
+
+    write_file(root, "late.rs", "fn late() {}\n");
+    git_commit(root, "feat(77): landed after the snapshot");
+    let late = rev_parse_head(root);
+
+    let fresh = RealGitOps::new(root);
+    assert!(
+        fresh
+            .try_log_grep("main", "77")
+            .expect("fresh grep runs")
+            .iter()
+            .any(|c| c.sha == late),
+        "fixture premise: a fresh instance sees the late commit",
+    );
+    assert_eq!(
+        snap.try_log_grep("main", "77"),
+        Ok(vec![]),
+        "the snapshot answers from the history it read, not from the moved main",
+    );
+    assert!(
+        snap.is_ancestor(&late, "main"),
+        "a SHA the snapshot does not hold falls back to merge-base, which is truthful",
+    );
+}
+
+/// Pin that a snapshot of a branch git cannot log answers every question
+/// exactly as one git call per question does.
+#[test]
+fn history_snapshot_on_unusable_branch_falls_back() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let fx = history_fixture(root);
+
+    let plain = RealGitOps::new(root);
+    let broken = RealGitOps::new(root).with_history_snapshot("no-such-branch");
+    assert_history_answers_match(&plain, &broken, &fx);
+}
