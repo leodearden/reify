@@ -194,7 +194,8 @@ pub(crate) fn merge_post_build_verdicts(
 /// The first gap is exit-relevant: [`check_gating_error`] reads the merged set,
 /// so a surviving stale `ConstraintViolated` Error would move the exit code
 /// against the `Satisfied` verdict `check` prints on stdout.
-/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #4 (`FixPath`) holds that off; its fix
+/// The [`CHECK_ERROR_EXIT_ALLOWLIST`] entry `Code(ConstraintViolated)`
+/// (`FixPath`) holds that off; its fix
 /// belongs HERE — widening this helper's scope past `ConstraintIndeterminate`
 /// (#6048) — not in the gate.  Real violations still exit non-zero via
 /// `ConstraintOutcome::SomeViolated` in `finish_check`.
@@ -263,8 +264,8 @@ pub(crate) fn drop_falsified_indeterminate_diagnostics(
 /// on top: [`check_gating_error`] excuses any Error a
 /// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry claims (a bounded burn-down ratchet,
 /// #5404).  `build`/`eval` are deliberately NOT allowlist-aware — they have
-/// gated on raw `Severity::Error` since #4458 and must keep gating on e.g.
-/// the trampoline Error that `check` excuses.
+/// gated on raw `Severity::Error` since #4458 and must keep gating on every
+/// Error, whatever `check` excuses.
 ///
 /// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
 /// unit-testable; callers convert to `ExitCode` at the boundary.
@@ -302,8 +303,8 @@ enum CheckErrorAllowlistMatcher {
     /// the gate can never be excused through a legacy substring
     /// (`check_error_gate_tests::message_entries_excuse_only_code_less_diagnostics`).
     ///
-    /// PRD §7 sketches this as `MessagePrefix`; entry #2's marker
-    /// (`is unresolved (Undef)`) sits mid-string, after the per-argument
+    /// PRD §7 sketches this as `MessagePrefix`; the `is unresolved (Undef)`
+    /// entry's marker sits mid-string, after the per-argument
     /// detail, so a prefix match could not express it.  Substring is the
     /// honest spelling of the same intent.
     MessageContains(&'static str),
@@ -360,60 +361,39 @@ struct CheckErrorExitAllowance {
 /// [`check_gating_error`] makes any `Severity::Error` diagnostic on any
 /// channel exit non-zero — *unless* an entry here excuses it.  Every entry was
 /// seeded for a legacy emission that predates the gate and whose Error
-/// severity is wrong (or wrongly reachable) on `check`'s deliberately
-/// kernel-less, solver-less path; none of them is a policy decision about what
-/// `check` should tolerate.  The enforced excusal is the MATCHER, not that
-/// intent, and entry #2's matcher is knowingly broader than its intent — see
-/// that entry.
+/// severity was wrong (or wrongly reachable) on `check`'s path at the time;
+/// none of them is a policy decision about what `check` should tolerate.  The
+/// enforced excusal is the MATCHER, not that intent, and the
+/// `is unresolved (Undef)` entry's matcher is knowingly broader than its
+/// intent — see that entry.
 ///
 /// The table is pinned whole by `check_error_exit_allowlist_ratchet` and is
 /// burned to ZERO by #5404, converging on INV-SF-2's end state where no
 /// per-code list mediates the exit code at all.  **Do not add entries** — see
 /// that module's doc for the standing obligation.
 ///
-/// Entries #2 and #3 were seeded from a MEASURED sweep of `reify check` over
-/// all `examples/*.ri` and `crates/reify-cli/tests/fixtures/*.ri`
-/// (2026-08-29): of the files that exited 0 while printing an `error:` line,
-/// the `auto`-param case they target was the only one expected on a healthy
-/// path.  Their code-less substrings excuse more than that case.  Entry #1 is a posture entry that
-/// excuses nothing `check` reaches today, kept by ruling until its deadline
-/// (see its marker); entry #4 is a merge hazard, not a corpus finding.  The
-/// genuine design errors in that same sweep —
+/// The two `MessageContains` entries were seeded from a MEASURED sweep of
+/// `reify check` over all `examples/*.ri` and
+/// `crates/reify-cli/tests/fixtures/*.ri` (2026-08-29): of the files that
+/// exited 0 while printing an `error:` line, the unsolved-`auto` case they
+/// targeted was the only one expected on a healthy path.  `check` now solves,
+/// so that case no longer arises, and their code-less substrings excuse only
+/// the over-broad cases the `is unresolved (Undef)` entry describes.  The
+/// `Code(ConstraintViolated)` entry is a merge hazard, not a corpus finding.
+/// The genuine design errors in that same sweep —
 /// `mirror: o{x,y,z} argument expects Length`, `unresolvable GeomRef::*`,
 /// `transform_{log,exp}: ... dimensionless`, `E_StackupEmptyChain` — are
 /// deliberately NOT excused and now exit 1, matching `reify eval`, which
 /// already exits 1 on every one of them.
 const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
-    // TODO(#5404): delete this entry no later than the change that gives
-    // `check` a non-empty compute registry (#6693).
-    //
-    // `cmd_check` attaches NO compute trampoline BY DESIGN (see its doc
-    // contract: registering one would run a potentially slow FEA solve inside
-    // the lightweight static-check path).  The engine conditions this
-    // diagnostic's severity on that posture: on an EMPTY compute registry it
-    // is a `Severity::Warning`, so today this entry excuses nothing `check`
-    // can reach, and `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated`
-    // holds its exit 0 by severity alone.  The entry is kept deliberately (the
-    // ruling is recorded on #5404).  On a non-empty registry the same emission
-    // is a correct Error that this entry would silence — hence the deadline.
-    //
-    // Keyed on the code rather than the message stem, as `engine_compute.rs`
-    // advises: the co-resident code-less "compute trampoline was cancelled"
-    // Error shares the `@optimized target {t:?}: ` prefix and must keep gating.
-    CheckErrorExitAllowance {
-        matcher: CheckErrorAllowlistMatcher::Code(DiagnosticCode::NoRegisteredComputeTrampoline),
-        disposition: CheckErrorAllowlistDisposition::Demote,
-        cite: "#5404",
-    },
-    // TODO(#5404): give the `auto`-param-awaiting-solver case its own code or
-    // message, key this excusal on that, then delete this entry.
+    // TODO(#5404): delete this entry; the case it was seeded for no longer
+    // arises, so it excuses only the over-broad cases below.
     //
     // Seeded for a geometry op argument left `Undef` because an `auto` param
-    // awaits a solver `check` deliberately does not run (`examples/
+    // awaited a solver `check` did not run at the time (`examples/
     // fea_bracket_minimize_mass.ri`, `param thickness : Length = auto(free)`).
-    // `reify eval` on that same file exits 0 (MEASURED — it takes >60s because
-    // it actually solves), so gating there would make `check` newly DISAGREE
-    // with `eval` about a healthy design.
+    // `check` now solves, and that file emits no Undef-argument line under it
+    // (MEASURED), so the seeding case is gone.
     //
     // KNOWINGLY OVER-BROAD: the text comes from
     // `geometry_ops.rs::unresolved_arg_message`, which words EVERY Undef
@@ -435,8 +415,8 @@ const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
     // rollup printed whenever every op failed, WHATEVER the cause; `check`
     // writes no geometry, so "no geometry output produced" is not a fact about
     // the design.  Excusing it is harmless only while the per-op errors beside
-    // it still gate; where entry #2 excuses those too, this entry inherits
-    // entry #2's over-breadth.
+    // it still gate; where the `is unresolved (Undef)` entry excuses those
+    // too, this entry inherits that entry's over-breadth.
     //
     // `examples/sweep_degenerate.ri` carries the same rollup beside
     // `unresolvable GeomRef::Step(0)` / `GeomRef::Sub('s1')` errors that

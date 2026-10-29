@@ -912,15 +912,16 @@ structure def OversizedBuildVolume {
 /// KNOWN GAP, pinned so #5404 has a target to flip — characterization, not
 /// endorsement.
 ///
-/// `CHECK_ERROR_EXIT_ALLOWLIST` entry 2 was seeded for an `auto` param awaiting
-/// a solver, but its code-less substring `is unresolved (Undef)` matches the one
+/// The `CHECK_ERROR_EXIT_ALLOWLIST` entry `MessageContains("is unresolved
+/// (Undef)")` was seeded for an `auto` param awaiting a solver, but its
+/// code-less substring matches the one
 /// wording `geometry_ops.rs::unresolved_arg_message` gives EVERY Undef geometry
 /// argument. So a genuine design error — here a `box` width that divides by a
 /// zero param — prints `error:` lines beside "All constraints satisfied." and
 /// exits 0, the shape INV-SF-2 forbids, while `reify eval` on the same file
 /// exits 1.
 ///
-/// When #5404 narrows entry 2, THIS TEST MUST FAIL: flip the `check` exit
+/// When #5404 narrows or deletes that entry, THIS TEST MUST FAIL: flip the `check` exit
 /// assertion to `!status.success()` and drop the known-gap framing.
 #[test]
 fn check_excuses_every_code_less_undef_geometry_argument() {
@@ -961,12 +962,13 @@ structure def UndefBoxWidth {
          summary; without it this test pins nothing.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    // TODO(#5404): flip to `!status.success()` once entry 2 stops excusing
-    // non-`auto` Undef arguments.
+    // TODO(#5404): flip to `!status.success()` once the `is unresolved (Undef)`
+    // allowlist entry stops excusing non-`auto` Undef arguments.
     assert!(
         status.success(),
-        "KNOWN GAP: entry 2's substring excuses this genuine design error. If \
-         this now exits non-zero, #5404 narrowed entry 2 — flip this assertion.\n\
+        "KNOWN GAP: the `is unresolved (Undef)` allowlist entry excuses this \
+         genuine design error. If this now exits non-zero, #5404 narrowed or \
+         deleted that entry — flip this assertion.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 

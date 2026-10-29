@@ -653,13 +653,14 @@ fn empty_build_diags_short_circuits_regardless_of_verdicts() {
 /// The gap is exit-relevant: `check_gating_error` reads this merged set,
 /// so a surviving stale `ConstraintViolated` Error would move `check`'s
 /// EXIT CODE against the `Satisfied` verdict on its own stdout.
-/// `CHECK_ERROR_EXIT_ALLOWLIST` entry #4 (`Code(ConstraintViolated)`,
-/// disposition `FixPath`) holds that off — this test and that entry are
+/// The `CHECK_ERROR_EXIT_ALLOWLIST` entry `Code(ConstraintViolated)`
+/// (disposition `FixPath`) holds that off — this test and that entry are
 /// two views of one gap, and `FixPath` says the repair belongs in
 /// `drop_falsified_indeterminate_diagnostics`, not in the gate.
 ///
 /// When #6048 lands, THIS TEST MUST FAIL — that is the point; flip it to
-/// assert the drop, and retire allowlist entry #4 in the same change.
+/// assert the drop, and retire the `Code(ConstraintViolated)` allowlist
+/// entry in the same change.
 #[test]
 fn mirror_case_build_side_violation_currently_survives() {
     let needle = "BoltFlange#constraint[1]";
