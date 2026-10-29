@@ -1838,7 +1838,7 @@ fn unified_dag_curated_fillet_over_flat_map_lambda_selector_resolves_edges() {
 /// the first realization `build_snapshot` executes gets handle 1.
 fn build_snapshot_under_unified_dag(source: &str, kernel: Box<dyn GeometryKernel>) -> BuildResult {
     let compiled = compile_source_with_stdlib(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     engine.eval(&compiled);
     engine

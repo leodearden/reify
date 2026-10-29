@@ -363,6 +363,7 @@ fn fillet_top_edges_example_builds_clean_e2e() {
     let op_handles_ref = recording_kernel.op_handles_ref();
     let volumes_ref = recording_kernel.volumes_ref();
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(recording_kernel)),
     );
