@@ -296,6 +296,9 @@ fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Fi
         .filter(|meta| CheckMode::Sweep.audits(meta))
         .collect();
     let prefetch = SweepPrefetch::gather(ctx, &audited);
+    if let Some(msg) = h2_inert_skip_breadcrumb(ctx, &audited) {
+        eprintln!("{msg}");
+    }
     audited
         .into_iter()
         .flat_map(|meta| check_task(ctx, meta, CheckMode::Sweep, &prefetch))
@@ -1770,7 +1773,15 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// query that left nothing to examine — an empty slice, or every
 /// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
 /// via [`h2_vacuous_breadcrumb`] (task 4144).
+///
+/// An inert seam ([`crate::JCodemunchOps::is_inert`], e.g. `--no-jcodemunch`)
+/// is not queried at all: every task is skipped here, and the sweep instead
+/// prints ONE line naming how many cross-crate tasks went unexamined
+/// ([`h2_inert_skip_breadcrumb`]) rather than one vacuous line per task.
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    if ctx.jcodemunch.is_inert() {
+        return vec![];
+    }
     let Some((since_sha, until_sha)) = h2_range(meta) else {
         return vec![];
     };
@@ -1928,6 +1939,26 @@ pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Find
              once jcodemunch answers"
         ),
         evidence: vec![],
+    })
+}
+
+/// The one stderr line a sweep prints when H2 skipped every task because the
+/// seam is inert, or `None` when the seam is live or no audited task is one H2
+/// would have queried.
+fn h2_inert_skip_breadcrumb(ctx: &AuditContext, audited: &[&TaskMetadata]) -> Option<String> {
+    if !ctx.jcodemunch.is_inert() {
+        return None;
+    }
+    let skipped = audited
+        .iter()
+        .filter(|meta| h2_range(meta).is_some())
+        .count();
+    (skipped > 0).then(|| {
+        format!(
+            "reify-audit: H2 (live-path-stranded) skipped for {skipped} cross-crate done \
+             task(s): the jcodemunch seam is inert, so none was queried — zero \
+             live-path-stranded findings are not a clean result"
+        )
     })
 }
 

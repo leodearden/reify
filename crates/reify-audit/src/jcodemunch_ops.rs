@@ -286,6 +286,14 @@ pub trait JCodemunchOps {
     /// imports that violate the project's layering rules. Returns an empty vec
     /// when none found. Per PRD §4-b.
     fn get_layer_violations(&self) -> Result<Vec<LayerViolation>, JCodemunchCallFailed>;
+
+    /// True iff every query answers nothing without asking anything, so a
+    /// caller may skip its query loop outright. An inert seam's empty answers
+    /// are not statements about the code, and a caller that skips them must
+    /// not report the result as clean.
+    fn is_inert(&self) -> bool {
+        false
+    }
 }
 
 /// Inert [`JCodemunchOps`] — every query answers "nothing".
@@ -333,6 +341,9 @@ impl JCodemunchOps for NoopJCodemunchOps {
     }
     fn get_layer_violations(&self) -> Result<Vec<LayerViolation>, JCodemunchCallFailed> {
         Ok(vec![])
+    }
+    fn is_inert(&self) -> bool {
+        true
     }
 }
 
