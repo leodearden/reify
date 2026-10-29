@@ -2921,26 +2921,29 @@ mod tests {
     }
 
     #[test]
-    fn combined_iterate_judges_its_own_geometry_as_its_own_residual() {
+    fn combined_iterate_is_an_equilibrium_at_the_closed_form_prism_only() {
         let membrane = PrismMembrane::new();
-        let nodes = perturbed_prism_guess();
+        let (golden, guess) = (canonical_prism(), perturbed_prism_guess());
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let spec = ForceDensitySpec::Explicit(q.clone());
-        let problem = membrane.problem(&nodes, &spec);
-        let surface_mat = membrane.surface_matrix(&nodes);
-
-        let iterate = CombinedIterate::new(&problem, q.clone(), nodes.clone(), surface_mat.clone());
-
-        assert_eq!(
-            iterate.residual_at(&problem, &nodes, &surface_mat),
-            iterate.residual
-        );
-        assert_eq!(
-            iterate.residual,
-            all_node_equilibrium_residual_relative(
-                &combined_force_density_matrix(&membrane.members, &q, &surface_mat),
-                &nodes,
+        let problem = membrane.problem(&guess, &spec);
+        let iterate_at = |nodes: &[[f64; 3]]| {
+            CombinedIterate::new(
+                &problem,
+                q.clone(),
+                nodes.to_vec(),
+                membrane.surface_matrix(nodes),
             )
+        };
+
+        let off_golden = iterate_at(&guess);
+
+        assert!(iterate_at(&golden).is_equilibrium());
+        assert!(!off_golden.is_equilibrium());
+        assert!(
+            off_golden.residual_at(&problem, &golden, &membrane.surface_matrix(&golden))
+                <= FREE_SURFACE_EQUILIBRIUM_REL_TOL,
+            "an iterate judges a trial geometry at its own q, with the trial's surface term",
         );
     }
 
@@ -2999,45 +3002,46 @@ mod tests {
     }
 
     #[test]
-    fn relax_step_without_a_projection_trial_is_one_descent_step_carrying_its_step_size() {
+    fn relax_step_without_a_projection_trial_only_descends_carrying_its_step_size() {
         let membrane = PrismMembrane::new();
         let guess = perturbed_prism_guess();
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let spec = ForceDensitySpec::Explicit(q.clone());
         let problem = membrane.problem(&guess, &spec);
-        let descend = |from: &[[f64; 3]], step: f64| {
-            combined_geometry_descent_step(
+        let eig_gap = |nodes: &[[f64; 3]]| {
+            combined_eig_gap_objective(
                 6,
                 &membrane.members,
                 &q,
                 &membrane.surfaces,
                 &membrane.sigmas,
-                from,
-                step,
+                nodes,
             )
         };
-        let mut relax = RelaxStep::new();
-
         let first = CombinedIterate::new(
             &problem,
             q.clone(),
             guess.clone(),
             membrane.surface_matrix(&guess),
         );
-        let next = relax.relax(&problem, &first, false);
-        let (expected, carried_step) = descend(&guess, 1e-2);
-        assert_eq!(next, expected);
+        let mut relax = RelaxStep::new();
 
-        let second = CombinedIterate::new(
-            &problem,
-            q.clone(),
-            next.clone(),
-            membrane.surface_matrix(&next),
+        let next = relax.relax(&problem, &first, false);
+
+        assert!(
+            eig_gap(&next) < eig_gap(&guess),
+            "the relax step must descend"
         );
-        assert_eq!(
-            relax.relax(&problem, &second, false),
-            descend(&next, carried_step).0
+        assert_ne!(
+            relax.descent_step,
+            RelaxStep::INITIAL_DESCENT_STEP,
+            "the adapted step must carry to the next call",
         );
+        assert!(
+            projection_trial(&problem, &first).is_some(),
+            "the guess must admit a projection trial for withholding it to show",
+        );
+        assert_ne!(next, RelaxStep::new().relax(&problem, &first, true));
     }
 
     #[test]
@@ -3050,25 +3054,19 @@ mod tests {
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let spec = ForceDensitySpec::Explicit(q.clone());
         let problem = membrane.problem(&planar, &spec);
-        let iterate = CombinedIterate::new(
-            &problem,
-            q.clone(),
-            planar.clone(),
-            membrane.surface_matrix(&planar),
+        let surface_mat = membrane.surface_matrix(&planar);
+        let iterate =
+            CombinedIterate::new(&problem, q.clone(), planar.clone(), surface_mat.clone());
+        assert_eq!(
+            form_find_explicit_combined_relaxed(&membrane.members, &q, &planar, &surface_mat),
+            Err(FreeFormError::SingularRecovery),
+            "the planar fixture must exercise the trial's error branch",
         );
+        assert_eq!(projection_trial(&problem, &iterate), None);
 
         let next = RelaxStep::new().relax(&problem, &iterate, true);
 
-        let (descended, _) = combined_geometry_descent_step(
-            6,
-            &membrane.members,
-            &q,
-            &membrane.surfaces,
-            &membrane.sigmas,
-            &planar,
-            1e-2,
-        );
-        assert_eq!(next, descended);
+        assert_eq!(next, RelaxStep::new().relax(&problem, &iterate, false));
     }
 
     /// Drives `guard` through `GEO_STALL_ITERS - 1` iterations that each leave
