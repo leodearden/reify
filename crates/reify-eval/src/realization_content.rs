@@ -1056,23 +1056,9 @@ mod tests {
     // Degradation tests should already PASS (None+1 diag from both old & new arm).
 
     /// Closed box mesh (±1.0 mm on each axis, 12 triangles).
-    /// Same fixture as `ingest_mesh_densify_tests::box_2mm`.
     #[cfg(has_openvdb)]
     fn box_2mm() -> reify_ir::Mesh {
-        let v: Vec<f32> = vec![
-            -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
-            1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
-        ];
-        #[rustfmt::skip]
-        let i: Vec<u32> = vec![
-            0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
-            2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
-        ];
-        reify_ir::Mesh {
-            vertices: v,
-            indices: i,
-            normals: None,
-        }
+        reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
     }
 
     /// δ SUCCESS: `project_realization_read_handle` on a Voxel node backed by
