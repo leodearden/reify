@@ -1439,13 +1439,28 @@ mod tests {
     /// runs inside fused-memory's write lock under a hard timeout.
     #[test]
     fn history_snapshot_binds_for_sweeps_only() {
-        assert_eq!(history_snapshot_branch(&make_args(false, None)), Some("main"));
-        assert_eq!(history_snapshot_branch(&make_args(false, Some("P5"))), Some("main"));
-        assert_eq!(history_snapshot_branch(&make_args(false, Some("P2"))), Some("main"));
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, None)),
+            Some("main")
+        );
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, Some("P5"))),
+            Some("main")
+        );
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, Some("P2"))),
+            Some("main")
+        );
 
-        let spot_check = Args { task_id: Some("1".to_string()), ..make_args(false, None) };
+        let spot_check = Args {
+            task_id: Some("1".to_string()),
+            ..make_args(false, None)
+        };
         assert_eq!(history_snapshot_branch(&spot_check), None);
-        let pre_done = Args { task_id: Some("1".to_string()), ..make_args(true, None) };
+        let pre_done = Args {
+            task_id: Some("1".to_string()),
+            ..make_args(true, None)
+        };
         assert_eq!(history_snapshot_branch(&pre_done), None);
     }
 
