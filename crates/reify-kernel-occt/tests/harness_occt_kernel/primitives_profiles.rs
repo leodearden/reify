@@ -3,36 +3,9 @@
 
 #![cfg(has_occt)]
 
-use crate::support::assert_operation_fails_with;
-use reify_ir::{
-    BRepKind, ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value,
-};
+use crate::support::{assert_operation_fails_with, assert_volume_near};
+use reify_ir::{BRepKind, ExportFormat, GeometryError, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
-
-/// Assert that the volume of the shape at `handle_id` is within `tolerance`
-/// relative error of `expected`. Panics with a descriptive message including `label`.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
-fn assert_volume_near(
-    kernel: &mut OcctKernel,
-    handle_id: GeometryHandleId,
-    expected: f64,
-    tolerance: f64,
-    label: &str,
-) {
-    let vol = kernel
-        .query(&GeometryQuery::Volume(handle_id))
-        .expect("Volume query should succeed")
-        .as_f64()
-        .expect("Volume should be numeric");
-    let rel_err = (vol - expected).abs() / expected;
-    assert!(
-        rel_err < tolerance,
-        "{label}: expected volume \u{2248} {expected:.2}, got {vol:.2} (rel_err={rel_err:.4})"
-    );
-}
 
 // --- Tube tests (task-324) ---
 
