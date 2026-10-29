@@ -26,12 +26,20 @@ The other **four** tiers, keyed on *who consumes the file* rather than who motiv
 | Language-spec conformance corpus | `crates/reify-spec-conformance/fixtures/<section>/` | run only by the spec-conformance suite's own harness (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2); must-reject fixtures are chartered residents, so no repo-wide walker sweeps it — `corpus_no_bare_scalar` carries a registered exclusion arm |
 
 **A fixture read by a compiled test target does not get special placement — it gets
-registration.** Add its basename to `_RUST_COUPLED_RI_FIXTURES` (`scripts/verify.sh:1080`)
-so an edit to it correctly escalates `pre-commit` to the heavy checks. You do not have to
-remember: `tests/infra/test_verify_scope.sh`'s PG-DRIFT scenario re-derives the coupled
-set from `git grep` over tracked sources and turns RED until the fixture is registered.
-This mechanism is the reason this directory is the standard — it exists here and nowhere
-else.
+registration.** Add its basename to `_RUST_COUPLED_RI_FIXTURES` in `scripts/verify.sh`
+(the list `decide_scope`'s prd-gate fixture arm reads) so an edit to it correctly
+escalates `pre-commit` to the heavy checks. You do not have to remember:
+`tests/infra/test_verify_scope.sh`'s PG-DRIFT scenario re-derives the coupled set from
+`git grep` over tracked sources and turns RED until the fixture is registered. This
+mechanism is the reason this directory is the standard — it exists here and nowhere else.
+
+From the S18 cutover (ζ #9112) there is no list to register in: both coupled sets are
+derived at plan time (PRD `docs/prds/v0_6/verify-structured-plan-and-role-table.md` D6,
+implemented in `scripts/reify_verify/scope.py`). The Rust set comes from tracked `*.rs`
+references, by PG-DRIFT's own predicate; the GUI set from
+`gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. Until then `scripts/verify.sh`
+is still the gate and classifies by its lists, and PG-DRIFT still reds an unregistered
+reference, so keep registering.
 
 Note that fixtures here are **not** required to parse or to pass `reify check`: several
 are deliberately unparseable or deliberately failing, because they are *probe* inputs

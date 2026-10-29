@@ -64,3 +64,5 @@ gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<<|<<.*> *"?[$][{]?
 # ordered-scope-grep: scope-decision fields are read with plan_capture_lib.sh's
 # plan_header_field, order-independently; ξ #9113 lowers this to 0.
 ordered-scope-grep | RUN_RUST=[01] RUN_GUI=[01] | tests/infra/test_*.sh | 82 | θ #9105
+# planner-fixture-name-literal: the planner derives its coupled fixture sets (D6), so no reify_verify module quotes a fixture name.
+planner-fixture-name-literal | [A-Za-z0-9_]+[.]ri['"] | scripts/reify_verify/*.py | 0 | S18 β #9097

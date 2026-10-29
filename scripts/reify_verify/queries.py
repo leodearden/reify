@@ -1,8 +1,9 @@
 """queries — the read-only reports verify.py prints instead of running (PRD D11).
 
 Each report is one JSON object per stdout line, every line carrying `"v": 1`.
-A report returns its knob warnings rather than printing them: cli writes them
-to stderr, each once.
+A report returns its warnings rather than printing them, and cli writes them
+to stderr. The knob and role reports de-duplicate theirs; scope_report keeps
+every stage's lines, in bash's stage order.
 """
 
 import dataclasses
@@ -11,8 +12,10 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
-from reify_verify import knobs, policy
+from reify_verify import knobs, narrowing, policy, scope, selection
+from reify_verify.invocation import Invocation
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,22 @@ def role_policy_report(env: Mapping[str, str]) -> QueryOutput:
     )
     return QueryOutput(
         tuple(map(json.dumps, (*role_lines, *profile_lines))), _first_occurrences(warnings)
+    )
+
+
+def scope_report(invocation: Invocation, env: Mapping[str, str], repo_root: Path) -> QueryOutput:
+    """The scope decision, the infra selection and the narrowing of one gate invocation."""
+    decision, scope_warnings = scope.decide(invocation, repo_root, env)
+    selected, selection_warnings = selection.select_infra(decision, repo_root, env)
+    narrowed, narrowing_warnings = narrowing.narrow(decision, invocation.narrow, repo_root, env)
+    record = {
+        "v": 1,
+        "scope": decision.to_json(),
+        "narrowing": narrowed.to_json(),
+        "infra_selection": selected.to_json(),
+    }
+    return QueryOutput(
+        (json.dumps(record),), (*scope_warnings, *selection_warnings, *narrowing_warnings)
     )
 
 
