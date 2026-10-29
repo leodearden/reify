@@ -201,7 +201,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "mpc-row-literals",
         home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
-        baseline: 2,
+        baseline: 0,
         measure: Measure::Occurrences(Pattern {
             skip_items: &["impl MpcRow", "pub struct MpcRow"],
             view: View::CodeAndDocs,
