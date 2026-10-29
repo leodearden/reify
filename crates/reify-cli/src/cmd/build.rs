@@ -111,28 +111,6 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    // Register FEA/buckling/modal + shell-extract compute trampolines so that
-    // `@optimized("solver::elastic_static")` targets dispatch to the real solver
-    // rather than body-inlining.  This is also what keeps the missing-trampoline
-    // diagnostic GATING here: without these registrations this engine's compute
-    // registry would be entirely EMPTY — `cmd_check`'s declared trampoline-free
-    // posture — and task 5311's severity predicate would emit
-    // `DiagnosticCode::NoRegisteredComputeTrampoline` at `Severity::Warning`,
-    // leaving FEA-result constraints Indeterminate WITHOUT failing the build.
-    // With the bundle registered, a target that is still unregistered is a
-    // genuine defect and stays `Severity::Error`, which `reify build` gates on.
-    //
-    // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
-    // constructs under a `Solve` posture, wiring the production registry).  The DimensionalSolver resolves
-    // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
-    // `minimize`/`maximize` directive is present; wiring it here would change the
-    // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
-    // bracket_all_indeterminate) from INDETERMINATE → SATISFIED.  cmd_build's
-    // solver-free posture is intentional; cmd_eval wires the full solver via
-    // `configured_eval_engine` because it explicitly models the full evaluation path.
-    // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
-    // the solve runs correctly here under `SolverPosture::SolverFree`.  See
-    // `build_is_success` for the (c) exit-code gate.
     let mut engine = configured_check_build_engine(|posture| {
         reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
     });

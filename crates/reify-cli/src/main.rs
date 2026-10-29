@@ -315,10 +315,9 @@ fn parse_and_compile_with_cfg(
 /// membership, ordering, and the INV-FEA-1 single-source-of-truth rationale;
 /// this wrapper does not restate them).
 ///
-/// Exists to name the `MorphRegistration::Enabled` choice once and keep both
-/// call sites — `cmd_build` (solver-free, calls this directly) and
-/// [`configured_eval_engine`] (full solver) — one-line, with no drift between
-/// them.
+/// Exists to name the `MorphRegistration::Enabled` choice once; its one
+/// production caller is [`production_cli_engine`], which every CLI engine
+/// ([`configured_eval_engine`], [`configured_check_build_engine`]) goes through.
 ///
 /// The morph producer is dormant-safe (task 4744 β): the dispatch only
 /// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
@@ -404,11 +403,6 @@ const EVAL_FAMILY_POSTURE: reify_eval::SolverPosture =
 /// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
 /// "falling back to tet meshing" warning even though the FEA trampoline independently
 /// re-classifies and runs the correct shell solve.
-///
-/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
-/// [`register_compute_trampolines`] directly (constructs `SolverPosture::SolverFree`)
-/// to preserve cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
-/// `cmd_build` for rationale.
 fn configured_eval_engine(
     construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
 ) -> reify_eval::Engine {

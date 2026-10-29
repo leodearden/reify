@@ -846,9 +846,9 @@ fn build_combined_param_let_graph(
 /// why that probe is not a flat membership test over the readers.
 ///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
-/// `has_active_solver` gate so the warning surfaces on `reify check` even
-/// when no constraint solver is attached (exactly as `detect_scope_coupling`
-/// does).
+/// `has_active_solver` gate so the warning surfaces on a solver-free engine
+/// (reify-lsp's cold path) as well as on `reify check` / `reify eval`
+/// (exactly as `detect_scope_coupling` does).
 ///
 /// **Global vs per-template scan:** the global read-set prevents false positives
 /// for cross-scope-referenced auto cells (e.g. `Leaf.k` read by a sibling
@@ -1158,8 +1158,9 @@ fn auto_is_pinned_through_a_reader(
 /// (task δ #4825; PRD `docs/prds/v0_6/objective-scope-inheritance.md` §3.4/§6.4, BT8).
 ///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
-/// `has_active_solver` gate, so the warning surfaces on `reify check` (no
-/// solver attached) as well as `reify eval`.  `eval_cached` (the LSP cached
+/// `has_active_solver` gate, so the warning surfaces on a solver-free engine
+/// (reify-lsp's cold path) as well as `reify check` / `reify eval`.
+/// `eval_cached` (the LSP cached
 /// path) intentionally does NOT call this — same asymmetry as W_SCOPE_COUPLING
 /// (see the `eval_cached` call site comment at engine_eval.rs:4495).
 ///
@@ -7017,7 +7018,8 @@ impl Engine {
         // cycle-only coupling_diagnostics (irreducible SCC crossings only).
         // Acyclic crossings are resolved by the ordering itself and do NOT warn.
         // Placed OUTSIDE the `has_active_solver` gate so cycle warnings surface
-        // on `reify check` (which attaches no solver) — same placement as before.
+        // on a solver-free engine (reify-lsp's cold path) as well as `reify
+        // check` / `reify eval` — same placement as before.
         // `ro` was bound before the gate above so it is in scope here.
         diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
 
@@ -7026,8 +7028,9 @@ impl Engine {
         // BT2). For each over-cap / un-mergeable cluster (ApproximatedFallback),
         // emit ONE named warning by reading `ro.clusters` (populated by
         // resolve_order's structural clustering pass). Placed at the same site +
-        // gate as the coupling_diagnostics extend above, so it surfaces on
-        // `reify check` (no solver) and `reify eval` alike. This is the non-test
+        // gate as the coupling_diagnostics extend above, so it surfaces on a
+        // solver-free engine (reify-lsp's cold path) as well as `reify check` /
+        // `reify eval`. This is the non-test
         // consumer of ro.clusters, so the field is not dead code — β consumes
         // the identical field to drive the merged solve. eval_cached deliberately
         // does NOT emit (mirrors its existing no-W_SCOPE_COUPLING policy — eval
@@ -7068,7 +7071,8 @@ impl Engine {
 
         // Ambiguous objective inheritance detection (task δ #4825 — W_OBJECTIVE_INHERIT_AMBIGUOUS,
         // PRD §3.4/§6.4, BT8). Placed OUTSIDE the `has_active_solver` gate so the warning
-        // surfaces on `reify check` (no solver) and `reify eval` alike. Emits one warning per
+        // surfaces on a solver-free engine (reify-lsp's cold path) as well as `reify check` /
+        // `reify eval`. Emits one warning per
         // objective-less structure reachable under ≥2 distinct-objective containers.
         diagnostics.extend(detect_ambiguous_inherited_objectives(&module.templates));
 
@@ -10741,8 +10745,8 @@ impl Engine {
                                 // diagnostic, then fall through to body-inlining.
                                 // Task 5311: Warning when this engine's compute
                                 // registry is entirely EMPTY (a declared
-                                // trampoline-free posture, e.g. `reify check` /
-                                // reify-lsp), Error otherwise (a driver that
+                                // trampoline-free posture, e.g. reify-lsp),
+                                // Error otherwise (a driver that
                                 // registered some trampolines is genuinely missing
                                 // this one). Wording, code AND that emptiness
                                 // predicate all live in the constructor — see
@@ -11859,7 +11863,7 @@ impl Engine {
                         // body-inlining.
                         // Task 5311: Warning when this engine's compute registry
                         // is entirely EMPTY (a declared trampoline-free posture,
-                        // e.g. `reify check` / reify-lsp), Error otherwise (a
+                        // e.g. reify-lsp), Error otherwise (a
                         // driver that registered some trampolines is genuinely
                         // missing this one). Wording, code AND that emptiness
                         // predicate all live in the constructor — see
@@ -14504,9 +14508,9 @@ structure LetSiteProbe {
         diagnostics
     }
 
-    /// EMPTY registry ⇒ `Severity::Warning`, coded. This is `reify check`'s and
-    /// `reify-lsp`'s posture: no trampolines registered at all, so a missing one
-    /// is the declared posture rather than a defect.
+    /// EMPTY registry ⇒ `Severity::Warning`, coded. This is `reify-lsp`'s
+    /// posture: no trampolines registered at all, so a missing one is the
+    /// declared posture rather than a defect.
     #[test]
     fn evaluate_let_bindings_unregistered_target_warns_on_an_empty_registry() {
         let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);

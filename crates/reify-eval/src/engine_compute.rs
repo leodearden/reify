@@ -135,16 +135,14 @@ impl crate::Engine {
     /// - registry entirely EMPTY ⇒
     ///   [`Severity::Warning`](reify_core::Severity::Warning). An empty compute
     ///   registry means the driver declared a trampoline-free posture rather
-    ///   than forgetting one trampoline. `reify check` (whose `cmd_check`
-    ///   constructs its engines without ever calling
-    ///   `register_compute_trampolines`) and `reify-lsp` (`Engine::new` with no
-    ///   registration) are both in that posture, and reporting a posture as an
-    ///   `error:` while exiting 0 is the loud/silent mismatch this task closes.
+    ///   than forgetting one trampoline. `reify-lsp` (`Engine::new` with no
+    ///   registration) is in that posture, and reporting a posture as an
+    ///   `error:` is the loud/silent mismatch this task closes.
     /// - registry NON-empty ⇒ [`Severity::Error`](reify_core::Severity::Error).
     ///   A driver that registered SOME trampolines and is still missing THIS
-    ///   one is a genuine defect. `reify eval` and `reify build` both register
-    ///   the 19-target production bundle, so they stay on this arm and the
-    ///   diagnostic keeps gating their exit codes.
+    ///   one is a genuine defect. `reify check`, `reify eval` and `reify build`
+    ///   all register the 19-target production bundle, so they stay on this arm
+    ///   and the diagnostic keeps gating their exit codes.
     ///
     /// The [`DiagnosticCode`] is the SAME on both arms by design: the code
     /// names the cause, the severity reports how much the caller's posture
@@ -199,9 +197,9 @@ impl crate::Engine {
 ///    one `Severity::Error`. An `Err` carrying only a Warning is incoherent,
 ///    and would be silently swallowed by `reify build` / `reify eval`'s
 ///    `has_error_diagnostic` exit gate — a returned failure that stops gating.
-/// 3. `reify check` — the driver whose loud/silent mismatch task 5311 closes —
-///    can only ever reach the two SOFT sites, traced end to end. Nothing
-///    user-observable is lost by leaving these two unconditional.
+/// 3. Every CLI driver (`reify check`, `reify eval`, `reify build`) registers
+///    the production bundle, so the predicate would yield Error for them
+///    anyway.
 ///
 /// Both HARD sites are guarded positively by
 /// `dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry`

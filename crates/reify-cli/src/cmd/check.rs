@@ -1,4 +1,4 @@
-//! `reify check <file>`: the static constraint checker.
+//! `reify check <file>`: resolves autos and reports every constraint verdict.
 
 use std::process::ExitCode;
 
@@ -17,49 +17,18 @@ use crate::module_capabilities::{
 };
 use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
 
-/// `reify check <file>` — lightweight static constraint checker.
+/// `reify check <file>` — resolves autos and reports every constraint verdict.
+///
+/// Every engine comes from
+/// [`configured_check_build_engine`](crate::configured_check_build_engine): the
+/// solver and the compute trampolines, with no persistent cache.
 ///
 /// `--verbose` adds a full-precision achieved-deviation readout to stdout
 /// ([`report_achieved_deviations`]) and changes nothing else. It is refused
 /// with `--purpose`: that path never measures a deviation, so it would print
 /// nothing.
 ///
-/// ## Engine posture: deliberately NO compute trampolines
-///
-/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
-/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
-/// check()`.  Neither path calls
-/// [`configured_eval_engine`](crate::configured_eval_engine) nor registers the
-/// FEA/buckling/modal compute trampolines
-/// ([`register_compute_trampolines`](crate::register_compute_trampolines)).
-///
-/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
-/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
-/// against the body-inline `undef` fallback and report **Indeterminate** under
-/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
-/// FEA exit-code gate.
-///
-/// **Rationale:** registering compute trampolines here would run a potentially
-/// slow FEA solve inside the lightweight static-check path, violating the design
-/// intent that *check attaches no kernel by design*.  The trampoline-free posture
-/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
-/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
-///
-/// **Severity of the missing-trampoline diagnostic (task 5311):** `reify check`
-/// surfaces the engine-owned "no registered compute trampoline (falling back to
-/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves at
-/// `Severity::Warning`, carrying
-/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
-/// severity on its compute registry being entirely EMPTY, which is exactly this
-/// function's posture — `cmd_check` never calls `register_compute_trampolines`,
-/// so a missing trampoline here is the declared posture rather than a defect.
-/// `reify eval` and `reify build` DO register the production bundle, so the
-/// same diagnostic stays `Severity::Error` there and keeps gating their exit
-/// codes.  The contrast is pinned by
-/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
-/// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
-///
-/// **Other `error:` lines.** Every other `Severity::Error` diagnostic makes
+/// **`error:` lines.** Every `Severity::Error` diagnostic makes
 /// `check` exit non-zero through [`check_gating_error`] unless a
 /// `check_verdict::CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.  The residual shapes across
 /// `examples/**/*.ri` are inventoried in #7308 (with the sweep command that
@@ -214,8 +183,8 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // tessellate realize nothing → all three kinds yield Indeterminate or
         // are skipped (never a false Violated or false W_DFM_OVERHANG) → exit 0.
         //
-        // When the module has NONE of the four kinds, keep the existing
-        // `Engine::new(None)+check()` path verbatim (C2).
+        // When the module has NONE of the four kinds, take the kernel-less
+        // `Engine::new(.., None) + check()` arm (C2).
         let checker = SimpleConstraintChecker;
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
@@ -338,7 +307,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             let result = engine.check(&compiled);
             (result, take_deviation_readout(&engine))
         } else {
-            // Existing lightweight path: no kernel, no tessellation (C2).
+            // Lightweight arm: no geometry kernel, no tessellation (C2).
             let mut engine = configured_check_build_engine(|posture| {
                 reify_eval::Engine::new(posture, Box::new(checker), None)
             });
@@ -443,13 +412,9 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // and geometry-query value cells stay `undef`.
         //
         // `Engine::with_registered_kernel` (engine_admin.rs) attaches a
-        // GEOMETRY kernel only. `configured_eval_engine` is deliberately NOT
-        // used: it calls `register_compute_trampolines` and wires a solver +
-        // persistent FEA cache, and `check` stays compute-trampoline-free by
-        // design (see the design-intent comment on `cmd_check` above, and the
-        // regression lock `check_fea_violated_constraint_is_not_gated`). The
-        // geometry-kernel axis and the compute-trampoline axis are independent;
-        // this leaf moves only the former.
+        // GEOMETRY kernel; both arms take the solver and the compute
+        // trampolines from `configured_check_build_engine`, with no persistent
+        // cache, exactly as the no-purpose path does.
         //
         // The engine must outlive the branch: `activate_purpose` /
         // `activate_purpose_with_bindings` / `is_purpose_active` /
