@@ -2550,43 +2550,37 @@ mod tests {
     // metric-improvement proof (esc-4068-134 directive 2). ---
 
     #[test]
-    fn degenerate_flat_reduces_to_mitc3_plus_on_unit_metric_triangle() {
-        // "Bit-compatible flat reduction" realized as numerical equivalence at FP
-        // round-off: on the UNIT-metric orthogonal reference triangle with
-        // directors ∥ +z and uniform thickness, the degenerate element matrix
-        // equals flat MITC3+'s (max entrywise diff / k_max < 1e-9). This is the
-        // load-bearing correctness anchor — the element provably degrades to the
-        // reviewed task-3392 behaviour when flat.
-        //
-        // Why the UNIT-metric triangle (esc-4068-134): membrane+bending reduce on
-        // ANY flat triangle, but the degenerate transverse shear is the physically-
-        // correct standard-MITC3 shear, which equals task 3392's metric-simplified
-        // flat shear only where |g_ξ| = |g_η| = 1 and g_ξ ⊥ g_η — i.e. the unit
-        // reference triangle. On a general flat triangle the two K differ by the
-        // in-plane metric on the shear (a strict improvement, pinned positively by
-        // the non-unit shear patch test below). Literal `to_bits()` identity is
-        // precluded by the differing (but exact) ζ-quadrature, so it is not
-        // asserted; 1e-9 relative is the standard FE meaning of "reduces to flat".
+    fn degenerate_flat_reduces_to_mitc3_plus_on_any_flat_triangle() {
+        // With directors ∥ +z and uniform thickness, a flat facet's exact
+        // covariant shear is (t/2)× the metric-carrying flat field, and membrane +
+        // bending coincide too, so the degenerate K equals flat MITC3+'s at FP
+        // round-off on any flat triangle. Literal `to_bits()` identity is
+        // precluded by the differing (but exact) ζ-quadrature; 1e-9 relative is
+        // the standard FE meaning of "reduces to flat".
         let mat = steel_like();
         let t = 0.05_f64;
         let directors = [[0.0, 0.0, 1.0]; 3]; // ∥ +z facet normal
         let thicknesses = [t; 3];
-        let k_deg = shell_element_stiffness_degenerate(&UNIT_TRI, &directors, &thicknesses, &mat);
-        let k_ref = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
-        let k_max = element_k_max(&k_ref);
+        let wide = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+        let panel_cell = [[0.0, 0.0, 0.0], [0.055, 0.0, 0.0], [0.055, 0.05625, 0.0]];
+        for nodes in [UNIT_TRI, DISTORTED_TRI, wide, panel_cell] {
+            let k_deg = shell_element_stiffness_degenerate(&nodes, &directors, &thicknesses, &mat);
+            let k_ref = shell_element_stiffness_mitc3_plus(&nodes, t, &mat);
+            let k_max = element_k_max(&k_ref);
 
-        let mut max_diff = 0.0_f64;
-        for i in 0..Mitc3Plus::N_DOFS {
-            for j in 0..Mitc3Plus::N_DOFS {
-                max_diff = max_diff.max((k_deg.get(i, j) - k_ref.get(i, j)).abs());
+            let mut max_diff = 0.0_f64;
+            for i in 0..Mitc3Plus::N_DOFS {
+                for j in 0..Mitc3Plus::N_DOFS {
+                    max_diff = max_diff.max((k_deg.get(i, j) - k_ref.get(i, j)).abs());
+                }
             }
+            assert!(
+                max_diff < 1e-9 * k_max,
+                "flat degenerate K differs from flat MITC3+ on {nodes:?} by {max_diff} \
+                 (k_max {k_max}, rel {})",
+                max_diff / k_max,
+            );
         }
-        assert!(
-            max_diff < 1e-9 * k_max,
-            "flat degenerate K differs from flat MITC3+ by {max_diff} \
-             (k_max {k_max}, rel {})",
-            max_diff / k_max,
-        );
     }
 
     // --- Rotation-bubble activation signal (task 4065 step-1 RED) ---

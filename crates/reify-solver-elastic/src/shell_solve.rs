@@ -281,21 +281,25 @@ mod tests {
         mx
     }
 
-    /// RED (task δ step-1): pin the flat-plate MITC3 cantilever shell driver.
-    ///
+    /// Max top-layer von Mises over the elements of a driver solve.
+    fn max_top_von_mises(solve: &FlatPlateShellSolve) -> f64 {
+        solve
+            .stresses
+            .iter()
+            .map(|s| von_mises(&s.top))
+            .fold(0.0_f64, f64::max)
+    }
+
     /// Fixture mirrors `examples/fea_shell_flexure.ri`: a 50 mm × 10 mm × 1 mm
     /// steel flexure (E=205 GPa, ν=0.29) with a 10 N transverse tip load.
     ///
-    /// # Accuracy basis (esc-3594-10 bare-MITC3 honest band)
+    /// # Accuracy basis
     ///
-    /// A flat-facet cantilever is the BENIGN MITC3 case: it has NO curvature,
-    /// so none of the membrane-locking that drives the 1.7×–2200× errors on the
-    /// curved MacNeal-Harder benchmarks (`shell_benchmarks.rs`) applies. The
-    /// assertion is therefore a ONE-ORDER-OF-MAGNITUDE band [3e7, 3e9] Pa around
-    /// the analytical σ = 6PL/(bh²) = 3e8 Pa — a 10× window, far wider than the
-    /// flat-facet method error. No tight (5%) tolerance is asserted.
+    /// The max top-layer von Mises sits at the clamped root and is held to
+    /// ±15% of σ = 6PL/(bh²) = 3e8 Pa (measured 0.92σ; a shear-locked element
+    /// reads 7σ from a flapping tip corner).
     #[test]
-    fn flat_plate_shell_cantilever_top_von_mises_within_one_oom_of_analytical() {
+    fn flat_plate_shell_cantilever_top_von_mises_within_15_percent_of_analytical() {
         let length = 0.05_f64;
         let width = 0.01_f64;
         let thickness = 0.001_f64;
@@ -325,26 +329,20 @@ mod tests {
 
         // Analytical reference: σ = 6PL/(bh²) = 6·10·0.05/(0.01·1e-6) = 3e8 Pa.
         let sigma_ref = 6.0 * tip_force * length / (width * thickness.powi(2));
-        let lower = 0.1 * sigma_ref; // 3e7 Pa
-        let upper = 10.0 * sigma_ref; // 3e9 Pa
 
         // Peak bending lives at the clamped root; assert max-over-elements (not a
         // fragile root-element index) of the .top layer von Mises.
-        let max_top_vm = solve
-            .stresses
-            .iter()
-            .map(|s| von_mises(&s.top))
-            .fold(0.0_f64, f64::max);
+        let max_top_vm = max_top_von_mises(&solve);
 
         assert!(
             max_top_vm.is_finite(),
             "max top von Mises must be finite, got {max_top_vm}"
         );
-        assert!(max_top_vm > 0.0, "max top von Mises must be > 0, got {max_top_vm}");
         assert!(
-            (lower..=upper).contains(&max_top_vm),
-            "max top von Mises {max_top_vm:.4e} Pa outside one-OOM band \
-             [{lower:.1e}, {upper:.1e}] around σ=6PL/(bh²)={sigma_ref:.4e} Pa"
+            (0.85..=1.15).contains(&(max_top_vm / sigma_ref)),
+            "max top von Mises {max_top_vm:.4e} Pa = {:.4}·σ, outside [0.85σ, 1.15σ] \
+             around σ=6PL/(bh²)={sigma_ref:.4e} Pa",
+            max_top_vm / sigma_ref,
         );
 
         // Real through-thickness bending gradient: the top fibre must carry more
@@ -363,6 +361,29 @@ mod tests {
             max_top_abs > max_mid_abs,
             "expected a through-thickness bending gradient (max|top|={max_top_abs:.4e} \
              > max|mid|={max_mid_abs:.4e}); mid should sit near the neutral plane"
+        );
+    }
+
+    /// The 1100 × 900 × 66 mm dogfood panel (L/t ≈ 17) under a 1 kN tip load:
+    /// max top von Mises within ±15% of σ = 6PL/(bh²). Measured 0.93σ.
+    #[test]
+    fn flat_plate_shell_dogfood_panel_top_von_mises_within_15_percent_of_analytical() {
+        let (length, width, thickness) = (1.1_f64, 0.9_f64, 0.066_f64);
+        let material = IsotropicElastic {
+            youngs_modulus: 205e9,
+            poisson_ratio: 0.29,
+        };
+        let tip_force = 1000.0_f64;
+
+        let solve = solve_flat_plate_shell(length, width, thickness, &material, tip_force);
+        assert!(solve.converged, "dogfood panel CG must converge");
+
+        let sigma_ref = 6.0 * tip_force * length / (width * thickness.powi(2));
+        let ratio = max_top_von_mises(&solve) / sigma_ref;
+        assert!(
+            (0.85..=1.15).contains(&ratio),
+            "dogfood panel max top von Mises = {ratio:.4}·σ, outside [0.85σ, 1.15σ] \
+             around σ=6PL/(bh²)={sigma_ref:.4e} Pa"
         );
     }
 }

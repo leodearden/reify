@@ -499,7 +499,7 @@ fn pinched_cylinder_octant_symmetry_bcs(nodes: &[[f64; 3]], l: f64, tol: f64) ->
 /// the file header in `shell_assembly.rs` for the K_NB ≡ 0 proof that
 /// shows flat-facet bubble enrichment is mathematically inert. The band
 /// here documents observed bare-MITC3 behaviour on a 4×4 octant mesh —
-/// roughly 76× under the published reference due to residual membrane
+/// roughly 6× under the published reference due to residual membrane
 /// locking on curved geometry.
 ///
 /// A thin cylindrical shell (R=300, L=600, t=3, E=3×10⁶, ν=0.3) is
@@ -519,8 +519,8 @@ fn pinched_cylinder_octant_symmetry_bcs(nodes: &[[f64; 3]], l: f64, tol: f64) ->
 /// # Smoke-test envelope (bare MITC3, flat-facet)
 ///
 /// MacNeal-Harder (1985) reference: **1.8248×10⁻⁵**.
-/// Observed bare-MITC3 4×4 octant displacement: **~2.4×10⁻⁷** (~76× under).
-/// Acceptance band: `[1.0×10⁻⁷, 1.0×10⁻⁶]` — a factor-~2 window around the
+/// Observed bare-MITC3 4×4 octant displacement: **3.0456×10⁻⁶** (~6× under).
+/// Acceptance band: `[1.5×10⁻⁶, 6.1×10⁻⁶]` — a factor-~2 window around the
 /// observed value to absorb normal numerical drift. A future curved-element
 /// MITC3+ implementation will move radial_disp UPWARD toward the published
 /// reference and require widening (or replacement) of this band.
@@ -533,9 +533,9 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward()
     const NY: usize = 4; // z-direction divisions
     const P: f64 = 1.0; // total applied load
     const MACNEAL_HARDER_REF: f64 = 1.8248e-5;
-    // Bare-MITC3 observed value is ~2.4e-7; band brackets observed × 2.
-    const LOWER: f64 = 1.0e-7;
-    const UPPER: f64 = 1.0e-6;
+    // Bare-MITC3 observed value is 3.0456e-6; band brackets observed × 2.
+    const LOWER: f64 = 1.5e-6;
+    const UPPER: f64 = 6.1e-6;
 
     let mat = IsotropicElastic {
         youngs_modulus: 3e6,
@@ -585,8 +585,8 @@ fn pinched_cylinder_octant_smoke_test_radial_displacement_is_finite_and_inward()
     assert!(
         (LOWER..=UPPER).contains(&radial_disp),
         "pinched cylinder: radial_disp = {radial_disp:.6e} \
-         outside bare-MITC3 envelope [{LOWER:.0e}, {UPPER:.0e}] \
-         (MacNeal-Harder reference {MACNEAL_HARDER_REF:.4e}; bare MITC3 ~76× under). \
+         outside bare-MITC3 envelope [{LOWER:.1e}, {UPPER:.1e}] \
+         (MacNeal-Harder reference {MACNEAL_HARDER_REF:.4e}; bare MITC3 ~6× under). \
          A future curved-element MITC3+ fix will exceed this band and require widening."
     );
 }
@@ -1350,14 +1350,20 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
 
 // ─── step-9: twisted beam (MacNeal-Harder §3.6) ──────────────────────────────
 
+/// MacNeal-Harder (1985) twisted-beam tip deflection for the load these tests
+/// apply. F_y is normal to the root section but lies in the plane of the tip
+/// section, which is MacNeal-Harder's tip in-plane case (5.424×10⁻³), not the
+/// out-of-plane 1.754×10⁻³. Beam-theory cross-check:
+/// (L³/E)·[0.268/I_weak + 0.065/I_strong] = 5.43×10⁻³.
+const TWISTED_BEAM_F_Y_TIP_REF: f64 = 5.424e-3;
+
 /// Twisted cantilever beam smoke test — geometry from MacNeal-Harder
 /// (1985) §3.6.
 ///
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
 /// the response is finite, signed, and within a wide order-of-magnitude
-/// band; today's bare MITC3 element under-predicts the published reference
-/// by ~1.7× (much milder than the curved benchmarks because the helicoid's
-/// elements are nearly planar).
+/// band; the absolute band lives in
+/// `twisted_beam_flat_shell_tip_deflection_within_10_percent_of_reference`.
 ///
 /// A flat strip twisted uniformly 90° about its long axis from root to tip,
 /// clamped at the root and loaded by a transverse point load at the tip.
@@ -1371,23 +1377,19 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
 /// - Twist angle: α(z) = (π/2) · z/L.
 /// - Node position: `(s·cos α, s·sin α, z)` where s ∈ [−w/2, +w/2].
 ///
-/// # Load case: out-of-plane tip load (MacNeal-Harder reference = 1.754×10⁻³)
+/// # Load case: F_y tip load (MacNeal-Harder reference = 5.424×10⁻³)
 ///
-/// "Out-of-plane" is defined relative to the root cross-section: the root's
-/// mid-surface is in the xz-plane, so the out-of-plane direction is +y.
-/// Applying F_y = 1.0 at the tip (distributed equally among the ny+1 tip nodes)
-/// produces a transverse bending + twisting response.
+/// F_y is normal to the root section (mid-surface in the xz-plane) and lies in
+/// the plane of the tip section (mid-surface in the yz-plane): MacNeal-Harder's
+/// tip in-plane case, see [`TWISTED_BEAM_F_Y_TIP_REF`]. Applying F_y = 1.0 at
+/// the tip (distributed equally among the ny+1 tip nodes) produces a bending +
+/// twisting response.
 ///
 /// The measurement: u_y at the tip centroid (s=0, z=L) → node at (0,0,L).
 ///
 /// # Smoke-test envelope
 ///
-/// Today's coarse-mesh MITC3 out-of-plane tip displacement is
-/// **~1.0×10⁻³** (bare MITC3, 12×2). The published MacNeal-Harder
-/// (1985) reference is **1.754×10⁻³** (only a ~1.7× gap — best-performing
-/// of the four geometries because the helicoid elements are nearly planar
-/// and the assumed-strain MITC technique is effective there).
-///
+/// Bare MITC3 on the 12×2 mesh gives **~5.7×10⁻³** (+5% of the reference).
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test for the same rationale.
 #[test]
@@ -1395,7 +1397,6 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     const L: f64 = 12.0;
     const NZ: usize = 12; // segments along z
     const NY: usize = 2; // strips across width
-    const MACNEAL_HARDER_REF: f64 = 1.754e-3;
 
     let mat = IsotropicElastic {
         youngs_modulus: 29.0e6,
@@ -1429,9 +1430,8 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     }
 
     // Load: F_y = 1.0 distributed equally among the NY+1 tip nodes.
-    // Each tip node receives F_y = 1.0 / (NY+1).
-    // The out-of-plane direction at the root is +y, making F_y the
-    // "out-of-plane" load case per the MacNeal-Harder convention.
+    // Each tip node receives F_y = 1.0 / (NY+1). F_y is normal to the root
+    // section and in the plane of the tip section (TWISTED_BEAM_F_Y_TIP_REF).
     let tip_f = 1.0 / (NY + 1) as f64;
     let mut point_loads: Vec<(usize, f64)> = Vec::new();
     for (node, n) in nodes.iter().enumerate() {
@@ -1452,11 +1452,9 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     // Out-of-plane displacement = u_y at tip centroid.
     let tip_defl = u[centroid_node * 6 + 1];
 
-    // Smoke-test envelope spans today's locked output (~1.0e-3) and the
-    // published reference (1.754e-3). The gap is small here, so the band
-    // is correspondingly narrower than the curved-shell benchmarks.
-    //   floor = 1e-5 → 100× margin below observed locked output
-    //   ceil  = 1e-1 → 57× margin above published reference
+    // Order-of-magnitude envelope around the reference (5.424e-3):
+    //   floor = 1e-5 → ~540× below it
+    //   ceil  = 1e-1 → ~18× above it
     const SMOKE_FLOOR: f64 = 1.0e-5;
     const SMOKE_CEIL: f64 = 1.0e-1;
     assert!(
@@ -1472,26 +1470,21 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     assert!(
         tip_defl > SMOKE_FLOOR && tip_defl < SMOKE_CEIL,
         "twisted beam smoke test: tip_defl = {tip_defl:.4e} outside \
-         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Today's locked \
-         MITC3 12×2 output is ~1.0e-3; published MacNeal-Harder reference \
-         is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
-         this band, not outside it."
+         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Bare MITC3 12×2 \
+         gives ~5.7e-3; MacNeal-Harder reference is \
+         {TWISTED_BEAM_F_Y_TIP_REF:.4e}."
     );
 }
 
-/// MITC3+ observable signal: on the MacNeal-Harder twisted cantilever, the
-/// genuine flat-facet MITC3+ element ([`shell_element_stiffness_mitc3_plus`])
-/// must produce a tip out-of-plane deflection that is STRICTLY CLOSER to the
-/// published reference (1.754×10⁻³) than bare flat-facet MITC3 on the identical
-/// mesh / BCs / loads — the relative shear-locking-relief deliverable for task
-/// 3392 (the absolute ~50% MacNeal-Harder bound needs the curved substrate +
-/// membrane cure of task 4065 and is NOT chased here).
+/// Twisted cantilever (MacNeal-Harder §3.6) under the F_y tip load: bare MITC3
+/// and flat MITC3+ each land within ±10% of [`TWISTED_BEAM_F_Y_TIP_REF`] on the
+/// identical 12×2 mesh / BCs / loads. Measured: bare 5.718e-3 (+5.4%), MITC3+
+/// 5.738e-3 (+5.8%). No ordering between the two kernels is claimed.
 #[test]
-fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
+fn twisted_beam_flat_shell_tip_deflection_within_10_percent_of_reference() {
     const L: f64 = 12.0;
     const NZ: usize = 12;
     const NY: usize = 2;
-    const MACNEAL_HARDER_REF: f64 = 1.754e-3;
 
     let mat = IsotropicElastic {
         youngs_modulus: 29.0e6,
@@ -1516,8 +1509,7 @@ fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
         }
     }
 
-    // Load: F_y = 1.0 distributed equally among the NY+1 tip nodes (the root
-    // out-of-plane direction is +y).
+    // Load: F_y = 1.0 distributed equally among the NY+1 tip nodes.
     let tip_f = 1.0 / (NY + 1) as f64;
     let mut point_loads: Vec<(usize, f64)> = Vec::new();
     for (node, n) in nodes.iter().enumerate() {
@@ -1531,46 +1523,26 @@ fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
         .position(|n| (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol)
         .expect("tip centroid node (0, 0, L) not found in twisted-beam mesh");
 
-    // Bare flat-facet MITC3.
-    let k_bare = build_shell_stiffnesses(&nodes, &connectivity, thickness, &mat);
-    let e_bare = assembly_elements_for(&connectivity, &k_bare);
-    let u_bare = solve_shell_system(&e_bare, n_nodes, &bcs, &point_loads);
-    let tip_bare = u_bare[centroid_node * 6 + 1];
-
-    // Genuine flat-facet MITC3+ (same mesh / BCs / loads).
-    let k_plus = build_shell_stiffnesses_mitc3_plus(&nodes, &connectivity, thickness, &mat);
-    let e_plus = assembly_elements_for(&connectivity, &k_plus);
-    let u_plus = solve_shell_system(&e_plus, n_nodes, &bcs, &point_loads);
-    let tip_plus = u_plus[centroid_node * 6 + 1];
-
-    // Observed (12×2 mesh, t=0.32): bare MITC3 tip ≈ 1.0233e-3, MITC3+ tip ≈
-    // 1.1637e-3, reference 1.754e-3 → the MITC3+ shear-locking relief moves the
-    // tip ~19% closer to the reference (err 7.31e-4 → 5.90e-4) without overshoot.
-    let err_bare = (tip_bare - MACNEAL_HARDER_REF).abs();
-    let err_plus = (tip_plus - MACNEAL_HARDER_REF).abs();
-
-    // Finite & physically signed (positive in the +F_y direction).
-    assert!(
-        tip_plus.is_finite() && tip_bare.is_finite(),
-        "tip deflections must be finite: bare={tip_bare}, plus={tip_plus}"
-    );
-    assert!(
-        tip_plus > 0.0,
-        "MITC3+ tip deflection {tip_plus:.4e} must be positive under +F_y load"
-    );
-    // Sane upper ceiling to catch runaway (the reference is 1.754e-3).
-    assert!(
-        tip_plus < 1.0e-1,
-        "MITC3+ tip deflection {tip_plus:.4e} exceeds the runaway ceiling 1e-1"
-    );
-    // The shear-locking-relief deliverable: MITC3+ is STRICTLY closer to the
-    // MacNeal-Harder reference than bare MITC3.
-    assert!(
-        err_plus < err_bare,
-        "MITC3+ must be strictly closer to the MacNeal-Harder reference than bare \
-         MITC3: |{tip_plus:.6e} − {MACNEAL_HARDER_REF:.6e}| = {err_plus:.6e} must be \
-         < |{tip_bare:.6e} − {MACNEAL_HARDER_REF:.6e}| = {err_bare:.6e}"
-    );
+    for (kernel, stiffness) in [
+        (
+            "bare MITC3",
+            build_shell_stiffnesses(&nodes, &connectivity, thickness, &mat),
+        ),
+        (
+            "MITC3+",
+            build_shell_stiffnesses_mitc3_plus(&nodes, &connectivity, thickness, &mat),
+        ),
+    ] {
+        let elements = assembly_elements_for(&connectivity, &stiffness);
+        let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+        let tip = u[centroid_node * 6 + 1];
+        let ratio = tip / TWISTED_BEAM_F_Y_TIP_REF;
+        assert!(
+            tip.is_finite() && (0.9..=1.1).contains(&ratio),
+            "{kernel} twisted-beam tip u_y = {tip:.6e} is {ratio:.4}× the MacNeal-Harder \
+             reference {TWISTED_BEAM_F_Y_TIP_REF:.4e}, outside [0.9, 1.1]"
+        );
+    }
 }
 
 // ─── step-11: locking detection ──────────────────────────────────────────────
@@ -1600,9 +1572,9 @@ fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
 /// - MITC3 successfully transitions from membrane-dominated response (thick
 ///   shell, t ≈ R) to bending-dominated response (thin shell, t ≪ R).
 /// - n(t) **increases** as t decreases: at t=1 (R/t=1, membrane regime)
-///   n ≈ 4.0; at t=0.01 (R/t=100, bending regime) n ≈ 18.9.
+///   n ≈ 2.05; at t=0.01 (R/t=100, bending regime) n ≈ 27.4.
 /// - The bending-dominated scaling u_r ~ P/(E·t³)·R² yields n ~ R²/t², so
-///   the factor ~4.7 increase in n from t=1.0 to t=0.01 is physically correct.
+///   the factor ~13.4 increase in n from t=1.0 to t=0.01 is physically correct.
 ///
 /// Note: bare flat-facet MITC3 (no curved-element MITC3+) still exhibits
 /// **faceting over-stiffness and lost membrane–bending coupling** on curved
@@ -1610,35 +1582,31 @@ fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
 /// over-stiffness. This compresses n below the analytical thin-shell
 /// reference, but does NOT collapse it to zero.
 ///
-/// # Observed n(t) values at this mesh (4×4 octant, verified 2026-05-09)
+/// # Observed n(t) values at this mesh (4×4 octant)
 ///
 /// | Thickness t | R/t | n(t) = u_r·E·t/P | Regime           |
 /// |-------------|-----|------------------|------------------|
-/// | 1.0         |   1 | 4.00             | thick/membrane   |
-/// | 0.1         |  10 | 14.68            | transitional     |
-/// | 0.01        | 100 | 18.91            | thin/bending     |
-/// | ratio [2]/[0] | — | 4.73             | INCREASING (✓)   |
+/// | 1.0         |   1 | 2.0517           | thick/membrane   |
+/// | 0.1         |  10 | 11.843           | transitional     |
+/// | 0.01        | 100 | 27.411           | thin/bending     |
+/// | ratio [2]/[0] | — | 13.36            | INCREASING (✓)   |
 ///
-/// A naive Reissner-Mindlin element would show ratio → 0 (collapsed), not 4.73.
+/// A naive Reissner-Mindlin element would show ratio → 0 (collapsed), not 13.36.
 ///
 /// # Regression bounds (pure, ~1.5× safety) — esc-3034-168
 ///
-/// The bounds below are **pure regression constants** calibrated against
-/// today's observed n(t) values (see table above), not against any analytical
+/// The bounds below are **pure regression constants** calibrated against the
+/// observed n(t) values (see table above), not against any analytical
 /// reference. Each bound provides a ~1.5× safety margin: tight enough to catch
 /// a ≥1.5× regression while tolerating minor mesh/solver drift.
 ///
-/// | Bound        | Value | Observed    | Margin |
-/// |--------------|-------|-------------|--------|
-/// | n floor      |  2.5  | min =  4.00 | 1.6×   |
-/// | n ceiling    | 30.0  | max = 18.91 | 1.59×  |
-/// | ratio floor  |  3.0  | 4.73        | 1.58×  |
+/// | Bound        | Value | Observed     | Margin |
+/// |--------------|-------|--------------|--------|
+/// | n floor      |  1.35 | min =  2.052 | 1.52×  |
+/// | n ceiling    | 41.0  | max = 27.41  | 1.50×  |
+/// | ratio floor  |  8.9  | 13.36        | 1.50×  |
 ///
-/// The membrane-limit framing (floor = lower bound of membrane-only response)
-/// is dropped: the observed minimum (4.00) is well above any membrane-only
-/// response, so that physical interpretation never matched the assertion. The
-/// old floor=1.0 allowed a 3× regression to slip through undetected; floor=2.5
-/// closes that gap. Cross-reference: reviewer escalation `esc-3034-168`.
+/// Cross-reference: reviewer escalation `esc-3034-168`.
 ///
 /// If a future curved-element MITC3+ formulation is added, n(t) values will
 /// INCREASE toward the analytical reference — these bounds can then be
@@ -1690,39 +1658,39 @@ fn mitc3_thin_shell_pinched_cylinder_does_not_lock_under_decreasing_thickness() 
     // ── Assertions (pure regression bounds, ~1.5× safety margin) ────────────────
     //
     // Bounds calibrated against observed values (4×4 octant, R=1, L=2, E=1, ν=0.3, P=1):
-    //   n(t=1.0)  = 4.00   →  floor=2.5  gives 1.6× margin below observed min
-    //   n(t=0.1)  = 14.68
-    //   n(t=0.01) = 18.91  →  ceiling=30 gives 1.59× margin above observed max
-    //   ratio     = 4.73   →  ratio_floor=3.0 gives 1.58× margin
+    //   n(t=1.0)  = 2.0517 →  floor=1.35 gives 1.52× margin below observed min
+    //   n(t=0.1)  = 11.843
+    //   n(t=0.01) = 27.411 →  ceiling=41 gives 1.50× margin above observed max
+    //   ratio     = 13.36  →  ratio_floor=8.9 gives 1.50× margin
     //
     // These are pure regression pins (not derived from any analytical reference).
     // See doc-comment section "Regression bounds (pure, ~1.5× safety)" for rationale.
     for (idx, &t) in thicknesses.iter().enumerate() {
         let n = n_vals[idx];
         assert!(
-            n > 2.5,
-            "locking floor violated at t={t}: n(t)={n:.4e} < floor=2.5 \
-             (regression bound: 1.6× below observed MITC3 minimum 4.00 at t=1.0; \
+            n > 1.35,
+            "locking floor violated at t={t}: n(t)={n:.4e} < floor=1.35 \
+             (regression bound: 1.52× below observed MITC3 minimum 2.0517 at t=1.0; \
              esc-3034-168). A naive Reissner-Mindlin element collapses n→0 at thin t."
         );
         assert!(
-            n < 30.0,
-            "locking ceiling violated at t={t}: n(t)={n:.4e} > ceiling=30.0 \
-             (regression bound: 1.59× above observed MITC3 maximum 18.91 at t=0.01; \
+            n < 41.0,
+            "locking ceiling violated at t={t}: n(t)={n:.4e} > ceiling=41.0 \
+             (regression bound: 1.50× above observed MITC3 maximum 27.411 at t=0.01; \
              esc-3034-168). Indicates NaN, runaway, or a sign error in the assembly."
         );
     }
-    // Ratio assertion: n(thin)/n(thick) must stay above 3.0.
+    // Ratio assertion: n(thin)/n(thick) must stay above 8.9.
     //
-    // Physically: MITC3 transitions from membrane-dominated (n≈4 at t=1.0) to
-    // bending-dominated (n≈18.9 at t=0.01) response — n INCREASES with thinner
+    // Physically: MITC3 transitions from membrane-dominated (n≈2.05 at t=1.0) to
+    // bending-dominated (n≈27.4 at t=0.01) response — n INCREASES with thinner
     // shells. A locking element produces n(thin) < n(thick), making ratio < 1.
-    // Observed ratio = 4.73; floor=3.0 is a 1.58× regression bound (esc-3034-168).
+    // Observed ratio = 13.36; floor=8.9 is a 1.50× regression bound (esc-3034-168).
     let ratio = n_vals[2] / n_vals[0]; // n(t=0.01) / n(t=1.0)
     assert!(
-        ratio > 3.0,
-        "locking detected: n(0.01)/n(1.0) = {ratio:.4e} < floor=3.0 \
-         (regression bound: 1.58× below observed ratio 4.73; esc-3034-168). \
+        ratio > 8.9,
+        "locking detected: n(0.01)/n(1.0) = {ratio:.4e} < floor=8.9 \
+         (regression bound: 1.50× below observed ratio 13.36; esc-3034-168). \
          MITC3 should increase n as shell thins; ratio < 1 indicates spurious \
          stiffness blocking the bending-dominated response. \
          Observed: t=1.0→{:.4e}, t=0.1→{:.4e}, t=0.01→{:.4e}",
@@ -1917,23 +1885,15 @@ fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
     );
 }
 
-/// **Observable signal (task 4068 step-21/22).** On the bending-dominated
-/// pinched-cylinder benchmark, the degenerate substrate — per-node ANALYTIC
-/// radial directors + the varying Jacobian — is STRICTLY closer to the
-/// MacNeal-Harder reference than flat-facet MITC3+ on the IDENTICAL mesh / BCs /
-/// loads. Mirrors the proven relative template
-/// `twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare`
-/// (swapping bare-vs-plus for plus-vs-degenerate).
-///
-/// # Relative / directional ONLY — no absolute band is claimed
-///
-/// The absolute ~50% / 4×4 MacNeal-Harder accuracy target stays gated on task
-/// 4065's ANS-membrane. Per-node directors + a varying Jacobian REINTRODUCE
-/// membrane locking (design_decisions[3]; formulation-review s3), so both
-/// formulations still under-predict here — flat MITC3+ ~76× under, the
-/// degenerate substrate ~6.4× under. The geometric-fidelity / membrane-bending
-/// coupling the directors add is what moves the displacement toward the
-/// reference; the residual lock is 4065's job to remove.
+/// **Honest report (task 4068 step-21/22).** On the bending-dominated
+/// pinched-cylinder benchmark, flat-facet MITC3+ and the degenerate substrate
+/// (per-node ANALYTIC radial directors + the varying Jacobian, no ANS) each sit
+/// in a measured band of the MacNeal-Harder reference on the IDENTICAL mesh /
+/// BCs / loads. No ordering between the two is claimed: per-node directors
+/// without ANS REINTRODUCE membrane locking (design_decisions[3];
+/// formulation-review s3), so at 4×4 the metric-correct flat facet is the closer
+/// of the two. The absolute ~50% / 4×4 MacNeal-Harder target stays gated on the
+/// ANS-membrane stack of task 4065.
 ///
 /// # Why the pinched cylinder (bending-dominated) and not the roof / hemisphere
 ///
@@ -1951,19 +1911,13 @@ fn pinched_cylinder_octant_symmetry_bcs_pins_exact_dofs_on_1x1_mesh() {
 ///
 /// # Observed (4×4 octant, t=3, R=300, E=3e6, ν=0.3)
 ///
-/// | quantity              | value      |
-/// |-----------------------|------------|
-/// | flat MITC3+ radial    | 2.424e-7   |
-/// | degenerate radial     | 2.847e-6   |
-/// | MacNeal-Harder ref    | 1.8248e-5  |
-/// | err flat              | 1.8006e-5  |
-/// | err degenerate        | 1.5401e-5  |
-///
-/// The degenerate substrate moves the radial displacement ~11.7× toward the
-/// reference (~14.5% closer in absolute error) — correctly signed (inward), no
-/// overshoot.
+/// | quantity              | value      | ratio to ref | band          |
+/// |-----------------------|------------|--------------|---------------|
+/// | flat MITC3+ radial    | 6.5245e-6  | 0.358        | [0.24, 0.54]  |
+/// | degenerate radial     | 2.8466e-6  | 0.156        | [0.10, 0.23]  |
+/// | MacNeal-Harder ref    | 1.8248e-5  | 1            |               |
 #[test]
-fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus() {
+fn degenerate_and_flat_mitc3_plus_pinched_cylinder_honest_report() {
     const R: f64 = 300.0;
     const L: f64 = 600.0;
     const T: f64 = 3.0;
@@ -1996,45 +1950,27 @@ fn degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus
         .expect("load node (0, R, 0) not found in mesh");
     let point_loads = vec![(load_node * 6 + 1, -P / 4.0)];
 
-    // Flat-facet MITC3+ (the baseline to beat).
     let k_flat = build_shell_stiffnesses_mitc3_plus(&nodes, &connectivity, T, &mat);
-    let e_flat = assembly_elements_for(&connectivity, &k_flat);
-    let u_flat = solve_shell_system(&e_flat, n_nodes, &bcs, &point_loads);
-    let radial_flat = -u_flat[load_node * 6 + 1]; // inward = positive
-
-    // Degenerate substrate (same mesh / BCs / loads), analytic radial directors.
     let k_deg = build_shell_stiffnesses_degenerate(&nodes, &connectivity, &directors, T, &mat);
-    let e_deg = assembly_elements_for(&connectivity, &k_deg);
-    let u_deg = solve_shell_system(&e_deg, n_nodes, &bcs, &point_loads);
-    let radial_deg = -u_deg[load_node * 6 + 1];
-
-    let err_flat = (radial_flat - MACNEAL_HARDER_REF).abs();
-    let err_deg = (radial_deg - MACNEAL_HARDER_REF).abs();
-
-    // Finite & physically signed (inward, positive).
-    assert!(
-        radial_flat.is_finite() && radial_deg.is_finite(),
-        "radial displacements must be finite: flat={radial_flat}, deg={radial_deg}"
-    );
-    assert!(
-        radial_deg > 0.0,
-        "degenerate radial displacement {radial_deg:.4e} must be positive (inward) \
-         under inward radial load; a sign reversal indicates a BC/load/director bug"
-    );
-    // Runaway ceiling (the reference is 1.8248e-5; degenerate still under-predicts).
-    assert!(
-        radial_deg < 1.0e-3,
-        "degenerate radial displacement {radial_deg:.4e} exceeds the runaway ceiling 1e-3"
-    );
-    // The substrate deliverable: the degenerate element is STRICTLY closer to the
-    // MacNeal-Harder reference than flat-facet MITC3+ on the identical mesh.
-    assert!(
-        err_deg < err_flat,
-        "degenerate substrate must be strictly closer to the MacNeal-Harder \
-         reference than flat MITC3+: |{radial_deg:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
-         {err_deg:.6e} must be < |{radial_flat:.6e} − {MACNEAL_HARDER_REF:.6e}| = \
-         {err_flat:.6e}"
-    );
+    for (formulation, stiffness, band) in [
+        ("flat MITC3+", k_flat, 0.24..=0.54),
+        ("degenerate (no ANS)", k_deg, 0.10..=0.23),
+    ] {
+        let elements = assembly_elements_for(&connectivity, &stiffness);
+        let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+        let radial = -u[load_node * 6 + 1]; // inward = positive
+        let ratio = radial / MACNEAL_HARDER_REF;
+        assert!(
+            radial.is_finite() && radial > 0.0,
+            "{formulation} radial displacement {radial:.4e} must be finite and positive \
+             (inward) under the inward radial load"
+        );
+        assert!(
+            band.contains(&ratio),
+            "{formulation} radial displacement {radial:.6e} = {ratio:.4}× the \
+             MacNeal-Harder reference {MACNEAL_HARDER_REF:.4e}, outside {band:?}"
+        );
+    }
 }
 
 // ─── task 4065 pre-refinement baselines (prereq-1) ───────────────────────────
@@ -2094,10 +2030,9 @@ const PRE_REFINEMENT_HEMISPHERE_RATIO: f64 = 0.10;
 /// hemisphere/pinched GREEN) and 3513 (Scordelis-Lo), per
 /// `docs/architecture-audit/fea-accuracy-achievability-survey-2026-05-29.md` §6.
 /// Asserting an absolute tolerance HERE would be a formulation-vs-bound false
-/// premise. This test mirrors the established relative template
-/// (`degenerate_shell_pinched_cylinder_is_closer_to_reference_than_flat_mitc3_plus`,
-/// swapping flat-vs-degenerate for non-ANS-vs-ANS): the non-ANS degenerate
-/// substrate is ~6.4× under-predicting (ample headroom for a clean directional
+/// premise. This test is a directional non-ANS-vs-ANS comparison on the mesh of
+/// `degenerate_and_flat_mitc3_plus_pinched_cylinder_honest_report`: the non-ANS
+/// degenerate substrate is ~6.4× under-predicting (ample headroom for a clean directional
 /// move with no overshoot), so the ANS cure can only soften toward the reference.
 ///
 /// # Why the pinched cylinder (bending-dominated) and not the roof / hemisphere
