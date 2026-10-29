@@ -126,7 +126,7 @@ impl DualEnv {
     /// tangent — and it is what keeps "bindings only ever GROW" true, which is
     /// what the `carries` memo's permanent-`true` rule rests on.
     ///
-    /// Uses `collect_value_refs` rather than `expr.walk` for the reason
+    /// Uses `contains_value_ref_matching` rather than `expr.walk` for the reason
     /// [`Seeds::depends_on_seed`] states: the two traversals disagree on
     /// `Lambda`, and this predicate's `false` also gates the fast path.
     ///
@@ -140,7 +140,7 @@ impl DualEnv {
         {
             return hit;
         }
-        let answer = expr.collect_value_refs().iter().any(|id| self.bindings.contains_key(id));
+        let answer = expr.contains_value_ref_matching(|id| self.bindings.contains_key(id));
         self.carries.borrow_mut().insert(expr.content_hash, (self.generation, answer));
         answer
     }
