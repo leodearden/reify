@@ -396,9 +396,10 @@ pub mod ffi {
         /// Test-fixture-style helper intentionally compiled across the cxx bridge
         /// in every build.  Cfg-gating cxx::bridge entries is awkward, so the
         /// symbol is visible to all callers of `crate::ffi::ffi` even though the
-        /// only present-day call site is the crate-private test module in
-        /// `lib.rs`, which pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
-        /// against the authoritative OCCT value at runtime.
+        /// only present-day call site is `ffi_contract_tests.rs`'s
+        /// `default_point_on_shape_tolerance_m_pins_occt_precision_confusion`, which
+        /// pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
+        /// authoritative OCCT value at runtime.
         /// `Precision::Confusion()` is a `constexpr` literal in OCCT — cannot
         /// throw, no `Result` wrapper needed.
         fn precision_confusion() -> f64;
