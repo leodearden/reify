@@ -861,6 +861,9 @@ fn moves_with(joint: &Value, target: &Value) -> bool {
     joint == target || coupling_parent(joint) == Some(target)
 }
 
+/// Default central-difference step for [`loop_residual_jacobian_by_joint`].
+pub const DEFAULT_LOOP_JACOBIAN_FD_STEP: f64 = 1e-7;
+
 /// Compute the loop-closure residual Jacobian with respect to caller-supplied
 /// tree-joint targets by central-difference of the full two-chain residual.
 ///

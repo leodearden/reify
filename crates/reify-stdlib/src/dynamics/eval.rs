@@ -29,14 +29,16 @@
 //!   * `inverse_dynamics_at_snapshot_lower`  — open-chain snapshot RNEA (step-6)
 //!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 
-use crate::dynamics::closed_chain::{reduce_constraint_rank, solve_closed_chain, DEFAULT_PIVOT_EPS};
+use crate::dynamics::closed_chain::{DEFAULT_PIVOT_EPS, loop_constraint_rows, solve_closed_chain};
 use crate::dynamics::rnea::{
     assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain, JointCompliance,
     RneaLink,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
-use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
+use crate::loop_closure::{
+    DEFAULT_LOOP_JACOBIAN_FD_STEP, extract_loop_closure_chains, loop_residual_jacobian_by_joint,
+};
 use crate::mechanism::is_world;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
@@ -1527,22 +1529,17 @@ fn closed_chain_inverse_dynamics(
         let (chain_a, vals_a, chain_b, vals_b, _free_b) =
             extract_loop_closure_chains(record, bindings)?;
 
-        // Raw 6×n Jacobian via central FD over all spanning-tree joints.
-        let raw_cols =
-            loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &ordered_joints, 1e-7)?;
-
-        // raw_cols: one [f64;6] column per spanning-tree DOF in topo order.
-        // Convert to 6×n row-major.
-        let mut a_raw = vec![0.0f64; 6 * n];
-        for (col_idx, col) in raw_cols.iter().enumerate() {
-            for row_idx in 0..6 {
-                a_raw[row_idx * n + col_idx] = col[row_idx];
-            }
-        }
-
-        // Drop only zero or linearly dependent rows — rank-preserving; see
-        // reduce_constraint_rank.
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
+        // One residual-twist column per spanning-tree DOF, in topo order,
+        // reduced to full row rank without dropping any live row.
+        let raw_cols = loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            &ordered_joints,
+            DEFAULT_LOOP_JACOBIAN_FD_STEP,
+        )?;
+        let (a_red, m_eff) = loop_constraint_rows(&raw_cols);
 
         // b = −Ȧ·q̇.  For the cases exercised here (q̇=0 smoke test; 4-bar
         // power-identity e2e where τ·q̇ = τ_open·q̇ for any consistent q̇) b=0
@@ -3026,7 +3023,7 @@ mod tests {
             &chain_b,
             &vals_b,
             &ordered_joints,
-            1e-7,
+            DEFAULT_LOOP_JACOBIAN_FD_STEP,
         )
         .expect("FD Jacobian must resolve with a 0-DOF link in chain_b");
         assert_eq!(
@@ -3038,13 +3035,7 @@ mod tests {
 
         // The reduced constraint is the single live v_z row [1, −1] — the row a
         // closing-joint (+z) projection would delete.
-        let mut a_raw = vec![0.0f64; 6 * n];
-        for (col_idx, col) in raw_cols.iter().enumerate() {
-            for row_idx in 0..6 {
-                a_raw[row_idx * n + col_idx] = col[row_idx];
-            }
-        }
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
+        let (a_red, m_eff) = loop_constraint_rows(&raw_cols);
         assert_eq!(
             m_eff, 1,
             "the closure q_b = q_a + 0.5 is one live constraint row"
@@ -3120,10 +3111,8 @@ mod tests {
         // (e) Workless constraints: the tangent virtual velocity q̇ = [1, 1]
         // satisfies A·q̇ = 0, so Σ τ_closed·q̇ must equal Σ τ_open·q̇ — λ does
         // no work along it. Non-vacuous: both sliders carry their links against
-        // gravity, so Σ τ_open·q̇ ≈ (1 + 2)·9.81 = 29.43 N, not 0. Bound basis:
-        // the difference is λ·(A·q̇), and both factors are first-order in the FD
-        // asymmetry of A's two entries (≤ ulp(0.5)/2 / 1e-7 ≈ 5.6e-10), so the
-        // product is ~1e-17 and 1e-9 leaves ≥ 8 orders of headroom.
+        // gravity, so Σ τ_open·q̇ ≈ (1 + 2)·9.81 = 29.43 N, not 0. The
+        // difference λ·(A·q̇) is a product of two FD-roundoff terms, far below 1e-9.
         let q_dot = [1.0, 1.0];
         let power = |tau: &[f64]| -> f64 { tau.iter().zip(q_dot).map(|(t, qd)| t * qd).sum() };
         let (power_closed, power_open) = (power(&tau_closed), power(&tau_open));

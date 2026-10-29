@@ -47,6 +47,10 @@
 /// singular.  Mirrors `loop_closure_solver::DEFAULT_SINGULARITY_PIVOT_EPS`.
 pub const DEFAULT_PIVOT_EPS: f64 = 1e-12;
 
+/// Default row-pivot threshold for [`reduce_constraint_rank`]; the one
+/// [`loop_constraint_rows`] applies.
+pub const DEFAULT_RANK_EPS: f64 = 1e-10;
+
 /// Errors returned by [`solve_closed_chain`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClosedChainError {
@@ -284,6 +288,24 @@ pub fn reduce_constraint_rank(
     (a_red, m_eff)
 }
 
+/// One loop's constraint rows, reduced to full row rank.
+///
+/// `twist_columns` holds one `[ω; v]` residual-Jacobian column per
+/// spanning-tree DOF, in DOF order — the shape
+/// [`loop_residual_jacobian_by_joint`](crate::loop_closure::loop_residual_jacobian_by_joint)
+/// returns. They are laid out as the raw 6×n row-major A, with
+/// n = `twist_columns.len()`, and reduced by [`reduce_constraint_rank`] at
+/// [`DEFAULT_RANK_EPS`].
+///
+/// # Returns
+/// `(a_reduced, m_eff)`, as from [`reduce_constraint_rank`].
+pub fn loop_constraint_rows(twist_columns: &[[f64; 6]]) -> (Vec<f64>, usize) {
+    let a_raw: Vec<f64> = (0..6)
+        .flat_map(|row| twist_columns.iter().map(move |col| col[row]))
+        .collect();
+    reduce_constraint_rank(&a_raw, 6, twist_columns.len(), DEFAULT_RANK_EPS)
+}
+
 // ── Private LDLᵀ solver ───────────────────────────────────────────────────────
 
 /// Solve `A · x = b` in-place for a k×k symmetric matrix.
@@ -453,8 +475,12 @@ mod tests {
     /// closing-joint motion-subspace projection deleted.
     #[test]
     fn reduce_constraint_rank_on_builder_produced_closed_chain() {
+        use super::loop_constraint_rows;
         use crate::eval_builtin;
-        use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
+        use crate::loop_closure::{
+            DEFAULT_LOOP_JACOBIAN_FD_STEP, extract_loop_closure_chains,
+            loop_residual_jacobian_by_joint,
+        };
         use reify_ir::Value;
 
         let unit = |x: f64, y: f64, z: f64| {
@@ -503,29 +529,28 @@ mod tests {
         assert_eq!(chain_b.len(), 1, "chain_b = [j_a] (terminates at the closing edge's parent)");
         assert!(free_b.is_empty(), "both joints are directly bound, so nothing is free");
 
-        // Raw 6×n Jacobian over the spanning-tree joints, assembled exactly as
-        // `closed_chain_inverse_dynamics` assembles it.
+        // Residual-twist columns over the spanning-tree joints, reduced by the
+        // same two calls `closed_chain_inverse_dynamics` makes.
         let n = 2usize;
         let ordered_joints = [j_a.clone(), j_b.clone()];
-        let raw_cols =
-            loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &ordered_joints, 1e-7)
-                .expect("FD Jacobian must resolve for a builder-produced chain pair");
+        let raw_cols = loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            &ordered_joints,
+            DEFAULT_LOOP_JACOBIAN_FD_STEP,
+        )
+        .expect("FD Jacobian must resolve for a builder-produced chain pair");
         assert_eq!(raw_cols.len(), n, "one column per spanning-tree DOF");
         assert_near("∂residual/∂q_a", &raw_cols[0], &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 1e-6);
         assert_near("∂residual/∂q_b", &raw_cols[1], &[0.0, 0.0, 0.0, 0.0, 0.0, -1.0], 1e-6);
 
-        let mut a_raw = vec![0.0f64; 6 * n];
-        for (col_idx, col) in raw_cols.iter().enumerate() {
-            for row_idx in 0..6 {
-                a_raw[row_idx * n + col_idx] = col[row_idx];
-            }
-        }
+        let (a_red, m_eff) = loop_constraint_rows(&raw_cols);
 
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
-
-        // The v_z row is NONZERO in the raw Jacobian and survives the
-        // reduction: it is a genuine constraint row, not an absorbed one.
-        assert_near("raw v_z row", &a_raw[5 * n..6 * n], &[0.0, -1.0], 1e-6);
+        // The raw v_z row [0, −1] (the v_z entries of the two columns above)
+        // survives the reduction: it is a genuine constraint row, not an
+        // absorbed one.
         assert_eq!(
             m_eff, 2,
             "both the v_x and v_z rows are genuine constraints (rank 2 = n, ker(A) = {{0}})"

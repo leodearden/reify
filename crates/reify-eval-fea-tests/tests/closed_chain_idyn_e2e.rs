@@ -20,13 +20,14 @@
 //! which has q̇=q̈=0 and no gravity work).
 //!
 //! ── What this does NOT validate (and why) ─────────────────────────────────────
-//! The 2-prismatic loop carries ONE live constraint row, v_z = [1, −1]
-//! (`m_eff = 1`, closure q_b == q_a), but its multiplier vanishes analytically:
-//! both sliders carry the same per-mass gravity load and the prescribed
-//! accelerations are equal, so the unconstrained response to τ_open already
-//! satisfies the constraint. Hence λ = 0 and τ = τ_open, and this fixture does
-//! NOT exercise a nonzero λ. The live-constraint e2e is the planar 4-bar below
-//! (B6/B7, `m_eff = 3`); the array-level unit tests in `closed_chain.rs` /
+//! The 2-prismatic loop's closure q_b == q_a is one live constraint row,
+//! v_z = [1, −1], but its multiplier vanishes analytically: both sliders carry
+//! the same per-mass gravity load and the prescribed accelerations are equal,
+//! so the unconstrained response to τ_open already satisfies the constraint.
+//! Hence λ = 0, which the test pins joint by joint as τ = τ_open. Because
+//! τ = τ_open would hold equally with no live row, this fixture checks neither
+//! a nonzero λ nor the row count. The live-constraint e2e is the planar 4-bar
+//! below (B6/B7, `m_eff = 3`); the array-level unit tests in `closed_chain.rs` /
 //! `loop_closure.rs` / `rnea.rs` cover the same machinery in isolation.
 //!
 //! Kernel-INDEPENDENT: `inverse_dynamics` derives mass from each body's
@@ -35,7 +36,10 @@
 
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
-use reify_stdlib::loop_closure::{loop_residual_jacobian_by_joint, loop_residual_twist};
+use reify_stdlib::dynamics::closed_chain::loop_constraint_rows;
+use reify_stdlib::loop_closure::{
+    DEFAULT_LOOP_JACOBIAN_FD_STEP, loop_residual_jacobian_by_joint, loop_residual_twist,
+};
 use reify_stdlib::loop_closure_solver::{
     NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
 };
@@ -87,8 +91,9 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 
 /// `inverse_dynamics(m, traj)` on the vertical 2-prismatic CLOSED loop yields a
 /// finite `List<List<JointForce>>` of shape 1×2 whose two prismatic
-/// `ScalarForce` magnitudes (τ_a, τ_b) satisfy the virtual-work power identity
-/// `Σ τ_i·q̇_i = (m_a+m_b)·v·(a+9.81) = 39.585 W` within 1 µW.
+/// `ScalarForce` magnitudes (τ_a, τ_b) each equal their open-chain value
+/// `m_i·(a+9.81)` within 1 µN (λ = 0) and satisfy the virtual-work power
+/// identity `Σ τ_i·q̇_i = (m_a+m_b)·v·(a+9.81) = 39.585 W` within 1 µW.
 #[test]
 fn closed_2prismatic_virtual_work_identity() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
@@ -141,6 +146,10 @@ fn closed_2prismatic_virtual_work_identity() {
     // is returned in the same bodies order, so forces[i] pairs with q_dot[i].
     let q_dot = [0.7_f64, 0.7_f64];
 
+    // λ = 0 analytically, so each force is its open-chain value
+    // τ_i = m_i·(q̈_i + 9.81) with m = (2, 3) kg and q̈ = 1.5 m/s².
+    let tau_open = [2.0 * (1.5 + 9.81), 3.0 * (1.5 + 9.81)];
+
     // Σ τ_i·q̇_i over the returned (signed) prismatic generalized forces.
     let mut power = 0.0_f64;
     for (i, jf) in forces.iter().enumerate() {
@@ -150,6 +159,13 @@ fn closed_2prismatic_virtual_work_identity() {
         assert!(
             mag.is_finite(),
             "force[{i}].ScalarForce.magnitude must be finite (⇒ KKT nonsingular), got {mag}"
+        );
+        // 1 µN, like the power bound: only FD roundoff in A can make λ ≠ 0.
+        assert!(
+            (mag - tau_open[i]).abs() < 1e-6,
+            "force[{i}] = {mag} N must equal its open-chain value {} N (λ = 0); Δ = {} N",
+            tau_open[i],
+            mag - tau_open[i]
         );
         power += mag * q_dot[i];
     }
@@ -477,7 +493,7 @@ fn closed_4bar_loop_closes_consistently() {
 ///
 /// At the ASSEMBLED config of the Grashof 4-bar, the loop-constraint Jacobian
 /// (6×5, one column per spanning-tree joint) reduces to m_eff = 3 rows under
-/// `reduce_constraint_rank`, which drops only zero or dependent rows.
+/// `loop_constraint_rows`, which drops only zero or dependent rows.
 ///
 /// The residual welds the coupler_tip body to the rocker_tip body, so the
 /// closure constrains the in-plane translation (v_x, v_y) AND the orientation
@@ -553,11 +569,17 @@ fn closed_4bar_live_constraint_rank() {
         j_rocker_tip,
     ];
 
-    // Raw 6×5 loop-constraint Jacobian via central FD (eps=1e-7, same as bridge).
-    // Returns one [f64;6] twist column per spanning-tree joint.
-    let raw_cols =
-        loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &target_joints, 1e-7)
-            .expect("loop_residual_jacobian_by_joint must succeed at assembled config");
+    // One [f64;6] residual-twist column per spanning-tree joint, at the bridge's
+    // FD step.
+    let raw_cols = loop_residual_jacobian_by_joint(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b,
+        &target_joints,
+        DEFAULT_LOOP_JACOBIAN_FD_STEP,
+    )
+    .expect("loop_residual_jacobian_by_joint must succeed at assembled config");
 
     assert_eq!(
         raw_cols.len(),
@@ -565,20 +587,10 @@ fn closed_4bar_live_constraint_rank() {
         "5 spanning-tree joints → 5 Jacobian columns"
     );
 
-    // Transpose to 6×5 row-major (a_raw[row*5+col] = col[row]), exactly as
-    // `closed_chain_inverse_dynamics` assembles it.
+    // Lay the columns out as the raw 6×5 A and drop only zero or dependent rows —
+    // the call `closed_chain_inverse_dynamics` makes.
     let n = 5usize;
-    let mut a_raw = vec![0.0f64; 6 * n];
-    for (col_idx, col) in raw_cols.iter().enumerate() {
-        for row_idx in 0..6 {
-            a_raw[row_idx * n + col_idx] = col[row_idx];
-        }
-    }
-
-    // Drop only zero or dependent rows — the exact call
-    // `closed_chain_inverse_dynamics` makes.
-    let (a_red, m_eff) =
-        reify_stdlib::dynamics::closed_chain::reduce_constraint_rank(&a_raw, 6, n, 1e-10);
+    let (a_red, m_eff) = loop_constraint_rows(&raw_cols);
 
     // Expected m_eff = 3 (row-by-row reasoning):
     //   row 0 (ω_x): identically zero for planar-XY linkage → dropped
@@ -597,7 +609,7 @@ fn closed_4bar_live_constraint_rank() {
     // drops a live row (3→2) would silently pass a ≥1 check.
     assert_eq!(
         m_eff, 3,
-        "reduce_constraint_rank must return m_eff=3 at the assembled 4-bar config \
+        "loop_constraint_rows must return m_eff=3 at the assembled 4-bar config \
          (ω_z orientation closure and in-plane v_x,v_y active; ω_x,ω_y,v_z \
          structurally zero for planar-XY). Indicates a degenerate or wrongly-reduced \
          Jacobian — check closed_4bar_idyn.ri link lengths and pivot offsets (β1 §0 \
@@ -626,37 +638,36 @@ fn closed_4bar_live_constraint_rank() {
             .sqrt()
     };
 
-    // (i) The .ri's prescribed tangent velocity is admitted: ‖a_red·q̇‖₂ ≈ 0.
-    //     Basis: measured 6.1e-9; FD entry noise ≤ ~1.1e-9 (measured) ×
-    //     |q̇|₁ ≈ 16.8 gives ≤ ~2e-8 a priori, so 1e-6 has ≥ 50× headroom.
+    // (i) The .ri's prescribed tangent velocity is admitted: ‖a_red·q̇‖₂ ≈ 0, up
+    //     to the FD roundoff in a_red scaled by |q̇|.
     let tangent_residual = a_red_times(&q_dot_b6);
     assert!(
         tangent_residual < 1e-6,
         "the 4-bar's prescribed tangent velocity must lie in ker(a_red): \
-         ‖a_red·q̇‖₂ = {tangent_residual:.3e} (expected < 1e-6, measured 6.1e-9)"
+         ‖a_red·q̇‖₂ = {tangent_residual:.3e} (expected < 1e-6)"
     );
 
     // (ii) Spinning the closing joint alone is REJECTED: e_2 is a unit velocity
-    //      on j_coupler_tip (target index 2). Its analytic ω_z entry is −1, so
-    //      ‖a_red·e_2‖₂ ≈ 1.0 (measured). The retired closing-joint projection
-    //      admitted it (6.9e-11): a phantom freedom that opens the loop.
+    //      on j_coupler_tip (target index 2), whose ω_z entry is −1, so
+    //      ‖a_red·e_2‖₂ ≈ 1. The retired closing-joint projection admitted it:
+    //      a phantom freedom that opens the loop.
     let e_2 = [0.0, 0.0, 1.0, 0.0, 0.0];
     let closing_spin_residual = a_red_times(&e_2);
     assert!(
         closing_spin_residual > 0.5,
         "spinning the closing joint alone must violate the closure: \
-         ‖a_red·e_2‖₂ = {closing_spin_residual:.3e} (expected > 0.5, measured 1.0)"
+         ‖a_red·e_2‖₂ = {closing_spin_residual:.3e} (expected ≈ 1)"
     );
 
     // ── Bridge tie-back: m_eff=3 implies non-trivial KKT correction in `forces` ──
     //
-    // B6 reconstructs reduce_constraint_rank from public primitives; the test above
-    // passes as long as the two stdlib functions behave, regardless of how the bridge
-    // wires them together.  This tie-back reads the bridge's actual `forces` output
-    // and asserts the loaded-sample power is substantial (> 1 W), confirming that the
-    // bridge's KKT path (ordered_joints, eps) was correctly wired and propagated
-    // the inertial load.  A mismatch in bridge wiring would
-    // produce near-zero or wrong forces here even if m_eff=3 above.
+    // B6 rebuilds the constraint rows from the same public calls the bridge makes;
+    // the assertions above pass as long as those calls behave, regardless of how the
+    // bridge wires them together.  This tie-back reads the bridge's actual `forces`
+    // output and asserts the loaded-sample power is substantial (> 1 W), confirming
+    // that the bridge's KKT path (ordered_joints) was correctly wired and propagated
+    // the inertial load.  A mismatch in bridge wiring would produce near-zero or
+    // wrong forces here even if m_eff=3 above.
     let cell = ValueCellId::new("ClosedFourBarIdyn", "forces");
     let per_sample = match result.values.get(&cell) {
         Some(Value::List(s)) if s.len() >= 2 => s,
@@ -683,8 +694,8 @@ fn closed_4bar_live_constraint_rank() {
         "B6 bridge tie-back: loaded-sample power = {power_b6:.4} W must be > 1 W \
          (m_eff=3 ⇒ active KKT constraints ⇒ inertial torques carry ~2.573 W load). \
          A near-zero value indicates bridge wiring is broken even though the standalone \
-         reduce_constraint_rank call returned m_eff=3 — wrong ordered_joints or wrong \
-         eps silences the KKT correction."
+         loop_constraint_rows call returned m_eff=3 — wrong ordered_joints silences \
+         the KKT correction."
     );
 }
 

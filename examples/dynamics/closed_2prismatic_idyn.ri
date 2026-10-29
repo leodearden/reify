@@ -13,7 +13,8 @@
 //
 // The companion Rust gate
 // `crates/reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs::closed_2prismatic_virtual_work_identity`
-// asserts the virtual-work power identity below within 1 µW.
+// asserts the virtual-work power identity below within 1 µW, and τ = τ_open
+// joint by joint (λ = 0) within 1 µN.
 //
 // ── Why a vertical PRISMATIC loop (not a revolute 4-bar) ──────────────────────
 // The original plan targeted a planar revolute 4-bar, but the Reify kinematic
