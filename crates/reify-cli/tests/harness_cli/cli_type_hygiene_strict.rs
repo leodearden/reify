@@ -7,8 +7,9 @@
 //! indeterminate constraint; `reify check <file>` (no `--strict`) must exit 0.
 //!
 //! The fixture `type_hygiene_strict.ri` exercises a hygiene-relevant indeterminate
-//! constraint (β bare-zero coercion + `auto` mass param) that is OCCT-independent:
-//! no geometry query is needed to arrive at `Indeterminate`.
+//! constraint (β bare-zero coercion against an Undef `mass`, which divides by a
+//! zero param) that is OCCT-independent: no geometry query is needed to arrive
+//! at `Indeterminate`.
 //!
 //! # Why a dedicated file for row 12
 //!
@@ -24,13 +25,9 @@ use crate::common;
 /// §10 row 12a: `reify check --strict type_hygiene_strict.ri` must exit non-zero
 /// and write "Strict check failed" to stderr when the constraint is Indeterminate.
 ///
-/// The fixture has `param mass : Mass = auto` + `constraint mass > 0` — the
-/// `auto` default makes `mass` indeterminate at `reify check` time (pre-realization,
-/// OCCT-independent), so `mass > 0` resolves Indeterminate → θ strict mode fails.
-///
-/// RED (step-3): fixture `type_hygiene_strict.ri` does not exist yet → `reify check`
-/// cannot load the file → exits non-zero (file-not-found), but for the wrong reason;
-/// the non-strict exit-0 assertion (row 12b) is what makes this step RED.
+/// The fixture has `let mass : Mass = 1kg / divisor` with `divisor = 0` and
+/// `constraint mass > 0` — the zero divisor makes `mass` Undef (OCCT-independent),
+/// so `mass > 0` resolves Indeterminate → θ strict mode fails.
 #[test]
 fn check_strict_exits_failure_for_indeterminate_hygiene_constraint() {
     let path = common::fixture_path("type_hygiene_strict.ri");
@@ -39,7 +36,7 @@ fn check_strict_exits_failure_for_indeterminate_hygiene_constraint() {
     assert!(
         !status.success(),
         "§10 row 12a: `reify check --strict type_hygiene_strict.ri` should exit non-zero \
-         (indeterminate mass > 0 constraint with auto default → Indeterminate → strict fail).\n\
+         (mass > 0 reads an Undef mass → Indeterminate → strict fail).\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -61,10 +58,6 @@ fn check_strict_exits_failure_for_indeterminate_hygiene_constraint() {
 /// when the only constraint is Indeterminate.
 ///
 /// Indeterminate is not a failure in default mode (only in strict mode per θ).
-///
-/// RED (step-3): fixture does not exist → `reify check` cannot load the file →
-/// exits non-zero → `status.success()` assertion FAILS.
-/// GREEN (step-4): fixture is created → `reify check` exits 0 → assertion passes.
 #[test]
 fn check_without_strict_exits_zero_for_indeterminate_hygiene_constraint() {
     let path = common::fixture_path("type_hygiene_strict.ri");

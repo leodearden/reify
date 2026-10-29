@@ -1,5 +1,16 @@
+// `tolerance` is Undef because `divisor` is zero. The Undef comes from a
+// run-dependent value: change `divisor` and the purpose-injected constraint
+// that reads `tolerance` resolves.
+//
+// This file must contain no `auto` param. A constraint that reads an Undef
+// operand AND an auto makes the solve Infeasible (`comparison_residual` scores
+// a non-numeric operand 1.0), which is an error that flips the exit code. An
+// auto-free Undef is dropped from the solve, so the verdict here does not
+// depend on whether the driver solves.
 structure Bracket {
-    param tolerance: Length = auto
+    param divisor: Int = 0
+
+    let tolerance = 1mm / divisor
 }
 
 purpose mfg_ready(subject : Structure) {

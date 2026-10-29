@@ -97,8 +97,8 @@ fn check_indeterminate_constraint_exits_success() {
         !stderr.contains("error:"),
         "stderr should not contain 'error:' for a successful check, got: {stderr}"
     );
-    // INDETERMINATE is non-violating by design (auto params not yet resolved),
-    // so the summary still reads "No constraints violated".
+    // INDETERMINATE is non-violating by design (the constraint reads an Undef
+    // input), so the summary still reads "No constraints violated".
     assert!(
         stdout.contains("No constraints violated"),
         "stdout should contain 'No constraints violated', got: {stdout}"
@@ -133,7 +133,7 @@ fn check_violated_with_indeterminate_exits_failure() {
         "stdout should contain violation summary, got: {stdout}"
     );
     // Negative assertions: the fixture has zero satisfied constraints
-    // (thickness=1mm violates thickness>2mm, tolerance=auto makes tolerance>0.1mm indeterminate).
+    // (thickness=1mm violates thickness>2mm, an Undef tolerance makes tolerance>0.1mm indeterminate).
     assert!(
         !stdout.contains("  OK "),
         "stdout should NOT contain '  OK ' (no satisfied constraints in fixture), got: {stdout}"

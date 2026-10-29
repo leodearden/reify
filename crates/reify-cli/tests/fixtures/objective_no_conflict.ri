@@ -1,11 +1,17 @@
-// Fixture for task 4010 (E_OBJECTIVE_CONFLICT boundary B3 — negative case).
+// Fixture for E_OBJECTIVE_CONFLICT boundary B3 — negative case.
 //
-// Structure S has two auto Scalar params and same-sense objectives:
+// Structure S has two auto params and same-sense objectives:
 // minimize mass + minimize cost (equal-weight sum, B2, not a conflict).
 // `reify check` must exit zero and NOT print "E_OBJECTIVE_CONFLICT".
+//
+// The autos are `auto(free)` and each is bounded by a constraint, so a driver
+// that solves them reaches a feasible optimum, and the exit code reflects only
+// the objective-conflict verdict rather than the outcome of the solve.
 structure S {
-    param mass: Length = auto
-    param cost: Length = auto
+    param mass: Length = auto(free)
+    param cost: Length = auto(free)
+    constraint mass >= 1mm && mass <= 10mm
+    constraint cost >= 1mm && cost <= 10mm
     minimize mass
     minimize cost
 }
