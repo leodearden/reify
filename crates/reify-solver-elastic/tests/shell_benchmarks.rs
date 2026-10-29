@@ -20,21 +20,19 @@
 //!   - **order of magnitude** (within a wide physically-plausible band).
 //!
 //! The four **curved** smoke tests do **not** assert against the published
-//! MacNeal-Harder reference values: bare MITC3 suffers from severe membrane
-//! locking on curved geometry (factor 21–2200× under-prediction at coarse mesh
-//! resolution). Tightening those bands needs an ANS-membrane correction on a
-//! curved substrate (task 4065) — flat-facet enrichment cannot cure *membrane*
-//! locking, which is a curvature phenomenon.
+//! MacNeal-Harder reference values: flat-facet MITC3 on curved geometry still
+//! under-predicts at coarse mesh resolution, from ~1.4× on the Scordelis-Lo roof
+//! to ~80× on the hemisphere. Tightening those bands needs an ANS-membrane
+//! correction on a curved substrate (task 4065) — flat-facet enrichment cannot
+//! cure *membrane* locking, which is a curvature phenomenon.
 //!
-//! The **twisted-cantilever** test additionally carries a genuine relative
-//! observable signal: `twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare`
-//! shows that the flat-facet MITC3+ element (`shell_element_stiffness_mitc3_plus`,
-//! task 3392) relieves transverse-shear locking and moves the tip deflection
-//! measurably closer to the published reference than bare MITC3. The MITC3+
-//! shear cure lives in the *nodal* assumed-shear field (interior-tying Eq. 9),
-//! NOT the cubic bubble — the bubble is inert in transverse shear on a flat
-//! facet (K_NB^shear ≡ 0; see the `shell_assembly.rs` header) and becomes live
-//! only on the curved director substrate of task 4065.
+//! The **twisted cantilever** additionally carries an absolute band:
+//! `twisted_beam_flat_shell_tip_deflection_within_10_percent_of_reference`
+//! holds bare MITC3 and the flat-facet MITC3+ element
+//! (`shell_element_stiffness_mitc3_plus`) each within ±10% of the
+//! MacNeal-Harder reference. The cubic bubble is inert in transverse shear on a
+//! flat facet (K_NB^shear ≡ 0; see the `shell_assembly.rs` header) and becomes
+//! live only on the curved director substrate of task 4065.
 //!
 //! In addition to the four geometry smoke tests, this file contains:
 //!   - a **locking-detection** test verifying that MITC3 does not collapse
@@ -182,8 +180,7 @@ fn build_shell_stiffnesses(
 /// MITC3+ counterpart of [`build_shell_stiffnesses`]: builds one per-element
 /// stiffness matrix per triangle via the genuine flat-facet MITC3+ element
 /// [`shell_element_stiffness_mitc3_plus`] (Lee, Lee & Bathe 2014). Used to run
-/// the twisted-cantilever benchmark with both formulations on the identical
-/// mesh / BCs / loads so the shear-locking improvement is observable end-to-end.
+/// benchmarks with both flat formulations on the identical mesh / BCs / loads.
 fn build_shell_stiffnesses_mitc3_plus(
     nodes: &[[f64; 3]],
     connectivity: &[[usize; 3]],
@@ -206,9 +203,7 @@ fn build_shell_stiffnesses_mitc3_plus(
 /// `directors[k]` is the unit through-thickness director (vertex normal) at
 /// global node `k`; each element reads the three directors of its nodes. Used
 /// to run a bending-dominated curved benchmark with both the flat MITC3+ and the
-/// degenerate substrate on the identical mesh / BCs / loads, so the
-/// geometric-fidelity improvement is observable end-to-end (mirroring the
-/// twisted-beam plus-vs-bare template).
+/// degenerate substrate on the identical mesh / BCs / loads.
 fn build_shell_stiffnesses_degenerate(
     nodes: &[[f64; 3]],
     connectivity: &[[usize; 3]],
@@ -977,10 +972,9 @@ fn roof_quadrant_gravity_loads(
 ///
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
 /// the response is finite, signed, and within a wide order-of-magnitude
-/// band; today's bare MITC3 element under-predicts the published reference
-/// by ~21× due to faceting over-stiffness and lost intra-element
-/// membrane–bending coupling (flat facets on curved geometry; element-level
-/// membrane locking requires a curved element).
+/// band; bare MITC3 under-predicts the published reference by ~1.4× (flat
+/// facets on curved geometry; element-level membrane locking requires a
+/// curved element).
 ///
 /// A cylindrical roof shell (R=25, L=50, t=0.25, semi-angle 80°, E=4.32×10⁸,
 /// ν=0.0) loaded by self-weight (gravity 90 per unit area in the −z direction).
@@ -1012,13 +1006,11 @@ fn roof_quadrant_gravity_loads(
 ///
 /// # Smoke-test envelope
 ///
-/// Today's coarse-mesh MITC3 vertical deflection at the free-edge
-/// longitudinal center is **~1.4×10⁻²** (bare MITC3, 4×4 quadrant,
-/// downward). The published MacNeal-Harder (1985) reference is **0.3024**
-/// (a ~21× gap due to faceting over-stiffness and lost membrane–bending
-/// coupling on the flat facets; only a curved-element formulation closes
-/// the gap — flat-facet bubble enrichment is mathematically inert, see
-/// the file header in `shell_assembly.rs`).
+/// Bare MITC3 (4×4 quadrant) gives a downward vertical deflection of
+/// **~0.215** at the free-edge longitudinal center, against the published
+/// MacNeal-Harder (1985) reference **0.3024** (~1.4× under; flat-facet bubble
+/// enrichment is mathematically inert, see the file header in
+/// `shell_assembly.rs`).
 ///
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test above for the same rationale.
@@ -1070,10 +1062,10 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
     // Gravity loads −z ⇒ u_z < 0.  Report downward deflection (positive).
     let vert_defl = -u[free_edge_center * 6 + 2];
 
-    // Smoke-test envelope spans today's locked output (~1.4e-2) and the
-    // published reference (0.3024). See pinched_cylinder rationale.
-    //   floor = 1e-4 → 140× margin below observed locked output
-    //   ceil  = 5.0  → 16× margin above published reference
+    // Order-of-magnitude envelope around the bare-MITC3 output (~0.215) and
+    // the published reference (0.3024). See pinched_cylinder rationale.
+    //   floor = 1e-4 → ~2000× below the observed output
+    //   ceil  = 5.0  → 16× above the published reference
     const SMOKE_FLOOR: f64 = 1.0e-4;
     const SMOKE_CEIL: f64 = 5.0;
     assert!(
@@ -1089,10 +1081,9 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
     assert!(
         vert_defl > SMOKE_FLOOR && vert_defl < SMOKE_CEIL,
         "Scordelis-Lo smoke test: vert_defl = {vert_defl:.4e} outside \
-         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Today's locked \
-         MITC3 4×4 output is ~1.4e-2; published MacNeal-Harder reference \
-         is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
-         this band, not outside it."
+         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Bare MITC3 4×4 \
+         gives ~0.215; published MacNeal-Harder reference is \
+         {MACNEAL_HARDER_REF:.4e}."
     );
 }
 
@@ -1125,10 +1116,10 @@ fn scordelis_lo_roof_quadrant_smoke_test_vertical_deflection_is_finite_and_downw
 /// - Ceiling 1.0·REF: "no overshoot" — the coarse-mesh degenerate element under-predicts
 ///   via residual faceting/lock, so overshoot of the reference is not expected.
 ///
-/// # Discriminator
+/// # Not a flat-vs-curved discriminator
 ///
-/// The bare-MITC3 flat-facet path (this test's RED state, ratio ~0.0476) cannot reach
-/// the ≥50% floor — the band discriminates the curved cure from the flat-facet baseline.
+/// The bare-MITC3 flat-facet path also lands in this band (ratio ~0.71, see the
+/// smoke test), so the band pins the curved stack's absolute accuracy only.
 ///
 /// # Geometry and material
 ///
@@ -1228,9 +1219,8 @@ fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
         "Scordelis-Lo Bathe & Lee 2014 band test: vert_defl = {vert_defl:.4e} outside \
          [{LOWER:.4e}, {UPPER:.4e}].  Published MacNeal-Harder reference = {MACNEAL_HARDER_REF:.4}; \
          Bathe & Lee (2014) figure: ~50% of reference at 4×4 mesh.  The full \
-         deg+ANS+bubble curved stack (tasks 4068/4069/4065) is required to clear the \
-         >= 0.50·REF floor; the bare-MITC3 flat-facet path yields ratio ~0.0476, which \
-         should NOT pass this test."
+         deg+ANS+bubble curved stack (tasks 4068/4069/4065) is expected to clear the \
+         >= 0.50·REF floor."
     );
 }
 
@@ -1241,10 +1231,9 @@ fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
 ///
 /// **NOT a validated benchmark** — see file-level docs. Asserts only that
 /// the response is finite, signed, and within a wide order-of-magnitude
-/// band; today's bare MITC3 element under-predicts the published reference
-/// by ~2200× due to severe faceting over-stiffness and lost
-/// membrane–bending coupling (flat facets on this very thin shell,
-/// R/t=250; element-level membrane locking requires a curved element).
+/// band; bare MITC3 under-predicts the published reference by ~80× (flat
+/// facets on this very thin shell, R/t=250; element-level membrane locking
+/// requires a curved element).
 ///
 /// A hemispherical shell (R=10, t=0.04, E=6.825×10⁷, ν=0.3) with an 18°
 /// polar cut-out, loaded by alternating ±P=±2 point loads along the x and y
@@ -1271,13 +1260,11 @@ fn scordelis_lo_roof_degenerate_stack_4x4_within_bathe_lee_2014_band() {
 ///
 /// # Smoke-test envelope
 ///
-/// Today's coarse-mesh MITC3 radial displacement at the loaded equator
-/// corner is **~4.3×10⁻⁵** (bare MITC3, 4×4 quadrant, outward).
-/// The published MacNeal-Harder (1985) reference is **0.0940** (a ~2200×
-/// gap due to severe faceting over-stiffness and lost membrane–bending
-/// coupling on the flat facets, R/t=250; only a curved-element formulation
-/// closes the gap — flat-facet bubble enrichment is mathematically inert,
-/// see the file header in `shell_assembly.rs`).
+/// Bare MITC3 (4×4 quadrant) gives an outward radial displacement of
+/// **~1.18×10⁻³** at the loaded equator corner, against the published
+/// MacNeal-Harder (1985) reference **0.0940** (~80× under; flat-facet bubble
+/// enrichment is mathematically inert, see the file header in
+/// `shell_assembly.rs`).
 ///
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test for the same rationale.
@@ -1319,13 +1306,11 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
     // equator point, so the radial displacement = u_x (positive = outward).
     let radial_disp = u[load_node * 6 + 0];
 
-    // Smoke-test envelope spans today's locked output (~4.3e-5) and the
-    // published reference (0.0940). The huge ~2200× gap is the well-known
-    // bare-MITC3 hemisphere result; envelope is intentionally wide enough
-    // to absorb a future curved-element MITC3+ correctness fix without
-    // regression.
-    //   floor = 1e-7 → 430× margin below observed locked output
-    //   ceil  = 1.0  → 11× margin above published reference
+    // Order-of-magnitude envelope around the bare-MITC3 output (~1.18e-3) and
+    // the published reference (0.0940), wide enough to absorb a future
+    // curved-element correctness fix.
+    //   floor = 1e-7 → ~12000× below the observed output
+    //   ceil  = 1.0  → 11× above the published reference
     const SMOKE_FLOOR: f64 = 1.0e-7;
     const SMOKE_CEIL: f64 = 1.0;
     assert!(
@@ -1341,10 +1326,9 @@ fn hemisphere_with_point_loads_smoke_test_radial_displacement_is_finite_and_outw
     assert!(
         radial_disp > SMOKE_FLOOR && radial_disp < SMOKE_CEIL,
         "hemisphere smoke test: radial_disp = {radial_disp:.4e} outside \
-         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Today's locked \
-         MITC3 4×4 output is ~4.3e-5; published MacNeal-Harder reference \
-         is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
-         this band, not outside it."
+         envelope [{SMOKE_FLOOR:.0e}, {SMOKE_CEIL:.0e}]. Bare MITC3 4×4 \
+         gives ~1.18e-3; published MacNeal-Harder reference is \
+         {MACNEAL_HARDER_REF:.4e}."
     );
 }
 

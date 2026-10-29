@@ -14,17 +14,14 @@
 //! is lifted from the proven end-to-end shell solve in
 //! `tests/shell_benchmarks.rs` (the flat-plate cantilever sanity test).
 //!
-//! # Accuracy contract (esc-3594-10 re-spec)
+//! # Accuracy contract
 //!
-//! The recovered stress is held to the **bare-MITC3 honest band**, NOT a tight
-//! tolerance: the user-observable signal (e2e in
-//! `reify-eval/tests/shell_solve_e2e.rs`) asserts the max top-channel von Mises
-//! is finite, non-zero, and within ONE ORDER OF MAGNITUDE of the analytical
-//! `σ = 6PL/(bh²)`. A flat-facet cantilever is the benign MITC3 case (no
-//! curvature → no membrane locking), so the 1-OOM band is met deterministically;
-//! this driver is intentionally NOT gated on MITC3+ tight accuracy (task 3392),
-//! matching the `shell_benchmarks.rs` "smoke tests, NOT validated benchmarks"
-//! convention.
+//! The tip deflection is 0.92–0.94·δ_EB across L/t ≈ 8–133, and it does not
+//! change with thickness. The max top-layer von Mises is 0.92–0.93·σ, with
+//! σ = 6PL/(bh²). Held by `tests/flat_shell_shear_locking.rs` and by this
+//! module's two driver tests, each at ±15%. The reify-eval e2e
+//! (`reify-eval/tests/shell_solve_e2e.rs`) keeps its wider one-order-of-magnitude
+//! band.
 
 use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
@@ -78,28 +75,19 @@ pub struct FlatPlateShellSolve {
 ///   without the pin `K` is rank-deficient and the solve produces NaN (see the
 ///   `shell_benchmarks.rs` flat-plate sanity test for the same treatment).
 /// - The transverse `-Z` `tip_force` is applied as a consistent traction over
-///   the last element column (a one-cell-wide patch at the free tip), NOT a
-///   pure edge-line load. A pure edge load concentrates the whole force on the
-///   `x == length` node ring, whose two doubly-free corner nodes each belong to
-///   a single triangle and act as near-mechanisms (they "flap" and manufacture
-///   a spurious local stress concentration). The patch shares the load with the
-///   inboard node column, cutting the corner over-load while keeping the root
-///   bending moment at `tip_force · (length − Δx/2)` — within ≈2.5% of the
-///   ideal tip-point moment `tip_force · length`.
+///   the last element column (a one-cell-wide patch at the free tip), not a
+///   pure edge-line load. The patch's root bending moment is
+///   `tip_force · (length − Δx/2)`, within ≈2.5% of the ideal tip-point moment
+///   `tip_force · length`.
 ///
 /// # Element choice / accuracy
 ///
 /// Assembly uses the flat-facet MITC3+ element
-/// ([`shell_element_stiffness_mitc3_plus`], task 3392): bare MITC3 transverse-
-/// SHEAR-locks on this thin plate (`L/t = 50`), collapsing the bending response
-/// ~100× and pushing the recovered stress below the band; the MITC3+ nodal
-/// assumed-shear field relieves that locking and restores a tip deflection
-/// within ~30% of Euler-Bernoulli. A flat facet has no curvature, so the
-/// membrane-locking that drives the large curved-benchmark errors
-/// (`shell_benchmarks.rs`) is absent. The recovered top-channel von Mises lands
-/// within one order of magnitude of the analytical σ = 6PL/(bh²) (esc-3594-10
-/// honest-accuracy contract; band `[3e7, 3e9]` Pa around `3e8`). This is NOT a
-/// tight-accuracy (5%) contract.
+/// ([`shell_element_stiffness_mitc3_plus`]). Bare MITC3 gives the same response
+/// to within ~1%, because both carry the in-plane metric in their transverse
+/// shear. A flat facet has no curvature, so the membrane locking behind the
+/// curved-benchmark errors (`shell_benchmarks.rs`) is absent. Measured accuracy
+/// and the tests that hold it: see the module-level accuracy contract.
 pub fn solve_flat_plate_shell(
     length: f64,
     width: f64,
@@ -111,8 +99,8 @@ pub fn solve_flat_plate_shell(
     //
     // Near-square cells: ny ≈ nx · width/length. nx is chosen fine enough that
     // the root element's centroid-sampled (constant-strain) curvature captures
-    // the peak bending moment to within the one-OOM band; bending is uniform
-    // across the width, so ny can stay small.
+    // the peak bending moment; bending is uniform across the width, so ny can
+    // stay small.
     let nx: usize = 20;
     let ny: usize = ((nx as f64 * width / length).round() as usize).max(2);
 
@@ -187,13 +175,6 @@ pub fn solve_flat_plate_shell(
     // edge-line load. f is 6-DOF/node, so the transverse (DOF 2) component is
     // written directly (apply_point_load is a 3-DOF/node helper).
     //
-    // A pure edge-line load concentrates the whole tip force on the x==length
-    // node ring, whose two doubly-free corner nodes each belong to a single
-    // triangle and behave as near-mechanisms — they "flap" and manufacture a
-    // spurious local bending stress that swamps the physical root stress. The
-    // patch shares the load with the inboard (x==length-Δx) node column, cutting
-    // each corner node's share ~3× and reusing the corner's second triangle.
-    //
     // For a uniform downward pressure whose resultant is `tip_force`, the
     // consistent (constant-pressure) nodal force on a linear triangle is
     // p·area/3 per vertex; on the structured grid this is exactly
@@ -201,7 +182,7 @@ pub fn solve_flat_plate_shell(
     // Summed over the column's 2·ny triangles it recovers `tip_force` exactly.
     // The patch centroid sits at x = length − Δx/2, so the root bending moment
     // is `tip_force · (length − Δx/2)` — within Δx/2length (≈2.5%) of the ideal
-    // tip-point moment, well inside the one-OOM accuracy band.
+    // tip-point moment.
     let mut f = vec![0.0_f64; 6 * n_nodes];
     let per_vertex = -tip_force / (6.0 * ny as f64);
     for iy in 0..ny {
@@ -296,8 +277,7 @@ mod tests {
     /// # Accuracy basis
     ///
     /// The max top-layer von Mises sits at the clamped root and is held to
-    /// ±15% of σ = 6PL/(bh²) = 3e8 Pa (measured 0.92σ; a shear-locked element
-    /// reads 7σ from a flapping tip corner).
+    /// ±15% of σ = 6PL/(bh²) = 3e8 Pa (measured 0.92σ).
     #[test]
     fn flat_plate_shell_cantilever_top_von_mises_within_15_percent_of_analytical() {
         let length = 0.05_f64;

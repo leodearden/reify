@@ -20,15 +20,19 @@
 //! tensorial components (MITC) technique: covariant shear strains are sampled
 //! at three edge-midpoint tying points (A, B, C) and blended via the affine
 //! formula from `Mitc3Plus::interpolate_assumed_shear`. This corresponds to
-//! the **MITC3** formulation (Bathe & Dvorkin 1985).
+//! the **MITC3** formulation (Bathe & Dvorkin 1985). The sampled covariant
+//! shear is [`crate::shell_kinematics::ShellKinematics::covariant_shear_b`],
+//! which carries the in-plane metric, so both flat kernels hold rigid modes,
+//! constant shear and Euler-Bernoulli thickness scaling on any flat triangle
+//! (`tests/flat_shell_shear_locking.rs`).
 //!
 //! # `shell_element_stiffness` is bare MITC3; the MITC3+ sibling is below
 //!
 //! [`shell_element_stiffness`] is the bare-MITC3 baseline (edge-midpoint
 //! assumed shear, no bubble). The genuine flat-facet **MITC3+** element of
 //! Bathe & Lee 2014 lives in the sibling [`shell_element_stiffness_mitc3_plus`]
-//! (task 3392); the two are kept side by side so the shear-locking improvement
-//! is measurable against the bare baseline.
+//! (task 3392); the two are kept side by side so the two assumed-shear fields
+//! can be compared on identical geometry.
 //!
 //! ## What the cubic bubble does — and does not — do on a flat facet
 //!
@@ -46,9 +50,9 @@
 //!   bubble does not enter the assumed shear by value or by gradient there.
 //!
 //! It does **not** follow that MITC3+ needs curved geometry. On a flat facet the
-//! genuine MITC3+ shear-locking cure lives entirely in the **nodal** assumed
-//! transverse-shear field: the bare three-node covariant shear is sampled at six
-//! *interior* tying points A–F and re-interpolated via Eq. 9
+//! MITC3+ assumed transverse-shear field is entirely **nodal**: the three-node
+//! covariant shear is sampled at six *interior* tying points A–F and
+//! re-interpolated via Eq. 9
 //! ([`crate::elements::mitc3_plus::Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]),
 //! a softer field than the bare edge-midpoint Eq. 5. The bubble (carried through
 //! the retained 20×20 skeleton + 2×2 condensation, a no-op here since `K_NB = 0`)
@@ -429,8 +433,8 @@ pub fn shell_element_stiffness(
 }
 
 /// Compute the 18×18 element stiffness for the genuine flat-facet **MITC3+**
-/// shell element (Lee, Lee & Bathe 2014) — the transverse-shear-locking cure
-/// and sibling of the bare-MITC3 [`shell_element_stiffness`].
+/// shell element (Lee, Lee & Bathe 2014), sibling of the bare-MITC3
+/// [`shell_element_stiffness`].
 ///
 /// `nodes`, `thickness`, `material`, the DOF ordering, the drilling-rotation
 /// singularity, and the local→global rotation are all exactly as documented on
@@ -446,14 +450,15 @@ pub fn shell_element_stiffness(
 /// K* = K_NN − K_NB · K_BB⁻¹ · K_BN        (18×18)
 /// ```
 ///
-/// ## Where the shear-locking cure lives (corrected — esc-3392)
+/// ## The assumed transverse-shear field (esc-3392)
 ///
 /// On a flat, constant-Jacobian facet the cubic bubble is **inert in transverse
 /// shear**: the nodal↔bubble shear coupling `K_NB^shear ≡ 0` (the
 /// divergence-theorem result of task 3349, re-derived for the flat-facet shear
-/// field — DD#2 retracted). The genuine MITC3+ shear-locking cure here lives
-/// **entirely in the nodal assumed transverse-shear field**: the bare three-node
-/// (DISP3) covariant shear is sampled at the six *interior* tying points A–F and
+/// field — DD#2 retracted). The MITC3+ assumed transverse-shear field is
+/// therefore **entirely nodal**: the metric-carrying three-node (DISP3)
+/// covariant shear ([`crate::shell_kinematics::ShellKinematics::covariant_shear_b`])
+/// is sampled at the six *interior* tying points A–F and
 /// re-interpolated via the MITC3+ assumed field (Eq. 9,
 /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]). That field differs from
 /// bare MITC3's edge-midpoint Eq. 5 by O(1) structural terms, so it is a softer,
@@ -2033,8 +2038,7 @@ mod tests {
         // (iii) Rigid-body null space on the CURVED patch. The degenerate
         // rigid-rotation mode u_i = ω×(x_i−c), θ_i = ω is strain-free for ANY
         // directors: u_h(ξ,η,ζ) ≡ ω×(X−c), so the velocity gradient is skew(ω)
-        // (symmetric strain 0) and the geometry-free covariant shear coincides
-        // with flat MITC3+'s (already proven to annihilate this mode).
+        // (symmetric strain 0) and the exact covariant shear vanishes too.
         let k_max = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
         let tol = 1e-9 * k_max.max(1.0);
 
@@ -2547,8 +2551,8 @@ mod tests {
         );
     }
 
-    // --- Degenerate flat-reduction anchor (task 4068 steps 19/20) + the positive
-    // metric-improvement proof (esc-4068-134 directive 2). ---
+    // --- Degenerate flat-reduction anchor (task 4068 steps 19/20) + the non-unit
+    // constant-shear patch test. ---
 
     #[test]
     fn degenerate_flat_reduces_to_mitc3_plus_on_any_flat_triangle() {
@@ -2696,19 +2700,13 @@ mod tests {
 
     #[test]
     fn degenerate_transverse_shear_constant_state_patch_test_nonunit_triangle() {
-        // POSITIVE proof of the metric improvement (esc-4068-134 directive 2): on a
-        // NON-UNIT flat triangle, a uniform θ_y = α (w = 0) is a constant physical
-        // transverse-shear state γ_xz = α, γ_yz = 0 — no membrane (u = 0) and no
-        // bending (θ uniform ⇒ zero curvature). A physically-correct element must
-        // reproduce the analytical constant-shear energy ½·α²·κ·G·t·A for ANY
-        // triangle (A = mid-surface area). The degenerate element's exact covariant
-        // kinematics + s3·m2 contravariant map deliver this FULL value.
-        //
-        // Sanity / contrast: task 3392's metric-simplified flat shear would give
-        // only ¼ of this on the [(0,0),(2,0),(0,1.5)] triangle (the in-plane metric
-        // |g_x| = 2 it drops); we assert the CORRECT full value, NOT 3392's. Per
-        // the esc-4068-134 directive, if this does not pass the s3·m2 map has a
-        // residual bug and the failure must be escalated, not hidden.
+        // On a NON-UNIT flat triangle, a uniform θ_y = α (w = 0) is a constant
+        // physical transverse-shear state γ_xz = α, γ_yz = 0 — no membrane (u = 0)
+        // and no bending (θ uniform ⇒ zero curvature). A physically-correct element
+        // must reproduce the analytical constant-shear energy ½·α²·κ·G·t·A for ANY
+        // triangle (A = mid-surface area); the degenerate element's exact covariant
+        // kinematics + s3·m2 contravariant map deliver it. The flat kernels match
+        // it too (tests/flat_shell_shear_locking.rs).
         let mat = steel_like();
         let t = 0.05_f64;
         let alpha = 0.003_f64;
@@ -2732,10 +2730,8 @@ mod tests {
         assert!(
             (u_k - u_analytical).abs() < 1e-9 * scale,
             "degenerate non-unit shear patch: U_K = {u_k}, U_analytical = \
-             {u_analytical}, rel_err = {} (the ¼-value {} would flag a fallback to \
-             3392's metric-simplified shear)",
+             {u_analytical}, rel_err = {}",
             (u_k - u_analytical).abs() / scale,
-            0.25 * u_analytical,
         );
     }
 }

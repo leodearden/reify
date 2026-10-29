@@ -1,12 +1,13 @@
 //! Shared MITC3 shell kinematics shared by `shell_assembly` and `shell_result`.
 //!
-//! Both `shell_element_stiffness` and `shell_element_stress` need the same
-//! local 2D nodal coordinates, constant 2D shape gradients, covariant shear
-//! B-matrix at the three MITC3 tying points, and the J2⁻ᵀ covariant→physical
-//! map. This module is the single source of truth for those four quantities
-//! (plus the J2 determinant `det2` used by the shear quadrature weight in the
-//! stiffness path), so a sign-convention or tying-point-ordering change made
-//! here propagates to both consumers atomically.
+//! The flat shell kernels and `shell_element_stress` need the same local 2D
+//! nodal coordinates, constant 2D shape gradients, the local J2 and its J2⁻ᵀ
+//! covariant→physical map, and the covariant transverse-shear B-matrix. This
+//! module is the single source of truth for them (plus the J2 determinant
+//! `det2` used by the shear quadrature weight). The covariant shear has one
+//! home, [`ShellKinematics::covariant_shear_b`], which carries the in-plane
+//! metric on the rotation term. Bare MITC3 samples it at the three edge tying
+//! points (`b_cov_at_tying_points`); MITC3+ samples it at the six interior ones.
 
 use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
 use crate::elements::shell_frame::ShellFrame;
@@ -19,7 +20,7 @@ pub struct ShellKinematics {
     pub local_nodes_2d: [[f64; 2]; 3],
     /// Constant 2D shape gradients in the local frame: `dn[i] = [dN_i/dx, dN_i/dy]`.
     pub dn: [[f64; 2]; 3],
-    /// Covariant shear B-matrix at each MITC3 tying point A, B, C:
+    /// [`ShellKinematics::covariant_shear_b`] at each MITC3 tying point A, B, C:
     /// `b_cov_at_tying_points[tp_idx][cov_component][dof]` for
     /// `tp_idx in {A=0, B=1, C=2}` and `cov_component in {γ_ξζ=0, γ_ηζ=1}`.
     pub b_cov_at_tying_points: [[[f64; 18]; 2]; 3],
