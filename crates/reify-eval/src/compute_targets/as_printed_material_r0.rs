@@ -43,14 +43,14 @@
 //! θ's.
 
 use reify_fdm::{
-    DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, R0Options, R0Region, Toolpath, parse_prusaslicer_gcode,
-    r0_region_materials,
+    DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, R0Options, R0Region, Toolpath, ZoneProcessParams,
+    parse_prusaslicer_gcode, r0_region_materials,
 };
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
     AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_vec3, orthotropic_material,
-    read_base_elastic,
+    read_base_elastic, zone_params_value,
 };
 use super::{MM_TO_M, rejected_input_outcome, struct_data, structure};
 use crate::arg_acceptance::{FieldRejection, dimensionless_spec, length_spec, read_field};
@@ -155,16 +155,13 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
     let mat_infill = r0_zone_material(&regions.infill, build_unit);
 
     // ── Pack the AsPrintedZones lambda (same 7-element contract as R-fast) ───────
-    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz].
-    let params_list = Value::List(vec![
-        Value::Real(walls as f64),
-        Value::Real(top_bottom_layers as f64),
-        Value::Real(layer_height),
-        Value::Real(line_width),
-        Value::Real(build_unit[0]),
-        Value::Real(build_unit[1]),
-        Value::Real(build_unit[2]),
-    ]);
+    let params_list = zone_params_value(&ZoneProcessParams {
+        walls,
+        top_bottom_layers,
+        layer_height,
+        line_width,
+        build_direction: build_unit,
+    });
     let lambda = Value::List(vec![
         super::point3_length(aabb_min),
         super::point3_length(aabb_max),

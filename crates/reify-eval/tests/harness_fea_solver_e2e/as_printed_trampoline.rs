@@ -233,7 +233,11 @@ fn as_printed_trampoline_types_the_zone_param_lengths() {
         panic!("expected the params list at items[2], got {:?}", items[2]);
     };
     assert_eq!(p.len(), 7, "params must be a 7-element list");
-    assert_eq!(p[2], scalar(0.0002, DimensionVector::LENGTH), "layer_height");
+    assert_eq!(
+        p[2],
+        scalar(0.0002, DimensionVector::LENGTH),
+        "layer_height"
+    );
     assert_eq!(p[3], scalar(0.0004, DimensionVector::LENGTH), "line_width");
     for idx in [0, 1, 4, 5, 6] {
         assert!(

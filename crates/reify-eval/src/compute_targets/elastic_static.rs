@@ -4352,7 +4352,8 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
 ///
 /// - `aabb_min` / `aabb_max` — `Point3<Length>` (3 Scalar<Length> SI metres)
 /// - `params`        — `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
-///   (all `Value::Real`; bx/by/bz are the normalised build-direction components)
+///   (layer_height / line_width are `Scalar<Length>` SI metres like the AABB
+///   corners; the rest are `Value::Real`, bx/by/bz the normalised build direction)
 /// - `cos_threshold` — `Value::Real` top/bottom-vs-side face cosine cutoff
 /// - `mat_wall`, `mat_skin`, `mat_infill` — `AnisotropicMaterial` StructureInstances
 ///
@@ -4593,7 +4594,9 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// AsPrintedZones lambda:
 /// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
 ///
-/// All elements are `Value::Real`.
+/// `layer_height` and `line_width` (idx 2, 3) are `Scalar<Length>` read through
+/// [`extract_length_si`], the same rule as the `Point3<Length>` AABB corners;
+/// the counts and the build direction are `Value::Real`.
 ///
 /// Task D4 (compute-fea-hardening PRD): Result-ified leaf extractor — returns
 /// `Err(FeaValueShapeError)` on a malformed `Value` instead of panicking. Its
@@ -4638,8 +4641,8 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
     Ok(ZoneProcessParams {
         walls:             real(0)? as u32,
         top_bottom_layers: real(1)? as u32,
-        layer_height:      real(2)?,
-        line_width:        real(3)?,
+        layer_height:      extract_length_si(&list[2])?,
+        line_width:        extract_length_si(&list[3])?,
         build_direction:   [real(4)?, real(5)?, real(6)?],
     })
 }

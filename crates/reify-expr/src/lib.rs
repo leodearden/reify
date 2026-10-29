@@ -3326,7 +3326,8 @@ pub(crate) fn apply_lambda_with_point_unpacking(
 /// `reify_ir::FieldSourceKind::AsPrintedZones`:
 /// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`,
 /// where `params` is itself a `Value::List` of 7 numbers
-/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`.
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]` whose two
+/// band widths are `Length` scalars, read dimension-blind via `as_f64`.
 ///
 /// Reconstructs the γ [`reify_fdm::AxisAlignedBox`] / [`reify_fdm::ZoneProcessParams`],
 /// classifies the query point `at` into a Wall / Skin / Infill zone via

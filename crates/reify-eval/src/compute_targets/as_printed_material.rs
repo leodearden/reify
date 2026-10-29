@@ -42,7 +42,7 @@ use std::sync::Arc;
 use reify_core::{DimensionVector, Type};
 use reify_fdm::{
     AxisAlignedBox, BaseElastic, CouponOverride, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, InfillPattern,
-    OrthotropicConstants, TransverseIsoConstants, Zone, effective_orthotropic,
+    OrthotropicConstants, TransverseIsoConstants, Zone, ZoneProcessParams, effective_orthotropic,
     effective_transverse_isotropic, zone_solid_fraction,
 };
 use reify_ir::{FieldSourceKind, OpaqueState, StructureInstanceData, Value};
@@ -177,16 +177,13 @@ fn build_as_printed_field(
 
     // ── Pack the AsPrintedZones lambda payload (storage contract on
     //    reify_ir::FieldSourceKind::AsPrintedZones) ──────────────────────────────
-    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz].
-    let params_list = Value::List(vec![
-        Value::Real(walls as f64),
-        Value::Real(top_bottom_layers as f64),
-        Value::Real(layer_height),
-        Value::Real(line_width),
-        Value::Real(build_unit[0]),
-        Value::Real(build_unit[1]),
-        Value::Real(build_unit[2]),
-    ]);
+    let params_list = zone_params_value(&ZoneProcessParams {
+        walls,
+        top_bottom_layers,
+        layer_height,
+        line_width,
+        build_direction: build_unit,
+    });
     let lambda = Value::List(vec![
         super::point3_length(aabb.min),
         super::point3_length(aabb.max),
@@ -197,6 +194,23 @@ fn build_as_printed_field(
         mat_infill,
     ]);
     Ok(Some(as_printed_field_value(lambda)))
+}
+
+/// The positional `params` slot of the `AsPrintedZones` lambda,
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`: the two
+/// band widths are typed `Length` (SI metres); the counts and the unit build
+/// direction are dimensionless `Value::Real`.
+pub(crate) fn zone_params_value(params: &ZoneProcessParams) -> Value {
+    let [bx, by, bz] = params.build_direction;
+    Value::List(vec![
+        Value::Real(f64::from(params.walls)),
+        Value::Real(f64::from(params.top_bottom_layers)),
+        super::length(params.layer_height),
+        super::length(params.line_width),
+        Value::Real(bx),
+        Value::Real(by),
+        Value::Real(bz),
+    ])
 }
 
 /// Wrap a lambda payload as the `Field<Point3<Length>, AnisotropicMaterial>`
