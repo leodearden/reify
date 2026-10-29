@@ -836,7 +836,26 @@ fn is_stdlib_path(p: &str) -> bool {
     p == "std" || p.starts_with("std.")
 }
 
-/// Build the `(error_string, diag_infos)` payload for an error result.
+/// What a successful compile produced, in one order everywhere.
+pub(crate) struct CompiledSource {
+    pub(crate) parsed: reify_ast::ParsedModule,
+    pub(crate) compiled: CompiledModule,
+}
+
+/// Why a compile was rejected.
+///
+/// Not the session's stored [`CompileFailure`]: that record also carries the
+/// failure's [`CompileFailureKind`], which only the session can know, and is
+/// built from this one by `record_compile_failure`.
+pub(crate) struct CompileRejection {
+    /// `"{prefix}: msg1; msg2; …"`, e.g. `"Parse errors: …"` /
+    /// `"Compile errors: …"` — the reload entry points' `Err` string.
+    pub(crate) message: String,
+    /// The same errors in structured form, for the diagnostics panel.
+    pub(crate) diags: Vec<DiagnosticInfo>,
+}
+
+/// Build the [`CompileRejection`] for an error result.
 ///
 /// Centralises the mechanical pattern shared by all parse- and compile-error
 /// return sites in `compile_single_file_with_stdlib` and
@@ -845,18 +864,19 @@ fn is_stdlib_path(p: &str) -> bool {
 /// wire payload.
 ///
 /// `prefix` becomes the leading label (e.g. `"Parse errors"`, `"Compile errors"`).
-/// The returned string has the form `"{prefix}: msg1; msg2; …"`, preserving the
+/// The message has the form `"{prefix}: msg1; msg2; …"`, preserving the
 /// wire-format invariant the function docstrings promise.
 fn build_err_payload(
     prefix: &str,
     diags: &[Diagnostic],
     file_path: &str,
     source: &str,
-) -> (String, Vec<DiagnosticInfo>) {
+) -> CompileRejection {
     let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-    let error_string = format!("{}: {}", prefix, msgs.join("; "));
-    let diag_infos = diagnostics_to_info(diags, file_path, source);
-    (error_string, diag_infos)
+    CompileRejection {
+        message: format!("{}: {}", prefix, msgs.join("; ")),
+        diags: diagnostics_to_info(diags, file_path, source),
+    }
 }
 
 /// Synthesize [`Diagnostic`] values from a slice of [`reify_syntax::ParseError`]s
@@ -869,7 +889,7 @@ fn parse_errs_to_payload(
     errors: &[reify_ast::ParseError],
     file_path: &str,
     source: &str,
-) -> (String, Vec<DiagnosticInfo>) {
+) -> CompileRejection {
     let synthetic_diags: Vec<Diagnostic> = errors
         .iter()
         .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
@@ -877,15 +897,45 @@ fn parse_errs_to_payload(
     build_err_payload("Parse errors", &synthetic_diags, file_path, source)
 }
 
+/// Reject `compiled` if any of its diagnostics is an error.
+///
+/// The one compile-error filter both compile helpers share: the rejection
+/// carries only the `Severity::Error` diagnostics, under the
+/// `"Compile errors"` prefix, keyed by `module_key(module_name)`.
+fn reject_compile_errors(
+    compiled: CompiledModule,
+    module_name: &str,
+    source: &str,
+) -> Result<CompiledModule, CompileRejection> {
+    if !compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return Ok(compiled);
+    }
+    let error_diags: Vec<Diagnostic> = compiled
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    Err(build_err_payload(
+        "Compile errors",
+        &error_diags,
+        &module_key(module_name),
+        source,
+    ))
+}
+
 /// Parse and compile a single-file source string using the stdlib prelude.
 ///
-/// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing
-/// a human-readable error string (preserving the existing `"Parse errors: …"` /
-/// `"Compile errors: …"` format so existing substring assertions remain valid)
-/// **and** a `Vec<DiagnosticInfo>` with the same errors in structured form.
-/// The structured payload is used by callers to populate
-/// `EngineSession::compile_failure` (via `record_compile_failure`) so `build_gui_state`
-/// can surface the failure in the diagnostics panel.
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`]
+/// whose message preserves the existing `"Parse errors: …"` /
+/// `"Compile errors: …"` format (so existing substring assertions remain
+/// valid) and whose diagnostics carry the same errors in structured form.
+/// Callers store those diagnostics in `EngineSession::compile_failure` (via
+/// `record_compile_failure`) so `build_gui_state` can surface the failure in
+/// the diagnostics panel.
 ///
 /// This is the single-file counterpart to `compile_entry_with_imports`.  It is
 /// called by both `load_from_source` (which always uses the single-file path) and
@@ -893,7 +943,7 @@ fn parse_errs_to_payload(
 fn compile_single_file_with_stdlib(
     content: &str,
     module_name: &str,
-) -> Result<(reify_ast::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<CompiledSource, CompileRejection> {
     // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
@@ -905,30 +955,17 @@ fn compile_single_file_with_stdlib(
         &parsed,
         &reify_constraints::SimpleConstraintChecker,
     );
-    let has_errors = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error);
-    if has_errors {
-        let error_diags: Vec<Diagnostic> = compiled
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        let file_path = module_key(module_name);
-        return Err(build_err_payload(
-            "Compile errors",
-            &error_diags,
-            &file_path,
-            content,
-        ));
-    }
-    Ok((parsed, compiled))
+    let compiled = reject_compile_errors(compiled, module_name, content)?;
+    Ok(CompiledSource { parsed, compiled })
 }
 
 /// Parse and compile `source` with multi-file import resolution.
 ///
 /// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`] in the
+/// same shape and message format as `compile_single_file_with_stdlib`'s (an
+/// import that fails to compile is reported under its own
+/// `"Compile errors in import '…'"` prefix, keyed by the import's file).
 ///
 /// `reify_compiler::module_dag::compile_project_with_entry_source` (at
 /// module_dag.rs:607) covers most of the same scaffolding — parse,
@@ -988,7 +1025,7 @@ fn compile_entry_with_imports(
     entry_path: &Path,
     source: &str,
     module_name: &str,
-) -> Result<(CompiledModule, reify_ast::ParsedModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<CompiledSource, CompileRejection> {
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
@@ -1081,31 +1118,12 @@ fn compile_entry_with_imports(
         .collect();
 
     let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
-    let mut compiled = reify_compiler::compile_with_prelude_context_checked(
+    let compiled = reify_compiler::compile_with_prelude_context_checked(
         &parsed,
         &ctx,
         &reify_constraints::SimpleConstraintChecker,
     );
-
-    // Surface compile errors.
-    let has_errors = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error);
-    if has_errors {
-        let error_diags: Vec<Diagnostic> = compiled
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        let file_path = module_key(module_name);
-        return Err(build_err_payload(
-            "Compile errors",
-            &error_diags,
-            &file_path,
-            source,
-        ));
-    }
+    let mut compiled = reject_compile_errors(compiled, module_name, source)?;
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
     // compiled.templates so that reify_eval::Engine::eval / unfold can find them
@@ -1134,7 +1152,7 @@ fn compile_entry_with_imports(
         &merge_inputs,
     );
 
-    Ok((compiled, parsed))
+    Ok(CompiledSource { parsed, compiled })
 }
 
 impl EngineSession {
@@ -2175,10 +2193,10 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let (parsed, compiled) =
-            compile_single_file_with_stdlib(source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, source, module_name);
-                msg
+        let CompiledSource { parsed, compiled } =
+            compile_single_file_with_stdlib(source, module_name).map_err(|rejection| {
+                self.record_compile_failure(rejection.diags, source, module_name);
+                rejection.message
             })?;
 
         // Evaluate + check constraints (borrows compiled by shared ref, so all
@@ -3186,10 +3204,10 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let (compiled, parsed) =
-            compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, &source, module_name);
-                msg
+        let CompiledSource { parsed, compiled } =
+            compile_entry_with_imports(path, &source, module_name).map_err(|rejection| {
+                self.record_compile_failure(rejection.diags, &source, module_name);
+                rejection.message
             })?;
         // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
         let check_result = self.check_with_solve_slot(&compiled);
@@ -3239,23 +3257,21 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path().map(|p| p.to_path_buf()) {
+        let CompiledSource { parsed, compiled } = if let Some(entry_path) = self.core.file_path().map(|p| p.to_path_buf()) {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
             // imports.  Both module_name and the project-root anchor come from
             // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
-            let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
-                .map_err(|(msg, diags)| {
-                    self.record_compile_failure(diags, content, module_name);
-                    msg
-                })?;
-            (parsed, compiled)
+            compile_entry_with_imports(&entry_path, content, module_name).map_err(|rejection| {
+                self.record_compile_failure(rejection.diags, content, module_name);
+                rejection.message
+            })?
         } else {
             // Single-file flow — no prior load_file means no project_root anchor;
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
-            compile_single_file_with_stdlib(content, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, content, module_name);
-                msg
+            compile_single_file_with_stdlib(content, module_name).map_err(|rejection| {
+                self.record_compile_failure(rejection.diags, content, module_name);
+                rejection.message
             })?
         };
 
