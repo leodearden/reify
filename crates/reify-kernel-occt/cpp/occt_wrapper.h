@@ -110,15 +110,9 @@ struct AnalyticCurveDatum;
 
 /// Return OCCT's `Precision::Confusion()` value (~1e-7).
 ///
-/// Test-fixture-style helper intentionally compiled into every build of the
-/// wrapper.  Cfg-gating cxx::bridge entries is awkward, and the cost of
-/// always shipping a tiny constant-returning function is lower than the
-/// friction of conditional bridge declarations.  The current sole call site
-/// is `default_point_on_shape_tolerance_m_pins_occt_precision_confusion` in the
-/// `reify-kernel-occt` crate's `src/ffi_contract_tests.rs`, which pins
-/// `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the authoritative
-/// OCCT value at runtime.  The symbol is visible to all callers of the
-/// wrapper, not hidden by construction.
+/// Test-only: pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (see
+/// `src/ffi_contract_tests.rs`). Why it ships ungated: its declaration in
+/// `src/ffi.rs`.
 double precision_confusion();
 
 // --- Primitive construction ---

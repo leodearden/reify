@@ -136,7 +136,6 @@ fn zone_slab_planar_face_volume_identity() {
     }
 }
 
-/// RED until step-4 adds make_cylindrical_face FFI and wires curved handling.
 /// PRD G6 smoke bar: zone_slab on a curved (cylindrical) face must not fail
 /// and must return a solid with volume > 0.
 #[test]

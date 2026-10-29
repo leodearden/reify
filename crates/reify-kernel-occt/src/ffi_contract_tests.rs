@@ -1,6 +1,5 @@
-//! Contract tests of the cxx bridge `crate::ffi::ffi`, driven directly beneath `OcctKernel`.
-//! A test that needs an `OcctKernel` belongs in `tests/harness_occt_kernel/`; one that must
-//! observe a private `OcctKernel` invariant belongs in `lib.rs`'s `mod tests`.
+//! Contract tests of the cxx bridge `crate::ffi::ffi`, driven directly beneath `OcctKernel`
+//! (which kernel tests live here, in `tests/`, or in `lib.rs`: the doc on `lib.rs`'s `mod tests`).
 
 use crate::ffi;
 
@@ -18,27 +17,26 @@ use crate::ffi;
 /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
 /// gap the get_shape chokepoint already covers.
 ///
-/// RED (pre-fix): `query_volume` dereferences `ShapeType()` on null
-/// topology → SIGSEGV (the guaranteed crash vector); `query_centroid`,
-/// `query_face_centroid`, `query_area`, and `query_edge_length` all return
-/// `Ok` (origin / mass 0.0) on null topology (so their `is_err()`
-/// assertions would fail). GREEN (after the C++ guards): each throws
-/// `std::runtime_error`, mapped by cxx to a catchable `Err`.
+/// Without its guard, `query_volume` dereferences `ShapeType()` on null
+/// topology → SIGSEGV, while `query_centroid`, `query_face_centroid`,
+/// `query_area` and `query_edge_length` return `Ok` (origin / mass 0.0).
+/// With the guards, each throws `std::runtime_error`, which cxx maps to a
+/// catchable `Err`.
 ///
-/// MUST run under `cargo nextest run` (process-per-test isolation) so the
-/// pre-fix crash is contained as one failing test, not a suite abort.
+/// MUST run under `cargo nextest run` (process-per-test isolation) so a
+/// missing guard's crash is contained as one failing test, not a suite abort.
 #[test]
 fn occt_query_ffi_rejects_null_topology_shape() {
     let null_shape = ffi::ffi::make_null_shape_for_test();
 
-    // query_volume is the guaranteed crash vector pre-fix (ShapeType()
+    // query_volume is the crash vector an unguarded path hits (ShapeType()
     // fallback over null topology).
     assert!(
         ffi::ffi::query_volume(&null_shape).is_err(),
         "query_volume on null-topology shape must return Err, not crash"
     );
     // Same crash vector, second entry point: both delegate to
-    // compute_volume_arm, which is where the IsNull guard now lives.
+    // compute_volume_arm, which is where the IsNull guard lives.
     assert!(
         ffi::ffi::query_volume_measurement(&null_shape).is_err(),
         "query_volume_measurement on null-topology shape must return Err, not crash"
@@ -55,9 +53,9 @@ fn occt_query_ffi_rejects_null_topology_shape() {
         ffi::ffi::query_inertia_tensor(&null_shape, 1000.0).is_err(),
         "query_inertia_tensor on null-topology shape must return Err"
     );
-    // Surface/linear-property queries: pre-fix these return Ok (origin /
-    // mass 0.0) on null topology rather than crashing, but they are equally
-    // unguarded. query_face_centroid is reached from the production Centroid
+    // Surface/linear-property queries: unguarded, these return Ok (origin /
+    // mass 0.0) on null topology rather than crashing, so a missing guard
+    // here is silent. query_face_centroid is reached from the production Centroid
     // dispatch for Face-repr handles (see GeometryQuery::Centroid dispatch).
     assert!(
         ffi::ffi::query_face_centroid(&null_shape).is_err(),
@@ -107,10 +105,10 @@ fn make_offset_surface_ffi_contract() {
     );
 
     // Negative distance: offsets along the face's -normal, opposite the
-    // +0.002 case above. Previously uncovered (reviewer finding) — pin
-    // the *sign*, not just success, via query_bbox: the result must land
-    // at z ≈ -0.002m, catching a regression that mis-signs the normal
-    // or silently no-ops on inward/negative offsets.
+    // +0.002 case above. Pin the *sign*, not just success, via
+    // query_bbox: the result must land at z ≈ -0.002m, catching a
+    // regression that mis-signs the normal or silently no-ops on
+    // inward/negative offsets.
     let neg = ffi::ffi::make_offset_surface(&face, -0.002)
         .expect("-2mm surface offset should succeed (-normal direction)");
     let bb = ffi::ffi::query_bbox(&neg).expect("query_bbox should succeed");
@@ -128,7 +126,7 @@ fn make_offset_surface_ffi_contract() {
     );
 }
 
-// --- Offset curve (offset_curve ι) tests ---
+// --- Offset curve tests ---
 
 /// Overload-1 precise signal (FFI level): offsetting a planar circular arc
 /// of radius 10mm outward by 2mm yields a concentric arc of radius 12mm.
@@ -228,7 +226,7 @@ fn make_circle_wire_valid_produces_wire() {
     );
 }
 
-// --- Extrude tests (task-308 step-7 + step-9) ---
+// --- Extrude tests ---
 
 #[test]
 fn extrude_circle_face_volume() {
@@ -274,7 +272,7 @@ fn extrude_negative_distance_same_volume() {
     );
 }
 
-// --- Revolve FFI tests (task-309 step-1) ---
+// --- Revolve FFI tests ---
 
 #[test]
 fn make_rect_face_creates_valid_face() {
@@ -377,7 +375,7 @@ fn revolve_result_is_solid_not_shell() {
     );
 }
 
-// --- Torus tests (task-4157) ---
+// --- Torus tests ---
 
 #[test]
 fn make_torus_ffi_produces_correct_volume() {
@@ -704,7 +702,7 @@ fn ffi_make_oriented_circle_face_rejects_non_positive_or_nan_radius() {
     }
 }
 
-// --- make_line_wire degeneracy threshold tests (task-383 S2) ---
+// --- make_line_wire degeneracy threshold tests ---
 
 #[test]
 fn ffi_make_line_wire_rejects_sub_epsilon_length() {
@@ -751,10 +749,9 @@ fn cpp_line_wire_floor_matches_rust_const() {
 ///
 /// `Precision::Confusion()` is defined in OCCT as the `constexpr` literal
 /// `1.0e-7`, identical to the Rust constant.  This test would fail if a
-/// future OCCT release changed `Precision::Confusion()` away from 1e-7,
-/// giving genuine drift-detection that the deleted tautological test in
-/// `reify-types` only pretended to provide (that test compared the constant
-/// against the literal it was defined as — always true by construction).
+/// future OCCT release changed `Precision::Confusion()` away from 1e-7 —
+/// drift detection that comparing the constant against its own literal
+/// could never give.
 /// The comparison uses a relative tolerance of ~4 ULPs so a future OCCT
 /// switch from a literal to an arithmetically equivalent computed
 /// `constexpr` (same nominal value, possible 1-ulp rounding difference)
@@ -868,9 +865,8 @@ fn gtransform_shape_identity_preserves_aabb() {
 }
 
 /// Singular linear part (diag(1,1,0), det=0) must return Err containing "singular".
-/// This is RED against the base impl — BRepBuilderAPI_GTransform silently emits a
-/// degenerate shape for det=0 without failing IsDone(), so this test fails until
-/// the explicit determinant guard is added in step-4.
+/// BRepBuilderAPI_GTransform silently emits a degenerate shape for det=0 without
+/// failing IsDone(), so the explicit determinant guard is what this pins.
 #[test]
 fn gtransform_shape_singular_linear_returns_error() {
     let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
@@ -939,7 +935,7 @@ fn gtransform_shape_does_not_mutate_source_shape() {
     );
 }
 
-// --- Wedge FFI tests (task-4158, step-1) ---
+// --- Wedge FFI tests ---
 
 /// FFI-level test: make_wedge produces a solid with the expected volume and
 /// face count.
@@ -947,8 +943,6 @@ fn gtransform_shape_does_not_mutate_source_shape() {
 /// V = depth·height·(width+top_width)/2 = 0.010·0.015·(0.020+0.005)/2
 ///   = 1.875e-6 m³ (exact for flat-faced OCCT BRepPrimAPI_MakeWedge).
 /// Face count = 6: 2 trapezoid end-caps + 4 lateral faces.
-///
-/// RED until step-2 implements ffi::ffi::make_wedge.
 #[test]
 fn make_wedge_ffi_produces_solid_with_expected_volume_and_face_count() {
     let shape = ffi::ffi::make_wedge(0.020, 0.010, 0.015, 0.005)
@@ -972,15 +966,13 @@ fn make_wedge_ffi_produces_solid_with_expected_volume_and_face_count() {
     );
 }
 
-// --- RectangleProfile FFI tests (task-4160, step-1) ---
+// --- RectangleProfile FFI tests ---
 
 /// FFI-level test: make_rectangle_face produces a face that can be extruded
 /// to a solid with the expected volume.
 ///
 /// Rectangle w=0.020 m, h=0.010 m, extruded by d=0.003 m →
 /// V = w·h·d = 0.020·0.010·0.003 = 6.0e-7 m³ (exact for rectangular prism).
-///
-/// RED until step-2 implements ffi::ffi::make_rectangle_face.
 #[test]
 fn make_rectangle_face_ffi_extrude_volume() {
     let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
@@ -998,8 +990,6 @@ fn make_rectangle_face_ffi_extrude_volume() {
 }
 
 /// Degenerate input: width=0 must return Err (not panic).
-///
-/// RED until step-2 implements ffi::ffi::make_rectangle_face.
 #[test]
 fn make_rectangle_face_ffi_zero_width_returns_err() {
     let result = ffi::ffi::make_rectangle_face(0.0, 0.010, 0.0);
@@ -1010,8 +1000,6 @@ fn make_rectangle_face_ffi_zero_width_returns_err() {
 }
 
 /// Degenerate input: negative height must return Err (not panic).
-///
-/// RED until step-2 implements ffi::ffi::make_rectangle_face.
 #[test]
 fn make_rectangle_face_ffi_negative_height_returns_err() {
     let result = ffi::ffi::make_rectangle_face(0.020, -0.010, 0.0);
@@ -1021,15 +1009,12 @@ fn make_rectangle_face_ffi_negative_height_returns_err() {
     );
 }
 
-// --- FFI face builders: polygon + ellipse (task-4161 step-1) ---
-// RED until step-2 adds make_polygon_face / make_ellipse_face to ffi.rs + occt_wrapper.
+// --- FFI face builders: polygon + ellipse ---
 
 /// (a) Square polygon face → extrude → volume ≈ 1e-4 m² × 0.005 m = 5e-7 m³.
 ///
 /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
 /// prism volume = base_area × height = 1e-4 × 0.005 = 5e-7 m³ (exact for rectilinear mesh).
-///
-/// RED until step-2 implements ffi::ffi::make_polygon_face.
 #[test]
 fn make_polygon_face_ffi_square_extrude_volume() {
     #[rustfmt::skip]
@@ -1049,8 +1034,6 @@ fn make_polygon_face_ffi_square_extrude_volume() {
 }
 
 /// (b) Triangle polygon face → surface area ≈ shoelace = 0.5 × 0.02 × 0.01 = 1e-4 m².
-///
-/// RED until step-2 implements ffi::ffi::make_polygon_face.
 #[test]
 fn make_polygon_face_ffi_triangle_surface_area() {
     #[rustfmt::skip]
@@ -1068,8 +1051,6 @@ fn make_polygon_face_ffi_triangle_surface_area() {
 }
 
 /// (c-i) Degenerate: n_points < 3 must return Err.
-///
-/// RED until step-2 implements ffi::ffi::make_polygon_face.
 #[test]
 fn make_polygon_face_ffi_too_few_points_returns_err() {
     let coords = [0.0_f64, 0.0, 0.01, 0.0];
@@ -1081,8 +1062,6 @@ fn make_polygon_face_ffi_too_few_points_returns_err() {
 }
 
 /// (c-ii) Degenerate: coords.len() != 2 × n_points must return Err.
-///
-/// RED until step-2 implements ffi::ffi::make_polygon_face.
 #[test]
 fn make_polygon_face_ffi_wrong_coords_len_returns_err() {
     // 3 points claimed but only 4 coords (should be 6)
@@ -1096,8 +1075,6 @@ fn make_polygon_face_ffi_wrong_coords_len_returns_err() {
 
 /// (c-iii) Degenerate: 3 collinear points produce a degenerate polygon that
 /// BRepBuilderAPI_MakeFace rejects (IsDone() = false → Err).
-///
-/// RED until step-2 implements ffi::ffi::make_polygon_face.
 #[test]
 fn make_polygon_face_ffi_collinear_points_returns_err() {
     // All three points on the X-axis → zero area → degenerate face
@@ -1110,8 +1087,6 @@ fn make_polygon_face_ffi_collinear_points_returns_err() {
 }
 
 /// (d) Ellipse face → surface area ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
-///
-/// RED until step-2 implements ffi::ffi::make_ellipse_face.
 #[test]
 fn make_ellipse_face_ffi_surface_area() {
     let face = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
@@ -1130,8 +1105,6 @@ fn make_ellipse_face_ffi_surface_area() {
 ///
 /// make_ellipse_face(0.005, 0.010) must normalize major/minor internally and
 /// produce the same area as make_ellipse_face(0.010, 0.005).
-///
-/// RED until step-2 implements ffi::ffi::make_ellipse_face.
 #[test]
 fn make_ellipse_face_ffi_swapped_axes_same_area() {
     let face_ab = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
@@ -1190,8 +1163,6 @@ fn make_ellipse_face_ffi_swapped_axes_bbox_orientation() {
 }
 
 /// (f-i) Non-positive semi-axis → Err.
-///
-/// RED until step-2 implements ffi::ffi::make_ellipse_face.
 #[test]
 fn make_ellipse_face_ffi_zero_semi_axis_returns_err() {
     let result = ffi::ffi::make_ellipse_face(0.0, 0.005, 0.0);
@@ -1208,8 +1179,6 @@ fn make_ellipse_face_ffi_zero_semi_axis_returns_err() {
 }
 
 /// (f-ii) Non-finite semi-axis → Err.
-///
-/// RED until step-2 implements ffi::ffi::make_ellipse_face.
 #[test]
 fn make_ellipse_face_ffi_nonfinite_semi_axis_returns_err() {
     let result = ffi::ffi::make_ellipse_face(f64::INFINITY, 0.005, 0.0);
