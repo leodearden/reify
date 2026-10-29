@@ -8654,7 +8654,8 @@ fn resolve_index_usize(
 /// `List`, the lambda has one param and a `FunctionCall` body, and every
 /// element's body resolves to a `List`. A `Selector`-valued list arg such as
 /// `faces(b)` is not supported. `Some(Undef)` only propagates a kernel failure
-/// the nested helper already reported.
+/// the nested helper already reported. The diagnostics the walk's nested
+/// helpers report are kept only with a `Some`: a declined cell leaves none.
 ///
 /// A `ValueRef` list arg reads another selector cell's resolved `List`, so its
 /// result depends on that cell being hydrated first: UnifiedDag's HydrateCell
@@ -8664,6 +8665,21 @@ fn resolve_index_usize(
 /// It is reached from inside `try_eval_topology_selector` so both hydration
 /// ladders, a nested `flat_map` and the `single(...)` fallback share one entry.
 fn try_eval_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let mut walk_diagnostics = Vec::new();
+    let walked = walk_topology_flat_map(args, named_steps, values, kernel, &mut walk_diagnostics)?;
+    diagnostics.append(&mut walk_diagnostics);
+    Some(walked)
+}
+
+/// The walk behind [`try_eval_topology_flat_map`]. It reports into
+/// `diagnostics` even on the paths that return `None`.
+fn walk_topology_flat_map(
     args: &[reify_ir::CompiledExpr],
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
@@ -13029,3 +13045,6 @@ mod tests;
 
 #[cfg(test)]
 mod dispatch_table_uniqueness;
+
+#[cfg(test)]
+mod flat_map_tests;
