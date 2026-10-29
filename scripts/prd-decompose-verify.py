@@ -52,7 +52,8 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional
 
 # ---------------------------------------------------------------------------
 # Load α (prd-capability-check.py) via importlib
@@ -81,9 +82,11 @@ class Premise:
 
     Fields:
         text            — human-readable assertion statement
-        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir"
+        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir" | "value"
         fixture         — repo-relative path to the .ri fixture file
-        match           — match predicate dict for α's probe (exit_code, stderr_contains, …)
+        match           — the premise's own match keys for α's probe (stderr_contains, …);
+                          binding adds the keys its assertion kind requires
+                          (AssertionBinding.required_match) and refuses a contradiction
         capability      — optional human name; falls back to text if None
     """
     text: str
@@ -94,37 +97,64 @@ class Premise:
 
 
 # ---------------------------------------------------------------------------
-# Assertion-kind → (probe_kind, observation) mapping
+# Assertion-kind → binding table
 # ---------------------------------------------------------------------------
 
-# Deterministic binding table (PRD D1 / negative-assertion mandate):
-#   rejection → check / present  — the rejection FIRES → exit_code 1 → match satisfied → PRESENT
-#                                   if reify accepts silently (exit 0) → match fails → ABSENT → FAIL
-#   parses    → grammar / present — tree-sitter exits 0 (no parse errors) → PRESENT → PASS
-#   resolves  → check / present  — reify check exits 0 → match {exit_code:0} satisfied → PRESENT
-#   produces  → ir / present     — reify eval exits ≠ 0 with signature → PRESENT → PASS
-#   ir        → ir / absent      — reify eval exits 0 (clean) → ABSENT → expected absent → PASS
-#   value     → value / present  — reify eval exits 0 AND the stdout capture satisfies the
-#                                   numeric constraint → PRESENT → PASS; exits 0 and a capture
-#                                   was read but is wrong or undef → ABSENT → FAIL; exits ≠ 0,
-#                                   or the pattern located nothing → INDETERMINATE → UNPROVABLE
-#                                   (ABSENT is reserved for a value actually read: a mis-aimed
-#                                   pattern is a broken probe, not a negative finding)
-_ASSERTION_KIND_MAP: Dict[str, tuple] = {
-    "rejection": ("check",   "present"),
-    "parses":    ("grammar", "present"),
-    "resolves":  ("check",   "present"),
-    "produces":  ("ir",      "present"),
-    "ir":        ("ir",      "absent"),
-    "value":     ("value",   "present"),
-}
+@dataclass(frozen=True)
+class AssertionBinding:
+    """How every premise of one assertion kind becomes an α probe.
+
+    probe_kind and observation name the probe.  required_match holds the match
+    keys every premise of the kind probes, whatever the premise wrote: the row's
+    own statement of what makes it non-vacuous.  It is read-only, so no probe
+    handed to a caller can rewrite the row.
+    """
+    probe_kind: str
+    observation: str
+    required_match: Mapping[str, Any]
+
+
+_NO_REQUIRED_MATCH: Mapping[str, Any] = MappingProxyType({})
+
+# Deterministic binding table (PRD D1 / D4).  α's load_probe_set holds the rest
+# of each probe's non-vacuity: a non-empty fixture, no key its kind ignores,
+# and a value probe's constrained predicate.
+_ASSERTION_KIND_MAP: Mapping[str, AssertionBinding] = MappingProxyType({
+    # The rejection FIRES → exit 1 → match satisfied → PRESENT → PASS; reify
+    # accepting silently (exit 0) misses it → ABSENT → expected present → FAIL.
+    # Negative-assertion mandate: "present", NOT "absent" (see premise_to_probe).
+    "rejection": AssertionBinding(
+        "check", "present", MappingProxyType({"exit_code": 1})
+    ),
+    # reify check exits 0 → match satisfied → PRESENT.
+    "resolves": AssertionBinding(
+        "check", "present", MappingProxyType({"exit_code": 0})
+    ),
+    # tree-sitter exits 0 (no parse errors) → PRESENT → PASS.
+    "parses": AssertionBinding("grammar", "present", _NO_REQUIRED_MATCH),
+    # reify eval exits ≠ 0 with the premise's stderr signature → PRESENT → PASS.
+    "produces": AssertionBinding("ir", "present", _NO_REQUIRED_MATCH),
+    # reify eval exits 0 (clean) → ABSENT → expected absent → PASS.
+    "ir": AssertionBinding("ir", "absent", _NO_REQUIRED_MATCH),
+    # reify eval exits 0 AND the stdout capture satisfies the numeric
+    # constraint → PRESENT → PASS; exits 0 and a capture was read but is wrong
+    # or undef → ABSENT → FAIL; exits ≠ 0, or the pattern located nothing →
+    # INDETERMINATE → UNPROVABLE (ABSENT is reserved for a value actually read:
+    # a mis-aimed pattern is a broken probe, not a negative finding).  α's value
+    # predicate rules are what make this row non-vacuous.
+    "value": AssertionBinding("value", "present", _NO_REQUIRED_MATCH),
+})
 
 
 def premise_to_probe(premise: Premise) -> Dict[str, Any]:
     """Bind a Premise record to an α probe dict.
 
-    The binding is deterministic — assertion_kind → (probe_kind, observation) from
-    _ASSERTION_KIND_MAP; the match dict is passed through verbatim from the premise.
+    The binding is deterministic — assertion_kind → the AssertionBinding row in
+    _ASSERTION_KIND_MAP.  The emitted match is a new dict: the row's required_match
+    united with the premise's match (required ∪ premise).  A premise that sets a
+    required key to a different value is mis-kinded and refused rather than
+    honoured: `resolves` with exit_code 1 would otherwise silently become a
+    rejection.
 
     Negative-assertion mandate (D1): a "rejection" premise binds observation="present"
     (NOT "absent").  A "revolute rejects a non-axis arg" assertion must probe that the
@@ -147,7 +177,8 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
         A dict in α's committed-probe-set shape, accepted by pcc.load_probe_set.
 
     Raises:
-        ValueError: if the assertion_kind is unknown.
+        ValueError: if the assertion_kind is unknown, the premise's match is not
+                    an object, or it contradicts the row's required_match.
     """
     kind = premise.assertion_kind
     if kind not in _ASSERTION_KIND_MAP:
@@ -155,17 +186,31 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
             f"unknown assertion_kind {kind!r}; "
             f"must be one of {sorted(_ASSERTION_KIND_MAP)}"
         )
+    binding = _ASSERTION_KIND_MAP[kind]
 
-    probe_kind, observation = _ASSERTION_KIND_MAP[kind]
+    if not isinstance(premise.match, Mapping):
+        raise ValueError(
+            f"{kind} premise {premise.text!r} has a match of type "
+            f"{type(premise.match).__name__}; match must be an object"
+        )
+    for key, required in binding.required_match.items():
+        if key in premise.match and premise.match[key] != required:
+            raise ValueError(
+                f"{kind} premise {premise.text!r} sets match.{key} = "
+                f"{premise.match[key]!r}, but every {kind} premise binds "
+                f"{key} = {required!r}.  The premise is mis-kinded: change its "
+                f"assertion_kind, or drop match.{key}"
+            )
+
     capability = premise.capability if premise.capability is not None else premise.text
 
     return {
         "capability": capability,
-        "probe_kind": probe_kind,
+        "probe_kind": binding.probe_kind,
         "fixture": premise.fixture,
         "expected": {
-            "observation": observation,
-            "match": premise.match,
+            "observation": binding.observation,
+            "match": {**premise.match, **binding.required_match},
         },
     }
 
@@ -182,14 +227,16 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
         {"probes": [probe_dict, ...]}
 
     Negative-assertion enforcement:
-        A `rejection` premise with an empty fixture string is a gap — a
-        rejection assertion with no probe target would silently pass, masking
-        the missing check.  Such a premise raises ValueError.
+        Each binding row in _ASSERTION_KIND_MAP writes the match its kind
+        requires (a rejection always probes exit_code 1), so a premise cannot
+        bind a probe that a silent accept would pass.
 
     Validation:
-        The assembled probe-set is validated by pcc.load_probe_set so any
-        binding error (unknown probe_kind, missing observation) surfaces here
-        rather than at probe-run time.
+        The assembled probe-set goes through pcc.load_probe_set, and that is
+        the only validation: α refuses an empty fixture for every kind, a match
+        key the kind never reads, a check probe with no constraining key and a
+        vacuous value predicate.  Any of these surfaces here rather than at
+        probe-run time.
 
     Args:
         premises: List of Premise records (may be empty → empty probe-set).
@@ -198,33 +245,10 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
         A dict {"probes": [...]}.  Round-trips through pcc.load_probe_set.
 
     Raises:
-        ValueError: if a rejection premise has an empty fixture path, or if
-                    the assembled probe dict is rejected by α's validation.
+        ValueError: if premise_to_probe refuses a premise, or if α's
+                    validation rejects the assembled probe set.
     """
-    probes = []
-    for premise in premises:
-        # Negative-assertion mandate: a rejection with no fixture is a gap.
-        if premise.assertion_kind == "rejection" and not premise.fixture.strip():
-            raise ValueError(
-                f"rejection premise {premise.text!r} has no fixture path — "
-                "a rejection assertion with no probe target is a gap, not a pass"
-            )
-
-        # Negative-assertion mandate: a rejection with an empty match dict is
-        # satisfied unconditionally (α's match_predicate returns True for {}) —
-        # reify can silently accept and the probe still PASSes.  That is the
-        # exact 4575 silent-accept class this harness exists to catch.
-        if premise.assertion_kind == "rejection" and not premise.match:
-            raise ValueError(
-                f"rejection premise {premise.text!r} has no match constraints — "
-                "an empty match is satisfied unconditionally and cannot detect "
-                "silent-accept (add e.g. match={{\"exit_code\": 1}} or "
-                "match={{\"exit_code\": 1, \"stderr_contains\": \"<diag>\"}})"
-            )
-
-        probe = premise_to_probe(premise)
-        probes.append(probe)
-
+    probes = [premise_to_probe(premise) for premise in premises]
     probe_set = {"probes": probes}
 
     # Validate through α so binding errors surface here, not at probe-run time.
@@ -721,9 +745,10 @@ def _parse_premises_file(path: str) -> List[Premise]:
             "premises": [
                 {
                     "text": "...",
-                    "assertion_kind": "rejection|parses|resolves|produces|ir",
-                    "fixture": "...",
-                    "match": {...},
+                    "assertion_kind": "rejection|parses|resolves|produces|ir|value",
+                    "fixture": "...",          // non-empty (α refuses an empty one)
+                    "match": {...},            // optional; bind adds the keys the
+                                               // kind requires, refuses a contradiction
                     "capability": "..."   // optional
                 }
             ]
