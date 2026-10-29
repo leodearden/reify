@@ -113,13 +113,13 @@
 //! - a "single-character argument" metavariable rule (to catch
 //!   `predicate(x)` specifically) was measured to ALSO drop `determined`,
 //!   `constrained`, `undetermined` and `partially_determined` — FOUR names,
-//!   exactly those of spec §2.10:221's ten-name carve-out that this corpus
+//!   exactly those of spec §2.10's ten-name carve-out that this corpus
 //!   documents in the `f(x)` shape, and every one of them a standard
 //!   library FUNCTION the spec is explicit is not a keyword, so filter 3
 //!   deliberately leaves all four claimable. Blinding the lane to four real
 //!   builtins to win one metavariable is the wrong trade. (`some(spec)` is
 //!   dropped by the rejected rule too, but is NOT part of that cost and
-//!   must not be counted as a fifth: `some` is a §2.10:212 value-literal
+//!   must not be counted as a fifth: `some` is a §2.10 value-literal
 //!   KEYWORD, filter 3 already drops it unconditionally, and
 //!   `keyword_filter_excludes_the_spec_carve_outs` omits it from the carve-out
 //!   list for exactly that reason.)
@@ -3209,7 +3209,7 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
 
     /// Non-function call-shaped syntax that reads like a call but is grammar,
     /// not an API claim. `auto(free)` is the real `parameters.md:13` shape (a
-    /// value literal/keyword, spec §2.10:207); `some(...)` is a language-level
+    /// value literal/keyword, spec §2.10); `some(...)` is a language-level
     /// `Option` constructor intercepted before general function resolution
     /// (crates/reify-compiler/src/expr.rs:2222-2223, "some() is a
     /// language-level constructor, not a user-defined function" — `none` gets

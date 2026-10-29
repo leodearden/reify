@@ -530,7 +530,7 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
 fn reasonless_marker_survives_every_mention_side_filter() {
     for (filter, chunk, expected_name) in [
         (
-            "reify_syntax::KEYWORDS membership (`auto` is a value literal, spec §2.10:207)",
+            "reify_syntax::KEYWORDS membership (`auto` is a value literal, spec §2.10)",
             "# Params\n\n- `auto(free)` <!-- pdoccover:allow -->\n\
              - `extrude(profile, height)` — real.\n",
             "auto",

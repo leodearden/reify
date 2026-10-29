@@ -60,11 +60,7 @@ const fn contextual(word: &'static str, rename: RenamePolicy) -> Keyword {
     }
 }
 
-/// Every reify keyword (PRD D15). Two tests below hold the table:
-/// - `keyword_words_match_spec_section_2_10` pins the word set to spec §2.10 plus the test-local
-///   `GRAMMAR_ONLY` list. A keyword the grammar has but the spec does not list goes there.
-/// - `keyword_kinds_match_parse_behaviour` pins each row's kind to how the parser treats the word
-///   as a binding name.
+/// Every reify keyword; the word set and each row's kind are pinned by this module's tests (PRD D15).
 pub const KEYWORDS: &[Keyword] = &[
     contextual("and", Refused),
     contextual("as", Accepted),
@@ -274,22 +270,6 @@ mod tests {
             .filter(|w| !seen.insert(*w))
             .collect();
         assert!(duplicates.is_empty(), "KEYWORDS repeats {duplicates:?}");
-    }
-
-    #[test]
-    fn unit_and_chain_are_contextual_and_rename_accepted() {
-        for word in ["unit", "chain"] {
-            assert_eq!(
-                lookup_keyword(word),
-                Some(&Keyword {
-                    word,
-                    kind: KeywordKind::Contextual {
-                        rename: RenamePolicy::Accepted
-                    },
-                }),
-                "`{word}` must be a rename-accepted Contextual keyword (PRD D15 amendment)"
-            );
-        }
     }
 
     #[test]
