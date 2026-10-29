@@ -308,35 +308,40 @@ class TestBindPremises(unittest.TestCase):
         self.assertEqual(len(rejection_probes), 2,
                          "Both rejection premises must yield probes (none dropped)")
 
-    # ── (4) rejection premise missing fixture → error ─────────────────────────
+    # ── (4) a premise with no fixture → error, for every kind ─────────────────
 
-    def test_rejection_missing_fixture_raises(self):
-        """A rejection premise with no fixture raises a clear error (gap, not a pass)."""
-        p = pdv.Premise(text="missing fixture rejection", assertion_kind="rejection",
-                        fixture="", match={"exit_code": 1}, capability="missing")
-        with self.assertRaises(Exception) as ctx:
-            pdv.bind_premises([p])
-        self.assertIn(
-            "fixture",
-            str(ctx.exception).lower(),
-            "Error message must mention 'fixture' for a rejection premise with no fixture path",
-        )
+    def test_missing_fixture_raises_for_every_kind(self):
+        """A premise with no fixture is a gap, not a pass — whatever its kind.
 
-    def test_rejection_empty_match_raises(self):
-        """A rejection premise with empty match raises — empty match is satisfied
-        unconditionally (α's match_predicate returns True for {}), so reify can silently
-        accept and the probe still PASSes.  This is the exact 4575 silent-accept class
-        bind_premises exists to catch."""
+        The refusal is α's load rule (R14 M1), reached through bind_premises'
+        one validation call, so it names the probe index α reports.
+        """
+        valid_match = {
+            "rejection": {"exit_code": 1},
+            "resolves": {"exit_code": 0},
+            "parses": {},
+            "produces": {"stderr_contains": "E"},
+            "ir": {"stderr_contains": "EvalError"},
+            "value": {"stdout_value": {"pattern": r"X = ([0-9.]+)", "min": 0}},
+        }
+        for kind, match in valid_match.items():
+            with self.subTest(assertion_kind=kind):
+                p = pdv.Premise(text=f"missing fixture {kind}", assertion_kind=kind,
+                                fixture="", match=match, capability="missing")
+                with self.assertRaises(ValueError) as ctx:
+                    pdv.bind_premises([p])
+                message = str(ctx.exception)
+                self.assertIn("fixture", message)
+                self.assertIn("probe[0]", message)
+
+    def test_rejection_empty_match_binds_exit_code_1(self):
+        """An empty rejection match is filled, not refused: the binding row itself
+        requires exit_code 1, so silent-accept (exit 0) still FAILs the probe."""
         p = pdv.Premise(text="empty match rejection", assertion_kind="rejection",
                         fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
                         match={}, capability="empty-match")
-        with self.assertRaises(Exception) as ctx:
-            pdv.bind_premises([p])
-        self.assertIn(
-            "match",
-            str(ctx.exception).lower(),
-            "Error message must mention 'match' for a rejection premise with empty match dict",
-        )
+        result = pdv.bind_premises([p])
+        self.assertEqual(result["probes"][0]["expected"]["match"], {"exit_code": 1})
 
     # ── (5) empty list → empty probe-set ────────────────────────────────────
 
@@ -462,15 +467,105 @@ class TestValueAssertionKind(unittest.TestCase):
 
     def test_existing_bindings_unchanged(self):
         expected = {
-            "rejection": ("check", "present"),
-            "parses": ("grammar", "present"),
-            "resolves": ("check", "present"),
-            "produces": ("ir", "present"),
-            "ir": ("ir", "absent"),
+            "rejection": ("check", "present", {"exit_code": 1}),
+            "parses": ("grammar", "present", {}),
+            "resolves": ("check", "present", {"exit_code": 0}),
+            "produces": ("ir", "present", {"stderr_contains": "EvalError"}),
+            "ir": ("ir", "absent", {"stderr_contains": "EvalError"}),
         }
-        for kind, (probe_kind, observation) in expected.items():
+        for kind, (probe_kind, observation, match) in expected.items():
             with self.subTest(assertion_kind=kind):
-                self.assertEqual(pdv._ASSERTION_KIND_MAP[kind], (probe_kind, observation))
+                probe = pdv.premise_to_probe(
+                    self._premise(match=match, assertion_kind=kind)
+                )
+                self.assertEqual(
+                    (probe["probe_kind"], probe["expected"]["observation"]),
+                    (probe_kind, observation),
+                )
+
+
+# ---------------------------------------------------------------------------
+# #8644 (S22 δ, D4 / §5.3): each binding row carries its required match
+# ---------------------------------------------------------------------------
+
+class TestBindingRequiredMatch(unittest.TestCase):
+    """premise_to_probe writes the match keys a binding row requires.
+
+    A `rejection` premise always probes exit_code 1 and a `resolves` premise
+    exit_code 0, whether or not the premise wrote it; a premise that writes a
+    different value is mis-kinded and refused rather than silently honoured.
+    The other kinds' matches pass through as written.
+    """
+
+    _FIXTURE = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
+    _VALUE_SPEC = {"pattern": r"X = ([0-9.]+)", "min": 0.01}
+
+    def _premise(self, kind, match):
+        return pdv.Premise(text="the premise under test", assertion_kind=kind,
+                           fixture=self._FIXTURE, match=match, capability="cap")
+
+    def _bound_match(self, kind, match):
+        return pdv.premise_to_probe(self._premise(kind, match))["expected"]["match"]
+
+    def test_fills_the_exit_code_its_kind_requires(self):
+        satisfied = "All constraints satisfied."
+        cases = (
+            ("resolves", {}, {"exit_code": 0}),
+            ("resolves", {"stdout_contains": satisfied},
+             {"exit_code": 0, "stdout_contains": satisfied}),
+            ("resolves", {"exit_code": 0}, {"exit_code": 0}),
+            ("rejection", {}, {"exit_code": 1}),
+            ("rejection", {"stderr_contains": "diag"},
+             {"exit_code": 1, "stderr_contains": "diag"}),
+        )
+        for kind, given, want in cases:
+            with self.subTest(assertion_kind=kind, match=given):
+                self.assertEqual(self._bound_match(kind, given), want)
+
+    def test_other_kinds_bind_the_premise_match_unchanged(self):
+        cases = (
+            ("parses", {}),
+            ("produces", {"stderr_contains": "X"}),
+            ("ir", {"stderr_contains": "EvalError"}),
+            ("value", {"stdout_value": dict(self._VALUE_SPEC)}),
+        )
+        for kind, given in cases:
+            with self.subTest(assertion_kind=kind):
+                self.assertEqual(self._bound_match(kind, given), given)
+
+    def test_refuses_an_exit_code_that_contradicts_the_kind(self):
+        """Honouring `resolves` + exit_code 1 would turn resolves into rejection."""
+        with self.assertRaises(ValueError) as ctx:
+            pdv.premise_to_probe(self._premise("resolves", {"exit_code": 1}))
+        message = str(ctx.exception)
+        for needle in ("resolves", "exit_code"):
+            self.assertIn(needle, message)
+        self.assertRegex(message, r"\b0\b")
+        self.assertRegex(message, r"\b1\b")
+
+        with self.assertRaises(ValueError) as ctx:
+            pdv.premise_to_probe(self._premise("rejection", {"exit_code": 42}))
+        message = str(ctx.exception)
+        for needle in ("rejection", "exit_code", "42"):
+            self.assertIn(needle, message)
+        self.assertRegex(message, r"\b1\b")
+
+    def test_a_bound_match_is_a_fresh_dict(self):
+        """Mutating one emitted probe reaches neither the table nor the premise."""
+        premise_match = {}
+        first = pdv.premise_to_probe(self._premise("resolves", premise_match))
+        first["expected"]["match"]["exit_code"] = 7
+        second = pdv.premise_to_probe(self._premise("resolves", {}))
+        self.assertEqual(second["expected"]["match"], {"exit_code": 0})
+        self.assertEqual(premise_match, {})
+
+    def test_a_non_object_premise_match_is_a_value_error(self):
+        """A ValueError, not a TypeError, so the bind CLI reports it as rc 64."""
+        for kind in ("rejection", "resolves", "parses"):
+            for match in (None, ["exit_code", 0]):
+                with self.subTest(assertion_kind=kind, match=match):
+                    with self.assertRaises(ValueError):
+                        pdv.premise_to_probe(self._premise(kind, match))
 
 
 if __name__ == "__main__":
