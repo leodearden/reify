@@ -8,6 +8,7 @@
 //! stiffness path), so a sign-convention or tying-point-ordering change made
 //! here propagates to both consumers atomically.
 
+use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
 use crate::elements::shell_frame::ShellFrame;
 
 /// Per-element shell kinematics derived from physical nodes + the local
@@ -22,6 +23,9 @@ pub struct ShellKinematics {
     /// `b_cov_at_tying_points[tp_idx][cov_component][dof]` for
     /// `tp_idx in {A=0, B=1, C=2}` and `cov_component in {γ_ξζ=0, γ_ηζ=1}`.
     pub b_cov_at_tying_points: [[[f64; 18]; 2]; 3],
+    /// Local-frame J2 = `[[x1−x0, x2−x0], [y1−y0, y2−y0]]`: its columns are the
+    /// covariant base vectors `g_ξ`, `g_η`.
+    pub jac2: [[f64; 2]; 2],
     /// J2⁻ᵀ — maps covariant (ξ,η) shear components to physical (x,y).
     pub jac2_inv_t: [[f64; 2]; 2],
     /// `det(J2)` — local 2D Jacobian determinant. Always `> 0` for a
@@ -42,8 +46,6 @@ pub struct ShellKinematics {
 /// - `nodes` — three physical vertex positions in global coordinates.
 /// - `frame` — pre-built local mid-surface frame (from `build_shell_frame`).
 pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinematics {
-    use crate::elements::mitc3_plus::Mitc3Plus;
-
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 total DOFs
     const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
     const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
@@ -120,8 +122,38 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
         local_nodes_2d,
         dn,
         b_cov_at_tying_points,
+        jac2,
         jac2_inv_t,
         det2,
+    }
+}
+
+impl ShellKinematics {
+    /// Covariant transverse-shear B-matrix of the three-node (DISP3) field at
+    /// `coord`: rows `(γ_ξζ, γ_ηζ)`, columns the 18 local DOFs.
+    ///
+    /// ```text
+    /// γ_ξζ = Σ_i ∂h_i/∂ξ · u_z_i + h_i · (J00·θ_y_i − J10·θ_x_i)
+    /// γ_ηζ = Σ_i ∂h_i/∂η · u_z_i + h_i · (J01·θ_y_i − J11·θ_x_i)
+    /// ```
+    ///
+    /// i.e. `γ_α = ∂w/∂ξ_α + g_α · (θ_y, −θ_x)`, so the physical shear
+    /// `J2⁻ᵀ · B · u = ∇w + (θ_y, −θ_x)` on any flat triangle.
+    pub fn covariant_shear_b(&self, coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let h = Mitc3Plus.shape_at(coord);
+        let dh = Mitc3Plus.shape_grad_at(coord);
+        let j = self.jac2;
+        let mut b = [[0.0_f64; Mitc3Plus::N_DOFS]; 2];
+        for node in 0..Mitc3Plus::N_NODES {
+            let (uz, tx, ty) = (NDP * node + 2, NDP * node + 3, NDP * node + 4);
+            for (alpha, row) in b.iter_mut().enumerate() {
+                row[uz] = dh[node][alpha];
+                row[ty] = j[0][alpha] * h[node];
+                row[tx] = -j[1][alpha] * h[node];
+            }
+        }
+        b
     }
 }
 
@@ -129,7 +161,6 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
-    use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
     use crate::elements::shell_frame::build_shell_frame;
 
     const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
@@ -197,7 +228,8 @@ mod tests {
     }
 
     #[test]
-    fn covariant_shear_b_maps_uniform_rotation_to_the_constant_physical_shear_on_non_unit_triangles() {
+    fn covariant_shear_b_maps_uniform_rotation_to_the_constant_physical_shear_on_non_unit_triangles()
+     {
         for nodes in NON_UNIT_TRIS {
             let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
             let m = kin.jac2_inv_t;
