@@ -48,6 +48,18 @@ pub struct ZoneProcessParams {
     pub build_direction: [f64; 3],
 }
 
+impl ZoneProcessParams {
+    /// True iff `layer_height`, `line_width` and every `build_direction`
+    /// component are finite. [`classify_zone`]'s band comparisons and the
+    /// top/bottom normal test mean something only when this holds, so every
+    /// producer and reader of these params checks it.
+    pub fn is_finite(&self) -> bool {
+        self.layer_height.is_finite()
+            && self.line_width.is_finite()
+            && self.build_direction.iter().all(|c| c.is_finite())
+    }
+}
+
 /// Precomputed distance probes for a single query point.
 ///
 /// The two distances probe *different* face populations:
