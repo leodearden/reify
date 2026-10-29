@@ -46,10 +46,9 @@
 //! commitment_policy = "only_run_on_final_inputs"
 //! ```
 //!
-//! Pick a `commitment_policy` that differs from the selected node's default
-//! (see `docs/notes/reify-toml-schema.md` → "Precedence"), or the entry is a
-//! no-op: `compute` defaults to `commit_if_slow`, so the entry above changes
-//! the resolved policy, whereas `value` + `always_cancel_when_stale` would not.
+//! An entry must pick a `commitment_policy` that differs from the selected
+//! node's level-4 default, or it is a no-op; see
+//! `docs/notes/reify-toml-schema.md` → "Example".
 //!
 //! Two selector forms are supported:
 //! - **Kind selector** — exact NodeKind name (case-insensitive):
