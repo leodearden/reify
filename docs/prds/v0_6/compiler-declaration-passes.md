@@ -4,7 +4,8 @@
 `plans/review-all-program-reify-20261012.md`); decomposed 2026-10-12 (pass 2): α #8730 … π #8746,
 λ #8741 held on S6; gap-fill 2026-10-16: ρ #9321, σ #9322, ε₂ #9323; retro-critic sitting
 2026-10-20 (R4, R6): D1, D2, D5, D7, D9, D11, D12, §3, §5, §6, §7 and §8 amended in place (see
-§"Retro-critic sitting amendments (2026-10-20)"). Shape: **B+H** (contract §5,
+§"Retro-critic sitting amendments (2026-10-20)"); esc-8739-2 (2026-10-29): D7, §6 B11 and §8 ι
+amended (see §"esc-8739-2 amendment (2026-10-29)"). Shape: **B+H** (contract §5,
 boundary-test sketch §6). Milestone: v0_6.
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12); the review record's anchors were
@@ -361,8 +362,19 @@ type_acceptance ↔ conformance module cycle forms). The type is named `ArgVerdi
 5,299 lines, and S7/S8 partition it. Each deliberate divergence from `type_compatible` is an
 explicitly named arm with a one-line pointer to its rationale in the language spec or this PRD. The
 Vector-accepts-any-`Tensor<1>` rule is one example. The walker keeps only wrapper recursion (the
-TraitObject recursion included) and diagnostic emission. Fn-call, struct-ctor and default sites all reach acceptance through the
-relation, so they cannot disagree.
+TraitObject recursion included) and diagnostic emission. Every site that reaches the walker (a
+struct-ctor argument, and a fn-call argument whose parameter carries a trait object) gets its
+verdict from the relation, so those sites cannot disagree.
+**[Amended 2026-10-29, esc-8739-2]** That is NOT yet true of every acceptance site, and ι
+does not make it so. Two known gaps remain, both owned by #9571, which depends on ι:
+(1) a fn-call argument at a concrete (non-trait-carrying) parameter is judged by
+`reify_core::overload`'s exact slot matching, not the relation; (2)
+`check_param_default_conformance` checks only StructureRef and Geometry cells and leaves every
+other default unchecked. The relation is still the one place where the verdict for each row is
+decided. The arm owners edit its arms (#8121 Point scalar, #8317 Matrix/Tensor scalar, #8101
+Geometry, #9568 quantity slot, #9569 Field erasure, #9570 Matrix nested-list erasure), and #9571
+then routes fn-call and default through it, with no fn-call verdict loosening except on the rows
+ruled Unverifiable.
 
 **D8. One gated DOF entry point (κ).**
 `joint_dof_diagnostics(joint_name, dof: &[(name, Type, span)], body: &[CompiledExpr], span) -> Vec<Diagnostic>`
@@ -494,7 +506,7 @@ same files, which contract §8 step 2 exists to prevent.
 | B9 | user-named `__connector_0` | `sub __connector_0 = Gain()` | Its `SubComponentDecl.origin == Declared`. | ζ |
 | B9b | **[Amended 2026-10-20, retro-critic R4]** user `__connector_0` beside a connector connect | `Top { sub __connector_0 = Gain()  port a: out Sig {}  port b: in Sig {}  connect a -> b : Conn { gain = auto } }`, Conn pinning `gain == 10mm`, Gain.gain = 3mm (RED on main: `Top.__connector_0.gain = 0.003 m`, rc 0, no diagnostic) | rc 1 with the reserved-prefix Error, or (mint-skips variant) the connector keeps 10mm. | ζ |
 | B10 | phantom-default cases via source | each of the four same-name-loser shapes behind the skip sets, as `.ri` through `check_trait_conformance` | Same advertised and injected sets as main; no `check_phase_*` call in the test region. | η (pins), θ (stays green) |
-| B11 | acceptance sites agree | each deliberate divergence row, at a fn-call, a struct-ctor and a param-default site | Same accept/reject verdict at all three sites. | ι |
+| B11 | acceptance sites agree | **[Amended 2026-10-29, esc-8739-2]** (ι) each deliberate divergence row, at a struct-ctor site and at a fn-call site whose parameter carries a trait object; (#9571) the same rows at a fn-call site with a concrete parameter and at a param-default site | (ι) Main's exact verdict and diagnostic, reached through `conformance_accepts`; the walker has no type-comparison arm. (#9571) The ruled verdict per row at all three sites, as listed in #9571's verdict table. | ι (narrowed), #9571 (full) |
 | B12 | DOF gates | a joint with a `Type::Error` DOF; a joint with a non-kind DOF type; a joint whose body has `tangent` | No `E_JOINT_DOF_MISMATCH`; the non-kind case gets exactly one `E_ARG_TYPE_MISMATCH`. | κ |
 | B13 | relation table | iterate `RelationKind::iter()` through `relation_sig` | **[Amended 2026-10-20, retro-critic R6]** The names derive from the reify-builtins rows; arity is the row's; the doc count matches; R3 = 0. (The rot + trans == ΔDOF clause moved to #6669 B4 — lead amendment, D9.) | λ |
 | B14 | parse-error kind | a member-continuation source through `compile_project` (module_dag) | Diagnostic carries the mapped code and the original span; CLI `render_errors` text unchanged. | μ |
@@ -569,7 +581,8 @@ New gate-resident tests carry their drift-guard registrations in the same diff (
   conformance/mod.rs. D6. Signal: B10 green unchanged; the four `&HashSet<String>` parameters are
   gone from both phases; the prose table is deleted. Deps: η. Priority medium. Keys: fk-cf6356374fa1.
 - **ι #8739 — `conformance_accepts` beside `type_compatible`** *(leaf)*. Modules: reify-compiler
-  `type_acceptance.rs` (new), conformance/mod.rs. D7. Signal: B11; the walker's own-rule arms
+  `type_acceptance.rs` (new), conformance/mod.rs. D7. Signal: B11 (ι half, **[Amended 2026-10-29,
+  esc-8739-2]** behaviour-preserving; the three-site half is #9571); the walker's own-rule arms
   delegate; its divergence prose is deleted, with a one-line pointer per named arm; **[Amended 2026-10-20, retro-critic R4]** the
   outcome type is `ArgVerdict` and takes the registries; the walker keeps the TraitObject recursion.
   Deps: η.
@@ -719,3 +732,18 @@ amended in place where marked `[Amended 2026-10-20, retro-critic R<n>]`.
   row is bound to σ itself (syntax-lowering-contract R4: σ owns `SpannedIdent` population at the
   ts_parser.rs lowering sites); D11/D12's R4 ownership corrected (reify-eval and reify-test-support
   rows are S4's, #8870; only reify-lsp's are S27's). Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R4`.
+
+## esc-8739-2 amendment (2026-10-29)
+
+Ruled by Leo. **B11's premise was false; ι is narrowed.** At main `129a711d2a`, for
+a concrete parameter, fn-call rejects what ctor and default accept silently (`Vector3<Length>` ←
+`vec3(1,2,3)`, `Point3<Length>` ← `5`, `Field<Point3<Length>,Real>` ← wrong-domain lambda,
+`Matrix<3,3,Real>` ← list), because three relations decide acceptance (overload slot matching, the
+walker, the default check). A SPOT violation (h11). Ruling: ι stays the behaviour-preserving
+extraction and carries the ctor/trait-carrying half of B11. The structural task #9571 (deps ι,
+γ₂ #9363, #8121, #8317, #8101, #9568) routes fn-call concrete slots and param-default cells
+through `ArgVerdict` and carries full B11. Per-row verdicts: Point/Matrix-scalar/Geometry reject
+everywhere (#8121, #8317 — Matrix verdict pending Leo's explicit confirmation —, #8101, re-pointed to edit the relation's arms); Vector ← dimensionless
+rejects everywhere (V2, #9568, held on the direction-type ruling); Field ← lambda and Matrix ←
+nested list are Unverifiable everywhere until #9569 / #9570 remove the erasure. D7 and B11 are
+amended in place.
