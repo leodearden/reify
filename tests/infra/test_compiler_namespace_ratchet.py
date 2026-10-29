@@ -20,7 +20,8 @@ sys.path.insert(0, str(INFRA_DIR))
 import source_count_ratchet as scr  # noqa: E402
 
 COMPILER_SRC = "crates/reify-compiler/src"
-BASELINE = INFRA_DIR / "compiler-namespace-ratchet-baseline.txt"
+BASELINE_REL = "tests/infra/compiler-namespace-ratchet-baseline.txt"
+BASELINE = REPO_ROOT / BASELINE_REL
 COUNTERS = (
     scr.Counter(
         "glob_reexports",
@@ -52,17 +53,15 @@ class ScratchTree(unittest.TestCase):
     def src(self, rel, text):
         return self.write(f"{COMPILER_SRC}/{rel}", text)
 
-    BASELINE_REL = "tests/infra/compiler-namespace-ratchet-baseline.txt"
-
     def baseline(self, text):
-        return self.write(self.BASELINE_REL, text)
+        return self.write(BASELINE_REL, text)
 
     def append(self, rel, text):
         path = self.root / COMPILER_SRC / rel
         path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
 
     def report(self):
-        return namespace_ratchet(self.root, self.root / self.BASELINE_REL)
+        return namespace_ratchet(self.root, self.root / BASELINE_REL)
 
     def census(self):
         return scr.census(self.root, (self.root / COMPILER_SRC,), COUNTERS)
@@ -300,7 +299,7 @@ class Verdicts(ScratchTree):
         self.assert_green()
         self.src("a.rs", "fn f() {}\n")
         violation = self.single_violation()
-        for fragment in ("'glob_imports 1'", f"({self.BASELINE_REL}:3)", "'glob_imports 0'"):
+        for fragment in ("'glob_imports 1'", f"({BASELINE_REL}:3)", "'glob_imports 0'"):
             self.assertIn(fragment, violation)
         self.baseline("# header comment\nglob_reexports 1\nglob_imports 0\n")
         self.assert_green()
@@ -314,7 +313,7 @@ class Verdicts(ScratchTree):
         self.assertEqual(report.skipped, (child("a/tests.rs", "a.rs", 3),))
 
     def test_baseline_input_errors_name_the_input(self):
-        path = self.root / self.BASELINE_REL
+        path = self.root / BASELINE_REL
         cases = {
             "malformed count": ("# h\nglob_reexports 1\nglob_imports twenty\n", f"{path}:3"),
             "extra field": ("# h\nglob_reexports 1\nglob_imports 1 extra\n", f"{path}:3"),
