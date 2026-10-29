@@ -517,24 +517,6 @@ impl MpcRow {
 mod tests {
     use super::*;
 
-    /// Compile-only smoke that `MpcRow` is reachable and struct-literal
-    /// constructible with the documented field shape.
-    ///
-    /// Once Task 3020 (T10) adds real constructors / validators (e.g.
-    /// `MpcRow::shell_tet_tying`, length-equality assertions), the
-    /// behavioural tests live alongside that logic. This test exists
-    /// solely to lock that the public-field shape is the one downstream
-    /// crates will compile against — no behaviour to assert until T10
-    /// owns it.
-    #[test]
-    fn mpc_row_type_compiles_with_documented_field_shape() {
-        let _: MpcRow = MpcRow {
-            dofs: vec![3, 7, 11],
-            coeffs: vec![1.0, -0.5, 0.5],
-            rhs: 0.0,
-        };
-    }
-
     // -----------------------------------------------------------------------
     // Step 1 (RED): MpcRow::new constructor contract tests
     // -----------------------------------------------------------------------

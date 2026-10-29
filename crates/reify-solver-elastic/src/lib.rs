@@ -187,15 +187,8 @@
 //! assert_eq!(bcs_t8.len(), 6, "FixedSupport on shell node 0 → 6 BCs");
 //! assert_eq!(compat_t8, SupportCompatibility::Ok, "Fixed on Shell → Ok compat");
 //!
-//! // MpcRow re-export smoke test (T11 / Task 3021): pin that the type is
-//! // discoverable from the crate root for downstream consumers (Task 3020 will
-//! // add construction methods on this type). The struct-literal init is the
-//! // surface check; the dofs/coeffs equal-length invariant is T10's
-//! // constructor's job, not a literal-vs-literal len comparison here.
-//! let _row = MpcRow { dofs: vec![0, 6], coeffs: vec![1.0, -1.0], rhs: 0.0 };
-//!
-//! // T10 smoke tests (Task 3020): pin apply_mpc_row_elimination and
-//! // MpcRow::shell_tet_tying are discoverable from the crate root.
+//! // MpcRow / apply_mpc_row_elimination re-export smoke: pin that both are
+//! // discoverable from the crate root.
 //! let _ = apply_mpc_row_elimination;
 //! let _rows = MpcRow::shell_tet_tying(
 //!     [0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11], [12, 13, 14],
