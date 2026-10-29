@@ -816,10 +816,10 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
 ///
 /// The case list covers all 13 symbols the cross-guard compares — the eleven
 /// canonical ladder rungs plus `in` and `g`, which are reachable only through a
-/// caller-supplied hint — so a registry shadow on ANY of them fails here. It is hand-written rather than driven from `BUILTIN_UNITS` because
-/// each case needs a magnitude and a declared `.ri` type, not just a symbol;
-/// the cross-guard above is the table-driven half, and the two are meant to be
-/// read together.
+/// caller-supplied hint — so a registry shadow on ANY of them fails here. It is
+/// hand-written rather than driven from `BUILTIN_UNITS` because each case needs
+/// a magnitude and a declared `.ri` type, not just a symbol; the cross-guard
+/// above is the table-driven half, and the two are meant to be read together.
 #[test]
 fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
     let cases = vec![
@@ -1096,10 +1096,11 @@ fn named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         });
         assert_factor_one_entry(entry, sym, dim, "RI_NAMED_DERIVED_SYMBOLS");
     }
-    assert!(
-        reify_core::RI_NAMED_DERIVED_SYMBOLS.len() >= 4,
-        "expected at least N/Pa/J/W in RI_NAMED_DERIVED_SYMBOLS, got {} rows",
-        reify_core::RI_NAMED_DERIVED_SYMBOLS.len()
+    assert_eq!(
+        reify_core::RI_NAMED_DERIVED_SYMBOLS.len(),
+        4,
+        "expected exactly the four N/Pa/J/W rows in RI_NAMED_DERIVED_SYMBOLS — \
+         did the named-derived table change?"
     );
 }
 
