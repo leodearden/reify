@@ -120,6 +120,18 @@ fn gui_crate_manifest_dir() -> String {
     std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
 }
 
+/// Absolute path to the workspace's `examples/<file_name>`, two levels up from
+/// [`gui_crate_manifest_dir`].
+fn examples_path(file_name: &str) -> std::path::PathBuf {
+    std::path::Path::new(&gui_crate_manifest_dir())
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(file_name)
+}
+
 /// Guards against a file under `src/tests/` that this module never
 /// declares with `mod <name>;`. An undeclared file is not part of any
 /// compilation unit, so any `#[test]` fns inside it silently never run

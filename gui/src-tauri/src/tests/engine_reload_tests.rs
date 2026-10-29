@@ -15,7 +15,7 @@
 //! Every commit, injected (`load_from_compiled`) or compiled, resets the
 //! session's caches through the one reset list (§5 B2).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use reify_constraints::SimpleConstraintChecker;
@@ -103,15 +103,6 @@ fn logged_session() -> (EngineSession, TelemetryLog) {
     (session, log)
 }
 
-fn bracket_path() -> PathBuf {
-    Path::new(&super::gui_crate_manifest_dir())
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/bracket.ri")
-}
-
 /// `source` written to `<fresh tempdir>/<file_name>`; the dir lives as long as
 /// the returned guard.
 fn source_file(file_name: &str, source: &str) -> (tempfile::TempDir, PathBuf) {
@@ -128,8 +119,8 @@ fn simple_compiled_module() -> reify_compiler::CompiledModule {
 }
 
 #[test]
-fn every_reload_entry_point_goes_through_reload() {
-    let bracket = bracket_path();
+fn every_reload_entry_point_runs_the_pipeline_exactly_once() {
+    let bracket = super::examples_path("bracket.ri");
     let bracket_str = bracket.to_str().unwrap();
 
     let (mut session, log) = logged_session();
@@ -173,14 +164,22 @@ fn a_rejected_compile_runs_no_part_of_the_pipeline() {
         .load_file(&broken_path)
         .expect_err("load_file of unparseable text");
 
-    let (mut updated, updated_log) = logged_session();
-    updated
+    let (mut single_file, single_file_log) = logged_session();
+    single_file
         .load_from_source(bracket_source(), "bracket")
         .expect("prime");
-    updated_log.take();
-    let updated_err = updated
+    single_file_log.take();
+    let single_file_err = single_file
         .update_source("bracket.ri", UNPARSEABLE_SRC)
-        .expect_err("update_source of unparseable text");
+        .expect_err("update_source of unparseable text, single-file branch");
+
+    let bracket = super::examples_path("bracket.ri");
+    let (mut with_imports, with_imports_log) = logged_session();
+    with_imports.load_file(&bracket).expect("prime");
+    with_imports_log.take();
+    let with_imports_err = with_imports
+        .update_source(bracket.to_str().unwrap(), UNPARSEABLE_SRC)
+        .expect_err("update_source of unparseable text, multi-file branch");
 
     for (entry_point, err, session, log) in [
         (
@@ -190,7 +189,18 @@ fn a_rejected_compile_runs_no_part_of_the_pipeline() {
             &from_source_log,
         ),
         ("load_file", from_file_err, &from_file, &from_file_log),
-        ("update_source", updated_err, &updated, &updated_log),
+        (
+            "update_source, single-file branch",
+            single_file_err,
+            &single_file,
+            &single_file_log,
+        ),
+        (
+            "update_source, multi-file branch",
+            with_imports_err,
+            &with_imports,
+            &with_imports_log,
+        ),
     ] {
         assert!(
             err.starts_with("Parse errors"),
