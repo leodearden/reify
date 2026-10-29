@@ -24,9 +24,9 @@
 use std::sync::Arc;
 
 use crate::common::as_printed::{
-    as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure, with_field,
+    as_printed_options, box_mesh, fdm_process, length, r0_toolpath_gcode, structure, with_field,
 };
-use reify_core::{ContentHash, DiagnosticCode, RealizationNodeId, Severity, Type};
+use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_trampoline;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};
@@ -308,6 +308,40 @@ fn r0_field_differs_structurally_from_r_fast() {
         dx > 1e-6,
         "R0 frame x-axis {r0_x:?} must differ from R-fast {rfast_x:?}"
     );
+}
+
+/// task 6940: the R0 zone-params slot (lambda items[2]) types its two band
+/// widths as `Length` exactly as R-fast does; `line_width` is the mean wall bead
+/// width (0.45 mm → SI). The counts and the unit build direction stay
+/// dimensionless `Value::Real`.
+#[test]
+fn r0_trampoline_types_the_zone_param_lengths() {
+    let (_, _, items) = field_parts(&run_r0(r0_toolpath_gcode()));
+    let Value::List(p) = &items[2] else {
+        panic!("expected the params list at items[2], got {:?}", items[2]);
+    };
+    assert_eq!(p.len(), 7, "params must be a 7-element list");
+    assert_eq!(p[2], length(0.0002), "layer_height");
+    match &p[3] {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(*dimension, DimensionVector::LENGTH, "line_width dimension");
+            assert!(
+                (si_value - 0.45 * MM_TO_M).abs() < 1e-12,
+                "line_width {si_value} != mean bead width 0.45 mm"
+            );
+        }
+        other => panic!("line_width must be a Length Scalar, got {other:?}"),
+    }
+    for idx in [0, 1, 4, 5, 6] {
+        assert!(
+            matches!(p[idx], Value::Real(_)),
+            "params[{idx}] must stay a dimensionless Value::Real, got {:?}",
+            p[idx]
+        );
+    }
 }
 
 #[test]

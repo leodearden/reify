@@ -214,6 +214,36 @@ fn infill_e_in_plane(outcome: ComputeOutcome) -> f64 {
     }
 }
 
+/// task 6940: the zone-params slot (lambda items[2]) types its two band widths
+/// — `layer_height`, `line_width` — as `Length`; the counts and the unit build
+/// direction stay dimensionless `Value::Real`.
+#[test]
+fn as_printed_trampoline_types_the_zone_param_lengths() {
+    let ComputeOutcome::Completed {
+        result: Value::Field { lambda, .. },
+        ..
+    } = run_r_fast(as_printed_options())
+    else {
+        panic!("expected Completed with a Field");
+    };
+    let Value::List(items) = lambda.as_ref() else {
+        panic!("expected the 7-element zone payload, got {lambda:?}");
+    };
+    let Value::List(p) = &items[2] else {
+        panic!("expected the params list at items[2], got {:?}", items[2]);
+    };
+    assert_eq!(p.len(), 7, "params must be a 7-element list");
+    assert_eq!(p[2], scalar(0.0002, DimensionVector::LENGTH), "layer_height");
+    assert_eq!(p[3], scalar(0.0004, DimensionVector::LENGTH), "line_width");
+    for idx in [0, 1, 4, 5, 6] {
+        assert!(
+            matches!(p[idx], Value::Real(_)),
+            "params[{idx}] must stay a dimensionless Value::Real, got {:?}",
+            p[idx]
+        );
+    }
+}
+
 fn coupon_with_ex(ex: Value) -> Value {
     with_field(coupon_default(), "ex", Value::Option(Some(Box::new(ex))))
 }

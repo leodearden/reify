@@ -124,7 +124,8 @@ pub fn het_aniso_material(e: f64, nu: f64, build_z: [f64; 3]) -> Value {
 /// Lambda layout (mirrors `as_printed_material.rs`):
 /// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`
 ///
-/// where `params = [walls, top_bottom_layers, layer_height, line_width, bu_x, bu_y, bu_z]`.
+/// where `params = [walls, top_bottom_layers, layer_height, line_width, bu_x, bu_y, bu_z]`
+/// — the two band widths are `Length` scalars, the rest `Value::Real`.
 ///
 /// `mat_wall` and `mat_skin` are set to `e_stiff`; `mat_infill` to `e_soft`.
 /// `cos_threshold` is fixed at `0.7` (matches the production default).
@@ -147,8 +148,8 @@ pub fn het_as_printed_field(
     let params = Value::List(vec![
         Value::Real(walls),
         Value::Real(layers),
-        Value::Real(layer_height),
-        Value::Real(line_width),
+        len_scalar(layer_height),
+        len_scalar(line_width),
         Value::Real(bu[0]),
         Value::Real(bu[1]),
         Value::Real(bu[2]),

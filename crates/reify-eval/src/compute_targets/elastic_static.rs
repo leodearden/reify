@@ -11029,8 +11029,8 @@ mod tests {
         let params = Value::List(vec![
             Value::Real(2.0),
             Value::Real(3.0),
-            Value::Real(0.25),
-            Value::Real(0.5),
+            scalar(0.25),
+            scalar(0.5),
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
@@ -11609,18 +11609,20 @@ mod tests {
     ///
     /// Amendment (task #5082 review round 3, suggestion 2): deliberately
     /// does NOT assert that `got` contains the failing index (e.g.
-    /// `"params[2]"`), matching `extract_zone_process_params_rejects_wrong_arity`'s
+    /// `"params[0]"`), matching `extract_zone_process_params_rejects_wrong_arity`'s
     /// policy of relying on structural (variant) matching only rather than
     /// pinning runtime-message prose. The index-folding in the `real`
     /// closure remains for panic-message diagnosability (see its doc
     /// comment) — it is just not part of this test's asserted contract.
     #[test]
     fn extract_zone_process_params_rejects_non_real_element() {
+        // The `Value::Point` sits in a dimensionless count slot (idx 0); the
+        // two band widths (idx 2, 3) are `Length` scalars (task 6940).
         let mixed = Value::List(vec![
-            Value::Real(1.0),
-            Value::Real(2.0),
             Value::Point(vec![]),
-            Value::Real(4.0),
+            Value::Real(2.0),
+            scalar(3.0, DimensionVector::LENGTH),
+            scalar(4.0, DimensionVector::LENGTH),
             Value::Real(5.0),
             Value::Real(6.0),
             Value::Real(7.0),
@@ -11633,6 +11635,47 @@ mod tests {
         );
     }
 
+    /// task 6940: `layer_height` / `line_width` (idx 2, 3) are typed
+    /// `Length`, so a bare `Value::Real` there is a missing dimension —
+    /// `extract_length_si`'s `ExpectedScalar`, not a silent read as metres.
+    #[test]
+    fn extract_zone_process_params_rejects_a_bare_length() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::LENGTH),
+            Value::Real(0.5),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a bare line_width, got: {res:?}"
+        );
+    }
+
+    /// task 6940: a band width of another dimension is refused as
+    /// `WrongDimension` rather than having its SI magnitude read as metres.
+    #[test]
+    fn extract_zone_process_params_rejects_a_wrong_dimension_length() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::MASS),
+            scalar(0.5, DimensionVector::LENGTH),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::WrongDimension { .. })),
+            "expected Err(WrongDimension) for a MASS layer_height, got: {res:?}"
+        );
+    }
+
     /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
     /// return `Ok` with the mapped `ZoneProcessParams` for a well-formed
     /// 7-element `Value::List`, locking the success/field-mapping path
@@ -11642,8 +11685,8 @@ mod tests {
         let list = Value::List(vec![
             Value::Real(2.0),
             Value::Real(3.0),
-            Value::Real(0.25),
-            Value::Real(0.5),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(0.5, DimensionVector::LENGTH),
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
@@ -11673,8 +11716,8 @@ mod tests {
         let list = Value::List(vec![
             Value::Real(2.0),
             Value::Real(3.0),
-            Value::Real(0.25),
-            Value::Real(0.5),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(0.5, DimensionVector::LENGTH),
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
@@ -12702,8 +12745,8 @@ mod tests {
         let params = Value::List(vec![
             Value::Real(2.0),    // walls
             Value::Real(3.0),    // top_bottom_layers
-            Value::Real(0.0002), // layer_height
-            Value::Real(0.0004), // line_width
+            len(0.0002),         // layer_height
+            len(0.0004),         // line_width
             Value::Real(0.0),    // bx
             Value::Real(0.0),    // by
             Value::Real(1.0),    // bz

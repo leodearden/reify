@@ -54,8 +54,8 @@ fn as_printed_field() -> (Value, Type) {
     let params = Value::List(vec![
         Value::Real(3.0),    // walls
         Value::Real(4.0),    // top_bottom_layers
-        Value::Real(0.0002), // layer_height (m)
-        Value::Real(0.0004), // line_width (m)
+        length(0.0002),      // layer_height
+        length(0.0004),      // line_width
         Value::Real(0.0),    // build_direction x
         Value::Real(0.0),    // build_direction y
         Value::Real(1.0),    // build_direction z
