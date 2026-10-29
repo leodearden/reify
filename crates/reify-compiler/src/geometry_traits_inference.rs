@@ -937,8 +937,9 @@ pub fn try_infer_traits_for_function_call_in_env(
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
         // Each name maps to the SweepKind its geometry.rs lowering arm emits.
-        // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
-        // so they belong here. zone_profile is in the modify arm above.
+        // zone_annulus is the exception: it lowers to a Difference of two Pipe
+        // sweeps, whose op-array inference drops `connected`, while this arm
+        // keeps it. zone_profile is in the modify arm above.
         "extrude" => Some(sweep_in_env(SweepKind::Extrude, args, env)),
         "extrude_symmetric" => Some(sweep_in_env(SweepKind::ExtrudeSymmetric, args, env)),
         "extrude_infinite" => Some(sweep_in_env(SweepKind::ExtrudeInfinite, args, env)),

@@ -15,7 +15,9 @@ use reify_core::{ContentHash, DiagnosticCode, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-const ALL_SWEEP_KINDS: [SweepKind; 9] = [
+/// Sized by the derived variant count, so a new `SweepKind` fails to compile
+/// until it is listed here.
+const ALL_SWEEP_KINDS: [SweepKind; SweepKind::VARIANT_COUNT] = [
     SweepKind::Loft,
     SweepKind::Extrude,
     SweepKind::Revolve,
@@ -27,20 +29,26 @@ const ALL_SWEEP_KINDS: [SweepKind; 9] = [
     SweepKind::Pipe,
 ];
 
-/// The kinds whose first operand is a section that the sweep raises by one
-/// dimension.
-const SECTION_LIFTING_KINDS: [SweepKind; 7] = [
-    SweepKind::Extrude,
-    SweepKind::ExtrudeSymmetric,
-    SweepKind::ExtrudeInfinite,
-    SweepKind::Revolve,
-    SweepKind::Sweep,
-    SweepKind::SweepGuided,
-    SweepKind::LoftGuided,
-];
+/// Whether `kind`'s first operand is a section the sweep raises by one
+/// dimension. `Pipe`'s first operand is its PATH, and `Loft` caps every
+/// section.
+const fn lifts_its_section(kind: SweepKind) -> bool {
+    match kind {
+        SweepKind::Extrude
+        | SweepKind::ExtrudeSymmetric
+        | SweepKind::ExtrudeInfinite
+        | SweepKind::Revolve
+        | SweepKind::Sweep
+        | SweepKind::SweepGuided
+        | SweepKind::LoftGuided => true,
+        SweepKind::Pipe | SweepKind::Loft => false,
+    }
+}
 
-/// Every sweep builtin name, paired with the `SweepKind` geometry.rs lowers it to.
-const SWEEP_NAME_KINDS: [(&str, SweepKind); 12] = [
+/// Every sweep builtin name that geometry.rs lowers to a single `Sweep` op,
+/// paired with that op's `SweepKind`. `zone_annulus` is absent: it lowers to a
+/// `Difference` of two `Pipe` sweeps.
+const SWEEP_NAME_KINDS: [(&str, SweepKind); 11] = [
     ("extrude", SweepKind::Extrude),
     ("extrude_symmetric", SweepKind::ExtrudeSymmetric),
     ("extrude_infinite", SweepKind::ExtrudeInfinite),
@@ -52,7 +60,6 @@ const SWEEP_NAME_KINDS: [(&str, SweepKind); 12] = [
     ("loft_guided", SweepKind::LoftGuided),
     ("pipe", SweepKind::Pipe),
     ("zone_cylinder", SweepKind::Pipe),
-    ("zone_annulus", SweepKind::Pipe),
 ];
 
 /// A no-arg geometry builtin call, typed with the `dimensionless_scalar`
@@ -235,7 +242,10 @@ fn let_bound_finite_extrude_of_a_bounded_profile_at_bounded_param_is_clean() {
 
 #[test]
 fn combine_sweep_lifts_a_curve_section_to_a_surface_and_a_face_to_a_solid() {
-    for kind in SECTION_LIFTING_KINDS {
+    for kind in ALL_SWEEP_KINDS
+        .into_iter()
+        .filter(|k| lifts_its_section(*k))
+    {
         assert_eq!(
             combine_sweep(kind, InferredTraits::curve()).dimension,
             GeomDim::Surface,
@@ -254,11 +264,12 @@ fn combine_sweep_lifts_a_curve_section_to_a_surface_and_a_face_to_a_solid() {
     }
 }
 
-/// Pipe's first operand is its PATH and Loft caps every section, so neither
-/// lifts a curve operand to a Surface.
 #[test]
-fn combine_sweep_of_pipe_and_loft_is_solid_over_a_curve_operand() {
-    for kind in [SweepKind::Pipe, SweepKind::Loft] {
+fn combine_sweep_of_a_non_lifting_kind_is_solid_over_a_curve_operand() {
+    for kind in ALL_SWEEP_KINDS
+        .into_iter()
+        .filter(|k| !lifts_its_section(*k))
+    {
         assert_eq!(
             combine_sweep(kind, InferredTraits::curve()).dimension,
             GeomDim::Solid,
