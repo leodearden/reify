@@ -743,7 +743,8 @@ walker, the default check). A SPOT violation (h11). Ruling: ι stays the behavio
 extraction and carries the ctor/trait-carrying half of B11. The structural task #9571 (deps ι,
 γ₂ #9363, #8121, #8317, #8101, #9568) routes fn-call concrete slots and param-default cells
 through `ArgVerdict` and carries full B11. Per-row verdicts: Point/Matrix-scalar/Geometry reject
-everywhere (#8121, #8317 — Matrix verdict pending Leo's explicit confirmation —, #8101, re-pointed to edit the relation's arms); Vector ← dimensionless
+everywhere (#8121, #8317, #8101, re-pointed to edit the relation's arms; a scalar stays legal only at a
+rank-0 Tensor with a matching dimension, Rule 2a); Vector ← dimensionless
 rejects everywhere (V2, #9568, held on the direction-type ruling); Field ← lambda and Matrix ←
 nested list are Unverifiable everywhere until #9569 / #9570 remove the erasure. D7 and B11 are
 amended in place.
