@@ -501,10 +501,14 @@ const READ_BACK_SOURCE: &str = r#"structure def GcodeWaypointReadBack {
 }
 "#;
 
-/// Compile [`READ_BACK_SOURCE`] (zero Error diagnostics required) and evaluate it.
-fn read_back_values() -> ValueMap {
-    let compiled = parse_and_compile_with_stdlib(READ_BACK_SOURCE);
-    make_simple_engine().eval(&compiled).values
+/// Compile [`READ_BACK_SOURCE`] (zero Error diagnostics required) and evaluate
+/// it, caching the result as [`smoke_compiled`] does.
+fn read_back_values() -> &'static ValueMap {
+    static V: OnceLock<ValueMap> = OnceLock::new();
+    V.get_or_init(|| {
+        let compiled = parse_and_compile_with_stdlib(READ_BACK_SOURCE);
+        make_simple_engine().eval(&compiled).values
+    })
 }
 
 fn read_back_cell<'a>(values: &'a ValueMap, member: &str) -> &'a Value {
@@ -522,7 +526,7 @@ fn every_waypoint_field_reads_back_through_the_dsl() {
 
     for (member, metres) in [("x", 0.01), ("y", 0.02), ("z", 0.003), ("e", 0.004)] {
         assert_eq!(
-            *read_back_cell(&values, member),
+            *read_back_cell(values, member),
             Value::length(metres),
             "wp.{member} should read back as the Length {metres} m"
         );
@@ -533,12 +537,12 @@ fn every_waypoint_field_reads_back_through_the_dsl() {
         dimension: DimensionVector::VELOCITY,
     };
     assert_eq!(
-        *read_back_cell(&values, "feedrate"),
+        *read_back_cell(values, "feedrate"),
         Value::Option(Some(Box::new(feed.clone()))),
         "F1800 mm/min should read back as some(0.03 m/s)"
     );
     assert_eq!(
-        *read_back_cell(&values, "feed"),
+        *read_back_cell(values, "feed"),
         feed,
         "unwrap_or should yield the present 0.03 m/s Velocity, not the 0 mm/s default"
     );
@@ -568,10 +572,10 @@ fn minted_instances_carry_exactly_their_declared_params() {
     let values = read_back_values();
     let stdlib = reify_compiler::stdlib_loader::load_stdlib();
 
-    let Value::List(segments) = read_back_cell(&values, "imported") else {
+    let Value::List(segments) = read_back_cell(values, "imported") else {
         panic!("expected Value::List for {READ_BACK_STRUCTURE}.imported")
     };
-    let first_waypoint = read_back_cell(&values, "wp");
+    let first_waypoint = read_back_cell(values, "wp");
 
     for instance in [&segments[0], first_waypoint] {
         let Value::StructureInstance(data) = instance else {
